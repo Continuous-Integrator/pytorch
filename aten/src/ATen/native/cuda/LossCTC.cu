@@ -209,9 +209,6 @@ ctc_loss_log_alpha_gpu_kernel(scalar_t* __restrict__ log_alpha_data,
 }
 
 // The forward computation. Lot's of admin and a call to the alpha kernel.
-// Note: we do not check that the labels are in the valid range. As we use
-// them for indexing in the kernels, you'll see memory errors when you
-// pass corrupt labels.
 // We support both a 2-dimensional tensor as targets (one set of targets in each row) and
 // a 1-dimensional tensor where all targets are concatenated (and we use target_lengths
 // to figure out where they begin).
@@ -282,6 +279,24 @@ std::tuple<Tensor, Tensor> ctc_loss_gpu_template(const Tensor& log_probs, const 
     TORCH_CHECK(input_lengths[b] <= max_input_length,
              "Expected input_lengths to have value at most ", max_input_length, ", but got value ", input_lengths[b],
              " (while checking arguments for ", c, ")");
+  }
+
+  // Validate that target values are in range [0, num_labels).
+  // Out-of-bounds targets cause reads beyond the log_probs tensor.
+  {
+    auto targets_cpu = targets.to(at::kCPU);
+    auto targets_data = targets_cpu.const_data_ptr<target_t>();
+    for (const auto b : c10::irange(batch_size)) {
+      for (int64_t t = 0; t < target_lengths[b]; ++t) {
+        int64_t target_val = static_cast<int64_t>(
+            targets_data[tg_batch_offsets_data[b] + tg_target_stride * t]);
+        TORCH_CHECK(
+            target_val >= 0 && target_val < num_labels,
+            "Expected all target values to be in range [0, ", num_labels,
+            "), but got target value ", target_val,
+            " (while checking arguments for ", c, ")");
+      }
+    }
   }
 
   auto target_lengths_t = at::tensor(target_lengths, targets.options().dtype(kLong));
