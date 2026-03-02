@@ -452,7 +452,7 @@ def register_symm_mem_lowerings():
             ),
         )
 
-    @register_lowering(symm_mem.one_shot_all_reduce_out)
+    @register_lowering(symm_mem.one_shot_all_reduce.out)
     def _symm_mem_one_shot_all_reduce_out(
         inp: ir.TensorBox,
         reduce_op: str,
@@ -463,7 +463,7 @@ def register_symm_mem_lowerings():
         return pytree.tree_map(
             ir.TensorBox.create,
             ir.FallbackKernel.create(
-                symm_mem.one_shot_all_reduce_out.default,
+                symm_mem.one_shot_all_reduce.out,
                 inp,
                 reduce_op,
                 group_name,
@@ -490,7 +490,7 @@ def register_symm_mem_lowerings():
             ),
         )
 
-    @register_lowering(symm_mem.one_shot_all_reduce_copy_out)
+    @register_lowering(symm_mem.one_shot_all_reduce_copy.out)
     def _symm_mem_one_shot_all_reduce_copy_out(
         symm_buffer: ir.TensorBox,
         local_input: ir.TensorBox,
@@ -502,7 +502,7 @@ def register_symm_mem_lowerings():
         return pytree.tree_map(
             ir.TensorBox.create,
             ir.FallbackKernel.create(
-                symm_mem.one_shot_all_reduce_copy_out.default,
+                symm_mem.one_shot_all_reduce_copy.out,
                 symm_buffer,
                 local_input,
                 reduce_op,
@@ -577,7 +577,7 @@ def register_symm_mem_lowerings():
             ),
         )
 
-    @register_lowering(symm_mem.multimem_one_shot_all_reduce_out)
+    @register_lowering(symm_mem.multimem_one_shot_all_reduce.out)
     def _symm_mem_multimem_one_shot_all_reduce_out(
         inp: ir.TensorBox,
         reduce_op: str,
@@ -588,7 +588,7 @@ def register_symm_mem_lowerings():
         return pytree.tree_map(
             ir.TensorBox.create,
             ir.FallbackKernel.create(
-                symm_mem.multimem_one_shot_all_reduce_out.default,
+                symm_mem.multimem_one_shot_all_reduce.out,
                 inp,
                 reduce_op,
                 group_name,
