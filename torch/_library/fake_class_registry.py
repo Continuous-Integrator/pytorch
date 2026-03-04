@@ -72,6 +72,9 @@ class FakeScriptObject:
     def __hash__(self) -> int:
         return hash(self.real_obj)
 
+    def __getitem__(self, key):
+        return self.real_obj[key]
+
     def __deepcopy__(self, memo: dict[int, Any]) -> "FakeScriptObject":
         if id(self) in memo:
             return memo[id(self)]

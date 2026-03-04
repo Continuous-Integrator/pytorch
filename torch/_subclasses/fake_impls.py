@@ -1443,20 +1443,23 @@ def _pack_padded_sequence(
         # Without symints/symfloats, cannot handle this
         raise DynamicOutputShapeException(func)
 
-    new_batch_size = fake_mode.shape_env.create_unbacked_symint()
-
     from torch.fx.experimental.symbolic_shapes import _constrain_range_for_size
 
+    new_batch_size = fake_mode.shape_env.create_unbacked_symint()
     _constrain_range_for_size(new_batch_size)
 
+    # total_packed_length = sum(lengths) is data-dependent
+    new_total_length = fake_mode.shape_env.create_unbacked_symint()
+    _constrain_range_for_size(new_total_length)
+
     if not batch_first:
-        # Inputs should have shape (batch_size, seq_len, *)
         inputs = inputs.transpose(0, 1)  # type: ignore[assignment]
 
-    res_size = inputs.shape[1:]
-    packed_data = inputs.new_empty(res_size)
-    batch_size = inputs.new_empty((new_batch_size,))
-    return (packed_data, batch_size)  # type: ignore[return]
+    feature_shape = inputs.shape[2:]
+    packed_data = inputs.new_empty((new_total_length, *feature_shape))
+    # batch_sizes is always int64 (counts per timestep)
+    batch_sizes = inputs.new_empty((new_batch_size,), dtype=torch.int64)
+    return (packed_data, batch_sizes)  # type: ignore[return]
 
 
 # pyrefly: ignore [implicit-any]

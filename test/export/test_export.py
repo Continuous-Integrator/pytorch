@@ -1361,6 +1361,85 @@ graph():
         ep_out_bigru_dynamic = ep_bigru.module()(x_, h0_bi)
         self.assertEqual(ep_out_bigru_dynamic, model_bigru(x_, h0_bi))
 
+    def test_packed_sequence_lstm(self):
+        from torch.export._patches import (
+            register_gru_while_loop_decomposition,
+            register_lstm_while_loop_decomposition,
+        )
+
+        # Test 1: Basic pack -> LSTM -> unpack pattern
+        class PackedLSTM(torch.nn.Module):
+            def __init__(self, input_size, hidden_size):
+                super().__init__()
+                self.lstm = torch.nn.LSTM(input_size, hidden_size, batch_first=True)
+
+            def forward(self, x, lengths):
+                packed = torch.nn.utils.rnn.pack_padded_sequence(
+                    x, lengths, batch_first=True, enforce_sorted=False
+                )
+                output, _ = self.lstm(packed)
+                output, out_lengths = torch.nn.utils.rnn.pad_packed_sequence(
+                    output, batch_first=True
+                )
+                return output
+
+        input_size, hidden_size = 10, 20
+        model = PackedLSTM(input_size, hidden_size)
+        x = torch.randn(3, 5, input_size)
+        lengths = torch.tensor([5, 3, 2])
+
+        eager_out = model(x, lengths)
+
+        with (
+            register_gru_while_loop_decomposition(),
+            register_lstm_while_loop_decomposition(),
+        ):
+            ep = export(model, (x, lengths))
+        ep_out = ep.module()(x, lengths)
+        self.assertEqual(eager_out, ep_out)
+
+        # Test 2: Bidirectional packed LSTM
+        class BiPackedLSTM(torch.nn.Module):
+            def __init__(self, input_size, hidden_size):
+                super().__init__()
+                self.lstm = torch.nn.LSTM(
+                    input_size, hidden_size, batch_first=True, bidirectional=True
+                )
+
+            def forward(self, x, lengths):
+                packed = torch.nn.utils.rnn.pack_padded_sequence(
+                    x, lengths, batch_first=True, enforce_sorted=False
+                )
+                output, _ = self.lstm(packed)
+                output, _ = torch.nn.utils.rnn.pad_packed_sequence(
+                    output, batch_first=True
+                )
+                return output
+
+        model_bi = BiPackedLSTM(input_size, hidden_size)
+        eager_out_bi = model_bi(x, lengths)
+
+        with (
+            register_gru_while_loop_decomposition(),
+            register_lstm_while_loop_decomposition(),
+        ):
+            ep_bi = export(model_bi, (x, lengths))
+        ep_out_bi = ep_bi.module()(x, lengths)
+        self.assertEqual(eager_out_bi, ep_out_bi)
+
+        # Test 3: Single sequence
+        x_single = torch.randn(1, 4, input_size)
+        lengths_single = torch.tensor([4])
+        eager_out_single = model(x_single, lengths_single)
+
+        with (
+            register_gru_while_loop_decomposition(),
+            register_lstm_while_loop_decomposition(),
+        ):
+            ep_single = export(model, (x_single, lengths_single))
+        ep_out_single = ep_single.module()(x_single, lengths_single)
+        self.assertEqual(eager_out_single, ep_out_single)
+
     @testing.expectedFailureStrictV2
     def test_no_tensor_computation(self):
         class Module(torch.nn.Module):
