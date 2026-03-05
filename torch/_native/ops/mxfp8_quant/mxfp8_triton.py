@@ -59,7 +59,7 @@ def triton_to_mxfp8_dim0(
     )
 
     # Launch the kernel
-    wrap_triton(to_mxfp8_dim0_kernel)[grid](
+    torch.library.wrap_triton(to_mxfp8_dim0_kernel)[grid](
         x_ptr=x,
         output_ptr=output,
         scale_ptr=scale,
