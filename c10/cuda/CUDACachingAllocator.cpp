@@ -1321,8 +1321,8 @@ class DeviceCachingAllocator {
     ska::flat_hash_map<cudaStream_t, ska::flat_hash_set<cudaGraphNode_t>>
         visited;
   };
-  ska::flat_hash_map<MempoolId_t, CaptureId_t, MempoolIdHash>
-      mempool_to_capture_id;
+  ska::flat_hash_map<MempoolId_t, std::vector<CaptureId_t>, MempoolIdHash>
+      mempool_to_capture_ids;
   ska::flat_hash_map<CaptureId_t, GraphReuseContext> graph_reuse_context;
 
   // outstanding cuda events
@@ -1885,16 +1885,22 @@ class DeviceCachingAllocator {
       if (owning_graph == nullptr) {
         owning_graph = info.graph;
       }
-      TORCH_INTERNAL_ASSERT(
-          info.graph == owning_graph,
-          "All streams in the same capture should agree on the graph");
+
+      if (info.graph != owning_graph) {
+        // This stream is capturing into a different cudaGraph_t (e.g., a
+        // conditional node's child graph). Child graph nodes live in a
+        // separate DAG unreachable via cudaGraphNodeGetDependencies from the
+        // parent graph's terminals. Skip — the conditional node in the parent
+        // graph provides synchronization via
+        // cudaStreamUpdateCaptureDependencies.
+        return true;
+      }
 
       // Use current terminals as the free markers for the stream
       for (size_t i = 0; i < info.num_terminals; ++i) {
         auto terminal = info.terminals[i];
         markers.insert(terminal);
       }
-      owning_graph = info.graph; // all streams in the same capture should agree
       return true;
     };
 
@@ -2012,7 +2018,7 @@ class DeviceCachingAllocator {
               "Could not find graph pool for capture.");
           auto mempool_id = graph_pool->first;
           graph_reuse_context[info.capture_id] = GraphReuseContext{};
-          mempool_to_capture_id[mempool_id] = info.capture_id;
+          mempool_to_capture_ids[mempool_id].push_back(info.capture_id);
           found = true;
           break;
         }
@@ -2103,8 +2109,7 @@ class DeviceCachingAllocator {
           block->stream, &block_cap_status, &block_cap_id));
 
       if (block_cap_status == cudaStreamCaptureStatusActive) {
-        auto current_stream =
-            c10::cuda::getCurrentCUDAStream(block->device);
+        auto current_stream = c10::cuda::getCurrentCUDAStream(block->device);
         cudaStreamCaptureStatus current_cap_status{};
         CaptureId_t current_cap_id = 0;
         C10_CUDA_CHECK(cudaStreamGetCaptureInfo(
@@ -2774,20 +2779,6 @@ class DeviceCachingAllocator {
   void endAllocateToPool(MempoolId_t mempool_id) {
     std::lock_guard<std::recursive_mutex> lock(mutex);
 
-    if (CUDAAllocatorConfig::graph_capture_record_stream_reuse() &&
-        !graph_reuse_context.empty()) {
-      auto capture_id = mempool_to_capture_id[mempool_id];
-      auto graph_context = graph_reuse_context[capture_id];
-      for (auto& [stream, _] : graph_context.visited) {
-        TORCH_INTERNAL_ASSERT(
-            stream_get_capture_info(stream).status ==
-                cudaStreamCaptureStatusNone,
-            "This stream should not be capturing when the capture is ended");
-      }
-      graph_reuse_context.erase(capture_id);
-      mempool_to_capture_id.erase(mempool_id);
-    }
-
     for (auto it = captures_underway.begin(); it != captures_underway.end();
          ++it) {
       if (it->first == mempool_id) {
@@ -2796,7 +2787,9 @@ class DeviceCachingAllocator {
           cross_capture_free_count_ = 0;
           TORCH_CHECK(
               false,
-              "Freed ", count, " tensor(s) allocated in a parent CUDA graph "
+              "Freed ",
+              count,
+              " tensor(s) allocated in a parent CUDA graph "
               "capture inside a conditional node's child graph. This would "
               "cause data corruption at replay time if the conditional branch "
               "does not execute. Hold tensors alive through both branches "
@@ -2805,6 +2798,19 @@ class DeviceCachingAllocator {
         }
 
         captures_underway.erase(it);
+
+        if (CUDAAllocatorConfig::graph_capture_record_stream_reuse() &&
+            mempool_to_capture_ids.count(mempool_id) &&
+            !mempool_to_capture_ids[mempool_id].empty()) {
+          auto& id_stack = mempool_to_capture_ids[mempool_id];
+          auto cap_id = id_stack.back();
+          id_stack.pop_back();
+          graph_reuse_context.erase(cap_id);
+          if (id_stack.empty()) {
+            mempool_to_capture_ids.erase(mempool_id);
+          }
+        }
+
         return;
       }
     }
