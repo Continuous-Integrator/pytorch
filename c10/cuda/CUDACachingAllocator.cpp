@@ -1311,6 +1311,10 @@ class DeviceCachingAllocator {
   //     ends.
   ska::flat_hash_map<Block*, std::vector<cudaGraphNode_t>> deferred_blocks;
 
+  // Count of blocks freed during a child graph capture that were allocated
+  // in a parent capture (capture ID mismatch). Checked in endAllocateToPool.
+  size_t cross_capture_free_count_ = 0;
+
   // Incremental reverse-traversal state cached per graph.
   // We never re-traverse nodes we've already seen
   struct GraphReuseContext {
@@ -2089,6 +2093,30 @@ class DeviceCachingAllocator {
     if (block->size >= AcceleratorAllocatorConfig::max_split_size())
       stats.oversize_allocations.decrease(1);
 
+    // Detect freeing a parent-capture block inside a child graph capture
+    // (e.g., conditional node). The block is freed normally here, but we
+    // count the violation so endAllocateToPool can throw after cleanup.
+    if (C10_UNLIKELY(!captures_underway.empty())) {
+      cudaStreamCaptureStatus block_cap_status{};
+      CaptureId_t block_cap_id = 0;
+      C10_CUDA_CHECK(cudaStreamGetCaptureInfo(
+          block->stream, &block_cap_status, &block_cap_id));
+
+      if (block_cap_status == cudaStreamCaptureStatusActive) {
+        auto current_stream =
+            c10::cuda::getCurrentCUDAStream(block->device);
+        cudaStreamCaptureStatus current_cap_status{};
+        CaptureId_t current_cap_id = 0;
+        C10_CUDA_CHECK(cudaStreamGetCaptureInfo(
+            current_stream, &current_cap_status, &current_cap_id));
+
+        if (current_cap_status == cudaStreamCaptureStatusActive &&
+            block_cap_id != current_cap_id) {
+          ++cross_capture_free_count_;
+        }
+      }
+    }
+
     // If the block has been used on more than one stream, handle accordingly.
     if (!block->stream_uses.empty()) {
       if (C10_UNLIKELY(!captures_underway.empty())) {
@@ -2763,6 +2791,19 @@ class DeviceCachingAllocator {
     for (auto it = captures_underway.begin(); it != captures_underway.end();
          ++it) {
       if (it->first == mempool_id) {
+        if (cross_capture_free_count_ > 0) {
+          size_t count = cross_capture_free_count_;
+          cross_capture_free_count_ = 0;
+          TORCH_CHECK(
+              false,
+              "Freed ", count, " tensor(s) allocated in a parent CUDA graph "
+              "capture inside a conditional node's child graph. This would "
+              "cause data corruption at replay time if the conditional branch "
+              "does not execute. Hold tensors alive through both branches "
+              "(e.g., pass as operands to torch.cond) and free them after "
+              "the conditional node completes.");
+        }
+
         captures_underway.erase(it);
         return;
       }
