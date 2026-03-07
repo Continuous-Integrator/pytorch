@@ -65,10 +65,7 @@ _NOQA_RE = re.compile(r"#\s*noqa\s*:\s*TEST_DEVICE_BIAS\b")
 
 _HELP_URL = "https://pytorch.org/docs/main/notes/device_generic_testing.html"
 
-_SUFFIX = (
-    f"If intentional, add '# noqa: TEST_DEVICE_BIAS' to suppress. "
-    f"See {_HELP_URL}"
-)
+_SUFFIX = f"If intentional, add '# noqa: TEST_DEVICE_BIAS' to suppress. See {_HELP_URL}"
 
 
 def _is_device_id(value: str) -> str | None:
@@ -102,7 +99,7 @@ class DeviceBiasVisitor(ast.NodeVisitor):
     def _check_node(self, subnode: ast.AST) -> None:
         # String constants that are device identifiers: "cuda", "cuda:0", etc.
         if isinstance(subnode, ast.Constant) and isinstance(subnode.value, str):
-            if bias := _is_device_id(subnode.value):
+            if _is_device_id(subnode.value):
                 self.record(
                     subnode,
                     f"Use torch.accelerator.current_accelerator() or the 'device' "
