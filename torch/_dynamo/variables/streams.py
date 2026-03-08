@@ -10,9 +10,13 @@ from torch.fx import has_side_effect, Proxy
 from .. import graph_break_hints
 from ..bytecode_transformation import create_call_function
 from ..exc import TYPE_CHECKING, unimplemented
-from ..graph_bytecode_inputs import get_external_object_by_index
+from ..graph_bytecode_inputs import (
+    get_external_object_by_index,
+    register_graph_created_object,
+)
+from ..source import CurrentStreamSource
 from .base import VariableTracker
-from .constant import ConstantVariable
+from .constant import CONSTANT_VARIABLE_NONE, ConstantVariable
 from .ctx_manager import FxTracebackAnnotateVariable
 from .lazy import LazyVariableTracker
 
@@ -26,6 +30,44 @@ from torch._library.custom_ops import custom_op
 
 
 Tensor = torch.Tensor
+
+
+def new_event(*args: Any, **kwargs: Any) -> int:
+    event = torch.Event(*args, **kwargs)
+    return register_graph_created_object(
+        event,
+        EventVariable.make_construct_in_graph_event_fn(
+            TupleVariable([]), ConstDictVariable({})
+        ),
+    )
+
+
+def new_stream(*args: tuple[Any], **kwargs: Any) -> int:
+    stream = torch.Stream(*args, **kwargs)  # type: ignore[no-matching-overload,call-overload]
+    return register_graph_created_object(
+        stream,
+        StreamVariable.make_construct_in_graph_stream_fn(
+            TupleVariable([]), ConstDictVariable({})
+        ),
+    )
+
+
+def _codegen_current_stream(device: torch.device, cg: "PyCodegen") -> None:
+    cg.add_push_null(
+        lambda: cg.load_import_from(
+            torch._dynamo.graph_bytecode_inputs.__name__,  # type: ignore[implicit-imports]
+            "stash_graph_created_object",
+        )
+    )
+    cg(CurrentStreamSource(device))
+    cg.extend_output(create_call_function(1, False))
+
+
+def get_current_stream(device: torch.device) -> int:
+    stream = torch.accelerator.current_stream(device)
+    return register_graph_created_object(
+        stream, lambda _, cg: _codegen_current_stream(device, cg)
+    )
 
 
 def _get_stream_by_index(index: int) -> torch.Stream:
@@ -115,6 +157,54 @@ def _(
 has_side_effect(torch.ops.streams.wait_event.default)
 
 
+@custom_op("streams::wait_stream", mutates_args=())
+def wait_stream(waiting_stream_index: int, waited_on_stream_index: int) -> None:
+    waiting = _get_stream_by_index(waiting_stream_index)
+    waited_on = _get_stream_by_index(waited_on_stream_index)
+    waiting.wait_stream(waited_on)
+
+
+@wait_stream.register_fake
+def _(
+    event_index: int,
+    stream_index: int,
+) -> None:
+    pass
+
+
+has_side_effect(torch.ops.streams.wait_stream.default)
+
+
+@custom_op("streams::sync_dealloc", mutates_args=())
+def sync_dealloc(
+    wait_event_index: int, src_stream_index: int, to_dealloc: torch.Tensor
+) -> None:
+    """An op which waits on an event and moves the last usage of to_dealloc
+    after the wait, so that after the sync occurs, the deallocation or
+    subsequent reuse of the tensor's memory will be guaranteed to happen
+    after a side stream is finished using it.
+    See https://docs.pytorch.org/docs/stable/generated/torch.Tensor.record_stream.html#torch.Tensor.record_stream
+    for more details"""
+    torch.ops.streams.wait_event.default(wait_event_index, src_stream_index)
+
+
+has_side_effect(torch.ops.streams.sync_dealloc.default)
+
+
+@custom_op("streams::record_stream", mutates_args=())
+def record_stream(tensor: torch.Tensor, stream_index: int) -> None:
+    tensor.record_stream(_get_stream_by_index(stream_index))
+
+
+@record_stream.register_fake
+def _(
+    src_stream_index: int,
+    wait_event_index: int,
+    to_dealloc: torch.Tensor,
+) -> None:
+    pass
+
+
 class SymbolicStreamState:
     """Track the currently entered stream if any"""
 
@@ -139,7 +229,7 @@ class SymbolicStreamState:
     def exit_stream(self) -> None:
         self.cur_stream_stack.pop()
 
-    def cur_stream(self, device: Optional[torch.device] = None) -> "StreamVariable":
+    def cur_stream(self, device: torch.device | None = None) -> "StreamVariable":
         if device is not None:
             for stream in reversed(self.cur_stream_stack):
                 if stream.device == device:
@@ -204,7 +294,7 @@ class StreamVariable(StreamContextVariable):
         self,
         proxy: Proxy,
         value: torch.Stream,
-        user_object_index: Optional[int] = None,
+        user_object_index: int | None = None,
         **kwargs: Any,
     ) -> None:
         # Index into the user object table
@@ -214,9 +304,8 @@ class StreamVariable(StreamContextVariable):
 
         self.proxy = proxy
         self.value = value
-        # pyrefly: ignore [read-only]
         self.device = value.device
-        # pyrefly: ignore [read-only]
+
         self.user_object_index = user_object_index
         super().__init__(None, **kwargs)
 
@@ -239,7 +328,7 @@ class StreamVariable(StreamContextVariable):
             tx.output.create_proxy(
                 "call_method", name, *proxy_args_kwargs([self] + args, kwargs)
             )
-            return ConstantVariable(None)
+            return CONSTANT_VARIABLE_NONE
         elif name == "query":
             return wrap_fx_proxy_cls(
                 target_cls=ConstantVariable,
@@ -266,13 +355,14 @@ class StreamVariable(StreamContextVariable):
             # constant values
             other = args[0]
             if not isinstance(other, StreamVariable):
-                return ConstantVariable.create(NotImplemented)
+                return VariableTracker.build(tx, NotImplemented)
 
             if other.source:
                 assert self.source is not None
                 install_guard(self.source.make_guard(GuardBuilder.EQUALS_MATCH))
-            return ConstantVariable.create(
-                cmp_name_to_op_mapping[name](self.value, other.value)  # type: ignore[arg-type]
+            return VariableTracker.build(
+                tx,
+                cmp_name_to_op_mapping[name](self.value, other.value),  # type: ignore[arg-type]
             )
 
         return super().call_method(tx, name, args, kwargs)
@@ -315,12 +405,19 @@ class StreamVariable(StreamContextVariable):
         def fn(index: int, codegen: "PyCodegen") -> None:
             codegen.add_push_null(
                 lambda: codegen.load_import_from(
+                    torch._dynamo.graph_bytecode_inputs.__name__,  # type: ignore[implicit-imports]
+                    "stash_graph_created_object",
+                )
+            )
+            codegen.add_push_null(
+                lambda: codegen.load_import_from(
                     torch._dynamo.utils.__name__, "build_stream"
                 )
             )
             codegen(args)
             codegen(kwargs)
             codegen.extend_output(create_call_function(2, False))
+            codegen.extend_output(create_call_function(1, False))
 
         return fn
 
@@ -330,7 +427,7 @@ class EventVariable(VariableTracker):
         self,
         proxy: Proxy,
         value: torch.Event,
-        user_object_index: Optional[int],
+        user_object_index: int | None,
         **kwargs: Any,
     ) -> None:
         if proxy is not None and "example_value" in proxy.node.meta:
@@ -360,7 +457,7 @@ class EventVariable(VariableTracker):
                 ),
                 {},
             )
-            return ConstantVariable(None)
+            return CONSTANT_VARIABLE_NONE
         elif name == "record":
             tx.output.create_proxy(
                 "call_function",
@@ -371,12 +468,12 @@ class EventVariable(VariableTracker):
                 ),
                 {},
             )
-            return ConstantVariable(None)
+            return CONSTANT_VARIABLE_NONE
         elif name == "synchronize":
             tx.output.create_proxy(
                 "call_method", name, *proxy_args_kwargs([self] + args, kwargs)
             )
-            return ConstantVariable(None)
+            return CONSTANT_VARIABLE_NONE
         elif name == "query":
             return wrap_fx_proxy_cls(
                 target_cls=ConstantVariable,
@@ -426,12 +523,19 @@ class EventVariable(VariableTracker):
         def fn(index: int, codegen: "PyCodegen") -> None:
             codegen.add_push_null(
                 lambda: codegen.load_import_from(
+                    torch._dynamo.graph_bytecode_inputs.__name__,  # type: ignore[implicit-imports]
+                    "stash_graph_created_object",
+                )
+            )
+            codegen.add_push_null(
+                lambda: codegen.load_import_from(
                     torch._dynamo.utils.__name__, "build_event"
                 )
             )
             codegen(args)
             codegen(kwargs)
             codegen.extend_output(create_call_function(2, False))
+            codegen.extend_output(create_call_function(1, False))
 
         return fn
 

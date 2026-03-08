@@ -3,7 +3,6 @@
 
 #include <ATen/core/Tensor.h>
 #include <ATen/Dispatch.h>
-#include <ATen/Dispatch_v2.h>
 #include <ATen/OpMathType.h>
 #include <ATen/cpu/vec/vec.h>
 #include <ATen/cpu/vec/functional.h>
@@ -348,35 +347,34 @@ struct MinValuesOps: public at::native::MinOps<scalar_t> {
 };
 
 void min_values_kernel_impl(TensorIterator& iter) {
-  // This case is special because of Vectorized<int64_t> does not
-  // handle upper_bound<int64_t>().
-  // See: https://github.com/pytorch/pytorch/issues/43254
-  if (iter.dtype() == kLong || iter.dtype() == kUInt64) {
-    AT_DISPATCH_V2(iter.dtype(), "min_values_cpu", AT_WRAP([&iter] {
-      binary_kernel_reduce(
-        iter,
-        MinValuesOps<scalar_t>{},
-        std::pair<scalar_t, int64_t>(upper_bound<scalar_t>(), -1));
-    }), kLong, kUInt64);
+  if (iter.dtype() == kLong) {
+    // This case is special because of Vectorized<int64_t> does not
+    // handle upper_bound<int64_t>().
+    // See: https://github.com/pytorch/pytorch/issues/43254
+    using scalar_t = int64_t;
+    binary_kernel_reduce(
+      iter,
+      MinValuesOps<scalar_t>{},
+      std::pair<scalar_t, int64_t>(upper_bound<scalar_t>(), -1));
     return;
   }
-  AT_DISPATCH_V2(iter.dtype(), "min_values_cpu", AT_WRAP([&iter] {
+  AT_DISPATCH_ALL_TYPES_AND3(kBFloat16, kHalf, kBool, iter.dtype(), "min_values_cpu", [&iter] {
     binary_kernel_reduce_vec(
       iter,
       [](scalar_t a, scalar_t b) -> scalar_t { return min_impl(a, b); },
       [](Vectorized<scalar_t> a, Vectorized<scalar_t> b) { return minimum(a, b); },
       static_cast<double>(upper_bound<scalar_t>()));
-  }), AT_EXPAND(AT_ALL_TYPES), AT_EXPAND(AT_BAREBONES_UNSIGNED_TYPES), kBFloat16, kHalf, kBool);
+  });
 }
 
 void max_values_kernel_impl(TensorIterator& iter) {
-  AT_DISPATCH_V2(iter.dtype(), "max_values_cpu", AT_WRAP([&iter] {
+  AT_DISPATCH_ALL_TYPES_AND3(kBFloat16, kHalf, kBool, iter.dtype(), "max_values_cpu", [&iter] {
     binary_kernel_reduce_vec(
       iter,
       [](scalar_t a, scalar_t b) -> scalar_t { return max_impl(a, b); },
       [](Vectorized<scalar_t> a, Vectorized<scalar_t> b) { return maximum(a, b); },
       lower_bound<scalar_t>());
-  }), AT_EXPAND(AT_ALL_TYPES), AT_EXPAND(AT_BAREBONES_UNSIGNED_TYPES), kBFloat16, kHalf, kBool);
+  });
 }
 
 void argmax_kernel_impl(TensorIterator &iter) {
@@ -470,6 +468,81 @@ void xor_sum_kernel_impl(TensorIterator& iter) {
       });
 }
 
+// powsum: computes sum(|x|^p) without the final root
+template <typename scalar_t, typename out_t=typename scalar_value_type<scalar_t>::type>
+void powsum_kernel_cpu_impl(TensorIterator& iter, const double& val) {
+  using acc_t = at::opmath_type<typename scalar_value_type<scalar_t>::type>;
+  if (val == 2.0) {
+    binary_kernel_reduce(iter, NormTwoOps<scalar_t, acc_t, out_t, false>(), acc_t(0));
+  } else {
+    binary_kernel_reduce(iter, NormOps<scalar_t, acc_t, out_t, false>{acc_t(val)}, acc_t(0));
+  }
+}
+
+void powsum_kernel_tensor_iterator_impl(
+    TensorIterator& iter,
+    const Scalar& p) {
+  double val = 0;
+  if (p.isIntegral(false)) {
+    val = p.to<int64_t>();
+  } else if (p.isFloatingPoint()) {
+    val = p.to<double>();
+  } else {
+    TORCH_CHECK(false, "powsum_kernel_cpu expects ord to be integer or float");
+  }
+  if (iter.numel() == 0) {
+    iter.output().fill_(0);
+    return;
+  }
+
+  if (val == 2.0 && is_reduce_lastdim(iter) &&
+      iter.dtype(0) == iter.input_dtype() &&
+      (iter.input_dtype() == kFloat || iter.input_dtype() == kDouble ||
+       iter.input_dtype() == kBFloat16)) {
+    // Vectorized path for L2 powsum (no sqrt at end)
+    AT_DISPATCH_FLOATING_TYPES_AND(kBFloat16, iter.input_dtype(), "powsum_cpu", [&] {
+        using acc_t = at::opmath_type<scalar_t>;
+        binary_kernel_reduce_lastdim(iter, [](char* result_data_bytes, char* self_data_bytes, int64_t size) {
+          scalar_t* result_data = (scalar_t*)result_data_bytes;
+          scalar_t* self_data = (scalar_t*)self_data_bytes;
+
+          using Vec = Vectorized<scalar_t>;
+          using fVec = Vectorized<acc_t>;
+          fVec acc_vec{acc_t(0)};
+          acc_t buffer[fVec::size()];
+          int64_t d = 0;
+          for (; d < size - (size % Vec::size()); d += Vec::size()) {
+            Vec data_vec = Vec::loadu(self_data + d);
+            norm_two_reduce_step(acc_vec, data_vec);
+          }
+          acc_vec.store(buffer);
+          for (int j = 1; j < fVec::size(); j++) {
+            buffer[0] = buffer[0] + buffer[j];
+          }
+          for (; d < size; d++) {
+            acc_t data_val = acc_t(self_data[d]);
+            buffer[0] += data_val * data_val;
+          }
+          result_data[0] = scalar_t(buffer[0]);  // No sqrt!
+        });
+      });
+  } else {
+    if (iter.input_dtype() == kHalf && iter.dtype(0) == kFloat) {
+      powsum_kernel_cpu_impl<at::Half, float>(iter, val); return;
+    } else if (iter.input_dtype() == kBFloat16 && iter.dtype(0) == kFloat) {
+      powsum_kernel_cpu_impl<at::BFloat16, float>(iter, val); return;
+    }
+
+    AT_DISPATCH_FLOATING_AND_COMPLEX_TYPES_AND3(kHalf, kBFloat16, kComplexHalf, iter.input_dtype(), "powsum_cpu", [&] {
+      powsum_kernel_cpu_impl<scalar_t>(iter, val);
+    });
+
+    if (isComplexType(iter.output().scalar_type())) {
+      at::imag(iter.output()).zero_();
+    }
+  }
+}
+
 }  // anonymous namespace
 
 REGISTER_DISPATCH(std_var_stub, &std_var_kernel_impl)
@@ -478,6 +551,7 @@ REGISTER_DISPATCH(prod_stub, &prod_kernel_impl)
 // but mean_stub must be defined for CPU as well
 REGISTER_DISPATCH(mean_stub, nullptr)
 REGISTER_DISPATCH(norm_stub, &norm_kernel_tensor_iterator_impl)
+REGISTER_DISPATCH(powsum_stub, &powsum_kernel_tensor_iterator_impl)
 REGISTER_DISPATCH(and_stub, &and_kernel_impl)
 REGISTER_DISPATCH(or_stub, &or_kernel_impl)
 REGISTER_DISPATCH(min_values_stub, &min_values_kernel_impl)

@@ -8,7 +8,7 @@ import math
 import sys
 from bisect import bisect_right, insort
 from collections import ChainMap
-from typing import Any, cast, Optional, Union
+from typing import Any, cast
 
 import torch
 from torch.distributed._shard._utils import narrow_tensor_by_index
@@ -74,7 +74,7 @@ class DefaultSavePlanner(SavePlanner):
         self,
         flatten_state_dict: bool = True,
         flatten_sharded_tensors: bool = True,
-        dedup_replicated_tensors: Optional[bool] = None,
+        dedup_replicated_tensors: bool | None = None,
         dedup_save_to_lowest_rank: bool = False,
         enable_plan_caching: bool = False,
     ) -> None:
@@ -94,7 +94,7 @@ class DefaultSavePlanner(SavePlanner):
     def set_up_planner(
         self,
         state_dict: STATE_DICT_TYPE,
-        storage_meta: Optional[StorageMeta] = None,
+        storage_meta: StorageMeta | None = None,
         is_coordinator: bool = False,
     ) -> None:
         if self.flatten_state_dict:
@@ -123,7 +123,12 @@ class DefaultSavePlanner(SavePlanner):
                 )
                 return SavePlan([], usable=False)
             else:
-                SavePlanner._cached_save_plan[self._cached_plans_key] = plan
+                # Store the plan as pending. It will be promoted to the
+                # class-level cache in finish_plan after the global plan
+                # has succeeded. This avoids a stale local cache when
+                # the global plan fails (e.g. validation error) but the
+                # local cache was already populated.
+                self._pending_local_plan = plan
 
         return self.plan
 
@@ -164,12 +169,13 @@ class DefaultSavePlanner(SavePlanner):
             # Case 1: If the plans are not cached, the cache will be hydrated with the
             # all_plans, global_plans (Deduped), and metadata.
 
-            # Cache the original all_plans
-            SavePlanner._cached_all_plans[self._cached_plans_key] = all_plans
+            # First create and validate the global plan. Only cache everything
+            # after success to avoid partial cache state
             global_plan, metadata = self._create_global_plan(all_plans)
-            # Cache the deduped and validated global_plan
+
+            # Cache all plans atomically after successful validation
+            SavePlanner._cached_all_plans[self._cached_plans_key] = all_plans
             SavePlanner._cached_global_plan[self._cached_plans_key] = global_plan
-            # Cache the metadata
             SavePlanner._cached_metadata[self._cached_plans_key] = metadata
             # If plans are not cached, global_plan delta will be the same as global plan.
             return global_plan, global_plan, metadata
@@ -248,10 +254,20 @@ class DefaultSavePlanner(SavePlanner):
         if self._enable_plan_caching:
             finished_plan = self._finish_plan_with_caching(new_plan)
 
+            # Promote the pending local plan to the class-level cache now
+            # that the global plan has succeeded and we are finalizing.
+            # This ensures the local cache is only populated after a
+            # successful end-to-end checkpoint plan creation.
+            if hasattr(self, "_pending_local_plan"):
+                SavePlanner._cached_save_plan[self._cached_plans_key] = (
+                    self._pending_local_plan
+                )
+                del self._pending_local_plan
+
         self.plan = finished_plan
         return self.plan
 
-    def resolve_data(self, write_item: WriteItem) -> Union[torch.Tensor, io.BytesIO]:
+    def resolve_data(self, write_item: WriteItem) -> torch.Tensor | io.BytesIO:
         object = self.lookup_object(write_item.index)
         return self.transform_object(write_item, object)
 
@@ -297,7 +313,7 @@ class DefaultLoadPlanner(LoadPlanner):
     def set_up_planner(
         self,
         state_dict: STATE_DICT_TYPE,
-        metadata: Optional[Metadata] = None,
+        metadata: Metadata | None = None,
         is_coordinator: bool = False,
     ) -> None:
         _init_state_dict(state_dict)
@@ -431,7 +447,7 @@ class _EmptyStateDictLoadPlanner(DefaultLoadPlanner):
     def set_up_planner(
         self,
         state_dict: STATE_DICT_TYPE,
-        metadata: Optional[Metadata] = None,
+        metadata: Metadata | None = None,
         is_coordinator: bool = False,
     ) -> None:
         if state_dict:

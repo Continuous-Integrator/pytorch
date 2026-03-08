@@ -1,10 +1,9 @@
 # mypy: allow-untyped-defs
 import copy
-import sys
 import warnings
 from collections import namedtuple
-from typing import Any, Optional, Union
-from typing_extensions import deprecated
+from typing import Any
+from typing_extensions import deprecated, TypeAliasType
 
 import torch
 import torch.nn as nn
@@ -544,7 +543,7 @@ def get_default_qat_qconfig_dict(backend="x86", version=1):
     ).to_dict()
 
 
-def _assert_valid_qconfig(qconfig: Optional[QConfig], mod: torch.nn.Module) -> None:
+def _assert_valid_qconfig(qconfig: QConfig | None, mod: torch.nn.Module) -> None:
     """
     Verifies that this `qconfig` is valid.
     """
@@ -572,17 +571,11 @@ def _assert_valid_qconfig(qconfig: Optional[QConfig], mod: torch.nn.Module) -> N
             )
 
 
-if sys.version_info < (3, 12):
-    QConfigAny = Optional[QConfig]
-    QConfigAny.__module__ = "torch.ao.quantization.qconfig"
-else:
-    from typing import TypeAliasType
-
-    QConfigAny = TypeAliasType("QConfigAny", Optional[QConfig])
+QConfigAny = TypeAliasType("QConfigAny", QConfig | None)
 
 
 def _add_module_to_qconfig_obs_ctr(
-    qconfig: QConfigAny, module: Optional[nn.Module]
+    qconfig: QConfigAny, module: nn.Module | None
 ) -> Any:
     r"""This is a helper function for use in quantization prepare that updates a qconfig so that
     the constructors stored in the qconfig will create observers on the same device that
@@ -628,9 +621,9 @@ def _add_module_to_qconfig_obs_ctr(
     return QConfig(activation, weight)
 
 
-_ObserverOrFakeQuantizeConstructor = Union[
-    _PartialWrapper, type[ObserverBase], type[FakeQuantizeBase]
-]
+_ObserverOrFakeQuantizeConstructor = (
+    _PartialWrapper | type[ObserverBase] | type[FakeQuantizeBase]
+)
 
 
 def _obs_or_fq_ctr_equals(
@@ -707,7 +700,7 @@ def _activation_is_memoryless(qconfig: QConfig):
         return _is_memoryless(act)
 
 
-def _is_reuse_input_qconfig(qconfig: Optional[QConfig]):
+def _is_reuse_input_qconfig(qconfig: QConfig | None):
     return (
         qconfig is not None
         and isinstance(qconfig.activation(), ReuseInputObserver)
