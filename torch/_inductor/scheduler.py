@@ -4673,6 +4673,7 @@ class Scheduler:
             self.fuse_two_nodes(node1, node2, fused_nodes)
             return True
 
+        self._revert_expansion_if_needed(node1, node2)
         return False
 
     def _evaluate_pending_template_fusions(
@@ -4795,9 +4796,10 @@ class Scheduler:
             ):
                 continue
 
-            if self.can_fuse(
-                node1, node2, is_reorder_round
-            ) and not self.will_fusion_create_cycle(node1, node2):
+            can_fuse_result = self.can_fuse(node1, node2, is_reorder_round)
+            if can_fuse_result and not self.will_fusion_create_cycle(
+                node1, node2
+            ):
                 fusion_res = self.speedup_by_fusion(node1, node2)
                 if fusion_res.callable_fn is not None:
                     pending_fusion = PendingFusion(
@@ -4822,9 +4824,13 @@ class Scheduler:
                     continue
 
                 if not fusion_res.should_fuse:
+                    self._revert_expansion_if_needed(node1, node2)
                     continue
 
                 self.fuse_two_nodes(node1, node2, fused_nodes)
+            else:
+                # can_fuse returned False, or cycle detected after expansion
+                self._revert_expansion_if_needed(node1, node2)
 
     def _finish_pending_fusions(
         self,
@@ -5617,12 +5623,11 @@ class Scheduler:
         ):
             return None
 
-        # does not support mutation yet since relying on index mod to handle
-        # out-of-boundary access.
+        # does not support mutation since expansion changes the iteration domain
         if node1.has_aliasing_or_mutation() or node2.has_aliasing_or_mutation():
             return None
 
-        # skip halide which does not support mod for index
+        # skip halide which does not support the masked expansion codegen
         if config.cpu_backend == "halide":
             return None
 
@@ -5642,18 +5647,8 @@ class Scheduler:
         if len(node1.read_writes.writes) > 1 or len(node2.read_writes.writes) > 1:
             return None
 
-        # When memory access is small, reducing gpu kernel overhead is profitable over
-        # slightly larger memory access.
-        node1_write_memory = self.dep_size_hint(next(iter(node1.read_writes.writes)))
-        node2_write_memory = self.dep_size_hint(next(iter(node1.read_writes.writes)))
-        if (
-            max(node1_write_memory, node2_write_memory)
-            > config.small_memory_access_threshold
-        ):
-            return None
-
-        # does not support reinplace since `index % boundary` may lead to
-        # race condition
+        # does not support reinplace since masked stores on inplace buffers
+        # could have subtle correctness issues
         def has_reusable_buffer(node: BaseSchedulerNode) -> bool:
             for read in node.read_writes.reads:
                 input_buf: SchedulerBuffer | SchedulerDonatedBuffer | None
@@ -5687,6 +5682,13 @@ class Scheduler:
             n1_iter_sizes[mismatch_dim],
             n2_iter_sizes[mismatch_dim],
         )
+
+        # NOTE: we intentionally do not gate on expansion ratio here.
+        # Expansion only wastes ALU on masked-out threads; for memory-bound
+        # pointwise kernels this cost is negligible. If future workloads show
+        # expansion hurting (e.g. compute-bound kernels or register pressure),
+        # consider adding a max_expand_ratio config guard here.
+
         if V.graph.sizevars.statically_known_lt(mismatch_size1, mismatch_size2):
             return mismatch_dim, node1, mismatch_size2
         elif V.graph.sizevars.statically_known_lt(mismatch_size2, mismatch_size1):
@@ -5889,9 +5891,55 @@ class Scheduler:
             expand_analysis := self.get_expand_dim_for_pointwise_nodes(node1, node2)
         ):
             (expand_dim, smaller_node, expand_size) = expand_analysis
+            # Save state before expansion so we can rollback if fusion is
+            # rejected by downstream checks (V.choices.can_fuse, backend, etc.)
+            saved_body = smaller_node._body
+            saved_sizes = smaller_node._sizes
+            saved_group = smaller_node.group
+            saved_read_writes = smaller_node.read_writes
+            saved_unmet_deps = smaller_node.unmet_dependencies
+
             smaller_node.expand_dimension_for_pointwise_node(expand_dim, expand_size)
-            shared_data_score = self.score_fusion_memory(node1, node2)
-            assert isinstance(shared_data_score, int)
+            smaller_node._expanded_for_fusion = True  # type: ignore[attr-defined]
+            smaller_node._expansion_saved_state = {  # type: ignore[attr-defined]
+                "body": saved_body,
+                "sizes": saved_sizes,
+                "group": saved_group,
+                "read_writes": saved_read_writes,
+                "unmet_dependencies": saved_unmet_deps,
+            }
+            smaller_node.pointwise_read_writes.clear_cache(smaller_node)
+            shared_data_score = max(
+                self.score_fusion_memory(node1, node2),
+                config.score_fusion_memory_threshold,
+            )
+
+            # Run remaining fusion checks; rollback expansion if any rejects.
+            # Note: we skip loop_index_inversion_in_fusion here because after
+            # expansion the domains already match — index inversion is only
+            # needed when domains match but indexing patterns differ.
+            can_fuse_result = self._can_fuse_expanded(
+                node1, node2, shared_data_score, device
+            )
+            if not can_fuse_result:
+                self._revert_expansion(smaller_node)
+            return can_fuse_result
+        elif (
+            config.expand_dimension_for_pointwise_nodes
+            and shared_data_score < config.score_fusion_memory_threshold
+            and (
+                getattr(node1, "_expanded_for_fusion", False)
+                or getattr(node2, "_expanded_for_fusion", False)
+            )
+        ):
+            # can_fuse is called twice for each pair: first in
+            # get_possible_fusions (which expands and returns True), then again
+            # in _try_fusion_pairs (where sizes now match so get_expand_dim
+            # returns None). Force the score past the threshold since expansion
+            # profitability was already validated in the first call.
+            shared_data_score = max(
+                shared_data_score, config.score_fusion_memory_threshold
+            )
 
         if (
             config.loop_index_inversion_in_fusion
@@ -5922,6 +5970,54 @@ class Scheduler:
                 and self.get_backend(device).can_fuse_vertical(node1, node2)
             )
         else:  # nodes don't depend on each other, but may have common reads
+            return V.choices.can_fuse_horizontal(
+                self, node1, node2, shared_data_score
+            ) and self.get_backend(device).can_fuse_horizontal(node1, node2)
+
+    def _revert_expansion(self, node: BaseSchedulerNode) -> None:
+        """Revert a node's dimension expansion performed during can_fuse.
+
+        Called when fusion is ultimately rejected after can_fuse returned True
+        (e.g., by will_fusion_create_cycle or speedup_by_fusion)."""
+        saved = getattr(node, "_expansion_saved_state", None)
+        if saved is None:
+            return
+        node._body = saved["body"]
+        node._sizes = saved["sizes"]
+        node.group = saved["group"]
+        node.read_writes = saved["read_writes"]
+        node.unmet_dependencies = saved["unmet_dependencies"]
+        node._expanded_for_fusion = False  # type: ignore[attr-defined]
+        del node._expansion_saved_state  # type: ignore[attr-defined]
+        node.pointwise_read_writes.clear_cache(node)
+
+    def _revert_expansion_if_needed(
+        self, node1: BaseSchedulerNode, node2: BaseSchedulerNode
+    ) -> None:
+        """Revert expansion on either node if it was expanded but fusion failed."""
+        for node in (node1, node2):
+            if getattr(node, "_expanded_for_fusion", False):
+                self._revert_expansion(node)
+
+    def _can_fuse_expanded(
+        self,
+        node1: BaseSchedulerNode,
+        node2: BaseSchedulerNode,
+        shared_data_score: int,
+        device: object,
+    ) -> bool:
+        """Remaining fusion checks after dimension expansion. Factored out so
+        that the caller can rollback the expansion if this returns False."""
+        if not V.choices.can_fuse(self, node1, node2, shared_data_score):
+            return False
+
+        if node1.get_operation_names() & node2.ancestors:
+            return (
+                self.can_fuse_vertical(node1, node2)
+                and V.choices.can_fuse_vertical(self, node1, node2, shared_data_score)
+                and self.get_backend(device).can_fuse_vertical(node1, node2)
+            )
+        else:
             return V.choices.can_fuse_horizontal(
                 self, node1, node2, shared_data_score
             ) and self.get_backend(device).can_fuse_horizontal(node1, node2)
