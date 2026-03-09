@@ -14,7 +14,7 @@ Further, we expect the overriding function to take as the first argument `dispat
 
 ## A Note on Imports
 
-All registrations will happen at the end of `import torch`. It is expected at that point that **no DSL runtime library is loaded** - this means that the runtime(s) must only be imported lazily. We can still check the presence of a module, and get it's version without importing, but special care must be taken when writing op kernels to not import DSLs too early. An illustrative example is below, using `triton`:
+All registrations will happen at the end of `import torch`. It is expected at that point that **no DSL runtime library is loaded by registration code** - this means that the runtime(s) must only be imported lazily. We can still check the presence of a module, and get it's version without importing, but special care must be taken when writing op kernels to not import DSLs too early. An illustrative example is below, using `triton`:
 
 First, we're going to write the registration function, and a top-level call, being very careful to not pull in the `triton` package early:
 
@@ -82,13 +82,15 @@ def my_impl(dispatch_key, ...) -> ...:
     pass
 
 # Override the symbol `aten._scaled_grouped_mm_v2` in this example with the implementation in `my_impl`,
-# noting the function signatures must match
+# noting the function signatures must match.
+# Replacing an operator completely (no fallback) requires passing the `unconditional_override=True` flag.
 def register_kernel_override():
     tu.register_op_override(
         "aten",
         "_scaled_grouped_mm_v2",
         "CUDA",
         my_impl,
+        unconditional_override=True
     )
 ```
 
@@ -106,6 +108,21 @@ def my_impl(...) -> ...:
     from .my_impl_kernel import my_kernel
     return my_kernel(...)
 
+
+# Note the dispatch_keys argument here - this must be passed as the first argument
+# to the fallback kernel.
+# Also note that we need the `fallback_kernel` argument to be specified, as
+# we this function gets called every operator invocation - the "fallback" is
+# actually the currently registered function, which is... this one.
+def enable_my_impl(dispatch_keys, arg1, arg2, *args, fallback_kernel, **kwargs):
+    # determine if we want to call our implementation
+    if arg1 == ... and arg2 == ...:
+        return my_impl(arg1, arg2, *args, **kwargs)
+    else:
+        # Call the fallback
+        return fallback_kernel(dispatch_keys,
+                               arg1, arg2, *args, **kwargs)
+
 # Override the symbol `aten._scaled_grouped_mm_v2` in this example with the implementation in `my_impl`,
 # only when the check-method `enable_my_impl` returns `True`
 def register_kernel_override():
@@ -113,23 +130,16 @@ def register_kernel_override():
     # Get the original implementation for fallback purposes
     fallback_kernel = torch.library.get_kernel("aten::_scaled_grouped_mm_v2", "CUDA")
 
-    # Note the dispatch_keys argument here - this must be passed as the first argument
-    # to the fallback kernel
-    def enable_my_impl(dispatch_keys, arg1, arg2, *args, **kwargs) -> bool:
-        # determine if we want to call our implementation
-        if arg1 == ... and arg2 == ...:
-            return my_impl(arg1, arg2, *args, **kwargs)
-        else:
-            # Call the fallback
-            return fallback_kernel(dispatch_keys,
-                                   arg1, arg2, *args, **kwargs)
+    # partially-specialize our function so that we're not grabbing the
+    # fallback every invocation.
+    fn = functools.partial(enable_my_impl, fallback_kernel=fallback_kernel)
 
     # Same as before
     cu.register_op_override(
         "aten",
         "_scaled_grouped_mm_v2",
         "CUDA",
-        enable_my_impl,
+        fn,
     )
 ```
 

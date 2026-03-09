@@ -7,10 +7,7 @@ from .common_utils import (
     check_native_jit_disabled,
     check_native_version_skip,
 )
-from .registry import (
-    _OpFn,
-    _register_op_override,
-)
+from .registry import _OpFn, _register_op_override
 
 
 log = logging.getLogger(__name__)
