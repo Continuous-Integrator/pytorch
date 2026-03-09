@@ -270,6 +270,12 @@ class PallasKernelOverrides(OpOverrides):
         src_dtype: torch.dtype | None = None,
         use_compute_types: bool = True,
     ) -> str:
+        # TPU does not support 64-bit types; downcast to 32-bit
+        if V.graph.get_current_device_or_throw().type == "tpu":
+            if dtype == torch.int64:
+                dtype = torch.int32
+            elif dtype == torch.float64:
+                dtype = torch.float32
         jax_dtype = torch_dtype_to_jax(dtype)
         # Wrap in jnp.asarray to handle scalars from integer indexing
         return f"jnp.asarray({x}).astype({jax_dtype})"
@@ -302,6 +308,12 @@ class PallasKernelOverrides(OpOverrides):
     @staticmethod
     def constant(val, dtype: torch.dtype) -> str:
         """Convert a constant value to JAX representation."""
+        # TPU does not support 64-bit types; downcast to 32-bit
+        if V.graph.get_current_device_or_throw().type == "tpu":
+            if dtype == torch.int64:
+                dtype = torch.int32
+            elif dtype == torch.float64:
+                dtype = torch.float32
         jax_dtype = torch_dtype_to_jax(dtype)
         if dtype == torch.bool:
             return "True" if val else "False"
@@ -804,9 +816,15 @@ class PallasKernelOverrides(OpOverrides):
     def randint64(seed: str, offset: str, low: str, high: str) -> str:
         """Generate random int64 values in [low, high)."""
         # For vectorized random, use vmap to fold in each offset value
+        # TPU does not support int64; use int32 instead
+        int_dtype = (
+            "jnp.int32"
+            if V.graph.get_current_device_or_throw().type == "tpu"
+            else "jnp.int64"
+        )
         return (
             f"jax.vmap(lambda o: jax.random.randint("
-            f"jax.random.fold_in(jax.random.PRNGKey(jnp.uint32({seed})), jnp.uint32(o)), (), {low}, {high}, dtype=jnp.int64))"
+            f"jax.random.fold_in(jax.random.PRNGKey(jnp.uint32({seed})), jnp.uint32(o)), (), {low}, {high}, dtype={int_dtype}))"
             f"(jnp.asarray({offset}).flatten()).reshape(jnp.asarray({offset}).shape)"
         )
 
@@ -885,6 +903,11 @@ class PallasKernel(SIMDKernel):
         # the kernel and generate static indexing inside
         # (e.g. in_ref[:, :, offset] instead of in_ref[...].flatten()[idx]).
         self.strided_input_buffers: dict[str, list[tuple[int, int, int]]] = {}
+        # When a single iteration variable spans multiple buffer dims
+        # (collapsed), stores groups of dims that should be flattened
+        # together in the reshape.  e.g. [[0, 1]] means dims 0 and 1
+        # are collapsed into one merged dim.
+        self.strided_dim_groups: dict[str, list[list[int]]] = {}
         # Buffers that already use flatten+gather indexing; strided
         # decomposition must not reshape these (it would break flat offsets).
         self.flatten_indexed_buffers: OrderedSet[str] = OrderedSet()
@@ -1083,7 +1106,7 @@ class PallasKernel(SIMDKernel):
 
     def _decompose_strided_access(
         self, index: sympy.Expr, name: str
-    ) -> list[tuple[int, int, int]] | None:
+    ) -> tuple[list[tuple[int, int, int]], list[list[int]] | None] | None:
         """Decompose a flat index into per-dimension (stride, offset, skip) triples.
 
         Given flat index like ``64*x0 + 2*x1 + 5`` and buffer shape ``(32, 64)``
@@ -1112,10 +1135,10 @@ class PallasKernel(SIMDKernel):
             return None
         _, buf_size, _, _, _ = info
 
-        buf_shape_or_none = [self._safe_int(s) for s in buf_size]
-        if any(s is None or s <= 0 for s in buf_shape_or_none):
+        buf_shape_maybe = [self._safe_int(s) for s in buf_size]
+        if any(s is None or s <= 0 for s in buf_shape_maybe):
             return None
-        buf_shape: list[int] = cast(list[int], buf_shape_or_none)
+        buf_shape: list[int] = buf_shape_maybe  # type: ignore[assignment]
         ndim = len(buf_shape)
         if ndim == 0:
             return None
@@ -1202,34 +1225,114 @@ class PallasKernel(SIMDKernel):
         if output_numel != output_numel_expected:
             return None
 
-        # Verify each variable's range matches its assigned dimension's
-        # effective size.  When the kernel collapses multiple buffer dims
-        # into one iteration variable (e.g. batch*channels), the variable
-        # range won't match any single buffer dimension and we must bail
-        # out to avoid shape mismatches in the generated code.
+        # Build reverse mapping: dim -> set of variables covering it
+        dim_to_vars: dict[int, OrderedSet[sympy.Symbol]] = {
+            d: OrderedSet() for d in range(ndim)
+        }
         for var, dim in var_to_dim.items():
+            dim_to_vars[dim].add(var)
+
+        # When the kernel collapses multiple buffer dims into one iteration
+        # variable (e.g. batch*spatial), the variable range spans more than
+        # the single mapped dimension.  Try to absorb unmapped contiguous
+        # dimensions into such over-ranged variables.
+        unmapped_dims = [d for d in range(ndim) if not dim_to_vars[d]]
+        if unmapped_dims:
+            for var, mapped_dim in list(var_to_dim.items()):
+                if var not in self.range_tree_nodes:
+                    return None
+                var_range = self._safe_int(self.range_tree_nodes[var].length)
+                if var_range is None:
+                    return None
+                stride_d = decomposed[mapped_dim][0]
+                effective = buf_shape[mapped_dim] // stride_d
+                if var_range <= effective:
+                    continue
+                # Variable is over-ranged — try absorbing unmapped dims
+                excess = var_range // effective
+                absorbed = []
+                for d in sorted(
+                    unmapped_dims, key=lambda i: c_strides[i], reverse=True
+                ):
+                    if decomposed[d][2] != 0:
+                        continue  # can't merge dim with non-zero skip
+                    if excess % buf_shape[d] == 0:
+                        absorbed.append(d)
+                        excess //= buf_shape[d]
+                    if excess == 1:
+                        break
+                if excess != 1:
+                    return None
+                for d in absorbed:
+                    dim_to_vars[d].add(var)
+                    unmapped_dims.remove(d)
+
+        # Validate: each variable's range == product of effective sizes of
+        # all dims mapped to it.
+        for var in var_to_dim:
             if var not in self.range_tree_nodes:
                 return None
             var_range = self._safe_int(self.range_tree_nodes[var].length)
             if var_range is None:
                 return None
-            stride_d, _offset_d, skip_d = decomposed[dim]
-            effective_size = buf_shape[dim] // stride_d - skip_d
-            if var_range != effective_size:
+            expected = 1
+            for d in range(ndim):
+                if var in dim_to_vars[d]:
+                    stride_d, _, skip_d = decomposed[d]
+                    expected *= buf_shape[d] // stride_d - skip_d
+            if var_range != expected:
                 return None
 
-        return decomposed
+        # Compute dim groups: group consecutive dims covered by the same
+        # variable so the reshape merges them (e.g. (32, 64) -> (1024, 2)
+        # instead of (32, 32, 2) when a single var spans both dims).
+        has_collapsed = any(
+            sum(1 for d in range(ndim) if var in dim_to_vars[d]) > 1
+            for var in var_to_dim
+        )
+        dim_groups: list[list[int]] | None = None
+        if has_collapsed:
+            dim_groups = []
+            d = 0
+            while d < ndim:
+                group = [d]
+                while d + 1 < ndim and (dim_to_vars[d] & dim_to_vars[d + 1]):
+                    d += 1
+                    group.append(d)
+                dim_groups.append(group)
+                d += 1
+
+        return decomposed, dim_groups
 
     @staticmethod
-    def _strided_load_expr(buf: str, decomp: list[tuple[int, int, int]]) -> str:
+    def _strided_load_expr(
+        buf: str,
+        decomp: list[tuple[int, int, int]],
+        dim_groups: list[list[int]] | None = None,
+    ) -> str:
         """Build ``buf[:, :, offset]`` for strided dims, ``:`` for others."""
+        has_collapsed = dim_groups is not None
+        if dim_groups is None:
+            dim_groups = [[d] for d in range(len(decomp))]
         parts: list[str] = []
-        for stride, offset, _skip in decomp:
-            if stride == 1:
+        for group in dim_groups:
+            group_stride = 1
+            group_offset = 0
+            for d in group:
+                if decomp[d][0] > 1:
+                    group_stride = decomp[d][0]
+                    group_offset = decomp[d][1]
+            if group_stride == 1:
                 parts.append(":")
+            elif has_collapsed:
+                # Collapsed dims: use slice indexing to preserve
+                # dimensionality for correct broadcasting with
+                # iteration variables (e.g. buf[:, 0:1] not buf[:, 0]).
+                parts.append(":")
+                parts.append(f"{group_offset}:{group_offset + 1}")
             else:
                 parts.append(":")  # the halved dim
-                parts.append(str(offset))  # static index into stride dim
+                parts.append(str(group_offset))  # static index into stride dim
         return f"{buf}[{', '.join(parts)}]"
 
     def _codegen_strided_reshapes(
@@ -1240,6 +1343,10 @@ class PallasKernel(SIMDKernel):
         For each strided param, reshapes ``(M, N)`` to ``(M, N/stride, stride)``
         and, when ``skip > 0``, slices off leading blocks so the remaining
         elements align with the output.
+
+        When dim groups are present (collapsed iteration variables), merged
+        dims are flattened first: e.g. ``(32, 64)`` -> ``(1024, 2)`` instead
+        of ``(32, 32, 2)``.
         """
         for param in params:
             buf_name = self._param_to_buf_name(param)
@@ -1250,29 +1357,136 @@ class PallasKernel(SIMDKernel):
             if info is None:
                 continue
             _, buf_size, _, _, _ = info
+
+            dim_groups = self.strided_dim_groups.get(buf_name)
+            if dim_groups is None:
+                dim_groups = [[d] for d in range(len(strides))]
+
             new_shape_parts: list[str] = []
-            for d, (stride, _offset, _skip) in enumerate(strides):
-                dim = self._safe_int(buf_size[d])
-                if dim is None:
+            valid = True
+            for group in dim_groups:
+                merged_size = 1
+                group_stride = 1
+                for d in group:
+                    dim = self._safe_int(buf_size[d])
+                    if dim is None:
+                        valid = False
+                        break
+                    merged_size *= dim
+                    if strides[d][0] > 1:
+                        group_stride = strides[d][0]
+                if not valid:
                     break
-                if stride > 1:
-                    new_shape_parts.append(str(dim // stride))
-                    new_shape_parts.append(str(stride))
+                if group_stride > 1:
+                    new_shape_parts.append(str(merged_size // group_stride))
+                    new_shape_parts.append(str(group_stride))
                 else:
-                    new_shape_parts.append(str(dim))
-            else:
-                code.writeline(
-                    f"{param} = {param}.reshape({', '.join(new_shape_parts)})"
+                    new_shape_parts.append(str(merged_size))
+            if not valid:
+                continue
+
+            # 1D -> 2D reshape with small inner dim is expensive on TPU
+            # due to tile relayout
+            ndim = len(buf_size)
+            max_stride = max(s for s, _, _ in strides)
+            if ndim == 1 and max_stride < 128:
+                perf_hint_log.info(
+                    "strided reshape of 1D buffer %s with stride %d "
+                    "may be slow on TPU (tile relayout)",
+                    buf_name,
+                    max_stride,
                 )
-                if any(skip > 0 for _, _, skip in strides):
-                    slice_parts: list[str] = []
-                    for stride, _offset, skip in strides:
-                        if stride == 1:
-                            slice_parts.append(":")
-                        else:
-                            slice_parts.append(f"{skip}:" if skip > 0 else ":")
-                            slice_parts.append(":")
-                    code.writeline(f"{param} = {param}[{', '.join(slice_parts)}]")
+            code.writeline(f"{param} = {param}.reshape({', '.join(new_shape_parts)})")
+            if any(skip > 0 for _, _, skip in strides):
+                slice_parts: list[str] = []
+                for group in dim_groups:
+                    group_stride = 1
+                    group_skip = 0
+                    for d in group:
+                        if strides[d][0] > 1:
+                            group_stride = strides[d][0]
+                            group_skip = strides[d][2]
+                    if group_stride > 1:
+                        slice_parts.append(f"{group_skip}:" if group_skip > 0 else ":")
+                        slice_parts.append(":")
+                    else:
+                        slice_parts.append(":")
+                code.writeline(f"{param} = {param}[{', '.join(slice_parts)}]")
+
+    def _codegen_collapsed_input_reshapes(
+        self, code: IndentedBuffer, params: list[str]
+    ) -> None:
+        """Flatten non-strided multi-dim inputs when collapsed dim groups exist.
+
+        When a single iteration variable spans multiple buffer dimensions,
+        strided inputs are reshaped to a collapsed form (e.g. (1024, 2)).
+        Non-strided inputs with matching numel also need flattening so that
+        shapes broadcast correctly inside the kernel.
+        """
+        if not self.strided_dim_groups:
+            return
+
+        num_vars = len(self.used_iter_vars)
+        if num_vars < 2:
+            return
+
+        # Find the collapsed range from any strided input's dim groups
+        collapsed_numel: int | None = None
+        for buf_name, groups in self.strided_dim_groups.items():
+            if buf_name not in self.strided_input_buffers:
+                continue
+            strides = self.strided_input_buffers[buf_name]
+            info = self._get_buffer_info(buf_name)
+            if info is None:
+                continue
+            _, buf_size, _, _, _ = info
+            for group in groups:
+                if len(group) <= 1:
+                    continue
+                merged = 1
+                group_stride = 1
+                valid = True
+                for d in group:
+                    dim = self._safe_int(buf_size[d])
+                    if dim is None:
+                        valid = False
+                        break
+                    merged *= dim
+                    if strides[d][0] > 1:
+                        group_stride = strides[d][0]
+                if valid:
+                    collapsed_numel = merged // group_stride
+                    break
+            if collapsed_numel is not None:
+                break
+
+        if collapsed_numel is None:
+            return
+
+        trailing_ones = num_vars - 1
+        target_shape = [str(collapsed_numel)] + ["1"] * trailing_ones
+        target_shape_str = ", ".join(target_shape)
+
+        for param in params:
+            buf_name = self._param_to_buf_name(param)
+            if buf_name is None or buf_name in self.strided_input_buffers:
+                continue
+            info = self._get_buffer_info(buf_name)
+            if info is None:
+                continue
+            _, buf_size, _, _, _ = info
+            if len(buf_size) <= 1:
+                continue
+            numel = 1
+            for s in buf_size:
+                dim = self._safe_int(s)
+                if dim is None:
+                    numel = None  # type: ignore[assignment]
+                    break
+                numel *= dim
+            if numel != collapsed_numel:
+                continue
+            code.writeline(f"{param} = {param}.reshape({target_shape_str})")
 
     @staticmethod
     def _c_contiguous_strides(shape: list[int]) -> list[int]:
@@ -1865,6 +2079,10 @@ class PallasKernel(SIMDKernel):
         if not needs_flatten:
             return index_str, needs_flatten
 
+        # Mosaic TPU does not support strided loads (stride != 1)
+        if V.graph.get_current_device_or_throw().type == "tpu":
+            return index_str, needs_flatten
+
         buf_obj = V.graph.get_buffer(name)
         if buf_obj is None:
             return index_str, needs_flatten
@@ -1940,7 +2158,13 @@ class PallasKernel(SIMDKernel):
             self.flatten_indexed_buffers.add(name)
             # Flatten then index for non-contiguous access (gather operation)
             has_minmax = index.has(sympy.Min) or index.has(sympy.Max)
-            idx = f"({index_str}).astype(jnp.int64)" if has_minmax else index_str
+            # TPU does not support int64; use int32 for gather indices
+            int_dtype = (
+                "jnp.int32"
+                if V.graph.get_current_device_or_throw().type == "tpu"
+                else "jnp.int64"
+            )
+            idx = f"({index_str}).astype({int_dtype})" if has_minmax else index_str
             return f"{buf}[...].flatten()[{idx}]"
         else:
             # Direct indexing for contiguous access
@@ -2092,6 +2316,10 @@ class PallasKernel(SIMDKernel):
 
             # If store compresses but load doesn't, check for strided input vs im2col
             if load_orig_vars != load_prep_vars or store_prep_vars == store_orig_vars:
+                continue
+
+            # Strided inputs are already handled by _decompose_strided_access
+            if buf_name in self.strided_input_buffers:
                 continue
 
             # Check if load coefficients match buffer strides
@@ -2379,13 +2607,18 @@ class PallasKernel(SIMDKernel):
             name, index, index_str, needs_flatten
         )
 
-        # Try strided decomposition before multidim slice or flatten.
-        # This generates reshape + static indexing which works on both
-        # CPU and TPU (unlike slice notation which fails on Mosaic).
-        decomp = self._decompose_strided_access(index, name)
-        if decomp is not None:
+        # Try strided decomposition on TPU where Mosaic does not support
+        # slice notation or int64 gather indices.  On CPU/GPU the existing
+        # multi-dim slice and flatten+gather paths work correctly.
+        decomp_result = None
+        if V.graph.get_current_device_or_throw().type == "tpu":
+            decomp_result = self._decompose_strided_access(index, name)
+        if decomp_result is not None:
+            decomp, dim_groups = decomp_result
             self.strided_input_buffers[name] = decomp
-            load_expr = self._strided_load_expr(buf, decomp)
+            if dim_groups is not None:
+                self.strided_dim_groups[name] = dim_groups
+            load_expr = self._strided_load_expr(buf, decomp, dim_groups)
         else:
             # Adjust index for buffer shape (scalar, multi-dim, etc.)
             index_str, needs_flatten = self._adjust_index_for_buffer_shape(
@@ -3295,6 +3528,9 @@ class PallasKernel(SIMDKernel):
                     self._codegen_tiled_specs(ctx)
                 else:
                     self._codegen_strided_reshapes(code, ctx.kernel_input_params)
+                    self._codegen_collapsed_input_reshapes(
+                        code, ctx.kernel_input_params
+                    )
 
                     code.writeline("indexer = lambda n: lambda i: [jnp.int32(i)] * n")
                     code.writeline("out_specs_pallas = tuple(")
@@ -3403,6 +3639,17 @@ from torch._inductor.runtime.runtime_utils import (
             if result[0]:
                 reshape_target_shape, reshape_target_numel = result
                 break
+
+        # When collapsed dim groups exist (a single iteration variable
+        # spans multiple buffer dims), skip N-D reshape for iteration
+        # vars.  This keeps them flat (e.g. (1024, 1)) so shapes are
+        # consistent with the collapsed strided input (e.g. (1024, 2)).
+        has_collapsed_dims = any(
+            len(g) > 1 for groups in self.strided_dim_groups.values() for g in groups
+        )
+        if has_collapsed_dims:
+            reshape_target_shape = None
+            reshape_target_numel = None
 
         var_items = list(self.range_tree_nodes.items())
 
@@ -3718,17 +3965,17 @@ from torch._inductor.runtime.runtime_utils import (
         is_tpu_literal = "True" if ctx.is_tpu else "False"
         code.writeline(
             f"_tile, _grid, _ax2g = pallas_compute_tiling("
-            f"out_shapes[0], transpose={transpose_literal}, "
+            f"_pallas_out_shapes[0], transpose={transpose_literal}, "
             f"skip_last_n={skip_n}, exact_only=True, is_tpu={is_tpu_literal})"
         )
         code.writeline("_ng = len(_grid)")
-        code.writeline("_ref = out_shapes[0]")
+        code.writeline("_ref = _pallas_out_shapes[0]")
 
         code.writeline("out_specs_pallas = tuple(")
         code.writeline(
             "    pallas_make_block_spec(s, _ref, _tile, _ax2g, _ng, is_output=True)"
         )
-        code.writeline("    for s in out_shapes")
+        code.writeline("    for s in _pallas_out_shapes")
         code.writeline(")")
 
         self._codegen_strided_reshapes(code, ctx.kernel_input_params)
