@@ -39,7 +39,7 @@ from torch._inductor.scheduler import (
 from torch._inductor.utils import fresh_inductor_cache, run_and_get_triton_code
 from torch.distributed.distributed_c10d import GroupMember
 from torch.fx.experimental.proxy_tensor import make_fx
-from torch.testing._internal.common_cuda import SM80OrLater
+from torch.testing._internal.common_cuda import PLATFORM_SUPPORTS_BF16
 from torch.testing._internal.common_distributed import (
     _dynamo_dist_per_rank_init,
     DynamoDistributedMultiProcTestCase,
@@ -1607,7 +1607,7 @@ class TestCollectivesInductor(DynamoDistributedSingleProcTestCase):
             self.assertEqual(stats.moves, 0)
 
     @unittest.skipIf(not HAS_GPU, "Inductor+gpu needs triton and recent GPU arch")
-    @unittest.skipIf(not SM80OrLater, "bfloat16")
+    @unittest.skipIf(not PLATFORM_SUPPORTS_BF16, "bfloat16")
     @parametrize("bucket_mode", ["all", "all_custom_ops"])
     def test_all_gather_bucket(self, bucket_mode):
         def func(x, w, ag_0, ag_1, ag_2, ag_3, *, tag, ranks, group_size):
@@ -1686,7 +1686,7 @@ class TestCollectivesInductor(DynamoDistributedSingleProcTestCase):
             raise AssertionError(f"Expected out to match correct: {out} vs {correct}")
 
     @unittest.skipIf(not HAS_GPU, "Inductor+gpu needs triton and recent GPU arch")
-    @unittest.skipIf(not SM80OrLater, "bfloat16")
+    @unittest.skipIf(not PLATFORM_SUPPORTS_BF16, "bfloat16")
     def test_all_gather_bucket_path(self):
         def func(x, w, ag_0, ag_1, *, tag, ranks, group_size):
             # do some unrelated matmuls
@@ -1739,7 +1739,7 @@ class TestCollectivesInductor(DynamoDistributedSingleProcTestCase):
         FileCheck().check_count("wait_tensor.default(", 2, exactly=True).run(code)
 
     @unittest.skipIf(not HAS_GPU, "Inductor+gpu needs triton and recent GPU arch")
-    @unittest.skipIf(not SM80OrLater, "bfloat16")
+    @unittest.skipIf(not PLATFORM_SUPPORTS_BF16, "bfloat16")
     @parametrize("bucket_mode", ["all", "all_custom_ops"])
     def test_reduce_scatter_bucket(self, bucket_mode):
         def func(x, w, rs_0, rs_1, tag, ranks, group_size):
@@ -1810,7 +1810,7 @@ class TestCollectivesInductor(DynamoDistributedSingleProcTestCase):
                 )
 
     @unittest.skipIf(not HAS_GPU, "Inductor+gpu needs triton and recent GPU arch")
-    @unittest.skipIf(not SM80OrLater, "bfloat16")
+    @unittest.skipIf(not PLATFORM_SUPPORTS_BF16, "bfloat16")
     @parametrize("bucket_mode", ["all"])
     def test_all_reduce_bucket(self, bucket_mode):
         def func(x, w, ar_0, ar_1, tag, ranks, group_size):
@@ -1866,7 +1866,7 @@ class TestCollectivesInductor(DynamoDistributedSingleProcTestCase):
             raise AssertionError(f"Expected out to match correct: {out} vs {correct}")
 
     @unittest.skipIf(not HAS_GPU, "Inductor+gpu needs triton and recent GPU arch")
-    @unittest.skipIf(not SM80OrLater, "bfloat16")
+    @unittest.skipIf(not PLATFORM_SUPPORTS_BF16, "bfloat16")
     @parametrize("bucket_mode", ["all_custom_ops_multidtype"])
     def test_all_gather_bucket_multidtype(self, bucket_mode):
         def func(x, w, ag_0, ag_1, *, tag, ranks, group_size):
@@ -1930,7 +1930,7 @@ class TestCollectivesInductor(DynamoDistributedSingleProcTestCase):
             raise AssertionError(f"Expected out to match correct: {out} vs {correct}")
 
     @unittest.skipIf(not HAS_GPU, "Inductor+gpu needs triton and recent GPU arch")
-    @unittest.skipIf(not SM80OrLater, "bfloat16")
+    @unittest.skipIf(not PLATFORM_SUPPORTS_BF16, "bfloat16")
     @parametrize("bucket_mode", ["all", "all_custom_ops"])
     def test_reorder_peak_memory_bucketed(self, bucket_mode):
         """
@@ -2868,7 +2868,7 @@ class TestSyncDecisionCrossRanks(MultiProcessTestCase):
 
     @skip_if_lt_x_gpu(2)
     @unittest.skipIf(not HAS_GPU, "Inductor+gpu needs triton and recent GPU arch")
-    @unittest.skipIf(not SM80OrLater, "bfloat16")
+    @unittest.skipIf(not PLATFORM_SUPPORTS_BF16, "bfloat16")
     def test_schedule_overlap_benchmark(self):
         store = c10d.FileStore(self.file_name, self.world_size)
         torch.cuda.set_device(self.rank)

@@ -78,7 +78,6 @@ from torch.nn import functional as F
 from torch.testing import make_tensor
 from torch.testing._internal.common_cuda import (
     PLATFORM_SUPPORTS_FLASH_ATTENTION,
-    SM80OrLater,
     TEST_CUDA,
     TEST_MULTIGPU,
 )

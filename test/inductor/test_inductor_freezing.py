@@ -16,7 +16,7 @@ from torch._inductor import config
 from torch._inductor.test_case import TestCase as InductorTestCase
 from torch._inductor.utils import override_lowering, run_and_get_code
 from torch.testing import FileCheck
-from torch.testing._internal.common_cuda import SM80OrLater, tf32_on_and_off
+from torch.testing._internal.common_cuda import PLATFORM_SUPPORTS_BF16, tf32_on_and_off
 from torch.testing._internal.common_utils import (
     IS_FBCODE,
     skipIfXpu,
@@ -487,7 +487,7 @@ class OptimizeForInferenceTemplate(TestCase):
             if self.device == "cpu" and dtype == torch.float16:
                 continue
 
-            if self.device == GPU_TYPE and dtype == torch.bfloat16 and not SM80OrLater:
+            if self.device == GPU_TYPE and dtype == torch.bfloat16 and not PLATFORM_SUPPORTS_BF16:
                 continue
 
             mod = (
@@ -532,7 +532,7 @@ class OptimizeForInferenceTemplate(TestCase):
             if self.device == "cpu" and dtype == torch.float16:
                 continue
 
-            if self.device == GPU_TYPE and dtype == torch.bfloat16 and not SM80OrLater:
+            if self.device == GPU_TYPE and dtype == torch.bfloat16 and not PLATFORM_SUPPORTS_BF16:
                 continue
 
             mod = (

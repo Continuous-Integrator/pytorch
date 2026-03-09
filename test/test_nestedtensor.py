@@ -26,9 +26,9 @@ from torch.nested._internal.nested_tensor import (
     ViewNestedFromBuffer,
 )
 from torch.testing._internal.common_cuda import (
+    PLATFORM_SUPPORTS_BF16,
     PLATFORM_SUPPORTS_FUSED_ATTENTION,
     SM70OrLater,
-    SM80OrLater,
     tf32_on_and_off,
 )
 from torch.testing._internal.common_device_type import (
@@ -6864,7 +6864,7 @@ torch.cuda.synchronize()
     @dtypes(
         *(
             [torch.float16, torch.bfloat16, torch.float32]
-            if SM80OrLater
+            if PLATFORM_SUPPORTS_BF16
             else [torch.float16, torch.float32]
         )
     )
@@ -7134,7 +7134,7 @@ torch.cuda.synchronize()
     @dtypes(
         *(
             [torch.float16, torch.bfloat16, torch.float32]
-            if SM80OrLater
+            if PLATFORM_SUPPORTS_BF16
             else [torch.float16, torch.float32]
         )
     )
@@ -7264,7 +7264,7 @@ torch.cuda.synchronize()
     @dtypes(
         *(
             [torch.float16, torch.bfloat16, torch.float32]
-            if SM80OrLater
+            if PLATFORM_SUPPORTS_BF16
             else [torch.float16, torch.float32]
         )
     )
@@ -7322,7 +7322,7 @@ torch.cuda.synchronize()
     @dtypes(
         *(
             [torch.float16, torch.bfloat16, torch.float32]
-            if SM80OrLater
+            if PLATFORM_SUPPORTS_BF16
             else [torch.float16, torch.float32]
         )
     )

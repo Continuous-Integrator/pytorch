@@ -12,7 +12,7 @@ from torch.testing._internal.common_utils import (
 )
 from torch.testing._internal.common_quantization import skipIfNoDynamoSupport
 from torch.testing import FileCheck
-from torch.testing._internal.common_cuda import SM80OrLater, _get_torch_cuda_version
+from torch.testing._internal.common_cuda import PLATFORM_SUPPORTS_INT_MM, _get_torch_cuda_version
 
 
 @unittest.skipIf(not torch._dynamo.is_dynamo_supported(), "dynamo isn't support")
@@ -163,7 +163,7 @@ class TestOutDtypeOp(TestCase):
             loss.backward()
 
     @unittest.skipIf(IS_WINDOWS, "_int_mm unavailable")
-    @unittest.skipIf(not SM80OrLater, "_int_mm unavailable")
+    @unittest.skipIf(not PLATFORM_SUPPORTS_INT_MM, "_int_mm unavailable")
     @unittest.skipIf(IS_FBCODE and IS_REMOTE_GPU, "cublas runtime error")
     @unittest.skipIf(_get_torch_cuda_version() >= (11, 7), "_int_mm unavailable")
     @unittest.skipIf(not TEST_CUDA, "_int_mm unavailable")

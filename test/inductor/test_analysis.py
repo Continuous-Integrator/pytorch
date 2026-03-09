@@ -15,7 +15,7 @@ from torch._inductor.analysis.profile_analysis import (
     main,
 )
 from torch._inductor.utils import fresh_inductor_cache, tabulate_2d, zip_dicts
-from torch.testing._internal.common_cuda import SM80OrLater
+from torch.testing._internal.common_cuda import PLATFORM_SUPPORTS_BF16
 from torch.testing._internal.common_device_type import (
     dtypes,
     instantiate_device_type_tests,
@@ -274,7 +274,7 @@ class TestUtils(TestCase):
 
 def has_supported_gpu():
     """Check if any GPU platform with Triton support is available."""
-    return torch.xpu.is_available() or SM80OrLater or torch.version.hip
+    return torch.xpu.is_available() or PLATFORM_SUPPORTS_BF16 or torch.version.hip
 
 
 class TestAnalysis(TestCase):
@@ -331,7 +331,7 @@ class TestAnalysis(TestCase):
         ):
             main()
 
-    @skipIf(not (SM80OrLater or TEST_XPU), "Requires SM80 or XPU")
+    @skipIf(not (PLATFORM_SUPPORTS_BF16 or TEST_XPU), "Requires SM80 or XPU")
     def test_augment_trace_helper_unit(self):
         js = json.loads(example_profile)
         out_profile = _augment_trace_helper(js)

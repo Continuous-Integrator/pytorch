@@ -22,7 +22,7 @@ from torch.testing._internal.common_cuda import (
     blas_library_context,
     PLATFORM_SUPPORTS_BF16,
     PLATFORM_SUPPORTS_GREEN_CONTEXT,
-    SM80OrLater,
+    PLATFORM_SUPPORTS_GROUPED_GEMM,
     SM90OrLater,
     SM100OrLater,
 )
@@ -414,7 +414,7 @@ class TestMatmulCuda(InductorTestCase):
         torch.backends.cuda.matmul.allow_bf16_reduced_precision_reduction = orig_bf16
         torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction = orig_fp16
 
-    @unittest.skipIf(not SM80OrLater, "Grouped gemm supported only on SM80 or greater")
+    @unittest.skipIf(not PLATFORM_SUPPORTS_GROUPED_GEMM, "Grouped gemm supported only on SM80 or greater")
     @parametrize("strided", [False, True])
     @parametrize("a_row_major", [False, True])
     @parametrize("b_row_major", [False, True])
@@ -451,7 +451,7 @@ class TestMatmulCuda(InductorTestCase):
             start = offs_cpu[i]
         self.grouped_mm_helper(alist, blist, gO, agradlist, bgradlist, out)
 
-    @unittest.skipIf(not SM80OrLater, "Grouped gemm supported only on SM80 or greater")
+    @unittest.skipIf(not PLATFORM_SUPPORTS_GROUPED_GEMM, "Grouped gemm supported only on SM80 or greater")
     @parametrize("strided", [False, True])
     @parametrize("a_row_major", [False, True])
     @parametrize("b_row_major", [False, True])
@@ -506,7 +506,7 @@ class TestMatmulCuda(InductorTestCase):
             self.grouped_mm_helper(alist, b, gOlist, agradlist, bgradlist, outlist)
 
 
-    @unittest.skipIf(not SM80OrLater, "Grouped gemm supported only on SM80 or greater")
+    @unittest.skipIf(not PLATFORM_SUPPORTS_GROUPED_GEMM, "Grouped gemm supported only on SM80 or greater")
     @parametrize("strided", [False, True])
     @parametrize("a_row_major", [False, True])
     @parametrize("b_row_major", [False, True])
@@ -539,7 +539,7 @@ class TestMatmulCuda(InductorTestCase):
         out.backward(gO)
         self.grouped_mm_helper(a, b, gO, a.grad, b.grad, out)
 
-    @unittest.skipIf(not SM80OrLater, "Grouped gemm supported only on SM80 or greater")
+    @unittest.skipIf(not PLATFORM_SUPPORTS_GROUPED_GEMM, "Grouped gemm supported only on SM80 or greater")
     @parametrize("strided", [False, True])
     @parametrize("a_row_major", [False, True])
     @parametrize("b_row_major", [False, True])

@@ -50,7 +50,7 @@ from torch.compiler._cache import (
     CacheArtifactManager,
 )
 from torch.testing._internal.common_cuda import (
-    SM80OrLater,
+    PLATFORM_SUPPORTS_BF16,
     TEST_MULTIGPU,
     with_tf32_off,
 )
@@ -296,9 +296,9 @@ class TestFxGraphCache(TestCase):
             device == "cuda"
             and torch.version.hip is None
             and dtype == torch.bfloat16
-            and not SM80OrLater
+            and not PLATFORM_SUPPORTS_BF16
         ):
-            raise unittest.SkipTest("requires SM80 or later")
+            raise unittest.SkipTest("bfloat16 not supported on this platform")
         if use_static_triton_launcher and not (
             device in STATIC_LAUNCHER_DEVICES and bundle_triton
         ):
@@ -492,9 +492,9 @@ class TestFxGraphCache(TestCase):
             device == "cuda"
             and torch.version.hip is None
             and dtype == torch.bfloat16
-            and not SM80OrLater
+            and not PLATFORM_SUPPORTS_BF16
         ):
-            raise unittest.SkipTest("requires SM80 or later")
+            raise unittest.SkipTest("bfloat16 not supported on this platform")
         if use_static_triton_launcher and not (
             device in STATIC_LAUNCHER_DEVICES and bundle_triton
         ):
@@ -560,9 +560,9 @@ class TestFxGraphCache(TestCase):
             device == "cuda"
             and torch.version.hip is None
             and dtype == torch.bfloat16
-            and not SM80OrLater
+            and not PLATFORM_SUPPORTS_BF16
         ):
-            raise unittest.SkipTest("requires SM80 or later")
+            raise unittest.SkipTest("bfloat16 not supported on this platform")
 
         def fn(x, y):
             return x.sin() @ y
@@ -657,9 +657,9 @@ class TestFxGraphCache(TestCase):
             device == "cuda"
             and torch.version.hip is None
             and dtype == torch.bfloat16
-            and not SM80OrLater
+            and not PLATFORM_SUPPORTS_BF16
         ):
-            raise unittest.SkipTest("requires SM80 or later")
+            raise unittest.SkipTest("bfloat16 not supported on this platform")
 
         def fn(x, y):
             return x.sin() @ y
@@ -1031,9 +1031,9 @@ class TestFxGraphCache(TestCase):
             device == "cuda"
             and torch.version.hip is None
             and dtype == torch.bfloat16
-            and not SM80OrLater
+            and not PLATFORM_SUPPORTS_BF16
         ):
-            raise unittest.SkipTest("requires CUDA SM80 or later")
+            raise unittest.SkipTest("bfloat16 not supported on this platform")
 
         def fn(x, y):
             return (x + x, y + y)
@@ -1085,9 +1085,9 @@ class TestFxGraphCache(TestCase):
             device == "cuda"
             and torch.version.hip is None
             and dtype == torch.bfloat16
-            and not SM80OrLater
+            and not PLATFORM_SUPPORTS_BF16
         ):
-            raise unittest.SkipTest("requires SM80 or later")
+            raise unittest.SkipTest("bfloat16 not supported on this platform")
 
         # See lowering; for all of the pooling operators, we always guard and
         # make the height/width static.
@@ -3065,7 +3065,7 @@ class TestAutotuneCache(TestCase):
         clear_caches()
 
     @requires_cuda_and_triton
-    @unittest.skipIf(not SM80OrLater, "Requires SM80+")
+    @unittest.skipIf(not PLATFORM_SUPPORTS_BF16, "Requires SM80+")
     @config.patch({"use_static_triton_launcher": True})
     @config.patch({"fx_graph_cache": True})
     @config.patch({"fx_graph_remote_cache": False})
@@ -3113,7 +3113,7 @@ class TestAutotuneCache(TestCase):
             self.assertRegex(k, r"triton:[0-9a-f]{64}::[0-9a-f]{64}:c[0-9]+")
 
     @requires_gpu_and_triton
-    @unittest.skipIf(not HAS_XPU_AND_TRITON and not SM80OrLater, "Requires SM80+")
+    @unittest.skipIf(not HAS_XPU_AND_TRITON and not PLATFORM_SUPPORTS_BF16, "Requires SM80+")
     @config.patch({"fx_graph_cache": False})
     @config.patch({"fx_graph_remote_cache": False})
     @config.patch({"autotune_local_cache": False})
@@ -3154,7 +3154,7 @@ class TestAutotuneCache(TestCase):
             self.assertRegex(k, r"triton:[0-9a-f]{64}::[0-9a-f]{64}:c[0-9]+")
 
     @requires_gpu_and_triton
-    @unittest.skipIf(not HAS_XPU_AND_TRITON and not SM80OrLater, "Requires SM80+")
+    @unittest.skipIf(not HAS_XPU_AND_TRITON and not PLATFORM_SUPPORTS_BF16, "Requires SM80+")
     @config.patch({"fx_graph_cache": False})
     @config.patch({"fx_graph_remote_cache": False})
     @config.patch({"autotune_local_cache": True})
@@ -3215,7 +3215,7 @@ class TestAutotuneCache(TestCase):
 
     @requires_triton()
     @requires_gpu_and_triton
-    @unittest.skipIf(not HAS_XPU_AND_TRITON and not SM80OrLater, "Requires SM80+")
+    @unittest.skipIf(not HAS_XPU_AND_TRITON and not PLATFORM_SUPPORTS_BF16, "Requires SM80+")
     @config.patch({"fx_graph_cache": False})
     @config.patch({"fx_graph_remote_cache": False})
     @config.patch({"bundled_autotune_remote_cache": False})
@@ -3279,7 +3279,7 @@ class TestAutotuneCache(TestCase):
 
 class TestRemoteAOTAutogradCache(TestCase):
     @requires_gpu()
-    @unittest.skipIf(not HAS_XPU_AND_TRITON and not SM80OrLater, "Requires SM80+")
+    @unittest.skipIf(not HAS_XPU_AND_TRITON and not PLATFORM_SUPPORTS_BF16, "Requires SM80+")
     @config.patch({"fx_graph_cache": False})
     @config.patch({"fx_graph_remote_cache": True})
     @torch._functorch.config.patch({"enable_autograd_cache": False})
@@ -3318,7 +3318,7 @@ class TestRemoteAOTAutogradCache(TestCase):
             self.assertRegex(k, r"pt2:fx-graph-v1::[0-9a-z]{52}:c[0-9]+")
 
     @requires_gpu_and_triton
-    @unittest.skipIf(not HAS_XPU_AND_TRITON and not SM80OrLater, "Requires SM80+")
+    @unittest.skipIf(not HAS_XPU_AND_TRITON and not PLATFORM_SUPPORTS_BF16, "Requires SM80+")
     @config.patch({"fx_graph_cache": False})
     @config.patch({"fx_graph_remote_cache": True})
     @torch._functorch.config.patch({"enable_autograd_cache": False})

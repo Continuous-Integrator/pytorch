@@ -47,6 +47,7 @@ from torch._dynamo.testing import CompileCounterWithBackend
 from torch.testing._internal.common_methods_invocations import wrapper_set_seed
 from torch.testing._internal.common_cuda import (
     IS_JETSON,
+    PLATFORM_SUPPORTS_BF16,
     SM80OrLater,
     PLATFORM_SUPPORTS_FLASH_ATTENTION,
     PLATFORM_SUPPORTS_MEM_EFF_ATTENTION,
@@ -221,7 +222,7 @@ PLATFORM_SPECIFIC_SDPA = get_platform_specific_sdpa()
 # Indicate the Efficient attention backend can support:
 # 1. sequence longher than 512
 # 2. head dimsion larger than 64
-MEM_EFF_CAPABILITY_MATCHES_SM80 = SM80OrLater or TEST_WITH_ROCM
+MEM_EFF_CAPABILITY_MATCHES_SM80 = PLATFORM_SUPPORTS_BF16
 
 def rand_sdpa_tensor(shape: SdpaShape, device: str, dtype: torch.dtype, type: str,
                      requires_grad: bool = False, packed: bool = False) -> torch.Tensor:

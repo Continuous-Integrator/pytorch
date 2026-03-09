@@ -19,7 +19,7 @@ from torch._subclasses.fake_tensor import (
     DynamicOutputShapeException,
     FakeTensorMode,
 )
-from torch.testing._internal.common_cuda import SM80OrLater
+from torch.testing._internal.common_cuda import PLATFORM_SUPPORTS_BF16
 from torch.testing._internal.common_device_type import (
     instantiate_device_type_tests,
     onlyNativeDeviceTypes,
@@ -221,7 +221,7 @@ inductor_skips["cuda"] = {
     "_batch_norm_with_update": {f16, f32, f64},
 }
 
-if not SM80OrLater:
+if not PLATFORM_SUPPORTS_BF16:
     inductor_skips["cuda"]["bfloat16"] = {b8, f16, f32, f64, i32, i64}
 
 if TEST_WITH_ROCM:
