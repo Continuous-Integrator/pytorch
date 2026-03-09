@@ -148,6 +148,19 @@ PLATFORM_SUPPORTS_GREEN_CONTEXT: bool = LazyVal(lambda: evaluate_platform_suppor
 
 PLATFORM_SUPPORTS_CK_SDPA: bool = LazyVal(lambda: evaluate_platform_supports_ck_sdpa())
 
+
+def evaluate_platform_supports_triton():
+    if not torch.cuda.is_available():
+        return False
+    if torch.version.hip:
+        return True
+    if torch.version.cuda:
+        return torch.cuda.get_device_capability() >= (7, 0)
+    return False
+
+
+PLATFORM_SUPPORTS_TRITON: bool = LazyVal(lambda: evaluate_platform_supports_triton())
+
 def evaluate_platform_supports_fp8():
     if torch.cuda.is_available():
         if torch.version.hip:

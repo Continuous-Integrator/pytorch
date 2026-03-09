@@ -31,7 +31,7 @@ from torch._subclasses.functional_tensor import (
     PythonFunctionalizeAPI,
 )
 from torch.fx.experimental.proxy_tensor import make_fx
-from torch.testing._internal.common_cuda import SM70OrLater
+from torch.testing._internal.common_cuda import PLATFORM_SUPPORTS_TRITON
 from torch.testing._internal.common_quantization import skipIfNoDynamoSupport
 from torch.testing._internal.common_utils import (
     decorateIf,
@@ -1384,7 +1384,7 @@ def forward(self, pred_1, x_1):
         return cond_outputs, cond_inputs
 
     @skipIfTorchDynamo("don't test compile on compile")
-    @unittest.skipIf(not SM70OrLater, "triton")
+    @unittest.skipIf(not PLATFORM_SUPPORTS_TRITON, "triton")
     @unittest.skipIf(not torch.cuda.is_available(), "Test requires CUDA.")
     @parametrize("compile_mode", ["compile_dynamic_shape"])
     @parametrize("scalar", [False])
@@ -1842,7 +1842,7 @@ def forward(self, pred_1, x_1):
             ],
         )
 
-    @unittest.skipIf(not SM70OrLater, "triton")
+    @unittest.skipIf(not PLATFORM_SUPPORTS_TRITON, "triton")
     @requires_cuda
     @parametrize("reverse", [False, True])
     @parametrize("compile_mode", ["none", "eager"])
@@ -1886,7 +1886,7 @@ def forward(self, pred_1, x_1):
                 if autograd:
                     self.check_autograd(result, result_exp, (init, x))
 
-    @unittest.skipIf(not SM70OrLater, "triton")
+    @unittest.skipIf(not PLATFORM_SUPPORTS_TRITON, "triton")
     @requires_cuda
     @parametrize("reverse", [False, True])
     @parametrize("compile_mode", ["none", "eager"])
@@ -1948,7 +1948,7 @@ def forward(self, pred_1, x_1):
             )
             self.assertEqual(grads, expected_grads)
 
-    @unittest.skipIf(not SM70OrLater, "triton")
+    @unittest.skipIf(not PLATFORM_SUPPORTS_TRITON, "triton")
     @requires_cuda
     @parametrize("reverse", [False, True])
     @parametrize("compile_mode", ["none", "eager"])
@@ -2092,7 +2092,7 @@ def forward(self, pred_1, x_1):
     # TODO: Does not work because of the usage of vmap within associative_scan
     # The paT206899919 rameterization is commented out for the moment and the test is marked with expected fail
     # Fails with: AssertionError: scan is not an OpOverload
-    @unittest.skipIf(not SM70OrLater, "triton")
+    @unittest.skipIf(not PLATFORM_SUPPORTS_TRITON, "triton")
     @requires_cuda
     def test_scan_associative_scan(self):
         combine_mode = "generic"
@@ -2226,7 +2226,7 @@ def forward(self, pred_1, x_1):
         if autograd:
             self.check_autograd(result, expected_result, (init, init2, inp))
 
-    @unittest.skipIf(not SM70OrLater, "triton")
+    @unittest.skipIf(not PLATFORM_SUPPORTS_TRITON, "triton")
     @requires_cuda
     @parametrize("reverse", [False, True])
     @parametrize("compile_mode", ["none", "eager"])
@@ -2679,7 +2679,7 @@ def forward(self, pred_1, x_1):
                 reverse=reverse,
             )
 
-    @unittest.skipIf(not SM70OrLater, "triton")
+    @unittest.skipIf(not PLATFORM_SUPPORTS_TRITON, "triton")
     @requires_cuda
     @parametrize("reverse", [False, True])
     @parametrize("compile_mode", ["none", "eager"])
@@ -2864,7 +2864,7 @@ class GraphModule(torch.nn.Module):
         )
 
     @skipIfTorchDynamo("Graph is not captured by backend if test with dynamo")
-    @unittest.skipIf(not SM70OrLater, "triton")
+    @unittest.skipIf(not PLATFORM_SUPPORTS_TRITON, "triton")
     @requires_cuda
     @parametrize("compile_mode", ["none", "eager"])
     @parametrize("autograd", [False, True])
@@ -2939,7 +2939,7 @@ class GraphModule(torch.nn.Module):
             self.assertEqual(grads, expected_grads)
             self.assertEqual(add_input_grads, expected_add_input_grads)
 
-    @unittest.skipIf(not SM70OrLater, "triton")
+    @unittest.skipIf(not PLATFORM_SUPPORTS_TRITON, "triton")
     @requires_cuda
     @parametrize("reverse", [False, True])
     @parametrize("compile_mode", ["none", "eager"])
@@ -3026,7 +3026,7 @@ class GraphModule(torch.nn.Module):
 
     @requires_cuda
     @skipIfTorchDynamo("not a dynamo test")
-    @unittest.skipIf(not SM70OrLater, "triton")
+    @unittest.skipIf(not PLATFORM_SUPPORTS_TRITON, "triton")
     @parametrize("layers", [1, 2, 3])
     @parametrize("device", ["cpu", "cuda"])
     @torch._dynamo.config.patch(capture_scalar_outputs=True)
@@ -3181,7 +3181,7 @@ class GraphModule(torch.nn.Module):
                 compiled_loss,
             )
 
-    @unittest.skipIf(not SM70OrLater, "triton")
+    @unittest.skipIf(not PLATFORM_SUPPORTS_TRITON, "triton")
     @requires_cuda
     @parametrize("reverse", [False, True])
     @parametrize("compile_mode", ["none", "eager"])
@@ -3221,7 +3221,7 @@ class GraphModule(torch.nn.Module):
             res_exp_req_grad_flat = pytree.tree_leaves(result_exp)[1:]
             self.check_autograd(res_req_grad_flat, res_exp_req_grad_flat, (x, h2))
 
-    @unittest.skipIf(not SM70OrLater, "triton")
+    @unittest.skipIf(not PLATFORM_SUPPORTS_TRITON, "triton")
     @requires_cuda
     @parametrize("reverse", [False, True])
     @parametrize("compile_mode", ["none", "eager"])
@@ -3261,7 +3261,7 @@ class GraphModule(torch.nn.Module):
             res_exp_req_grad_flat = pytree.tree_leaves(result_exp)[1:]
             self.check_autograd(res_req_grad_flat, res_exp_req_grad_flat, (x, h2))
 
-    @unittest.skipIf(not SM70OrLater, "triton")
+    @unittest.skipIf(not PLATFORM_SUPPORTS_TRITON, "triton")
     @requires_cuda
     @parametrize("reverse", [False, True])
     @parametrize("compile_mode", ["none", "eager"])
@@ -3290,7 +3290,7 @@ class GraphModule(torch.nn.Module):
         if autograd:
             self.check_autograd(result[0], result_exp[0], (x, h1, h2))
 
-    @unittest.skipIf(not SM70OrLater, "triton")
+    @unittest.skipIf(not PLATFORM_SUPPORTS_TRITON, "triton")
     @requires_cuda
     @parametrize("reverse", [False, True])
     @parametrize("compile_mode", ["none", "eager"])
@@ -3325,7 +3325,7 @@ class GraphModule(torch.nn.Module):
         if autograd:
             self.check_autograd(result[1], result_exp[1], (h, x, W_ih, b_ih))
 
-    @unittest.skipIf(not SM70OrLater, "triton")
+    @unittest.skipIf(not PLATFORM_SUPPORTS_TRITON, "triton")
     @requires_cuda
     @parametrize("reverse", [False, True])
     @parametrize("compile_mode", ["none", "eager"])
@@ -3362,7 +3362,7 @@ class GraphModule(torch.nn.Module):
         if autograd:
             self.check_autograd(result[1], result_exp[1], (h, x))
 
-    @unittest.skipIf(not SM70OrLater, "triton")
+    @unittest.skipIf(not PLATFORM_SUPPORTS_TRITON, "triton")
     @requires_cuda
     @parametrize("reverse", [False, True])
     @parametrize("compile_mode", ["none", "eager"])
@@ -3399,7 +3399,7 @@ class GraphModule(torch.nn.Module):
         if autograd:
             self.check_autograd(result[1], result_exp[1], (h, x))
 
-    @unittest.skipIf(not SM70OrLater, "triton")
+    @unittest.skipIf(not PLATFORM_SUPPORTS_TRITON, "triton")
     @requires_cuda
     @parametrize("reverse", [False, True])
     @parametrize("compile_mode", ["none", "eager"])
@@ -3627,7 +3627,7 @@ def forward(self, L_init_ : torch.Tensor, L_xs_ : torch.Tensor):
         ):
             scan(fct_input_output_alias, init, inp, dim=0)
 
-    @unittest.skipIf(not SM70OrLater, "triton")
+    @unittest.skipIf(not PLATFORM_SUPPORTS_TRITON, "triton")
     @requires_cuda
     def test_scan_carry_carry_alias(self):
         device = torch.device("cuda")
@@ -3650,7 +3650,7 @@ def forward(self, L_init_ : torch.Tensor, L_xs_ : torch.Tensor):
         ):
             scan(fct_carry_carry_alias, init, inp, dim=0)
 
-    @unittest.skipIf(not SM70OrLater, "triton")
+    @unittest.skipIf(not PLATFORM_SUPPORTS_TRITON, "triton")
     @requires_cuda
     def test_scan_carry_output_alias(self):
         device = torch.device("cuda")
@@ -3835,7 +3835,7 @@ class AssociativeScanTests(TestCase):
         kwargs_fake["compile_mode"] = "fake"
         return kwargs_fake
 
-    @unittest.skipIf(not SM70OrLater, "triton")
+    @unittest.skipIf(not PLATFORM_SUPPORTS_TRITON, "triton")
     @requires_cuda
     @parametrize("reverse", [False, True])
     @parametrize("compile_mode", ["none", "eager", "compile", "compile_dynamic_shape"])
@@ -3918,7 +3918,7 @@ class AssociativeScanTests(TestCase):
 
         self.assertEqual(result, results_torch)
 
-    @unittest.skipIf(not SM70OrLater, "triton")
+    @unittest.skipIf(not PLATFORM_SUPPORTS_TRITON, "triton")
     @requires_cuda
     @parametrize("reverse", [False, True])
     @parametrize("compile_mode", ["none", "eager", "compile", "compile_dynamic_shape"])
@@ -3974,7 +3974,7 @@ class AssociativeScanTests(TestCase):
                     results_torch.append(op_pt(x, 0))
                 self.assertEqual(results, results_torch)
 
-    @unittest.skipIf(not SM70OrLater, "triton")
+    @unittest.skipIf(not PLATFORM_SUPPORTS_TRITON, "triton")
     @requires_cuda
     @unittest.expectedFailure
     def test_associative_scan_dim_shape_failure(self, compile_mode, combine_mode):
@@ -3997,7 +3997,7 @@ class AssociativeScanTests(TestCase):
                 inputs=x,
             )
 
-    @unittest.skipIf(not SM70OrLater, "triton")
+    @unittest.skipIf(not PLATFORM_SUPPORTS_TRITON, "triton")
     @requires_cuda
     @parametrize("compile_mode", ["none", "eager", "compile", "compile_dynamic_shape"])
     @parametrize("combine_mode", ["pointwise", "generic"])
@@ -4040,7 +4040,7 @@ class AssociativeScanTests(TestCase):
             autograd_param=None if not autograd else inp,
         )
 
-    @unittest.skipIf(not SM70OrLater, "triton")
+    @unittest.skipIf(not PLATFORM_SUPPORTS_TRITON, "triton")
     @requires_cuda
     @parametrize("compile_mode", ["none", "eager", "compile", "compile_dynamic_shape"])
     @parametrize("reverse", [False, True])
@@ -4069,7 +4069,7 @@ class AssociativeScanTests(TestCase):
             autograd_param=None if not autograd else (x,),
         )
 
-    @unittest.skipIf(not SM70OrLater, "triton")
+    @unittest.skipIf(not PLATFORM_SUPPORTS_TRITON, "triton")
     @requires_cuda
     @parametrize("compile_mode", ["none", "eager", "compile", "compile_dynamic_shape"])
     @parametrize("reverse", [False, True])
@@ -4101,7 +4101,7 @@ class AssociativeScanTests(TestCase):
             autograd_param=None if not autograd else (x,),
         )
 
-    @unittest.skipIf(not SM70OrLater, "triton")
+    @unittest.skipIf(not PLATFORM_SUPPORTS_TRITON, "triton")
     @requires_cuda
     @parametrize("compile_mode", ["none", "eager", "compile", "compile_dynamic_shape"])
     @parametrize("combine_mode", ["pointwise", "generic"])
@@ -4275,7 +4275,7 @@ class GraphModule(torch.nn.Module):
 """,  # noqa: B950
         )
 
-    @unittest.skipIf(not SM70OrLater, "triton")
+    @unittest.skipIf(not PLATFORM_SUPPORTS_TRITON, "triton")
     @requires_cuda
     @parametrize("combine_mode", ["pointwise", "generic"])
     @parametrize("compile_mode", ["none", "eager", "compile", "compile_dynamic_shape"])
@@ -4323,7 +4323,7 @@ class GraphModule(torch.nn.Module):
             autograd_param=None if not autograd else (inp,),
         )
 
-    @unittest.skipIf(not SM70OrLater, "triton")
+    @unittest.skipIf(not PLATFORM_SUPPORTS_TRITON, "triton")
     @requires_cuda
     @parametrize("combine_mode", ["pointwise", "generic"])
     @parametrize("compile_mode", ["none", "eager", "compile", "compile_dynamic_shape"])
@@ -4372,7 +4372,7 @@ class GraphModule(torch.nn.Module):
             autograd_param=None if not autograd else (inp,),
         )
 
-    @unittest.skipIf(not SM70OrLater, "triton")
+    @unittest.skipIf(not PLATFORM_SUPPORTS_TRITON, "triton")
     @requires_cuda
     @parametrize("combine_mode", ["pointwise", "generic"])
     @parametrize("compile_mode", ["none", "eager", "compile", "compile_dynamic_shape"])
@@ -4438,7 +4438,7 @@ class GraphModule(torch.nn.Module):
 
     # TODO: Does not work because of the usage of vmap within associative_scan
     # TODO: Re-enable additional parameters again once this issues has been resolved
-    @unittest.skipIf(not SM70OrLater, "triton")
+    @unittest.skipIf(not PLATFORM_SUPPORTS_TRITON, "triton")
     @requires_cuda
     @unittest.expectedFailure
     def test_associative_scan_nested(self):
@@ -4486,7 +4486,7 @@ class GraphModule(torch.nn.Module):
             inputs=inp,
         )
 
-    @unittest.skipIf(not SM70OrLater, "triton")
+    @unittest.skipIf(not PLATFORM_SUPPORTS_TRITON, "triton")
     @requires_cuda
     @parametrize("compile_mode", ["none", "eager", "compile", "compile_dynamic_shape"])
     @parametrize("loop_type", ["for"])
@@ -4538,7 +4538,7 @@ class GraphModule(torch.nn.Module):
 
     # TODO: Does not work because of the usage of vmap within associative_scan
     # TODO: Re-enable additional parameters again once this issues has been resolved
-    @unittest.skipIf(not SM70OrLater, "triton")
+    @unittest.skipIf(not PLATFORM_SUPPORTS_TRITON, "triton")
     @requires_cuda
     @unittest.expectedFailure
     def test_associative_scan_loop_in_combine_fn_failure(self):
@@ -4573,7 +4573,7 @@ class GraphModule(torch.nn.Module):
             inputs=inp,
         )
 
-    @unittest.skipIf(not SM70OrLater, "triton")
+    @unittest.skipIf(not PLATFORM_SUPPORTS_TRITON, "triton")
     @requires_cuda
     @parametrize("compile_mode", ["none", "eager", "compile", "compile_dynamic_shape"])
     @parametrize("reverse", [False, True])
@@ -4614,7 +4614,7 @@ class GraphModule(torch.nn.Module):
 
     # TODO: Does not work because of the usage of vmap within associative_scan
     # TODO: Re-enable additional parameters again once this issues has been resolved
-    @unittest.skipIf(not SM70OrLater, "triton")
+    @unittest.skipIf(not PLATFORM_SUPPORTS_TRITON, "triton")
     @requires_cuda
     @unittest.expectedFailure
     def test_associative_scan_map_in_combine_fn(self):
@@ -4646,7 +4646,7 @@ class GraphModule(torch.nn.Module):
             inputs=inp,
         )
 
-    @unittest.skipIf(not SM70OrLater, "triton")
+    @unittest.skipIf(not PLATFORM_SUPPORTS_TRITON, "triton")
     @requires_cuda
     @parametrize("compile_mode", ["none", "eager", "compile", "compile_dynamic_shape"])
     @parametrize("reverse", [False, True])
@@ -4680,7 +4680,7 @@ class GraphModule(torch.nn.Module):
             autograd_param=None if not autograd else (inp,),
         )
 
-    @unittest.skipIf(not SM70OrLater, "triton")
+    @unittest.skipIf(not PLATFORM_SUPPORTS_TRITON, "triton")
     @requires_cuda
     @parametrize("reverse", [False, True])
     @parametrize("compile_mode", ["none", "eager", "compile", "compile_dynamic_shape"])
@@ -4712,7 +4712,7 @@ class GraphModule(torch.nn.Module):
             autograd_param=None if not autograd else (x,),
         )
 
-    @unittest.skipIf(not SM70OrLater, "triton")
+    @unittest.skipIf(not PLATFORM_SUPPORTS_TRITON, "triton")
     @requires_cuda
     @parametrize("compile_mode", ["none", "eager", "compile", "compile_dynamic_shape"])
     @parametrize("combine_mode", ["pointwise", "generic"])
@@ -4759,7 +4759,7 @@ class GraphModule(torch.nn.Module):
             autograd_param=None if not autograd else elements,
         )
 
-    @unittest.skipIf(not SM70OrLater, "triton")
+    @unittest.skipIf(not PLATFORM_SUPPORTS_TRITON, "triton")
     @requires_cuda
     @parametrize("compile_mode", ["none", "eager", "compile", "compile_dynamic_shape"])
     @parametrize("reverse", [False, True])
@@ -4797,7 +4797,7 @@ class GraphModule(torch.nn.Module):
             inputs=elements,
         )
 
-    @unittest.skipIf(not SM70OrLater, "triton")
+    @unittest.skipIf(not PLATFORM_SUPPORTS_TRITON, "triton")
     @requires_cuda
     def test_associative_scan_different_input_size_wrong_dim(self):
         batch = 5
@@ -4831,7 +4831,7 @@ class GraphModule(torch.nn.Module):
                 combine_mode="pointwise",
             )
 
-    @unittest.skipIf(not SM70OrLater, "triton")
+    @unittest.skipIf(not PLATFORM_SUPPORTS_TRITON, "triton")
     @unittest.skipIf(not torch.cuda.is_available(), "Test requires CUDA.")
     @parametrize("compile_mode", ["none", "eager", "compile", "compile_dynamic_shape"])
     @parametrize("combine_mode", ["pointwise", "generic"])
@@ -4884,7 +4884,7 @@ class GraphModule(torch.nn.Module):
                 autograd_param=None if not autograd else (inp, *param),
             )
 
-    @unittest.skipIf(not SM70OrLater, "triton")
+    @unittest.skipIf(not PLATFORM_SUPPORTS_TRITON, "triton")
     @unittest.skipIf(not torch.cuda.is_available(), "Test requires CUDA.")
     @parametrize("compile_mode", ["none", "eager", "compile", "compile_dynamic_shape"])
     @parametrize("combine_mode", ["pointwise", "generic"])
@@ -4961,7 +4961,7 @@ class GraphModule(torch.nn.Module):
                 autograd_param=None if not autograd else (inp, *param),
             )
 
-    @unittest.skipIf(not SM70OrLater, "triton")
+    @unittest.skipIf(not PLATFORM_SUPPORTS_TRITON, "triton")
     @unittest.skipIf(not torch.cuda.is_available(), "Test requires CUDA.")
     @parametrize("compile_mode", ["none", "eager", "compile", "compile_dynamic_shape"])
     @parametrize("combine_mode", ["pointwise", "generic"])
@@ -5002,7 +5002,7 @@ class GraphModule(torch.nn.Module):
             autograd_param=None if not autograd else (inp,),
         )
 
-    @unittest.skipIf(not SM70OrLater, "triton")
+    @unittest.skipIf(not PLATFORM_SUPPORTS_TRITON, "triton")
     @unittest.skipIf(not torch.cuda.is_available(), "Test requires CUDA.")
     @parametrize("compile_mode", ["none", "eager", "compile", "compile_dynamic_shape"])
     @parametrize("reverse", [False, True])
@@ -5042,7 +5042,7 @@ class GraphModule(torch.nn.Module):
             autograd_param=None if not autograd else (inp,),
         )
 
-    @unittest.skipIf(not SM70OrLater, "triton")
+    @unittest.skipIf(not PLATFORM_SUPPORTS_TRITON, "triton")
     @unittest.skipIf(not torch.cuda.is_available(), "Test requires CUDA.")
     @parametrize("compile_mode", ["none", "eager", "compile", "compile_dynamic_shape"])
     @parametrize("combine_mode", ["pointwise", "generic"])
@@ -5081,7 +5081,7 @@ class GraphModule(torch.nn.Module):
             autograd_param=None if not autograd else (inp,),
         )
 
-    @unittest.skipIf(not SM70OrLater, "triton")
+    @unittest.skipIf(not PLATFORM_SUPPORTS_TRITON, "triton")
     @unittest.skipIf(not torch.cuda.is_available(), "Test requires CUDA.")
     @parametrize("compile_mode", ["none", "eager", "compile", "compile_dynamic_shape"])
     @parametrize("reverse", [False, True])
@@ -5137,7 +5137,7 @@ class GraphModule(torch.nn.Module):
             autograd_param=None if not autograd else (*pytree.tree_leaves(inp),),
         )
 
-    @unittest.skipIf(not SM70OrLater, "triton")
+    @unittest.skipIf(not PLATFORM_SUPPORTS_TRITON, "triton")
     @requires_cuda
     @parametrize("combine_mode", ["pointwise", "generic"])
     @parametrize("compile_mode", ["none", "eager", "compile", "compile_dynamic_shape"])
@@ -5197,7 +5197,7 @@ class GraphModule(torch.nn.Module):
                 autograd_param=inp,
             )
 
-    @unittest.skipIf(not SM70OrLater, "triton")
+    @unittest.skipIf(not PLATFORM_SUPPORTS_TRITON, "triton")
     @requires_cuda
     @parametrize("combine_mode", ["pointwise", "generic"])
     @parametrize("compile_mode", ["none", "eager", "compile", "compile_dynamic_shape"])
@@ -5246,7 +5246,7 @@ class GraphModule(torch.nn.Module):
             autograd_param=inp[0:1],
         )
 
-    @unittest.skipIf(not SM70OrLater, "triton")
+    @unittest.skipIf(not PLATFORM_SUPPORTS_TRITON, "triton")
     def test_associative_scan_sparse_tensor(self):
         x = torch.tensor(
             [[[0.0, 0], [1.0, 2.0]], [[0.0, 0], [3.0, 4.0]], [[0.0, 0], [5.0, 6.0]]]
@@ -5260,7 +5260,7 @@ class GraphModule(torch.nn.Module):
                 get_scan_combine_fn("add", True), x, 0, combine_mode="generic"
             )
 
-    @unittest.skipIf(not SM70OrLater, "triton")
+    @unittest.skipIf(not PLATFORM_SUPPORTS_TRITON, "triton")
     @requires_cuda
     def test_associative_scan_combine_fn_wrong_meta_in_combine_fn(self):
         device = torch.device("cuda")
@@ -5285,7 +5285,7 @@ class GraphModule(torch.nn.Module):
             ):
                 associative_scan(fct, x, 0)
 
-    @unittest.skipIf(not SM70OrLater, "triton")
+    @unittest.skipIf(not PLATFORM_SUPPORTS_TRITON, "triton")
     def test_associative_scan_wrong_pytree(self):
         def fct_wrong_pytree(x, y):
             return {
@@ -5305,7 +5305,7 @@ class GraphModule(torch.nn.Module):
         ):
             associative_scan(fct_wrong_pytree, inp, 0, combine_mode="generic")
 
-    @unittest.skipIf(not SM70OrLater, "triton")
+    @unittest.skipIf(not PLATFORM_SUPPORTS_TRITON, "triton")
     @requires_cuda
     def test_associative_scan_non_pointwise(self):
         device = torch.device("cuda")
@@ -5361,7 +5361,7 @@ class GraphModule(torch.nn.Module):
         ):
             associative_scan(fct_input_output_alias, inp, 0)
 
-    @unittest.skipIf(not SM70OrLater, "triton")
+    @unittest.skipIf(not PLATFORM_SUPPORTS_TRITON, "triton")
     @requires_cuda
     def test_associative_scan_output_output_alias(self):
         device = torch.device("cuda")
@@ -9684,7 +9684,7 @@ class TestAutoFunctionalizeControlFlow(TestCase):
         return backend.fw_graphs[0]
 
     @requires_cuda
-    @unittest.skipIf(not SM70OrLater, "triton")
+    @unittest.skipIf(not PLATFORM_SUPPORTS_TRITON, "triton")
     @parametrize("device", ["cuda", "cpu"])
     @parametrize("dynamic", [True, False])
     def test_cond_auto_functionalize_input_mutation(self, device, dynamic):
@@ -9739,7 +9739,7 @@ class <lambda>(torch.nn.Module):
             )
 
     @requires_cuda
-    @unittest.skipIf(not SM70OrLater, "triton")
+    @unittest.skipIf(not PLATFORM_SUPPORTS_TRITON, "triton")
     @parametrize("device", ["cuda", "cpu"])
     @parametrize("dynamic", [True, False])
     def test_cond_auto_functionalize_buffer_mutation(self, device, dynamic):
@@ -9805,7 +9805,7 @@ class <lambda>(torch.nn.Module):
             )
 
     @requires_cuda
-    @unittest.skipIf(not SM70OrLater, "triton")
+    @unittest.skipIf(not PLATFORM_SUPPORTS_TRITON, "triton")
     @parametrize("device", ["cuda", "cpu"])
     @parametrize("dynamic", [True, False])
     def test_cond_auto_functionalize_union_input_mutation(self, device, dynamic):

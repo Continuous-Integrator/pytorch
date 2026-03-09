@@ -30,7 +30,7 @@ from torch._higher_order_ops.torchbind import enable_torchbind_tracing
 from torch.fx.experimental.proxy_tensor import make_fx
 from torch.fx.node import has_side_effect
 from torch.testing import FileCheck
-from torch.testing._internal.common_cuda import SM70OrLater, SM80OrLater
+from torch.testing._internal.common_cuda import PLATFORM_SUPPORTS_TRITON, SM80OrLater
 from torch.testing._internal.common_quantization import skipIfNoDynamoSupport
 from torch.testing._internal.common_utils import (
     IS_WINDOWS,
@@ -246,7 +246,7 @@ def forward(self, arg0_1, arg1_1, arg2_1):
         self.assertTrue(torch.allclose(res, f(*inputs)))
 
     @unittest.skipIf(IS_WINDOWS, "triton")
-    @unittest.skipIf(not SM70OrLater, "triton")
+    @unittest.skipIf(not PLATFORM_SUPPORTS_TRITON, "triton")
     def test_compile_inductor(self):
         def f(x):
             torch.ops.aten._print("moo")
