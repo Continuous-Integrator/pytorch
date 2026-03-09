@@ -1988,6 +1988,7 @@ main()
         )
         self.assertEqual(counters["stats"]["unique_graphs"], 4)  # 3 fw, 1 bw
 
+    @config.patch("nested_graph_breaks", False)
     def test_custom_fn_compiled_fw_bw_graph_break(self):
         def fn():
             class MySin(torch.autograd.Function):
@@ -4844,6 +4845,7 @@ class CompiledAutograd1(torch.nn.Module):
     #   ...
     # } else {
     #   variable_grad += new_grad;
+    @config.patch("nested_graph_breaks", False)
     def test_accumulate_grad_polyfill_case_2_3_3(self):
         def fn():
             class DenseVarGradSparseNewGradOp(BaseCustomOp):
