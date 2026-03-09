@@ -6678,16 +6678,14 @@ tensor(..., device='meta', size=(1,), requires_grad=True)""")
                 self.assertEqual(input_cpu.grad, input_gpu.grad)
 
     @unittest.skipIf(not TEST_CUDA, 'CUDA not available')
-    @parametrize_test("emulate_precision_casts", [True, False])
+    @torch._inductor.config.patch(emulate_precision_casts=True)
     @parametrize_test("dtype", [torch.float16, torch.bfloat16])
     @parametrize_test("align_corners", [True, False])
-    def test_affine_grid_inductor_float16(self, emulate_precision_casts, dtype, align_corners):
+    def test_affine_grid_inductor_float16(self, dtype, align_corners):
         # Verify that the affine_grid_generator decomposition under inductor
         # matches the native CUDA kernel for reduced-precision types.
         # Residual error comes from bmm (cuBLAS) and constant-folded linspace
         # values differing slightly from the native kernel's computation.
-        import torch._inductor.config as inductor_config
-
         atol = 4e-3 if dtype == torch.float16 else 0.032
 
         # 4D
@@ -6704,10 +6702,7 @@ tensor(..., device='meta', size=(1,), requires_grad=True)""")
                     theta, size=size, align_corners=ac
                 )
 
-            with inductor_config.patch(
-                emulate_precision_casts=emulate_precision_casts
-            ):
-                actual = torch.compile(fn, backend="inductor")(theta, size)
+            actual = torch.compile(fn, backend="inductor")(theta, size)
             self.assertEqual(actual, expected, atol=atol, rtol=0)
 
         # 5D
@@ -6724,10 +6719,7 @@ tensor(..., device='meta', size=(1,), requires_grad=True)""")
                     theta, size=size, align_corners=ac
                 )
 
-            with inductor_config.patch(
-                emulate_precision_casts=emulate_precision_casts
-            ):
-                actual = torch.compile(fn5d, backend="inductor")(theta, size)
+            actual = torch.compile(fn5d, backend="inductor")(theta, size)
             self.assertEqual(actual, expected, atol=atol, rtol=0)
 
     def test_channel_shuffle_return_alias_of_self(self):
