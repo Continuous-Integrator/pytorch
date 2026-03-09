@@ -2212,7 +2212,7 @@ class GraphModule(torch.nn.Module):
         out.sum().backward()
         return "\n".join(annotations)
 
-    def test_ignored_op_annotation_no_leak(self):
+    def test_pre_mode_decomp_has_sac_ignored_ops(self):
         """detach (a SAC_IGNORED_OP) should get PREFER_RECOMPUTE,
         not leak the annotation from the preceding op."""
 
@@ -2232,20 +2232,19 @@ add: aten.add.Tensor -> PREFER_RECOMPUTE
 cos: aten.cos.default -> MUST_SAVE""",
         )
 
-    def test_decomposed_op_annotation(self):
+    def test_post_mode_decomp(self):
         """SiLU decomposes under inductor decomps. All decomposed ops should
         get the policy returned for the original op, not leak from neighbors."""
         from torch._inductor.compile_fx import select_decomp_table
 
-        @torch._dynamo.allow_in_graph
-        def op_with_silu(x):
+        def fn(x):
             x = x.sin()
             x = torch.nn.functional.silu(x)
             x = x.cos()
             return x
 
         self.assertExpectedInline(
-            self._get_sac_annotations(op_with_silu, decompositions=select_decomp_table),
+            self._get_sac_annotations(fn, decompositions=select_decomp_table),
             """\
 sin: aten.sin.default -> MUST_RECOMPUTE
 neg: aten.neg.default -> PREFER_RECOMPUTE
@@ -2255,12 +2254,11 @@ div: aten.div.Tensor -> PREFER_RECOMPUTE
 cos: aten.cos.default -> MUST_SAVE""",
         )
 
-    def test_multi_output_op_annotation(self):
+    def test_multi_output_op(self):
         """Multi-output ops produce getitem nodes. All should get the same
         annotation as the op itself."""
 
-        @torch._dynamo.allow_in_graph
-        def op_with_multi_output(x):
+        def fn(x):
             x = x.sin()
             vals, idxs = torch.topk(x, k=2)
             out = vals.sum()
@@ -2268,7 +2266,7 @@ cos: aten.cos.default -> MUST_SAVE""",
             return out
 
         self.assertExpectedInline(
-            self._get_sac_annotations(op_with_multi_output),
+            self._get_sac_annotations(fn),
             """\
 sin: aten.sin.default -> MUST_RECOMPUTE
 topk: aten.topk.default -> PREFER_RECOMPUTE
