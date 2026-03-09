@@ -2164,6 +2164,120 @@ class GraphModule(torch.nn.Module):
         with torch._dynamo.config.patch(capture_profiler_record_function=True):
             self._validate(fn, backend, x, y)
 
+    def _get_sac_annotations(self, checkpointed_fn, decompositions=None):
+        """Compile checkpointed_fn with SAC and return annotation strings
+        from the joint graph. Policy: sin=MUST_RECOMPUTE, cos=MUST_SAVE,
+        everything else=PREFER_RECOMPUTE."""
+
+        def policy_fn(ctx, func, *args, **kwargs):
+            if func == torch.ops.aten.sin.default:
+                return CheckpointPolicy.MUST_RECOMPUTE
+            if func == torch.ops.aten.cos.default:
+                return CheckpointPolicy.MUST_SAVE
+            return CheckpointPolicy.PREFER_RECOMPUTE
+
+        annotations = []
+
+        def capture_partition(joint_gm, joint_args, **kwargs):
+            for node in joint_gm.graph.nodes:
+                if node.op == "call_function":
+                    recompute = node.meta.get("recompute", None)
+                    if recompute is not None:
+                        annotations.append(
+                            f"{node.name}: {node.target} -> {recompute.name}"
+                        )
+            return min_cut_rematerialization_partition(joint_gm, joint_args, **kwargs)
+
+        backend = aot_autograd(
+            fw_compiler=nop,
+            bw_compiler=nop,
+            partition_fn=capture_partition,
+            decompositions=decompositions,
+        )
+
+        def fn(x):
+            return checkpoint(
+                checkpointed_fn,
+                x,
+                use_reentrant=False,
+                context_fn=functools.partial(
+                    create_selective_checkpoint_contexts, policy_fn
+                ),
+            )
+
+        x = torch.randn(4, requires_grad=True)
+        torch._dynamo.reset()
+        compiled = torch.compile(fn, backend=backend)
+        out = compiled(x)
+        out.sum().backward()
+        return "\n".join(annotations)
+
+    def test_ignored_op_annotation_no_leak(self):
+        """detach (a SAC_IGNORED_OP) should get PREFER_RECOMPUTE,
+        not leak the annotation from the preceding op."""
+
+        @torch._dynamo.allow_in_graph
+        def op_with_detach(x):
+            a = x.sin()
+            out = a.detach() + a
+            out = out.cos()
+            return out
+
+        self.assertExpectedInline(
+            self._get_sac_annotations(op_with_detach),
+            """\
+sin: aten.sin.default -> MUST_RECOMPUTE
+detach_1: aten.detach.default -> PREFER_RECOMPUTE
+add: aten.add.Tensor -> PREFER_RECOMPUTE
+cos: aten.cos.default -> MUST_SAVE""",
+        )
+
+    def test_decomposed_op_annotation(self):
+        """SiLU decomposes under inductor decomps. All decomposed ops should
+        get the policy returned for the original op, not leak from neighbors."""
+        from torch._inductor.compile_fx import select_decomp_table
+
+        @torch._dynamo.allow_in_graph
+        def op_with_silu(x):
+            x = x.sin()
+            x = torch.nn.functional.silu(x)
+            x = x.cos()
+            return x
+
+        self.assertExpectedInline(
+            self._get_sac_annotations(op_with_silu, decompositions=select_decomp_table),
+            """\
+sin: aten.sin.default -> MUST_RECOMPUTE
+neg: aten.neg.default -> PREFER_RECOMPUTE
+exp: aten.exp.default -> PREFER_RECOMPUTE
+add: aten.add.Tensor -> PREFER_RECOMPUTE
+div: aten.div.Tensor -> PREFER_RECOMPUTE
+cos: aten.cos.default -> MUST_SAVE""",
+        )
+
+    def test_multi_output_op_annotation(self):
+        """Multi-output ops produce getitem nodes. All should get the same
+        annotation as the op itself."""
+
+        @torch._dynamo.allow_in_graph
+        def op_with_multi_output(x):
+            x = x.sin()
+            vals, idxs = torch.topk(x, k=2)
+            out = vals.sum()
+            out = out.cos()
+            return out
+
+        self.assertExpectedInline(
+            self._get_sac_annotations(op_with_multi_output),
+            """\
+sin: aten.sin.default -> MUST_RECOMPUTE
+topk: aten.topk.default -> PREFER_RECOMPUTE
+getitem: <built-in function getitem> -> PREFER_RECOMPUTE
+getitem_1: <built-in function getitem> -> PREFER_RECOMPUTE
+sum_1: aten.sum.default -> PREFER_RECOMPUTE
+cos: aten.cos.default -> MUST_SAVE""",
+        )
+
 
 class RematerializeACNodesPassTests(torch._dynamo.test_case.TestCase):
     """Tests for AC reordering optimization in full graph (forward+backward in one graph)."""
