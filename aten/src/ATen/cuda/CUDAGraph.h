@@ -31,6 +31,11 @@ namespace cuda {
 // to CUDAGraph::capture_begin
 TORCH_CUDA_CPP_API MempoolId_t graph_pool_handle();
 
+// Returns true if any CUDAGraph capture is currently active in this process.
+#if defined(USE_ROCM)
+TORCH_CUDA_CPP_API bool is_graph_capture_active();
+#endif
+
 struct CUDAGraph;
 
 TORCH_CUDA_CPP_API CUDAGraph* get_graph_from_capture_id(CaptureId_t capture_id);
@@ -79,6 +84,9 @@ struct TORCH_CUDA_CPP_API CUDAGraph {
   static void set_conditional_handle(
       cudaGraphConditionalHandle handle,
       const Tensor& scalar_cuda_pred_tensor);
+
+  // Returns the (seed_tensor, offset_tensor) pairs for each captured generator.
+  std::vector<std::pair<at::Tensor, at::Tensor>> _captured_rng_states() const;
 
  private:
   template <typename StreamType>

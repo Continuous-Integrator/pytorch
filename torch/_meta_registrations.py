@@ -521,8 +521,13 @@ def meta_copy_(self, src, non_blocking=False):
 
     if isinstance(src, Tensor):
         intermediate = src.to(self, non_blocking)
-        if self.size() != intermediate.size():
-            aten.expand_copy.default(intermediate, self.size())
+        # Validate broadcast compatibility. We call the _refs expand
+        # directly rather than aten.expand_copy.default because the
+        # aten dispatch path hits C++ that cannot handle unbacked
+        # symints. The refs version performs the same checks using
+        # sym_or(x == 1, requested_length == x) which gracefully
+        # handles unbacked symints.
+        torch._refs.expand(intermediate, self.size())
     return self
 
 
@@ -4582,12 +4587,14 @@ def common_meta_baddbmm_bmm(batch1, batch2, is_bmm, self_baddbmm=None, out_dtype
     return output
 
 
-@register_meta(aten.bmm.default)
+@register_meta([aten.bmm.default, aten.bmm.out])
+@out_wrapper(exact_dtype=True)
 def meta_bmm(self, mat2):
     return common_meta_baddbmm_bmm(self, mat2, True)
 
 
-@register_meta(aten.bmm.dtype)
+@register_meta([aten.bmm.dtype, aten.bmm.dtype_out])
+@out_wrapper(exact_dtype=True)
 def meta_bmm_dtype(self, mat2, out_dtype):
     return common_meta_baddbmm_bmm(self, mat2, True, out_dtype=out_dtype)
 
@@ -6294,6 +6301,7 @@ def meta__flash_attention_forward(
     window_size_right: int | None = None,
     seqused_k: Tensor | None = None,
     alibi_slopes: Tensor | None = None,
+    block_table: Tensor | None = None,
 ):
     # NB: there are two underlying paths:
     # 1. normal dense path; expect 4D inputs of shape (batch_size, seqlen, num_heads, head_dim)
@@ -6351,6 +6359,47 @@ def meta__flash_attention_forward(
         offset,
         debug_mask,
     )
+
+
+@register_meta([aten._flash_attention_forward_no_dropout_inplace.default])
+def meta__flash_attention_forward_no_dropout_inplace(
+    out: Tensor,
+    query: Tensor,
+    key: Tensor,
+    value: Tensor,
+    cum_seq_q: Tensor | None,
+    cum_seq_k: Tensor | None,
+    max_q: int,
+    max_k: int,
+    dropout_p: float,
+    is_causal: bool,
+    return_debug_mask: bool,
+    scale: float | None = None,
+    window_size_left: int | None = None,
+    window_size_right: int | None = None,
+    seqused_k: Tensor | None = None,
+    alibi_slopes: Tensor | None = None,
+    block_table: Tensor | None = None,
+):
+    _, logsumexp, _, _, _ = meta__flash_attention_forward(
+        query,
+        key,
+        value,
+        cum_seq_q,
+        cum_seq_k,
+        max_q,
+        max_k,
+        dropout_p,
+        is_causal,
+        return_debug_mask,
+        scale,
+        window_size_left,
+        window_size_right,
+        seqused_k,
+        alibi_slopes,
+        block_table,
+    )
+    return logsumexp
 
 
 @register_meta([aten._flash_attention_forward.quantized])
@@ -6631,6 +6680,8 @@ def _check_scaled_mm_sizes(
                 _k = _k * 2
             else:
                 block_size_k = 32
+                if self.dtype == torch.float4_e2m1fn_x2:
+                    _k = _k * 2
 
             block_size_mn = 128
 

@@ -5,6 +5,7 @@
 #include <ATen/cuda/CUDAGraph.h>
 #include <ATen/cuda/CUDAGraphsUtils.cuh>
 #include <c10/core/StreamGuard.h>
+#include <c10/cuda/CUDACachingAllocator.h>
 #include <c10/cuda/CUDAFunctions.h>
 #include <c10/util/CallOnce.h>
 #include <deque>
@@ -82,17 +83,10 @@ Generator createCUDAGenerator(DeviceIndex device_index) {
 } // namespace cuda::detail
 
 /**
- * Allocate tensors and initialize with seed value.
+ * Allocate GPU tensors for this capture state.
  *
- * The RNG state tensors must be allocated in the default memory pool (not the
- * graph pool) because they persist across graph replays and are managed
- * internally.
- *
- * We allocate on the default stream via StreamGuard so get_pool() returns the
- * default pool. CUDAStreamCaptureModeGuard is required because when the
- * current stream is default (not capturing), cudaMallocMaybeCapturing skips
- * the relaxed-mode guard, but cudaMalloc can still fail if another stream is
- * capturing.
+ * We allocate on the default stream so that the caching allocator routes
+ * these tensors to the default memory pool, not the graph's capture pool.
  */
 void CUDAGeneratorCaptureState::initialize(uint64_t seed) {
   if (is_initialized()) {
@@ -102,10 +96,14 @@ void CUDAGeneratorCaptureState::initialize(uint64_t seed) {
   auto options = at::TensorOptions().device(at::kCUDA).dtype(at::kLong);
   c10::InferenceMode inference_guard(false);
 
-  c10::cuda::CUDAStream default_stream = c10::cuda::getDefaultCUDAStream();
+  // Allocate on the default stream so that the caching allocator routes
+  // these tensors to the default memory pool, not the graph's capture pool.
+  // The relaxed capture mode guard is needed because the thread-local capture
+  // mode may be Global (set by cudaStreamBeginCapture), which would block
+  // cudaMalloc even on a non-capturing stream.
   c10::cuda::CUDAStreamCaptureModeGuard capture_mode_guard(
       cudaStreamCaptureModeRelaxed);
-  c10::cuda::CUDAStreamGuard stream_guard(default_stream);
+  c10::cuda::CUDAStreamGuard stream_guard(c10::cuda::getDefaultCUDAStream());
 
   rng_state_seed_extragraph_ = at::empty({1}, options);
   rng_state_offset_extragraph_ = at::empty({1}, options);
@@ -128,11 +126,37 @@ uint64_t CUDAGeneratorCaptureState::finalize() {
   return result;
 }
 
+/**
+ * Note [RNG state tensor lifetime and recordStream]
+ * ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+ * RNG state tensors (seed and offset) are allocated on the default stream
+ * so they land in the default memory pool, not the graph's capture pool.
+ * This avoids false positives in the CUDA graph tree memory leak checker.
+ *
+ * However, during replay these tensors are filled and then read by the
+ * graph on the replay stream (which may differ from the default stream).
+ * If the graph is deleted while a replay is still in flight, the tensors
+ * are freed and the allocator could recycle their memory before the replay
+ * finishes reading them — a use-after-free.
+ *
+ * We fix this by calling recordStream on each tensor during replay.
+ * This tells the caching allocator that the tensor is in use on the
+ * replay stream. When the tensor is later freed (in CUDAGraph::reset),
+ * the allocator records a CUDA event on the replay stream and defers
+ * recycling until that event completes.
+ */
 void CUDAGeneratorCaptureState::setup_for_replay(uint64_t seed, uint64_t philox_offset) {
   TORCH_INTERNAL_ASSERT(is_initialized(),
       "Capture state not initialized");
   rng_state_seed_extragraph_.fill_(static_cast<int64_t>(seed));
   rng_state_offset_extragraph_.fill_(static_cast<int64_t>(philox_offset));
+
+  // See Note [RNG state tensor lifetime and recordStream]
+  auto stream = c10::cuda::getCurrentCUDAStream();
+  c10::cuda::CUDACachingAllocator::recordStream(
+      rng_state_seed_extragraph_.storage().data_ptr(), stream);
+  c10::cuda::CUDACachingAllocator::recordStream(
+      rng_state_offset_extragraph_.storage().data_ptr(), stream);
 }
 
 c10::intrusive_ptr<CUDAGeneratorState> CUDAGeneratorState::clone() {
@@ -395,6 +419,11 @@ void CUDAGeneratorImpl::set_state(const c10::TensorImpl& new_state) {
   this->set_philox_offset_per_thread(static_cast<uint64_t>(philox_offset));
 }
 
+/**
+ * Sets the generator's current state to
+ * This function allows switching between different registered states of
+ * the generator.
+ */
 void CUDAGeneratorImpl::graphsafe_set_state(
     const c10::intrusive_ptr<GeneratorImpl>& gen) {
   c10::intrusive_ptr<CUDAGeneratorImpl> cuda_gen =
@@ -403,6 +432,9 @@ void CUDAGeneratorImpl::graphsafe_set_state(
   state_ = cuda_gen->state_;
 }
 
+/**
+ * Get the GeneratorImpl that point to current state_
+ */
 c10::intrusive_ptr<c10::GeneratorImpl> CUDAGeneratorImpl::graphsafe_get_state()
     const {
   auto gen = make_intrusive<CUDAGeneratorImpl>(device().index(), state_);
@@ -415,6 +447,11 @@ c10::intrusive_ptr<c10::GeneratorImpl> CUDAGeneratorImpl::graphsafe_get_state()
  * See Note [Acquire lock when using random generators]
  */
 void CUDAGeneratorImpl::set_philox_offset_per_thread(uint64_t offset) {
+  // see Note [Why enforce RNG offset % 4 == 0?]
+
+  // Note: If you use CUDNN RNN's, calling
+  // set_philox_offset_per_thread instead of set_offset will cause the
+  // cudnn RNN rng state to become stale.
   TORCH_CHECK(offset % 4 == 0, "offset must be a multiple of 4");
   auto capture_id = c10::cuda::currentStreamCaptureIdMayInitCtx();
   if (C10_LIKELY(!capture_id.has_value())) {
@@ -425,6 +462,9 @@ void CUDAGeneratorImpl::set_philox_offset_per_thread(uint64_t offset) {
   }
 }
 
+/**
+ * Gets the current philox_offset_per_thread_ of CUDAGeneratorImpl.
+ */
 uint64_t CUDAGeneratorImpl::philox_offset_per_thread() const {
   auto capture_id = c10::cuda::currentStreamCaptureIdMayInitCtx();
   if (C10_LIKELY(!capture_id.has_value())) {
@@ -441,6 +481,18 @@ uint64_t CUDAGeneratorImpl::philox_offset_per_thread() const {
  * and can be used non-divergently in callers whether CUDA graph
  * capture is underway or not.  See
  * Note [CUDA Graph-safe RNG states]
+ *
+ * Each kernel using philox has to sensibly increment offset
+ * for future users of philox. So it gets the "old" value for
+ * itself (before add), and tells subsequent users which offset
+ * they should use, since only the kernel knows how many randoms
+ * it intends to generate.
+ *
+ * Increment should be at least the number of curand() random numbers used in
+ * each thread. It is the user's responsibility to make sure the increment
+ * for philox is never smaller than the number of curand() calls. Increment
+ * value > the number of curand() calls won't harm but anything less would mean
+ * that you would be reusing random values from previous calls.
  *
  * See Note [Acquire lock when using random generators]
  */
@@ -462,6 +514,10 @@ PhiloxCudaState CUDAGeneratorImpl::philox_cuda_state(uint64_t increment) {
   }
 }
 
+/**
+ * Temporarily accommodates call sites that use philox_engine_inputs.
+ * Allows incremental refactor of call sites to use philox_cuda_state.
+ */
 std::pair<uint64_t, uint64_t> CUDAGeneratorImpl::philox_engine_inputs(
     uint64_t increment) {
   at::cuda::assertNotCapturing(
@@ -471,14 +527,28 @@ std::pair<uint64_t, uint64_t> CUDAGeneratorImpl::philox_engine_inputs(
   return std::make_pair(state_->seed_, offset);
 }
 
+/*
+ * Gets the DeviceType of CUDAGeneratorImpl.
+ * Used for type checking during run time.
+ */
 DeviceType CUDAGeneratorImpl::device_type() {
   return DeviceType::CUDA;
 }
 
+/**
+ * Public clone method implementation
+ *
+ * See Note [Acquire lock when using random generators]
+ */
 std::shared_ptr<CUDAGeneratorImpl> CUDAGeneratorImpl::clone() const {
   return std::shared_ptr<CUDAGeneratorImpl>(this->clone_impl());
 }
 
+/**
+ * Private clone method implementation
+ *
+ * See Note [Acquire lock when using random generators]
+ */
 CUDAGeneratorImpl* CUDAGeneratorImpl::clone_impl() const {
   at::cuda::assertNotCapturing("Cannot call CUDAGeneratorImpl::clone_impl");
   auto gen = new CUDAGeneratorImpl(this->device().index(), state_->clone());
