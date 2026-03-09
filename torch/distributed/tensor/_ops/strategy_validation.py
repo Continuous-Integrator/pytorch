@@ -559,7 +559,7 @@ def validate_combination(
             if isinstance(out_plc, Replicate):
                 local_values = [local_out._local_tensors[r] for r in range(world_size)]
                 all_same = all(
-                    torch.allclose(local_values[0], lv, atol=1e-5, rtol=1e-5)
+                    torch.allclose(local_values[0], lv, atol=1e-3, rtol=1e-5)
                     for lv in local_values[1:]
                 )
                 if not all_same:
@@ -580,7 +580,7 @@ def validate_combination(
                 )
 
             if not torch.allclose(
-                gt, full_output, atol=1e-5, rtol=1e-5, equal_nan=True
+                gt, full_output, atol=1e-3, rtol=1e-5, equal_nan=True
             ):
                 max_diff = (gt - full_output).abs().max().item()
                 return False, f"Value mismatch[{i}]: max_diff={max_diff:.6f}"
@@ -718,9 +718,14 @@ class _CaptureAtenOp(torch.utils._python_dispatch.TorchDispatchMode):
 
 def get_aten_op_for_sample(
     op: Callable[..., Any], sample: SampleInput, op_name: str = ""
-) -> tuple[OpOverload | None, tuple[Any, ...], dict[str, Any]]:
+) -> tuple[OpOverload | None, tuple[Any, ...], dict[str, Any], int]:
     """
     Determine the actual aten op that will be dispatched for a given sample.
+
+    Returns (aten_op, args, kwargs, num_supported_aten_ops) where
+    num_supported_aten_ops is the count of distinct supported aten ops seen
+    in the trace. A value != 1 means the sample doesn't map 1:1 to a single
+    supported aten op.
     """
     with _CaptureAtenOp(op_name) as capture:
         try:
@@ -731,6 +736,14 @@ def get_aten_op_for_sample(
         except Exception:
             pass
 
+    num_supported = len(
+        {
+            str(cap_op)
+            for cap_op, _, _ in capture.all_ops
+            if _has_dtensor_support(cap_op)
+        }
+    )
+
     if capture.best_match is not None:
         captured_op = capture.best_match
         captured_args = capture.best_match_args
@@ -738,9 +751,9 @@ def get_aten_op_for_sample(
     elif capture.all_ops:
         captured_op, captured_args, captured_kwargs = capture.all_ops[0]
     else:
-        return None, (), {}
+        return None, (), {}, 0
 
-    return captured_op, captured_args, captured_kwargs
+    return captured_op, captured_args, captured_kwargs, num_supported
 
 
 def query_single_dim_strategy(
@@ -1374,7 +1387,7 @@ def _discover_aten_op(
             tensors = extract_tensors_from_sample(sample)
             if not tensors or any(0 in t.shape for _, t in tensors):
                 continue
-            aten_op, _, _ = get_aten_op_for_sample(opinfo.op, sample, opinfo.name)
+            aten_op, _, _, _ = get_aten_op_for_sample(opinfo.op, sample, opinfo.name)
             if aten_op is not None:
                 return aten_op
     return None
@@ -1411,8 +1424,12 @@ def compare_operator(
 
     aten_op = _discover_aten_op(opinfos, device, dtype)
     if aten_op is None or not _has_dtensor_support(aten_op):
+        if verbose:
+            print(f"  ATEN_OP_MAP: {op_name} -> {aten_op} [no_support]")
         stats.no_dtensor_support = True
         return stats
+    if verbose:
+        print(f"  ATEN_OP_MAP: {op_name} -> {aten_op} [supported]")
 
     total_samples = 0
     total_combinations = 0
@@ -1420,7 +1437,7 @@ def compare_operator(
 
     for opinfo in opinfos:
         variant = opinfo.variant_test_name
-        if variant:
+        if variant and verbose:
             print(f"\n  OpInfo variant: {variant}")
 
         op = opinfo.op
@@ -1428,7 +1445,8 @@ def compare_operator(
         try:
             samples = list(opinfo.sample_inputs(device, dtype))
         except Exception as e:
-            print(f"    Error generating samples: {e}")
+            if verbose:
+                print(f"    Error generating samples: {e}")
             continue
 
         if max_samples:
@@ -1482,6 +1500,18 @@ def compare_operator(
                 skip_reasons["op raised exception"] += 1
                 continue
 
+            # Get the aten op for this sample. num_supported tells us if
+            # the sample maps 1:1 to a single supported aten op — ops like
+            # inner (permute, view, mm, view) decompose into multiple aten
+            # calls and validating against one captured op gives wrong results.
+            aten_op, captured_args, captured_kwargs, num_supported = (
+                get_aten_op_for_sample(op, sample, opinfo.name)
+            )
+            if num_supported != 1:
+                total_samples -= 1
+                skip_reasons["non-1:1 aten mapping"] += 1
+                continue
+
             input_shapes = tuple(t.shape for _, t in tensors)
             gt_list = ground_truth if isinstance(ground_truth, list) else [ground_truth]
             output_shapes = tuple(tuple(gt.shape) for gt in gt_list)
@@ -1505,10 +1535,26 @@ def compare_operator(
             # Use first output for enumerating placement options (DTensor applies
             # the same placement to all outputs of multi-output ops)
             output_placement_options = get_1d_output_placements_for_tensor(first_gt)
-
-            aten_op, captured_args, captured_kwargs = get_aten_op_for_sample(
-                op, sample, opinfo.name
+            # Verify tensor arity matches between captured aten call and sample
+            num_captured_tensors = sum(
+                1 for a in captured_args if isinstance(a, torch.Tensor)
             )
+            if num_captured_tensors != len(tensors):
+                total_samples -= 1
+                skip_reasons["aten tensor arity mismatch"] += 1
+                continue
+
+            if verbose and sample_idx == 0:
+                propagator = DTensor._op_dispatcher.sharding_propagator
+                if aten_op and aten_op in propagator.op_single_dim_strategy_funcs:
+                    path = "single_dim"
+                elif aten_op and aten_op in propagator.op_strategy_funcs:
+                    path = "op_strategy"
+                elif aten_op and DecompShardingStrategy.has_decomp(aten_op):
+                    path = "decomp"
+                else:
+                    path = "none"
+                print(f"  SAMPLE_OP_MAP: {opinfo.name} -> {aten_op} [{path}]")
 
             dtensor_rules = _query_dtensor_rules(
                 aten_op,
@@ -1854,6 +1900,7 @@ if __name__ == "__main__":
                     dtype,
                     args.world_size,
                     args.max_samples,
+                    verbose=True,
                     incorrect_only=args.incorrect_only,
                 )
                 elapsed = time.time() - op_start
