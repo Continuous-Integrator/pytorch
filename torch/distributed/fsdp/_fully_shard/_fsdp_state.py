@@ -6,6 +6,7 @@ from collections.abc import Callable, Sequence
 from typing import Any, Generic, TYPE_CHECKING, TypeVar
 
 import torch
+import torch.distributed as dist
 import torch.nn as nn
 from torch._logging import warning_once
 from torch.autograd import Variable
@@ -20,7 +21,13 @@ from torch.distributed.fsdp._common_utils import collect_grad_tensors
 from torch.distributed.utils import _apply_to_tensors, _to_kwargs
 
 from ._fsdp_api import MixedPrecisionPolicy
-from ._fsdp_common import _cast_fp_tensor, _dynamo_disable, TrainingState
+from ._fsdp_common import (
+    _cast_fp_tensor,
+    _dynamo_disable,
+    DDPMeshInfo,
+    FSDPMeshInfo,
+    TrainingState,
+)
 from ._fsdp_param_group import FSDPCommContext, FSDPParamGroup
 
 
@@ -200,6 +207,7 @@ class FSDPState(_State):
                 fsdp_param_group.post_forward_mesh_info = None
         self._init_fqns()
         self._init_shared_state()
+        self._init_collective_process_groups()
         # Run parameter group lazy inits after initializing FQNs for improved
         # error messages
         for state in self._state_ctx.all_states:
@@ -213,6 +221,80 @@ class FSDPState(_State):
             state._comm_ctx = self._comm_ctx
             for fsdp_param_group in state._fsdp_param_groups:
                 fsdp_param_group.comm_ctx = self._comm_ctx
+
+    def _init_collective_process_groups(self) -> None:
+        """Create dedicated PGs for AG, RS, and all-reduce so each collective
+        type gets its own NCCL stream and can overlap with the others."""
+        # Collect unique shard PGs (FSDPMeshInfo) and replicate PGs (DDPMeshInfo)
+        shard_pg_to_mesh_infos: dict[dist.ProcessGroup, list[FSDPMeshInfo]] = {}
+        replicate_pg_to_mesh_infos: dict[dist.ProcessGroup, list[DDPMeshInfo]] = {}
+        for state in self._state_ctx.all_states:
+            for param_group in state._fsdp_param_groups:
+                for mi in (param_group.mesh_info, param_group.post_forward_mesh_info):
+                    if isinstance(mi, FSDPMeshInfo):
+                        pg = mi.shard_process_group
+                        if pg not in shard_pg_to_mesh_infos:
+                            shard_pg_to_mesh_infos[pg] = []
+                        if mi not in shard_pg_to_mesh_infos[pg]:
+                            shard_pg_to_mesh_infos[pg].append(mi)
+                    if isinstance(mi, DDPMeshInfo):
+                        pg = mi.replicate_process_group
+                        if pg not in replicate_pg_to_mesh_infos:
+                            replicate_pg_to_mesh_infos[pg] = []
+                        if mi not in replicate_pg_to_mesh_infos[pg]:
+                            replicate_pg_to_mesh_infos[pg].append(mi)
+        if not shard_pg_to_mesh_infos and not replicate_pg_to_mesh_infos:
+            return
+
+        # Different ranks may have different submesh PGs (e.g. efsdp
+        # [0,2,4,6] vs [1,3,5,7]).  Discover ALL rank sets so that every
+        # rank calls dist.new_group with the same args in the same order.
+        local_shard_rank_sets = [
+            tuple(sorted(dist.get_process_group_ranks(pg)))
+            for pg in shard_pg_to_mesh_infos
+        ]
+        local_replicate_rank_sets = [
+            tuple(sorted(dist.get_process_group_ranks(pg)))
+            for pg in replicate_pg_to_mesh_infos
+        ]
+        gathered: list[object] = [None] * dist.get_world_size()
+        dist.all_gather_object(
+            gathered, (local_shard_rank_sets, local_replicate_rank_sets)
+        )
+        all_shard_rank_sets: set[tuple[int, ...]] = set()
+        all_replicate_rank_sets: set[tuple[int, ...]] = set()
+        for shard_rs, replicate_rs in gathered:  # type: ignore[misc]
+            all_shard_rank_sets.update(shard_rs)
+            all_replicate_rank_sets.update(replicate_rs)
+
+        # Create dedicated PGs in deterministic order (sorted rank tuples).
+        # Shard rank sets get two PGs each (AG + RS); replicate rank sets
+        # get one PG each (all-reduce).
+        shard_ranks_to_pgs: dict[
+            tuple[int, ...], tuple[dist.ProcessGroup, dist.ProcessGroup]
+        ] = {}
+        for ranks in sorted(all_shard_rank_sets):
+            ag_pg = dist.new_group(list(ranks))
+            rs_pg = dist.new_group(list(ranks))
+            shard_ranks_to_pgs[ranks] = (ag_pg, rs_pg)
+
+        replicate_ranks_to_pg: dict[tuple[int, ...], dist.ProcessGroup] = {}
+        for ranks in sorted(all_replicate_rank_sets):
+            replicate_ranks_to_pg[ranks] = dist.new_group(list(ranks))
+
+        # Assign to mesh_infos
+        for pg, mesh_infos in shard_pg_to_mesh_infos.items():
+            ranks = tuple(sorted(dist.get_process_group_ranks(pg)))
+            ag_pg, rs_pg = shard_ranks_to_pgs[ranks]
+            for mi in mesh_infos:
+                mi.ag_shard_process_group = ag_pg
+                mi.rs_shard_process_group = rs_pg
+
+        for pg, mesh_infos in replicate_pg_to_mesh_infos.items():
+            ranks = tuple(sorted(dist.get_process_group_ranks(pg)))
+            ar_pg = replicate_ranks_to_pg[ranks]
+            for mi in mesh_infos:
+                mi.ar_replicate_process_group = ar_pg
 
     def _init_fqns(self) -> None:
         """Sets module and parameter FQN attributes for debugging."""
@@ -337,11 +419,10 @@ class FSDPState(_State):
                     state._finalize_backward()
             if self._state_ctx.is_last_backward:
                 self._comm_ctx.post_forward_order.clear()
-                if self._comm_ctx.reduce_scatter_state is not None:
-                    self._device_handle.current_stream().wait_event(
-                        self._comm_ctx.reduce_scatter_state.event
-                    )
-                    self._comm_ctx.reduce_scatter_state = None
+                for rs_state in self._comm_ctx._pg_to_reduce_scatter_state.values():
+                    if rs_state.event is not None:
+                        self._device_handle.current_stream().wait_event(rs_state.event)
+                self._comm_ctx._pg_to_reduce_scatter_state.clear()
             self._state_ctx.post_backward_final_callback_queued = False
 
     def _finalize_backward(self) -> None:

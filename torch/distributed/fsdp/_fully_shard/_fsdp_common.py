@@ -48,6 +48,10 @@ class FSDPMeshInfo(DataParallelMeshInfo):
         self.shard_mesh_size: int = self.mesh.size(self.shard_mesh_dim)
         self.shard_process_group = self.mesh.get_group(self.shard_mesh_dim)
         self.shard_mesh_rank: int = self.shard_process_group.rank()
+        # Dedicated PGs so AG and RS use separate NCCL streams and can
+        # overlap; initialized by _init_collective_process_groups()
+        self.ag_shard_process_group: dist.ProcessGroup | None = None
+        self.rs_shard_process_group: dist.ProcessGroup | None = None
 
 
 @dataclass
@@ -59,6 +63,9 @@ class DDPMeshInfo(DataParallelMeshInfo):
         self.replicate_mesh_size: int = self.mesh.size(self.replicate_mesh_dim)
         self.replicate_process_group = self.mesh.get_group(self.replicate_mesh_dim)
         self.replicate_mesh_rank: int = self.replicate_process_group.rank()
+        # Dedicated PG for all-reduce so it uses a separate NCCL stream;
+        # initialized by _init_collective_process_groups()
+        self.ar_replicate_process_group: dist.ProcessGroup | None = None
 
 
 @dataclass

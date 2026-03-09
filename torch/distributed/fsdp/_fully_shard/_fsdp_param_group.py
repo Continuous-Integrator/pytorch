@@ -89,11 +89,14 @@ class FSDPCommContext:
         # since collectives use different network resources and can overlap
         # in the typical intra-node sharding / inter-node replication case
         self.all_reduce_stream = self.device_handle.Stream()
-        # All-gather/reduce-scatter states keep references to collective
-        # tensors produced in one stream and used in another and accompanying
-        # CUDA events for synchronization
+        # All-gather state keeps references to collective tensors produced in
+        # one stream and used in another and accompanying CUDA events
         self.all_gather_state: AllGatherState | None = None
-        self.reduce_scatter_state: ReduceScatterState | None = None
+        # Per-process-group reduce-scatter state so that param groups with
+        # different process groups do not block each other's RS overlap
+        self._pg_to_reduce_scatter_state: dict[
+            dist.ProcessGroup, ReduceScatterState
+        ] = {}
         # Post-forward order for explicit backward prefetching
         self.post_forward_order: list[FSDPParamGroup] = []  # will cause ref cycles
 
@@ -525,14 +528,11 @@ class FSDPParamGroup:
         if len(fsdp_params_with_grad) == 0:
             return
         with record_function(self._with_fqn("FSDP::post_backward_reduce")):
-            if (
-                self.comm_ctx.reduce_scatter_state is not None
-                and self.comm_ctx.reduce_scatter_state.event is not None
-            ):
-                self.device_handle.current_stream().wait_event(
-                    self.comm_ctx.reduce_scatter_state.event
-                )
-            self.comm_ctx.reduce_scatter_state = None
+            rs_pg = self._reduce_scatter_process_group
+            rs_state = self.comm_ctx._pg_to_reduce_scatter_state.get(rs_pg)
+            if rs_state is not None and rs_state.event is not None:
+                self.device_handle.current_stream().wait_event(rs_state.event)
+            self.comm_ctx._pg_to_reduce_scatter_state.pop(rs_pg, None)
             all_reduce_pg = (
                 self._all_reduce_process_group
                 if isinstance(self.mesh_info, DDPMeshInfo)
@@ -584,7 +584,7 @@ class FSDPParamGroup:
                 self._all_reduce_hook,
                 self.force_sum_reduction_for_comms,
             )
-            self.comm_ctx.reduce_scatter_state = ReduceScatterState(
+            self.comm_ctx._pg_to_reduce_scatter_state[rs_pg] = ReduceScatterState(
                 reduce_scatter_input, reduce_scatter_event
             )
             if all_reduce_input is not None:
@@ -768,7 +768,8 @@ class FSDPParamGroup:
             raise AssertionError(
                 f"Expected mesh_info to be FSDPMeshInfo, got {type(mesh_info)}"
             )
-        return mesh_info.shard_process_group
+        ag_pg = mesh_info.ag_shard_process_group
+        return ag_pg if ag_pg is not None else mesh_info.shard_process_group
 
     @property
     def _reduce_scatter_process_group(self) -> dist.ProcessGroup:
@@ -776,7 +777,8 @@ class FSDPParamGroup:
             raise AssertionError(
                 f"Expected mesh_info to be FSDPMeshInfo, got {type(self.mesh_info)}"
             )
-        return self.mesh_info.shard_process_group
+        rs_pg = self.mesh_info.rs_shard_process_group
+        return rs_pg if rs_pg is not None else self.mesh_info.shard_process_group
 
     @property
     def _all_reduce_process_group(self) -> dist.ProcessGroup:
@@ -784,7 +786,8 @@ class FSDPParamGroup:
             raise AssertionError(
                 f"Expected mesh_info to be DDPMeshInfo or HSDPMeshInfo, got {type(self.mesh_info)}"
             )
-        return self.mesh_info.replicate_process_group
+        ar_pg = self.mesh_info.ar_replicate_process_group
+        return ar_pg if ar_pg is not None else self.mesh_info.replicate_process_group
 
     def _with_fqn(self, label: str) -> str:
         if self._module_fqn:
