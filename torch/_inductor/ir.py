@@ -9784,7 +9784,6 @@ class _CollectiveKernel(FallbackKernel):
             self.kwargs["async_op"] = False
         super().codegen(wrapper)
         if self.use_comm_stream:
-            self.kwargs.pop("async_op", None)
             wrapper.writeline(f"restore_comm_stream({device_idx})")
 
     # This is identical to FallbackKernel.set_cpp_kernel(), minus the
