@@ -172,12 +172,16 @@ struct TORCH_CUDA_CPP_API CUDAGeneratorImpl : public c10::GeneratorImpl {
 
   void register_graph(cuda::CUDAGraph* graph);
 
+  // Generates a PhiloxCudaState with a specified increment, and increment
+  // current state
   PhiloxCudaState philox_cuda_state(uint64_t increment);
 
   bool reset_rnn_state() {
     return !no_reset_rnn_state_.test_and_set();
   }
 
+  // Temporarily accommodates call sites that use philox_engine_inputs.
+  // Allows incremental refactor of call sites to use philox_cuda_state.
   std::pair<uint64_t, uint64_t> philox_engine_inputs(uint64_t increment);
 
   static c10::DeviceType device_type();
