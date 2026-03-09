@@ -130,8 +130,10 @@ void THCPGraph_init(PyObject* module) {
         py::list result;
         for (auto& [seed, offset] : states) {
           result.append(py::make_tuple(
-              py::reinterpret_steal<py::object>(THPVariable_Wrap(std::move(seed))),
-              py::reinterpret_steal<py::object>(THPVariable_Wrap(std::move(offset)))));
+              py::reinterpret_steal<py::object>(
+                  THPVariable_Wrap(std::move(seed))),
+              py::reinterpret_steal<py::object>(
+                  THPVariable_Wrap(std::move(offset)))));
         }
         return result;
       });

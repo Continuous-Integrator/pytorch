@@ -2397,9 +2397,7 @@ torch.cuda.synchronize()
 
         # Allocate int64 [1] tensors; the allocator should refuse to
         # recycle the RNG blocks because recordStream is still pending.
-        trash = [
-            torch.empty(1, dtype=torch.int64, device="cuda") for _ in range(64)
-        ]
+        trash = [torch.empty(1, dtype=torch.int64, device="cuda") for _ in range(64)]
 
         reused = [t for t in trash if t.data_ptr() in rng_state_ptrs]
         self.assertEqual(
