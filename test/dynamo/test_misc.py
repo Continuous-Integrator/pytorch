@@ -9877,7 +9877,6 @@ not ___dict_contains('cccccccc', G['sys'].modules)""",
         self.assertTrue(isinstance(compile_out, torch.Size))
         self.assertEqual(eager_out, compile_out)
 
-    @torch._dynamo.config.patch(nested_graph_breaks=False)
     def test_nested_function_resuming_with_correct_globals(self):
         # https://github.com/pytorch/pytorch/issues/99665
         try:
@@ -10273,7 +10272,6 @@ def ___make_guard_fn():
         self.assertEqual(counter.frame_count, 2)
         self.assertEqual(counter.op_count, 2)
 
-    @torch._dynamo.config.patch(nested_graph_breaks=False)
     def test_jacfwd_one_hot_dynamic_compile(self):
         import torch.nn.functional as F
 
@@ -13380,6 +13378,52 @@ fn
         res = opt_fn(t)
         self.assertEqual(ref, res)
         self.assertEqual(ref, t + 10)
+
+    def test_property_setter(self):
+        class Box:
+            def __init__(self, value):
+                self._value = torch.tensor([value], dtype=torch.float32)
+
+            @property
+            def value(self):
+                return self._value + 1
+
+            @value.setter
+            def value(self, new_value):
+                self._value = new_value * 2
+
+        def fn(b):
+            b.value = 5
+            return b.value
+
+        b = Box(0)
+        opt_fn = torch.compile(fn, backend="eager", fullgraph=True)
+        ref = fn(Box(0))
+        res = opt_fn(b)
+        self.assertEqual(ref, res)
+
+    def test_property_setter_in_init(self):
+        class Clamped:
+            def __init__(self, val):
+                self.val = val
+
+            @property
+            def val(self):
+                return self._val
+
+            @val.setter
+            def val(self, v):
+                self._val = torch.clamp(v, 0, 100)
+
+        def fn(x):
+            obj = Clamped(x)
+            return obj.val
+
+        x = torch.tensor([200.0])
+        opt_fn = torch.compile(fn, backend="eager", fullgraph=True)
+        ref = fn(x)
+        res = opt_fn(x)
+        self.assertEqual(ref, res)
 
     def test_assert_size_stride(self):
         x = torch.randn(2, 3, 4)
