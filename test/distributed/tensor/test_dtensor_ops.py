@@ -202,8 +202,6 @@ dtensor_fails = {
     xfail("nn.functional.conv_transpose3d"),
     # decomposition interferes with strategy: threshold decomp runs via refs
     xfail("nn.functional.threshold"),
-    # in-place op requires placement change during decomposition
-    xfail("nn.functional.cosine_similarity"),
     # "cannot resize variables that require grad" from test harness
     xfail("resize_"),
     xfail("resize_as_"),
@@ -241,6 +239,7 @@ dtensor_fails = {
     skip("fft.hfftn"),
     skip("fft.ifftn"),
     skip("fft.irfft"),
+    skip("frexp"),
     skip("istft"),
     skip("isclose"),
     skip("isreal"),
