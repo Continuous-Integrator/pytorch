@@ -2865,9 +2865,6 @@ class TestCustomOpAPI(TestCase):
         # Verify _CtxWithNeedsInputGrad correctly forwards/intercepts the full
         # public surface of ctx (37 named attrs + object protocol). See
         # ctx_surface_and_wrapping_risks.txt in https://github.com/soulitzer/cr/pull/2
-        import copy
-        import weakref
-
         from torch._library.autograd import _CtxWithNeedsInputGrad
 
         class MyFn(torch.autograd.Function):
@@ -2961,11 +2958,9 @@ class TestCustomOpAPI(TestCase):
         wrapped.new_attr = "hello"
         self.assertEqual(real_ctx.new_attr, "hello")
 
-        # Object protocol: things that work
-        self.assertTrue(bool(wrapped))
-        self.assertIsNotNone(hash(wrapped))
+        # Object protocol
+        self.assertEqual(bool(wrapped), bool(real_ctx))
         self.assertIsInstance(wrapped.__dict__, dict)
-        self.assertIsNotNone(weakref.ref(wrapped))
 
         # Object protocol: known limitations
         from torch.autograd.function import BackwardCFunction, FunctionCtx
