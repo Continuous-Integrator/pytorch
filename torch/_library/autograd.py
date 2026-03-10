@@ -10,23 +10,45 @@ from torch.utils import _pytree
 from . import utils
 
 
-# Wraps ctx to override needs_input_grad. Same pattern as WrappedCtx in
-# torch/_functorch/autograd_function.py, redefined here to avoid a circular
-# import (torch._library is imported during torch.utils._pytree init).
-class _CtxWithNeedsInputGrad:
+# Same as WrappedCtx in torch/_functorch/autograd_function.py, redefined here
+# to avoid a circular import (torch._library is imported during
+# torch.utils._pytree init, and torch._functorch imports _pytree).
+class _WrappedCtx:
+    _pt_reserved_attrs: tuple[str, ...] = ("_pt_reserved_attrs", "_pt_inner_ctx")
+
+    def __init__(self, ctx):
+        if not isinstance(ctx, _WrappedCtx):
+            reserved_attrs = type(self)._pt_reserved_attrs
+            for name in reserved_attrs:
+                if not hasattr(ctx, name):
+                    continue
+                raise RuntimeError(
+                    f"PyTorch reserves the {reserved_attrs} field on ctx. "
+                    "Please name your fields on ctx something else to avoid "
+                    "name collision."
+                )
+        self._pt_inner_ctx = ctx
+
+    def __getattr__(self, name):
+        return getattr(self._pt_inner_ctx, name)
+
+    def __setattr__(self, name, value):
+        if name in type(self)._pt_reserved_attrs:
+            self.__dict__[name] = value
+            return
+        return setattr(self._pt_inner_ctx, name, value)
+
+
+class _CtxWithNeedsInputGrad(_WrappedCtx):
+    _pt_reserved_attrs = ("_pt_needs_input_grad", *_WrappedCtx._pt_reserved_attrs)
+
     def __init__(self, ctx, needs_input_grad):
-        self.__dict__["_inner_ctx"] = ctx
-        self.__dict__["_needs_input_grad"] = needs_input_grad
+        super().__init__(ctx)
+        self._pt_needs_input_grad = needs_input_grad
 
     @property
     def needs_input_grad(self):
-        return self._needs_input_grad
-
-    def __getattr__(self, name):
-        return getattr(self._inner_ctx, name)
-
-    def __setattr__(self, name, value):
-        setattr(self._inner_ctx, name, value)
+        return self._pt_needs_input_grad
 
 
 class InfoProtocol(Protocol):
