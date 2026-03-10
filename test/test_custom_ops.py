@@ -2769,6 +2769,57 @@ class TestCustomOpAPI(TestCase):
             self.assertTrue(called)
             self.assertEqual(w.grad, torch.full_like(w, 2 * 3 * 42))
 
+    def test_register_autograd_partial_backward(self):
+        bwd_needs_input_grad_values = []
+
+        with torch.library._scoped_library("_torch_testing", "FRAGMENT") as lib:
+            lib.define("my_mul(Tensor x, Tensor y) -> Tensor")
+
+            def my_mul_impl(x, y):
+                return x * y
+
+            lib.impl("my_mul", my_mul_impl, "CPU")
+
+            def backward(ctx, grad):
+                bwd_needs_input_grad_values.append(ctx.needs_input_grad)
+                x, y = ctx.saved_tensors
+                grad_x = grad * y if ctx.needs_input_grad[0] else None
+                grad_y = grad * x if ctx.needs_input_grad[1] else None
+                return grad_x, grad_y
+
+            def setup_context(ctx, inputs, output):
+                x, y = inputs
+                ctx.save_for_backward(x, y)
+
+            torch.library.register_autograd(
+                "_torch_testing::my_mul",
+                backward,
+                setup_context=setup_context,
+                lib=lib,
+            )
+
+            x = torch.randn(3, requires_grad=True)
+            y = torch.randn(3, requires_grad=True)
+
+            # Partial backward: only x
+            out = torch.ops._torch_testing.my_mul(x, y)
+            torch.autograd.backward(out.sum(), inputs=[x])
+            self.assertEqual(bwd_needs_input_grad_values[-1], (True, False))
+
+            # Partial backward: only y
+            x2 = torch.randn(3, requires_grad=True)
+            y2 = torch.randn(3, requires_grad=True)
+            out2 = torch.ops._torch_testing.my_mul(x2, y2)
+            torch.autograd.backward(out2.sum(), inputs=[y2])
+            self.assertEqual(bwd_needs_input_grad_values[-1], (False, True))
+
+            # Full backward
+            x3 = torch.randn(3, requires_grad=True)
+            y3 = torch.randn(3, requires_grad=True)
+            out3 = torch.ops._torch_testing.my_mul(x3, y3)
+            out3.sum().backward()
+            self.assertEqual(bwd_needs_input_grad_values[-1], (True, True))
+
     @skipIfTorchDynamo("Expected to fail due to no FakeTensor support; not a bug")
     def test_manual_schema_error(self):
         with self.assertRaisesRegex(ValueError, "the op mutates {'x'}"):
@@ -2860,6 +2911,113 @@ class TestCustomOpAPI(TestCase):
         sum(ys).backward()
         result = [xi.grad for xi in xs]
         self.assertEqual(result, torch.tensor([1.0, 2, 1, 2, 3]).unbind(0))
+
+    def test_supports_tensorlist_partial_backward(self):
+        @torch._library.autograd.supports_tensorlist
+        class MyAdd(torch.autograd.Function):
+            @staticmethod
+            def forward(ctx, xs, y):
+                ctx.save_for_backward(y)
+                ctx.num_xs = len(xs)
+                return [x + y for x in xs]
+
+            @staticmethod
+            def backward(ctx, grads):
+                (y,) = ctx.saved_tensors
+                self.assertEqual(ctx.num_xs, 3)
+                grad_xs = [g for g in grads]
+                grad_y = sum(g for g in grads)
+                return grad_xs, grad_y
+
+        xs = [torch.randn(3, requires_grad=True) for _ in range(3)]
+        y = torch.randn(3, requires_grad=True)
+        ys = MyAdd.apply(xs, y)
+        loss = sum(t.sum() for t in ys)
+
+        # Partial backward: only request grad for y
+        torch.autograd.backward(loss, inputs=[y])
+        self.assertIsNotNone(y.grad)
+        for x in xs:
+            self.assertIsNone(x.grad)
+
+    def test_supports_tensorlist_partial_backward_needs_input_grad(self):
+        bwd_needs_input_grad_values = []
+
+        @torch._library.autograd.supports_tensorlist
+        class Stack(torch.autograd.Function):
+            @staticmethod
+            def forward(ctx, xs, y):
+                ctx.save_for_backward(y)
+                ctx.num_xs = len(xs)
+                return torch.stack(xs) + y
+
+            @staticmethod
+            def backward(ctx, grad):
+                bwd_needs_input_grad_values.append(ctx.needs_input_grad)
+                (y,) = ctx.saved_tensors
+                grad_xs = list(grad.unbind(0))
+                grad_y = grad.sum(0)
+                return grad_xs, grad_y
+
+        # Full backward: all inputs need grad
+        xs1 = [torch.randn(2, requires_grad=True) for _ in range(3)]
+        y1 = torch.randn(2, requires_grad=True)
+        out1 = Stack.apply(xs1, y1)
+        out1.sum().backward()
+        nig = bwd_needs_input_grad_values[-1]
+        self.assertEqual(nig, ([True, True, True], True))
+
+        # Partial backward: only y
+        xs2 = [torch.randn(2, requires_grad=True) for _ in range(3)]
+        y2 = torch.randn(2, requires_grad=True)
+        out2 = Stack.apply(xs2, y2)
+        torch.autograd.backward(out2.sum(), inputs=[y2])
+        nig = bwd_needs_input_grad_values[-1]
+        self.assertEqual(nig, ([False, False, False], True))
+
+        # Partial backward: only first x
+        xs3 = [torch.randn(2, requires_grad=True) for _ in range(3)]
+        y3 = torch.randn(2, requires_grad=True)
+        out3 = Stack.apply(xs3, y3)
+        torch.autograd.backward(out3.sum(), inputs=[xs3[0]])
+        nig = bwd_needs_input_grad_values[-1]
+        self.assertEqual(nig, ([True, False, False], False))
+
+    def test_supports_tensorlist_partial_backward_retain_graph(self):
+        bwd_needs_input_grad_values = []
+
+        @torch._library.autograd.supports_tensorlist
+        class Stack(torch.autograd.Function):
+            @staticmethod
+            def forward(ctx, xs):
+                ctx.num_xs = len(xs)
+                return torch.stack(xs)
+
+            @staticmethod
+            def backward(ctx, grad):
+                bwd_needs_input_grad_values.append(ctx.needs_input_grad)
+                return list(grad.unbind(0))
+
+        xs = [torch.randn(2, requires_grad=True) for _ in range(3)]
+        out = Stack.apply(xs)
+
+        # First backward: only xs[0]
+        torch.autograd.backward(out.sum(), inputs=[xs[0]], retain_graph=True)
+        self.assertEqual(
+            bwd_needs_input_grad_values[-1], ([True, False, False],)
+        )
+
+        # Second backward: only xs[2]
+        torch.autograd.backward(out.sum(), inputs=[xs[2]], retain_graph=True)
+        self.assertEqual(
+            bwd_needs_input_grad_values[-1], ([False, False, True],)
+        )
+
+        # Third backward: all
+        torch.autograd.backward(out.sum(), inputs=xs)
+        self.assertEqual(
+            bwd_needs_input_grad_values[-1], ([True, True, True],)
+        )
 
     @skipIfTorchDynamo("Expected to fail due to no FakeTensor support; not a bug")
     def test_default_values(self):
