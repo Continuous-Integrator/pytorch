@@ -16441,12 +16441,24 @@ if RUN_GPU:
         @requires_cuda_and_triton
         @unittest.skipIf(TEST_WITH_ROCM, "no grouped_mm support")
         @config.patch(implicit_fallbacks=True)
-        def test_grouped_mm(self):
+        @parametrize("backend", ["cublaslt", "cutlass"])
+        def test_grouped_mm(self, backend):
+            if backend == "cublaslt" and torch.cuda.get_device_capability()[0] not in [
+                10,
+                11,
+            ]:
+                self.skipTest("cublaslt grouped gemm requires SM 10.x or 11.0")
+
+            if backend == "cublaslt":
+                fn = torch._grouped_mm_cublaslt
+            elif backend == "cutlass":
+                fn = F.grouped_mm
+            else:
+                raise ValueError(f"Invalid backend: {backend}")
+
             @torch.compile(fullgraph=True)
             def f(a, b, offs, out_dtype):
-                return F.grouped_mm(
-                    a, b.transpose(-2, -1), offs=offs, out_dtype=out_dtype
-                )
+                return fn(a, b.transpose(-2, -1), offs=offs, out_dtype=out_dtype)
 
             device = "cuda"
             dtype = torch.bfloat16

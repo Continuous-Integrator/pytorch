@@ -1210,6 +1210,10 @@
   self: _grouped_mm_mat1_backward(grad, mat2, self.sym_sizes(), self.sym_strides(), self.layout(), offs, 1)
   mat2: _grouped_mm_mat2_backward(grad, self, mat2.sym_sizes(), mat2.sym_strides(), mat2.layout(), offs, 1)
 
+- name: _grouped_mm_cublaslt(Tensor self, Tensor mat2, Tensor? offs=None, Tensor? bias=None, ScalarType? out_dtype=None) -> Tensor
+  self: _grouped_mm_cublaslt_mat1_backward(grad, mat2, self.sym_sizes(), self.sym_strides(), self.layout(), offs, 1)
+  mat2: _grouped_mm_cublaslt_mat2_backward(grad, self, mat2.sym_sizes(), mat2.sym_strides(), mat2.layout(), offs, 1)
+
 - name: mode(Tensor self, int dim=-1, bool keepdim=False) -> (Tensor values, Tensor indices)
   self: value_selecting_reduction_backward_symint(grad, dim, indices, self.sym_sizes(), keepdim)
   values: gather_with_keepdimed_indices(self_t, dim, indices, keepdim)

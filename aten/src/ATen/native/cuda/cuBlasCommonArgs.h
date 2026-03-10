@@ -2,6 +2,15 @@
 
 #include <ATen/core/Tensor.h>
 
+#ifndef AT_PER_OPERATOR_HEADERS
+#include <ATen/Functions.h>
+#else
+#include <ATen/ops/empty.h>
+#endif
+
+#include <ATen/cuda/CUDAContext.h>
+#include <ATen/native/cuda/CublasGroupedArgs.cuh>
+
 namespace at::native {
 
 using at::blas::ScalingType;
@@ -167,5 +176,188 @@ struct cublasCommonArgs {
   std::optional<ScalingType> scaling_matb_type;
   std::optional<c10::ScalarType> scale_result_dtype;
 };
+
+#if !defined(USE_ROCM) && defined(CUDA_VERSION) && CUDA_VERSION >= 13020
+struct cublasCommonGroupedArgs {
+  cublasCommonGroupedArgs(
+      const Tensor& mat1,
+      const Tensor& mat2,
+      const std::optional<Tensor>& offs,
+      Tensor& c,
+      const std::optional<Tensor>& scale_a = std::nullopt,
+      const std::optional<Tensor>& scale_b = std::nullopt,
+      const std::optional<Tensor>& scale_result = std::nullopt,
+      const std::optional<ScalingType>& scaling_choice_a = std::nullopt,
+      const std::optional<ScalingType>& scaling_choice_b = std::nullopt) {
+        const bool a_is_2d = mat1.dim() == 2;
+        const bool b_is_2d = mat2.dim() == 2;
+        if (a_is_2d || b_is_2d) {
+          TORCH_CHECK(offs.has_value(), "Offsets tensor must be provided when at least one input is 2D");
+        }
+
+        input_dtype = mat1.scalar_type();
+        result_dtype = c.scalar_type();
+        const int64_t esz = mat1.element_size();
+
+        if (offs.has_value()) {
+          batchCount = offs.value().size(0);
+        } else {
+          batchCount = mat1.size(0);
+        }
+
+        // cuBLAS is column-major. To get a row-major result C = mat1 × mat2,
+        // we use the identity C^T = mat2^T × mat1^T. So cuBLAS-A = mat2 and
+        // cuBLAS-B = mat1. The transpose flags depend on inner-dim layout:
+        //   row-major (stride(-1)==1): cuBLAS sees it as col-major "already
+        //     transposed" → after the B^T×A^T flip, the op flag is 'n'
+        //   col-major (stride(-2)==1): cuBLAS sees it naturally → after
+        //     the flip, the op flag is 't'
+        const bool mat2_row_major = mat2.stride(-1) == 1;
+        const bool mat1_row_major = mat1.stride(-1) == 1;
+        transa = mat2_row_major ? 'n' : 't';
+        transb = mat1_row_major ? 'n' : 't';
+
+        // User-space dimensions
+        const int64_t user_M = mat1.size(-2);
+        const int64_t user_N = mat2.size(-1);
+        const int64_t user_K = mat1.size(-1);
+
+        // In the cuBLAS B^T×A^T convention:
+        //   cublas_m = user_N, cublas_n = user_M, cublas_k = user_K
+        const int32_t cublas_m = static_cast<int32_t>(user_N);
+        const int32_t cublas_n = static_cast<int32_t>(user_M);
+        const int32_t cublas_k = static_cast<int32_t>(user_K);
+
+        // Leading dimensions (constant across groups, from inner-dim strides)
+        // cuBLAS-A = mat2, cuBLAS-B = mat1
+        const int32_t lda_val = static_cast<int32_t>(transa == 't' ? mat2.stride(-1) : mat2.stride(-2));
+        const int32_t ldb_val = static_cast<int32_t>(transb == 't' ? mat1.stride(-1) : mat1.stride(-2));
+        const int32_t ldd_val = static_cast<int32_t>(c.stride(-2));
+
+        // Determine per-case which dimensions are variable (delta-based)
+        // and how pointer strides work
+        bool m_is_delta = false, n_is_delta = false, k_is_delta = false;
+        int64_t a_offs_stride = 0, a_idx_stride = 0;
+        int64_t b_offs_stride = 0, b_idx_stride = 0;
+        int64_t d_offs_stride = 0, d_idx_stride = 0;
+
+        if (a_is_2d && b_is_2d) {
+          // 2D x 2D: jagged K
+          k_is_delta = true;
+          a_offs_stride = mat2.stride(-2) * esz;
+          b_offs_stride = mat1.stride(-1) * esz;
+          d_idx_stride = c.stride(0) * esz;
+          avgM = cublas_m;
+          avgN = cublas_n;
+          avgK = user_K / batchCount;
+        } else if (a_is_2d && !b_is_2d) {
+          // 2D x 3D: jagged M (user M varies, cublas n varies)
+          n_is_delta = true;
+          a_idx_stride = mat2.stride(0) * esz;
+          b_offs_stride = mat1.stride(-2) * esz;
+          d_offs_stride = c.stride(-2) * esz;
+          avgM = cublas_m;
+          avgN = user_M / batchCount;
+          avgK = cublas_k;
+        } else if (!a_is_2d && b_is_2d) {
+          // 3D x 2D: jagged N (user N varies, cublas m varies)
+          m_is_delta = true;
+          a_offs_stride = mat2.stride(-1) * esz;
+          b_idx_stride = mat1.stride(0) * esz;
+          d_offs_stride = c.stride(-1) * esz;
+          avgM = user_N / batchCount;
+          avgN = cublas_n;
+          avgK = cublas_k;
+        } else {
+          // 3D x 3D: all dimensions fixed
+          a_idx_stride = mat2.stride(0) * esz;
+          b_idx_stride = mat1.stride(0) * esz;
+          d_idx_stride = c.stride(0) * esz;
+          avgM = cublas_m;
+          avgN = cublas_n;
+          avgK = cublas_k;
+        }
+
+        // Single device allocation for all arrays:
+        //   6 x int32[batchCount]  = batchCount * 24 bytes  (m,n,k,lda,ldb,ldd)
+        //   5 x int64[batchCount]  = batchCount * 40 bytes  (A,B,D,alpha,beta ptrs)
+        //   2 x float              = 8 bytes                 (alpha, beta scalars)
+        // Total = batchCount * 64 + 8 bytes
+        const int64_t buf_bytes = static_cast<int64_t>(batchCount) * 64 + 8;
+        buf = at::empty({buf_bytes}, mat1.options().dtype(at::kByte));
+        char* base = static_cast<char*>(buf.data_ptr());
+
+        // int32 arrays (6 x batchCount)
+        mArray   = reinterpret_cast<void*>(base);
+        nArray   = reinterpret_cast<void*>(base + batchCount * 4);
+        kArray   = reinterpret_cast<void*>(base + batchCount * 8);
+        ldaArray = reinterpret_cast<void*>(base + batchCount * 12);
+        ldbArray = reinterpret_cast<void*>(base + batchCount * 16);
+        lddArray = reinterpret_cast<void*>(base + batchCount * 20);
+
+        // int64 arrays (5 x batchCount), starting at offset batchCount * 24
+        APtrArray     = reinterpret_cast<void*>(base + batchCount * 24);
+        BPtrArray     = reinterpret_cast<void*>(base + batchCount * 32);
+        DPtrArray     = reinterpret_cast<void*>(base + batchCount * 40);
+        alphaPtrArray = reinterpret_cast<void*>(base + batchCount * 48);
+        betaPtrArray  = reinterpret_cast<void*>(base + batchCount * 56);
+
+        // float scalars at the end
+        float* alpha_scalar = reinterpret_cast<float*>(base + batchCount * 64);
+        float* beta_scalar  = reinterpret_cast<float*>(base + batchCount * 64 + 4);
+
+        const int64_t base_A = reinterpret_cast<int64_t>(mat2.data_ptr());
+        const int64_t base_B = reinterpret_cast<int64_t>(mat1.data_ptr());
+        const int64_t base_D = reinterpret_cast<int64_t>(c.data_ptr());
+
+        const int32_t* offs_ptr = offs.has_value()
+            ? static_cast<const int32_t*>(offs.value().data_ptr())
+            : nullptr;
+
+        cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+        launch_populate_cublas_grouped_args(
+            batchCount, offs_ptr,
+            base_A, base_B, base_D,
+            cublas_m, cublas_n, cublas_k,
+            m_is_delta, n_is_delta, k_is_delta,
+            lda_val, ldb_val, ldd_val,
+            a_offs_stride, a_idx_stride,
+            b_offs_stride, b_idx_stride,
+            d_offs_stride, d_idx_stride,
+            static_cast<int32_t*>(mArray),
+            static_cast<int32_t*>(nArray),
+            static_cast<int32_t*>(kArray),
+            static_cast<int32_t*>(ldaArray),
+            static_cast<int32_t*>(ldbArray),
+            static_cast<int32_t*>(lddArray),
+            static_cast<int64_t*>(APtrArray),
+            static_cast<int64_t*>(BPtrArray),
+            static_cast<int64_t*>(DPtrArray),
+            static_cast<int64_t*>(alphaPtrArray),
+            static_cast<int64_t*>(betaPtrArray),
+            alpha_scalar, beta_scalar,
+            stream);
+  }
+
+  char transa, transb;
+  int64_t avgM, avgN, avgK;
+  ScalarType input_dtype, result_dtype;
+  int batchCount;
+
+  // All arrays live in a single device allocation
+  Tensor buf;
+  void* mArray;
+  void* nArray;
+  void* kArray;
+  void* ldaArray;
+  void* ldbArray;
+  void* lddArray;
+  void* APtrArray;
+  void* BPtrArray;
+  void* DPtrArray;
+  void* alphaPtrArray;
+  void* betaPtrArray;
+};
+#endif // !defined(USE_ROCM) && defined(CUDA_VERSION) && CUDA_VERSION >= 13020
 
 } // namespace at::native

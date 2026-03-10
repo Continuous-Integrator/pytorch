@@ -1008,6 +1008,7 @@ class DistMatrixOpsTest(DTensorTestBase):
     @unittest.skipIf(not SM90OrLater, "Grouped gemm supported on SM90")
     @with_comms
     @skip_unless_torch_gpu
+    @parametrize("backend", ["cublaslt", "cutlass"])
     @parametrize(
         "kwargs",
         [
@@ -1037,7 +1038,12 @@ class DistMatrixOpsTest(DTensorTestBase):
             },
         ],
     )
-    def test_grouped_mm(self, kwargs):
+    def test_grouped_mm(self, backend, kwargs):
+        if backend == "cublaslt" and torch.cuda.get_device_capability()[0] not in [
+            10,
+            11,
+        ]:
+            self.skipTest("cublaslt grouped gemm requires SM 10.x or 11.0")
         # TODO: torch.nn.functional.grouped_mm can take inputs of dimension (2D, 3D) x (2D, 3D)
         # More tests need to be added.
         device_mesh = self.build_device_mesh()
@@ -1063,8 +1069,15 @@ class DistMatrixOpsTest(DTensorTestBase):
         )
         offs = torch.tensor([16, 64], device=self.device_type, dtype=torch.int32)
 
-        h = F.grouped_mm(inp, w1, offs=offs)
-        out = F.grouped_mm(h, w2, offs=offs)
+        if backend == "cublaslt":
+            f = torch._grouped_mm_cublaslt
+        elif backend == "cutlass":
+            f = F.grouped_mm
+        else:
+            raise ValueError(f"Invalid backend: {backend}")
+
+        h = f(inp, w1, offs=offs)
+        out = f(h, w2, offs=offs)
 
         dist_inp = distribute_tensor(inp, device_mesh, kwargs["inp_placements"])
         # colwise sharded
@@ -1074,8 +1087,8 @@ class DistMatrixOpsTest(DTensorTestBase):
         dist_offs = distribute_tensor(offs, device_mesh, [Replicate()])
 
         with comm_mode:
-            dist_h = F.grouped_mm(dist_inp, dist_w1, offs=dist_offs)
-            dist_out = F.grouped_mm(dist_h, dist_w2, offs=dist_offs)
+            dist_h = f(dist_inp, dist_w1, offs=dist_offs)
+            dist_out = f(dist_h, dist_w2, offs=dist_offs)
             self.assertEqual(
                 comm_mode.get_total_counts(), kwargs["expected_comm_counts_fwd"]
             )

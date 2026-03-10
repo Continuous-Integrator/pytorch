@@ -205,6 +205,13 @@ aten__grouped_mm = ExternKernelChoice(
 )
 
 
+aten__grouped_mm_cublaslt = ExternKernelChoice(
+    torch._grouped_mm_cublaslt,
+    "at::_grouped_mm_cublaslt",
+    op_overload=aten._grouped_mm_cublaslt.default,
+    has_out_variant=False,
+)
+
 aten__scaled_grouped_mm = ExternKernelChoice(
     torch._scaled_grouped_mm,
     "at::_scaled_grouped_mm",
@@ -469,6 +476,35 @@ def tuned_grouped_mm(
         "aten._grouped_mm.default",
         "grouped_mm",
         aten__grouped_mm,
+        triton_grouped_mm_template,
+        mat_a,
+        mat_b,
+        None,
+        None,
+        offs,
+        bias,
+        None,
+        out_dtype,
+        None,
+        layout,
+    )
+
+
+@register_lowering(aten._grouped_mm_cublaslt.default, type_promotion_kind=None)
+def tuned_grouped_mm_cublaslt(
+    mat_a: TensorBox,
+    mat_b: TensorBox,
+    offs: Optional[TensorBox] = None,
+    bias: Optional[TensorBox] = None,
+    out_dtype: Optional[torch.dtype] = None,
+    layout: Optional[Layout] = None,
+) -> TensorBox:
+    """Auto-tuning for _grouped_mm_cublaslt() operator."""
+
+    return _tuned_grouped_mm_common(
+        "aten._grouped_mm_cublaslt.default",
+        "grouped_mm_cublaslt",
+        aten__grouped_mm_cublaslt,
         triton_grouped_mm_template,
         mat_a,
         mat_b,
