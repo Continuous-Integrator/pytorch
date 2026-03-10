@@ -335,6 +335,7 @@ LINEAR_REDUCTION_OP_MAP = {
     aten.amax.out: "max",
     aten.amin.default: "min",
     aten.amin.out: "min",
+    aten.nansum.default: "sum",
 }
 
 # argmax/argmin return indices which cannot be combined with P(max/min).
@@ -452,6 +453,108 @@ def cumsum_strategy(op_schema: OpSchema) -> OpStrategy:
     return common_reduction_strategy(
         input_strategy, [dim], keep_dim=True, reduction_linear=False
     )
+
+
+@register_op_strategy(
+    [aten.cumprod.default, aten.logcumsumexp.default],
+    schema_info=RuntimeSchemaInfo(1),
+)
+def scan_strategy(op_schema: OpSchema) -> OpStrategy:
+    args_schema = op_schema.args_schema
+    input_strategy = args_schema[0]
+    if not isinstance(input_strategy, OpStrategy):
+        raise AssertionError(f"Expected OpStrategy, got {type(input_strategy)}")
+    dim = args_schema[1]
+    if not isinstance(dim, int):
+        raise AssertionError(f"Expected int, got {type(dim)}")
+    return common_reduction_strategy(
+        input_strategy, [dim], keep_dim=True, reduction_linear=False
+    )
+
+
+@register_op_strategy(
+    [aten.median.default, aten.nanmedian.default],
+    schema_info=RuntimeSchemaInfo(1),
+)
+def global_median_strategy(op_schema: OpSchema) -> OpStrategy:
+    input_strategy = cast(OpStrategy, op_schema.args_schema[0])
+    reduce_dims = list(range(input_strategy.ndim))
+    return common_reduction_strategy(
+        input_strategy, reduce_dims, reduction_linear=False
+    )
+
+
+@register_single_dim_strategy(
+    [aten.median.dim, aten.nanmedian.dim, aten.mode.default],
+    schema_info=RuntimeSchemaInfo(1),
+)
+def dim_reduction_with_indices_strategy(
+    op: torch._ops.OpOverload,
+    args_schema: tuple[Any, ...],
+    kwargs_schema: dict[str, Any],
+) -> list[list[Placement | _ShardingPlaceholder]]:
+    input_meta = args_schema[0]
+    if not isinstance(input_meta, TensorMeta):
+        raise AssertionError(f"Expected TensorMeta, got {type(input_meta)}")
+
+    ndim = len(input_meta.shape)
+    dim = normalize_dim(cast(int, args_schema[1]) if len(args_schema) > 1 else -1, ndim)
+    keep_dim = len(args_schema) > 2 and bool(args_schema[2])
+
+    strategies: list[list[Placement | _ShardingPlaceholder]] = []
+    for d in range(ndim):
+        if d == dim:
+            continue
+        out_d = d if keep_dim or d < dim else d - 1
+        strategies.append(
+            [
+                _ShardingPlaceholder(out_d),
+                _ShardingPlaceholder(out_d),
+                _ShardingPlaceholder(d),
+            ]
+        )
+    return strategies
+
+
+@register_single_dim_strategy(
+    [aten.kthvalue.default],
+    schema_info=RuntimeSchemaInfo(2),
+)
+def kthvalue_strategy(
+    op: torch._ops.OpOverload,
+    args_schema: tuple[Any, ...],
+    kwargs_schema: dict[str, Any],
+) -> list[list[Placement | _ShardingPlaceholder]]:
+    input_meta = args_schema[0]
+    if not isinstance(input_meta, TensorMeta):
+        raise AssertionError(f"Expected TensorMeta, got {type(input_meta)}")
+
+    ndim = len(input_meta.shape)
+    dim = normalize_dim(cast(int, args_schema[2]) if len(args_schema) > 2 else -1, ndim)
+    keep_dim = len(args_schema) > 3 and bool(args_schema[3])
+
+    strategies: list[list[Placement | _ShardingPlaceholder]] = []
+    for d in range(ndim):
+        if d == dim:
+            continue
+        out_d = d if keep_dim or d < dim else d - 1
+        strategies.append(
+            [
+                _ShardingPlaceholder(out_d),
+                _ShardingPlaceholder(out_d),
+                _ShardingPlaceholder(d),
+            ]
+        )
+    return strategies
+
+
+@register_op_strategy(
+    [aten.cummax.default, aten.cummin.default],
+    schema_info=RuntimeSchemaInfo(1),
+)
+def cummax_cummin_strategy(op_schema: OpSchema) -> OpStrategy:
+    dim = cast(int, op_schema.args_schema[1])
+    return sort_strategy(op_schema, dim)
 
 
 @register_op_strategy(
@@ -685,6 +788,41 @@ def linalg_replicate_strategy(op_schema: OpSchema) -> OpStrategy:
         )
         output_strategies.append(replicate_strategy)
     return OpStrategy(output_strategies)
+
+
+SINGLE_OUTPUT_POOL_OPS = [
+    aten._adaptive_avg_pool3d.default,
+    aten.avg_pool2d.default,
+    aten.avg_pool3d.default,
+]
+
+DUAL_OUTPUT_POOL_OPS = [
+    aten.adaptive_max_pool2d.default,
+    aten.adaptive_max_pool3d.default,
+    aten.fractional_max_pool2d.default,
+    aten.fractional_max_pool3d.default,
+    aten.max_pool2d_with_indices.default,
+    aten.max_pool3d_with_indices.default,
+]
+
+
+@register_op_strategy(
+    SINGLE_OUTPUT_POOL_OPS + DUAL_OUTPUT_POOL_OPS,
+    schema_info=RuntimeSchemaInfo(1),
+)
+def pooling_strategy(op_schema: OpSchema) -> OpStrategy:
+    input_strategy = cast(OpStrategy, op_schema.args_schema[0])
+    mesh = input_strategy.mesh
+    num_outputs = 2 if op_schema.op in DUAL_OUTPUT_POOL_OPS else 1
+    num_inputs = len(op_schema.args_strategy) + len(op_schema.kwargs_strategy)
+    n = num_outputs + num_inputs
+    single_mesh_dim_strategies: list[PlacementList] = [
+        [Replicate()] * n,
+        [Shard(0)] * n,
+    ]
+    return expand_to_full_mesh_op_strategy(
+        mesh, op_schema, single_mesh_dim_strategies, input_index=num_outputs
+    )
 
 
 @register_op_strategy(
@@ -1538,3 +1676,198 @@ def logsumexp_strategy(op_schema: OpSchema) -> OpStrategy:
         keep_dim=keep_dim,
         reduction_linear=False,
     )
+
+
+def _linalg_batch_dim_strategies(
+    ndim: int, n_placements: int
+) -> list[list[Placement | _ShardingPlaceholder]]:
+    """Build single-dim strategies for linalg ops that operate on the last 1-2 dims.
+
+    Returns sharding on each batch dim (all dims except the last 2), with all
+    outputs and inputs sharded on the same dim.
+    """
+    strategies: list[list[Placement | _ShardingPlaceholder]] = []
+    for dim in range(ndim - 2):
+        strategies.append([_ShardingPlaceholder(dim)] * n_placements)
+    return strategies
+
+
+@register_single_dim_strategy(
+    [
+        aten.cholesky.default,
+        aten.cholesky_inverse.default,
+        aten.linalg_matrix_exp.default,
+    ],
+    schema_info=RuntimeSchemaInfo(1),
+)
+def linalg_batch_1out_1in_strategy(
+    op: torch._ops.OpOverload,
+    args_schema: tuple[Any, ...],
+    kwargs_schema: dict[str, Any],
+) -> list[list[Placement | _ShardingPlaceholder]]:
+    ndim = len(cast(TensorMeta, args_schema[0]).shape)
+    return _linalg_batch_dim_strategies(ndim, n_placements=2)
+
+
+# linalg_pinv has optional tensor kwargs atol, rtol (scalar tensors when present).
+# Schema: (Tensor self, *, Tensor? atol=None, Tensor? rtol=None, bool hermitian) -> Tensor
+# When atol/rtol are None, num_inputs=1; when present, they add to num_inputs.
+@register_single_dim_strategy(
+    [aten.linalg_pinv.atol_rtol_tensor],
+    schema_info=RuntimeSchemaInfo(1),
+)
+def linalg_pinv_strategy(
+    op: torch._ops.OpOverload,
+    args_schema: tuple[Any, ...],
+    kwargs_schema: dict[str, Any],
+) -> list[list[Placement | _ShardingPlaceholder]]:
+    ndim = len(cast(TensorMeta, args_schema[0]).shape)
+    # Count optional tensor kwargs that are actually present
+    extra_tensors = sum(
+        isinstance(kwargs_schema.get(k), TensorMeta) for k in ("atol", "rtol")
+    )
+    strategies: list[list[Placement | _ShardingPlaceholder]] = []
+    for dim in range(ndim - 2):
+        s: list[Placement | _ShardingPlaceholder] = [
+            _ShardingPlaceholder(dim),
+            _ShardingPlaceholder(dim),
+        ]
+        # atol, rtol are scalar tensors — always Replicate
+        s.extend([Replicate()] * extra_tensors)
+        strategies.append(s)
+    return strategies
+
+
+@register_single_dim_strategy(
+    [
+        aten.cholesky_solve.default,
+        aten.linalg_householder_product.default,
+        aten.linalg_solve_triangular.default,
+    ],
+    schema_info=RuntimeSchemaInfo(1),
+)
+def linalg_batch_1out_2in_strategy(
+    op: torch._ops.OpOverload,
+    args_schema: tuple[Any, ...],
+    kwargs_schema: dict[str, Any],
+) -> list[list[Placement | _ShardingPlaceholder]]:
+    ndim = len(cast(TensorMeta, args_schema[0]).shape)
+    return _linalg_batch_dim_strategies(ndim, n_placements=3)
+
+
+@register_single_dim_strategy(
+    [
+        aten.linalg_ldl_solve.default,
+        aten.linalg_lu_solve.default,
+        aten.ormqr.default,
+    ],
+    schema_info=RuntimeSchemaInfo(1),
+)
+def linalg_batch_1out_3in_strategy(
+    op: torch._ops.OpOverload,
+    args_schema: tuple[Any, ...],
+    kwargs_schema: dict[str, Any],
+) -> list[list[Placement | _ShardingPlaceholder]]:
+    ndim = len(cast(TensorMeta, args_schema[0]).shape)
+    return _linalg_batch_dim_strategies(ndim, n_placements=4)
+
+
+@register_single_dim_strategy(
+    [
+        aten.geqrf.default,
+        aten.linalg_cholesky_ex.default,
+        aten.linalg_eig.default,
+        aten.linalg_inv_ex.default,
+    ],
+    schema_info=RuntimeSchemaInfo(1),
+)
+def linalg_batch_2out_1in_strategy(
+    op: torch._ops.OpOverload,
+    args_schema: tuple[Any, ...],
+    kwargs_schema: dict[str, Any],
+) -> list[list[Placement | _ShardingPlaceholder]]:
+    ndim = len(cast(TensorMeta, args_schema[0]).shape)
+    return _linalg_batch_dim_strategies(ndim, n_placements=3)
+
+
+@register_single_dim_strategy(
+    [aten.triangular_solve.default],
+    schema_info=RuntimeSchemaInfo(1),
+)
+def linalg_batch_2out_2in_strategy(
+    op: torch._ops.OpOverload,
+    args_schema: tuple[Any, ...],
+    kwargs_schema: dict[str, Any],
+) -> list[list[Placement | _ShardingPlaceholder]]:
+    ndim = len(cast(TensorMeta, args_schema[0]).shape)
+    return _linalg_batch_dim_strategies(ndim, n_placements=4)
+
+
+@register_single_dim_strategy(
+    [
+        aten._linalg_det.default,
+        aten.linalg_ldl_factor_ex.default,
+        aten.linalg_lu.default,
+        aten.linalg_lu_factor_ex.default,
+    ],
+    schema_info=RuntimeSchemaInfo(1),
+)
+def linalg_batch_3out_1in_strategy(
+    op: torch._ops.OpOverload,
+    args_schema: tuple[Any, ...],
+    kwargs_schema: dict[str, Any],
+) -> list[list[Placement | _ShardingPlaceholder]]:
+    ndim = len(cast(TensorMeta, args_schema[0]).shape)
+    return _linalg_batch_dim_strategies(ndim, n_placements=4)
+
+
+@register_single_dim_strategy(
+    [aten.lu_unpack.default],
+    schema_info=RuntimeSchemaInfo(1),
+)
+def linalg_batch_3out_2in_strategy(
+    op: torch._ops.OpOverload,
+    args_schema: tuple[Any, ...],
+    kwargs_schema: dict[str, Any],
+) -> list[list[Placement | _ShardingPlaceholder]]:
+    ndim = len(cast(TensorMeta, args_schema[0]).shape)
+    return _linalg_batch_dim_strategies(ndim, n_placements=5)
+
+
+@register_single_dim_strategy(
+    [aten._linalg_slogdet.default],
+    schema_info=RuntimeSchemaInfo(1),
+)
+def linalg_batch_4out_1in_strategy(
+    op: torch._ops.OpOverload,
+    args_schema: tuple[Any, ...],
+    kwargs_schema: dict[str, Any],
+) -> list[list[Placement | _ShardingPlaceholder]]:
+    ndim = len(cast(TensorMeta, args_schema[0]).shape)
+    return _linalg_batch_dim_strategies(ndim, n_placements=5)
+
+
+@register_single_dim_strategy(
+    [aten._linalg_solve_ex.default],
+    schema_info=RuntimeSchemaInfo(1),
+)
+def linalg_batch_4out_2in_strategy(
+    op: torch._ops.OpOverload,
+    args_schema: tuple[Any, ...],
+    kwargs_schema: dict[str, Any],
+) -> list[list[Placement | _ShardingPlaceholder]]:
+    ndim = len(cast(TensorMeta, args_schema[0]).shape)
+    return _linalg_batch_dim_strategies(ndim, n_placements=6)
+
+
+@register_single_dim_strategy(
+    [aten._linalg_check_errors.default],
+    schema_info=RuntimeSchemaInfo(1),
+)
+def linalg_check_errors_strategy(
+    op: torch._ops.OpOverload,
+    args_schema: tuple[Any, ...],
+    kwargs_schema: dict[str, Any],
+) -> list[list[Placement | _ShardingPlaceholder]]:
+    ndim = len(cast(TensorMeta, args_schema[0]).shape)
+    return _linalg_batch_dim_strategies(ndim, n_placements=1)
