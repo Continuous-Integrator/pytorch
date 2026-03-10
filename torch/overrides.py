@@ -280,6 +280,7 @@ def get_ignored_functions() -> set[Callable]:
         torch.nn.init.orthogonal,
         torch.nn.init.sparse,
         torch.nested.to_padded_tensor,
+        flex_attention_mod.flex_attention,
         flex_attention_mod.create_mask,
         flex_attention_mod.or_masks,
         flex_attention_mod.and_masks,
