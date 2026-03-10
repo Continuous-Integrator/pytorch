@@ -2861,6 +2861,112 @@ class TestCustomOpAPI(TestCase):
         result = [xi.grad for xi in xs]
         self.assertEqual(result, torch.tensor([1.0, 2, 1, 2, 3]).unbind(0))
 
+    def test_ctx_wrapper_surface(self):
+        # Verify _CtxWithNeedsInputGrad correctly forwards/intercepts the full
+        # public surface of ctx (37 named attrs + object protocol). See
+        # ctx_surface_and_wrapping_risks.txt in https://github.com/soulitzer/cr/pull/2
+        import copy
+        import weakref
+
+        from torch._library.autograd import _CtxWithNeedsInputGrad
+
+        class MyFn(torch.autograd.Function):
+            @staticmethod
+            def forward(ctx, x, y):
+                ctx.save_for_backward(x, y)
+                ctx.my_attr = 42
+                return x * y
+
+            @staticmethod
+            def backward(ctx, grad):
+                return grad, grad
+
+        x = torch.randn(3, requires_grad=True)
+        y = torch.randn(3, requires_grad=True)
+        out = MyFn.apply(x, y)
+        real_ctx = out.grad_fn
+
+        override = (False, True)
+        wrapped = _CtxWithNeedsInputGrad(real_ctx, override)
+
+        # -- Intercepted: needs_input_grad --
+        self.assertEqual(wrapped.needs_input_grad, override)
+        self.assertNotEqual(wrapped.needs_input_grad, real_ctx.needs_input_grad)
+
+        # -- C-level properties (PyGetSetDef, 16 total) --
+        s0, s1 = wrapped.saved_tensors
+        self.assertEqual(s0, x)
+        self.assertEqual(s1, y)
+        # saved_variables (deprecated alias)
+        self.assertEqual(len(wrapped.saved_variables), 2)
+        # _raw_saved_tensors
+        self.assertEqual(len(wrapped._raw_saved_tensors), 2)
+        # next_functions
+        self.assertEqual(len(wrapped.next_functions), 2)
+        # requires_grad
+        self.assertTrue(wrapped.requires_grad)
+        # metadata
+        self.assertIsNotNone(wrapped.metadata)
+        # _input_metadata
+        self.assertIsNotNone(wrapped._input_metadata)
+        # to_save (None after forward completes)
+        self.assertIsNone(wrapped.to_save)
+        # non_differentiable
+        self.assertIsNone(wrapped.non_differentiable)
+        # dirty_tensors
+        self.assertIsNone(wrapped.dirty_tensors)
+        # saved_for_forward
+        self.assertIsNone(wrapped.saved_for_forward)
+        # _compiled_autograd_backward_state
+        self.assertIsNone(wrapped._compiled_autograd_backward_state)
+
+        # -- C-level methods (PyMethodDef, 9 total) --
+        self.assertIn("MyFn", wrapped.name())
+        self.assertIsInstance(wrapped._sequence_nr(), int)
+        handle = wrapped.register_hook(lambda *a: None)
+        handle.remove()
+        handle = wrapped.register_prehook(lambda *a: None)
+        handle.remove()
+
+        # -- Python mixin methods (FunctionCtx, 6 total) --
+        # These are forward-only but should still be accessible.
+        self.assertTrue(callable(wrapped.save_for_backward))
+        self.assertTrue(callable(wrapped.save_for_forward))
+        self.assertTrue(callable(wrapped.mark_dirty))
+        self.assertTrue(callable(wrapped.mark_non_differentiable))
+        self.assertTrue(callable(wrapped.set_materialize_grads))
+
+        # -- Python mixin methods (BackwardCFunction, 3 total) --
+        self.assertTrue(callable(wrapped.apply))
+        self.assertTrue(callable(wrapped.apply_jvp))
+        self.assertTrue(callable(wrapped._compiled_autograd_key))
+
+        # -- Class attrs (FunctionMeta, 2 total) --
+        self.assertIs(wrapped._forward_cls, MyFn)
+        self.assertIsInstance(wrapped._autograd_function_id, int)
+
+        # -- User-set attributes: read and write --
+        self.assertEqual(wrapped.my_attr, 42)
+        wrapped.my_attr = 99
+        self.assertEqual(real_ctx.my_attr, 99)
+        wrapped.new_attr = "hello"
+        self.assertEqual(real_ctx.new_attr, "hello")
+
+        # -- Object protocol: things that work --
+        self.assertTrue(bool(wrapped))
+        self.assertIsNotNone(hash(wrapped))
+        self.assertIsInstance(wrapped.__dict__, dict)
+        self.assertIsNotNone(weakref.ref(wrapped))
+
+        # -- Object protocol: known limitations --
+        from torch.autograd.function import BackwardCFunction, FunctionCtx
+
+        self.assertNotIsInstance(wrapped, FunctionCtx)
+        self.assertNotIsInstance(wrapped, BackwardCFunction)
+        self.assertIsNot(type(wrapped), type(real_ctx))
+        self.assertNotEqual(id(wrapped), id(real_ctx))
+        self.assertNotEqual(wrapped, real_ctx)
+
     @skipIfTorchDynamo("Expected to fail due to no FakeTensor support; not a bug")
     def test_default_values(self):
         defaults = []
