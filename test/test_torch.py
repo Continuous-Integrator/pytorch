@@ -227,6 +227,7 @@ class TestTorchDeviceType(TestCase):
             torch.complex128, torch.quint8, torch.qint8, torch.qint32,
             torch.quint4x2)
     @slowTestIf(IS_WINDOWS)
+    @torch._dynamo.config.patch(nested_graph_breaks=False)
     def test_storage_setitem(self, device, dtype):
         # Skip quantized dtypes for CUDA, since they're not supported
         if torch.device(device).type == 'cuda':

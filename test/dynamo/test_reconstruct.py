@@ -305,7 +305,6 @@ class ReconstructTest(torch._dynamo.test_case.TestCase):
             got = opt_fn(model, states, x)
             self.assertEqual(expected, got)
 
-    @torch._dynamo.config.patch(nested_graph_breaks=False)
     def test_graph_break_in_wrapped_user_function(self):
         def fn(x):
             x = x + 1
@@ -325,7 +324,6 @@ class ReconstructTest(torch._dynamo.test_case.TestCase):
         inp = torch.randn(3)
         self.assertEqual(gn(inp), inp + 3)
 
-    @torch._dynamo.config.patch(nested_graph_breaks=False)
     def test_graph_break_in_wrapped_user_method(self):
         class Foo:
             def __init__(self):
@@ -353,7 +351,6 @@ class ReconstructTest(torch._dynamo.test_case.TestCase):
         inp = torch.randn(3)
         self.assertEqual(gn(inp), inp + 3)
 
-    @torch._dynamo.config.patch(nested_graph_breaks=False)
     def test_graph_break_in_wrapped_nested_function(self):
         @torch.compile(backend="eager")
         def gn(x):

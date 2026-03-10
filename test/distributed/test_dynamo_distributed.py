@@ -1489,6 +1489,7 @@ class TestSingleProc(DynamoDistributedSingleProcTestCase):
         return m, inputs, outputs
 
     @patch.object(config, "optimize_ddp", False)
+    @torch._dynamo.config.patch(nested_graph_breaks=False)
     def test_ddp_baseline_aot_eager(self):
         from torch.nn.parallel import DistributedDataParallel as DDP
 
