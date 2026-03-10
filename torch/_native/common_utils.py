@@ -5,6 +5,7 @@ from functools import cache
 
 import packaging.version
 
+
 @cache
 def check_native_jit_disabled() -> bool:
     """
@@ -45,13 +46,12 @@ def _available_version(package: str) -> packaging.version.Version | None:
     except importlib.metadata.PackageNotFoundError:
         return None
 
-
     try:
         v = packaging.version.parse(version)
     except packaging.version.InvalidVersion:
         return None
 
-    return v # (v.major, v.minor, v.micro)
+    return v
 
 
 @cache
