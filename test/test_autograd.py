@@ -5134,6 +5134,30 @@ Running aten.detach.default from within AccumulateGrad
 Done""",
         )
 
+    def test_reentrant_backward_from_saved_tensor_hook(self):
+        # Test that performing a reentrant backward on the same node inside a
+        # saved tensor unpack hook does not deadlock. The unpack hook fires
+        # inside MulBackward0::apply() while its mutex is held; calling
+        # mul_out.backward() re-enters the same node's apply(), which requires
+        # the mutex to be recursive. mul saves both inputs for backward.
+        a = torch.randn(3, requires_grad=True)
+        b = torch.randn(3, requires_grad=True)
+
+        triggered = [False]
+
+        def unpack_hook(x):
+            if not triggered[0]:
+                triggered[0] = True
+                mul_out.backward(torch.ones_like(mul_out), retain_graph=True)
+            return x
+
+        with torch.autograd.graph.saved_tensors_hooks(lambda x: x, unpack_hook):
+            mul_out = a * b
+
+        mul_out.sum().backward()
+
+        self.assertTrue(triggered[0])
+
     def test_profiler(self):
         x = torch.randn(10, 10)
 
@@ -8427,6 +8451,22 @@ for shape in [(1,), ()]:
         self.assertEqual(bwd_needs_input_grad_values[-1], (False, True))
         torch.autograd.backward(out6.sum(), inputs=[a6, b6])
         self.assertEqual(bwd_needs_input_grad_values[-1], (True, True))
+
+    def test_needs_input_grad_is_read_only(self):
+        class MyFn(Function):
+            @staticmethod
+            def forward(ctx, x):
+                return x.clone()
+
+            @staticmethod
+            def backward(ctx, grad):
+                ctx.needs_input_grad = (False,)
+                return grad
+
+        x = torch.randn(3, requires_grad=True)
+        out = MyFn.apply(x)
+        with self.assertRaises(AttributeError):
+            out.sum().backward()
 
     def test_autograd_node_isinstance(self):
         # Node is a "virtual" base class of codegen'd nodes. This means that
