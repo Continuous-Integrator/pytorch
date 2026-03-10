@@ -173,17 +173,9 @@ static void update_needs_input_grad(Node* node, THPFunction* py_fn) {
 // from C++'s Node::apply to a Python method "apply".
 // NOLINTNEXTLINE(*-rvalue-reference*)
 auto PyNode::apply(variable_list&& inputs) -> variable_list {
-  // see Note [Thread Safety on Autograd Node]
-  std::optional<pybind11::gil_scoped_release> no_gil;
-  if (PyGILState_Check()) {
-    no_gil.emplace();
-  }
-  std::lock_guard<std::mutex> lock(mutex_);
   pybind11::gil_scoped_acquire gil;
   at::OptionalDeviceGuard _device_guard;
   THPFunction* py_fn = (THPFunction*)obj;
-
-  update_needs_input_grad(this, py_fn);
 
   // Massage a C++ variable_list into a Python arguments tuple
   THPObjectPtr pyInputs(to_py_args(inputs, &_device_guard));
@@ -232,12 +224,6 @@ auto PyNode::apply(variable_list&& inputs) -> variable_list {
 auto PyNode::apply_with_saved_impl(
     const variable_list& inputs,
     const SwapSavedVariables& saved) -> variable_list {
-  // see Note [Thread Safety on Autograd Node]
-  std::optional<pybind11::gil_scoped_release> no_gil;
-  if (PyGILState_Check()) {
-    no_gil.emplace();
-  }
-  std::lock_guard<std::mutex> lock(mutex_);
   pybind11::gil_scoped_acquire gil;
   at::OptionalDeviceGuard _device_guard;
   THPFunction* py_fn = (THPFunction*)obj;
@@ -1802,6 +1788,42 @@ PyObject* getRequiresGrad(PyObject* obj, void* _unused) {
   Py_RETURN_TRUE;
 }
 
+// During backward, dynamically compute needs_input_grad using the current
+// graph task's exec_info (which knows which edges are actually needed when
+// inputs= is specified in backward()). During forward, fall back to the
+// stored tuple. A fresh tuple is returned each time, so no shared state is
+// mutated and no mutex is needed for thread safety.
+PyObject* getNeedsInputGrad(PyObject* obj, void* _unused) {
+  auto self = (THPFunction*)obj;
+  auto node = self->cdata.lock();
+  if (node) {
+    const auto& is_variable_input = self->is_variable_input;
+    auto n = static_cast<Py_ssize_t>(is_variable_input.size());
+    PyObject* result = PyTuple_New(n);
+    if (!result)
+      return nullptr;
+    size_t edge_idx = 0;
+    for (Py_ssize_t i = 0; i < n; i++) {
+      PyObject* val;
+      if (is_variable_input[i]) {
+        val = node->task_should_compute_output(edge_idx++) ? Py_True : Py_False;
+      } else {
+        val = Py_False;
+      }
+      Py_INCREF(val);
+      PyTuple_SET_ITEM(result, i, val);
+    }
+    return result;
+  }
+  // No node yet (e.g. during forward): return the stored tuple.
+  PyObject* value = self->needs_input_grad;
+  if (!value) {
+    Py_RETURN_NONE;
+  }
+  Py_INCREF(value);
+  return value;
+}
+
 } // namespace
 
 // NOLINTNEXTLINE(modernize-avoid-c-arrays,cppcoreguidelines-avoid-c-arrays,cppcoreguidelines-avoid-non-const-global-variables)
@@ -1847,7 +1869,7 @@ static struct PyGetSetDef THPFunction_properties[] = {
      nullptr,
      nullptr},
     {"needs_input_grad",
-     &getObject<&THPFunction::needs_input_grad>,
+     getNeedsInputGrad,
      &setObject<&THPFunction::needs_input_grad>,
      nullptr,
      nullptr},
