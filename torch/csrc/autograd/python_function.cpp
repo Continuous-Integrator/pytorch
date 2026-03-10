@@ -149,25 +149,6 @@ PyObject* to_py_size(const std::vector<c10::SymInt>& size) {
 
 namespace torch::autograd {
 
-// Update needs_input_grad to reflect which gradients are actually needed
-// by the current graph task (e.g. when inputs= is specified in backward()).
-static void update_needs_input_grad(Node* node, THPFunction* py_fn) {
-  const auto& is_variable_input = py_fn->is_variable_input;
-  size_t edge_idx = 0;
-  for (const auto i : c10::irange(is_variable_input.size())) {
-    if (is_variable_input[i]) {
-      PyObject* new_val =
-          node->task_should_compute_output(edge_idx++) ? Py_True : Py_False;
-      PyObject* cur = PyTuple_GET_ITEM(py_fn->needs_input_grad, i);
-      if (cur != new_val) {
-        Py_INCREF(new_val);
-        Py_DECREF(cur);
-        PyTuple_SET_ITEM(py_fn->needs_input_grad, i, new_val);
-      }
-    }
-  }
-}
-
 // NOTE: this function is written in a way that assumes it's only called for
 // backward; it's used by engine.cpp.  This is responsible for forwarding a call
 // from C++'s Node::apply to a Python method "apply".
@@ -227,8 +208,6 @@ auto PyNode::apply_with_saved_impl(
   pybind11::gil_scoped_acquire gil;
   at::OptionalDeviceGuard _device_guard;
   THPFunction* py_fn = (THPFunction*)obj;
-
-  update_needs_input_grad(this, py_fn);
 
   // Massage a C++ variable_list into a Python arguments tuple
   THPObjectPtr pyInputs(to_py_args(inputs, &_device_guard));

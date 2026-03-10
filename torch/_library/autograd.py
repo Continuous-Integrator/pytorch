@@ -10,6 +10,30 @@ from torch.utils import _pytree
 from . import utils
 
 
+class _WrappedCtx:
+    """Wraps an autograd Function ctx, overriding needs_input_grad.
+
+    Forwards all attribute access to the inner ctx except needs_input_grad,
+    which returns the value provided at construction time.
+    """
+
+    __slots__ = ("_inner_ctx", "_needs_input_grad")
+
+    def __init__(self, inner_ctx, needs_input_grad):
+        object.__setattr__(self, "_inner_ctx", inner_ctx)
+        object.__setattr__(self, "_needs_input_grad", needs_input_grad)
+
+    @property
+    def needs_input_grad(self):
+        return self._needs_input_grad
+
+    def __getattr__(self, name):
+        return getattr(self._inner_ctx, name)
+
+    def __setattr__(self, name, value):
+        setattr(self._inner_ctx, name, value)
+
+
 class InfoProtocol(Protocol):
     _backward_fn: Optional[Callable]
     _setup_context_fn: Optional[Callable]
@@ -72,12 +96,8 @@ def make_autograd_impl(op: _ops.OpOverload, info: InfoProtocol) -> Callable:
 
     def backward(ctx, *grads):
         if info._backward_fn:
-            try:
-                prev_needs_input_grad = ctx.needs_input_grad
-                ctx.needs_input_grad = ctx.needs_input_grad[:-1]
-                result = info._backward_fn(ctx, *grads)
-            finally:
-                ctx.needs_input_grad = prev_needs_input_grad
+            wrapped_ctx = _WrappedCtx(ctx, ctx.needs_input_grad[:-1])
+            result = info._backward_fn(wrapped_ctx, *grads)
             if isinstance(result, tuple):
                 return (*result, None)
             return result, None
@@ -174,14 +194,13 @@ def supports_tensorlist(cls: Any) -> Any:
         # 1. get rid of the additional bool (which comes from the extra
         # `metadata input`)
         # 2. _pytree.tree_unflatten to get the right structure.
-        prev_needs_input_grad = ctx.needs_input_grad
-        try:
-            ctx.needs_input_grad = _pytree.tree_unflatten(
+        wrapped_ctx = _WrappedCtx(
+            ctx,
+            _pytree.tree_unflatten(
                 list(ctx.needs_input_grad[:-1]), metadata.input_spec
-            )
-            grad_inputs = orig_backward(ctx, *grads)
-        finally:
-            ctx.needs_input_grad = prev_needs_input_grad
+            ),
+        )
+        grad_inputs = orig_backward(wrapped_ctx, *grads)
 
         if not isinstance(grad_inputs, tuple):
             grad_inputs = (grad_inputs,)
