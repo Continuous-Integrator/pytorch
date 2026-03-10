@@ -1350,8 +1350,8 @@ class FxGraphCache(GuardedCache[CompiledFxGraph]):
             for log_name, metadata, payload in graph.recorded_structured_logs:
                 trace_structured(
                     log_name,
-                    metadata_fn=lambda m=metadata: m,
-                    payload_fn=lambda p=payload: p,
+                    metadata_fn=lambda m=metadata: m,  # pyrefly: ignore[bad-argument-type]
+                    payload_fn=lambda p=payload: p,  # pyrefly: ignore[bad-argument-type]
                 )
         if (
             get_metrics_context().in_progress()

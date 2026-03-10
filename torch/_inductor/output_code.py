@@ -64,8 +64,8 @@ if TYPE_CHECKING:
 
     from torch._inductor import metrics
     from torch._inductor.graph import GraphLowering
-    from torch._logging._internal import RecordedStructuredLog
     from torch._library.fake_class_registry import FakeScriptObject
+    from torch._logging._internal import RecordedStructuredLog
     from torch.export.pt2_archive._package_weights import Weights
 
     from .compile_fx import _CompileFxKwargs

@@ -1533,7 +1533,11 @@ def trace_structured(
         active_recorder = StructuredTraceRecorder.get_active()
         if active_recorder is not None:
             active_recorder.entries.append(
-                RecordedStructuredLog(name, record[name], payload if isinstance(payload, (str, type(None))) else payload)
+                RecordedStructuredLog(
+                    name,
+                    record[name],  # pyrefly: ignore[bad-argument-type]
+                    payload if isinstance(payload, (str, type(None))) else payload,
+                )
             )
 
         if record_logging_overhead:

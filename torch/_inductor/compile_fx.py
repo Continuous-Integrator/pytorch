@@ -1246,7 +1246,11 @@ class _InProcessFxCompile(FxCompile):
         with (
             _WaitCounter("pytorch.wait_counter.actual_codegen_and_compile").guard(),
             dynamo_utils.preserve_rng_state(),
-            (StructuredTraceRecorder.record() if trace_log.handlers else contextlib.nullcontext()) as _inductor_trace_recorder,
+            (
+                StructuredTraceRecorder.record()
+                if trace_log.handlers
+                else contextlib.nullcontext()
+            ) as _inductor_trace_recorder,
         ):
             if (sleep_sec := config.sleep_sec_TESTING_ONLY) is not None:
                 import time
@@ -1744,7 +1748,9 @@ class _InProcessFxCompile(FxCompile):
                         compiled_fn_runner,
                         inductor_provenance_tracking_node_mappings,
                         inductor_kernel_stack_trace_str,
-                        recorded_structured_logs=list(_inductor_trace_recorder.entries) if _inductor_trace_recorder is not None else None,
+                        recorded_structured_logs=list(_inductor_trace_recorder.entries)
+                        if _inductor_trace_recorder is not None
+                        else None,
                     )
                     return compiled_fx_graph
 

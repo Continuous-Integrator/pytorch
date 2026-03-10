@@ -416,8 +416,8 @@ class GenericAOTAutogradResult(Generic[TForward, TBackward]):
             for log_name, metadata, payload in self.recorded_structured_logs:
                 torch._logging.trace_structured(
                     log_name,
-                    metadata_fn=lambda m=metadata: m,
-                    payload_fn=lambda p=payload: p,
+                    metadata_fn=lambda m=metadata: m,  # pyrefly: ignore[bad-argument-type]
+                    payload_fn=lambda p=payload: p,  # pyrefly: ignore[bad-argument-type]
                 )
         with dynamo_timed("AOTAutogradCache.inductor_load"):
             compiled_fw_func = self.compiled_fw.load(args)
