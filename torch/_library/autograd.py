@@ -17,11 +17,9 @@ class _WrappedCtx:
     which returns the value provided at construction time.
     """
 
-    __slots__ = ("_inner_ctx", "_needs_input_grad")
-
     def __init__(self, inner_ctx, needs_input_grad):
-        object.__setattr__(self, "_inner_ctx", inner_ctx)
-        object.__setattr__(self, "_needs_input_grad", needs_input_grad)
+        self.__dict__["_inner_ctx"] = inner_ctx
+        self.__dict__["_needs_input_grad"] = needs_input_grad
 
     @property
     def needs_input_grad(self):
