@@ -2889,16 +2889,15 @@ class TestCustomOpAPI(TestCase):
         override = (False, True)
         wrapped = _CtxWithNeedsInputGrad(real_ctx, override)
 
-        # -- Intercepted: needs_input_grad --
+        # Intercepted: needs_input_grad
         self.assertEqual(wrapped.needs_input_grad, override)
 
-        # -- All forwarded attributes should return same value as real ctx --
-        # C-level properties (PyGetSetDef, 15 forwarded of 16 total)
+        # All forwarded attributes should return same value as real ctx.
+        # Properties that return singletons (True, None, dict): assertIs.
+        # Properties that construct new objects per call (tuples): assertEqual.
+
+        # C-level properties returning singletons
         for attr in [
-            "saved_tensors",
-            "saved_variables",
-            "_raw_saved_tensors",
-            "next_functions",
             "requires_grad",
             "metadata",
             "to_save",
@@ -2907,15 +2906,24 @@ class TestCustomOpAPI(TestCase):
             "saved_for_forward",
             "_compiled_autograd_backward_state",
         ]:
+            self.assertIs(
+                getattr(wrapped, attr), getattr(real_ctx, attr), msg=attr
+            )
+
+        # C-level properties that construct new objects per call
+        for attr in [
+            "saved_tensors",
+            "saved_variables",
+            "_raw_saved_tensors",
+            "next_functions",
+        ]:
             self.assertEqual(
                 getattr(wrapped, attr), getattr(real_ctx, attr), msg=attr
             )
-        # _input_metadata creates a new object per call
-        self.assertEqual(
-            type(wrapped._input_metadata), type(real_ctx._input_metadata)
-        )
+        # _input_metadata objects don't implement __eq__
+        self.assertIsNotNone(wrapped._input_metadata)
 
-        # C-level methods (PyMethodDef)
+        # C-level methods
         self.assertEqual(wrapped.name(), real_ctx.name())
         self.assertEqual(wrapped._sequence_nr(), real_ctx._sequence_nr())
         handle = wrapped.register_hook(lambda *a: None)
@@ -2923,48 +2931,43 @@ class TestCustomOpAPI(TestCase):
         handle = wrapped.register_prehook(lambda *a: None)
         handle.remove()
 
-        # Python mixin methods (FunctionCtx) — forwarded, bound to real ctx
+        # Python mixin methods, forwarded and bound to real ctx
         for attr in [
             "save_for_backward",
             "save_for_forward",
             "mark_dirty",
             "mark_non_differentiable",
             "set_materialize_grads",
+            "apply",
+            "apply_jvp",
+            "_compiled_autograd_key",
         ]:
-            self.assertEqual(
+            self.assertIs(
                 getattr(wrapped, attr).__func__,
                 getattr(real_ctx, attr).__func__,
                 msg=attr,
             )
 
-        # Python mixin methods (BackwardCFunction) — forwarded, bound to real ctx
-        for attr in ["apply", "apply_jvp", "_compiled_autograd_key"]:
-            self.assertEqual(
-                getattr(wrapped, attr).__func__,
-                getattr(real_ctx, attr).__func__,
-                msg=attr,
-            )
-
-        # Class attrs (FunctionMeta) — forwarded
+        # Class attrs
         self.assertIs(wrapped._forward_cls, real_ctx._forward_cls)
-        self.assertEqual(
+        self.assertIs(
             wrapped._autograd_function_id, real_ctx._autograd_function_id
         )
 
-        # -- User-set attributes: read and write --
+        # User-set attributes: read and write
         self.assertEqual(wrapped.my_attr, 42)
         wrapped.my_attr = 99
         self.assertEqual(real_ctx.my_attr, 99)
         wrapped.new_attr = "hello"
         self.assertEqual(real_ctx.new_attr, "hello")
 
-        # -- Object protocol: things that work --
+        # Object protocol: things that work
         self.assertTrue(bool(wrapped))
         self.assertIsNotNone(hash(wrapped))
         self.assertIsInstance(wrapped.__dict__, dict)
         self.assertIsNotNone(weakref.ref(wrapped))
 
-        # -- Object protocol: known limitations --
+        # Object protocol: known limitations
         from torch.autograd.function import BackwardCFunction, FunctionCtx
 
         self.assertNotIsInstance(wrapped, FunctionCtx)
