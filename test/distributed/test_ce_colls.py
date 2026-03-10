@@ -1,6 +1,5 @@
 # Owner(s): ["oncall: distributed"]
 import sys
-from typing import Optional
 
 import torch
 import torch.distributed as dist
@@ -25,11 +24,11 @@ if not dist.is_available() or not dist.is_nccl_available():
 @requires_cuda_p2p_access()
 class NCCLCopyEngineCollectives(MultiProcContinuousTest):
     @classmethod
-    def backend_str(cls) -> Optional[str]:
+    def backend_str(cls) -> str | None:
         return "nccl"
 
     @classmethod
-    def opts(cls) -> Optional[dist.ProcessGroupNCCL.Options]:
+    def opts(cls) -> dist.ProcessGroupNCCL.Options | None:
         # Enable Zero-CTA policy for CE collectives
         opts = dist.ProcessGroupNCCL.Options()
         opts.config.cta_policy = dist.ProcessGroupNCCL.NCCL_CTA_POLICY_ZERO
@@ -47,7 +46,6 @@ class NCCLCopyEngineCollectives(MultiProcContinuousTest):
         # initialize NCCL communicator.
         dist.all_reduce(torch.ones(1, device=self.device))
         group_name = dist.group.WORLD.group_name
-        symm_mem.enable_symm_mem_for_group(group_name)
 
         # Prepare a profiler
         prof = torch.profiler.profile(
@@ -103,6 +101,43 @@ class NCCLCopyEngineCollectives(MultiProcContinuousTest):
 
         # if self.rank == 0:
         #     prof.export_chrome_trace("test_ce_allgather.json")
+
+    @skip_if_lt_x_gpu(2)
+    def test_ce_alltoall(self):
+        group_name, prof = self._init()
+        dtype = torch.float
+        numel = 1024 * 1024 * self.world_size
+
+        # Regular implementation
+        inp_golden = torch.randn(numel, dtype=dtype, device=self.device)
+        out_golden = torch.empty(numel, dtype=dtype, device=self.device)
+
+        # Copy engine implementation
+        inp = symm_mem.empty(numel, dtype=dtype, device=self.device).copy_(inp_golden)
+        out = symm_mem.empty(numel, dtype=dtype, device=self.device)
+        out2 = symm_mem.empty(numel, dtype=dtype, device=self.device)
+        symm_mem.rendezvous(inp, group=group_name)
+        symm_mem.rendezvous(out, group=group_name)
+        symm_mem.rendezvous(out2, group=group_name)
+
+        current_stream = torch.cuda.current_stream()
+        # Create a side stream
+        stream = torch.cuda.Stream()
+
+        with prof:
+            # SM
+            dist.all_to_all_single(out_golden, inp_golden)
+            # CE + async
+            work = dist.all_to_all_single(out, inp, async_op=True)
+            work.wait()
+            # CE + side stream
+            stream.wait_stream(current_stream)
+            with torch.cuda.stream(stream):
+                dist.all_to_all_single(out2, inp)
+            prof.step()
+
+        self.assertEqual(out, out_golden)
+        self.assertEqual(out2, out_golden)
 
 
 if __name__ == "__main__":

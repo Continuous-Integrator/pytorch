@@ -8,7 +8,7 @@ from typing import Any
 import torch
 import torch._inductor.runtime.runtime_utils
 from torch import Tensor
-from torch._dynamo.utils import counters, dynamo_timed
+from torch._dynamo.utils import counters
 from torch._inductor import utils
 from torch._inductor.autoheuristic.autoheuristic import (
     AHContext,
@@ -21,6 +21,7 @@ from torch._inductor.autoheuristic.autoheuristic_utils import (
     pad_mm_operations,
     pad_mm_precondition,
 )
+from torch._inductor.runtime.caching import encoders, memoizers
 from torch._subclasses.fake_tensor import FakeTensor
 from torch.utils._mode_utils import no_dispatch
 
@@ -347,7 +348,8 @@ def should_pad_bench_key(
     tf32_key = (
         None
         if mat1.dtype != torch.float32
-        else torch.backends.cuda.matmul.allow_tf32 or torch.backends.mkldnn.allow_tf32
+        else torch.backends.cuda.matmul.fp32_precision == "tf32"
+        or torch.backends.mkldnn.fp32_precision == "tf32"
     )
 
     def fmt_pad(name: str) -> str | None:
@@ -466,23 +468,22 @@ def should_pad(
     input: Tensor | None = None,
 ) -> bool:
     _can_pad = can_pad(mat1, mat2, op, input)
-    with dynamo_timed(
-        "pad_mm_benchmark",
-        log_pt2_compile_event=False,
-        dynamo_compile_column_us="compile_time_autotune_time_us",
-    ):
-        return _can_pad and _should_pad(match, mat1, mat2, op, input)
+    # Note that if you're tempted to insert a dynamo_timed call here, this function can
+    # be called enough that the dynamo_timed overhead is not negligible.
+    return _can_pad and _should_pad(match, mat1, mat2, op, input)
 
 
 def get_do_bench() -> Callable[[Callable[[], Any]], float]:
-    with dynamo_timed("pad_mm_benchmark_get_do_bench"):
-        return functools.partial(
-            # pyrefly: ignore [bad-argument-type]
-            torch._inductor.runtime.benchmarking.benchmarker.benchmark_gpu,
-            warmup=5,
-        )
+    return functools.partial(
+        # pyrefly: ignore [bad-argument-type]
+        torch._inductor.runtime.benchmarking.benchmarker.benchmark_gpu,
+        warmup=5,
+    )
 
 
+@memoizers.should_pad_memoizer.memoize(
+    custom_params_encoder=encoders.should_pad_params_encoder
+)
 def _should_pad(
     match: Match,
     mat1: Tensor,
@@ -916,16 +917,19 @@ def bmm_replace(mat1: Tensor, mat2: Tensor) -> Tensor:
 
 
 @functools.cache
-def _pad_mm_init() -> None:
+def _pad_mm_init(input_device: torch.device | None = None) -> None:
     from .joint_graph import patterns
 
-    if torch.cuda.is_available():
-        # workaround https://github.com/pytorch/pytorch/issues/97894
-        device = "cuda"
-    elif torch.xpu.is_available():
-        device = "xpu"
+    if input_device:
+        device = str(input_device)
     else:
-        device = "cpu"
+        if torch.cuda.is_available():
+            # workaround https://github.com/pytorch/pytorch/issues/97894
+            device = "cuda"
+        elif torch.xpu.is_available():
+            device = "xpu"
+        else:
+            device = "cpu"
 
     # sizes/values dont actually matter for initial trace
     # once we get a possible match we re-trace with the actual values and verify the match still holds
@@ -979,6 +983,7 @@ def _pad_mm_init() -> None:
             patterns,
             extra_check=extra_check,
             scalar_workaround=workaround,
+            skip_duplicates=True,
         )
 
         gen_register_replacement(
@@ -992,4 +997,5 @@ def _pad_mm_init() -> None:
             patterns,
             extra_check=extra_check,
             scalar_workaround=workaround,
+            skip_duplicates=True,
         )
