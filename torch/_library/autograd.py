@@ -5,31 +5,22 @@ from dataclasses import dataclass
 from typing import Any, Optional, Protocol
 
 from torch import _C, _ops, autograd, Tensor
+from torch._functorch.autograd_function import WrappedCtx
 from torch.utils import _pytree
 
 from . import utils
 
 
-class _WrappedCtx:
-    """Wraps an autograd Function ctx, overriding needs_input_grad.
+class _WrappedCtx(WrappedCtx):
+    _pt_reserved_attrs = ("_pt_needs_input_grad", *WrappedCtx._pt_reserved_attrs)
 
-    Forwards all attribute access to the inner ctx except needs_input_grad,
-    which returns the value provided at construction time.
-    """
-
-    def __init__(self, inner_ctx, needs_input_grad):
-        self.__dict__["_inner_ctx"] = inner_ctx
-        self.__dict__["_needs_input_grad"] = needs_input_grad
+    def __init__(self, ctx, needs_input_grad):
+        super().__init__(ctx)
+        self._pt_needs_input_grad = needs_input_grad
 
     @property
     def needs_input_grad(self):
-        return self._needs_input_grad
-
-    def __getattr__(self, name):
-        return getattr(self._inner_ctx, name)
-
-    def __setattr__(self, name, value):
-        setattr(self._inner_ctx, name, value)
+        return self._pt_needs_input_grad
 
 
 class InfoProtocol(Protocol):
