@@ -234,6 +234,14 @@ struct cublasCommonGroupedArgs {
         const int32_t ldb_val = static_cast<int32_t>(transb == 't' ? mat1.stride(-1) : mat1.stride(-2));
         const int32_t ldd_val = static_cast<int32_t>(c.stride(-2));
 
+        if (scale_a && scale_b) {
+          scale_mata_ptr = scale_b->data_ptr();
+          scale_matb_ptr = scale_a->data_ptr();
+        }
+        if (scale_result) {
+          scale_result_ptr = scale_result->data_ptr();
+        }
+
         // Determine per-case which dimensions are variable (delta-based)
         // and how pointer strides work
         bool m_is_delta = false, n_is_delta = false, k_is_delta = false;
@@ -281,8 +289,7 @@ struct cublasCommonGroupedArgs {
         // Single device allocation for all arrays:
         //   6 x int32[batchCount]  = batchCount * 24 bytes  (m,n,k,lda,ldb,ldd)
         //   5 x int64[batchCount]  = batchCount * 40 bytes  (A,B,D,alpha,beta ptrs)
-        //   2 x float              = 8 bytes                 (alpha, beta scalars)
-        // Total = batchCount * 64 + 8 bytes
+        //   2 x float              = 8 bytes          (alpha, beta)
         const int64_t buf_bytes = static_cast<int64_t>(batchCount) * 64 + 8;
         buf = at::empty({buf_bytes}, mat1.options().dtype(at::kByte));
         char* base = static_cast<char*>(buf.data_ptr());
@@ -302,7 +309,7 @@ struct cublasCommonGroupedArgs {
         alphaPtrArray = reinterpret_cast<void*>(base + batchCount * 48);
         betaPtrArray  = reinterpret_cast<void*>(base + batchCount * 56);
 
-        // float scalars at the end
+        // Alpha/beta scalars at the end
         float* alpha_scalar = reinterpret_cast<float*>(base + batchCount * 64);
         float* beta_scalar  = reinterpret_cast<float*>(base + batchCount * 64 + 4);
 
@@ -315,28 +322,29 @@ struct cublasCommonGroupedArgs {
             : nullptr;
 
         cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+
         launch_populate_cublas_grouped_args(
-            batchCount, offs_ptr,
-            base_A, base_B, base_D,
-            cublas_m, cublas_n, cublas_k,
-            m_is_delta, n_is_delta, k_is_delta,
-            lda_val, ldb_val, ldd_val,
-            a_offs_stride, a_idx_stride,
-            b_offs_stride, b_idx_stride,
-            d_offs_stride, d_idx_stride,
-            static_cast<int32_t*>(mArray),
-            static_cast<int32_t*>(nArray),
-            static_cast<int32_t*>(kArray),
-            static_cast<int32_t*>(ldaArray),
-            static_cast<int32_t*>(ldbArray),
-            static_cast<int32_t*>(lddArray),
-            static_cast<int64_t*>(APtrArray),
-            static_cast<int64_t*>(BPtrArray),
-            static_cast<int64_t*>(DPtrArray),
-            static_cast<int64_t*>(alphaPtrArray),
-            static_cast<int64_t*>(betaPtrArray),
-            alpha_scalar, beta_scalar,
-            stream);
+              batchCount, offs_ptr,
+              base_A, base_B, base_D,
+              cublas_m, cublas_n, cublas_k,
+              m_is_delta, n_is_delta, k_is_delta,
+              lda_val, ldb_val, ldd_val,
+              a_offs_stride, a_idx_stride,
+              b_offs_stride, b_idx_stride,
+              d_offs_stride, d_idx_stride,
+              static_cast<int32_t*>(mArray),
+              static_cast<int32_t*>(nArray),
+              static_cast<int32_t*>(kArray),
+              static_cast<int32_t*>(ldaArray),
+              static_cast<int32_t*>(ldbArray),
+              static_cast<int32_t*>(lddArray),
+              static_cast<int64_t*>(APtrArray),
+              static_cast<int64_t*>(BPtrArray),
+              static_cast<int64_t*>(DPtrArray),
+              static_cast<int64_t*>(alphaPtrArray),
+              static_cast<int64_t*>(betaPtrArray),
+              alpha_scalar, beta_scalar,
+              stream);
   }
 
   char transa, transb;
@@ -357,6 +365,10 @@ struct cublasCommonGroupedArgs {
   void* DPtrArray;
   void* alphaPtrArray;
   void* betaPtrArray;
+
+  void* scale_mata_ptr = nullptr;
+  void* scale_matb_ptr = nullptr;
+  void* scale_result_ptr = nullptr;
 };
 #endif // !defined(USE_ROCM) && defined(CUDA_VERSION) && CUDA_VERSION >= 13020
 
