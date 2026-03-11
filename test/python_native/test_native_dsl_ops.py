@@ -25,20 +25,15 @@ class TestNativeDSLOps(TestCase):
 
     def test_consistent_helper_interface(self):
         """triton_utils and cutedsl_utils expose the same public API."""
-        import torch
+        from torch._native import cutedsl_utils, triton_utils
 
         REQUIRED_METHODS = {
             "runtime_available",
             "runtime_version",
             "register_op_override",
         }
-        utils = [
-            getattr(torch._native, u)
-            for u in dir(torch._native)
-            if u.endswith("utils") and not u.startswith("common")
-        ]
 
-        for mod in utils:
+        for mod in (cutedsl_utils, triton_utils):
             public = {name for name in dir(mod) if not name.startswith("_")}
             self.assertTrue(
                 REQUIRED_METHODS <= public,
@@ -47,20 +42,12 @@ class TestNativeDSLOps(TestCase):
             for name in REQUIRED_METHODS:
                 self.assertTrue(callable(getattr(mod, name)))
 
-        public = {}
+        triton_public = {n for n in dir(triton_utils) if not n.startswith("_")}
+        cute_public = {n for n in dir(cutedsl_utils) if not n.startswith("_")}
 
-        for mod in utils:
-            public[mod] = {n for n in dir(mod) if not n.startswith("_")}
-        # triton_public = {n for n in dir(triton_utils) if not n.startswith("_")}
-        # cute_public = {n for n in dir(cutedsl_utils) if not n.startswith("_")}
+        self.assertEqual(triton_public, cute_public)
 
-        base_mod = next(iter(public.keys()))
-
-        for mod in utils:
-            if mod != base_mod:
-                self.assertEqual(public[base_mod], public[mod])
-
-        for mod in utils:
+        for mod in (cutedsl_utils, triton_utils):
             self.assertIsInstance(mod.runtime_available(), bool)
             ver = mod.runtime_version()
             if ver is not None:

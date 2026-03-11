@@ -51,16 +51,24 @@ def runtime_version() -> None | Version:
     return version
 
 
+@functools.cache
 def _version_is_sufficient() -> bool:
     _, version = _check_runtime_available()
-    if version is None:
-        return False
-    if check_native_version_skip():
-        return True
     # Either exact version, or same major
     major_ok = version.major == _TRITON_REQUIRED_VERSION_MAJOR
     minor_ok = version.minor >= _TRITON_MINIMUM_VERSION_MINOR
-    return major_ok and minor_ok
+
+    if (major_ok and minor_ok) or check_native_version_skip():
+        return True
+
+    log.info(
+        "triton version %s is not sufficient (>= (%s.%s.*)); "
+        "set TORCH_NATIVE_SKIP_VERSION_CHECK=1 to override",
+        version,
+        _TRITON_REQUIRED_VERSION_MAJOR,
+        _TRITON_MINIMUM_VERSION_MINOR,
+    )
+    return False
 
 
 def register_op_override(
@@ -82,13 +90,6 @@ def register_op_override(
         return
 
     if not _version_is_sufficient():
-        log.warning(
-            "triton version %s is not sufficient (>= (%s.%s.*)); "
-            "set TORCH_NATIVE_SKIP_VERSION_CHECK=1 to override",
-            version,
-            _TRITON_REQUIRED_VERSION_MAJOR,
-            _TRITON_MINIMUM_VERSION_MINOR,
-        )
         return
 
     _register_op_override(

@@ -59,13 +59,19 @@ def runtime_version() -> None | Version:
     return version
 
 
+@functools.cache
 def _version_is_ok() -> bool:
     _, version = _check_runtime_available()
-    if version is None:
-        return False
-    if check_native_version_skip():
+    if check_native_version_skip() or (version in _CUTEDSL_REQUIRED_VERSIONS):
         return True
-    return version in _CUTEDSL_REQUIRED_VERSIONS
+
+    log.info(
+        "cutedsl version %s is not known-good (ok: %s); "
+        "set TORCH_NATIVE_SKIP_VERSION_CHECK=1 to override",
+        version,
+        _CUTEDSL_REQUIRED_VERSIONS,
+    )
+    return False
 
 
 def register_op_override(
@@ -87,12 +93,6 @@ def register_op_override(
         return
 
     if not _version_is_ok():
-        log.warning(
-            "cutedsl version %s is not known-good (ok: %s); "
-            "set TORCH_NATIVE_SKIP_VERSION_CHECK=1 to override",
-            version,
-            _CUTEDSL_REQUIRED_VERSIONS,
-        )
         return
 
     _register_op_override(
