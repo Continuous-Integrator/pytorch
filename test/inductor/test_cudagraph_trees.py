@@ -2291,6 +2291,20 @@ if HAS_CUDA_AND_TRITON:
             with self.assertRaisesRegex(Exception, "overwritten by a subsequent"):
                 out2 + out2
 
+        def test_error_on_dealloc_use_with_mark_step(self):
+            @torch.compile(mode="reduce-overhead")
+            def foo(x):
+                return x * x * x
+
+            inp = torch.rand([4], device="cuda")
+            torch.compiler.cudagraph_mark_step_begin()
+            out = foo(inp)
+            torch.compiler.cudagraph_mark_step_begin()
+            out2 = foo(inp)
+
+            with self.assertRaisesRegex(Exception, "overwritten by a subsequent"):
+                out + out
+
         def test_error_on_dealloc_use2(self):
             @torch.compile()
             def foo(x):

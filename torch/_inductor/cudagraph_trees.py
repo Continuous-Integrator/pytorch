@@ -2600,8 +2600,7 @@ class CUDAGraphTreeManager:
         return (
             "Error: accessing tensor output of CUDAGraphs that has been overwritten by a subsequent run. "
             f"Stack trace: {stack_trace}. "
-            "To prevent overwriting, clone the tensor outside of torch.compile() "
-            "or call torch.compiler.cudagraph_mark_step_begin() before each model invocation."
+            "To prevent overwriting, clone the tensor outside of torch.compile() before the next invocation."
         )
 
     def dealloc_current_path_weakrefs(self) -> None:
