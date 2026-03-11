@@ -35,7 +35,6 @@ from torch._prims_common import (
     suggest_memory_format,
     type_to_dtype,
 )
-from torch._refs import native_layer_norm as decomp_native_layer_norm
 from torch.fx.experimental.symbolic_shapes import guard_or_false, statically_known_true
 
 from . import config, inductor_prims
@@ -211,10 +210,11 @@ def _native_layer_norm(
     bias: torch.Tensor | None,
     eps: float,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    if input.is_mtia:
-        return NotImplemented
-    # We can write a util function to update decomp table if we have more ops to fallback.
-    return decomp_native_layer_norm(input, normalized_shape, weight, bias, eps)
+    # The decomposition computes mean/variance via torch.var_mean, which uses a
+    # different reduction order than the C++/CUDA native_layer_norm kernels
+    # (Welford + cascade sum). The small fp32 differences cause bf16 rounding
+    # divergences amplified by subsequent matmuls. See #168126.
+    return NotImplemented
 
 
 @register_decomposition([aten.sym_constrain_range_for_size.default])

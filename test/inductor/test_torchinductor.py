@@ -6122,6 +6122,24 @@ class CommonTemplate:
         if self.device != "cpu":
             assertGeneratedKernelCountEqual(self, 1)
 
+    def test_layer_norm_bf16_numerics(self):
+        # Regression test for https://github.com/pytorch/pytorch/issues/168126
+        # LayerNorm + Linear under bf16 autocast: compile must match eager.
+        norm = torch.nn.LayerNorm(128, eps=1e-5, device=self.device)
+        linear = torch.nn.Linear(128, 128, bias=False, device=self.device)
+
+        def f(x):
+            return linear(norm(x))
+
+        compiled_f = torch.compile(f, fullgraph=True)
+
+        with torch.autocast(device_type=self.device, dtype=torch.bfloat16):
+            torch.manual_seed(42)
+            x = torch.randn(4, 32, 32, 128, device=self.device)
+            out_eager = f(x)
+            out_compiled = compiled_f(x)
+            self.assertEqual(out_eager, out_compiled)
+
     @torch._functorch.config.patch("donated_buffer", True)
     def test_matmul_layer_norm(self):
         batch_size = 32
@@ -17233,8 +17251,9 @@ if RUN_GPU:
                 torch.randn(hidden_size, hidden_size, device=GPU_TYPE),
             ]
             fn_opt = torch.compile(fn)
-            code = run_and_get_triton_code(fn_opt, *inps)
-            self.assertTrue(len(re.findall(r"in_out_ptr\d+", code)) > 0)
+            # native_layer_norm is no longer decomposed (#168126) so there is
+            # no fused Triton kernel to check in_out_ptr against. Just verify
+            # correctness.
             self.assertEqual(fn_opt(*inps), fn(*inps))
 
         @torch._functorch.config.patch("donated_buffer", True)
