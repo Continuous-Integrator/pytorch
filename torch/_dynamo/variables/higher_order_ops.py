@@ -5312,7 +5312,7 @@ def get_user_module_hash(
     fn_var: Any,
     fn_args_vt: Sequence[VariableTracker],
 ) -> tuple[int, int] | None:
-    """Check if the module defines ___dynamo_module_hash__ and return (fn_id, hash).
+    """Check if the module defines __dynamo_module_hash__ and return (fn_id, hash).
 
     When present, this hash is used as the cache key instead of automatic
     guard-based reuse, giving users an escape hatch to assert structural
@@ -5324,14 +5324,14 @@ def get_user_module_hash(
     elif fn_args_vt and isinstance(fn_args_vt[0], UnspecializedNNModuleVariable):
         mod = fn_args_vt[0].value
 
-    if mod is None or not hasattr(mod, "___dynamo_module_hash__"):
+    if mod is None or not hasattr(mod, "__dynamo_module_hash__"):
         return None
 
     fn_id = get_fn_id(fn_var)
     if fn_id is None:
         return None
 
-    user_hash = mod.___dynamo_module_hash__()
+    user_hash = mod.__dynamo_module_hash__()
     return (fn_id, user_hash)
 
 
@@ -6167,7 +6167,7 @@ class InvokeSubgraphHigherOrderVariable(WrapHigherOrderVariable):
         reuse = not tx.output.export
 
         # User-defined hash: bypass all automatic guard checks when
-        # the module defines ___dynamo_module_hash__.
+        # the module defines __dynamo_module_hash__.
         user_hash_key = get_user_module_hash(fn_var, fn_args_vt) if reuse else None
 
         if user_hash_key is not None:

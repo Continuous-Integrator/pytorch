@@ -3648,7 +3648,7 @@ class GraphModule(torch.nn.Module):
 @skipIfTorchDynamo("Not a torch._dynamo test")
 class TestInvokeSubgraphUserHash(TestCase):
     def test_subgraph_reuse_user_hash_basic(self):
-        """Module with ___dynamo_module_hash__ triggers user-hash reuse."""
+        """Module with __dynamo_module_hash__ triggers user-hash reuse."""
 
         class MyBlock(torch.nn.Module):
             def __init__(self, scale):
@@ -3656,7 +3656,7 @@ class TestInvokeSubgraphUserHash(TestCase):
                 self.linear = torch.nn.Linear(8, 8, bias=False)
                 torch.nn.init.constant_(self.linear.weight, scale)
 
-            def ___dynamo_module_hash__(self):
+            def __dynamo_module_hash__(self):
                 return 42
 
         @nested_compile_region()
@@ -3701,7 +3701,7 @@ class TestInvokeSubgraphUserHash(TestCase):
         self.assertEqual(x.grad, x_clone.grad)
 
     def test_subgraph_reuse_user_hash_different_hash(self):
-        """Different ___dynamo_module_hash__ values → separate traces."""
+        """Different __dynamo_module_hash__ values → separate traces."""
 
         class MyBlock(torch.nn.Module):
             def __init__(self, scale, hash_val):
@@ -3710,7 +3710,7 @@ class TestInvokeSubgraphUserHash(TestCase):
                 torch.nn.init.constant_(self.linear.weight, scale)
                 self._hash_val = hash_val
 
-            def ___dynamo_module_hash__(self):
+            def __dynamo_module_hash__(self):
                 return self._hash_val
 
         @nested_compile_region()
@@ -3759,7 +3759,7 @@ class TestInvokeSubgraphUserHash(TestCase):
                 self.linear = torch.nn.Linear(8, 8, bias=False)
                 self.c = c
 
-            def ___dynamo_module_hash__(self):
+            def __dynamo_module_hash__(self):
                 return 99
 
         @nested_compile_region()
