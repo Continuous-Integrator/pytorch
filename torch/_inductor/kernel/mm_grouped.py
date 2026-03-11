@@ -1,7 +1,7 @@
 # mypy: allow-untyped-defs
 import logging
 from dataclasses import asdict, dataclass
-from typing import Any
+from typing import Any, Optional
 
 import torch
 from torch._dynamo.utils import counters
@@ -570,6 +570,7 @@ def tuned_scaled_grouped_mm_cublaslt(
     scale_b: TensorBox,
     offs: Optional[TensorBox] = None,
     bias: Optional[TensorBox] = None,
+    scale_result: Optional[TensorBox] = None,
     out_dtype: Optional[torch.dtype] = None,
     use_fast_accum: bool = False,
     layout: Optional[Layout] = None,

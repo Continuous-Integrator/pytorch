@@ -198,6 +198,7 @@ struct cublasCommonGroupedArgs {
         input_dtype = mat1.scalar_type();
         result_dtype = c.scalar_type();
         const int64_t esz = mat1.element_size();
+        const int64_t out_esz = c.element_size();
 
         if (offs.has_value()) {
           batchCount = offs.value().size(0);
@@ -254,7 +255,7 @@ struct cublasCommonGroupedArgs {
           k_is_delta = true;
           a_offs_stride = mat2.stride(-2) * esz;
           b_offs_stride = mat1.stride(-1) * esz;
-          d_idx_stride = c.stride(0) * esz;
+          d_idx_stride = c.stride(0) * out_esz;
           avgM = cublas_m;
           avgN = cublas_n;
           avgK = user_K / batchCount;
@@ -263,7 +264,7 @@ struct cublasCommonGroupedArgs {
           n_is_delta = true;
           a_idx_stride = mat2.stride(0) * esz;
           b_offs_stride = mat1.stride(-2) * esz;
-          d_offs_stride = c.stride(-2) * esz;
+          d_offs_stride = c.stride(-2) * out_esz;
           avgM = cublas_m;
           avgN = user_M / batchCount;
           avgK = cublas_k;
@@ -272,7 +273,7 @@ struct cublasCommonGroupedArgs {
           m_is_delta = true;
           a_offs_stride = mat2.stride(-1) * esz;
           b_idx_stride = mat1.stride(0) * esz;
-          d_offs_stride = c.stride(-1) * esz;
+          d_offs_stride = c.stride(-1) * out_esz;
           avgM = user_N / batchCount;
           avgN = cublas_n;
           avgK = cublas_k;
@@ -280,7 +281,7 @@ struct cublasCommonGroupedArgs {
           // 3D x 3D: all dimensions fixed
           a_idx_stride = mat2.stride(0) * esz;
           b_idx_stride = mat1.stride(0) * esz;
-          d_idx_stride = c.stride(0) * esz;
+          d_idx_stride = c.stride(0) * out_esz;
           avgM = cublas_m;
           avgN = cublas_n;
           avgK = cublas_k;

@@ -902,9 +902,9 @@ class TestMatmulCuda(InductorTestCase):
         self.assertEqual(C, C_ref)
 
     def scaled_grouped_gemm_cublaslt_helper(self, op, fast_accum):
-        """Build FP8 inputs with per-group tensorwise scales, run
+        """Build FP8 inputs with tensorwise scales, run
         _scaled_grouped_mm_cublaslt, and compare against per-group
-        torch._scaled_mm with tensorwise scales."""
+        torch._scaled_mm with the same tensorwise scales."""
         device = "cuda"
         dtype = torch.float8_e4m3fn
         ngroups = 5
@@ -935,14 +935,15 @@ class TestMatmulCuda(InductorTestCase):
 
         B = B_T.transpose(-2, -1)
         batch = ngroups if offs is None else offs.shape[0]
-        scale_a = torch.rand(batch, device=device, dtype=torch.float32) + 0.5
-        scale_b = torch.rand(batch, device=device, dtype=torch.float32) + 0.5
+        # cublaslt grouped GEMM uses SCALAR_32F scale mode: one scalar per matrix
+        scale_a = torch.rand(1, device=device, dtype=torch.float32) + 0.5
+        scale_b = torch.rand(1, device=device, dtype=torch.float32) + 0.5
 
         C = torch._scaled_grouped_mm_cublaslt(
             A, B, scale_a, scale_b, offs=offs, use_fast_accum=fast_accum
         )
 
-        # Reference: per-group scaled_mm with tensorwise scales
+        # Reference: per-group scaled_mm with the same scalar scales
         if offs is not None:
             off_vals = [0] + offs.tolist()
         else:
@@ -952,8 +953,6 @@ class TestMatmulCuda(InductorTestCase):
         b_is_2d = B_T.dim() == 2
         ref_parts = []
         for g in range(batch):
-            sa = scale_a[g].reshape(1)
-            sb = scale_b[g].reshape(1)
             if a_is_2d and b_is_2d:
                 start, end = off_vals[g], off_vals[g + 1]
                 a_g = A[:, start:end]
@@ -970,7 +969,7 @@ class TestMatmulCuda(InductorTestCase):
                 a_g = A[g]
                 b_g = B_T[g].t()
             out_g = torch._scaled_mm(
-                a_g, b_g, scale_a=sa, scale_b=sb,
+                a_g, b_g, scale_a=scale_a, scale_b=scale_b,
                 out_dtype=torch.bfloat16, use_fast_accum=fast_accum
             )
             ref_parts.append(out_g)
@@ -980,7 +979,7 @@ class TestMatmulCuda(InductorTestCase):
         elif a_is_2d and not b_is_2d:
             C_ref = torch.cat(ref_parts, dim=0)
         elif not a_is_2d and b_is_2d:
-            C_ref = torch.cat([r.reshape(-1) for r in ref_parts], dim=0)
+            C_ref = torch.cat(ref_parts, dim=1)
         else:
             C_ref = torch.stack(ref_parts, dim=0)
 

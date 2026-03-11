@@ -8528,6 +8528,7 @@ def meta_scaled_grouped_mm_cublaslt(
     scale_b: Tensor,
     offs: Tensor | None = None,
     bias: Tensor | None = None,
+    scale_result: Tensor | None = None,
     out_dtype: torch.dtype | None = None,
     use_fast_accum: bool = False,
 ) -> Tensor:
