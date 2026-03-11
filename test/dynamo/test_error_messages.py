@@ -1520,9 +1520,6 @@ Most recent bytecode instructions traced (max 20):
 """,
         )
 
-    # TODO this test is broken with nested_graph_breaks because we need to update
-    # the resume collapse function for nested graph breaks
-    @torch._dynamo.config.patch(nested_graph_breaks=False)
     @make_logging_test(graph_breaks=True)
     def test_graph_break_traceback_collapsed_resume_frames(self, records):
         @torch.compile(backend="eager")

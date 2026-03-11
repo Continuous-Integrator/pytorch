@@ -1802,8 +1802,6 @@ Detected recompile when torch.compile stance is 'fail_on_recompile'. filename: '
             f(torch.randn(3, 3))
 
     # also tests a lot of torch._dynamo.patch_dynamo_config functionality
-    # nested graph breaks x dont_skip_tracing doesn't completely work yet
-    @torch._dynamo.config.patch(nested_graph_breaks=False)
     def test_dont_skip_tracing(self):
         from torch._dynamo.test_dont_skip_tracing_functions import f1, f3, f4, f5, f6
 
