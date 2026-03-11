@@ -1112,6 +1112,12 @@ class aten_distributed_optimizations:
     # 0 = disabled (default), 1 = single comm stream, 2+ = pool.
     comm_stream_pool_size: int = 0
 
+    # Stream assignment strategy for the comm stream pool.
+    # "round_robin": cycle streams in order (simple, even distribution)
+    # "ag_rs": separate AllGather and ReduceScatter onto different streams
+    # "greedy": pack collectives into streams to minimise idle time
+    comm_stream_pool_strategy: str = "round_robin"
+
     # Max extra memory (GB) allowed from parallel collectives on different
     # streams.  When in-flight memory across all pool streams would exceed
     # this budget, new collectives are serialized onto a busy stream.
