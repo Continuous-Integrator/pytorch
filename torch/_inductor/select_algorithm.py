@@ -315,11 +315,6 @@ class SubgraphInfo:
     range_tree_nodes: dict[sympy.Symbol, "IterationRangesEntry"] | None = None
     numels: dict[str, sympy.Expr] | None = None
 
-    # Mapping from original range-tree root variable names (e.g. "xindex")
-    # to renamed prologue variables (e.g. "_prologue_x_xindex").  Used by
-    # prologue hooks to apply text-level renames in a structured way.
-    root_var_renames: dict[str, str] = dataclasses.field(default_factory=dict)
-
     def __post_init__(self):
         self.only_copy_if_non_none_fields = (
             "range_trees",
@@ -566,7 +561,6 @@ class TritonTemplateKernel(TritonKernel):
         self.template_mask: str | None = None
         self.template_out_shape: str | tuple[str] | None = None
         self.ops_handler: V.WrapperHandler | None = None  # type: ignore[name-defined]
-        self.root_var_renames: dict[str, str] = {}
 
         # When caching is enabled, the generated code is not dependent on the input nodes names, or
         # symbolic sizes names.
@@ -674,28 +668,6 @@ class TritonTemplateKernel(TritonKernel):
         )
         with self.set_subgraph_body(body_name):
             yield
-
-    def _make_independent_subgraph(self, subgraph_name, numel, **extra_fields):
-        """Create a subgraph with fresh independent range trees.
-
-        Used by external template backends for epilogue/prologue hooks
-        that need their own range tree state.
-        """
-        groups = {"x": V.graph.sizevars.simplify(numel), "r0_": sympy.S.One}
-        self.subgraph_bodies[subgraph_name] = SubgraphInfo(
-            body=IndentedBuffer(),
-            cse=self.cse.clone(),
-            range_trees=self.construct_range_trees(
-                pid_cache=None,
-                inside_reduction=False,
-                is_reduction=False,
-                numels=groups,
-                no_x_dim=False,
-            ),
-            range_tree_nodes={},
-            numels=groups,
-            **extra_fields,
-        )
 
     def _setup_contiguous_index_state(
         self,
