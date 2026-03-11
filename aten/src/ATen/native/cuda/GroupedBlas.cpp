@@ -834,8 +834,8 @@ Tensor _scaled_grouped_mm_cublaslt_cuda(
       reinterpret_cast<const void* const*>(args.APtrArray), args.scale_mata_ptr, args.ldaArray,
       reinterpret_cast<const void* const*>(args.BPtrArray), args.scale_matb_ptr, args.ldbArray,
       reinterpret_cast<const float* const*>(args.betaPtrArray), args.result_dtype,
-      reinterpret_cast<const void* const*>(args.DPtrArray), args.scale_result_ptr, args.lddArray,
-      reinterpret_cast<void**>(args.DPtrArray), args.lddArray,
+      reinterpret_cast<const void* const*>(args.DPtrArray), args.lddArray,
+      reinterpret_cast<void**>(args.DPtrArray), args.scale_result_ptr, args.lddArray,
       use_fast_accum, args.batchCount);
   return out;
 #else
