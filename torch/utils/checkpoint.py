@@ -1299,6 +1299,23 @@ SAC_IGNORED_OPS = {
 } | set(torch._subclasses.functional_tensor.FunctionalTensor.metadata_fns)  # type: ignore[has-type]
 
 
+def _sac_storage_key(func, args):
+    """Compute the SAC storage key for a given op.
+
+    For inductor_compiled_code, each compiled region gets its own FIFO queue
+    keyed by the callable's unique idx.  Without this, all compiled regions
+    share one queue and a cache-hit that skips a region during recompute
+    causes the queue to return the wrong entry (see gh-175258).
+    """
+    from torch._higher_order_ops.wrap import (
+        inductor_compiled_code as _inductor_compiled_code,
+        InductorCompiledCallable,
+    )
+    if func is _inductor_compiled_code and args and isinstance(args[0], InductorCompiledCallable):
+        return (func, args[0].idx)
+    return func
+
+
 class _CachingTorchDispatchMode(TorchDispatchMode):
     @classmethod
     def ignore_compile_internals(cls):
@@ -1336,7 +1353,8 @@ class _CachingTorchDispatchMode(TorchDispatchMode):
             any_ret_has_alias_info = any(ret.alias_info is not None for ret in func._schema.returns)
 
         if policy in (CheckpointPolicy.MUST_SAVE, CheckpointPolicy.PREFER_SAVE) or is_compiling:
-            self.storage[func].append(tree_map(lambda x: _VersionWrapper(_maybe_detach(x, any_ret_has_alias_info)), out))
+            key = _sac_storage_key(func, args)
+            self.storage[key].append(tree_map(lambda x: _VersionWrapper(_maybe_detach(x, any_ret_has_alias_info)), out))
         return out
 
 class _CachedTorchDispatchMode(TorchDispatchMode):
@@ -1363,7 +1381,8 @@ class _CachedTorchDispatchMode(TorchDispatchMode):
         is_compiling = _is_compiling(func, args, kwargs)
 
         if policy in (CheckpointPolicy.MUST_SAVE, CheckpointPolicy.PREFER_SAVE) or is_compiling:
-            storage = self.storage.get(func)
+            key = _sac_storage_key(func, args)
+            storage = self.storage.get(key)
             if storage is None:
                 raise RuntimeError(f"{func} encountered during backward, but not found in storage")
             if len(storage) == 0:
