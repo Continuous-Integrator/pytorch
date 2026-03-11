@@ -25,9 +25,9 @@ from torch.testing._internal.common_cuda import with_tf32_off
 from torch.testing._internal.common_device_type import (
     deviceCountAtLeast,
     instantiate_device_type_tests,
+    onlyAccelerator,
     onlyCPU,
     onlyNativeDeviceTypesAnd,
-    onlyOn,
     OpDTypes,
     ops,
     skipCUDAIfNotRocm,
@@ -237,7 +237,7 @@ class TestCommon(TestCase):
                 raise AssertionError(err_msg)
 
     # Validates that each OpInfo works correctly on different CUDA devices
-    @onlyOn(["cuda", "xpu"])
+    @onlyAccelerator
     @deviceCountAtLeast(2)
     @ops(op_db, allowed_dtypes=(torch.float32, torch.long))
     def test_multiple_devices(self, devices, dtype, op):
@@ -487,7 +487,7 @@ class TestCommon(TestCase):
                 )
 
     # Tests that the cpu and gpu results are consistent
-    @onlyOn(["cuda", "xpu"])
+    @onlyAccelerator
     @suppress_warnings
     @skipCUDAIfNotRocm
     @ops(_ops_and_refs_with_no_numpy_ref, dtypes=OpDTypes.any_common_cpu_cuda_one)
@@ -750,7 +750,7 @@ class TestCommon(TestCase):
             )
         self._ref_test_helper(contextlib.nullcontext, device, dtype, op)
 
-    @onlyOn(["cuda", "xpu"])
+    @onlyAccelerator
     @ops(python_ref_db)
     @parametrize("executor", ["aten"])
     @skipIfTorchInductor("Takes too long for inductor")
@@ -2952,7 +2952,7 @@ class TestFakeTensor(TestCase):
             except torch._subclasses.fake_tensor.UnsupportedOperatorException:
                 pass
 
-    @onlyOn(["cuda", "xpu"])
+    @onlyAccelerator
     @ops([op for op in op_db if op.supports_autograd], allowed_dtypes=(torch.float,))
     @skipOps(
         "TestFakeTensor", "test_fake_crossref_backward_no_amp", fake_backward_xfails
@@ -2960,7 +2960,7 @@ class TestFakeTensor(TestCase):
     def test_fake_crossref_backward_no_amp(self, device, dtype, op):
         self._test_fake_crossref_helper(device, dtype, op, contextlib.nullcontext)
 
-    @onlyOn(["cuda", "xpu"])
+    @onlyAccelerator
     @ops([op for op in op_db if op.supports_autograd], allowed_dtypes=(torch.float,))
     @skipOps(
         "TestFakeTensor",
