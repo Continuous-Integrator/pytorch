@@ -6353,6 +6353,29 @@ not ___dict_contains('cccccccc', G['sys'].modules)""",
         res2 = opt_fn(x)
         self.assertEqual(res, res2)
 
+    def test_function_return_none_creates_constant_variable(self):
+        """
+        Test that functions returning None properly return ConstantVariable.create(None)
+        instead of raw None, which would violate the stack's type contract.
+
+        Regression test for: Avoid using Optional[VariableTracker]
+        """
+
+        def gn(x):
+            return
+
+        torch._dynamo.config.reorderable_logging_functions.add(gn)
+
+        @torch.compile(backend="eager")
+        def fn(x):
+            x = x + 1
+            if gn(x) is None:
+                return x + 2
+            return x + 4
+
+        # If this doesn't crash, the test passes
+        fn(torch.ones(3))
+
     @patch.object(torch._dynamo.config, "capture_scalar_outputs", True)
     def test_tensor_ctor_list_of_tensor(self):
         def fn(x):
@@ -7659,6 +7682,38 @@ not ___dict_contains('cccccccc', G['sys'].modules)""",
         res = opt_fn(x, obj)
         self.assertTrue(same(ref, res))
 
+    def test_custom_instancecheck_does_not_cause_extra_init(self):
+        # When __new__ returns an object whose type is not a subclass of cls,
+        # CPython's type.__call__ skips __init__. The polyfill
+        # instantiate_user_defined_class_object must match this behavior even
+        # when the metaclass defines a custom __instancecheck__ that would
+        # return True for isinstance().
+        class Meta(type):
+            def __instancecheck__(cls, instance):
+                return isinstance(instance, Base) and instance.tag == cls._tag
+
+        class Base:
+            def __init__(self, tag="default"):
+                self.tag = tag
+
+        class Child(Base, metaclass=Meta):
+            _tag = "child"
+
+            def __new__(cls):
+                # Returns a Base (not a Child), like ByteStorage.__new__
+                return Base(tag="child")
+
+        def fn():
+            obj = Child()
+            return obj.tag
+
+        ref = fn()
+        self.assertEqual(ref, "child")
+
+        opt_fn = torch.compile(fn, backend="eager")
+        res = opt_fn()
+        self.assertEqual(res, "child")
+
     def test_variable_tracker_recursively_contains(self):
         # VariableTracker.recursively_contains should be updated correctly when mutation happens
         def fn(x):
@@ -7719,6 +7774,18 @@ not ___dict_contains('cccccccc', G['sys'].modules)""",
 
             self.assertEqual(f(), torch.zeros(2, 2))
             self.assertEqual(opt_f(), torch.ones(2, 2))
+
+    def test_is_exporting_not_true_during_compile(self):
+        def f():
+            if torch.compiler.is_exporting():
+                return torch.ones(2, 2)
+            else:
+                return torch.zeros(2, 2)
+
+        opt_f = torch.compile(f, backend="eager")
+
+        self.assertEqual(f(), torch.zeros(2, 2))
+        self.assertEqual(opt_f(), torch.zeros(2, 2))
 
     def test_torch_generator_set_state(self):
         def fn():
