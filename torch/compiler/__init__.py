@@ -381,6 +381,12 @@ def cudagraph_mark_step_begin():
 
     If that heuristic is wrong, such as in the following example, manually mark it with this api.
 
+    .. note::
+
+        This function helps the runtime correctly identify iteration boundaries but does not prevent
+        memory reuse across invocations. If you need to keep output tensors from a prior invocation alive,
+        you must clone them outside of ``torch.compile`` before calling the next invocation.
+
     .. code-block:: python
 
         @torch.compile(mode="reduce-overhead")

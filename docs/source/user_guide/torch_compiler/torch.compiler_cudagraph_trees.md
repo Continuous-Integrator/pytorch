@@ -317,10 +317,13 @@ print(y1)
 In the Separate CUDA Graph implementation, the output from the first invocation will be overwritten by the second invocation. In CUDAGraph
 Trees, we don’t want to add unintended dependencies between iterations that would cause us to not hit the hot path, nor do we want we want
 to prematurely free memory from a prior invocation. Our heuristics are in inference we start a new iteration on each invocation for
-torch.compile, and in training we do the same so long as there is not a pending backward that has not been invoked. If those heuristics
-are wrong, you can mark the start of a new iteration with
-[torch.compiler.cudagraph_mark_step_begin()](https://pytorch.org/docs/stable/generated/torch.compiler.cudagraph_mark_step_begin.html), or clone
-tensors of a prior iteration (outside of torch.compile) before you begin the next run.
+torch.compile, and in training we do the same so long as there is not a pending backward that has not been invoked.
+
+If you need to keep tensors from a prior invocation alive, clone them outside of torch.compile before calling the next invocation.
+If those heuristics for detecting a new iteration are wrong (e.g. pending backwards prevent generation advancement), you can mark
+the start of a new iteration with
+[torch.compiler.cudagraph_mark_step_begin()](https://pytorch.org/docs/stable/generated/torch.compiler.cudagraph_mark_step_begin.html).
+Note that `cudagraph_mark_step_begin()` does not prevent memory reuse — it only helps the runtime correctly identify iteration boundaries.
 
 ### Comparisons
 
