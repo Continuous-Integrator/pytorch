@@ -453,6 +453,16 @@ def _expand_single_dim_strategy_to_mesh(
             base_name = op_name.split("::")[1].split(".")[0]
             is_inplace = base_name.endswith("_")
 
+            # For per-element foreach schemas, the element's inputs may be on a
+            # different (smaller) mesh than the global compute_mesh.  Use the
+            # element's own mesh so that strategy expansion matches the runtime
+            # placements (e.g. 1D sub-mesh elements in a mixed-mesh tensor list).
+            element_mesh = mesh
+            for arg in op_schema.args_schema:
+                if isinstance(arg, OpStrategy):
+                    element_mesh = arg.strategies[0].output_spec.mesh
+                    break
+
             # cross_mesh_indices are defined as positions in args_schema (the
             # full arg list), but expand_to_full_mesh_op_strategy indexes into
             # args_strategy (OpStrategy items only).  Non-OpStrategy args like
@@ -473,7 +483,7 @@ def _expand_single_dim_strategy_to_mesh(
                 ]
 
             return expand_to_full_mesh_op_strategy(
-                mesh,
+                element_mesh,
                 op_schema,
                 cast(list[PlacementList], prepared_strategy.expanded_strategies),
                 output_tensor_meta=output_tensor_meta,
