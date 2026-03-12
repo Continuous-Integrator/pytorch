@@ -6838,6 +6838,11 @@
   dispatch:
     CUDA: _philox_key_fold_in_cuda
 
+- func: _philox_normal(Tensor self, Tensor key, float mean=0, float std=1) -> Tensor
+  variants: function
+  dispatch:
+    CUDA: _philox_normal_cuda
+
 - func: _dirichlet_grad(Tensor x, Tensor alpha, Tensor total) -> Tensor
   dispatch:
     CPU: _dirichlet_grad_cpu
