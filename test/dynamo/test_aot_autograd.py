@@ -253,8 +253,8 @@ class AotAutogradFallbackTests(torch._inductor.test_case.TestCase):
         self.assertTrue(torch._dynamo.testing.same(real, optimized_mod(x, y)))
 
         # Uncomment to reproduce commented out graphs below.
-        for gm in gms:
-            print("GM CODE", gm.code)
+        # for gm in gms:
+        #     print("GM CODE", gm.code)
 
         self.assertEqual(counter.frame_count, 2)
         self.assertEqual(counter.op_count, 7)
