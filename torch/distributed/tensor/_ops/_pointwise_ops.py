@@ -86,6 +86,8 @@ def _common_pointwise_single_dim_strategy(
                 # Filter rather than assert: some ops (e.g. mul.Tensor) mix
                 # unary rules (len 2, for scalar promotion) and binary rules
                 # (len 3, for tensor-tensor), so mismatched lengths are expected.
+                # see _MUL_RULES to see how _UNARY_LINEAR_RULES handles the
+                # scalar promotion case
                 if len(rule) == expected_len:
                     placements.append(rule)
         return placements
@@ -195,6 +197,8 @@ binary_mul_ops = [
     # foreach variants
     aten._foreach_mul.List,
     aten._foreach_mul_.List,
+    aten._foreach_mul.Tensor,
+    aten._foreach_mul_.Tensor,
 ]
 binary_div_ops = [
     aten.div.Tensor,
@@ -203,6 +207,8 @@ binary_div_ops = [
     # foreach variants
     aten._foreach_div.List,
     aten._foreach_div_.List,
+    aten._foreach_div.Tensor,
+    aten._foreach_div_.Tensor,
 ]
 
 # _UNARY_LINEAR_RULES handles the scalar promotion case: Python's __mul__/__truediv__
@@ -236,6 +242,10 @@ scalar_linear_ops = [
     aten._foreach_div_.Scalar,
     aten._foreach_mul.Scalar,
     aten._foreach_mul_.Scalar,
+    aten._foreach_div.ScalarList,
+    aten._foreach_div_.ScalarList,
+    aten._foreach_mul.ScalarList,
+    aten._foreach_mul_.ScalarList,
 ]
 
 for op in scalar_linear_ops:
@@ -307,6 +317,11 @@ non_decreasing_unary_ops = [
     aten.nan_to_num.default,
     aten.nan_to_num_.default,
     aten.nan_to_num.out,
+    # foreach variants
+    aten._foreach_exp.default,
+    aten._foreach_exp_.default,
+    aten._foreach_clamp_max_.Scalar,
+    aten._foreach_clamp_min_.Scalar,
 ]
 
 _NON_DECREASING_RULES: list[list[Placement]] = [
@@ -404,6 +419,8 @@ monotonic_max_preserving_binary_ops = [
     aten.maximum.default,
     aten.maximum.out,
     prims.fmax.default,
+    # foreach variants
+    aten._foreach_maximum_.List,
 ]
 
 _MONOTONE_MAX_PRESERVING_BINARY_BASE_RULES: list[list[Placement]] = [
@@ -741,18 +758,7 @@ pointwise_ops = [
     aten._foreach_addcmul_.Scalar,
     aten._foreach_addcmul_.ScalarList,
     aten._foreach_addcmul_.Tensor,
-    aten._foreach_clamp_max_.Scalar,
-    aten._foreach_clamp_min_.Scalar,
-    aten._foreach_div_.ScalarList,
-    aten._foreach_div_.Tensor,
-    aten._foreach_div.ScalarList,
-    aten._foreach_div.Tensor,
     aten._foreach_lerp_.Scalar,
-    aten._foreach_maximum_.List,
-    aten._foreach_mul.ScalarList,
-    aten._foreach_mul.Tensor,
-    aten._foreach_mul_.ScalarList,
-    aten._foreach_mul_.Tensor,
     aten._foreach_pow.List,
     aten._foreach_pow.ScalarList,
     aten._foreach_reciprocal_.default,
@@ -763,8 +769,6 @@ pointwise_ops = [
     aten._foreach_sqrt.default,
     aten._foreach_sqrt_.default,
     aten._foreach_zero_.default,
-    aten._foreach_exp.default,
-    aten._foreach_exp_.default,
     aten._foreach_cos.default,
     aten._foreach_cos_.default,
     aten._foreach_log.default,
