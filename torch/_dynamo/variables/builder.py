@@ -645,7 +645,10 @@ class VariableBuilder:
     def wrap_jit_function(self, value: Any) -> WrapperUserFunctionVariable:
         self.install_guards(GuardBuilder.TYPE_MATCH)
         return WrapperUserFunctionVariable(
-            value, "_torchdynamo_inline", source=self.source
+            value,
+            "_torchdynamo_inline",
+            source=self.source,
+            mutation_type=AttributeMutationExisting(),
         )
 
     def wrap_mapping_proxy(self, value: Any) -> VariableTracker:
@@ -1381,11 +1384,19 @@ class VariableBuilder:
         elif inspect.getattr_static(value, "__script_if_tracing_wrapper", False):
             self.install_guards(GuardBuilder.TYPE_MATCH)
             return WrapperUserFunctionVariable(
-                value, "__original_fn", source=self.source
+                value,
+                "__original_fn",
+                source=self.source,
+                mutation_type=AttributeMutationExisting(),
             )
         elif is_lru_cache_wrapped_function(value):
             self.install_guards(GuardBuilder.TYPE_MATCH)
-            return WrapperUserFunctionVariable(value, "__wrapped__", source=self.source)
+            return WrapperUserFunctionVariable(
+                value,
+                "__wrapped__",
+                source=self.source,
+                mutation_type=AttributeMutationExisting(),
+            )
         elif value is sys.exc_info or (
             sys.version_info >= (3, 11) and value is sys.exception
         ):
@@ -1395,7 +1406,10 @@ class VariableBuilder:
         ):
             self.install_guards(GuardBuilder.TYPE_MATCH)
             return WrapperUserFunctionVariable(
-                value, "_torchdynamo_inline", source=self.source
+                value,
+                "_torchdynamo_inline",
+                source=self.source,
+                mutation_type=AttributeMutationExisting(),
             )
         elif value is collections.namedtuple:
             self.install_guards(GuardBuilder.ID_MATCH)
@@ -2012,6 +2026,19 @@ class VariableBuilder:
             self.install_guards(GuardBuilder.TYPE_MATCH)
             self.source = AttrSource(self.source, "_orig_mod")
             return self.wrap_module(value._orig_mod)
+
+        if type(value) is torch.jit._script.RecursiveScriptModule:
+            unimplemented(
+                gb_type="torch.jit.script/freeze modules unsupported",
+                context=str(value),
+                explanation="Dynamo does not support tracing into torch.jit.script or "
+                "torch.jit.freeze modules because they execute in the TorchScript "
+                "runtime, not Python. Replace the ScriptModule submodule with the "
+                "original eager nn.Module.",
+                hints=[
+                    *graph_break_hints.FUNDAMENTAL,
+                ],
+            )
 
         if (
             isinstance(value, (torch.nn.RNN, torch.nn.GRU, torch.nn.LSTM))
@@ -4047,8 +4074,16 @@ def _wrap_to_fake_tensor_and_record_impl(
             and isinstance(fake_e, FakeTensor)
             and (sym_val := fake_e.item_memo) is not None
         ):
+            # Match the peephole in FakeTensorConverter.from_real_tensor that
+            # strips FloatTensorSource before calling create_symbol.  Without
+            # this, the tracked fake source name won't match source_to_var and
+            # produce_guards_verbose will report "(unknown source)".
+            if isinstance(source, FloatTensorSource):
+                item_source = source.base
+            else:
+                item_source = CallMethodItemSource(source)
             tx.output.tracked_fakes.append(
-                TrackedFake(sym_val, CallMethodItemSource(source), symbolic_context)
+                TrackedFake(sym_val, item_source, symbolic_context)
             )
 
         if is_traceable_wrapper_subclass(fake_e):
