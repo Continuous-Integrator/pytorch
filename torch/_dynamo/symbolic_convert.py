@@ -90,6 +90,7 @@ from .bytecode_transformation import (
 )
 from .code_context import code_context
 from .codegen import PyCodegen
+from .comprehension_graph_break import maybe_setup_comprehension_speculation
 from .exc import (
     augment_exc_message_with_hop_name,
     BackendCompilerFailed,
@@ -128,7 +129,6 @@ from .source import (
     SkipGuardSource,
     Source,
 )
-from .comprehension_graph_break import maybe_setup_comprehension_speculation
 from .trace_rules import is_builtin_constant, is_forbidden
 from .utils import (
     _get_error_on_graph_break,
@@ -2984,30 +2984,10 @@ class InstructionTranslatorBase(
             )
 
         # add resume function to the global scope
-        if new_code.co_freevars:
-            # Install a factory that creates the resume function with the
-            # correct globals. We can't use MAKE_FUNCTION because it inherits
-            # the current frame's globals, which is wrong for resume functions
-            # from inlined (nested) frames that belong to a different module.
-            # Capture f_globals in a local to avoid closing over self.
-            _globals = self.f_globals
-
-            def _make_fn(
-                closure: tuple[types.CellType, ...],
-            ) -> types.FunctionType:
-                return types.FunctionType(
-                    new_code, _globals, resume_name, None, closure
-                )
-
-            self.output.install_global_unsafe(resume_name, _make_fn)
-            package_name = None
-        else:
-            # This is safe: we pre-generate a unique name
-            self.output.install_global_unsafe(
-                resume_name,
-                types.FunctionType(new_code, self.f_globals, resume_name),
-            )
-            package_name = resume_name
+        self.output.install_resume_function_global(
+            resume_name, new_code, self.f_globals
+        )
+        package_name = None if new_code.co_freevars else resume_name
 
         if self.package is not None:
             self.package.add_resume_function(
