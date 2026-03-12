@@ -2496,7 +2496,7 @@ class TestFP8Matmul(TestCase):
         return A, B_T, scale_a, scale_b, offs
 
 
-    @unittest.skipIf(TEST_WITH_ROCM, "ROCm doesn't support cuBLASLt grouped GEMM")
+    @skipIfRocm
     @unittest.skipIf(torch.cuda.get_device_capability()[0] not in [10, 11], "cublaslt grouped gemm requires SM 10.x or 11.0")
     @parametrize("op", ["2d/2d", "2d/3d", "3d/2d", "3d/3d"])
     @parametrize("fast_accum", [False, True])
@@ -2548,7 +2548,7 @@ class TestFP8Matmul(TestCase):
         self.assertEqual(C, C_ref, atol=1e-2, rtol=1e-2)
 
 
-    @unittest.skipIf(TEST_WITH_ROCM, "ROCm doesn't support cuBLASLt grouped GEMM")
+    @skipIfRocm
     @unittest.skipIf(torch.cuda.get_device_capability()[0] not in [10, 11], "cublaslt grouped gemm requires SM 10.x or 11.0")
     @parametrize("op", ["2d/2d", "2d/3d", "3d/2d", "3d/3d"])
     @parametrize("fast_accum", [False, True])
