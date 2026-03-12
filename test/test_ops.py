@@ -66,6 +66,7 @@ from torch.testing._internal.common_utils import (
     set_default_dtype,
     skipIfTorchDynamo,
     skipIfTorchInductor,
+    skipIfXpu,
     suppress_warnings,
     TEST_WITH_ROCM,
     TEST_WITH_TORCHDYNAMO,
@@ -1054,6 +1055,7 @@ class TestCommon(TestCase):
     # Case 3 and 4 are slightly different when the op is a factory function:
     #   - if device, dtype are NOT passed, any combination of dtype/device should be OK for out
     #   - if device, dtype are passed, device and dtype should match
+    @skipIfXpu(msg="RuntimeError, torch-xpu-ops: #1951")
     @ops(ops_and_refs, dtypes=OpDTypes.any_one)
     def test_out(self, device, dtype, op):
         # Prefers running in float32 but has a fallback for the first listed supported dtype
@@ -1947,6 +1949,7 @@ class TestCompositeCompliance(TestCase):
                 op.get_op(), args, kwargs, op.gradcheck_wrapper, self.assertEqual
             )
 
+    @skipIfXpu(msg="AssertionError, torch-xpu-ops: #2248")
     @ops(op_db, allowed_dtypes=(torch.float,))
     def test_cow_input(self, device, dtype, op):
         samples = op.sample_inputs(device, dtype, requires_grad=op.supports_autograd)

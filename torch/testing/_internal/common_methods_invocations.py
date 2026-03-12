@@ -12637,6 +12637,9 @@ op_db: list[OpInfo] = [
                # RuntimeError: value cannot be converted to type double without overflow
                DecorateInfo(unittest.expectedFailure, 'TestCommon', device_type='mps', dtypes=(torch.complex64,)),
                DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_dtypes', device_type='mps'),
+               # https://github.com/intel/torch-xpu-ops/issues/1893
+               DecorateInfo(unittest.skip('Skipped!'), 'TestMathBits', 'test_neg_view',
+                            device_type='xpu', dtypes=(torch.float64,)),
            )),
     OpInfo('addmm',
            # When alpha=beta=1 as compile-time constants, JIT will decompose addmm into mm and add.
@@ -12678,6 +12681,10 @@ op_db: list[OpInfo] = [
                DecorateInfo(toleranceOverride({torch.float32: tol(atol=2e-5, rtol=3e-6)}),
                             "TestConsistency", "test_output_grad_match", device_type="mps"),
            ],
+           skips=(
+               # https://github.com/intel/torch-xpu-ops/issues/1893
+               DecorateInfo(unittest.skip('Skipped!'), 'TestMathBits', 'test_neg_view',
+                            device_type='xpu', dtypes=(torch.float64,))),
            sample_inputs_func=sample_inputs_addmv),
     OpInfo('addbmm',
            ref=lambda M, batch1, batch2, beta=1, alpha=1: np.add(np.multiply(np.asarray(beta, dtype=M.dtype), M),
@@ -17118,6 +17125,11 @@ op_db: list[OpInfo] = [
                # NVIDIA only assures that bfloat16 is supported by bmm if SM >= 5.3
                DecorateInfo(unittest.skip("Skipped!"), 'TestCommon', 'test_dtypes', device_type='cuda', active_if=not SM53OrLater),
                DecorateInfo(unittest.skip("Skipped!"), 'TestNNCOpInfo', 'test_nnc_correctness', dtypes=(torch.bfloat16,)),
+               # https://github.com/intel/torch-xpu-ops/issues/1963
+               DecorateInfo(unittest.skip("Skipped!"), 'TestFakeTensor', 'test_fake_crossref_backward_amp',
+                            device_type='xpu', dtypes=[torch.float32]),
+               DecorateInfo(unittest.skip("Skipped!"), 'TestFakeTensor', 'test_fake_crossref_backward_no_amp',
+                            device_type='xpu', dtypes=[torch.float32]),
            ),
            # Runs very slowly on slow gradcheck - alternatively reduce input sizes
            gradcheck_fast_mode=True,
@@ -19616,6 +19628,9 @@ op_db: list[OpInfo] = [
                             device_type='mps', dtypes=[torch.float32]),
                DecorateInfo(unittest.skip("Skipped!"), 'TestJit', 'test_variant_consistency_jit',
                             device_type='mps', dtypes=[torch.float32]),
+               # https://github.com/intel/torch-xpu-ops/issues/1963
+               DecorateInfo(unittest.skip("Skipped!"), 'TestFakeTensor', 'test_fake_autocast',
+                            device_type='xpu', dtypes=[torch.float32]),
            )),
     OpInfo('gather',
            dtypes=all_types_and_complex_and(torch.bool, torch.float16, torch.bfloat16),
@@ -20620,7 +20635,9 @@ op_db: list[OpInfo] = [
                DecorateInfo(unittest.skip("Skipped!"), 'TestDecomp', 'test_quick'),
                # AssertionError in CUDA variant
                DecorateInfo(unittest.skip("Skipped!"), 'TestFakeTensor', device_type='cuda'),
-               DecorateInfo(unittest.skip("Skipped!"), 'TestDeviceUtils', 'test_device_mode_ops'))),
+               DecorateInfo(unittest.skip("Skipped!"), 'TestDeviceUtils', 'test_device_mode_ops'),
+               # https://github.com/intel/torch-xpu-ops/issues/3041
+               DecorateInfo(unittest.skip("Skipped!"), 'TestFakeTensor', 'test_fake_crossref_backward_amp', device_type='xpu'))),
     OpInfo('bernoulli',
            op=lambda inp, *args, **kwargs:
                wrapper_set_seed(torch.bernoulli, inp, *args, **kwargs),
@@ -26764,6 +26781,11 @@ python_ref_db = [
             DecorateInfo(
                 unittest.expectedFailure, 'TestCommon', 'test_python_ref_torch_fallback', device_type='mps',
                 dtypes=(torch.uint8, torch.int8, torch.int32, torch.int16, torch.bool)
+            ),
+            # https://github.com/pytorch/pytorch/issues/177225
+            DecorateInfo(
+                unittest.expectedFailure, 'TestCommon', 'test_python_ref_executor', device_type='mps',
+                dtypes=(torch.uint8, torch.int8)
             ),
         ),
     ),
