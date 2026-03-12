@@ -2554,6 +2554,7 @@ class TestFP8Matmul(TestCase):
     @parametrize("fast_accum", [False, True])
     @parametrize("mode", ["default", "reduce-overhead"])
     def test_scaled_grouped_gemm_cublaslt_compiled(self, op, fast_accum, mode):
+        torch._dynamo.reset() # each shape combination needs fresh compilation state
         A, B_T, scale_a, scale_b, offs = self.scaled_grouped_gemm_cublaslt_helper(op, fast_accum)
 
         f_ref = torch._scaled_grouped_mm_cublaslt
