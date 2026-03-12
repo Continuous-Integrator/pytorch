@@ -26,6 +26,7 @@ from torch._dynamo.utils import counters
 from torch._higher_order_ops.associative_scan import associative_scan_op
 from torch._higher_order_ops.triton_kernel_wrap import triton_kernel_wrapper_mutation
 from torch._library.fake_class_registry import FakeScriptObject
+from torch._library.opaque_object import is_opaque_value
 from torch._library.utils import get_layout_constraint_tag
 from torch._prims_common import (
     canonicalize_dim,
@@ -2299,7 +2300,7 @@ def fallback_handler(kernel, add_to_fallback_set=True):
 
     def handler(*args, **kwargs):
         def wrap_tensors(x):
-            return TensorBox.create(x) if isinstance(x, ir.IRNode) else x
+            return x.wrap_for_lowering() if isinstance(x, ir.IRNode) else x
 
         return pytree.tree_map(
             wrap_tensors, ir.FallbackKernel.create(kernel, *args, **kwargs)
@@ -2888,7 +2889,7 @@ def require_channels_last(_, *args, **kwargs):
 def constrain_to_fake_tensor(arg, fake_arg):
     if fake_arg is None:
         return arg
-    if isinstance(fake_arg, FakeScriptObject):
+    if isinstance(fake_arg, FakeScriptObject) or is_opaque_value(fake_arg):
         return arg
     if isinstance(arg, ir.IRNode):
         return ir.ExternKernel.require_exact_strides(arg, fake_arg.stride())
@@ -4245,6 +4246,7 @@ def index_put_impl_(self, indices, values, accumulate, check, may_realize=False)
         None,
         check=check,
     )
+
     values = expand(values, expected_vals_size)
     # all guards are set above during broadcast_tensors and expand
 
@@ -5178,6 +5180,11 @@ def max_pool2d_with_indices_backward(
     is_channels_last = (x_stride is not None and x_stride[1] == 1) or (
         gO_stride is not None and gO_stride[1] == 1
     )
+    if any(d != 1 for d in dilation):
+        # dilation NYI
+        return fallback_max_pool2d_with_indices_backward(
+            grad_output, x, kernel_size, stride, padding, dilation, ceil_mode, indices
+        )
 
     *_batch, _height, width = x.get_size()
     *_, pooled_height, pooled_width = grad_output.get_size()
@@ -5186,17 +5193,13 @@ def max_pool2d_with_indices_backward(
     grad_loader = grad_output.make_loader()
     new_size = list(x.get_size())
 
-    # Effective kernel size accounts for dilation
-    effective_kh = (kernel_size[0] - 1) * dilation[0] + 1
-    effective_kw = (kernel_size[1] - 1) * dilation[1] + 1
-
     h_window_size = max(
-        max(FloorDiv(h, stride[0]) - max(0, FloorDiv(h - effective_kh, stride[0])), 1)
-        for h in range(effective_kh * 2)
+        max(FloorDiv(h, stride[0]) - max(0, FloorDiv(h - kernel_size[0], stride[0])), 1)
+        for h in range(kernel_size[0] * 2)
     )
     w_window_size = max(
-        max(FloorDiv(w, stride[1]) - max(0, FloorDiv(w - effective_kw, stride[1])), 1)
-        for w in range(effective_kw * 2)
+        max(FloorDiv(w, stride[1]) - max(0, FloorDiv(w - kernel_size[1], stride[1])), 1)
+        for w in range(kernel_size[1] * 2)
     )
 
     window_size = h_window_size * w_window_size
@@ -5215,10 +5218,10 @@ def max_pool2d_with_indices_backward(
         h = h + padding[0]
         w = w + padding[1]
         phstart = ops.index_expr(
-            FloorDiv(h - effective_kh + stride[0], stride[0]), torch.int32
+            FloorDiv(h - kernel_size[0] + stride[0], stride[0]), torch.int32
         )
         pwstart = ops.index_expr(
-            FloorDiv(w - effective_kw + stride[1], stride[1]), torch.int32
+            FloorDiv(w - kernel_size[1] + stride[1], stride[1]), torch.int32
         )
         phend = ops.index_expr(FloorDiv(h, stride[0]) + 1, torch.int32)
         pwend = ops.index_expr(FloorDiv(w, stride[1]) + 1, torch.int32)
@@ -7936,7 +7939,7 @@ def with_effects(token, op, *args, **kwargs):
     else:
 
         def wrap_tensors(x):
-            return TensorBox.create(x) if isinstance(x, ir.IRNode) else x
+            return x.wrap_for_lowering() if isinstance(x, ir.IRNode) else x
 
         result = pytree.tree_map(
             wrap_tensors, ir.FallbackKernel.create(op, *args, **kwargs)
