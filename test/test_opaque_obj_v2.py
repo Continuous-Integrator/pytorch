@@ -10,6 +10,7 @@ from dataclasses import dataclass
 import torch
 import torch.distributed as dist
 import torch.utils._pytree as pytree
+from torch._dynamo.functional_export import _dynamo_graph_capture_for_export
 from torch._dynamo.test_case import run_tests, TestCase
 from torch._dynamo.testing import (
     AotEagerAndRecordGraphs,
@@ -1098,6 +1099,25 @@ def forward(self, arg0_1, arg1_1, arg2_1):
             torch.library._register_effectful_op(
                 "_TestOpaqueObject::noisy_inject", None
             )
+
+    def test_install_free_opaque_object(self):
+        rng = RNGState(0)
+        x = torch.ones(2, 3)
+
+        def fn(x):
+            return torch.ops._TestOpaqueObject.noisy_inject(x, rng)
+
+        gm = _dynamo_graph_capture_for_export(fn)(x)
+        self.assertExpectedInline(
+            gm.code.strip(),
+            """\
+def forward(self, x):
+    arg_0, = fx_pytree.tree_flatten_spec(([x], {}), self._in_spec)
+    l_flat_args_0_ = arg_0
+    l__self____export_root___closure___0_cell_contents = self.L__self____export_root___closure___0_cell_contents
+    res = torch.ops._TestOpaqueObject.noisy_inject(l_flat_args_0_, l__self____export_root___closure___0_cell_contents);  l_flat_args_0_ = l__self____export_root___closure___0_cell_contents = None
+    return pytree.tree_unflatten((res,), self._out_spec)""",  # noqa: B950
+        )
 
     def test_compile1(self):
         def foo(rng_state, x):
@@ -2898,14 +2918,13 @@ def forward(self, L_x_ : torch.Tensor):
         res.sum().backward()
 
         actual = normalize_gm(backend.graphs[0].print_readable(print_output=False))
-        fx_class = _illegal_char_regex.sub("_", get_opaque_type_name(OpaqueMultiplier))
         self.assertExpectedInline(
             actual,
-            f"""\
+            """\
 class GraphModule(torch.nn.Module):
-    def forward(self, L_scale_obj_ : {fx_class}, L_x_: "f32[2, 2]"):
-        l_scale_obj_ = L_scale_obj_
+    def forward(self, L_x_: "f32[2, 2]", L_scale_obj_ : __main___OpaqueMultiplier):
         l_x_ = L_x_
+        l_scale_obj_ = L_scale_obj_
 
         subgraph_0 = self.subgraph_0
         invoke_subgraph = torch.ops.higher_order.invoke_subgraph(subgraph_0, 'subgraph_0', l_scale_obj_, l_x_);  subgraph_0 = l_scale_obj_ = l_x_ = None
@@ -2915,7 +2934,7 @@ class GraphModule(torch.nn.Module):
         return (add,)
 
     class subgraph_0(torch.nn.Module):
-        def forward(self, l_scale_obj_ : {fx_class}, l_x_: "f32[2, 2]"):
+        def forward(self, l_scale_obj_ : __main___OpaqueMultiplier, l_x_: "f32[2, 2]"):
             result: "f32[2, 2]" = torch.ops._TestOpaqueObject.mul_with_scale(l_scale_obj_, l_x_);  l_scale_obj_ = l_x_ = None
 
             result_1: "f32[2, 2]" = result * 2;  result = None
