@@ -630,7 +630,14 @@ def _build_comprehension_fn(
 
     # Install as global
     if new_code.co_freevars:
-        tx.output.install_global_unsafe(fn_name, new_code)
+        _globals = tx.f_globals
+
+        def _make_fn(
+            closure: tuple[types.CellType, ...],
+        ) -> types.FunctionType:
+            return types.FunctionType(new_code, _globals, fn_name, None, closure)
+
+        tx.output.install_global_unsafe(fn_name, _make_fn)
     else:
         tx.output.install_global_unsafe(
             fn_name,

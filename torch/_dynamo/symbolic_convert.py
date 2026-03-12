@@ -128,7 +128,7 @@ from .source import (
     SkipGuardSource,
     Source,
 )
-from .synthetic_function_graph_break import maybe_setup_comprehension_speculation
+from .comprehension_graph_break import maybe_setup_comprehension_speculation
 from .trace_rules import is_builtin_constant, is_forbidden
 from .utils import (
     _get_error_on_graph_break,
