@@ -220,70 +220,85 @@ class PartialRender:
         each key, the hook function runs and this method replaces every
         occurrence of the placeholder with the result.
 
-        Three replacement modes (applied per occurrence):
+        Three replacement modes based on how each placeholder appears in
+        the code:
 
-        **Inline placeholder** — direct substitution.
-            The placeholder shares a line with other content (e.g.
-            ``<ARGDEFS>,`` in flex_attention templates, where it appears
-            as part of a function signature).  All occurrences are replaced
-            with the result string verbatim — no indent handling.
+        **Non-empty result, whole-line placeholder** — indent-propagating
+        substitution.
+            When the placeholder is the only non-whitespace content on a
+            line, the entire line is replaced.  The placeholder line's
+            leading whitespace (indent) is prepended to each result line
+            that has no leading whitespace of its own; lines that are
+            already indented are kept as-is.  This handles both hooks that
+            return results at uniform indent 0 (e.g.
+            ``ExternalTritonTemplateKernel``) and hooks that use the
+            ``strip()`` convention (first line un-indented, subsequent
+            lines pre-indented to the target level).
 
-        **Whole-line placeholder, non-empty result** — dedent + re-indent.
-            The placeholder sits alone on an indented line.  The result
-            (often multi-line) is dedented then re-indented to match the
-            placeholder's column, so it integrates at the right nesting
-            level.  Real-world cases:
+        **Non-empty result, inline placeholder** — direct substitution
+        (``str.replace``).
+            When the placeholder appears mid-line (e.g.
+            ``{{gen_argdefs()}},``), all occurrences on that line are
+            replaced with the result verbatim via ``str.replace``.
 
-            - ``<DEF_KERNEL>`` at column 0: the hook emits the full
-              ``@triton.jit`` decorator, function signature, constant
-              defines, and prologue code.  Re-indent is a no-op (col 0).
-            - ``<STORE_OUTPUT_0>`` at 4–8 spaces indent: the hook emits
-              ``tl.store()`` plus any fused epilogue ops (e.g. relu, bias
-              add).  Re-indent aligns the block to the template's loop
-              body.
-            - ``<LOAD_INPUT_A>`` at 8 spaces indent: the hook emits
-              range-tree indexing setup and a ``tl.load()`` call.
-              Re-indent aligns to the inner loop body.
+        **Empty result** — line removal.
+            Every line whose only non-whitespace content is the placeholder
+            is removed.  This handles cases like:
 
-        **Whole-line placeholder, empty result** — line removal.
-            The entire placeholder line is deleted.  Cases:
-
-            - ``<DEF_KERNEL>`` returns ``""`` for
+            - ``<DEF_KERNEL>`` returning ``""`` for
               ``ExternalTritonTemplateKernel`` (Helion), which emits its
               own kernel definition outside the template system.
-            - ``<LOAD_INPUT_A>`` returns ``""`` when prologue fusion
+            - ``<LOAD_INPUT_A>`` returning ``""`` when prologue fusion
               replaces the explicit load with inline computation from a
               fused producer.
-            - ``<STORE_OUTPUT_0>`` returns ``""`` for
+            - ``<STORE_OUTPUT_0>`` returning ``""`` for
               ``ExternalTritonTemplateKernel`` outputs that have no
               matching epilogue consumer.
         """
         if hook_key not in self._code:
             return self._code
 
+        # Empty result — remove every line that contains only the placeholder
+        if not (result and result.strip()):
+            lines = self._code.split("\n")
+            return "\n".join(
+                line for line in lines if line.strip() != hook_key
+            )
+
+        # Non-empty result — line-by-line replacement
         lines = self._code.split("\n")
-        out: list[str] = []
+        new_lines = []
         for line in lines:
-            if hook_key not in line:
-                out.append(line)
-                continue
-
-            # Inline placeholder (e.g. ``<ARGDEFS>,`` in flex_attention
-            # templates) — direct substitution without indent handling.
-            if line.strip() != hook_key:
-                out.append(line.replace(hook_key, result))
-                continue
-
-            # Whole-line placeholder with empty result — drop the line
-            if not (result and result.strip()):
-                continue
-
-            # Whole-line placeholder — dedent result and re-indent to match
-            indent_str = line[: len(line) - len(line.lstrip())]
-            dedented = textwrap.dedent(result.rstrip("\n"))
-            out.append(textwrap.indent(dedented, indent_str))
-
-        return "\n".join(out)
+            if line.strip() == hook_key:
+                # Whole-line placeholder: decide how to indent the result.
+                indent = line[: len(line) - len(line.lstrip())]
+                result_lines = result.strip("\n").split("\n")
+                non_empty = [rl for rl in result_lines if rl.strip()]
+                all_unindented = bool(non_empty) and all(
+                    not rl[0].isspace() for rl in non_empty
+                )
+                if all_unindented:
+                    # Result is at uniform indent 0 (e.g.
+                    # ExternalTritonTemplateKernel hooks) — apply the
+                    # placeholder indent to every non-empty line.
+                    indented = [
+                        indent + rl if rl.strip() else rl
+                        for rl in result_lines
+                    ]
+                    new_lines.append("\n".join(indented).rstrip())
+                else:
+                    # Result has internal indentation (e.g. hooks using the
+                    # strip() convention, or <DEF_KERNEL> with function
+                    # bodies) — fall back to str.replace which prepends
+                    # the placeholder line's whitespace to the first line
+                    # only.
+                    new_lines.append(line.replace(hook_key, result))
+            elif hook_key in line:
+                # Inline placeholder: simple substitution
+                new_lines.append(line.replace(hook_key, result))
+            else:
+                new_lines.append(line)
+        return "\n".join(new_lines)
 
     def finalize_hook(self, hook_key: str, strict: bool = True) -> None:
         """
@@ -736,14 +751,21 @@ class TritonTemplateKernel(TritonKernel):
         self.template_indices = indices
         return contiguous_index
 
-    def _make_codegen_hook(self, subgraph_name: str) -> Callable[[], str]:
+    def _make_codegen_hook(
+        self, subgraph_name: str, indent_width: int = 0
+    ) -> Callable[[], str]:
         """Create a hook closure that codegen's a subgraph body."""
 
         def hook():
             with self.set_subgraph_body(subgraph_name):
                 self.codegen_body()
                 self.cse.invalidate(OrderedSet())
-                return self.body.getvalue().strip()
+                result = self.body.getvalue()
+                if indent_width:
+                    result = textwrap.indent(
+                        textwrap.dedent(result), " " * indent_width
+                    )
+                return result.strip()
 
         return hook
 
@@ -1213,7 +1235,10 @@ class TritonTemplateKernel(TritonKernel):
                     assert load_code is not None
                     self.body.writeline(load_code)
 
-                return self.body.getvalue().strip()
+                result = self.body.getvalue()
+                if indent_width:
+                    result = textwrap.indent(result, " " * indent_width)
+                return result.strip()
 
         return self._register_hook(hook_key, hook)
 
@@ -1469,7 +1494,7 @@ class TritonTemplateKernel(TritonKernel):
             self.codegen_body()
 
         return self._register_hook(
-            subgraph_name, self._make_codegen_hook(subgraph_name)
+            subgraph_name, self._make_codegen_hook(subgraph_name, indent_width)
         )
 
     def _register_hook(
