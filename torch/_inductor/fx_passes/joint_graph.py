@@ -56,14 +56,14 @@ pass_patterns = [
 
 
 @init_once_fakemode
-def lazy_init():
+def lazy_init(input_device: torch.device | None = None):
     from .fuse_attention import _sfdp_init
     from .misc_patterns import _misc_patterns_init
     from .pad_mm import _pad_mm_init
 
-    _pad_mm_init()
-    _sfdp_init()
-    _misc_patterns_init()
+    _pad_mm_init(input_device)
+    _sfdp_init(input_device)
+    _misc_patterns_init(input_device)
 
 
 def remove_no_ops(
@@ -71,8 +71,10 @@ def remove_no_ops(
     zeros: OrderedSet[torch.fx.Node],
     ones: OrderedSet[torch.fx.Node],
 ):
+    """
+    Removes operations that are essentially no-ops e.g. (+ 0, - 0, * 1, / 1)
+    """
     with torch.utils._python_dispatch._disable_current_modes():
-        "Removes no-ops: (+ 0, - 0, * 1, / 1)"
         graph = gm.graph
 
         def fake_tensors_eq(t1, t2, fields=("shape", "dtype", "device")):
@@ -83,13 +85,39 @@ def remove_no_ops(
                     return False
             return True
 
+        def is_mutated(n):
+            """Check if a node is mutated by any in-place operation."""
+            for user in n.users:
+                if user.op != "call_function" or not hasattr(user.target, "_schema"):
+                    continue
+                for i, arg in enumerate(user.args):
+                    if arg is n:
+                        schema_arg = user.target._schema.arguments[i]
+                        if schema_arg.alias_info and schema_arg.alias_info.is_write:
+                            return True
+            return False
+
+        def isScalarValue(arg):
+            return isinstance(arg, (int, float))
+
         def replace_no_op(node, replace_input_index):
             replacement = node.args[replace_input_index]
 
             # https://github.com/pytorch/pytorch/issues/86128 causes
             # non-Tensor inputs even for ops with only Tensor inputs.
             # TODO - decompose/type promote to avoid this
+
             if not all(isinstance(arg, torch.fx.Node) for arg in node.args):
+                if all(isScalarValue(arg) for arg in node.args) or not isinstance(
+                    replacement, torch.fx.Node
+                ):
+                    return
+
+            # https://github.com/pytorch/pytorch/issues/174187
+            # Don't replace if the replacement value is mutated in-place.
+            # The original node acts as an implicit copy; removing it would
+            # cause users to observe the post-mutation value instead.
+            if is_mutated(replacement):
                 return
 
             if not fake_tensors_eq(node.meta["val"], replacement.meta["val"]):
@@ -111,34 +139,62 @@ def remove_no_ops(
             graph.erase_node(node)
 
         for node in graph.find_nodes(op="call_function", target=aten.add.Tensor):
-            # TODO handle Tensor-Scalar adds, it's a different schema
             if len(node.args) == 2:
                 if (
-                    not any(e in zeros for e in node.args)
+                    not any(
+                        e in zeros or (isScalarValue(e) and e == 0) for e in node.args
+                    )
                     or node.kwargs.get("alpha", 1) != 1
                 ):
                     continue
 
-                replace_index = 1 if node.args[0] in zeros else 0
+                replace_index = (
+                    1
+                    if node.args[0] in zeros
+                    or (isScalarValue(node.args[0]) and node.args[0] == 0)
+                    else 0
+                )
+                replacement = node.args[replace_index]
+                if isinstance(replacement, torch.fx.Node):
+                    val = replacement.meta.get("val")
+                    if isinstance(val, torch.Tensor) and val.is_conj():
+                        continue
+
                 replace_no_op(node, replace_index)
 
         for node in graph.find_nodes(op="call_function", target=aten.sub.Tensor):
             if len(node.args) == 2:
-                if node.args[1] not in zeros or node.kwargs.get("alpha", 1) != 1:
+                if (
+                    not (
+                        node.args[1] in zeros
+                        or (isScalarValue(node.args[1]) and node.args[1] == 0)
+                    )
+                    or node.kwargs.get("alpha", 1) != 1
+                ):
                     continue
 
                 replace_no_op(node, 0)
 
         for node in graph.find_nodes(op="call_function", target=aten.mul.Tensor):
             if len(node.args) == 2:
-                if not any(e in ones for e in node.args):
+                if not any(
+                    e in ones or (isScalarValue(e) and e == 1) for e in node.args
+                ):
                     continue
 
-                replace_input_index = 1 if node.args[0] in ones else 0
+                replace_input_index = (
+                    1
+                    if node.args[0] in ones
+                    or (isScalarValue(node.args[0]) and node.args[0] == 1)
+                    else 0
+                )
                 replace_no_op(node, replace_input_index)
 
         for node in graph.find_nodes(op="call_function", target=aten.div.Tensor):
-            if len(node.args) == 2 and node.args[1] in ones:
+            if len(node.args) == 2 and (
+                node.args[1] in ones
+                or (isScalarValue(node.args[1]) and node.args[1] == 1)
+            ):
                 replace_no_op(node, 0)
 
         # meta tensors returned from the graph have no data and can be replaced with empty_strided
@@ -387,9 +443,29 @@ class UniformValueConstantFolder(ConstantFolder):
         return self.unknown_value
 
 
+def _has_self_referential_shape(
+    shapes: list[int | torch.fx.Node], node: torch.fx.Node
+) -> bool:
+    """
+    Check if any shape in `shapes` depends on `node`.
+
+    This is used to detect cycles when constant_fold_uniform_value creates a
+    replacement full() node whose shape includes a sym_size computed from the
+    original tensor being replaced.
+
+    Checks direct args only - shape nodes typically come from sym_size(tensor, dim)
+    where tensor is a direct arg.
+    """
+    for shape_node in shapes:
+        if isinstance(shape_node, torch.fx.Node):
+            if node in shape_node.args:
+                return True
+    return False
+
+
 def constant_fold_uniform_value(gm: torch.fx.GraphModule):
+    """Runs constant folding and replaces constants which can be constructed with a single `full` call. Calls into remove_no_ops."""
     with torch.utils._python_dispatch._disable_current_modes():
-        "Runs constant folding and replaces constants which can be constructed with a single `full` call. Calls into remove_no_ops."
         aten = torch.ops.aten
 
         # Constant folding can leak memory, especially with repeated compilation, so we are only going to
@@ -471,6 +547,11 @@ def constant_fold_uniform_value(gm: torch.fx.GraphModule):
                     cf.symint_nodes[s] if isinstance(s, torch.SymInt) else s
                     for s in node_replacements_shapes[node]
                 ]
+
+                # Check if any shape depends on a symint that was computed from
+                # the node being replaced - this would create a cycle
+                if _has_self_referential_shape(shapes, node):
+                    continue
 
                 # zeros and ones just get traced into full, so we insert those
                 new_node = graph.call_function(
@@ -574,7 +655,9 @@ def canonicalize_aten_ir_passes(gm: torch.fx.GraphModule):
     canonicalize_quant_mapping(gm)
 
 
-def joint_graph_passes(graph: torch.fx.GraphModule):
+def joint_graph_passes(
+    graph: torch.fx.GraphModule, input_device: torch.device | None = None
+):
     """
     Run FX transformations on the joint forwards+backwards graph.
     """
@@ -583,7 +666,7 @@ def joint_graph_passes(graph: torch.fx.GraphModule):
         subsystem="joint_graph_passes",
     )
 
-    lazy_init()
+    lazy_init(input_device)  # type: ignore[call-arg]
     count = 0
 
     # must occur before other passes
