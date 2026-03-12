@@ -62,7 +62,12 @@ class NoEnterTorchFunctionMode(BaseTorchFunctionMode):
         pass
 
 
-def _fn_with_ctx(ctx, fn, *args, **kwargs):
+# Used by WrappedUserFunctionVariable and similar to inline decorated function
+# calls with bytecode backing. Without this, the context enter/exit happens in
+# Python-level VT code, so a nested graph break inside `fn` would skip applying
+# the context in the compiled fn/resume. By inlining through this polyfill, the
+# `with` statement has real bytecode that the resume function can continue from.
+def _fn_with_ctx(ctx: Any, fn: Callable[..., T], *args: Any, **kwargs: Any) -> T:
     with ctx:
         return fn(*args, **kwargs)
 

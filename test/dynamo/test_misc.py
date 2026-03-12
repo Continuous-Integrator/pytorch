@@ -7714,6 +7714,28 @@ not ___dict_contains('cccccccc', G['sys'].modules)""",
         res = opt_fn()
         self.assertEqual(res, "child")
 
+    def test_custom_instancecheck_init_not_called(self):
+        class AlwaysTrueMeta(type):
+            def __instancecheck__(cls, instance):
+                return True
+
+        class Child(metaclass=AlwaysTrueMeta):
+            def __new__(cls):
+                return object()
+
+            def __init__(self):
+                raise AssertionError("should NOT be called")
+
+        def fn():
+            return Child()
+
+        ref = fn()
+        self.assertIsInstance(ref, object)
+
+        opt_fn = torch.compile(fn, backend="eager")
+        res = opt_fn()
+        self.assertIsInstance(res, object)
+
     def test_variable_tracker_recursively_contains(self):
         # VariableTracker.recursively_contains should be updated correctly when mutation happens
         def fn(x):

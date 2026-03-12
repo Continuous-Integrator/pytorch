@@ -6,11 +6,12 @@ import dis
 import functools
 import logging
 import sys
-import types
 from typing import Any, TYPE_CHECKING
 
 
 if TYPE_CHECKING:
+    import types
+
     from collections.abc import Callable
 
     from .symbolic_convert import InstructionTranslatorBase
@@ -629,20 +630,7 @@ def _build_comprehension_fn(
     skip_code(new_code)
 
     # Install as global
-    if new_code.co_freevars:
-        _globals = tx.f_globals
-
-        def _make_fn(
-            closure: tuple[types.CellType, ...],
-        ) -> types.FunctionType:
-            return types.FunctionType(new_code, _globals, fn_name, None, closure)
-
-        tx.output.install_global_unsafe(fn_name, _make_fn)
-    else:
-        tx.output.install_global_unsafe(
-            fn_name,
-            types.FunctionType(new_code, tx.f_globals, fn_name),
-        )
+    tx.output.install_resume_function_global(fn_name, new_code, tx.f_globals)
 
     return new_code, fn_name
 
