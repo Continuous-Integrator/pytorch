@@ -14,6 +14,8 @@ __all__ = [
     "seed",
     "initial_seed",
     "fork_rng",
+    "split",
+    "fold_in",
     "thread_safe_generator",
 ]
 
@@ -22,6 +24,24 @@ if TYPE_CHECKING:
     from torch.utils.data._utils.worker import WorkerInfo
 
 from torch._C import default_generator
+
+
+def key(seed: int, impl: str = "philox", device: torch.device = None) -> torch.Tensor:
+    if impl != "philox":
+        raise NotImplementedError(
+            f"torch.random.key() does not support PRNG impl '{impl}'"
+        )
+
+    # (seed, offset)
+    return torch.tensor([seed, 0], dtype=torch.uint64, device=device)
+
+
+def split(key: torch.Tensor, num_splits: int) -> torch.Tensor:
+    return torch._philox_key_split(key, num_splits)
+
+
+def fold_in(key: torch.Tensor, data: int) -> torch.Tensor:
+    return torch._philox_key_fold_in(key, data)
 
 
 def set_rng_state(new_state: torch.Tensor) -> None:
