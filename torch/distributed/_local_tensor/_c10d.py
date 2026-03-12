@@ -601,8 +601,10 @@ def _local_reduce_scatter_(
 
     from . import LocalTensor
 
-    assert len(output_tensors) == 1
-    assert len(input_tensors) == 1
+    if len(output_tensors) != 1:
+        raise AssertionError
+    if len(input_tensors) != 1:
+        raise AssertionError
 
     output_tensor = output_tensors[0]
     input_list = input_tensors[0]
@@ -610,10 +612,12 @@ def _local_reduce_scatter_(
     reduce_op = reduce_op_so.op()  # type: ignore[attr-defined]
     ranks, group_offsets, _offset = _prepare_collective_groups(process_group_so)
 
-    assert isinstance(output_tensor, LocalTensor), "Output tensor must be a LocalTensor"
-    assert len(input_list) == len(ranks), (
-        f"Number of input chunks ({len(input_list)}) must match number of ranks ({len(ranks)})"
-    )
+    if not isinstance(output_tensor, LocalTensor):
+        raise AssertionError("Output tensor must be a LocalTensor")
+    if len(input_list) != len(ranks):
+        raise AssertionError(
+            f"Number of input chunks ({len(input_list)}) must match number of ranks ({len(ranks)})"
+        )
 
     for group_offset in group_offsets:
         group_ranks = [group_offset + r for r in ranks]
@@ -623,7 +627,8 @@ def _local_reduce_scatter_(
         # For each rank position i, reduce input_list[i] across all ranks in the group
         for i, rank_i in enumerate(group_ranks):
             chunk = input_list[i]
-            assert isinstance(chunk, LocalTensor), "Input chunk must be a LocalTensor"
+            if not isinstance(chunk, LocalTensor):
+                raise AssertionError("Input chunk must be a LocalTensor")
             if not all(rank in chunk._local_tensors for rank in group_ranks):
                 continue
 
