@@ -457,6 +457,14 @@ comms_use_pg_alloc_strategy: str | None = os.environ.get("USE_PG_ALLOC_STRATEGY"
 # the buffer won't be needed for comms. Requires comms_use_pg_alloc=True.
 comms_pg_alloc_allow_borrow: bool = os.environ.get("USE_PG_ALLOC_BORROW", "0") == "1"
 
+# Strategy for cross-pool borrowing. Requires comms_pg_alloc_allow_borrow=True.
+# "greedy": single-pass, borrow first safe match (with reuse chain guard).
+# "peak_aware": two-pass — simulate to find peak, only borrow buffers live at peak.
+# "min_cost_flow": bipartite matching for optimal borrow assignment minimizing peak.
+comms_pg_alloc_borrow_strategy: str = os.environ.get(
+    "USE_PG_ALLOC_BORROW_STRATEGY", "greedy"
+)
+
 # runtime estimation function for ops
 # for built-in estimation function, pass in "default"; for user-defined estimation function, pass in the function handle
 estimate_op_runtime = "default"

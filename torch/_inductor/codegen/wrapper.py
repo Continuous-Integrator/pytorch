@@ -437,6 +437,10 @@ class MemoryPlanningState:
         # Pre-computed: regular alloc schedule (reuse_key -> sorted sni list)
         # Used to avoid borrowing when it would break a regular reuse chain.
         self.regular_alloc_schedule: dict[ReuseKey, list[int]] = {}
+        # Set of buffer names live at peak (for peak_aware strategy)
+        self.peak_live_buffers: OrderedSet[str] | None = None
+        # Pre-computed borrow plan: buf_name -> comm_key (for min_cost_flow strategy)
+        self.borrow_plan: dict[str, CommBufferReuseKey] | None = None
 
     def __contains__(self, key: ReuseKey) -> bool:
         return bool(self.reuse_pool.get(key, None))
@@ -905,8 +909,31 @@ class AllocateLine(MemoryPlanningLine):
         buf_name = self.node.get_name()
         free_sni = state.buffer_free_sni.get(buf_name)
         if free_sni is None:
-            # Don't know when this buffer will be freed (e.g., graph output)
             return None
+
+        strategy = config.comms_pg_alloc_borrow_strategy
+
+        # Peak-aware: only borrow buffers live at peak
+        if strategy == "peak_aware" and state.peak_live_buffers is not None:
+            if buf_name not in state.peak_live_buffers:
+                return None
+
+        # Min-cost flow: use pre-computed plan
+        if strategy == "min_cost_flow" and state.borrow_plan is not None:
+            planned_comm_key = state.borrow_plan.get(buf_name)
+            if planned_comm_key is None:
+                return None
+            if not state.comm_buffer_contains(planned_comm_key):
+                return None
+            free_line = state.comm_buffer_pop(planned_comm_key)
+            free_line.is_reused = True
+            state.borrowed_comm_keys[buf_name] = planned_comm_key
+            log.debug(
+                "pg_alloc borrow (min_cost_flow): %s borrows comm buffer %s",
+                buf_name,
+                planned_comm_key,
+            )
+            return ReuseLine(self.wrapper, free_line.node, self.node)
 
         # Check reuse chain: if a future regular allocation with the same key
         # exists after this buffer is freed, borrowing would break the chain
@@ -2178,6 +2205,170 @@ class PythonWrapperCodegen(CodeGen):
         for key in state.regular_alloc_schedule:
             state.regular_alloc_schedule[key].sort()
 
+    def _simulate_peak_without_borrow(self) -> OrderedSet[str]:
+        """Simulate memory planning without BOR to find buffers live at peak.
+
+        Read-only pass: tracks simulated regular reuse pool and running memory
+        total. Returns set of buffer names live at the peak memory point.
+        """
+        sim_pool: dict[ReuseKey, list[str]] = collections.defaultdict(list)
+        live_bufs: dict[str, int] = {}  # buf_name -> size_bytes
+        current_mem = 0
+        peak_mem = 0
+        peak_live: OrderedSet[str] = OrderedSet()
+
+        for line in self.lines:
+            if isinstance(line, AllocateLine) and not line.comm_buffer:
+                if line.node.get_name() in V.graph.removed_buffers:
+                    continue
+                key = buffer_reuse_key(line.node)
+                buf_name = line.node.get_name()
+                size = V.graph.sizevars.optimization_hint(
+                    V.graph.get_allocation_storage_size(line.node), fallback=0
+                ) * get_dtype_size(line.node.get_dtype())
+                if sim_pool.get(key):
+                    # Reuse from pool — no memory cost
+                    sim_pool[key].pop()
+                    live_bufs[buf_name] = size
+                else:
+                    # Fresh alloc
+                    current_mem += size
+                    live_bufs[buf_name] = size
+                if current_mem > peak_mem:
+                    peak_mem = current_mem
+                    peak_live = OrderedSet(live_bufs.keys())
+            elif isinstance(line, FreeIfNotReusedLine) and not line.comm_buffer:
+                buf_name = line.node.get_name()
+                if buf_name in live_bufs:
+                    key = buffer_reuse_key(line.node)
+                    sim_pool[key].append(buf_name)
+                    current_mem -= live_bufs.pop(buf_name)
+
+        return peak_live
+
+    def _plan_borrow_min_cost_flow(
+        self, state: MemoryPlanningState
+    ) -> dict[str, CommBufferReuseKey]:
+        """Compute optimal borrow assignments via bipartite matching.
+
+        Phase 1: Get peak live buffers via simulation.
+        Phase 2: Build bipartite graph of borrowable buffers to idle comm windows.
+        Phase 3: Maximum-weight matching via augmenting paths.
+        Returns {buf_name: comm_key} for matched pairs.
+        """
+        import bisect
+
+        peak_live = self._simulate_peak_without_borrow()
+        if not peak_live:
+            return {}
+
+        # Collect borrowable candidates: regular buffers live at peak with
+        # a matching comm buffer size and safe timing.
+        candidates: list[
+            tuple[str, BorrowMatchKey, int, int, int]
+        ] = []  # (name, match_key, alloc_sni, free_sni, size_bytes)
+        for line in self.lines:
+            if not isinstance(line, AllocateLine) or line.comm_buffer:
+                continue
+            buf_name = line.node.get_name()
+            if buf_name not in peak_live:
+                continue
+            if buf_name in V.graph.removed_buffers:
+                continue
+            free_sni = state.buffer_free_sni.get(buf_name)
+            if free_sni is None:
+                continue
+            # Check reuse chain guard
+            regular_key = buffer_reuse_key(line.node)
+            future_allocs = state.regular_alloc_schedule.get(regular_key, [])
+            idx = bisect.bisect_right(future_allocs, free_sni)
+            if idx < len(future_allocs):
+                continue
+            storage_size = V.graph.get_allocation_storage_size(line.node)
+            match_key: BorrowMatchKey = (
+                line.node.get_device_or_error(),
+                line.node.get_dtype(),
+                sympy_str(V.graph.sizevars.simplify(storage_size)),
+            )
+            size = V.graph.sizevars.optimization_hint(
+                storage_size, fallback=0
+            ) * get_dtype_size(line.node.get_dtype())
+            if size <= 0:
+                continue
+            candidates.append(
+                (buf_name, match_key, line.scheduler_node_index, free_sni, size)
+            )
+
+        if not candidates:
+            return {}
+
+        # Build idle windows from comm demand schedule:
+        # For each comm_key, idle windows are gaps between consecutive demands.
+        # An idle window [start, end] means the comm buffer is free during that range.
+        _INF_SNI = 2**31
+        idle_windows: list[
+            tuple[CommBufferReuseKey, int, int]
+        ] = []  # (comm_key, idle_start, idle_end)
+        for comm_key, demand_snis in state.comm_demand_schedule.items():
+            if comm_key[3] != ir.CommBufferType.PG_ALLOC:
+                continue
+            for i in range(len(demand_snis)):
+                idle_start = demand_snis[i]
+                idle_end = demand_snis[i + 1] if i + 1 < len(demand_snis) else _INF_SNI
+                idle_windows.append((comm_key, idle_start, idle_end))
+
+        if not idle_windows:
+            return {}
+
+        # Build match key for each comm_key
+        comm_key_match: dict[CommBufferReuseKey, BorrowMatchKey] = {}
+        for line in self.lines:
+            if isinstance(line, AllocateLine) and line.comm_buffer:
+                layout = line.node.get_output_spec()
+                if isinstance(layout, ir.CommBufferLayout):
+                    ck = comm_buffer_reuse_key(line.node)
+                    if ck not in comm_key_match:
+                        storage_size = V.graph.get_allocation_storage_size(line.node)
+                        comm_key_match[ck] = (
+                            line.node.get_device_or_error(),
+                            line.node.get_dtype(),
+                            sympy_str(V.graph.sizevars.simplify(storage_size)),
+                        )
+
+        # Build bipartite adjacency: candidate_idx -> list of (window_idx, weight)
+        adj: dict[int, list[tuple[int, int]]] = collections.defaultdict(list)
+        for ci, (buf_name, mk, alloc_sni, free_sni, size) in enumerate(candidates):
+            for wi, (comm_key, idle_start, idle_end) in enumerate(idle_windows):
+                cmk = comm_key_match.get(comm_key)
+                if cmk != mk:
+                    continue
+                # Buffer lifetime [alloc_sni, free_sni] must fit in [idle_start, idle_end)
+                if alloc_sni >= idle_start and free_sni < idle_end:
+                    adj[ci].append((wi, size))
+
+        # Maximum-weight bipartite matching via greedy (sort by weight desc)
+        # For typical graph sizes this is effective and fast.
+        edges: list[tuple[int, int, int]] = []  # (weight, candidate_idx, window_idx)
+        for ci, neighbors in adj.items():
+            for wi, weight in neighbors:
+                edges.append((weight, ci, wi))
+        edges.sort(reverse=True)
+
+        matched_candidates: OrderedSet[int] = OrderedSet()
+        matched_windows: OrderedSet[int] = OrderedSet()
+        plan: dict[str, CommBufferReuseKey] = {}
+
+        for weight, ci, wi in edges:
+            if ci in matched_candidates or wi in matched_windows:
+                continue
+            matched_candidates.add(ci)
+            matched_windows.add(wi)
+            buf_name = candidates[ci][0]
+            comm_key = idle_windows[wi][0]
+            plan[buf_name] = comm_key
+
+        return plan
+
     def memory_plan_reuse(self):
         outputs = self.get_graph_outputs()
         out_names = V.graph._get_output_names(outputs)
@@ -2198,6 +2389,15 @@ class PythonWrapperCodegen(CodeGen):
         # Pre-scan for cross-pool borrowing if enabled
         if config.comms_pg_alloc_allow_borrow and config.comms_use_pg_alloc:
             self._prescan_borrow_schedules(planning_states[-1])
+            strategy = config.comms_pg_alloc_borrow_strategy
+            if strategy == "peak_aware":
+                planning_states[
+                    -1
+                ].peak_live_buffers = self._simulate_peak_without_borrow()
+            elif strategy == "min_cost_flow":
+                planning_states[-1].borrow_plan = self._plan_borrow_min_cost_flow(
+                    planning_states[-1]
+                )
 
         for i in range(len(self.lines)):
             line = self.lines[i]
