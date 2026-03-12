@@ -140,16 +140,16 @@ def _register_single_dim_pointwise(
     else:
         schema_info = RuntimeSchemaInfo(static_argnum, static_kwargkey=["out"])
     # Fused ops (e.g. _fused_adam_) have state_steps on a potentially different
-    # mesh; cross_mesh_indices tells the propagator to preserve that mesh.
-    cross_mesh_indices: list[int] | None = None
+    # mesh; see the note in expand_to_full_mesh_op_strategy for details.
+    different_mesh_args: list[int] | None = None
     if op.name().startswith("aten::_fused_"):
-        cross_mesh_indices = [_FUSED_OP_SCALAR_IDX]
+        different_mesh_args = [_FUSED_OP_SCALAR_IDX]
     register_single_dim_strategy(
         op,
         schema_info=schema_info,
         allow_uneven_sharding=True,
         allow_unbacked_sharding=True,
-        cross_mesh_indices=cross_mesh_indices,
+        different_mesh_args=different_mesh_args,
     )(strategy_fn)
 
 

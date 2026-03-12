@@ -76,7 +76,10 @@ class _SingleDimStrategyInfo:
     func: _SingleDimStrategyFunc
     allow_unbacked_sharding: bool | None = field(default=None)
     allow_uneven_sharding: bool = field(default=False)
-    cross_mesh_indices: list[int] | None = field(default=None)
+    # Positions (in args_schema) of args that may live on a different mesh
+    # than the op's compute mesh.  These args must be Replicate.  See the
+    # note in expand_to_full_mesh_op_strategy for details.
+    different_mesh_args: list[int] | None = field(default=None)
 
     # Delegate to func so this can be used interchangeably with a raw
     # _SingleDimStrategyFunc (e.g. in tests that call strategy functions directly).
@@ -463,22 +466,23 @@ def _expand_single_dim_strategy_to_mesh(
                     element_mesh = arg.strategies[0].output_spec.mesh
                     break
 
-            # cross_mesh_indices are defined as positions in args_schema (the
-            # full arg list), but expand_to_full_mesh_op_strategy indexes into
-            # args_strategy (OpStrategy items only).  Non-OpStrategy args like
-            # empty lists (e.g. max_exp_avg_sqs=[] when amsgrad=False) are
-            # filtered out, shifting later indices.  Remap here.
-            cross_mesh_indices = strategy_info.cross_mesh_indices
-            if cross_mesh_indices is not None:
+            # different_mesh_args are defined as positions in
+            # args_schema (the full arg list), but
+            # expand_to_full_mesh_op_strategy indexes into args_strategy
+            # (OpStrategy items only).  Non-OpStrategy args like empty lists
+            # (e.g. max_exp_avg_sqs=[] when amsgrad=False) are filtered out,
+            # shifting later indices.  Remap here.
+            remapped_different_mesh_args = strategy_info.different_mesh_args
+            if remapped_different_mesh_args is not None:
                 schema_to_strategy: dict[int, int] = {}
                 strategy_pos = 0
                 for schema_pos, arg in enumerate(op_schema.args_schema):
                     if isinstance(arg, OpStrategy):
                         schema_to_strategy[schema_pos] = strategy_pos
                         strategy_pos += 1
-                cross_mesh_indices = [
+                remapped_different_mesh_args = [
                     schema_to_strategy[i]
-                    for i in cross_mesh_indices
+                    for i in remapped_different_mesh_args
                     if i in schema_to_strategy
                 ]
 
@@ -491,7 +495,7 @@ def _expand_single_dim_strategy_to_mesh(
                 input_index=prepared_strategy.num_outputs,
                 allow_unbacked_sharding=prepared_strategy.allow_unbacked_sharding,
                 allow_uneven_sharding=prepared_strategy.allow_uneven_sharding,
-                cross_mesh_indices=cross_mesh_indices,
+                different_mesh_args=remapped_different_mesh_args,
             )
 
         return expanded_strategy
@@ -631,7 +635,7 @@ def register_single_dim_strategy(
     schema_info: RuntimeSchemaInfo | None = None,
     allow_unbacked_sharding: bool | None = None,
     allow_uneven_sharding: bool = False,
-    cross_mesh_indices: list[int] | None = None,
+    different_mesh_args: list[int] | None = None,
 ) -> Callable[[_SingleDimStrategyFunc], _SingleDimStrategyFunc]:
     """
     Registers a single_dim_strategy function for the given op.
@@ -680,7 +684,7 @@ def register_single_dim_strategy(
             func=impl,
             allow_unbacked_sharding=allow_unbacked_sharding,
             allow_uneven_sharding=allow_uneven_sharding,
-            cross_mesh_indices=cross_mesh_indices,
+            different_mesh_args=different_mesh_args,
         )
         registration_wrapper(info)
         return impl

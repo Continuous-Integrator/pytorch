@@ -367,7 +367,7 @@ def expand_to_full_mesh_op_strategy(
         [list[DTensorSpec], DTensorSpec | tuple[DTensorSpec | None, ...]], bool
     ]
     | None = None,
-    cross_mesh_indices: list[int] | None = None,
+    different_mesh_args: list[int] | None = None,
 ) -> OpStrategy:
     """
     Convenience function to allow writing a sharding strategy considering only a single mesh dimension,
@@ -478,9 +478,25 @@ def expand_to_full_mesh_op_strategy(
                 f"{len(args_strategy)} args + {len(kwargs_strategy)} kwargs)"
             )
 
-        # For cross-mesh inputs, preserve the original mesh and assert Replicate placements
-        if cross_mesh_indices is not None:
-            for idx in cross_mesh_indices:
+        # Note on different_mesh_args:
+        #
+        # Some ops have args that live on a different mesh than the op's
+        # compute mesh.  These args must be Replicate — you cannot
+        # meaningfully Shard a tensor across a mesh it doesn't belong to.
+        # We preserve the original mesh/placement here so the propagator
+        # doesn't try to redistribute them onto the compute mesh.
+        #
+        # Currently used by fused optimizer ops (e.g. _fused_adam_) where
+        # state_steps is a scalar counter on a smaller sub-mesh (e.g. 1D
+        # DP) while params/grads are on a larger mesh (e.g. 2D DP+TP).
+        #
+        # This is distinct from the element_mesh handling in
+        # single_dim_strategy.py, which deals with foreach ops where
+        # different *elements* in a tensor list may live on different
+        # sub-meshes (e.g. param group A on 2D mesh, param group B on
+        # 1D mesh).
+        if different_mesh_args is not None:
+            for idx in different_mesh_args:
                 if idx < len(input_args_strategy):
                     cross_mesh_input = input_args_strategy[idx]
                     original_spec = cross_mesh_input.strategies[0].output_spec
