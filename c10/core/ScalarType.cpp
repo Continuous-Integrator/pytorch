@@ -279,9 +279,15 @@ std::string getScalarTypeAbbr(ScalarType scalarType) {
     case ScalarType::UInt64:
       return "u64";
     case ScalarType::Bits16:
-      return "b16";
+      return "b16x1";
     case ScalarType::Bits1x8:
       return "b1x8";
+    case ScalarType::Bits2x4:
+      return "b2x4";
+    case ScalarType::Bits4x2:
+      return "b4x2";
+    case ScalarType::Bits8:
+      return "b8x1";
     default:
       return std::get<0>(getDtypeNames(scalarType));
   }
