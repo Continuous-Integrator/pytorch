@@ -220,9 +220,15 @@ class PartialRender:
         each key, the hook function runs and this method splices the result
         back into the code in place of the placeholder.
 
-        Two replacement modes based on the hook result:
+        Three replacement modes:
 
-        **Non-empty result** — dedent + re-indent.
+        **Inline placeholder** — direct substitution.
+            The placeholder shares a line with other content (e.g.
+            ``<ARGDEFS>,`` in flex_attention templates, where it appears
+            as part of a function signature).  The placeholder text is
+            replaced with the result string verbatim — no indent handling.
+
+        **Whole-line placeholder, non-empty result** — dedent + re-indent.
             The placeholder sits alone on an indented line.  The result
             (often multi-line) is dedented then re-indented to match the
             placeholder's column, so it integrates at the right nesting
@@ -239,7 +245,7 @@ class PartialRender:
               range-tree indexing setup and a ``tl.load()`` call.
               Re-indent aligns to the inner loop body.
 
-        **Empty result** — line removal.
+        **Whole-line placeholder, empty result** — line removal.
             The entire placeholder line is deleted.  Cases:
 
             - ``<DEF_KERNEL>`` returns ``""`` for
@@ -251,9 +257,6 @@ class PartialRender:
             - ``<STORE_OUTPUT_0>`` returns ``""`` for
               ``ExternalTritonTemplateKernel`` outputs that have no
               matching epilogue consumer.
-
-        All callers (Jinja templates, CuteDSL, and Helion AST generation)
-        always emit placeholders alone on their line.
         """
         idx = self._code.find(hook_key)
         if idx < 0:
@@ -264,10 +267,10 @@ class PartialRender:
         if line_end == -1:
             line_end = len(self._code)
 
-        assert self._code[line_start:line_end].strip() == hook_key, (
-            f"Placeholder {hook_key} must occupy the whole line, "
-            f"got: {self._code[line_start:line_end]!r}"
-        )
+        # Inline placeholder (e.g. ``<ARGDEFS>,`` in flex_attention templates)
+        # — do a direct string substitution without indent handling.
+        if self._code[line_start:line_end].strip() != hook_key:
+            return self._code[:idx] + result + self._code[idx + len(hook_key) :]
 
         # Whole-line placeholder with empty result — remove entire line
         if not (result and result.strip()):
