@@ -1459,7 +1459,6 @@ class TestMultiProc(DynamoDistributedMultiProcTestCase):
             w.wait()
             torch.accelerator.synchronize(device)
 
-
     @skip_if_lt_x_gpu(2)
     def test_all_gather_into_tensor_stack_vs_concat_dynamic(self):
         """all_gather_into_tensor supports both stack and concat output shapes.
@@ -1470,9 +1469,7 @@ class TestMultiProc(DynamoDistributedMultiProcTestCase):
 
         def stack_gather(x):
             world_size = dist.get_world_size()
-            out = torch.empty(
-                (world_size,) + x.shape, dtype=x.dtype, device=x.device
-            )
+            out = torch.empty((world_size,) + x.shape, dtype=x.dtype, device=x.device)
             dist.all_gather_into_tensor(out, x)
             return out
 
@@ -1497,7 +1494,6 @@ class TestMultiProc(DynamoDistributedMultiProcTestCase):
                 compiled_result = compiled_fn(x)
                 self.assertEqual(eager_result, compiled_result)
                 torch._dynamo.reset()
-
 
 
 @requires_accelerator_dist_backend(["nccl", "xccl"])
