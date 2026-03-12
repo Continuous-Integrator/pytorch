@@ -1380,10 +1380,10 @@ REGISTER_NATIVE_OPERATOR_FUNCTOR(
     })
 
 REGISTER_NATIVE_OPERATOR_FUNCTOR(
-    prim::is_cuda,
-    prim_is_cuda,
+    aten::is_cuda,
+    aten_is_cuda,
     [](Node* n) -> SROperator {
-      if (!sr_schema_check(n, "prim::is_cuda(Tensor a) -> bool")) {
+      if (!sr_schema_check(n, "aten::is_cuda(Tensor self) -> bool")) {
         return nullptr;
       }
       return [](ProcessedNode* pnode) {

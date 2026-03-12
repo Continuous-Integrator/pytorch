@@ -809,7 +809,7 @@ struct CodeImpl {
       case aten::dim:
         emitOperatorOrInstruction(node, DIM);
         break;
-      case prim::is_cuda:
+      case aten::is_cuda:
         emitOperatorOrInstruction(node, IS_CUDA);
         break;
       case aten::__not__:

@@ -301,7 +301,7 @@ struct PeepholeOptimizeImpl {
           changed = true;
         }
       } else if (
-          node->matches("prim::is_cuda(Tensor a) -> bool") &&
+          node->matches("aten::is_cuda(Tensor self) -> bool") &&
           shape_peepholes_) {
         auto ptt = node->input()->type()->expect<TensorType>();
         if (ptt->device()) {

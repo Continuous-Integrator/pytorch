@@ -183,7 +183,6 @@ namespace c10 {
   _(prim, rpc_async)                 \
   _(prim, rpc_sync)                  \
   _(prim, rpc_remote)                \
-  _(prim, is_cuda)                   \
   _(aten, append)                    \
   _(aten, as_tensor)                 \
   _(aten, adaptive_avg_pool2d_backward) \

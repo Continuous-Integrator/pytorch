@@ -3332,6 +3332,96 @@
   device_guard: False
   manual_cpp_binding: True
 
+- func: is_cuda(Tensor self) -> bool
+  variants: method
+  device_check: NoCheck
+  device_guard: False
+  manual_cpp_binding: True
+
+- func: is_cpu(Tensor self) -> bool
+  variants: method
+  device_check: NoCheck
+  device_guard: False
+  manual_cpp_binding: True
+
+- func: is_xla(Tensor self) -> bool
+  variants: method
+  device_check: NoCheck
+  device_guard: False
+  manual_cpp_binding: True
+
+- func: is_xpu(Tensor self) -> bool
+  variants: method
+  device_check: NoCheck
+  device_guard: False
+  manual_cpp_binding: True
+
+- func: is_sparse(Tensor self) -> bool
+  variants: method
+  device_check: NoCheck
+  device_guard: False
+  manual_cpp_binding: True
+
+- func: is_sparse_csr(Tensor self) -> bool
+  variants: method
+  device_check: NoCheck
+  device_guard: False
+  manual_cpp_binding: True
+
+- func: is_mkldnn(Tensor self) -> bool
+  variants: method
+  device_check: NoCheck
+  device_guard: False
+  manual_cpp_binding: True
+
+- func: is_mps(Tensor self) -> bool
+  variants: method
+  device_check: NoCheck
+  device_guard: False
+  manual_cpp_binding: True
+
+- func: is_mtia(Tensor self) -> bool
+  variants: method
+  device_check: NoCheck
+  device_guard: False
+  manual_cpp_binding: True
+
+- func: is_vulkan(Tensor self) -> bool
+  variants: method
+  device_check: NoCheck
+  device_guard: False
+  manual_cpp_binding: True
+
+- func: is_ipu(Tensor self) -> bool
+  variants: method
+  device_check: NoCheck
+  device_guard: False
+  manual_cpp_binding: True
+
+- func: is_meta(Tensor self) -> bool
+  variants: method
+  device_check: NoCheck
+  device_guard: False
+  manual_cpp_binding: True
+
+- func: is_nested(Tensor self) -> bool
+  variants: method
+  device_check: NoCheck
+  device_guard: False
+  manual_cpp_binding: True
+
+- func: is_maia(Tensor self) -> bool
+  variants: method
+  device_check: NoCheck
+  device_guard: False
+  manual_cpp_binding: True
+
+- func: is_quantized(Tensor self) -> bool
+  variants: method
+  device_check: NoCheck
+  device_guard: False
+  manual_cpp_binding: True
+
 - func: kl_div(Tensor self, Tensor target, int reduction=Mean, *, bool log_target=False) -> Tensor
 
 - func: kron(Tensor self, Tensor other) -> Tensor

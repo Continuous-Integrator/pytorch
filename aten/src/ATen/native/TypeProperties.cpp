@@ -11,11 +11,26 @@
 #include <ATen/ops/can_cast_native.h>
 #include <ATen/ops/is_complex_native.h>
 #include <ATen/ops/is_conj_native.h>
+#include <ATen/ops/is_cpu_native.h>
+#include <ATen/ops/is_cuda_native.h>
 #include <ATen/ops/is_distributed_native.h>
 #include <ATen/ops/is_floating_point_native.h>
 #include <ATen/ops/is_inference_native.h>
+#include <ATen/ops/is_ipu_native.h>
+#include <ATen/ops/is_maia_native.h>
+#include <ATen/ops/is_meta_native.h>
+#include <ATen/ops/is_mkldnn_native.h>
+#include <ATen/ops/is_mps_native.h>
+#include <ATen/ops/is_mtia_native.h>
 #include <ATen/ops/is_neg_native.h>
+#include <ATen/ops/is_nested_native.h>
+#include <ATen/ops/is_quantized_native.h>
 #include <ATen/ops/is_signed_native.h>
+#include <ATen/ops/is_sparse_csr_native.h>
+#include <ATen/ops/is_sparse_native.h>
+#include <ATen/ops/is_vulkan_native.h>
+#include <ATen/ops/is_xla_native.h>
+#include <ATen/ops/is_xpu_native.h>
 #include <ATen/ops/promote_types_native.h>
 #include <ATen/ops/result_type_native.h>
 #include <ATen/ops/type_as_native.h>
@@ -53,6 +68,66 @@ bool is_conj(const Tensor& self) {
 
 bool is_neg(const Tensor& self) {
   return self.is_neg();
+}
+
+bool is_cuda(const Tensor& self) {
+  return self.is_cuda();
+}
+
+bool is_cpu(const Tensor& self) {
+  return self.is_cpu();
+}
+
+bool is_xla(const Tensor& self) {
+  return self.is_xla();
+}
+
+bool is_xpu(const Tensor& self) {
+  return self.is_xpu();
+}
+
+bool is_sparse(const Tensor& self) {
+  return self.is_sparse();
+}
+
+bool is_sparse_csr(const Tensor& self) {
+  return self.is_sparse_csr();
+}
+
+bool is_mkldnn(const Tensor& self) {
+  return self.is_mkldnn();
+}
+
+bool is_mps(const Tensor& self) {
+  return self.is_mps();
+}
+
+bool is_mtia(const Tensor& self) {
+  return self.is_mtia();
+}
+
+bool is_vulkan(const Tensor& self) {
+  return self.is_vulkan();
+}
+
+bool is_ipu(const Tensor& self) {
+  return self.is_ipu();
+}
+
+bool is_meta(const Tensor& self) {
+  return self.is_meta();
+}
+
+bool is_nested(const Tensor& self) {
+  return self.is_nested();
+}
+
+bool is_maia(const Tensor& self) {
+  return self.is_maia();
+}
+
+bool is_quantized(const Tensor& self) {
+  return self.is_quantized();
 }
 
 // Returns true if `self` and `from` have compatible tensor types,

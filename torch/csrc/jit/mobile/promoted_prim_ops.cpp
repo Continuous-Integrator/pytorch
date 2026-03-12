@@ -232,7 +232,7 @@ void dictIndex(Stack& stack) {
   push(stack, value->value());
 }
 
-[[maybe_unused]] static const std::array<mobile::prim_op_fn_register, 16>
+[[maybe_unused]] static const std::array<mobile::prim_op_fn_register, 17>
     op_reg = {
         mobile::prim_op_fn_register("prim::TupleIndex", tupleIndex),
         mobile::prim_op_fn_register("aten::Bool.Tensor", boolTensor),
@@ -252,6 +252,7 @@ void dictIndex(Stack& stack) {
         mobile::prim_op_fn_register("aten::dim", dim),
         mobile::prim_op_fn_register("prim::Uninitialized", unInitialized),
         mobile::prim_op_fn_register("prim::is_cuda", isCuda),
+        mobile::prim_op_fn_register("aten::is_cuda", isCuda),
         mobile::prim_op_fn_register("aten::__getitem__.Dict_str", dictIndex),
         mobile::prim_op_fn_register("prim::unchecked_cast", noop),
         // TODO: (@pavithran) size is overloaded with int[] and Tensor
