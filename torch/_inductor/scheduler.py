@@ -4358,6 +4358,8 @@ class Scheduler:
                 ms2_fused = _estimate_fused_epilogue_runtime(node1, node2, ms2)
 
             # Start compiling choices in parallel
+            from torch._inductor.codegen.simd import CantSplit
+
             future_choices: list[tuple[Any, LambdaFuture | None, ModuleType]] = []
             triton_choices = 0
             for choice, unfused_time in choice_timings_iter:
@@ -4384,9 +4386,14 @@ class Scheduler:
                     break
 
                 with multi_node.swap_as_triton_caller(choice):
-                    future_choices.append(
-                        (choice, *self.compile_kernel(node_list_fused))
-                    )
+                    try:
+                        future_choices.append(
+                            (choice, *self.compile_kernel(node_list_fused))
+                        )
+                    except CantSplit:
+                        # Epilogue node ranges may be incompatible with the
+                        # template kernel's tiling groups — skip this choice.
+                        continue
 
             if len(future_choices) == 0:
                 # Check if fb-specific fusion was requested but no choices available
