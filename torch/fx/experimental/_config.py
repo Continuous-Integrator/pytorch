@@ -125,6 +125,12 @@ soft_pending_unbacked_not_found_error = False
 aggressive_guard_free_semantics = 0
 
 
+# When set, recompile() dumps generated code to fx_{hash}.py files in this directory.
+codegen_dump_dir: str = Config(  # type: ignore[var-annotated]
+    default="",
+    env_name_default="TORCH_FX_CODEGEN_DUMP_DIR",
+)
+
 install_config_module(sys.modules[__name__])
 
 

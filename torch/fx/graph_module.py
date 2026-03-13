@@ -16,6 +16,7 @@ from typing import Any
 import torch
 import torch.nn as nn
 import torch.overrides
+from torch._logging._internal import trace_structured
 from torch.nn.modules.module import _addindent
 from torch.package import Importer, PackageExporter, PackageImporter, sys_importer
 
@@ -878,18 +879,53 @@ class {module_name}(torch.nn.Module):
             self._in_spec = self._graph._codegen.pytree_info.in_spec
             self._out_spec = self._graph._codegen.pytree_info.out_spec
 
+        # ProfilerCodeGen has its own dual-path profiler instrumentation,
+        # skip the old record_func / enrich_profiler_metadata path.
+        # Lazy import to avoid circular dependency: profiler_codegen -> torch.fx -> graph_module
+        from torch.fx.profiler_codegen import ProfilerCodeGen
+
+        use_record_func = (
+            fx_experimental_config.enrich_profiler_metadata
+            and not isinstance(self._graph._codegen, ProfilerCodeGen)
+        )
         python_code = self._graph.python_code(
             root_module="self",
-            record_func=fx_experimental_config.enrich_profiler_metadata,
+            record_func=use_record_func,
         )
         self._code = python_code.src
         self._lineno_map = python_code._lineno_map
         self._prologue_start = python_code._prologue_start
 
+        # Disk dump: write generated source to content-addressed file for debugging.
+        # Exec always runs from in-memory string; on-disk copy is read-only, no corruption risk.
+        dump_dir = fx_experimental_config.codegen_dump_dir
+        if dump_dir:
+            code_hash = hashlib.sha256(self._code.encode("utf-8")).hexdigest()[:16]
+            # Content-addressed filename, consistent with inductor cache pattern
+            dump_filename = f"fx_{code_hash}.py"
+            dump_path = os.path.join(dump_dir, dump_filename)
+            os.makedirs(dump_dir, exist_ok=True)
+            if not os.path.exists(dump_path):
+                with open(dump_path, "w") as f:
+                    f.write(self._code)
+            self._codegen_dump_path = dump_path
+
+            # Structured logging for tlparse integration
+            # TODO: consider gating on first-write only to avoid redundant logs
+            trace_structured(
+                "fx_codegen_dump",
+                lambda: {
+                    "filename": dump_filename,
+                    "file_path": os.path.abspath(dump_path),
+                },
+                payload_fn=lambda: self._code,
+                expect_trace_id=False,
+            )
+
         cls = type(self)
         co_fields = self._graph._co_fields if hasattr(self._graph, "_co_fields") else {}
 
-        if fx_experimental_config.enrich_profiler_metadata:
+        if use_record_func:
             # Generate metadata and register for profiler augmentation
             node_metadata: dict[int, dict[str, Any]] = {}
             for i, node in enumerate(self._graph.nodes):
