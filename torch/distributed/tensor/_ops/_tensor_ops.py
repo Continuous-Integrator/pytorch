@@ -1443,9 +1443,6 @@ def unfold_strategy(
         aten.isin.Tensor_Tensor,
         aten.isin.Tensor_Scalar,
         aten.isin.Scalar_Tensor,
-        # masked indexing: complex indexing patterns, no safe sharding
-        aten._unsafe_masked_index.default,
-        aten._unsafe_masked_index_put_accumulate.default,
         # trilinear: bilinear decomp target, native C++ only
         aten._trilinear.default,
         # grid_sampler: complex interpolation, batch dim only
@@ -1550,6 +1547,55 @@ def block_diag_strategy(op_schema: OpSchema) -> StrategyType:
         )
         input_specs.append(spec)
         redistribute_costs.append(generate_redistribute_costs(child, spec))
+    return OpStrategy(
+        [
+            OpSpec(
+                output_specs=DTensorSpec(mesh, replicate_placements),
+                input_specs=tuple(input_specs),
+                redistribute_cost=redistribute_costs,
+            )
+        ]
+    )
+
+
+@register_op_strategy(
+    [
+        aten._unsafe_masked_index.default,
+        aten._unsafe_masked_index_put_accumulate.default,
+    ],
+    schema_info=RuntimeSchemaInfo(1, needs_pytree=True),
+)
+def unsafe_masked_index_strategy(op_schema: OpSchema) -> StrategyType:
+    # These ops take (Tensor self, Tensor mask, Tensor?[] indices, ...).
+    # The Tensor?[] arg becomes a TupleStrategy, so we need needs_pytree
+    # to correctly count all tensor inputs.
+    first_arg = op_schema.args_schema[0]
+    if not isinstance(first_arg, OpStrategy):
+        raise AssertionError(f"Expected OpStrategy, got {type(first_arg)}")
+    mesh = first_arg.mesh
+    replicate_placements = tuple(Replicate() for _ in range(mesh.ndim))
+    input_specs = []
+    redistribute_costs = []
+    for arg in op_schema.args_schema:
+        if isinstance(arg, OpStrategy):
+            spec = DTensorSpec(
+                mesh,
+                replicate_placements,
+                tensor_meta=arg.strategies[0].output_spec.tensor_meta,
+            )
+            input_specs.append(spec)
+            redistribute_costs.append(generate_redistribute_costs(arg, spec))
+        elif isinstance(arg, TupleStrategy):
+            for child in arg.children:
+                if not isinstance(child, OpStrategy):
+                    continue
+                spec = DTensorSpec(
+                    mesh,
+                    replicate_placements,
+                    tensor_meta=child.strategies[0].output_spec.tensor_meta,
+                )
+                input_specs.append(spec)
+                redistribute_costs.append(generate_redistribute_costs(child, spec))
     return OpStrategy(
         [
             OpSpec(

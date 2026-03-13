@@ -268,8 +268,6 @@ dtensor_fails = {
     # sub-ops that hit view/reshape redistribution errors.
     # Fix: write proper sharded strategies (e.g. batch-dim sharding) instead of
     # replicate-only, or make the test only try placements the strategy allows.
-    xfail("_unsafe_masked_index"),  # decomp hits as_strided on sharded
-    xfail("_unsafe_masked_index_put_accumulate"),  # same as above
     xfail("cartesian_prod"),  # decomp hits _unsafe_view flatten on sharded
     xfail("histogram"),  # weight shape mismatch when sharded
     xfail("histogramdd"),  # tensor meta count mismatch in _histogramdd_bin_edges
@@ -778,7 +776,6 @@ ops_unbacked_dtensor_dde = {
     xfail("__rmatmul__"),
     xfail("_segment_reduce", "lengths"),
     xfail("_segment_reduce", "offsets"),
-    xfail("_unsafe_masked_index"),
     xfail("addmm"),
     xfail("addmm", "decomposed"),
     xfail("addr"),
