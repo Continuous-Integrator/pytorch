@@ -1306,9 +1306,10 @@ class _CachingTorchDispatchMode(TorchDispatchMode):
         return True
 
     # Used together with _CachedTorchDispatchMode to implement SAC.
-    def __init__(self, policy_fn, storage) -> None:
+    def __init__(self, policy_fn, storage, ac_graph_id=None) -> None:
         self.policy_fn = policy_fn
         self.storage = storage
+        self.ac_graph_id = ac_graph_id
 
     def __torch_dispatch__(self, func, types, args=(), kwargs=None):
         kwargs = {} if kwargs is None else kwargs
@@ -1320,6 +1321,8 @@ class _CachingTorchDispatchMode(TorchDispatchMode):
         if func in SAC_IGNORED_OPS:
             if is_compiling:
                 fx_traceback.current_meta["recompute"] = CheckpointPolicy.PREFER_RECOMPUTE
+                if self.ac_graph_id is not None:
+                    fx_traceback.current_meta["ac_graph_id"] = self.ac_graph_id
             return func(*args, **kwargs)
 
         # Snapshot graph length before the op so we can tag new nodes after.
@@ -1349,6 +1352,8 @@ class _CachingTorchDispatchMode(TorchDispatchMode):
             if proxy_mode is not None and graph_len_before is not None:
                 for node in list(proxy_mode.tracer.graph.nodes)[graph_len_before:]:
                     node.meta["recompute"] = policy
+                    if self.ac_graph_id is not None:
+                        node.meta["ac_graph_id"] = self.ac_graph_id
 
         if policy in (CheckpointPolicy.MUST_SAVE, CheckpointPolicy.PREFER_SAVE) or is_compiling:
             self.storage[func].append(tree_map(lambda x: _VersionWrapper(_maybe_detach(x, any_ret_has_alias_info)), out))
