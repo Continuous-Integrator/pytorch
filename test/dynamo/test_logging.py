@@ -430,7 +430,6 @@ Found from :
 
         exitstack.close()
 
-    @torch._dynamo.config.patch(nested_graph_breaks=False)
     @requires_distributed()
     @requires_cuda_and_triton
     @make_logging_test(ddp_graphs=True)
