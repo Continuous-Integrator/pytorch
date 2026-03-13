@@ -239,6 +239,20 @@ struct cublasCommonGroupedArgs {
         if (scale_a && scale_b) {
           scale_mata_ptr = scale_b->data_ptr();
           scale_matb_ptr = scale_a->data_ptr();
+          scale_mata_dtype = scale_b->scalar_type();
+          scale_matb_dtype = scale_a->scalar_type();
+
+          auto infer = [&](const Tensor& scale) -> at::blas::ScalingType {
+            if (scale.scalar_type() == at::kFloat8_e8m0fnu)
+              return at::blas::ScalingType::BlockWise1x32;
+            if (scale.numel() == 1)
+              return at::blas::ScalingType::TensorWise;
+            return at::blas::ScalingType::GroupWise;
+          };
+          // mata corresponds to scale_b (cuBLAS-A = mat2)
+          scale_mata_scaling_type = scaling_choice_a.value_or(infer(*scale_b));
+          // matb corresponds to scale_a (cuBLAS-B = mat1)
+          scale_matb_scaling_type = scaling_choice_b.value_or(infer(*scale_a));
         }
         if (scale_result) {
           scale_result_ptr = scale_result->data_ptr();
@@ -371,6 +385,10 @@ struct cublasCommonGroupedArgs {
   void* scale_mata_ptr = nullptr;
   void* scale_matb_ptr = nullptr;
   void* scale_result_ptr = nullptr;
+  at::blas::ScalingType scale_mata_scaling_type = at::blas::ScalingType::TensorWise;
+  at::blas::ScalingType scale_matb_scaling_type = at::blas::ScalingType::TensorWise;
+  c10::ScalarType scale_mata_dtype = c10::ScalarType::Float;
+  c10::ScalarType scale_matb_dtype = c10::ScalarType::Float;
 };
 #endif // !defined(USE_ROCM) && defined(CUDA_VERSION) && CUDA_VERSION >= 13020
 

@@ -2607,6 +2607,204 @@ class TestFP8Matmul(TestCase):
         self.assertEqual(C, C_ref)
 
 
+    @skipIfRocm
+    @unittest.skipIf(
+        torch.cuda.get_device_capability()[0] not in [10, 11],
+        "cublaslt grouped gemm requires SM 10.x or 11.0"
+    )
+    @parametrize("op", ["2d/2d", "2d/3d", "3d/2d", "3d/3d"])
+    @parametrize("fast_accum", [False, True])
+    def test_scaled_grouped_gemm_cublaslt_per_batch_scalar(self, op, fast_accum):
+        device = "cuda"
+        a_dtype, b_dtype = torch.float8_e4m3fn, torch.float8_e4m3fn
+        out_dtype = torch.bfloat16
+        ngroups = 4
+
+        if op == "2d/2d":
+            m, n, k_total = 16, 16, 64
+            offs = torch.tensor([16, 32, 48, k_total], device=device, dtype=torch.int32)
+            A = torch.randn(m, k_total, device=device).to(a_dtype)
+            B_T = torch.randn(n, k_total, device=device).to(b_dtype)
+        elif op == "2d/3d":
+            n, k = 16, 32
+            m_total = 64
+            offs = torch.tensor([16, 32, 48, m_total], device=device, dtype=torch.int32)
+            A = torch.randn(m_total, k, device=device).to(a_dtype)
+            B_T = torch.randn(ngroups, n, k, device=device).to(b_dtype)
+        elif op == "3d/2d":
+            m, k = 16, 32
+            n_total = 64
+            offs = torch.tensor([16, 32, 48, n_total], device=device, dtype=torch.int32)
+            A = torch.randn(ngroups, m, k, device=device).to(a_dtype)
+            B_T = torch.randn(n_total, k, device=device).to(b_dtype)
+        elif op == "3d/3d":
+            m, n, k = 16, 16, 32
+            offs = None
+            A = torch.randn(ngroups, m, k, device=device).to(a_dtype)
+            B_T = torch.randn(ngroups, n, k, device=device).to(b_dtype)
+
+        # Per-batch scalar: one float32 scale per group
+        scale_a = torch.rand(ngroups, device=device, dtype=torch.float32) + 0.5
+        scale_b = torch.rand(ngroups, device=device, dtype=torch.float32) + 0.5
+
+        C = torch._scaled_grouped_mm_cublaslt(
+            A,
+            B_T.transpose(-2, -1),
+            scale_a,
+            scale_b,
+            offs=offs,
+            use_fast_accum=fast_accum,
+            out_dtype=out_dtype,
+        )
+
+        # Reference: per-group scaled_mm
+        a_is_2d = A.dim() == 2
+        b_is_2d = B_T.dim() == 2
+        if offs is not None:
+            off_vals = [0] + offs.tolist()
+        ref_parts = []
+        for g in range(ngroups):
+            if a_is_2d and b_is_2d:
+                start, end = off_vals[g], off_vals[g + 1]
+                a_g = A[:, start:end]
+                b_g = B_T[:, start:end].t()
+            elif a_is_2d and not b_is_2d:
+                start, end = off_vals[g], off_vals[g + 1]
+                a_g = A[start:end, :]
+                b_g = B_T[g].t()
+            elif not a_is_2d and b_is_2d:
+                start, end = off_vals[g], off_vals[g + 1]
+                a_g = A[g]
+                b_g = B_T[start:end, :].t()
+            else:
+                a_g = A[g]
+                b_g = B_T[g].t()
+            out_g = torch._scaled_mm(
+                a_g, b_g,
+                scale_a=scale_a[g:g + 1],
+                scale_b=scale_b[g:g + 1],
+                out_dtype=out_dtype, use_fast_accum=fast_accum,
+            )
+            ref_parts.append(out_g)
+
+        if a_is_2d and b_is_2d:
+            C_ref = torch.stack(ref_parts, dim=0)
+        elif a_is_2d and not b_is_2d:
+            C_ref = torch.cat(ref_parts, dim=0)
+        elif not a_is_2d and b_is_2d:
+            C_ref = torch.cat(ref_parts, dim=1)
+        else:
+            C_ref = torch.stack(ref_parts, dim=0)
+
+        self.assertEqual(C, C_ref, atol=1e-2, rtol=1e-2)
+
+
+    @skipIfRocm
+    @unittest.skipIf(
+        torch.cuda.get_device_capability()[0] not in [10, 11],
+        "cublaslt grouped gemm requires SM 10.x or 11.0"
+    )
+    @parametrize("op", ["3d/3d"])
+    @parametrize("fast_accum", [False, True])
+    def test_scaled_grouped_gemm_cublaslt_mxfp8(self, op, fast_accum):
+        device = "cuda"
+        a_dtype, b_dtype = torch.float8_e4m3fn, torch.float8_e4m3fn
+        out_dtype = torch.bfloat16
+        ngroups = 4
+        BLOCK_SIZE = 32
+
+        # All K dims must be multiples of 32 for MXFP8 blockwise scales
+        # No empty groups allowed
+        if op == "2d/2d":
+            m, n, k_total = 16, 16, 128  # 4 groups x 32
+            offs = torch.tensor([32, 64, 96, k_total], device=device, dtype=torch.int32)
+            A = torch.randn(m, k_total, device=device).to(a_dtype)
+            B_T = torch.randn(n, k_total, device=device).to(b_dtype)
+            scale_a = torch.ones(m, k_total // BLOCK_SIZE, device=device, dtype=torch.float8_e8m0fnu)
+            scale_b = torch.ones(n, k_total // BLOCK_SIZE, device=device, dtype=torch.float8_e8m0fnu)
+        elif op == "2d/3d":
+            n, k = 16, 32
+            m_total = 64
+            offs = torch.tensor([16, 32, 48, m_total], device=device, dtype=torch.int32)
+            A = torch.randn(m_total, k, device=device).to(a_dtype)
+            B_T = torch.randn(ngroups, n, k, device=device).to(b_dtype)
+            scale_a = torch.ones(m_total, k // BLOCK_SIZE, device=device, dtype=torch.float8_e8m0fnu)
+            scale_b = torch.ones(ngroups, n, k // BLOCK_SIZE, device=device, dtype=torch.float8_e8m0fnu)
+        elif op == "3d/2d":
+            m, k = 16, 32
+            n_total = 64
+            offs = torch.tensor([16, 32, 48, n_total], device=device, dtype=torch.int32)
+            A = torch.randn(ngroups, m, k, device=device).to(a_dtype)
+            B_T = torch.randn(n_total, k, device=device).to(b_dtype)
+            scale_a = torch.ones(ngroups, m, k // BLOCK_SIZE, device=device, dtype=torch.float8_e8m0fnu)
+            scale_b = torch.ones(n_total, k // BLOCK_SIZE, device=device, dtype=torch.float8_e8m0fnu)
+        elif op == "3d/3d":
+            m, n, k = 16, 16, 32
+            offs = None
+            A = torch.randn(ngroups, m, k, device=device).to(a_dtype)
+            B_T = torch.randn(ngroups, n, k, device=device).to(b_dtype)
+            scale_a = torch.ones(ngroups, m, k // BLOCK_SIZE, device=device, dtype=torch.float8_e8m0fnu)
+            scale_b = torch.ones(ngroups, n, k // BLOCK_SIZE, device=device, dtype=torch.float8_e8m0fnu)
+
+        C = torch._scaled_grouped_mm_cublaslt(
+            A,
+            B_T.transpose(-2, -1),
+            scale_a,
+            scale_b,
+            offs=offs,
+            use_fast_accum=fast_accum,
+            out_dtype=out_dtype,
+        )
+
+        # Reference: per-group scaled_mm with blockwise MXFP8 scales
+        a_is_2d = A.dim() == 2
+        b_is_2d = B_T.dim() == 2
+        if offs is not None:
+            off_vals = [0] + offs.tolist()
+        ref_parts = []
+        for g in range(ngroups):
+            if a_is_2d and b_is_2d:
+                start, end = off_vals[g], off_vals[g + 1]
+                a_g = A[:, start:end]
+                b_g = B_T[:, start:end].t()
+                sa_g = scale_a[:, start // BLOCK_SIZE:end // BLOCK_SIZE]
+                sb_g = scale_b[:, start // BLOCK_SIZE:end // BLOCK_SIZE]
+            elif a_is_2d and not b_is_2d:
+                start, end = off_vals[g], off_vals[g + 1]
+                a_g = A[start:end, :]
+                b_g = B_T[g].t()
+                sa_g = scale_a[start:end, :]
+                sb_g = scale_b[g]
+            elif not a_is_2d and b_is_2d:
+                start, end = off_vals[g], off_vals[g + 1]
+                a_g = A[g]
+                b_g = B_T[start:end, :].t()
+                sa_g = scale_a[g]
+                sb_g = scale_b[start:end, :]
+            else:
+                a_g = A[g]
+                b_g = B_T[g].t()
+                sa_g = scale_a[g]
+                sb_g = scale_b[g]
+            out_g = torch._scaled_mm(
+                a_g, b_g,
+                scale_a=sa_g,
+                scale_b=sb_g,
+                out_dtype=out_dtype, use_fast_accum=fast_accum,
+            )
+            ref_parts.append(out_g)
+
+        if a_is_2d and b_is_2d:
+            C_ref = torch.stack(ref_parts, dim=0)
+        elif a_is_2d and not b_is_2d:
+            C_ref = torch.cat(ref_parts, dim=0)
+        elif not a_is_2d and b_is_2d:
+            C_ref = torch.cat(ref_parts, dim=1)
+        else:
+            C_ref = torch.stack(ref_parts, dim=0)
+
+        self.assertEqual(C, C_ref, atol=1e-2, rtol=1e-2)
+
     @unittest.skipIf(not PLATFORM_SUPPORTS_MX_GEMM, mx_skip_msg)
     def test_blockwise_mxfp8_compile(self) -> None:
 

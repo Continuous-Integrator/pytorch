@@ -213,7 +213,11 @@ void scaled_grouped_gemm(
       const void* D_scale_ptr,
       const void* lddArrayDev,
       bool use_fast_accum,
-      int batchCount);
+      int batchCount,
+      ScalarType A_scale_dtype,
+      ScalarType B_scale_dtype,
+      at::blas::ScalingType a_scaling_type,
+      at::blas::ScalingType b_scaling_type);
 
 #define CUDABLAS_BGEMM_ARGTYPES(Dtype)  CUDABLAS_BGEMM_ARGTYPES_AND_C_DTYPE(Dtype, Dtype)
 

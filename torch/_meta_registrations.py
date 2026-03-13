@@ -8573,12 +8573,12 @@ def meta_scaled_grouped_mm_cublaslt(
         lambda: "Bias not supported for scaled grouped GEMM.",
     )
     torch._check(
-        scale_a.dtype == torch.float32,
-        lambda: f"scale_a must be float32, got {scale_a.dtype}.",
+        scale_a.dtype == torch.float32 or scale_a.dtype == torch.float8_e8m0fnu,
+        lambda: f"scale_a must be float32 or float8_e8m0fnu, got {scale_a.dtype}.",
     )
     torch._check(
-        scale_b.dtype == torch.float32,
-        lambda: f"scale_b must be float32, got {scale_b.dtype}.",
+        scale_b.dtype == torch.float32 or scale_b.dtype == torch.float8_e8m0fnu,
+        lambda: f"scale_b must be float32 or float8_e8m0fnu, got {scale_b.dtype}.",
     )
     out_dtype = out_dtype or torch.bfloat16
     torch._check(

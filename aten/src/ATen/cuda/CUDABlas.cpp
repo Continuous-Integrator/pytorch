@@ -1980,6 +1980,14 @@ case ScalingType::TensorWise:
       return 0;
 #endif // if CUDA_VERSION >= 12080
 
+    case ScalingType::GroupWise:
+      TORCH_CHECK(scale_dtype == kFloat);
+#if CUDA_VERSION >= 13020
+      return CUBLASLT_MATMUL_MATRIX_SCALE_PER_BATCH_SCALAR_32F;
+#else
+      TORCH_CHECK(false, "per-batch scalar scaling requires CUDA >= 13.2");
+#endif // if CUDA_VERSION >= 13020
+
     default:
       TORCH_CHECK(false);
   }
@@ -2510,17 +2518,23 @@ void scaled_grouped_gemm(
     const void* D_scale_ptr,
     const void* lddArrayDev,
     bool use_fast_accum,
-    int batchCount) {
+    int batchCount,
+    ScalarType A_scale_dtype,
+    ScalarType B_scale_dtype,
+    ScalingType a_scaling_type,
+    ScalingType b_scaling_type) {
 #if !defined(USE_ROCM) && defined(CUDA_VERSION) && CUDA_VERSION >= 13020
   cudaDeviceProp* prop = at::cuda::getCurrentDeviceProperties();
   TORCH_CHECK(prop->major == 10 || prop->major == 11, "scaled grouped cublasLtMatmul requires SM 10.x or 11.0");
 
   const auto computeType = CUBLAS_COMPUTE_32F;
   const auto scaleType = CUDA_R_32F;
-  const auto scaleMode = CUBLASLT_MATMUL_MATRIX_SCALE_SCALAR_32F;
   const auto pointer_mode = CUBLASLT_POINTER_MODE_DEVICE;
   const int64_t alphaBatchStride = 1;
   const int64_t betaBatchStride = 1;
+
+  int a_scale_mode = get_scale_mode(a_scaling_type, A_scale_dtype, use_fast_accum);
+  int b_scale_mode = get_scale_mode(b_scaling_type, B_scale_dtype, use_fast_accum);
 
   CuBlasLtMatmulDescriptor computeDesc(computeType, scaleType);
   computeDesc.setAttribute(CUBLASLT_MATMUL_DESC_TRANSA, _cublasOpFromChar(transa));
@@ -2531,8 +2545,8 @@ void scaled_grouped_gemm(
   computeDesc.setAttribute(CUBLASLT_MATMUL_DESC_A_SCALE_POINTER, A_scale_ptr);
   computeDesc.setAttribute(CUBLASLT_MATMUL_DESC_B_SCALE_POINTER, B_scale_ptr);
   computeDesc.setAttribute(CUBLASLT_MATMUL_DESC_D_SCALE_POINTER, D_scale_ptr);
-  computeDesc.setAttribute(CUBLASLT_MATMUL_DESC_A_SCALE_MODE, scaleMode);
-  computeDesc.setAttribute(CUBLASLT_MATMUL_DESC_B_SCALE_MODE, scaleMode);
+  computeDesc.setAttribute(CUBLASLT_MATMUL_DESC_A_SCALE_MODE, a_scale_mode);
+  computeDesc.setAttribute(CUBLASLT_MATMUL_DESC_B_SCALE_MODE, b_scale_mode);
 
   const int8_t fastAccuMode = use_fast_accum ? 1 : 0;
   computeDesc.setAttribute(CUBLASLT_MATMUL_DESC_FAST_ACCUM, fastAccuMode);
