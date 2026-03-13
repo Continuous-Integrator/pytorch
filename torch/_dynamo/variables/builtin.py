@@ -1430,7 +1430,7 @@ class BuiltinVariable(VariableTracker):
                                 tx,
                                 args=[VariableTracker.build(tx, a) for a in exc.args],
                             )
-                        return VariableTracker.build(tx, res)
+                        return VariableTracker.build(tx, res)  # pyrefly: ignore [unbound-name]
                     return None
 
             handlers.append(constant_fold_handler)
