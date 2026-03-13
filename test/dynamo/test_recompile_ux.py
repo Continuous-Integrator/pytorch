@@ -451,6 +451,56 @@ class RegionRecompileLimitTests(torch._dynamo.test_case.TestCase):
         self.assertEqual(self._num_cache_entries(f), 2)
         self.assertEqual(cnt.frame_count, 4)
 
+        # Verify both subgraphs have exactly 2 cache entries
+        all_entries = torch._dynamo.eval_frame._debug_get_all_cache_entry_lists(f)
+        for code, entries in all_entries.items():
+            self.assertEqual(
+                len(entries), 2, f"{code.co_name} has {len(entries)} entries"
+            )
+
+    def test_region_recompile_limit_graph_break_asymmetric(self):
+        cnt = torch._dynamo.testing.CompileCounter()
+
+        results = []
+
+        def f(x, y):
+            a = x.sin()
+            results.append(a)
+            # graph break
+            print("graph break")
+            # Second subgraph only depends on y, not a or x
+            b = y.cos()
+            return b
+
+        opt_f = torch.compile(f, backend=cnt, region_recompile_limit=4)
+
+        # Call 1: x=(4,8), y=(4,8) -> compiles both subgraphs
+        opt_f(torch.randn(4, 8), torch.randn(4, 8))
+        self.assertEqual(self._num_cache_entries(f), 1)
+        self.assertEqual(cnt.frame_count, 2)
+
+        # Call 2: x=(7,8), y=(4,8) -> subgraph1 recompiles (x shape changed),
+        # subgraph2 cache hit (y unchanged, a not used after break)
+        opt_f(torch.randn(7, 8), torch.randn(4, 8))
+        self.assertEqual(self._num_cache_entries(f), 2)
+        self.assertEqual(cnt.frame_count, 3)
+
+        # Call 3: x=(5,8), y=(4,8) -> subgraph1 recompiles again, subgraph2 still hit
+        opt_f(torch.randn(5, 8), torch.randn(4, 8))
+        self.assertEqual(self._num_cache_entries(f), 3)
+        self.assertEqual(cnt.frame_count, 4)
+
+        # f has 3 cache entries, resume function should have only 1
+        all_entries = torch._dynamo.eval_frame._debug_get_all_cache_entry_lists(f)
+        counts = {c.co_name: len(entries) for c, entries in all_entries.items()}
+        self.assertEqual(counts["f"], 3)
+        resume_counts = {
+            k: v for k, v in counts.items() if k.startswith("torch_dynamo_resume")
+        }
+        self.assertTrue(len(resume_counts) > 0, f"No resume functions found: {counts}")
+        for name, count in resume_counts.items():
+            self.assertEqual(count, 1, f"{name} has {count} entries, expected 1")
+
 
 if __name__ == "__main__":
     from torch._dynamo.test_case import run_tests

@@ -384,6 +384,32 @@ def _debug_get_cache_entry_list(
     return torch._C._dynamo.eval_frame._debug_get_cache_entry_list(code)
 
 
+def _debug_get_all_cache_entry_lists(
+    code: types.CodeType | Callable[..., Any],
+) -> dict[types.CodeType, list[CacheEntry]]:
+    """
+    Given a code object or callable, return cache entries for it and all
+    its resume functions (from graph breaks), recursively.
+
+    Returns a dict mapping each code object to its list of cache entries.
+    """
+    from .resume_execution import ContinueExecutionCache
+
+    if callable(code) and not isinstance(code, types.CodeType):
+        code = code.__code__
+
+    result: dict[types.CodeType, list[CacheEntry]] = {}
+    queue = [code]
+    while queue:
+        c = queue.pop()
+        if c in result:
+            continue
+        result[c] = _debug_get_cache_entry_list(c)
+        if c in ContinueExecutionCache.cache:
+            queue.extend(ContinueExecutionCache.cache[c].values())
+    return result
+
+
 class OptimizedModule(torch.nn.Module):
     """
     Wraps the original nn.Module object and later patches its
