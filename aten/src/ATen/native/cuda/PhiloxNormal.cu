@@ -19,9 +19,12 @@ namespace at::native {
 
 namespace {
 
-// Dtype-specific normal generation. The primary template handles
-// float/half/bfloat16 via curand_normal4; the double specialization uses
-// curand_normal2_double.
+template <typename scalar_t, int N>
+struct alignas(sizeof(scalar_t) * N) AlignedVec {
+  scalar_t val[N];
+};
+
+// Scalar generate with bounds check, used for boundary elements.
 template <typename scalar_t>
 __device__ void normal_generate(
     scalar_t* output, int64_t base, int64_t elem, int64_t elem_end,
@@ -49,15 +52,34 @@ __device__ void normal_generate<double>(
   }
 }
 
-// 2D thread indexing over (key_idx, chunk_idx). Each thread initializes one
-// curand state and generates elems_per_thread normals for a single key,
-// amortizing the cost of curand_init.
-//
-// Each curand call produces 4 uint32 outputs. A float normal consumes 1
-// output; a double normal consumes 2 (needs more bits for the uniform).
-// For half/bfloat16 we generate in float and narrow, so the compute type
-// size is max(sizeof(scalar_t), sizeof(float)).
+// Vectorized generate without bounds check, uses aligned vector store.
 template <typename scalar_t>
+__device__ void normal_generate_vec(
+    scalar_t* output, int64_t pos,
+    curandStatePhilox4_32_10_t* state, double mean, double stddev) {
+  float fmean = static_cast<float>(mean);
+  float fstd = static_cast<float>(stddev);
+  float4 n = curand_normal4(state);
+  AlignedVec<scalar_t, 4> v;
+  v.val[0] = static_cast<scalar_t>(fmean + fstd * n.x);
+  v.val[1] = static_cast<scalar_t>(fmean + fstd * n.y);
+  v.val[2] = static_cast<scalar_t>(fmean + fstd * n.z);
+  v.val[3] = static_cast<scalar_t>(fmean + fstd * n.w);
+  *reinterpret_cast<AlignedVec<scalar_t, 4>*>(&output[pos]) = v;
+}
+
+template <>
+__device__ void normal_generate_vec<double>(
+    double* output, int64_t pos,
+    curandStatePhilox4_32_10_t* state, double mean, double stddev) {
+  double2 n = curand_normal2_double(state);
+  AlignedVec<double, 2> v;
+  v.val[0] = mean + stddev * n.x;
+  v.val[1] = mean + stddev * n.y;
+  *reinterpret_cast<AlignedVec<double, 2>*>(&output[pos]) = v;
+}
+
+template <typename scalar_t, bool single_key>
 __global__ void philox_normal_kernel(
     scalar_t* __restrict__ output,
     const uint64_t* __restrict__ keys,
@@ -72,27 +94,48 @@ __global__ void philox_normal_kernel(
   constexpr int elems_per_call = 4 / outputs_per_normal;
 
   int64_t num_chunks = (event_numel + elems_per_thread - 1) / elems_per_thread;
-  int64_t total_threads = num_keys * num_chunks;
+  int64_t total_threads = single_key ? num_chunks : num_keys * num_chunks;
   int64_t tid = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
 
+  uint64_t seed, key_offset;
+  if constexpr (single_key) {
+    seed = keys[0];
+    key_offset = keys[1];
+  }
+
   for (; tid < total_threads; tid += static_cast<int64_t>(gridDim.x) * blockDim.x) {
-    int64_t key_idx = tid / num_chunks;
-    int64_t chunk_idx = tid % num_chunks;
+    int64_t key_idx, chunk_idx;
+    if constexpr (single_key) {
+      key_idx = 0;
+      chunk_idx = tid;
+    } else {
+      key_idx = tid / num_chunks;
+      chunk_idx = tid % num_chunks;
+      seed = keys[key_idx * 2];
+      key_offset = keys[key_idx * 2 + 1];
+    }
     int64_t elem_start = chunk_idx * elems_per_thread;
     int64_t elem_end = min(elem_start + elems_per_thread, event_numel);
-
-    uint64_t seed = keys[key_idx * 2];
-    uint64_t offset = keys[key_idx * 2 + 1];
+    int64_t base = single_key ? 0 : key_idx * event_numel;
 
     curandStatePhilox4_32_10_t state;
-    curand_init(seed, /*subsequence=*/0, /*offset=*/offset, &state);
-
-    int64_t base = key_idx * event_numel;
-    skipahead(
-        static_cast<unsigned long long>(elem_start) * outputs_per_normal,
+    curand_init(seed, /*subsequence=*/0,
+        /*offset=*/key_offset + static_cast<unsigned long long>(elem_start) * outputs_per_normal,
         &state);
-    for (int64_t elem = elem_start; elem < elem_end; elem += elems_per_call) {
-      normal_generate<scalar_t>(output, base, elem, elem_end, &state, mean, stddev);
+
+    int64_t full_end = elem_start + ((elem_end - elem_start) / elems_per_call) * elems_per_call;
+    // Vector stores require aligned base; single_key always has base=0.
+    if (single_key || (base % elems_per_call) == 0) {
+      for (int64_t elem = elem_start; elem < full_end; elem += elems_per_call) {
+        normal_generate_vec<scalar_t>(output, base + elem, &state, mean, stddev);
+      }
+    } else {
+      for (int64_t elem = elem_start; elem < full_end; elem += elems_per_call) {
+        normal_generate<scalar_t>(output, base, elem, full_end, &state, mean, stddev);
+      }
+    }
+    if (full_end < elem_end) {
+      normal_generate<scalar_t>(output, base, full_end, elem_end, &state, mean, stddev);
     }
   }
 }
@@ -160,11 +203,19 @@ Tensor _philox_normal_cuda(const Tensor& self, const Tensor& key, double mean, d
       at::cuda::getCurrentDeviceProperties()->multiProcessorCount * 4);
 
   AT_DISPATCH_FLOATING_TYPES_AND2(kHalf, kBFloat16, self.scalar_type(), "_philox_normal_cuda", [&] {
-    philox_normal_kernel<scalar_t><<<num_blocks, block_size, 0,
-        at::cuda::getCurrentCUDAStream()>>>(
-        output.data_ptr<scalar_t>(),
-        key_expanded.data_ptr<uint64_t>(),
-        num_keys, event_numel, elems_per_thread, mean, stddev);
+    if (num_keys == 1) {
+      philox_normal_kernel<scalar_t, true><<<num_blocks, block_size, 0,
+          at::cuda::getCurrentCUDAStream()>>>(
+          output.data_ptr<scalar_t>(),
+          key_expanded.data_ptr<uint64_t>(),
+          num_keys, event_numel, elems_per_thread, mean, stddev);
+    } else {
+      philox_normal_kernel<scalar_t, false><<<num_blocks, block_size, 0,
+          at::cuda::getCurrentCUDAStream()>>>(
+          output.data_ptr<scalar_t>(),
+          key_expanded.data_ptr<uint64_t>(),
+          num_keys, event_numel, elems_per_thread, mean, stddev);
+    }
     C10_CUDA_KERNEL_LAUNCH_CHECK();
   });
 
