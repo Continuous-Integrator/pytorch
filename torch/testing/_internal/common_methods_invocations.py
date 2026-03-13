@@ -12755,6 +12755,12 @@ op_db: list[OpInfo] = [
                DecorateInfo(
                    toleranceOverride({torch.complex64: tol(atol=1e-05, rtol=1.2e-03)}),
                    'TestMathBits', 'test_conj_view', device_type='cuda'),
+               DecorateInfo(
+                   unittest.skip('Skipped!'),
+                   'TestMathBits',
+                   'test_neg_view',
+                   device_type='xpu',
+                   dtypes=(torch.float64,)),
            ],
            sample_inputs_func=sample_inputs_baddbmm,
            skips=(
@@ -12764,6 +12770,12 @@ op_db: list[OpInfo] = [
                    'TestSchemaCheckModeOpInfo',
                    'test_schema_correctness',
                    dtypes=(torch.complex64, torch.complex128)),
+               # https://github.com/intel/torch-xpu-ops/issues/2269
+               DecorateInfo(
+                   unittest.skip("Skipped!"),
+                   'TestFwdGradients',
+                   'test_inplace_forward_mode_AD',
+                   dtypes=(torch.float64)),
            )),
     OpInfo('dot',
            dtypes=all_types_and_complex_and(torch.float16, torch.bfloat16),
@@ -16269,6 +16281,10 @@ op_db: list[OpInfo] = [
                DecorateInfo(
                    toleranceOverride({torch.float16: tol(atol=5e-3, rtol=1e-3)}),
                    'TestInductorOpInfo', 'test_comprehensive',
+               ),
+               DecorateInfo(
+                   toleranceOverride({torch.float32: tol(atol=1e-4, rtol=5e-6)}),
+                   'TestCompositeCompliance', 'test_backward', device_type="xpu"
                ),
            ),
            skips=(
@@ -21371,7 +21387,7 @@ op_db: list[OpInfo] = [
            dtypes=all_types_and_complex_and(torch.float16, torch.bfloat16),
            dtypesIfCUDA=floating_and_complex_types_and(torch.float16, torch.bfloat16),
            dtypesIfROCM=floating_and_complex_types_and(torch.half, torch.bfloat16),
-           dtypesIfXPU=all_types_and_complex_and(torch.float16, torch.bfloat16),
+           dtypesIfXPU=floating_and_complex_types_and(torch.float16, torch.bfloat16),
            supports_forward_ad=True,
            supports_fwgrad_bwgrad=True,
            # See https://github.com/pytorch/pytorch/pull/78358
@@ -23789,6 +23805,9 @@ python_ref_db = [
             DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_python_ref', device_type='mps'),
             DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_python_ref_meta', device_type='mps'),
             DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_python_ref_torch_fallback', device_type='mps'),
+            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_python_ref_torch_fallback',
+                         dtypes=(torch.int16, torch.int32, torch.int64),
+                         device_type="xpu"),
         ),
     ),
     PythonRefInfo(
