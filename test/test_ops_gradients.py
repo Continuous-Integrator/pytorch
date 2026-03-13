@@ -1,5 +1,6 @@
 # Owner(s): ["module: unknown"]
 
+from collections import defaultdict
 from functools import partial
 
 import torch
@@ -24,12 +25,41 @@ _gradcheck_ops = partial(
     ops, dtypes=OpDTypes.supported, allowed_dtypes=[torch.double, torch.cdouble]
 )
 
+backward_failure_skips = defaultdict(dict)
+backward_failure_skips["xpu"] = {
+    #  Jacobian mismatch, https://github.com/intel/torch-xpu-ops/issues/2360
+    "addmm": {torch.float64},
+    "addbmm": {torch.float64},
+    "baddbmm": {torch.float64},
+    "_rmatmul_": {torch.float64},
+    "__rmatmul__": {torch.float64},
+    "addmv": {torch.float64},
+    "addr": {torch.float64},
+    "matmul": {torch.float64},
+    "mv": {torch.float64},
+    "cdist": {torch.float64},
+    "nn.functional.multi_head_attention_forward": {torch.float64},
+    "index_reduce": {torch.float64},
+}
+
 
 @unMarkDynamoStrictTest
 class TestBwdGradients(TestGradients):
+    def _skip_backward_failures(self, op, device, dtype):
+        _device = device.split(":")[0]
+        if (
+            device in backward_failure_skips
+            and op.name in backward_failure_skips[device]
+        ):
+            if dtype in backward_failure_skips[device][op.name]:
+                self.skipTest(
+                    f"Skipped! Backward test for {op.name} is skipped on {device} for dtype {dtype}."
+                )
+
     # Tests that gradients are computed correctly
     @_gradcheck_ops(op_db + hop_db + custom_op_db)
     def test_fn_grad(self, device, dtype, op):
+        self._skip_backward_failures(op, device, dtype)
         # This is verified by test_dtypes in test_ops.py
         if dtype not in op.supported_backward_dtypes(torch.device(device).type):
             self.skipTest("Skipped! Dtype is not in supported backward dtypes!")
@@ -45,6 +75,7 @@ class TestBwdGradients(TestGradients):
 
     @_gradcheck_ops(op_db + custom_op_db)
     def test_inplace_grad(self, device, dtype, op):
+        self._skip_backward_failures(op, device, dtype)
         self._skip_helper(op, device, dtype)
         if not op.inplace_variant:
             self.skipTest("Op has no inplace variant!")
@@ -66,6 +97,7 @@ class TestBwdGradients(TestGradients):
     # Test that gradients of gradients are computed correctly
     @_gradcheck_ops(op_db + hop_db + custom_op_db)
     def test_fn_gradgrad(self, device, dtype, op):
+        self._skip_backward_failures(op, device, dtype)
         self._skip_helper(op, device, dtype)
         if not op.supports_gradgrad:
             self.skipTest(
@@ -94,6 +126,7 @@ class TestBwdGradients(TestGradients):
 
     @_gradcheck_ops(op_db)
     def test_inplace_gradgrad(self, device, dtype, op):
+        self._skip_backward_failures(op, device, dtype)
         self._skip_helper(op, device, dtype)
         if not op.inplace_variant or not op.supports_inplace_autograd:
             self.skipTest("Skipped! Operation does not support inplace autograd.")
