@@ -467,6 +467,59 @@ class ActivationCheckpointingViaTagsTests(
         out.sum().backward()
 
     @requires_cuda_and_triton
+    def test_sac_tags_through_custom_autograd_function(self, device):
+        class MyMM(torch.autograd.Function):
+            @staticmethod
+            def forward(x, w):
+                return x @ w
+
+            @staticmethod
+            def setup_context(ctx, inputs, output):
+                x, w = inputs
+                ctx.save_for_backward(x, w)
+
+            @staticmethod
+            def backward(ctx, grad):
+                x, w = ctx.saved_tensors
+                return grad @ w.t(), x.t() @ grad
+
+        def gn(x, w):
+            return MyMM.apply(x, w)
+
+        context_fn = functools.partial(
+            torch.utils.checkpoint.create_selective_checkpoint_contexts,
+            lambda ctx, op, *args, **kwargs: torch.utils.checkpoint.CheckpointPolicy.PREFER_RECOMPUTE,
+        )
+
+        def fn(x, w):
+            return torch.utils.checkpoint.checkpoint(
+                gn, x, w, use_reentrant=False, context_fn=context_fn
+            )
+
+        x = torch.randn(4, 4, device=device, requires_grad=True)
+        w = torch.randn(4, 4, device=device, requires_grad=True)
+
+        def partition_fn(joint_gm, *args, **kwargs):
+            fwd_mm_nodes = [
+                node
+                for node in joint_gm.graph.nodes
+                if node.op == "call_function"
+                and node.target == torch.ops.aten.mm.default
+                and node.meta.get("partitioner_tag") == "is_forward"
+            ]
+            self.assertTrue(fwd_mm_nodes, "Expected forward mm nodes in the joint graph")
+            for node in fwd_mm_nodes:
+                self.assertIn("recompute", node.meta)
+                self.assertIn("ac_graph_id", node.meta)
+            return min_cut_rematerialization_partition(joint_gm, *args, **kwargs)
+
+        backend = aot_autograd(
+            fw_compiler=nop, bw_compiler=nop, partition_fn=partition_fn
+        )
+        out = torch.compile(fn, backend=backend)(x, w)
+        out.sum().backward()
+
+    @requires_cuda_and_triton
     def test_tangent_placeholders_have_is_backward_tag(self, device):
         """Test that tangent placeholders in the joint graph are tagged with is_backward."""
 
