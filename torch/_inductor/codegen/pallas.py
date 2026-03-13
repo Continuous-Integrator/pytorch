@@ -1385,17 +1385,6 @@ class PallasKernel(SIMDKernel):
             if not valid:
                 continue
 
-            # 1D -> 2D reshape with small inner dim is expensive on TPU
-            # due to tile relayout
-            ndim = len(buf_size)
-            max_stride = max(s for s, _, _ in strides)
-            if ndim == 1 and max_stride < 128:
-                perf_hint_log.info(
-                    "strided reshape of 1D buffer %s with stride %d "
-                    "may be slow on TPU (tile relayout)",
-                    buf_name,
-                    max_stride,
-                )
             code.writeline(f"{param} = {param}.reshape({', '.join(new_shape_parts)})")
             if any(skip > 0 for _, _, skip in strides):
                 slice_parts: list[str] = []
