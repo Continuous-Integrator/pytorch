@@ -26,6 +26,7 @@ from torch._dynamo.utils import counters
 from torch._higher_order_ops.associative_scan import associative_scan_op
 from torch._higher_order_ops.triton_kernel_wrap import triton_kernel_wrapper_mutation
 from torch._library.fake_class_registry import FakeScriptObject
+from torch._library.opaque_object import is_opaque_value
 from torch._library.utils import get_layout_constraint_tag
 from torch._prims_common import (
     canonicalize_dim,
@@ -2299,7 +2300,7 @@ def fallback_handler(kernel, add_to_fallback_set=True):
 
     def handler(*args, **kwargs):
         def wrap_tensors(x):
-            return TensorBox.create(x) if isinstance(x, ir.IRNode) else x
+            return x.wrap_for_lowering() if isinstance(x, ir.IRNode) else x
 
         return pytree.tree_map(
             wrap_tensors, ir.FallbackKernel.create(kernel, *args, **kwargs)
@@ -2888,7 +2889,7 @@ def require_channels_last(_, *args, **kwargs):
 def constrain_to_fake_tensor(arg, fake_arg):
     if fake_arg is None:
         return arg
-    if isinstance(fake_arg, FakeScriptObject):
+    if isinstance(fake_arg, FakeScriptObject) or is_opaque_value(fake_arg):
         return arg
     if isinstance(arg, ir.IRNode):
         return ir.ExternKernel.require_exact_strides(arg, fake_arg.stride())
@@ -2926,6 +2927,12 @@ def constrain_to_fx_strides(fx_node, *args, **kwargs):
     )
     kwargs = {k: apply_constraint(v, fx_node.kwargs[k]) for k, v in kwargs.items()}
     return args, kwargs
+
+
+# native_dropout uses empty_like(input) internally, so bernoulli_ consumes
+# RNG values in the input's stride order. Constrain input strides to match
+# the FX graph (i.e. eager) so the dropout mask is identical.
+add_layout_constraint(aten.native_dropout.default, constrain_to_fx_strides)
 
 
 def sdpa_constraint(fx_node, *args, **kwargs):
@@ -4239,6 +4246,7 @@ def index_put_impl_(self, indices, values, accumulate, check, may_realize=False)
         None,
         check=check,
     )
+
     values = expand(values, expected_vals_size)
     # all guards are set above during broadcast_tensors and expand
 
@@ -7931,7 +7939,7 @@ def with_effects(token, op, *args, **kwargs):
     else:
 
         def wrap_tensors(x):
-            return TensorBox.create(x) if isinstance(x, ir.IRNode) else x
+            return x.wrap_for_lowering() if isinstance(x, ir.IRNode) else x
 
         result = pytree.tree_map(
             wrap_tensors, ir.FallbackKernel.create(op, *args, **kwargs)
