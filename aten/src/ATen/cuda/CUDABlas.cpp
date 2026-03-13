@@ -2494,10 +2494,11 @@ void scaled_grouped_gemm(
     const void* kArrayDev,
     int64_t avgK,
     const float *const *alphaArrayDev,
-    ScalarType input_dtype,
+    ScalarType A_dtype,
     const void* const* A,
     const void* A_scale_ptr,
     const void* ldaArrayDev,
+    ScalarType B_dtype,
     const void* const* B,
     const void* B_scale_ptr,
     const void* ldbArrayDev,
@@ -2536,8 +2537,8 @@ void scaled_grouped_gemm(
   const int8_t fastAccuMode = use_fast_accum ? 1 : 0;
   computeDesc.setAttribute(CUBLASLT_MATMUL_DESC_FAST_ACCUM, fastAccuMode);
 
-  CuBlasLtGroupedMatrixLayout Adesc(ScalarTypeToCudaDataType(input_dtype), batchCount, mArrayDev, kArrayDev, ldaArrayDev, transa == 't');
-  CuBlasLtGroupedMatrixLayout Bdesc(ScalarTypeToCudaDataType(input_dtype), batchCount, kArrayDev, nArrayDev, ldbArrayDev, transb == 't');
+  CuBlasLtGroupedMatrixLayout Adesc(ScalarTypeToCudaDataType(A_dtype), batchCount, mArrayDev, kArrayDev, ldaArrayDev, transa == 't');
+  CuBlasLtGroupedMatrixLayout Bdesc(ScalarTypeToCudaDataType(B_dtype), batchCount, kArrayDev, nArrayDev, ldbArrayDev, transb == 't');
   CuBlasLtGroupedMatrixLayout Cdesc(ScalarTypeToCudaDataType(result_dtype), batchCount, mArrayDev, nArrayDev, ldcArrayDev);
   CuBlasLtGroupedMatrixLayout Ddesc(ScalarTypeToCudaDataType(result_dtype), batchCount, mArrayDev, nArrayDev, lddArrayDev);
 

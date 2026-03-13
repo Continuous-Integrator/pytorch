@@ -765,7 +765,7 @@ std::optional<c10::ScalarType> out_dtype) {
                                args.mArray, args.avgM,
                                args.nArray, args.avgN,
                                args.kArray, args.avgK,
-                               reinterpret_cast<const float* const*>(args.alphaPtrArray), args.input_dtype,
+                               reinterpret_cast<const float* const*>(args.alphaPtrArray), args.A_dtype,
                                reinterpret_cast<const void* const*>(args.APtrArray), args.ldaArray,
                                reinterpret_cast<const void* const*>(args.BPtrArray), args.ldbArray,
                                reinterpret_cast<const float* const*>(args.betaPtrArray), args.result_dtype,
@@ -789,10 +789,14 @@ Tensor _scaled_grouped_mm_cublaslt_cuda(
     bool use_fast_accum) {
 #if !defined(USE_ROCM) && defined(CUDA_VERSION) && CUDA_VERSION >= 13020
   TORCH_CHECK(
-      mat_a.dtype() == at::kFloat8_e4m3fn,
-      "cublasLt scaled grouped GEMM requires Float8_e4m3fn input, got ", mat_a.scalar_type());
-  TORCH_CHECK(mat_b.dtype() == mat_a.dtype(),
-      "mat_a and mat_b must have the same dtype");
+      mat_a.dtype() == at::kFloat8_e4m3fn || mat_a.dtype() == at::kFloat8_e5m2,
+      "cublasLt scaled grouped GEMM requires Float8_e4m3fn or Float8_e5m2 input, got ", mat_a.scalar_type());
+  TORCH_CHECK(
+      mat_b.dtype() == at::kFloat8_e4m3fn || mat_b.dtype() == at::kFloat8_e5m2,
+      "cublasLt scaled grouped GEMM requires Float8_e4m3fn or Float8_e5m2 input, got ", mat_b.scalar_type());
+  TORCH_CHECK(
+    mat_a.dtype() == at::kFloat8_e4m3fn || mat_b.dtype() == at::kFloat8_e4m3fn,
+    "at least one input must be Float8_e4m3fn");
   TORCH_CHECK(mat_a.dim() == 2 || mat_a.dim() == 3, "mat_a has to be 2 or 3d");
   TORCH_CHECK(mat_b.dim() == 2 || mat_b.dim() == 3, "mat_b has to be 2 or 3d");
   const bool a_is_2d = mat_a.dim() == 2;
@@ -822,6 +826,12 @@ Tensor _scaled_grouped_mm_cublaslt_cuda(
       "scale_b must have 1 or batchCount (", batchCount, ") elements, got ", scale_b.numel());
   TORCH_CHECK(!scale_result.has_value(), "scale_result is not supported yet for scaled grouped GEMM");
 
+  if (out_dtype.has_value()) {
+    TORCH_CHECK(
+      out_dtype.value() == at::kBFloat16 || out_dtype.value() == at::kHalf || out_dtype.value() == at::kFloat,
+      "Only bf16, fp16, and fp32 output types are supported for scaled grouped GEMM");
+  }
+
   const auto out_dtype_ = out_dtype.value_or(at::kBFloat16);
   Tensor out = create_grouped_gemm_output_tensor(mat_a, mat_b, offs, out_dtype_);
   cublasCommonGroupedArgs args(mat_a, mat_b, offs, out, scale_a, scale_b, scale_result);
@@ -830,9 +840,9 @@ Tensor _scaled_grouped_mm_cublaslt_cuda(
       args.mArray, args.avgM,
       args.nArray, args.avgN,
       args.kArray, args.avgK,
-      reinterpret_cast<const float* const*>(args.alphaPtrArray), args.input_dtype,
-      reinterpret_cast<const void* const*>(args.APtrArray), args.scale_mata_ptr, args.ldaArray,
-      reinterpret_cast<const void* const*>(args.BPtrArray), args.scale_matb_ptr, args.ldbArray,
+      reinterpret_cast<const float* const*>(args.alphaPtrArray),
+      args.A_dtype, reinterpret_cast<const void* const*>(args.APtrArray), args.scale_mata_ptr, args.ldaArray,
+      args.B_dtype, reinterpret_cast<const void* const*>(args.BPtrArray), args.scale_matb_ptr, args.ldbArray,
       reinterpret_cast<const float* const*>(args.betaPtrArray), args.result_dtype,
       reinterpret_cast<const void* const*>(args.DPtrArray), args.lddArray,
       reinterpret_cast<void**>(args.DPtrArray), args.scale_result_ptr, args.lddArray,

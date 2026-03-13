@@ -8533,12 +8533,16 @@ def meta_scaled_grouped_mm_cublaslt(
     use_fast_accum: bool = False,
 ) -> Tensor:
     torch._check(
-        mat_a.dtype == torch.float8_e4m3fn,
-        lambda: f"Expected float8_e4m3fn input, got mat_a.dtype={mat_a.dtype}.",
+        mat_a.dtype == torch.float8_e4m3fn or mat_a.dtype == torch.float8_e5m2,
+        lambda: f"Expected float8_e4m3fn or float8_e5m2 input, got mat_a.dtype={mat_a.dtype}.",
     )
     torch._check(
-        mat_b.dtype == mat_a.dtype,
-        lambda: f"mat_a and mat_b must have the same dtype, got {mat_a.dtype} and {mat_b.dtype}.",
+        mat_b.dtype == torch.float8_e4m3fn or mat_b.dtype == torch.float8_e5m2,
+        lambda: f"Expected float8_e4m3fn or float8_e5m2 input, got mat_b.dtype={mat_b.dtype}.",
+    )
+    torch._check(
+        mat_a.dtype == torch.float8_e4m3fn or mat_b.dtype == torch.float8_e4m3fn,
+        lambda: "at least one input must be Float8_e4m3fn",
     )
     torch._check(
         mat_a.dim() in (2, 3) and mat_b.dim() in (2, 3),
@@ -8577,6 +8581,10 @@ def meta_scaled_grouped_mm_cublaslt(
         lambda: f"scale_b must be float32, got {scale_b.dtype}.",
     )
     out_dtype = out_dtype or torch.bfloat16
+    torch._check(
+        out_dtype == torch.bfloat16 or out_dtype == torch.float16 or out_dtype == torch.float32,
+        lambda: "If output dtype provided, it must be torch.bfloat16, torch.float16, or torch.float32.",
+    )
     return _create_grouped_mm_output_tensor(mat_a, mat_b, offs, out_dtype)
 
 

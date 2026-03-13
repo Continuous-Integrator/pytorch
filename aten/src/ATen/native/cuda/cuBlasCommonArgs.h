@@ -195,7 +195,8 @@ struct cublasCommonGroupedArgs {
           TORCH_CHECK(offs.has_value(), "Offsets tensor must be provided when at least one input is 2D");
         }
 
-        input_dtype = mat1.scalar_type();
+        A_dtype = mat2.scalar_type();
+        B_dtype = mat1.scalar_type();
         result_dtype = c.scalar_type();
         const int64_t esz = mat1.element_size();
         const int64_t out_esz = c.element_size();
@@ -350,7 +351,7 @@ struct cublasCommonGroupedArgs {
 
   char transa, transb;
   int64_t avgM, avgN, avgK;
-  ScalarType input_dtype, result_dtype;
+  ScalarType A_dtype, B_dtype, result_dtype;
   int batchCount;
 
   // All arrays live in a single device allocation
