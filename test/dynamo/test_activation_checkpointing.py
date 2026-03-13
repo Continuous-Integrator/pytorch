@@ -440,7 +440,7 @@ class ActivationCheckpointingViaTagsTests(
 
         def fn(x, w):
             return torch.utils.checkpoint.checkpoint(
-                gn, x, w, use_reentrant=False, preserve_rng_state=False
+                gn, x, w, use_reentrant=False
             )
 
         x = torch.randn(4, 4, device=device, requires_grad=True)
