@@ -1968,19 +1968,23 @@ class AOTInductorTestsTemplate:
                 return (expanded >> shifts) & 255
 
         torch.cuda.caching_allocator_enable(False)
-        model = Repro()
-        example_inputs = (
-            torch.randint(
-                0, 256, (200, INNER_DIM), device=self.device, dtype=torch.int64
-            ),
-            torch.randn(50, 8, device=self.device),
-        )
-        spec = {
-            "x": (Dim.DYNAMIC, Dim.STATIC),
-            "y": (Dim.DYNAMIC, Dim.STATIC),
-        }
-        self.check_model(model, example_inputs, dynamic_shapes=spec)
-        torch.cuda.caching_allocator_enable(True)
+        try:
+            model = Repro()
+            example_inputs = (
+                torch.randint(
+                    0, 256, (200, INNER_DIM), device=self.device, dtype=torch.int64
+                ),
+                torch.randn(50, 8, device=self.device),
+            )
+            spec = {
+                "x": (Dim.DYNAMIC, Dim.STATIC),
+                "y": (Dim.DYNAMIC, Dim.STATIC),
+            }
+            self.check_model(model, example_inputs, dynamic_shapes=spec)
+        except Exception:
+            raise
+        finally:
+            torch.cuda.caching_allocator_enable(True)
 
     @config.patch({"triton.autotune_at_compile_time": None})
     def test_stride_with_unbacked_expr(self):
