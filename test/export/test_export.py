@@ -1603,7 +1603,7 @@ def forward(self, primals, tangents):
     t = torch.ops.aten.t.default(primals_1);  primals_1 = None
     addmm = torch.ops.aten.addmm.default(primals_2, primals_5, t);  primals_2 = None
     relu = torch.ops.aten.relu.default(addmm);  addmm = None
-    detach_3 = torch.ops.aten.detach.default(relu)
+    detach = torch.ops.aten.detach.default(relu)
     t_1 = torch.ops.aten.t.default(primals_3);  primals_3 = None
     addmm_1 = torch.ops.aten.addmm.default(primals_4, relu, t_1);  primals_4 = None
     t_2 = torch.ops.aten.t.default(t_1);  t_1 = None
@@ -1614,8 +1614,8 @@ def forward(self, primals, tangents):
     sum_1 = torch.ops.aten.sum.dim_IntList(tangents_1, [0], True);  tangents_1 = None
     view = torch.ops.aten.view.default(sum_1, [128]);  sum_1 = None
     t_5 = torch.ops.aten.t.default(t_4);  t_4 = None
-    detach_6 = torch.ops.aten.detach.default(detach_3);  detach_3 = None
-    threshold_backward = torch.ops.aten.threshold_backward.default(mm, detach_6, 0);  mm = detach_6 = None
+    detach_1 = torch.ops.aten.detach.default(detach);  detach = None
+    threshold_backward = torch.ops.aten.threshold_backward.default(mm, detach_1, 0);  mm = detach_1 = None
     t_6 = torch.ops.aten.t.default(t);  t = None
     mm_2 = torch.ops.aten.mm.default(threshold_backward, t_6);  t_6 = None
     t_7 = torch.ops.aten.t.default(threshold_backward)
