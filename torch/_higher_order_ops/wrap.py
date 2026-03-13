@@ -454,9 +454,18 @@ Please make sure the checkpointed region does not contain in-place ops (e.g. tor
         fwd_ctx.ac_graph_id = unique_graph_id
         return fwd_ctx, recomp_ctx
 
+    # use_reentrant is set to False because this op is going to be traced.
+    # And we ensure that AOT Autograd traces through the non reentrant
+    # version of checkpointing.
     kwargs["use_reentrant"] = False
+    # preserve_rng_state is set to False because we want to prevent AOTAutograd from tracing through
+    # `torch.random.fork_rng` op (which is not supported yet under CUDA).
+    # This doesn't mean that we don't preserve RNG state. Instead, we will always preserve RNG state
+    # regardless of this flag (by doing RNG functionalization via `replace_random_passes` in Inductor
+    # instead of in AOTAutograd).
     kwargs["preserve_rng_state"] = False
     kwargs["context_fn"] = context_fn_with_graph_id
+    # Using interpreter allows preservation of metadata through torch.compile stack.
     with fx_traceback.preserve_node_meta():
         from torch.utils.checkpoint import checkpoint
 
