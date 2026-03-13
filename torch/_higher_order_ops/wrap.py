@@ -403,23 +403,6 @@ class TagActivationCheckpoint(HigherOrderOperator):
         }
         return checkpoint_kwargs, gmod_kwargs
 
-    @staticmethod
-    def tag_nodes(gmod, is_sac, unique_graph_id=None):
-        from torch.utils.checkpoint import CheckpointPolicy
-
-        if unique_graph_id is None:
-            unique_graph_id = next(uid)
-        for node in gmod.graph.nodes:
-            if node.op in ("call_function", "call_method", "call_module"):
-                node.meta["ac_graph_id"] = unique_graph_id
-                if is_sac:
-                    # For selective checkpointing, we will populate this tag later in _CachingTorchDispatchMode.
-                    node.meta["recompute"] = None
-                else:
-                    # Under vanilla activation checkpointing, all nodes should be recomputed.
-                    node.meta["recompute"] = CheckpointPolicy.PREFER_RECOMPUTE
-        return gmod
-
     def __call__(self, gmod, *args, **kwargs):
         dispatch_key_set = torch._ops._compute_keyset(
             args, kwargs, self.non_fallthrough_keys
@@ -466,19 +449,14 @@ Please make sure the checkpointed region does not contain in-place ops (e.g. tor
 
     def context_fn_with_graph_id():
         fwd_ctx, recomp_ctx = context_fn()
-        # Plumb ac_graph_id so _CachingTorchDispatchMode can tag nodes
-        # from desugared HOPs (e.g. custom autograd.Function) that
-        # tag_nodes doesn't see.
-        if hasattr(fwd_ctx, "ac_graph_id"):
-            fwd_ctx.ac_graph_id = unique_graph_id
+        # Plumb ac_graph_id so _CachingTorchDispatchMode tags all nodes
+        # (including ops from desugared HOPs like custom autograd.Function).
+        fwd_ctx.ac_graph_id = unique_graph_id
         return fwd_ctx, recomp_ctx
 
     kwargs["use_reentrant"] = False
     kwargs["preserve_rng_state"] = False
     kwargs["context_fn"] = context_fn_with_graph_id
-    gmod = TagActivationCheckpoint.tag_nodes(
-        gmod, is_sac=True, unique_graph_id=unique_graph_id
-    )
     with fx_traceback.preserve_node_meta():
         from torch.utils.checkpoint import checkpoint
 

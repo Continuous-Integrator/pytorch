@@ -1311,13 +1311,7 @@ class _CachingTorchDispatchMode(TorchDispatchMode):
         self.ac_graph_id = ac_graph_id
 
     def __torch_dispatch__(self, func, types, args=(), kwargs=None):
-        is_compiling = _is_compiling(func, args, kwargs)
-
         if func in SAC_IGNORED_OPS:
-            if is_compiling:
-                fx_traceback.current_meta["recompute"] = CheckpointPolicy.PREFER_RECOMPUTE
-                if self.ac_graph_id is not None:
-                    fx_traceback.current_meta["ac_graph_id"] = self.ac_graph_id
             return func(*args, **kwargs)
 
         kwargs = {} if kwargs is None else kwargs
@@ -1326,11 +1320,12 @@ class _CachingTorchDispatchMode(TorchDispatchMode):
         if isinstance(policy, bool):
             policy = _policy_from_bool(policy)
 
+        is_compiling = _is_compiling(func, args, kwargs)
+
         if is_compiling:
             # Overwrite each node's "recompute" tag to add in the user annotation.
             fx_traceback.current_meta["recompute"] = policy
-            if self.ac_graph_id is not None:
-                fx_traceback.current_meta["ac_graph_id"] = self.ac_graph_id
+            fx_traceback.current_meta["ac_graph_id"] = self.ac_graph_id
 
         out = func(*args, **kwargs)
 
