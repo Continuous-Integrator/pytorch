@@ -404,10 +404,11 @@ class TagActivationCheckpoint(HigherOrderOperator):
         return checkpoint_kwargs, gmod_kwargs
 
     @staticmethod
-    def tag_nodes(gmod, is_sac):
+    def tag_nodes(gmod, is_sac, unique_graph_id=None):
         from torch.utils.checkpoint import CheckpointPolicy
 
-        unique_graph_id = next(uid)
+        if unique_graph_id is None:
+            unique_graph_id = next(uid)
         for node in gmod.graph.nodes:
             if node.op in ("call_function", "call_method", "call_module"):
                 node.meta["ac_graph_id"] = unique_graph_id
@@ -434,44 +435,122 @@ class TagActivationCheckpoint(HigherOrderOperator):
 tag_activation_checkpoint = TagActivationCheckpoint()
 
 
+class _ACTaggingTorchDispatchMode(torch.utils._python_dispatch.TorchDispatchMode):
+    """Lightweight dispatch mode that tags new FX nodes with ac_graph_id and
+    recompute policy as ops execute during activation checkpointing.
+
+    Unlike the static tag_nodes approach which only sees the top-level graph
+    nodes, this mode intercepts ops at dispatch time — including ops that come
+    from desugared HOPs like autograd_function_apply — ensuring all ops in the
+    checkpoint region are properly tagged.
+
+    For vanilla AC, policy_fn is None and all ops get PREFER_RECOMPUTE.
+    For SAC, policy_fn is the user's selective checkpoint policy.
+    """
+
+    supports_higher_order_operators = True
+
+    @classmethod
+    def ignore_compile_internals(cls):
+        return True
+
+    def __init__(self, ac_graph_id, policy_fn=None):
+        self.ac_graph_id = ac_graph_id
+        self.policy_fn = policy_fn
+
+    def __torch_dispatch__(self, func, types, args=(), kwargs=None):
+        from torch.fx.experimental.proxy_tensor import get_proxy_mode
+        from torch.utils.checkpoint import (
+            CheckpointPolicy,
+            SAC_IGNORED_OPS,
+            SelectiveCheckpointContext,
+        )
+
+        kwargs = {} if kwargs is None else kwargs
+
+        if func in SAC_IGNORED_OPS:
+            # SAC_IGNORED_OPS (e.g. detach) are always recomputable.
+            # Tag via current_meta so proxy nodes pick up the tag.
+            import torch.fx.traceback as fx_traceback
+
+            fx_traceback.current_meta["recompute"] = CheckpointPolicy.PREFER_RECOMPUTE
+            fx_traceback.current_meta["ac_graph_id"] = self.ac_graph_id
+            return func(*args, **kwargs)
+
+        proxy_mode = get_proxy_mode()
+        graph_len_before = (
+            len(list(proxy_mode.tracer.graph.nodes))
+            if proxy_mode is not None
+            else None
+        )
+
+        out = func(*args, **kwargs)
+
+        if self.policy_fn is not None:
+            policy = self.policy_fn(
+                SelectiveCheckpointContext(is_recompute=False),
+                func,
+                *args,
+                **kwargs,
+            )
+            if isinstance(policy, bool):
+                from torch.utils.checkpoint import _policy_from_bool
+
+                policy = _policy_from_bool(policy)
+        else:
+            policy = CheckpointPolicy.PREFER_RECOMPUTE
+
+        if proxy_mode is not None and graph_len_before is not None:
+            for node in list(proxy_mode.tracer.graph.nodes)[graph_len_before:]:
+                node.meta["ac_graph_id"] = self.ac_graph_id
+                node.meta["recompute"] = policy
+
+        return out
+
+
 def tag_activation_checkpoint_impl(gmod, *args, **kwargs):
     import torch.fx.traceback as fx_traceback
     from torch.fx import Interpreter
 
+    unique_graph_id = next(uid)
     if "_checkpoint_context_fn" in gmod.meta:
-        warning_once(
-            log,
-            """
+        context_fn = gmod.meta["_checkpoint_context_fn"]
+        fwd_context, _ = context_fn()
+        # _CachingTorchDispatchMode (from create_selective_checkpoint_contexts)
+        # exposes policy_fn. For other context managers, fall back to the
+        # original checkpoint()-based path.
+        if hasattr(fwd_context, "policy_fn"):
+            policy_fn = fwd_context.policy_fn
+            gmod = TagActivationCheckpoint.tag_nodes(
+                gmod, is_sac=True, unique_graph_id=unique_graph_id
+            )
+            with fx_traceback.preserve_node_meta(), _ACTaggingTorchDispatchMode(
+                unique_graph_id, policy_fn=policy_fn
+            ):
+                return Interpreter(gmod).run(*args)
+        else:
+            warning_once(
+                log,
+                """
 Detected that context_fn is passed to torch.utils.checkpoint under torch.compile.
 Please make sure the checkpointed region does not contain in-place ops (e.g. torch.relu_).
 """,
-        )
-        # use_reentrant is set to False because this op is going to be traced.
-        # And we ensure that AOT Autograd traces through the non reentrant
-        # version of checkpointing.
-        kwargs["use_reentrant"] = False
-        # preserve_rng_state is set to False because we want to prevent AOTAutograd from tracing through
-        # `torch.random.fork_rng` op (which is not supported yet under CUDA).
-        # This doesn't mean that we don't preserve RNG state. Instead, we will always preserve RNG state
-        # regardless of this flag (by doing RNG functionalization via `replace_random_passes` in Inductor
-        # instead of in AOTAutograd).
-        kwargs["preserve_rng_state"] = False
-        kwargs["context_fn"] = gmod.meta["_checkpoint_context_fn"]
-        # We first tag all nodes as "recompute" in this graph, and then we undo the "recompute" tag
-        # for specific nodes in _CachingTorchDispatchMode in torch/utils/checkpoint.py.
-        gmod = TagActivationCheckpoint.tag_nodes(gmod, is_sac=True)
-        # Using interpreter allows preservation of metadata through torch.compile stack.
-        with fx_traceback.preserve_node_meta():
-            from torch.utils.checkpoint import checkpoint
+            )
+            kwargs["use_reentrant"] = False
+            kwargs["preserve_rng_state"] = False
+            kwargs["context_fn"] = context_fn
+            gmod = TagActivationCheckpoint.tag_nodes(gmod, is_sac=True)
+            with fx_traceback.preserve_node_meta():
+                from torch.utils.checkpoint import checkpoint
 
-            return checkpoint(Interpreter(gmod).run, *args, **kwargs)
+                return checkpoint(Interpreter(gmod).run, *args, **kwargs)
     else:
-        gmod = TagActivationCheckpoint.tag_nodes(gmod, is_sac=False)
-        # Using interpreter allows preservation of metadata through torch.compile stack.
-        # TODO: We want to use the same `checkpoint(Interpreter(gmod).run, *args, **kwargs)` here
-        # as the `context_fn != None` case, but that depends on in-place op support in TorchDispatchMode + torch.compile.
-        # (for details on in-place op issue, run `test_compile_selective_checkpoint_inplace_op` unit test)
-        with fx_traceback.preserve_node_meta():
+        gmod = TagActivationCheckpoint.tag_nodes(
+            gmod, is_sac=False, unique_graph_id=unique_graph_id
+        )
+        with fx_traceback.preserve_node_meta(), _ACTaggingTorchDispatchMode(
+            unique_graph_id
+        ):
             return Interpreter(gmod).run(*args)
 
 
