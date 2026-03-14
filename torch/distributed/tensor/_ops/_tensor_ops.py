@@ -1380,7 +1380,12 @@ def index_add_single_dim_strategy(
     for d in range(ndim):
         if d != dim:
             strategies.append(
-                [_ShardingPlaceholder(d), _ShardingPlaceholder(d), Replicate(), _ShardingPlaceholder(d)]
+                [
+                    _ShardingPlaceholder(d),
+                    _ShardingPlaceholder(d),
+                    Replicate(),
+                    _ShardingPlaceholder(d),
+                ]
             )
     strategies.append([Partial("sum"), Partial("sum"), Replicate(), Partial("sum")])
     return strategies
@@ -1400,7 +1405,12 @@ def index_copy_single_dim_strategy(
     for d in range(ndim):
         if d != dim:
             strategies.append(
-                [_ShardingPlaceholder(d), _ShardingPlaceholder(d), Replicate(), _ShardingPlaceholder(d)]
+                [
+                    _ShardingPlaceholder(d),
+                    _ShardingPlaceholder(d),
+                    Replicate(),
+                    _ShardingPlaceholder(d),
+                ]
             )
     return strategies
 
@@ -1438,7 +1448,12 @@ def index_fill_tensor_single_dim_strategy(
     for d in range(ndim):
         if d != dim:
             strategies.append(
-                [_ShardingPlaceholder(d), _ShardingPlaceholder(d), Replicate(), Replicate()]
+                [
+                    _ShardingPlaceholder(d),
+                    _ShardingPlaceholder(d),
+                    Replicate(),
+                    Replicate(),
+                ]
             )
     return strategies
 
@@ -1457,7 +1472,12 @@ def index_reduce_single_dim_strategy(
     for d in range(ndim):
         if d != dim:
             strategies.append(
-                [_ShardingPlaceholder(d), _ShardingPlaceholder(d), Replicate(), _ShardingPlaceholder(d)]
+                [
+                    _ShardingPlaceholder(d),
+                    _ShardingPlaceholder(d),
+                    Replicate(),
+                    _ShardingPlaceholder(d),
+                ]
             )
     return strategies
 
@@ -1478,7 +1498,12 @@ def scatter_reduce_single_dim_strategy(
     for d in range(ndim):
         if d != dim and self_meta.shape[d] == index_meta.shape[d] == src_meta.shape[d]:
             strategies.append(
-                [_ShardingPlaceholder(d), _ShardingPlaceholder(d), _ShardingPlaceholder(d), _ShardingPlaceholder(d)]
+                [
+                    _ShardingPlaceholder(d),
+                    _ShardingPlaceholder(d),
+                    _ShardingPlaceholder(d),
+                    _ShardingPlaceholder(d),
+                ]
             )
     return strategies
 
@@ -1498,7 +1523,11 @@ def select_scatter_single_dim_strategy(
         if d != dim:
             src_d = d if d < dim else d - 1
             strategies.append(
-                [_ShardingPlaceholder(d), _ShardingPlaceholder(d), _ShardingPlaceholder(src_d)]
+                [
+                    _ShardingPlaceholder(d),
+                    _ShardingPlaceholder(d),
+                    _ShardingPlaceholder(src_d),
+                ]
             )
     return strategies
 
@@ -1514,10 +1543,18 @@ def diagonal_scatter_single_dim_strategy(
     ndim = len(self_meta.shape)
     # offset=args[2], dim1=args[3], dim2=args[4]; may come as kwargs with defaults
     dim1 = normalize_dim(
-        args_schema[3] if len(args_schema) > 3 else kwargs_schema.get("dim1", 0), ndim
+        cast(
+            int,
+            args_schema[3] if len(args_schema) > 3 else kwargs_schema.get("dim1", 0),
+        ),
+        ndim,
     )
     dim2 = normalize_dim(
-        args_schema[4] if len(args_schema) > 4 else kwargs_schema.get("dim2", 1), ndim
+        cast(
+            int,
+            args_schema[4] if len(args_schema) > 4 else kwargs_schema.get("dim2", 1),
+        ),
+        ndim,
     )
     diagonal_dims = {dim1, dim2}
     non_diag_dims = sorted(d for d in range(ndim) if d not in diagonal_dims)
@@ -1579,8 +1616,10 @@ def searchsorted_single_dim_strategy(
         # Multi-dim sorted_sequence: shard both on matching batch dims
         for d in range(min(sorted_ndim - 1, self_ndim)):
             strategies.append(
-                [_ShardingPlaceholder(d), _ShardingPlaceholder(d), _ShardingPlaceholder(d)]
+                [
+                    _ShardingPlaceholder(d),
+                    _ShardingPlaceholder(d),
+                    _ShardingPlaceholder(d),
+                ]
             )
     return strategies
-
-
