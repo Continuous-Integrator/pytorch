@@ -101,8 +101,34 @@ class DistMathOpsTest(DTensorTestBase):
             "amin",
             "var",
             "std",
+            "nansum",
         ):
             self.linear_op_reductions(op_str)
+
+    @with_comms
+    def test_nansum_with_nan(self):
+        device_mesh = self.build_device_mesh()
+        # Tensor with NaN values sharded across the reduction dim
+        tensor = torch.tensor(
+            [[1.0, float("nan"), 3.0], [float("nan"), 5.0, 6.0]],
+            device=self.device_type,
+        )
+        dtensor = distribute_tensor(tensor, device_mesh, [Shard(0)])
+
+        # Full reduction: Shard(0) reduces to Partial(sum), then to Replicate
+        dt_full = dtensor.nansum()
+        self.assertEqual(dt_full.full_tensor(), tensor.nansum())
+        self.assertEqual(dt_full.placements, (Partial("sum"),))
+
+        # Reduction along sharded dim 0: produces Partial(sum)
+        dt_dim0 = dtensor.nansum(dim=0)
+        self.assertEqual(dt_dim0.full_tensor(), tensor.nansum(dim=0))
+        self.assertEqual(dt_dim0.placements, (Partial("sum"),))
+
+        # Reduction along non-sharded dim 1: preserves Shard(0)
+        dt_dim1 = dtensor.nansum(dim=1)
+        self.assertEqual(dt_dim1.full_tensor(), tensor.nansum(dim=1))
+        self.assertEqual(dt_dim1.placements, (Shard(0),))
 
     @with_comms
     @skip_unless_torch_gpu
@@ -1256,6 +1282,39 @@ class DistMathOpsTest(DTensorTestBase):
                 local_result = op(x, y)
                 dtensor_result = op(dtensor_x, dtensor_y)
             self.assertEqual(dtensor_result.full_tensor(), local_result)
+
+    @with_comms
+    def test_prims_fma(self):
+        from torch._inductor import inductor_prims
+
+        device_mesh = self.build_device_mesh()
+        a = torch.randn(12, 8)
+        b = torch.randn(12, 8)
+        c = torch.randn(12, 8)
+        dt_a = distribute_tensor(a, device_mesh, [Shard(0)])
+        dt_b = distribute_tensor(b, device_mesh, [Shard(0)])
+        dt_c = distribute_tensor(c, device_mesh, [Shard(0)])
+
+        # All DTensor inputs
+        local_result = inductor_prims.fma(a, b, c)
+        dtensor_result = inductor_prims.fma(dt_a, dt_b, dt_c)
+        self.assertEqual(dtensor_result.full_tensor(), local_result)
+        self.assertTrue(dtensor_result.placements[0].is_shard(dim=0))
+
+        # Scalar tensor input (mimics the alpha argument in add_)
+        scalar = torch.tensor(2.0)
+        local_result = inductor_prims.fma(a, scalar, c)
+        dtensor_result = inductor_prims.fma(dt_a, scalar, dt_c)
+        self.assertEqual(dtensor_result.full_tensor(), local_result)
+        self.assertTrue(dtensor_result.placements[0].is_shard(dim=0))
+
+        # Replicate placement
+        dt_a_rep = distribute_tensor(a, device_mesh, [Replicate()])
+        dt_c_rep = distribute_tensor(c, device_mesh, [Replicate()])
+        local_result = inductor_prims.fma(a, scalar, c)
+        dtensor_result = inductor_prims.fma(dt_a_rep, scalar, dt_c_rep)
+        self.assertEqual(dtensor_result.full_tensor(), local_result)
+        self.assertTrue(dtensor_result.placements[0].is_replicate())
 
     @with_comms
     def test_prims_view_of(self):

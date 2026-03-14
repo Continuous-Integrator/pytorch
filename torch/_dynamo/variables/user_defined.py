@@ -355,7 +355,7 @@ class UserDefinedClassVariable(UserDefinedVariable):
         if ConstantVariable.is_literal(obj):
             return VariableTracker.build(tx, obj)
         elif isinstance(obj, enum.Enum):
-            return VariableTracker.build(tx, obj)
+            return VariableTracker.build(tx, obj, source)
         elif self.value is collections.OrderedDict:
             return variables.GetAttrVariable(self, name)
         elif name in getattr(self.value, "__dict__", {}) or (
@@ -1114,6 +1114,8 @@ def call_random_fn(
     args = [x.as_python_constant() for x in args]
     kwargs = {k: v.as_python_constant() for k, v in kwargs.items()}
     random_call_index = len(tx.output.random_calls)
+    # NB: it is probably not important for the example_value to be exactly correct,
+    # we just need the right type
     example_value = fn(*args, **kwargs)
     source = RandomValueSource(random_call_index)
     tx.output.random_calls.append((fn, args, kwargs))  # type: ignore[arg-type]

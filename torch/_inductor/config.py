@@ -434,9 +434,18 @@ bucket_all_gathers_fx: Literal["none", "all", "only_fsdp"] = "none"
 # By default torch._inductor.fx_passes.bucketing.bucket_size_determinator is used
 bucket_all_gathers_fx_bucket_size_determinator: Callable[[int], int] | None = None
 
+bucket_all_gathers_bucket_mode: Literal[
+    "default", "custom_ops", "custom_ops_multidtype"
+] = "default"
+
 bucket_reduce_scatters_fx: Literal["none", "all"] = "none"
 # By default torch._inductor.fx_passes.bucketing.bucket_size_determinator is used
 bucket_reduce_scatters_fx_bucket_size_determinator: Callable[[int], int] | None = None
+
+bucket_reduce_scatters_bucket_mode: Literal[
+    "default", "custom_ops", "custom_ops_multidtype"
+] = "default"
+
 
 bucket_all_reduces_fx: Literal["none", "all"] = "none"
 # By default torch._inductor.fx_passes.bucketing.bucket_size_determinator is used
@@ -740,6 +749,13 @@ layout_optimization = (
 
 force_layout_optimization = os.environ.get("TORCHINDUCTOR_FORCE_LAYOUT_OPT", "0") == "1"
 
+# Cache SDPA constraint results keyed by (tensor identity, stride_order) to avoid
+# creating duplicate buffers when the same tensor feeds multiple SDPA positions
+# (e.g., key=value in simplified PMA attention).
+cache_sdpa_constraint = (
+    os.environ.get("TORCHINDUCTOR_CACHE_SDPA_CONSTRAINT", "0") == "1"
+)
+
 
 # Whether to keep the output strides the same as eager after layout optimization.
 keep_output_stride = os.environ.get("TORCHINDUCTOR_KEEP_OUTPUT_STRIDE", "1") == "1"
@@ -824,6 +840,10 @@ max_epilogue_benchmarked_choices = 1
 
 # how many nodes to allow into a single fusion
 max_fusion_size = 64
+
+# Minimum overlap ratio to consider fusion beneficial when inputs are shared by no indices overlapped.
+# Valid range: [0, 1]. Default to not fusion.
+min_overlap_ratio = 1.1
 
 # how many nodes to attempt pairwise fusion with in a buffer group
 max_fusion_buffer_group_pairwise_attempts = 64
@@ -1537,6 +1557,13 @@ class triton:
     # Specify dynamic shapes to capture cudagraphs and skip cudagraph for other shapes.
     # Default to None, which means we capture cudagraphs for all shapes.
     cudagraph_capture_sizes: tuple[int | tuple[int, ...]] | None = None
+
+    # Minimum number of nodes (kernels) required for a cudagraph partition.
+    # If a partition has fewer nodes than this threshold, it won't be cudagraphed.
+    # This helps avoid overhead for very small partitions where cudagraph
+    # recording/replay cost outweighs the benefits.
+    # Set to 0 to disable this check.
+    cudagraph_min_partition_size = 0
 
     # assertions not on the fast path, steady state
     slow_path_cudagraph_asserts = True
