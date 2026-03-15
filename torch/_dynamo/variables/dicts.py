@@ -775,6 +775,8 @@ class ConstDictVariable(VariableTracker):
 
             arg_hashable = args and is_hashable(args[0])
             if not arg_hashable:
+                if isinstance(self, SetVariable):
+                    return self._set_contains_unhashable(tx, args[0])
                 raise_unhashable(args[0], tx)
 
             self.install_dict_contains_guard(tx, args)
@@ -1229,6 +1231,22 @@ class SetVariable(ConstDictVariable):
     def reconstruct(self, codegen: "PyCodegen") -> None:
         codegen.foreach([x.vt for x in self.set_items])
         codegen.append_output(create_instruction("BUILD_SET", arg=len(self.set_items)))
+
+    def _set_contains_unhashable(
+        self,
+        tx: "InstructionTranslator",
+        arg: VariableTracker,
+    ) -> VariableTracker:
+        # CPython's set.__contains__ only special-cases set/frozenset keys
+        # (computing hash via frozenset_hash_impl). For all other unhashable
+        # types, it raises TypeError.
+        # https://github.com/python/cpython/blob/main/Objects/setobject.c
+        if arg.is_python_constant():
+            search = arg.as_python_constant()
+            if isinstance(search, (set, frozenset)):
+                result = search in self.as_python_constant()
+                return VariableTracker.build(tx, result)
+        raise_unhashable(arg, tx)
 
     def _fast_set_method(
         self,
