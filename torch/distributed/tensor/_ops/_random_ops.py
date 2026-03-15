@@ -9,7 +9,6 @@ from torch.distributed.tensor._op_schema import (
     OpSchema,
     OpSpec,
     OpStrategy,
-    RuntimeSchemaInfo,
     StrategyType,
     TensorMeta,
 )
