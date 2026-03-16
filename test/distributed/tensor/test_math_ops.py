@@ -1442,11 +1442,15 @@ class DistMathOpsTest(DTensorTestBase):
             self.assertTrue(result.placements[0].is_shard(0))
 
         # Dual-output pooling (values + indices)
-        for op, args in [
-            (torch.nn.functional.adaptive_max_pool2d, ((4, 4),)),
+        for op, args, kwargs in [
+            (
+                torch.nn.functional.adaptive_max_pool2d,
+                ((4, 4),),
+                {"return_indices": True},
+            ),
         ]:
-            exp_val, exp_idx = op(inp_4d, *args)
-            dt_val, dt_idx = op(dt_4d, *args)
+            exp_val, exp_idx = op(inp_4d, *args, **kwargs)
+            dt_val, dt_idx = op(dt_4d, *args, **kwargs)
             self.assertEqual(dt_val.full_tensor(), exp_val)
             self.assertTrue(dt_val.placements[0].is_shard(0))
 
