@@ -1198,7 +1198,7 @@ class PallasTestsMixin:
     def test_stack_then_reshape(self):
         """Test a stack + reshape pattern.
 
-        Uses even/odd stride-2 slicing, then reassembles via stack + reshape. Exercises strided input access.
+        Uses even/odd stride-2 slicing, then reassembles via stack + reshape.
         """
 
         def fn(x):
