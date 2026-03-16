@@ -23,7 +23,7 @@ log = logging.getLogger(__name__)
 autotuning_log = getArtifactLogger(__name__, "autotuning")
 
 # Type alias for kernel config key tuple.
-# Currently matches on (tile_m, tile_n, tile_k, cluster_m, cluster_n).
+# Currently matches on (tile_m, tile_n, cluster_m, cluster_n).
 # tile_k excluded because nvMatmulHeuristics and cutlass_api use it to mean different things.
 # TODO(nikhilap): Extend config key for stages/split_k https://github.com/pytorch/pytorch/issues/177578
 ConfigKey = tuple[int, int, int, int]
