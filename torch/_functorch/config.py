@@ -418,6 +418,11 @@ _sync_decision_cross_ranks = False
 saved_tensors_hooks_filtering_mode = "donated"
 
 
+# When True, cleanup_recompute_tags skips Case A (boundary saves between
+# consecutive AC regions). Used with explicit boundary saves in graph passes
+# for controlled A/B activation memory experiments.
+skip_ac_boundary_saves = False
+
 # This callback is invoked on the joint graph before partitioning
 joint_custom_pass: Callable = None  # type: ignore[assignment]
 

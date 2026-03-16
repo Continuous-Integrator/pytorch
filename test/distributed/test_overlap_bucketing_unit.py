@@ -5,6 +5,7 @@ import torch
 import torch._dynamo
 import torch._dynamo.logging
 import torch._dynamo.test_case
+import torch._inductor.config
 import torch.distributed as dist
 import torch.fx as fx
 
@@ -538,6 +539,165 @@ class TestOverlapPreservingBucketing(InductorTestCase):
             target=torch.ops._c10d_functional.reduce_scatter_tensor.default,
         )
         self.assertEqual(len(rs_nodes), 1)
+
+    def test_reduce_scatter_coalesced_mode(self):
+        """
+        Test that 'coalesced' bucket mode uses reduce_scatter_tensor_coalesced
+        instead of cat + single reduce_scatter.
+        """
+
+        def func(a, b):
+            group_name = "0"
+            group_size = 2
+
+            rs1 = torch.ops._c10d_functional.reduce_scatter_tensor(
+                a, "sum", group_size, group_name
+            )
+            rs2 = torch.ops._c10d_functional.reduce_scatter_tensor(
+                b, "sum", group_size, group_name
+            )
+
+            rs1_out = torch.ops._c10d_functional.wait_tensor(rs1)
+            rs2_out = torch.ops._c10d_functional.wait_tensor(rs2)
+
+            return rs1_out.sum() + rs2_out.sum()
+
+        with FakeTensorMode():
+            a = torch.ones(4, 4, device=self.device)
+            b = torch.ones(4, 4, device=self.device) * 2
+            traced = make_fx(func)(a, b)
+
+        rs1, rs2 = traced.graph.find_nodes(
+            op="call_function",
+            target=torch.ops._c10d_functional.reduce_scatter_tensor.default,
+        )
+
+        hiding_annotations = {}
+        collective_info = build_collective_info(traced.graph, hiding_annotations)
+        scheduled = OrderedSet(traced.graph.nodes)
+
+        from torch._inductor.fx_passes.overlap_preserving_bucketer import (
+            OverlapPreservingBucketer,
+        )
+
+        bucketer = OverlapPreservingBucketer(
+            traced.graph,
+            collective_info,
+            scheduled,
+            bucket_mode="coalesced",
+        )
+        bucketer.bucket_collectives()
+
+        graph_str = str(traced.graph)
+        # Coalesced mode should use reduce_scatter_tensor_coalesced, not cat
+        self.assertIn("reduce_scatter_tensor_coalesced", graph_str)
+        # No cat.default should appear (the whole point of coalesced)
+        self.assertNotIn("cat.default", graph_str)
+
+    def test_all_reduce_coalesced_mode(self):
+        """
+        Test that 'coalesced' bucket mode uses all_reduce_coalesced
+        instead of cat + single all_reduce.
+        """
+
+        def func(a, b):
+            group_name = "0"
+
+            ar1 = torch.ops._c10d_functional.all_reduce(a, "sum", group_name)
+            ar2 = torch.ops._c10d_functional.all_reduce(b, "sum", group_name)
+
+            ar1_out = torch.ops._c10d_functional.wait_tensor(ar1)
+            ar2_out = torch.ops._c10d_functional.wait_tensor(ar2)
+
+            return ar1_out.sum() + ar2_out.sum()
+
+        with FakeTensorMode():
+            a = torch.ones(4, 4, device=self.device)
+            b = torch.ones(4, 4, device=self.device) * 2
+            traced = make_fx(func)(a, b)
+
+        ar1, ar2 = traced.graph.find_nodes(
+            op="call_function",
+            target=torch.ops._c10d_functional.all_reduce.default,
+        )
+
+        hiding_annotations = {}
+        collective_info = build_collective_info(traced.graph, hiding_annotations)
+        scheduled = OrderedSet(traced.graph.nodes)
+
+        from torch._inductor.fx_passes.overlap_preserving_bucketer import (
+            OverlapPreservingBucketer,
+        )
+
+        bucketer = OverlapPreservingBucketer(
+            traced.graph,
+            collective_info,
+            scheduled,
+            bucket_mode="coalesced",
+        )
+        bucketer.bucket_collectives()
+
+        graph_str = str(traced.graph)
+        self.assertIn("all_reduce_coalesced", graph_str)
+        self.assertNotIn("cat.default", graph_str)
+
+    def test_all_gather_coalesced_mode(self):
+        """
+        Test that 'coalesced' bucket mode uses all_gather_into_tensor_coalesced
+        instead of foreach_copy_ into a buffer + single all_gather.
+        """
+
+        def func(a, b):
+            group_name = "0"
+            group_size = 2
+
+            ag1 = torch.ops._c10d_functional.all_gather_into_tensor(
+                a, group_size, group_name
+            )
+            ag2 = torch.ops._c10d_functional.all_gather_into_tensor(
+                b, group_size, group_name
+            )
+
+            mm1 = torch.mm(a, a)
+            mm2 = torch.mm(b, b)
+
+            ag1_out = torch.ops._c10d_functional.wait_tensor(ag1)
+            ag2_out = torch.ops._c10d_functional.wait_tensor(ag2)
+
+            return ag1_out.sum() + ag2_out.sum() + mm1.sum() + mm2.sum()
+
+        with FakeTensorMode():
+            a = torch.ones(4, 4, device=self.device)
+            b = torch.ones(4, 4, device=self.device) * 2
+            traced = make_fx(func)(a, b)
+
+        ag1, ag2 = traced.graph.find_nodes(
+            op="call_function",
+            target=torch.ops._c10d_functional.all_gather_into_tensor.default,
+        )
+        mm_nodes = traced.graph.find_nodes(
+            op="call_function", target=torch.ops.aten.mm.default
+        )
+
+        hiding_annotations = {ag1: mm_nodes[0], ag2: mm_nodes[1]}
+        collective_info = build_collective_info(traced.graph, hiding_annotations)
+        scheduled = OrderedSet(traced.graph.nodes)
+
+        from torch._inductor.fx_passes.overlap_preserving_bucketer import (
+            OverlapPreservingBucketer,
+        )
+
+        bucketer = OverlapPreservingBucketer(
+            traced.graph,
+            collective_info,
+            scheduled,
+            bucket_mode="coalesced",
+        )
+        bucketer.bucket_collectives()
+
+        graph_str = str(traced.graph)
+        self.assertIn("all_gather_into_tensor_coalesced", graph_str)
+        self.assertNotIn("foreach_copy_", graph_str)
 
     def test_can_bucket_multidtype_collectives(self):
         """
@@ -1410,6 +1570,71 @@ class TestForeachGroupsUnit(InductorTestCase):
             ag_ins, 2, "default", torch.float32, out_dtype_ints, 0, None
         )
         self.assertTrue(torch.allclose(result_with, result_without))
+
+
+class TestForeachImprov(InductorTestCase):
+    """Unit tests for _foreach_improv config (cat+copy_ vs _foreach_copy_)."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        from torch.testing._internal.distributed.fake_pg import FakeStore
+
+        store = FakeStore()
+        dist.init_process_group(backend="fake", rank=0, world_size=2, store=store)
+        cls.device = "cuda"
+
+    @classmethod
+    def tearDownClass(cls):
+        super().tearDownClass()
+        dist.destroy_process_group()
+
+    @unittest.skipIf(not HAS_GPU, "Requires GPU")
+    def test_foreach_improv_uses_cat_copy(self):
+        """Test that _foreach_improv replaces _foreach_copy_ with cat+copy_."""
+        from torch._inductor.fx_passes.bucketing import all_gather_merge_fn_to_trace
+
+        with FakeTensorMode():
+            ag_ins = [
+                torch.randn(4, 4, device=self.device),
+                torch.randn(8, 4, device=self.device),
+            ]
+            with torch._inductor.config.patch(_foreach_improv=True):
+                traced = make_fx(all_gather_merge_fn_to_trace)(
+                    ag_ins,
+                    2,
+                    "0",
+                    torch.float32,
+                    [torch.float32, torch.float32],
+                    0,
+                )
+            graph_str = str(traced.graph)
+            # Should use cat + copy_, not _foreach_copy_
+            self.assertIn("cat", graph_str)
+            self.assertIn("copy_", graph_str)
+            self.assertNotIn("_foreach_copy_", graph_str)
+
+    @unittest.skipIf(not HAS_GPU, "Requires GPU")
+    def test_default_uses_foreach_copy(self):
+        """Test that default mode still uses _foreach_copy_."""
+        from torch._inductor.fx_passes.bucketing import all_gather_merge_fn_to_trace
+
+        with FakeTensorMode():
+            ag_ins = [
+                torch.randn(4, 4, device=self.device),
+                torch.randn(8, 4, device=self.device),
+            ]
+            with torch._inductor.config.patch(_foreach_improv=False):
+                traced = make_fx(all_gather_merge_fn_to_trace)(
+                    ag_ins,
+                    2,
+                    "0",
+                    torch.float32,
+                    [torch.float32, torch.float32],
+                    0,
+                )
+            graph_str = str(traced.graph)
+            self.assertIn("_foreach_copy_", graph_str)
 
 
 if __name__ == "__main__":
