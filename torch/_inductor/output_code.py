@@ -610,7 +610,10 @@ class CompiledFxGraph(OutputCode):
                 # Use stack traces captured on the output node before
                 # post-grad passes, which may strip stack_trace from
                 # individual arg nodes.
-                stack_traces = output.meta["output_stack_traces"]
+                stack_traces = output.meta.get("output_stack_traces") or [
+                    (arg.stack_trace if isinstance(arg, torch.fx.node.Node) else None)
+                    for arg in output.args[0]  # type: ignore[union-attr]
+                ]
                 cudagraph_fail_reasons = [s for b, s in cudagraph_tests if not b]
                 placeholders = tuple(get_placeholder_info(gm.graph))
                 cudagraph_info = CudagraphCachedInfo(
