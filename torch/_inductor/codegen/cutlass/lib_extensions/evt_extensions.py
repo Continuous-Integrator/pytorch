@@ -1,5 +1,5 @@
 from collections.abc import Callable
-from typing import Any, Union
+from typing import Any
 
 from sympy import Expr
 
@@ -14,7 +14,7 @@ from ..utils import cutlass_arch, torch_dtype_to_cutlass_type, try_import_cutlas
 
 
 EpilogueFunctor = Any  # EpilogueFunctor local class defined in _trace
-Buffer = Union[ComputedBuffer, InputBuffer]
+Buffer = ComputedBuffer | InputBuffer
 CutlassTupleType = Any  # cutlass.backend.c_types.tuple_factory_.<locals>.TupleType
 CutlassVisitorType = Any  # cutlass.backend.c_types.visitor_factory.<locals>.VisitorType
 CutlassArgType = (
@@ -26,7 +26,6 @@ if try_import_cutlass():
     import ast
     import ctypes
     import textwrap
-    from typing import Union
 
     from cutlass_cppgen.backend.c_types import (  # type: ignore[import-not-found]
         EmptyByte,
@@ -40,6 +39,9 @@ if try_import_cutlass():
     )
     from cutlass_cppgen.backend.evt.backend.emitter_base import (  # type: ignore[import-not-found]
         FusionCallbacks,
+    )
+    from cutlass_cppgen.backend.evt.backend.sm100_emitter import (  # type: ignore[import-not-found]
+        Sm100CollectiveEpilogue,
     )
     from cutlass_cppgen.backend.evt.frontend import (  # type: ignore[import-not-found]
         PythonASTFrontend,
@@ -78,7 +80,7 @@ if try_import_cutlass():
     def create_example_tensors(
         var_name_to_buffer_name: dict[str, str],
         name_to_buffer: dict[str, Buffer],
-        size_hint_fn: Callable[[Union[Expr, int]], int],
+        size_hint_fn: Callable[[Expr | int], int],
     ) -> dict[str, CutlassTensor]:
         def cutlass_tensor_from_buffer(
             buffer: Buffer,
@@ -118,7 +120,8 @@ non-contiguous layout, received stride: {stride} and shape: {shape}"
         tile_description: TileDescription,
         epilogue_schedule: EpilogueScheduleType,
         name_to_buffer: dict[str, Buffer],
-        size_hint_fn: Callable[[Union[Expr, int]], int],
+        size_hint_fn: Callable[[Expr | int], int],
+        kernel_schedule: Any | None = None,
         device_type: str = "cuda",
         **kwargs: dict[str, Any],
     ) -> tuple[str, str, str, EVTArgRenames]:
@@ -130,21 +133,32 @@ non-contiguous layout, received stride: {stride} and shape: {shape}"
         visitor = EpilogueFunctorVisitor(arch, epilogue_functor)
         fusion_callbacks = FusionCallbacks(visitor.graph, arch, emit_CD=False)
         arch_prefix = "xe" if device_type == "xpu" else "sm"
-        try:
-            evt_emitter = getattr(evt_backend, f"{arch_prefix}{arch}_emitter")
-            CollectiveEpilogue = evt_emitter.CollectiveEpilogue
-        except AttributeError as e:
-            raise NotImplementedError(
-                f"EVT backend is not supported on Arch {arch_prefix}{arch}."
-            ) from e
 
-        collective_epilogue = CollectiveEpilogue(
-            tile_description,
-            epilogue_schedule,
-            accum_type,
-            output_type,
-            fusion_callbacks,
-        )
+        if device_type == "xpu" or arch < 100:
+            try:
+                evt_emitter = getattr(evt_backend, f"{arch_prefix}{arch}_emitter")
+                CollectiveEpilogue = evt_emitter.CollectiveEpilogue
+            except AttributeError as e:
+                raise NotImplementedError(
+                    f"EVT backend is not supported on Arch {arch_prefix}{arch}."
+                ) from e
+
+            collective_epilogue = CollectiveEpilogue(
+                tile_description,
+                epilogue_schedule,
+                accum_type,
+                output_type,
+                fusion_callbacks,
+            )
+        else:
+            collective_epilogue = Sm100CollectiveEpilogue(
+                tile_description=tile_description,
+                kernel_schedule=kernel_schedule,
+                epilogue_schedule=epilogue_schedule,
+                element_accumulator=accum_type,
+                element_d=output_type,
+                fusion_callbacks=fusion_callbacks,
+            )
         evt_name, evt_code = collective_epilogue.emit()
         evt_args, arg_renames = _render_argument_type(
             epilogue_functor, name_to_buffer, size_hint_fn
@@ -182,7 +196,7 @@ non-contiguous layout, received stride: {stride} and shape: {shape}"
     def _render_argument_type(
         epilogue_functor: EpilogueFunctor,
         name_to_buffer: dict[str, Buffer],
-        size_hint_fn: Callable[[Union[Expr, int]], int],
+        size_hint_fn: Callable[[Expr | int], int],
     ) -> tuple[str, EVTArgRenames]:
         epilogue_thread_type = epilogue_functor.epilogue_thread_type
         arg_renames = EVTArgRenames()
@@ -242,7 +256,7 @@ non-contiguous layout, received stride: {stride} and shape: {shape}"
     def _get_arg_from_node(
         arg_ty: type,
         node: Buffer,
-        size_hint_fn: Callable[[Union[Expr, int]], int],
+        size_hint_fn: Callable[[Expr | int], int],
         arg_renames: EVTArgRenames,
     ) -> str:
         from ..template import CUTLASSTemplate

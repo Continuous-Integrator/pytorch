@@ -1,6 +1,5 @@
 import functools
 import logging
-from typing import Optional
 
 import torch
 from torch._inductor.utils import clear_on_fresh_cache
@@ -11,7 +10,7 @@ log = logging.getLogger(__name__)
 
 @clear_on_fresh_cache
 @functools.lru_cache(1)
-def get_xpu_arch() -> Optional[str]:
+def get_xpu_arch() -> str | None:
     arch_code2name = {
         13136561920: "Xe12",
         21479031808: "Xe20",
@@ -27,7 +26,7 @@ def get_xpu_arch() -> Optional[str]:
 
 @clear_on_fresh_cache
 @functools.lru_cache(1)
-def get_xpu_version() -> Optional[str]:
+def get_xpu_version() -> str | None:
     # string of version, like 20250101
     try:
         xpu_version = torch.version.xpu
