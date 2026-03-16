@@ -439,9 +439,7 @@ class ActivationCheckpointingViaTagsTests(
             return MyMM.apply(x, w)
 
         def fn(x, w):
-            return torch.utils.checkpoint.checkpoint(
-                gn, x, w, use_reentrant=False
-            )
+            return torch.utils.checkpoint.checkpoint(gn, x, w, use_reentrant=False)
 
         x = torch.randn(4, 4, device=device, requires_grad=True)
         w = torch.randn(4, 4, device=device, requires_grad=True)
@@ -454,7 +452,9 @@ class ActivationCheckpointingViaTagsTests(
                 and node.target == torch.ops.aten.mm.default
                 and node.meta.get("partitioner_tag") == "is_forward"
             ]
-            self.assertTrue(fwd_mm_nodes, "Expected forward mm nodes in the joint graph")
+            self.assertTrue(
+                fwd_mm_nodes, "Expected forward mm nodes in the joint graph"
+            )
             for node in fwd_mm_nodes:
                 self.assertIn("recompute", node.meta)
                 self.assertIn("ac_graph_id", node.meta)
@@ -488,7 +488,10 @@ class ActivationCheckpointingViaTagsTests(
 
         context_fn = functools.partial(
             torch.utils.checkpoint.create_selective_checkpoint_contexts,
-            lambda ctx, op, *args, **kwargs: torch.utils.checkpoint.CheckpointPolicy.PREFER_RECOMPUTE,
+            lambda ctx,
+            op,
+            *args,
+            **kwargs: torch.utils.checkpoint.CheckpointPolicy.PREFER_RECOMPUTE,
         )
 
         def fn(x, w):
@@ -507,7 +510,9 @@ class ActivationCheckpointingViaTagsTests(
                 and node.target == torch.ops.aten.mm.default
                 and node.meta.get("partitioner_tag") == "is_forward"
             ]
-            self.assertTrue(fwd_mm_nodes, "Expected forward mm nodes in the joint graph")
+            self.assertTrue(
+                fwd_mm_nodes, "Expected forward mm nodes in the joint graph"
+            )
             for node in fwd_mm_nodes:
                 self.assertIn("recompute", node.meta)
                 self.assertIn("ac_graph_id", node.meta)
