@@ -19,6 +19,8 @@ void launch_populate_cublas_grouped_args(
     int64_t* APtr_out, int64_t* BPtr_out, int64_t* DPtr_out,
     int64_t* alphaPtr_out, int64_t* betaPtr_out,
     float* alpha_ptr, float* beta_ptr,
+    int64_t base_scale_a, int64_t base_scale_b,
+    int64_t* scalePtrA_out, int64_t* scalePtrB_out,
     cudaStream_t stream);
 
 } // namespace at::native
