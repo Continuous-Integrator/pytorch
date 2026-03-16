@@ -1507,6 +1507,8 @@ class DistMathOpsTest(DTensorTestBase):
         self.assertEqual(result.full_tensor(), expected)
         self.assertTrue(result.placements[0].is_shard(0))
 
+    @with_comms
+    @skip_unless_torch_gpu
     def test_linalg_cross(self):
         device_mesh = DeviceMesh(self.device_type, list(range(self.world_size)))
         a = torch.randn(8, 4, 3, device=self.device_type)
@@ -1527,6 +1529,8 @@ class DistMathOpsTest(DTensorTestBase):
         self.assertEqual(result1.full_tensor(), expected)
         self.assertTrue(result1.placements[0].is_shard(1))
 
+    @with_comms
+    @skip_unless_torch_gpu
     def test_linalg_solve_partial(self):
         device_mesh = DeviceMesh(self.device_type, list(range(self.world_size)))
         A = torch.randn(4, 4, device=self.device_type, dtype=torch.float64)
@@ -1535,7 +1539,7 @@ class DistMathOpsTest(DTensorTestBase):
 
         dt_A = distribute_tensor(A, device_mesh, [Replicate()])
         dt_B = distribute_tensor(B, device_mesh, [Partial()])
-        expected = torch.linalg.solve(A, B * self.world_size)
+        expected = torch.linalg.solve(A, B)
         result = torch.linalg.solve(dt_A, dt_B)
         self.assertEqual(result.full_tensor(), expected)
 

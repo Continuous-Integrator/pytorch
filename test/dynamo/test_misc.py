@@ -1004,6 +1004,127 @@ graph():
         self.assertEqual(res.grad, ref.grad)
         self.assertEqual(res.foo, ref.foo)
 
+    def test_input_tensor_custom_attr_mutation(self):
+        def f(x, flag):
+            x.offloading_activation = flag
+            return x + 1
+
+        opt_f = torch.compile(f, backend="eager", fullgraph=True)
+        x = torch.ones(5)
+
+        res = opt_f(x, True)
+        self.assertEqual(res, torch.ones(5) + 1)
+        self.assertTrue(x.offloading_activation)
+
+    def test_intermediate_tensor_custom_attr_mutation(self):
+        def f(x, flag):
+            y = x + 1
+            y.offloading_activation = flag
+            return y
+
+        opt_f = torch.compile(f, backend="eager", fullgraph=True)
+        x = torch.ones(5)
+
+        res = opt_f(x, True)
+        self.assertEqual(res, torch.ones(5) + 1)
+        self.assertTrue(res.offloading_activation)
+
+    @unittest.skipIf(
+        not torch.cuda.is_available() or torch.cuda.get_device_capability() < (9, 0),
+        "requires Hopper+ (SM >= 9.0) for TMA",
+    )
+    @unittest.skipIf(
+        not torch.utils._triton.has_triton()
+        or not hasattr(__import__("triton"), "set_allocator"),
+        "requires triton with set_allocator support",
+    )
+    def test_triton_set_allocator_no_graph_break(self):
+        """set_allocator inside torch.compile does not graph break and
+        replays correctly at runtime (including cache hits)."""
+        import triton
+        import triton.language as tl
+        from triton.runtime._allocation import NullAllocator
+
+        @triton.jit
+        def tma_copy_kernel(
+            x_ptr,
+            out_ptr,
+            M,
+            N,
+            stride_m,
+            stride_n,
+            BLOCK_M: tl.constexpr,
+            BLOCK_N: tl.constexpr,
+        ):
+            pid = tl.program_id(0)
+            desc = tl.make_tensor_descriptor(
+                x_ptr,
+                shape=[M, N],
+                strides=[stride_m, stride_n],
+                block_shape=[BLOCK_M, BLOCK_N],
+            )
+            block = tl.load_tensor_descriptor(desc, [pid * BLOCK_M, 0])
+            out_desc = tl.make_tensor_descriptor(
+                out_ptr,
+                shape=[M, N],
+                strides=[stride_m, stride_n],
+                block_shape=[BLOCK_M, BLOCK_N],
+            )
+            tl.store_tensor_descriptor(out_desc, [pid * BLOCK_M, 0], block)
+
+        M, N, BLOCK_M, BLOCK_N = 128, 64, 64, 64
+
+        def run_kernel(x):
+            out = torch.empty_like(x)
+            tma_copy_kernel[(M // BLOCK_M,)](
+                x,
+                out,
+                M,
+                N,
+                x.stride(0),
+                x.stride(1),
+                BLOCK_M=BLOCK_M,
+                BLOCK_N=BLOCK_N,
+            )
+            return out
+
+        x = torch.randn(M, N, device="cuda")
+
+        from contextlib import contextmanager
+
+        from triton.runtime._allocation import _allocator
+
+        @contextmanager
+        def triton_allocator(allocator):
+            prev = _allocator.get()
+            triton.set_allocator(allocator)
+            try:
+                yield
+            finally:
+                triton.set_allocator(prev)
+
+        def fn_with_set_allocator(x):
+            triton.set_allocator(
+                lambda size, alignment, stream: torch.empty(
+                    size, device="cuda", dtype=torch.int8
+                )
+            )
+            return run_kernel(x)
+
+        opt_fn = torch.compile(
+            fn_with_set_allocator, backend="aot_eager", fullgraph=True
+        )
+
+        # set_allocator inside compiled region does NOT graph break
+        with triton_allocator(NullAllocator()):
+            out = opt_fn(x)
+            self.assertEqual(out, x)
+
+            # Verify set_allocator replays on cache hit (not just tracing)
+            triton.set_allocator(NullAllocator())
+            out2 = opt_fn(x)
+            self.assertEqual(out2, x)
+
     def test_closure_recompiles(self):
         cnt = CompileCounter()
 
@@ -4241,6 +4362,74 @@ not ___dict_contains('cccccccc', G['sys'].modules)""",
             self.assertTrue(same(opt_fn(m2, v), correct2))
         self.assertEqual(cnts.frame_count, 1)
         self.assertEqual(cnts.op_count, 4)
+
+    def test_id_of_container_as_dict_key(self):
+        MY_DICT = {"a": 1, "b": 2}
+
+        def fn(x):
+            memo = {}
+            memo[id(MY_DICT)] = True
+            if id(MY_DICT) in memo:
+                return x + 1.0
+            return x + 2.0
+
+        x = torch.randn(4)
+        correct = fn(x)
+        result = torch.compile(fn, fullgraph=True)(x)
+        self.assertEqual(result, correct)
+
+    def test_id_of_list_as_dict_key(self):
+        MY_LIST = [1.0, 2.0]
+
+        def fn(x):
+            memo = {}
+            memo[id(MY_LIST)] = True
+            if id(MY_LIST) in memo:
+                return x + 1.0
+            return x + 2.0
+
+        x = torch.randn(4)
+        correct = fn(x)
+        result = torch.compile(fn, fullgraph=True)(x)
+        self.assertEqual(result, correct)
+
+    def test_deepcopy_dict(self):
+        MY_DICT = {"a": 1, "b": 2.0, "c": None}
+
+        def fn(x):
+            d = copy.deepcopy(MY_DICT)
+            d["b"] = 3.0
+            return x + d["b"]
+
+        x = torch.randn(4)
+        correct = fn(x)
+        result = torch.compile(fn, fullgraph=True)(x)
+        self.assertEqual(result, correct)
+
+    def test_deepcopy_nested_dict(self):
+        NESTED = {"a": {"b": 1.0}, "c": [2.0, 3.0]}
+
+        def fn(x):
+            d = copy.deepcopy(NESTED)
+            return x + d["a"]["b"] + d["c"][0]
+
+        x = torch.randn(4)
+        correct = fn(x)
+        result = torch.compile(fn, fullgraph=True)(x)
+        self.assertEqual(result, correct)
+
+    def test_deepcopy_list(self):
+        MY_LIST = [1.0, 2.0, 3.0]
+
+        def fn(x):
+            lst = copy.deepcopy(MY_LIST)
+            lst[0] = 5.0
+            return x + lst[0]
+
+        x = torch.randn(4)
+        correct = fn(x)
+        result = torch.compile(fn, fullgraph=True)(x)
+        self.assertEqual(result, correct)
 
     def test_global_state_guard_serialization(self):
         GlobalStateGuard = torch._C._dynamo.guards.GlobalStateGuard
@@ -10294,6 +10483,30 @@ def ___make_guard_fn():
         compiled_out = compiled_fn()
         self.assertEqual(fn_out, compiled_out)
         self.assertEqual(fn_out, (True, False, True, False, True, False))
+
+    def test_class_hasattr_sourceless_descriptor(self):
+        """Test that hasattr on sourceless UserDefinedClassVariable does not graph break."""
+
+        class FlagDescriptor:
+            def __get__(self, instance, owner):
+                if hasattr(owner, "flag"):
+                    return 1
+                return 0
+
+        class WithFlag:
+            flag = True
+            prop = FlagDescriptor()
+
+        class WithoutFlag:
+            prop = FlagDescriptor()
+
+        def fn(x, obj):
+            return x + obj.prop
+
+        compiled_fn = torch.compile(backend="eager", fullgraph=True)(fn)
+        x = torch.randn(3)
+        self.assertEqual(fn(x, WithFlag()), compiled_fn(x, WithFlag()))
+        self.assertEqual(fn(x, WithoutFlag()), compiled_fn(x, WithoutFlag()))
 
     def test_torch_objects_as_keys(self):
         remap = {torch.float16: torch.float32}
