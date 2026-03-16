@@ -1135,7 +1135,11 @@ class ListVariable(CommonListMethodsVariable):
                 )
                 self.items[:] = [x for x, *_ in sorted_items_with_keys]
             except Exception as e:
-                raise_observed_exception(type(e), tx, args=list(e.args))
+                raise_observed_exception(
+                    type(e),
+                    tx,
+                    args=[VariableTracker.build(tx, a) for a in e.args],
+                )
             return CONSTANT_VARIABLE_NONE
 
         if name == "__init__" and self.is_mutable():
