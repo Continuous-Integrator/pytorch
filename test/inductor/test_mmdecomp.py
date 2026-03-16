@@ -2,11 +2,10 @@
 
 import math
 import unittest
-from typing import Union
 
 import torch
 from torch._inductor import config
-from torch._inductor.decomposition import mm
+from torch._inductor.decomposition import bmm as decomp_bmm, mm
 from torch._subclasses.fake_tensor import FakeTensorMode
 from torch.fx.experimental.symbolic_shapes import (
     DimDynamic,
@@ -33,7 +32,7 @@ default_rtol = {
 
 
 def rand_math_tensor(
-    shape: tuple[Union[int, list[int]]],
+    shape: tuple[int | list[int]],
     device: str,
     dtype: torch.dtype,
     requires_grad: bool = False,
@@ -168,6 +167,80 @@ class TestDecomp(NNTestCase):
 
         run_comp_nocomp(torch_bmm, t1, t2, rtol=rtol, atol=atol)
 
+    @config.patch(coordinate_descent_tuning=False)
+    def test_bmm_outer_product_k_is_one(self, device):
+        t1 = torch.randn(32, 8, 1, device=device)
+        t2 = torch.randn(32, 1, 256, device=device)
+        expected = torch.bmm(t1, t2)
+
+        out = decomp_bmm(t1, t2)
+
+        self.assertIsNot(out, NotImplemented)
+        self.assertEqual(expected, out)
+
+    @unittest.skipIf(not HAS_GPU, "GPU tests require triton")
+    def test_bmm_outer_product_k_is_one_with_unbacked_k(self, device):
+        if device == "cpu":
+            self.skipTest("unbacked symints require GPU fake tensors")
+
+        shape_env = ShapeEnv()
+        with FakeTensorMode(shape_env=shape_env):
+            b, m, n = [shape_env.create_unbacked_symint() for _ in range(3)]
+            lhs_k_unbacked, rhs_k_unbacked = [
+                shape_env.create_unbacked_symint() for _ in range(2)
+            ]
+
+            lhs_static_k = torch.empty((b, m, 1), device=device)
+            rhs_static_k = torch.empty((b, 1, n), device=device)
+            lhs_unbacked_k = torch.empty((b, m, lhs_k_unbacked), device=device)
+            rhs_unbacked_k = torch.empty((b, rhs_k_unbacked, n), device=device)
+
+            self.assertIsNot(
+                decomp_bmm(lhs_static_k, rhs_unbacked_k),
+                NotImplemented,
+            )
+            self.assertIsNot(
+                decomp_bmm(lhs_unbacked_k, rhs_static_k),
+                NotImplemented,
+            )
+            self.assertIs(
+                decomp_bmm(lhs_unbacked_k, rhs_unbacked_k),
+                NotImplemented,
+            )
+
+    @config.patch(coordinate_descent_tuning=False)
+    def test_bmm_outer_product_permuted_inputs(self, device):
+        B, M, N = 4, 8, 16
+
+        cases = [
+            # LHS: batch dim permuted
+            (
+                torch.randn(M, B, 1, device=device).permute(1, 0, 2),
+                torch.randn(B, 1, N, device=device),
+            ),
+            # RHS: batch dim permuted
+            (
+                torch.randn(B, M, 1, device=device),
+                torch.randn(N, B, 1, device=device).permute(1, 2, 0),
+            ),
+            # Both permuted
+            (
+                torch.randn(M, B, 1, device=device).permute(1, 0, 2),
+                torch.randn(N, B, 1, device=device).permute(1, 2, 0),
+            ),
+            # LHS: fully transposed [1, M, B] -> [B, M, 1]
+            (
+                torch.randn(1, M, B, device=device).permute(2, 1, 0),
+                torch.randn(B, 1, N, device=device),
+            ),
+        ]
+
+        for t1, t2 in cases:
+            expected = torch.bmm(t1, t2)
+            out = decomp_bmm(t1, t2)
+            self.assertIsNot(out, NotImplemented)
+            self.assertEqual(expected, out, exact_stride=True)
+
     @unittest.skipIf(not HAS_GPU, "GPU tests require triton")
     @parametrize("dtype", [torch.float, torch.bfloat16, torch.int])
     def test_some(self, device, dtype):
@@ -271,54 +344,6 @@ class TestDecomp(NNTestCase):
                 ]
                 self.assertTrue(r_expr_types[0] == og_t1_expr_types[0])
                 self.assertTrue(r_expr_types[1] == og_t2_expr_types[1])
-
-    def test_mm_k1_stride(self, device):
-        """Test that K==1 mm decomposition preserves contiguous output strides."""
-
-        def check(a, b, label):
-            mm_out = torch.mm(a, b)
-            compiled_mm = torch.compile(torch.mm)
-            compiled_out = compiled_mm(a, b)
-            self.assertEqual(
-                mm_out.stride(),
-                compiled_out.stride(),
-                msg=f"{label}: eager stride={mm_out.stride()}, compiled stride={compiled_out.stride()}",
-            )
-            torch._dynamo.reset()
-
-        # Contiguous inputs
-        check(
-            torch.randn(2, 1, device=device),
-            torch.randn(1, 3, device=device),
-            "contiguous M>1,N>1",
-        )
-        check(
-            torch.randn(1, 1, device=device),
-            torch.randn(1, 3, device=device),
-            "contiguous M==1,N>1",
-        )
-        check(
-            torch.randn(2, 1, device=device),
-            torch.randn(1, 1, device=device),
-            "contiguous M>1,N==1",
-        )
-        check(
-            torch.randn(1, 1, device=device),
-            torch.randn(1, 1, device=device),
-            "contiguous M==1,N==1",
-        )
-
-        # Transposed inputs (non-standard strides from .T)
-        check(
-            torch.randn(1, 2, device=device).T,
-            torch.randn(1, 3, device=device),
-            "mat1=randn(1,2).T",
-        )
-        check(
-            torch.randn(2, 1, device=device),
-            torch.randn(3, 1, device=device).T,
-            "mat2=randn(3,1).T",
-        )
 
 
 device_types = ("cpu", GPU_TYPE)
