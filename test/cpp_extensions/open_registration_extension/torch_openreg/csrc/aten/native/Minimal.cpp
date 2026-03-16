@@ -164,13 +164,20 @@ at::Tensor view(const at::Tensor& self, c10::SymIntArrayRef size) {
 
 // LITERALINCLUDE START: FALLBACK IMPL
 void cpu_fallback(const c10::OperatorHandle& op, torch::jit::Stack* stack) {
+  // The blocklist prevents certain ops from silently falling back to CPU,
+  // ensuring the custom kernel registration is actually exercised.
+  // Set OPENREG_DISABLE_FALLBACK_BLOCKLIST=1 to allow all ops to fall back
+  // (useful when running PyTorch's full test suite against openreg).
+  static const bool disable_blocklist =
+      std::getenv("OPENREG_DISABLE_FALLBACK_BLOCKLIST") != nullptr;
+
   static const std::unordered_set<c10::OperatorName> cpu_fallback_blocklist = {
       c10::OperatorName("aten::abs", ""),
       c10::OperatorName("aten::abs", "out"),
   };
 
   const auto& op_name = op.schema().operator_name();
-  if (cpu_fallback_blocklist.count(op_name)) {
+  if (!disable_blocklist && cpu_fallback_blocklist.count(op_name)) {
     TORCH_CHECK(
         false,
         "Operator '",
