@@ -60,7 +60,7 @@ def normal(
     if device is None:
         device = key.device
     result = torch.empty(shape, dtype=dtype, device=device)
-    return torch._philox_normal(result, key, mean, std)
+    return torch._philox_normal_(result, key, mean, std)
 
 
 def uniform(
@@ -77,7 +77,7 @@ def uniform(
     if device is None:
         device = key.device
     result = torch.empty(shape, dtype=dtype, device=device)
-    return torch._philox_uniform(result, key, low, high)
+    return torch._philox_uniform_(result, key, low, high)
 
 
 def set_rng_state(new_state: torch.Tensor) -> None:

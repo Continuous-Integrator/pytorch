@@ -247,6 +247,27 @@ class TestPhiloxNormal(TestCase):
         with self.assertRaises(RuntimeError):
             torch.random.normal(key, (100,), device="cuda")
 
+    def test_offset_shift_consistency(self):
+        """Box-Muller alignment: shifting key offset shifts the output stream."""
+        seed = 42
+        n = 100
+        key0 = torch.tensor([seed, 0], dtype=torch.uint64, device="cuda")
+        ref = torch.random.normal(key0, (n,))
+        for offset in range(1, 4):
+            key = torch.tensor([seed, offset], dtype=torch.uint64, device="cuda")
+            result = torch.random.normal(key, (n - offset,))
+            self.assertEqual(result, ref[offset:])
+
+    def test_offset_shift_consistency_double(self):
+        """Box-Muller alignment for double: offset shift of 2 = element shift of 1."""
+        seed = 42
+        n = 100
+        key0 = torch.tensor([seed, 0], dtype=torch.uint64, device="cuda")
+        ref = torch.random.normal(key0, (n,), dtype=torch.float64)
+        key2 = torch.tensor([seed, 2], dtype=torch.uint64, device="cuda")
+        result = torch.random.normal(key2, (n - 1,), dtype=torch.float64)
+        self.assertEqual(result, ref[1:])
+
     def test_error_shape_mismatch(self):
         key = torch.random.key(42, device="cuda")
         keys = torch.random.split(key, 3)  # (3, 2)

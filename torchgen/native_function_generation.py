@@ -51,6 +51,9 @@ MUTABLE_OPS_THAT_CANNOT_GET_AN_OUT_VARIANT = [
     "_cummax_helper",
     # should be out=?
     "_cummin_helper",
+    # stateless RNG ops that write directly into self
+    "_philox_normal_",
+    "_philox_uniform_",
 ]
 
 # All of these operators don't have any tensor like returns

@@ -5,14 +5,13 @@
 #include <ATen/Dispatch.h>
 #include <c10/cuda/CUDAGuard.h>
 
+#include <ATen/cuda/detail/OffsetCalculator.cuh>
 #include <curand_kernel.h>
 
 #ifndef AT_PER_OPERATOR_HEADERS
-#include <ATen/Functions.h>
 #include <ATen/NativeFunctions.h>
 #else
 #include <ATen/ops/_philox_uniform_native.h>
-#include <ATen/ops/empty.h>
 #endif
 
 namespace at::native {
@@ -83,7 +82,7 @@ __device__ void uniform_generate_vec<double>(
   *reinterpret_cast<AlignedVec<double, 2>*>(&output[pos]) = v;
 }
 
-template <typename scalar_t, bool single_key>
+template <typename scalar_t, bool single_key, typename key_offset_calc_t>
 __global__ void philox_uniform_kernel(
     scalar_t* __restrict__ output,
     const uint64_t* __restrict__ keys,
@@ -91,7 +90,8 @@ __global__ void philox_uniform_kernel(
     int64_t event_numel,
     int64_t elems_per_thread,
     double low,
-    double high) {
+    double high,
+    key_offset_calc_t key_offset_calc) {
   constexpr size_t compute_size =
       sizeof(scalar_t) < sizeof(float) ? sizeof(float) : sizeof(scalar_t);
   constexpr int outputs_per_value = compute_size / sizeof(float);
@@ -115,8 +115,9 @@ __global__ void philox_uniform_kernel(
     } else {
       key_idx = tid / num_chunks;
       chunk_idx = tid % num_chunks;
-      seed = keys[key_idx * 2];
-      key_offset = keys[key_idx * 2 + 1];
+      auto key_elem_offset = key_offset_calc.get(key_idx)[0];
+      seed = keys[key_elem_offset];
+      key_offset = keys[key_elem_offset + 1];
     }
     int64_t elem_start = chunk_idx * elems_per_thread;
     int64_t elem_end = min(elem_start + elems_per_thread, event_numel);
@@ -128,7 +129,6 @@ __global__ void philox_uniform_kernel(
         &state);
 
     int64_t full_end = elem_start + ((elem_end - elem_start) / elems_per_call) * elems_per_call;
-    // Vector stores require aligned base; single_key always has base=0.
     if (single_key || (base % elems_per_call) == 0) {
       for (int64_t elem = elem_start; elem < full_end; elem += elems_per_call) {
         uniform_generate_vec<scalar_t>(output, base + elem, &state, low, high);
@@ -146,7 +146,7 @@ __global__ void philox_uniform_kernel(
 
 } // anonymous namespace
 
-Tensor _philox_uniform_cuda(const Tensor& self, const Tensor& key, double low, double high) {
+Tensor& _philox_uniform_cuda_(Tensor& self, const Tensor& key, double low, double high) {
   TORCH_CHECK(key.dim() >= 1 && key.size(-1) == 2,
       "_philox_uniform: key must have shape (*batch, 2), got shape ",
       key.sizes());
@@ -177,53 +177,66 @@ Tensor _philox_uniform_cuda(const Tensor& self, const Tensor& key, double low, d
 
   at::cuda::CUDAGuard device_guard(key.device());
 
-  // Expand key batch dims to match self, then make contiguous.
+  // Expand key batch dims to match self (lazy, no allocation).
   std::vector<int64_t> expanded_key_sizes;
   expanded_key_sizes.reserve(key_batch_ndim + 1);
   for (int64_t i = 0; i < key_batch_ndim; i++) {
     expanded_key_sizes.push_back(self.size(i));
   }
   expanded_key_sizes.push_back(2);
-  auto key_expanded = key.expand(expanded_key_sizes).contiguous();
+  auto key_expanded = key.expand(expanded_key_sizes);
 
   int64_t num_keys = key_expanded.numel() / 2;
-  int64_t event_numel = 1;
-  for (int64_t i = key_batch_ndim; i < self.dim(); i++) {
-    event_numel *= self.size(i);
-  }
-
-  Tensor output = at::empty(self.sizes(), self.options());
+  int64_t event_numel = self.numel() / num_keys;
 
   if (num_keys == 0 || event_numel == 0) {
-    return output;
+    return self;
   }
+
+  // Build an OffsetCalculator over the batch dims so the kernel can map
+  // a linear key_idx to the correct element offset in the strided key tensor.
+  // Strides are in elements (uint64_t), not bytes.
+  // OffsetCalculator decomposes linear indices in column-major order (dim 0
+  // is fastest), but our key indices are row-major.  Reverse the dims.
+  std::vector<int64_t> batch_sizes(key_batch_ndim);
+  std::vector<int64_t> batch_strides(key_batch_ndim);
+  for (int64_t i = 0; i < key_batch_ndim; i++) {
+    batch_sizes[i] = key_expanded.size(key_batch_ndim - 1 - i);
+    batch_strides[i] = key_expanded.stride(key_batch_ndim - 1 - i);
+  }
+  const int64_t* batch_strides_ptr = batch_strides.data();
+  auto key_offset_calc = OffsetCalculator<1>(
+      key_batch_ndim, batch_sizes.data(), &batch_strides_ptr);
 
   constexpr int64_t elems_per_thread = 16;
   int64_t num_chunks = (event_numel + elems_per_thread - 1) / elems_per_thread;
   int64_t total_threads = num_keys * num_chunks;
   constexpr int block_size = 256;
+  int blocks_per_sm = at::cuda::getCurrentDeviceProperties()->maxThreadsPerMultiProcessor / block_size;
   int num_blocks = std::min(
       static_cast<int>((total_threads + block_size - 1) / block_size),
-      at::cuda::getCurrentDeviceProperties()->multiProcessorCount * 4);
+      at::cuda::getCurrentDeviceProperties()->multiProcessorCount * blocks_per_sm);
 
   AT_DISPATCH_FLOATING_TYPES_AND2(kHalf, kBFloat16, self.scalar_type(), "_philox_uniform_cuda", [&] {
     if (num_keys == 1) {
       philox_uniform_kernel<scalar_t, true><<<num_blocks, block_size, 0,
           at::cuda::getCurrentCUDAStream()>>>(
-          output.data_ptr<scalar_t>(),
+          self.mutable_data_ptr<scalar_t>(),
           key_expanded.data_ptr<uint64_t>(),
-          num_keys, event_numel, elems_per_thread, low, high);
+          num_keys, event_numel, elems_per_thread, low, high,
+          key_offset_calc);
     } else {
       philox_uniform_kernel<scalar_t, false><<<num_blocks, block_size, 0,
           at::cuda::getCurrentCUDAStream()>>>(
-          output.data_ptr<scalar_t>(),
+          self.mutable_data_ptr<scalar_t>(),
           key_expanded.data_ptr<uint64_t>(),
-          num_keys, event_numel, elems_per_thread, low, high);
+          num_keys, event_numel, elems_per_thread, low, high,
+          key_offset_calc);
     }
     C10_CUDA_KERNEL_LAUNCH_CHECK();
   });
 
-  return output;
+  return self;
 }
 
 } // namespace at::native
