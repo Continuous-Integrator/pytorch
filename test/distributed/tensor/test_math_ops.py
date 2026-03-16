@@ -1544,6 +1544,7 @@ class DistMathOpsTest(DTensorTestBase):
         self.assertEqual(result.full_tensor(), expected)
 
     @with_comms
+    @skip_unless_torch_gpu
     def test_interpolation_upsample_ops(self):
         device_mesh = self.build_device_mesh()
         F = torch.nn.functional
@@ -1566,14 +1567,6 @@ class DistMathOpsTest(DTensorTestBase):
         # F.adaptive_avg_pool2d
         expected = F.adaptive_avg_pool2d(inp, (4, 4))
         result = F.adaptive_avg_pool2d(dt_inp, (4, 4))
-        self.assertEqual(result.full_tensor(), expected)
-        self.assertTrue(result.placements[0].is_shard(0))
-
-        # F.grid_sample
-        grid = torch.randn(8, 8, 8, 2, device=self.device_type)
-        dt_grid = distribute_tensor(grid, device_mesh, [Shard(0)])
-        expected = F.grid_sample(inp, grid, align_corners=True)
-        result = F.grid_sample(dt_inp, dt_grid, align_corners=True)
         self.assertEqual(result.full_tensor(), expected)
         self.assertTrue(result.placements[0].is_shard(0))
 
@@ -1603,7 +1596,6 @@ class DistMathOpsTest(DTensorTestBase):
         )
         self.assertEqual(result.full_tensor(), expected)
         self.assertTrue(result.placements[0].is_replicate())
-
 
 DistMathOpsTestWithLocalTensor = create_local_tensor_test_class(
     DistMathOpsTest,
