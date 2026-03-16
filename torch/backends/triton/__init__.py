@@ -2,6 +2,8 @@
 import sys
 from contextlib import contextmanager
 
+from packaging.version import Version
+
 from torch.backends import __allow_nonbracketed_mutation, ContextProp, PropModule
 
 
@@ -12,7 +14,7 @@ def is_available() -> bool:
     return triton_utils.runtime_available()
 
 
-def version() -> tuple[int, int, int] | None:
+def version() -> Version | None:
     r"""Return the installed Triton runtime version, or None if unavailable."""
     from torch._native import triton_utils
 
