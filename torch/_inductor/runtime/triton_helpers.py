@@ -89,6 +89,23 @@ def remainder_integer(a, b):
 
 
 @triton.jit
+def pow_integer(base, exponent):
+    # Triton has no exact integer pow primitive; use repeated squaring for
+    # nonnegative integer exponents so integral scalar pow does not round
+    # through libdevice.pow before casting back to int.
+    exponent_dtype: tl.constexpr = tl.core.get_int_dtype(
+        exponent.dtype.primitive_bitwidth, signed=False
+    )
+    exp = exponent.to(exponent_dtype)
+    result = tl.full(base.shape, 1, base.dtype)
+    for _ in tl.static_range(exponent_dtype.primitive_bitwidth):
+        result = tl.where((exp & 1) != 0, result * base, result)
+        exp = exp >> 1
+        base = base * base
+    return result
+
+
+@triton.jit
 def is_floating(x):
     return promote_to_tensor(x).dtype.is_floating()
 
@@ -342,6 +359,9 @@ def bucketize_binary_search(
         else:
             is_above = values > bucket_upper_bound
 
+        if is_floating(values):
+            is_above = is_above | (values != values)
+
         low = tl.where(is_above & mask, mid + 1, low)
         high = tl.where(is_above, high, mid)
 
@@ -493,7 +513,7 @@ def exclusive_scan_decoupled_lookback_64(scratch_base, block_value, index, combi
             prefix_valid = True
 
         if flag == 2:
-            test_target = -1
+            test_target = tl.full([], -1, index.dtype)  # Match the original type
         else:
             test_target = test_target - 1
 
@@ -679,7 +699,7 @@ def select_one(x, mask, dim, keep_dims=False):
     idtype = tl.core.get_int_dtype(x.dtype.primitive_bitwidth, signed=False)
     ix = x.to(idtype, bitcast=True)
     iy = tl.sum(ix * mask, dim, keep_dims=keep_dims)
-    return iy.to(x.dtype, bitcast=True)
+    return iy.to(idtype).to(x.dtype, bitcast=True)
 
 
 @triton.jit

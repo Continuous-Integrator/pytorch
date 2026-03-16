@@ -22,7 +22,7 @@ alexnet,pass,6
 
 
 
-basic_gnn_edgecnn,pass,21
+basic_gnn_edgecnn,pass,20
 
 
 
@@ -58,7 +58,7 @@ dlrm,pass,6
 
 
 
-drq,pass,6
+drq,pass,7
 
 
 
@@ -127,10 +127,6 @@ phlippe_densenet,pass,6
 
 
 phlippe_resnet,pass,6
-
-
-
-pytorch_CycleGAN_and_pix2pix,pass,6
 
 
 
