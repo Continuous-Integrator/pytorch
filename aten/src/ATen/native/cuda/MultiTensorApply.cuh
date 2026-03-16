@@ -99,8 +99,8 @@ constexpr bool kCompileForVoltaAndHigherOnly = cuda_arch_list[0] >= 700;
 constexpr bool kCompileForPascalAndLowerOnly =
     cuda_arch_list[cuda_arch_list_len - 1] < 700;
 #else
-// If __CUDA_ARCH_LIST__ (for rocm builds), fallback to the original
-// behavior.
+// If __CUDA_ARCH_LIST__ is not defined (for rocm builds),
+// fallback to the original behavior.
 constexpr bool kCompileForVoltaAndHigherOnly = false;
 constexpr bool kCompileForPascalAndLowerOnly = true;
 #endif
