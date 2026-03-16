@@ -1920,14 +1920,15 @@ def cleanup_recompute_tags(
     """
     for node in joint_module.graph.nodes:
         if must_recompute(node):
-            for user in node.users:
-                if (
-                    must_recompute(user)
-                    and "ac_graph_id" in user.meta
-                    and "ac_graph_id" in node.meta
-                    and user.meta["ac_graph_id"] > node.meta["ac_graph_id"]
-                ):
-                    node.meta["recompute"] = CheckpointPolicy.MUST_SAVE
+            if not config.skip_ac_boundary_saves:
+                for user in node.users:
+                    if (
+                        must_recompute(user)
+                        and "ac_graph_id" in user.meta
+                        and "ac_graph_id" in node.meta
+                        and user.meta["ac_graph_id"] > node.meta["ac_graph_id"]
+                    ):
+                        node.meta["recompute"] = CheckpointPolicy.MUST_SAVE
             if node.meta.get("has_backward_hook", False) and not any(
                 must_recompute(user) for user in node.users
             ):
