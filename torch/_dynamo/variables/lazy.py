@@ -573,7 +573,7 @@ class ComputedLazyConstantVariable(LazyVariableTracker):
         lazy_vars: list[LazyConstantVariable] = []
 
         def get_value(arg: VariableTracker) -> Any:
-            if isinstance(arg, ComputedLazyConstantVariable):
+            if isinstance(arg, ComputedLazyConstantVariable) and not arg.is_realized():
                 # pyrefly: ignore[missing-attribute]
                 lazy_vars.extend(arg._cache.lazy_vars)
                 return arg._cache.value
