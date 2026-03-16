@@ -1543,10 +1543,18 @@ def diagonal_scatter_single_dim_strategy(
     ndim = len(self_meta.shape)
     # offset=args[2], dim1=args[3], dim2=args[4]; may come as kwargs with defaults
     dim1 = normalize_dim(
-        args_schema[3] if len(args_schema) > 3 else kwargs_schema.get("dim1", 0), ndim
+        cast(
+            int,
+            args_schema[3] if len(args_schema) > 3 else kwargs_schema.get("dim1", 0),
+        ),
+        ndim,
     )
     dim2 = normalize_dim(
-        args_schema[4] if len(args_schema) > 4 else kwargs_schema.get("dim2", 1), ndim
+        cast(
+            int,
+            args_schema[4] if len(args_schema) > 4 else kwargs_schema.get("dim2", 1),
+        ),
+        ndim,
     )
     diagonal_dims = {dim1, dim2}
     non_diag_dims = sorted(d for d in range(ndim) if d not in diagonal_dims)
