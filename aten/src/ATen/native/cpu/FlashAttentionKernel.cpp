@@ -89,8 +89,8 @@ inline void _exp_reduce_sum_fusion_kernel(
     const int& size,
     T2* out,
     T1& val) {
-  const auto vec_size1 = vec::Vectorized<T1>::size();
-  const auto vec_size2 = vec::Vectorized<T2>::size();
+  constexpr auto vec_size1 = vec::Vectorized<T1>::size();
+  constexpr auto vec_size2 = vec::Vectorized<T2>::size();
   constexpr int64_t T1_n =
       (vec_size2 == vec_size1 * 2 && is_reduced_floating_point_v<T2>) ? 2 : 1;
   constexpr int64_t T2_n = 1;
@@ -130,7 +130,7 @@ inline void _exp_reduce_sum_fusion_kernel(
     vec_tmp_sum_tail = vec_tmp_sum_tail + tmp2;
     _store(out + i, tmp2);
   }
-  vec_tmp_sum[0] = vec_tmp_sum[0] + vec_tmp_sum_tail;
+  vec_tmp_sum[0] += vec_tmp_sum_tail;
   tmp_sum = vec::vec_reduce_all<T1>(
       [](vec::Vectorized<T1>& x, vec::Vectorized<T1>& y) {
         return x + y;
@@ -157,8 +157,8 @@ inline void _mul_reduce_max_fusion_kernel(
     scalar_t& max) {
   using Vec = vec::Vectorized<scalar_t>;
   using VecN = vec::VectorizedN<scalar_t, 2>;
-  const auto vec_size = Vec::size();
-  const auto vec_size_n = VecN::size();
+  constexpr auto vec_size = Vec::size();
+  constexpr auto vec_size_n = VecN::size();
   auto vec_scale = VecN(scale);
   scalar_t tmp_max = -std::numeric_limits<scalar_t>::infinity();
   auto vec_tmp_max = VecN(tmp_max);
