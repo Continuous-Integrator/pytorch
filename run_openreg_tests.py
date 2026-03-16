@@ -106,7 +106,9 @@ def install_openreg() -> str:
     platlib_rel = os.path.relpath(platlib, os.path.splitdrive(platlib)[0] + os.sep)
     install_dir = os.path.join(install_root, platlib_rel)
 
-    # Smoke test in a subprocess (avoids circular import).
+    # Smoke test in a subprocess. Run from a neutral directory so the source
+    # tree's torch/ doesn't shadow the installed package (matters in CI where
+    # cwd is the repo root).
     subprocess.check_call(
         [
             sys.executable, "-c",
@@ -116,6 +118,7 @@ def install_openreg() -> str:
             "print(f'Backend registered: {torch._C._get_privateuse1_backend_name()}')",
         ],
         env={**os.environ, "PYTHONPATH": install_dir},
+        cwd=OPENREG_DIR,
     )
     return install_dir
 
