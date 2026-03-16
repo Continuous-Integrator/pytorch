@@ -480,19 +480,6 @@ class EnumVariable(VariableTracker):
     def as_python_constant(self) -> enum.Enum | enum.IntEnum:
         return self.value
 
-    def resolve_type_attr(
-        self,
-        tx: "InstructionTranslator",
-        name: str,
-        type_attr: object,
-        source: Source | None,
-        real_value: object,
-    ) -> VariableTracker:
-        # Resolve eagerly via getattr so descriptors (functions, classmethods,
-        # etc.) are properly bound, rather than deferring to GetAttrVariable.
-        resolved = getattr(real_value, name)
-        return VariableTracker.build(tx, resolved, source)
-
     def var_getattr(self, tx: "InstructionTranslator", name: str) -> VariableTracker:
         from .user_defined import generic_getattr
 

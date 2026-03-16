@@ -492,22 +492,19 @@ class VariableTracker(metaclass=VariableTrackerMeta):
         source: Source | None,
         real_value: object,
     ) -> "VariableTracker":
-        # For most callable type attributes (C descriptors, Python functions,
-        # builtins), defer resolution to runtime via GetAttrVariable.  This
-        # avoids creating identity guards on ephemeral bound methods.
-        if isinstance(
-            type_attr,
-            (
-                types.MethodDescriptorType,
-                types.WrapperDescriptorType,
-                types.MethodWrapperType,
-                types.FunctionType,
-                types.BuiltinFunctionType,
-                types.BuiltinMethodType,
-            ),
-        ):
-            return variables.GetAttrVariable(self, name, source=source)
-        return VariableTracker.build(tx, type_attr, source)
+        try:
+            resolved = type(real_value).__getattribute__(real_value, name)
+        except AttributeError:
+            error_message = VariableTracker.build(
+                tx,
+                f"'{type(real_value).__name__}' object has no attribute '{name}'",
+            )
+            raise_observed_exception(
+                AttributeError,
+                tx,
+                args=[error_message],
+            )
+        return VariableTracker.build(tx, resolved, source)
 
     def handle_getattr_fallback(
         self,

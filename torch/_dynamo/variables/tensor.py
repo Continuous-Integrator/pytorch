@@ -436,6 +436,25 @@ class TensorVariable(VariableTracker):
 
         return VariableTracker.build(tx, ret_val)
 
+    def resolve_type_attr(self, tx, name, type_attr, source, real_value):
+        # Defer callable type attributes to GetAttrVariable rather than
+        # resolving eagerly.  TensorVariable has a comprehensive call_method
+        # that handles these, and eager resolution would create identity guards
+        # on ephemeral bound methods.
+        if isinstance(
+            type_attr,
+            (
+                types.MethodDescriptorType,
+                types.WrapperDescriptorType,
+                types.MethodWrapperType,
+                types.FunctionType,
+                types.BuiltinFunctionType,
+                types.BuiltinMethodType,
+            ),
+        ):
+            return variables.GetAttrVariable(self, name, source=source)
+        return super().resolve_type_attr(tx, name, type_attr, source, real_value)
+
     def var_getattr(self, tx: "InstructionTranslator", name: str) -> VariableTracker:
         if self.is_strict_mode(tx):
             if name in self._strict_mode_banned_ops():
