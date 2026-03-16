@@ -424,6 +424,46 @@ class RegionRecompileLimitTests(torch._dynamo.test_case.TestCase):
         opt_f(torch.randn(3, dtype=torch.float16))
         self.assertEqual(self._num_cache_entries(f), 2)
 
+    def test_region_recompile_limit_same_function_different_regions(self):
+        cnt1 = torch._dynamo.testing.CompileCounter()
+        cnt2 = torch._dynamo.testing.CompileCounter()
+
+        def f(x, y):
+            return x + y
+
+        opt_f = torch.compile(f, backend=cnt1, region_recompile_limit=2)
+        opt_g = torch.compile(f, backend=cnt2, region_recompile_limit=1)
+
+        # opt_f: first compilation
+        opt_f(torch.randn(3), torch.randn(3))
+        self.assertEqual(cnt1.frame_count, 1)
+
+        # opt_f: second compilation (different dtype)
+        opt_f(
+            torch.randn(3, dtype=torch.float64),
+            torch.randn(3, dtype=torch.float64),
+        )
+        self.assertEqual(cnt1.frame_count, 2)
+
+        # opt_g: should still be able to compile once despite f already having
+        # 2 cache entries from opt_f, because opt_g is a separate region
+        opt_g(torch.randn(3, dtype=torch.float16), torch.randn(3, dtype=torch.float16))
+        self.assertEqual(cnt2.frame_count, 1)
+
+        # opt_g: second call with new dtype should NOT compile (limit=1 reached)
+        opt_g(
+            torch.randn(3, dtype=torch.bfloat16),
+            torch.randn(3, dtype=torch.bfloat16),
+        )
+        self.assertEqual(cnt2.frame_count, 1)
+
+        # opt_f: third dtype should NOT compile (limit=2 reached for opt_f)
+        opt_f(
+            torch.randn(3, dtype=torch.float16),
+            torch.randn(3, dtype=torch.float16),
+        )
+        self.assertEqual(cnt1.frame_count, 2)
+
     def test_region_recompile_limit_graph_break(self):
         cnt = torch._dynamo.testing.CompileCounter()
 

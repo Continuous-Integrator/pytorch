@@ -419,34 +419,12 @@
   "GB0039": [
     {
       "Gb_type": "Dynamo recompile limit exceeded",
-      "Context": "Limit type: {limit_type}, function: {func_info}",
-      "Explanation": "Dynamo attempted to recompile {func_info} {cache_size.num_cache_entries} times, exceeding the {limit_type} (currently set to {limit_value}). Excessive recompilations can degrade performance due to the compilation overhead of each recompilation.",
+      "Context": "Limit type: {limit_type}",
+      "Explanation": "Dynamo attempted to recompile '{code.co_name}' {cache_size.num_cache_entries} times, exceeding the {limit_type} (currently set to {limit_value}). Excessive recompilations can degrade performance due to the compilation overhead of each recompilation.",
       "Hints": [
         "To monitor recompilations, enable TORCH_LOGS=recompiles. ",
         "If recompilations are expected, consider ",
         "increasing the recompile limit to an appropriate value.",
-        "See {troubleshooting_url} for tips on dealing with recompilations."
-      ]
-    },
-    {
-      "Gb_type": "Dynamo recompile limit exceeded",
-      "Context": "Limit type: {limit_type}",
-      "Explanation": "Dynamo attempted to recompile the code object too many times, exceeding the {limit_type} (currently set to {limit_value}). Excessive recompilations can degrade performance due to the compilation overhead of each recompilation.",
-      "Hints": [
-        "To monitor recompilations, enable TORCH_LOGS=recompiles. ",
-        "If recompilations are expected, consider ",
-        "increasing the cache limit to an appropriate value.",
-        "See {troubleshooting_url} for tips on dealing with recompilations."
-      ]
-    },
-    {
-      "Gb_type": "Dynamo recompile limit exceeded",
-      "Context": "Limit type: {limit_type}",
-      "Explanation": "Dynamo attempted to recompile the code object too many times, exceeding the {limit_type} cache size limit (currently set to {getattr(config, limit_type)}). Excessive recompilations can degrade performance due to the compilation overhead of each recompilation.",
-      "Hints": [
-        "To monitor recompilations, enable TORCH_LOGS=recompiles. ",
-        "If recompilations are expected, consider ",
-        "increasing torch._dynamo.config.{limit_type} to an appropriate value.",
         "See {troubleshooting_url} for tips on dealing with recompilations."
       ]
     },
@@ -2580,6 +2558,16 @@
       "Explanation": "The PyTorch package doesn't include torch.distributed when building from source.",
       "Hints": [
         "Set USE_DISTRIBUTED=1 to enable it when building PyTorch from source."
+      ]
+    }
+  ],
+  "GB2977": [
+    {
+      "Gb_type": "wrap_jit_function: missing _torchdynamo_inline",
+      "Context": "type: {type(value).__name__}",
+      "Explanation": "Dynamo expected a JIT function with a _torchdynamo_inline attribute, but the object does not have one.",
+      "Hints": [
+        "It may be possible to write Dynamo tracing rules for this code. Please report an issue to PyTorch if you encounter this graph break often and it is causing performance issues."
       ]
     }
   ],

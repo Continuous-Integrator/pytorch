@@ -89,11 +89,20 @@ class CacheSizeRelevantForFrame:
     # None means use global config limits.
     region_recompile_limit: int | None = None
 
+    # Number of compilations this specific compile region has done for this
+    # code object. Unlike num_cache_entries (which counts ALL entries on the
+    # code object across all regions), this only counts entries from the
+    # current torch.compile() call.
+    region_num_compilations: int = 0
+
     @property
     def exceeds_region_recompile_limit(self) -> bool:
+        # Cap at num_cache_entries so that after torch._dynamo.reset() clears
+        # the cache, the region can compile again.
+        effective = min(self.region_num_compilations, self.num_cache_entries)
         return (
             self.region_recompile_limit is not None
-            and self.num_cache_entries >= self.region_recompile_limit
+            and effective >= self.region_recompile_limit
         )
 
     def will_compilation_exceed(self, limit: int) -> bool:
@@ -146,7 +155,6 @@ def _has_same_id_matched_objs(frame: DynamoFrameType, cache_entry: Any) -> bool:
 def compute_cache_size(
     frame: DynamoFrameType,
     cache_entry: Any,
-    region_recompile_limit: int | None = None,
 ) -> CacheSizeRelevantForFrame:
     # Walk the linked list to calculate the cache size
     num_cache_entries = 0
@@ -164,7 +172,6 @@ def compute_cache_size(
     return CacheSizeRelevantForFrame(
         num_cache_entries,
         num_cache_entries_with_same_id_matched_objs,
-        region_recompile_limit,
     )
 
 

@@ -594,6 +594,7 @@ class ConvertFrameAssert:
         self._export_constraints = export_constraints
         self._package = package
         self._region_recompile_limit = region_recompile_limit
+        self._region_compilation_counts: dict[CodeType, int] = {}
         self._box = ConvertFrameBox()
 
     @property
@@ -618,8 +619,10 @@ class ConvertFrameAssert:
         increment_frame()
         code = frame.f_code
 
-        cache_size = compute_cache_size(
-            frame, cache_entry, self._region_recompile_limit
+        cache_size = compute_cache_size(frame, cache_entry)
+        cache_size.region_recompile_limit = self._region_recompile_limit
+        cache_size.region_num_compilations = self._region_compilation_counts.get(
+            code, 0
         )
         input_codes.add(code)
         if code in output_codes:
@@ -748,6 +751,11 @@ class ConvertFrameAssert:
         finally:
             # Restore the previous initial_global_state for nested compilation handling
             initial_global_state = prev_initial_global_state
+
+        if result.guarded_code is not None:
+            self._region_compilation_counts[code] = (
+                self._region_compilation_counts.get(code, 0) + 1
+            )
 
         if config.caching_precompile and self._package is not None:
             from .package import DynamoCache
@@ -1799,9 +1807,11 @@ def _compile(
             if limit_type == "region_recompile_limit":
                 limit_value = cache_size.region_recompile_limit
                 limit_source = f"torch.compile(region_recompile_limit={limit_value})"
+                num_recompiles = cache_size.region_num_compilations
             else:
                 limit_value = getattr(config, limit_type)
                 limit_source = f"config.{limit_type}"
+                num_recompiles = cache_size.num_cache_entries
 
             # NS: Don't add period at the end of string, as it'll be added to URL
             # rendering it incorrect
@@ -1823,7 +1833,7 @@ def _compile(
                     gb_type="Dynamo recompile limit exceeded",
                     context=f"Limit type: {limit_type}",
                     explanation=f"Dynamo attempted to recompile '{code.co_name}' "
-                    f"{cache_size.num_cache_entries} times, "
+                    f"{num_recompiles} times, "
                     f"exceeding the {limit_type} (currently set to {limit_value}). "
                     "Excessive recompilations can degrade "
                     "performance due to the compilation overhead of each recompilation.",
