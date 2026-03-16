@@ -19,11 +19,7 @@ void set_disabled_torch_dispatch_impl(PyObject* value);
 // overloaded list even if they don't actually have __torch_function__
 bool check_has_torch_function(PyObject* obj, bool ignore_mode = false);
 
-// has_torch_function is the preferred name for new code
-inline bool has_torch_function(PyObject* obj) {
-  return check_has_torch_function(obj);
-}
-
+bool has_torch_function(PyObject* obj);
 bool has_torch_function(c10::ArrayRef<PyObject*> args);
 
 struct DisableTorchDispatch {

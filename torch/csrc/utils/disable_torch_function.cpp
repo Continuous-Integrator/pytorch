@@ -324,6 +324,10 @@ auto check_has_torch_function(PyObject* obj, bool ignore_mode) -> bool {
       torch::torch_function_enabled() && has_torch_function_attr(obj));
 }
 
+bool has_torch_function(PyObject* obj) {
+  return check_has_torch_function(obj);
+}
+
 bool has_torch_function(c10::ArrayRef<PyObject*> args) {
   for (const auto obj : args) {
     if (check_has_torch_function(obj)) {
