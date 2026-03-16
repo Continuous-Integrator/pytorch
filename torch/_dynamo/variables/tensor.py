@@ -317,63 +317,6 @@ class TensorVariable(VariableTracker):
                 )
         return props
 
-    def dynamic_getattr(
-        self, tx: "InstructionTranslator", name: str
-    ) -> VariableTracker:
-        fake_val = self.proxy.node.meta["example_value"]
-        # For getattrs on tensors without sources,
-        # we can do better than the default (creating a GetAttrVariable)
-        # if:
-        # (1) the tensor is a traceable tensor subclass
-        # (2) We are getattr'ing an inner tensor from that subclass
-        if not self.source and is_traceable_wrapper_subclass(fake_val):
-            attrs, _ctx = fake_val.__tensor_flatten__()
-            proxy = getattr(self.as_proxy(), name)
-            example_value = getattr(fake_val, name)
-            if name in attrs:
-                # attrs returned from tensor_flatten are always tensors or opaques
-                assert isinstance(example_value, (torch.Tensor, OpaqueBase))
-                from .builder import wrap_fx_proxy
-
-                return wrap_fx_proxy(tx=tx, proxy=proxy, example_value=example_value)
-            elif is_opaque_reference_type(type(example_value)):
-                fake_script_obj = torch._library.fake_class_registry.maybe_to_fake_obj(
-                    tx.output.fake_mode, example_value
-                )
-                return TorchScriptObjectVariable.create(proxy, fake_script_obj)
-            elif isinstance(
-                example_value,
-                torch._library.fake_class_registry.FakeScriptObject,
-            ):
-                return TorchScriptObjectVariable.create(proxy, example_value)
-            # any other attributes on the subclass (that are not methods)
-            # are assumed to be constant metadata.
-            elif not callable(example_value):
-                return VariableTracker.build(tx, example_value)
-
-        if not (self.source and self.source.subguards_allowed()):
-            raise NotImplementedError
-
-        # Note - this scope construction is mirrored in guards
-        # A subsequent PR will introduce a util.
-        scope = {"L": tx.output.local_scope, "G": tx.output.global_scope}
-        try:
-            # SuperSource has bugs and can produce non-eval()-able names.
-            real_value = eval(self.source.name, scope)
-        except Exception as exc:
-            raise NotImplementedError from exc
-
-        if real_value is None:
-            raise NotImplementedError
-
-        attr_source = AttrSource(self.source, name)
-
-        self._real_value = real_value
-        try:
-            return generic_getattr(tx, self, real_value, name, attr_source)
-        finally:
-            self._real_value = None
-
     def fixup_type_attr(self, name: str, type_attr: object) -> object:
         return type_attr
 
@@ -403,6 +346,19 @@ class TensorVariable(VariableTracker):
         type_attr: object,
         source: Source | None,
     ) -> VariableTracker:
+        # Inplace views on graph inputs: delay graph break to actual call.
+        if self.source is not None and hasattr(torch.ops.aten, name):
+            fn = getattr(torch.ops.aten, name)
+            if (
+                hasattr(fn, "overloads")
+                and hasattr(fn, fn.overloads()[0])
+                and torch.Tag.inplace_view in getattr(fn, fn.overloads()[0]).tags
+            ):
+                return variables.misc.DelayGraphBreakVariable(
+                    source=AttrSource(self.source, name),
+                    msg="Getting an inplace view on a graph input is not supported",
+                )
+
         real_value = getattr(self._real_value, name)
         if is_bound_tensor_method(real_value):
             from .misc import GetAttrVariable
@@ -580,76 +536,87 @@ class TensorVariable(VariableTracker):
         if name == "__class__":
             return VariableTracker.build(tx, self.python_type())
 
+        # Fast path: cached FakeTensor metadata (works for all tensors)
         handler = getattr(self, f"method_attr_{name}", None)
         result = handler(tx) if handler is not None else None
-
-        # Add a guard for type matching, these guards are checked before tensor guards
-        # In some cases, a <tensor>.<attr> guard can be evaluated first, and break if
-        # <tensor> is later changed to another type
-        if (
-            result is not None
-            and self.source
-            and self.source.subguards_allowed()
-            and not (
-                name not in ("grad", "requires_grad") and result.is_python_constant()
-            )
-        ):
-            install_guard(self.make_guard(GuardBuilder.TYPE_MATCH))
-            result.source = AttrSource(self.source, name)
-
-        # It's hard to get inplace view (metadata mutation) on graph input work properly across
-        # dynamo/aot/inductor, just fall back.
-        if self.source is not None and hasattr(torch.ops.aten, name):
-            fn = getattr(torch.ops.aten, name)
+        if result is not None:
+            # Add a guard for type matching, these guards are checked before
+            # tensor guards. In some cases, a <tensor>.<attr> guard can be
+            # evaluated first, and break if <tensor> is later changed to
+            # another type.
             if (
-                hasattr(fn, "overloads")
-                and hasattr(fn, fn.overloads()[0])
-                and torch.Tag.inplace_view in getattr(fn, fn.overloads()[0]).tags
-            ):
-                # Delay the graph break to the actual call of unsqueeze_/resize_/resize_as_ etc.
-                return variables.misc.DelayGraphBreakVariable(
-                    source=AttrSource(self.source, name),
-                    msg="Getting an inplace view on a graph input is not supported",
+                self.source
+                and self.source.subguards_allowed()
+                and not (
+                    name not in ("grad", "requires_grad")
+                    and result.is_python_constant()
                 )
+            ):
+                install_guard(self.make_guard(GuardBuilder.TYPE_MATCH))
+                result.source = AttrSource(self.source, name)
+            return result
 
-        # For attributes (not methods) that were not caught in the special handling above,
-        # (e.g. tensor.real), we handle these generically, assuming that the output type is
-        # a tensor.
-        if result is None and name != "grad":
-
-            def try_generic_attr_handling() -> VariableTracker | None:
+        # Proxy path for getset_descriptors that produce tensors (.real, .T, .H, etc.).
+        # Works for all tensors (sourced and sourceless) without needing a real value.
+        # Skip "grad" — its result can be None, not always a tensor.
+        if name != "grad":
+            static_attr = all_tensor_attrs.get(name, None)
+            if (
+                static_attr is not None
+                and type(static_attr) is types.GetSetDescriptorType
+            ):
                 from .builder import wrap_fx_proxy
                 from .misc import GetAttrVariable
 
-                static_attr = all_tensor_attrs.get(name, None)
-                if static_attr is None:
-                    return None
-
-                # Make sure this is an attribute, not a method.
-                # type(torch.Tensor.H) should be "getset_descriptor"
-                # This is a because of CPython implementation, see THPVariableType:
-                # these attributes are implemented under tp_getset, which appear
-                # as `getset_descriptor`s, (compared to, say, methods which appear
-                # as `method_descriptor`s)
-                if type(static_attr) is not types.GetSetDescriptorType:
-                    return None
-
                 proxy = GetAttrVariable.create_getattr_proxy(self.as_proxy(), name)
-                if self.source is not None:
-                    return wrap_fx_proxy(
-                        tx=tx, proxy=proxy, source=AttrSource(self.source, name)
-                    )
-                else:
-                    return wrap_fx_proxy(tx=tx, proxy=proxy)
+                source = AttrSource(self.source, name) if self.source else None
+                return wrap_fx_proxy(tx=tx, proxy=proxy, source=source)
 
-            result = try_generic_attr_handling()
+        # Sourceless traceable subclass handling
+        fake_val = self.proxy.node.meta["example_value"]
+        if not self.source and is_traceable_wrapper_subclass(fake_val):
+            attrs, _ctx = fake_val.__tensor_flatten__()
+            proxy = getattr(self.as_proxy(), name)
+            example_value = getattr(fake_val, name)
+            if name in attrs:
+                # attrs returned from tensor_flatten are always tensors or opaques
+                assert isinstance(example_value, (torch.Tensor, OpaqueBase))
+                from .builder import wrap_fx_proxy
 
-        if result is None:
-            result = self.dynamic_getattr(tx, name)
+                return wrap_fx_proxy(tx=tx, proxy=proxy, example_value=example_value)
+            elif is_opaque_reference_type(type(example_value)):
+                fake_script_obj = torch._library.fake_class_registry.maybe_to_fake_obj(
+                    tx.output.fake_mode, example_value
+                )
+                return TorchScriptObjectVariable.create(proxy, fake_script_obj)
+            elif isinstance(
+                example_value,
+                torch._library.fake_class_registry.FakeScriptObject,
+            ):
+                return TorchScriptObjectVariable.create(proxy, example_value)
+            # any other attributes on the subclass (that are not methods)
+            # are assumed to be constant metadata.
+            elif not callable(example_value):
+                return VariableTracker.build(tx, example_value)
 
-        if result is None:
+        # Sourced tensor: recover real value and use generic_getattr
+        if not (self.source and self.source.subguards_allowed()):
             raise NotImplementedError
-        return result
+
+        scope = {"L": tx.output.local_scope, "G": tx.output.global_scope}
+        try:
+            real_value = eval(self.source.name, scope)
+        except Exception as exc:
+            raise NotImplementedError from exc
+        if real_value is None:
+            raise NotImplementedError
+
+        attr_source = AttrSource(self.source, name)
+        self._real_value = real_value
+        try:
+            return generic_getattr(tx, self, real_value, name, attr_source)
+        finally:
+            self._real_value = None
 
     def call_id(self, tx: "InstructionTranslator") -> VariableTracker:
         if not self.source:
