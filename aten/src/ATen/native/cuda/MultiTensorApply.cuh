@@ -6,22 +6,6 @@
 #include <ATen/native/cuda/MemoryAccess.cuh>
 #include <vector>
 
-// __CUDA_ARCH_LIST__ has the compute capabilities sorted from lowest
-// to highest. Thus, we know we are compiling only for Volta or higher
-// if the first value of the list is at least 700.
-
-// https://docs.nvidia.com/cuda/cuda-compiler-driver-nvcc/#virtual-architecture-macros
-#define __MTA_CUDA_ARCH_LIST_HEAD_IMPL(a, ...) a
-#define __MTA_CUDA_ARCH_LIST_HEAD(...) \
-  __MTA_CUDA_ARCH_LIST_HEAD_IMPL(__VA_ARGS__)
-#if (                              \
-    defined(__CUDA_ARCH_LIST__) && \
-    __MTA_CUDA_ARCH_LIST_HEAD(__CUDA_ARCH_LIST__) >= 700)
-#define __MTA_COMPILE_FOR_VOLTA_AND_HIGHER 1
-#else
-#define __MTA_COMPILE_FOR_VOLTA_AND_HIGHER 0
-#endif
-
 namespace at::native {
 
 namespace {
@@ -101,6 +85,30 @@ __device__ __forceinline__ void load_store(
 // doesn't actually do that.
 namespace mta_detail {
 
+// __CUDA_ARCH_LIST__ has the compute capabilities sorted from lowest
+// to highest. Thus, we know we are compiling only for Volta or higher
+// if the first value of the list is at least 700.
+// We know we are compiling only for Pascal or lower if the last value
+// is less than 700.
+// https://docs.nvidia.com/cuda/cuda-compiler-driver-nvcc/#virtual-architecture-macros
+#if defined(__CUDA_ARCH_LIST__)
+constexpr int cuda_arch_list[] = {__CUDA_ARCH_LIST__};
+constexpr int cuda_arch_list_len =
+    sizeof(cuda_arch_list) / sizeof(cuda_arch_list[0]);
+constexpr bool kCompileForVoltaAndHigherOnly = cuda_arch_list[0] >= 700;
+constexpr bool kCompileForPascalAndLowerOnly =
+    cuda_arch_list[cuda_arch_list_len - 1] < 700;
+#else
+// If __CUDA_ARCH_LIST__ (for rocm builds), fallback to the original
+// behavior.
+constexpr bool kCompileForVoltaAndHigherOnly = false;
+constexpr bool kCompileForPascalAndLowerOnly = true;
+#endif
+
+static_assert(
+    !(kCompileForVoltaAndHigherOnly && kCompileForPascalAndLowerOnly),
+    "Cannot compile for only Pascal or lower and only Volta or higher at the same time.");
+
 template <bool IS_VOLTA_OR_HIGHER, int depth>
 struct MTAConfig {
   static constexpr int max_tensors = IS_VOLTA_OR_HIGHER
@@ -124,7 +132,9 @@ struct MTAComplexDoubleConfig {
 
 } // namespace mta_detail
 
-template <int n, bool IS_VOLTA_OR_HIGHER = __MTA_COMPILE_FOR_VOLTA_AND_HIGHER>
+template <
+    int n,
+    bool IS_VOLTA_OR_HIGHER = mta_detail::kCompileForVoltaAndHigherOnly>
 struct TensorListMetadata {
  private:
   using Config = mta_detail::MTAConfig<IS_VOLTA_OR_HIGHER, n>;
@@ -140,7 +150,7 @@ struct TensorListMetadata {
 template <
     typename scalar_vals_t,
     int n,
-    bool IS_VOLTA_OR_HIGHER = __MTA_COMPILE_FOR_VOLTA_AND_HIGHER>
+    bool IS_VOLTA_OR_HIGHER = mta_detail::kCompileForVoltaAndHigherOnly>
 struct TensorListScalarListMetadata {
  private:
   using Config = mta_detail::MTAConfig<IS_VOLTA_OR_HIGHER, n>;
@@ -386,18 +396,21 @@ void multi_tensor_apply(
     at::ArrayRef<Scalar> scalars,
     T callable,
     ArgTypes... args) {
-#if __MTA_COMPILE_FOR_VOLTA_AND_HIGHER
-  multi_tensor_apply_impl<true, depth, scalar_T>(
-      tensor_lists, scalars, callable, args...);
-#else
-  if (is_current_device_volta_or_higher()) {
+  if constexpr (mta_detail::kCompileForVoltaAndHigherOnly) {
     multi_tensor_apply_impl<true, depth, scalar_T>(
         tensor_lists, scalars, callable, args...);
-  } else {
+  } else if constexpr (mta_detail::kCompileForPascalAndLowerOnly) {
     multi_tensor_apply_impl<false, depth, scalar_T>(
         tensor_lists, scalars, callable, args...);
+  } else {
+    if (is_current_device_volta_or_higher()) {
+      multi_tensor_apply_impl<true, depth, scalar_T>(
+          tensor_lists, scalars, callable, args...);
+    } else {
+      multi_tensor_apply_impl<false, depth, scalar_T>(
+          tensor_lists, scalars, callable, args...);
+    }
   }
-#endif
 }
 
 template <bool IS_VOLTA_OR_HIGHER, int depth, typename T, typename... ArgTypes>
@@ -490,15 +503,17 @@ void multi_tensor_apply(
     std::vector<std::vector<at::Tensor>>& tensor_lists,
     T callable,
     ArgTypes... args) {
-#if __MTA_COMPILE_FOR_VOLTA_AND_HIGHER
-  multi_tensor_apply_impl<true, depth>(tensor_lists, callable, args...);
-#else
-  if (is_current_device_volta_or_higher()) {
+  if constexpr (mta_detail::kCompileForVoltaAndHigherOnly) {
     multi_tensor_apply_impl<true, depth>(tensor_lists, callable, args...);
-  } else {
+  } else if constexpr (mta_detail::kCompileForPascalAndLowerOnly) {
     multi_tensor_apply_impl<false, depth>(tensor_lists, callable, args...);
+  } else {
+    if (is_current_device_volta_or_higher()) {
+      multi_tensor_apply_impl<true, depth>(tensor_lists, callable, args...);
+    } else {
+      multi_tensor_apply_impl<false, depth>(tensor_lists, callable, args...);
+    }
   }
-#endif
 }
 
 template <bool IS_VOLTA_OR_HIGHER, int depth, typename T, typename... ArgTypes>
@@ -591,18 +606,21 @@ void multi_tensor_apply_for_fused_optimizer(
     at::TensorList state_steps,
     T callable,
     ArgTypes... args) {
-#if __MTA_COMPILE_FOR_VOLTA_AND_HIGHER
-  multi_tensor_apply_for_fused_optimizer_impl<true, depth>(
-      tensor_lists, state_steps, callable, args...);
-#else
-  if (is_current_device_volta_or_higher()) {
+  if constexpr (mta_detail::kCompileForVoltaAndHigherOnly) {
     multi_tensor_apply_for_fused_optimizer_impl<true, depth>(
         tensor_lists, state_steps, callable, args...);
-  } else {
+  } else if constexpr (mta_detail::kCompileForPascalAndLowerOnly) {
     multi_tensor_apply_for_fused_optimizer_impl<false, depth>(
         tensor_lists, state_steps, callable, args...);
+  } else {
+    if (is_current_device_volta_or_higher()) {
+      multi_tensor_apply_for_fused_optimizer_impl<true, depth>(
+          tensor_lists, state_steps, callable, args...);
+    } else {
+      multi_tensor_apply_for_fused_optimizer_impl<false, depth>(
+          tensor_lists, state_steps, callable, args...);
+    }
   }
-#endif
 }
 
 } // namespace at::native
