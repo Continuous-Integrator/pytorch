@@ -1344,7 +1344,11 @@ class NestedGraphBreakTests(torch._dynamo.test_case.TestCaseWithNestedGraphBreak
             return x, y
 
         x = torch.tensor([1.0, 2.0])
-        self.assertEqual(fn(x), torch.tensor([2.0, 3.0]))
+        result = fn(x)
+        self.assertEqual(result[0], torch.tensor([2.0, 3.0]))
+        self.assertEqual(
+            result[1], (torch.tensor([2.0, 3.0]), torch.tensor([4.0, 5.0]))
+        )
         self.assertEqual(cnts.frame_count, 1)
         self.assertEqual(cnts.op_count, 3)
 
