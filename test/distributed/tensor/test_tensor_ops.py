@@ -451,6 +451,13 @@ class DistTensorOpsTest(DTensorContinuousTestBase):
         self.assertTrue(dist_tensor_1.is_same_size(dist_tensor_3))
         self.assertFalse(input_tensor_2.is_same_size(dist_tensor_3))
 
+    def test_is_pinned(self):
+        device_mesh = self.build_device_mesh()
+        shard_spec = [Shard(0)]
+
+        dt = DTensor.from_local(torch.ones(4, 4), device_mesh, shard_spec)
+        self.assertFalse(dt.is_pinned())
+
     def _test_op(self, mesh, op_call, *args, **kwargs):
         out = op_call(*args, **kwargs)
         dtc = DTensorConverter(mesh, args, kwargs)
@@ -1409,6 +1416,35 @@ class TestNewEmptyStridedUneven(DTensorTestBase):
             dt.grad._local_tensor,
             torch.full_like(dt.grad._local_tensor, 2.0),
         )
+
+
+class DistNewShardingOpsTest(DTensorContinuousTestBase):
+    """E2E tests for ops with new sharding strategies (non-replicate-only)."""
+
+    world_size = 4
+
+    def test_log_normal_shard(self):
+        mesh = self.build_device_mesh()
+        t = torch.randn(8, 6, device=self.device_type)
+        dt = distribute_tensor(t, mesh, [Shard(0)])
+        result = torch.ops.aten.log_normal.default(dt)
+        self.assertEqual(result.placements, (Shard(0),))
+        self.assertEqual(result.shape, torch.Size([8, 6]))
+
+    def test_multinomial_shard_batch(self):
+        mesh = self.build_device_mesh()
+        probs = torch.rand(8, 10, device=self.device_type)
+        probs = probs / probs.sum(dim=-1, keepdim=True)
+        dt = distribute_tensor(probs, mesh, [Shard(0)])
+        result = torch.multinomial(dt, 3, replacement=True)
+        self.assertEqual(result.placements, (Shard(0),))
+        self.assertEqual(result.shape, torch.Size([8, 3]))
+
+
+DistNewShardingOpsTestWithLocalTensor = create_local_tensor_test_class(
+    DistNewShardingOpsTest,
+    base_class=LocalDTensorContinuousTestBase,
+)
 
 
 if __name__ == "__main__":
