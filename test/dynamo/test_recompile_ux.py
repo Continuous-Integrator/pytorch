@@ -481,21 +481,153 @@ class RegionRecompileLimitTests(torch._dynamo.test_case.TestCase):
         self.assertEqual(self._num_cache_entries(f), 1)
         self.assertEqual(cnt.frame_count, 2)
 
-        # Second dtype: recompiles both subgraphs
+        # Second dtype: f recompiles (f=2, max=2 hits limit),
+        # resume function can't recompile because max already at limit
         opt_f(torch.randn(3, dtype=torch.float64))
         self.assertEqual(self._num_cache_entries(f), 2)
-        self.assertEqual(cnt.frame_count, 4)
+        frame_count_after_2 = cnt.frame_count
 
         # Third dtype: both subgraphs should hit the limit
         opt_f(torch.randn(3, dtype=torch.float16))
         self.assertEqual(self._num_cache_entries(f), 2)
-        self.assertEqual(cnt.frame_count, 4)
+        self.assertEqual(cnt.frame_count, frame_count_after_2)
 
-        # Verify both subgraphs have exactly 2 cache entries
+        # Verify no code object exceeds the limit
         all_entries = torch._dynamo.eval_frame._debug_get_all_cache_entry_lists(f)
         for code, entries in all_entries.items():
-            self.assertEqual(
-                len(entries), 2, f"{code.co_name} has {len(entries)} entries"
+            self.assertLessEqual(
+                len(entries),
+                2,
+                f"{code.co_name} has {len(entries)} entries, exceeds limit of 2",
+            )
+
+    @torch._dynamo.config.patch(automatic_dynamic_shapes=True)
+    def test_region_recompile_limit_graph_break_automatic_dynamic(self):
+        cnt = torch._dynamo.testing.CompileCounter()
+
+        def f(x):
+            a = x.sin()
+            print("graph break")
+            b = a.cos()
+            return b
+
+        opt_f = torch.compile(f, backend=cnt, region_recompile_limit=2)
+
+        # Call 1: compiles both subgraphs (static shapes)
+        opt_f(torch.randn(4, 8))
+        self.assertEqual(self._num_cache_entries(f), 1)
+        frame_count_after_1 = cnt.frame_count
+
+        # Call 2: dim0 changes -> both f and resume function recompile
+        # with automatic dynamic (dim0 becomes dynamic)
+        opt_f(torch.randn(5, 8))
+        self.assertEqual(self._num_cache_entries(f), 2)
+        frame_count_after_2 = cnt.frame_count
+        self.assertGreater(frame_count_after_2, frame_count_after_1)
+
+        # Call 3: dim1 changes -> region_recompile_limit=2 reached,
+        # neither f nor resume function should recompile
+        opt_f(torch.randn(5, 9))
+        self.assertEqual(cnt.frame_count, frame_count_after_2)
+
+        # Verify ALL code objects (f + resume functions) respect the limit
+        all_entries = torch._dynamo.eval_frame._debug_get_all_cache_entry_lists(f)
+        for code, entries in all_entries.items():
+            self.assertLessEqual(
+                len(entries),
+                2,
+                f"{code.co_name} has {len(entries)} entries, exceeds limit of 2",
+            )
+
+    def test_region_recompile_limit_resume_exceeds_max_budget(self):
+        """Resume function recompiles independently via global changes.
+        With region_recompile_limit=3, f compiles once but the resume function
+        recompiles up to 3 times. Once any code object in the region hits the
+        limit, all code objects in the region stop compiling."""
+        cnt = torch._dynamo.testing.CompileCounter()
+
+        mode = {"value": "a"}
+
+        def f(x):
+            a = x.sin()
+            print("graph break")
+            if mode["value"] == "a":
+                return a.cos()
+            elif mode["value"] == "b":
+                return a.tan()
+            elif mode["value"] == "c":
+                return a.exp()
+            else:
+                return a + 1
+
+        opt_f = torch.compile(f, backend=cnt, region_recompile_limit=3)
+
+        # Call 1: f compiles, resume compiles. max=1
+        opt_f(torch.randn(4, 8))
+        frame_count_after_1 = cnt.frame_count
+
+        # Call 2: mode changes, f cache hit, resume recompiles. max=2
+        mode["value"] = "b"
+        opt_f(torch.randn(4, 8))
+        frame_count_after_2 = cnt.frame_count
+        self.assertGreater(frame_count_after_2, frame_count_after_1)
+
+        # Call 3: mode changes, f cache hit, resume recompiles. max=3
+        mode["value"] = "c"
+        opt_f(torch.randn(4, 8))
+        frame_count_after_3 = cnt.frame_count
+        self.assertGreater(frame_count_after_3, frame_count_after_2)
+
+        # Call 4: mode changes again. max=3, 3 >= 3 -> stop.
+        # Resume function should NOT recompile.
+        mode["value"] = "d"
+        opt_f(torch.randn(4, 8))
+        self.assertEqual(cnt.frame_count, frame_count_after_3)
+
+    def test_region_recompile_limit_resume_function_independent(self):
+        """Resume function recompiles independently when a global used only
+        after the graph break changes, while the main function gets cache hits."""
+        cnt = torch._dynamo.testing.CompileCounter()
+
+        mode = {"value": "a"}
+
+        def f(x):
+            a = x.sin()
+            print("graph break")
+            if mode["value"] == "a":
+                return a.cos()
+            else:
+                return a.tan()
+
+        opt_f = torch.compile(f, backend=cnt, region_recompile_limit=2)
+
+        # Call 1: compiles f + resume function
+        opt_f(torch.randn(4, 8))
+        f_entries_after_1 = self._num_cache_entries(f)
+        frame_count_after_1 = cnt.frame_count
+
+        # Call 2: change mode -> f cache hit, resume function recompiles
+        mode["value"] = "b"
+        opt_f(torch.randn(4, 8))
+        frame_count_after_2 = cnt.frame_count
+        # f should NOT have recompiled
+        self.assertEqual(self._num_cache_entries(f), f_entries_after_1)
+        # but resume function should have recompiled
+        self.assertGreater(frame_count_after_2, frame_count_after_1)
+
+        # Call 3: change mode again -> resume function should NOT recompile
+        # (region_recompile_limit=2 reached for the resume function)
+        mode["value"] = "c"
+        opt_f(torch.randn(4, 8))
+        self.assertEqual(cnt.frame_count, frame_count_after_2)
+
+        # Verify via _debug_get_all_cache_entry_lists
+        all_entries = torch._dynamo.eval_frame._debug_get_all_cache_entry_lists(f)
+        for code, entries in all_entries.items():
+            self.assertLessEqual(
+                len(entries),
+                2,
+                f"{code.co_name} has {len(entries)} entries, exceeds limit of 2",
             )
 
     def test_region_recompile_limit_graph_break_asymmetric(self):

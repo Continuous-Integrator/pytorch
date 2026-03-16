@@ -398,16 +398,8 @@ def _debug_get_all_cache_entry_lists(
     if callable(code) and not isinstance(code, types.CodeType):
         code = code.__code__
 
-    result: dict[types.CodeType, list[CacheEntry]] = {}
-    queue = [code]
-    while queue:
-        c = queue.pop()
-        if c in result:
-            continue
-        result[c] = _debug_get_cache_entry_list(c)
-        if c in ContinueExecutionCache.cache:
-            queue.extend(ContinueExecutionCache.cache[c].values())
-    return result
+    all_codes = [code] + ContinueExecutionCache.get_all_resume_code_objects(code)
+    return {c: _debug_get_cache_entry_list(c) for c in all_codes}
 
 
 class OptimizedModule(torch.nn.Module):

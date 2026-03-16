@@ -97,12 +97,9 @@ class CacheSizeRelevantForFrame:
 
     @property
     def exceeds_region_recompile_limit(self) -> bool:
-        # Cap at num_cache_entries so that after torch._dynamo.reset() clears
-        # the cache, the region can compile again.
-        effective = min(self.region_num_compilations, self.num_cache_entries)
         return (
             self.region_recompile_limit is not None
-            and effective >= self.region_recompile_limit
+            and self.region_num_compilations >= self.region_recompile_limit
         )
 
     def will_compilation_exceed(self, limit: int) -> bool:

@@ -301,6 +301,23 @@ class ContinueExecutionCache:
     generated_code_metadata = ExactWeakKeyDictionary()
 
     @classmethod
+    def get_all_resume_code_objects(cls, code: types.CodeType) -> list[types.CodeType]:
+        """Return all resume function code objects generated from this code, recursively."""
+        result: list[types.CodeType] = []
+        queue = [code]
+        seen: set[int] = set()
+        while queue:
+            c = queue.pop()
+            if id(c) in seen:
+                continue
+            seen.add(id(c))
+            if c in cls.cache:
+                children = list(cls.cache[c].values())
+                result.extend(children)
+                queue.extend(children)
+        return result
+
+    @classmethod
     def lookup(
         cls, code: types.CodeType, lineno: int, init_offset: int, *key: Any
     ) -> types.CodeType:

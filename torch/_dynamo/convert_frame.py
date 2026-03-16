@@ -621,8 +621,8 @@ class ConvertFrameAssert:
 
         cache_size = compute_cache_size(frame, cache_entry)
         cache_size.region_recompile_limit = self._region_recompile_limit
-        cache_size.region_num_compilations = self._region_compilation_counts.get(
-            code, 0
+        cache_size.region_num_compilations = max(
+            self._region_compilation_counts.values(), default=0
         )
         input_codes.add(code)
         if code in output_codes:
