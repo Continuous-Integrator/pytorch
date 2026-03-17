@@ -485,6 +485,11 @@ class EnumVariable(VariableTracker):
 
         if name in cmp_name_to_op_mapping:
             return variables.GetAttrVariable(self, name)
+        # Pre-check: if the attribute doesn't exist, let the caller handle
+        # the fallback (e.g. GetAttrVariable) rather than raising an observed
+        # exception which would trigger an awkward graph break path.
+        if not hasattr(self.value, name):
+            raise NotImplementedError
         source = self.source and AttrSource(self.source, name)
         return generic_getattr(tx, self, self.value, name, source)
 
