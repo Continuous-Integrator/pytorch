@@ -1198,6 +1198,5 @@ class LazyConstantVariableTests(TestCase):
             self.assertEqual(counter.frame_count, 1)  # Still no recompile!
 
 
-
 if __name__ == "__main__":
     run_tests()
