@@ -6839,9 +6839,10 @@
     CUDA: _philox_key_fold_in_cuda
 
 - func: _philox_normal_(Tensor(a!) self, Tensor key, float mean=0, float std=1) -> Tensor(a!)
-  variants: function
+  variants: function, method
   dispatch:
     CUDA: _philox_normal_cuda_
+  autogen: _philox_normal, _philox_normal.out
 
 - func: _dirichlet_grad(Tensor x, Tensor alpha, Tensor total) -> Tensor
   dispatch:
