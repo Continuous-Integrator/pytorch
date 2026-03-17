@@ -10,7 +10,6 @@
 #include <torch/csrc/distributed/c10d/cuda/utils.hpp>
 #include <torch/csrc/distributed/c10d/symm_mem/CUDASymmetricMemory-inl.cuh>
 #include <torch/csrc/distributed/c10d/symm_mem/CUDASymmetricMemoryUtils.hpp>
-#include <torch/csrc/distributed/c10d/symm_mem/CUDASymmetricMemoryTypes.hpp>
 #include <torch/csrc/distributed/c10d/symm_mem/NCCLSymmetricMemory.hpp>
 #include <torch/csrc/distributed/c10d/symm_mem/nccl_devcomm_manager.hpp>
 
@@ -195,13 +194,13 @@ class NCCLPeerAllocInfo : public c10::intrusive_ptr_target {
         " on rank ",
         rank_));
 
-    // Starting from NCCL 2.28, we can use device communicators and get peer pointers
 #ifdef NCCL_HAS_SYMMEM_DEVICE_SUPPORT
-    // Create NCCL device communicator if it doesn't exist. Skip if it already exists.
-    auto& mr = NCCLDevCommManager::get(c10::Device(c10::DeviceType::CUDA, device_idx_));
-    // Each CTA will need a separate barrier. Assume `symm_max_nblocks` as a starting point.
-    mr.try_emplace_devcomm(group_name_, comm_, /*LSA*/ symm_max_nblocks, /*GIN*/ 0);
+    // Register the host-side communicator for device communicator management.
+    // `ncclDevCommCreate` will require it.
+    auto& manager = NCCLDevCommManager::get(c10::Device(c10::DeviceType::CUDA, device_idx_));
+    manager.register_comm(group_name_, comm_);
 
+    // Starting from NCCL 2.28, we can get peer pointers.
     const size_t arr_size = sizeof(void*) * world_size_;
     buffers_dev_ = reinterpret_cast<void**>(
         c10::cuda::CUDACachingAllocator::raw_alloc(arr_size));
@@ -532,27 +531,29 @@ class NCCLSymmetricMemoryAllocator : public SymmetricMemoryAllocator {
     // for different groups (e.g., forward vs backward).
     std::lock_guard<std::mutex> alloc_lock(allocation->mutex);
     auto& peer_alloc_infos = allocation->peer_alloc_infos_;
-    auto pai_it = peer_alloc_infos.find(*group_name);
-    if (pai_it == peer_alloc_infos.end()) {
-      // Never rendezvoused with this group before, create a new peer alloc info.
-      pai_it = peer_alloc_infos.emplace_hint(
-          pai_it,
-          *group_name,
-          c10::make_intrusive<NCCLPeerAllocInfo>(allocation, *group_name));
+    auto& pai = peer_alloc_infos[*group_name];
+    if (!pai) {
+      pai = c10::make_intrusive<NCCLPeerAllocInfo>(allocation, *group_name);
     }
-
-    auto& pai = pai_it->second;
     size_t offset =
         reinterpret_cast<uintptr_t>(ptr) -
         reinterpret_cast<uintptr_t>(allocation->ptr);
+    // Create the SymmetricMemory handle.
     auto symm_mem = c10::make_intrusive<NCCLSymmetricMemory>(pai, offset);
     {
       std::lock_guard<std::mutex> lock(mutex_);
-      auto it = symm_mems_.find(key);
-      if (it != symm_mems_.end()) {
+      // Insert the SymmetricMemory handle into the map (cache), keyed by the
+      // (Tensor storage ptr, group name) pair.
+      auto [it, inserted] = symm_mems_.emplace(key, symm_mem);
+      if (!inserted) {
+        // This condition should rarely happen, only when another thread happens
+        // to be concurrently rendezvousing with the same allocation for the
+        // same group.  For safety, we return the existing SymmetricMemory
+        // handle and discard the new one.
         return it->second;
       }
-      symm_mems_[key] = symm_mem;
+      // There is no more use of `key`; we can move it into the per-allocation
+      // key set to avoid an extra copy.
       symm_mem_keys_by_alloc_[allocation->ptr].insert(std::move(key));
     }
     return symm_mem;
