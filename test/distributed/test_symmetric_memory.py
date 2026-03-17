@@ -10,9 +10,9 @@ from unittest import skip, skipIf, skipUnless
 import torch
 import torch.distributed as dist
 import torch.distributed._symmetric_memory as symm_mem
+from torch._C import FileCheck
 from torch._C._autograd import DeviceType
 from torch._C._distributed_c10d import _SymmetricMemory
-from torch._C import FileCheck
 from torch._inductor.utils import (
     fresh_cache,
     fresh_inductor_cache,
@@ -1450,9 +1450,7 @@ class LoweringTest(MultiProcContinuousTest):
         # Verify one_shot_all_reduce is converted to one_shot_all_reduce_out
         # with out= parameter (ExternKernelOut, not FallbackKernel).
         # Each mm + allreduce pair should produce an out= call for the allreduce.
-        FileCheck().check_count(
-            "one_shot_all_reduce_out", 3, exactly=True
-        ).run(code)
+        FileCheck().check_count("one_shot_all_reduce_out", 3, exactly=True).run(code)
 
         # Verify the out= parameter is present on allreduce calls.
         out_calls = code.count(", out=")
@@ -1501,9 +1499,7 @@ class LoweringTest(MultiProcContinuousTest):
 
         # Verify one_shot_all_reduce_copy is converted to
         # one_shot_all_reduce_copy_out with out= parameter.
-        FileCheck().check(
-            "one_shot_all_reduce_copy_out"
-        ).run(code)
+        FileCheck().check("one_shot_all_reduce_copy_out").run(code)
 
         # Verify the out= parameter is present.
         self.assertIn(

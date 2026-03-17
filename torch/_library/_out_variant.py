@@ -10,9 +10,7 @@ log = logging.getLogger(__name__)
 
 # Manual registry for ops whose out variant is not discoverable via
 # to_out_variant() (e.g. flat _out naming instead of .out overload).
-_manual_out_variant_registry: dict[
-    torch._ops.OpOverload, torch._ops.OpOverload
-] = {}
+_manual_out_variant_registry: dict[torch._ops.OpOverload, torch._ops.OpOverload] = {}
 
 
 def register_out_variant(
