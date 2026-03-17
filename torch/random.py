@@ -1,7 +1,7 @@
 # mypy: allow-untyped-defs
 import contextlib
 import warnings
-from collections.abc import Generator
+from collections.abc import Generator, Sequence
 from typing import Optional, TYPE_CHECKING
 
 import torch
@@ -36,12 +36,12 @@ def key(seed: int, impl: str = "philox", device: torch.device = None) -> torch.T
     return torch.tensor([seed, 0], dtype=torch.uint64, device=device)
 
 
-def split(key: torch.Tensor, num_splits: int) -> torch.Tensor:
-    return torch._philox_key_split(key, num_splits)
+def split(key: torch.Tensor, num: int = 2) -> torch.Tensor:
+    return torch.ops.aten._philox_key_split(key, num)
 
 
 def fold_in(key: torch.Tensor, data: int) -> torch.Tensor:
-    return torch._philox_key_fold_in(key, data)
+    return torch.ops.aten._philox_key_fold_in(key, data)
 
 
 def set_rng_state(new_state: torch.Tensor) -> None:

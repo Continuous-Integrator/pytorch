@@ -3,6 +3,7 @@
 import unittest
 
 import torch
+import torch._dynamo.testing
 from torch.testing._internal.common_utils import run_tests, TestCase
 
 TEST_CUDA = torch.cuda.is_available()
@@ -172,6 +173,27 @@ class TestPhiloxKeyFoldIn(TestCase):
         key = torch.tensor([[42, 0, 1], [43, 0, 1]], dtype=torch.uint64, device="cuda")
         with self.assertRaises(RuntimeError):
             torch.random.fold_in(key, 0)
+
+
+@unittest.skipIf(not TEST_CUDA, "CUDA not available")
+class TestPhiloxCompile(TestCase):
+    def test_split_aot_eager(self):
+        key = torch.random.key(42, device="cuda")
+
+        @torch.compile(backend="aot_eager", fullgraph=True)
+        def f(key):
+            return torch.random.split(key, 4)
+
+        self.assertEqual(f(key), torch.random.split(key, 4))
+
+    def test_fold_in_aot_eager(self):
+        key = torch.random.key(42, device="cuda")
+
+        @torch.compile(backend="aot_eager", fullgraph=True)
+        def f(key):
+            return torch.random.fold_in(key, 7)
+
+        self.assertEqual(f(key), torch.random.fold_in(key, 7))
 
 
 if __name__ == "__main__":
