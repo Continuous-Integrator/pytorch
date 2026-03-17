@@ -1885,8 +1885,11 @@ test_openreg() {
   git submodule update --init --depth 1 third_party/googletest
   python test/run_test.py --openreg --verbose
   assert_git_not_dirty
-  python run_openreg_tests.py -c
-  assert_git_not_dirty
+  # Device-generic test suite only runs on gcc11 (the primary openreg build).
+  if [[ "$BUILD_ENVIRONMENT" == *gcc11* ]]; then
+    python run_openreg_tests.py -c --retries 0 --shard "$SHARD_NUMBER" "$NUM_TEST_SHARDS"
+    assert_git_not_dirty
+  fi
 }
 
 if ! [[ "${BUILD_ENVIRONMENT}" == *libtorch* || "${BUILD_ENVIRONMENT}" == *-bazel-* ]]; then

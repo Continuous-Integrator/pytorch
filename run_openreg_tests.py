@@ -5,9 +5,9 @@ This script serves as both the CI launcher for openreg and a template for
 out-of-tree PrivateUse1 backends to run PyTorch's device-generic tests.
 
 Usage:
-    python run_openreg_tests.py                          # run full allowlist
+    python run_openreg_tests.py                          # run all device-generic tests
     python run_openreg_tests.py test_torch.py            # run specific file(s)
-    python run_openreg_tests.py --list                   # print allowlist
+    python run_openreg_tests.py --list                   # print discovered test files
     python run_openreg_tests.py -c                       # don't stop on first failure
     python run_openreg_tests.py --timeout 30             # per-test timeout in seconds
     python run_openreg_tests.py --retries 3              # retry failed tests N times
@@ -20,6 +20,7 @@ Prerequisites:
 import argparse
 from collections import defaultdict
 import json
+import math
 import os
 import re
 import signal
@@ -40,43 +41,339 @@ OPENREG_DIR = os.path.join(
     "torch_openreg",
 )
 
-# Device-generic tests that openreg supports.
-ALLOWLIST = [
-    "nn/test_convolution.py",
-    "nn/test_dropout.py",
-    "nn/test_embedding.py",
-    "nn/test_init.py",
-    "nn/test_multihead_attention.py",
-    "nn/test_parametrization.py",
-    "nn/test_pooling.py",
-    "test_autograd.py",
-    "test_binary_ufuncs.py",
-    "test_custom_ops.py",
-    "test_dataloader.py",
-    "test_indexing.py",
+# Tests to skip, split into "later" (revisit in a future pass) and
+# "don't care" (not relevant for openreg). Both are combined into
+# BLOCKLIST_DIRS / BLOCKLIST_FILES for runtime filtering.
+#
+
+# --- Later: directories ---
+_LATER_DIRS = {
+    # Core areas that need refactoring to use instantiate_device_type_tests
+    "autograd",
+    "custom_operator",
+    "optim",
+    # Other subsystems
+    "distributed",
+    "dynamo",
+    "inductor",
+    "export",
+    "profiler",
+    "cpp_extensions",
+    "benchmark_utils",
+    "distributions",
+    "higher_order_ops",
+    # Some aotdispatch tests
+    "functorch",
+    # Only relevant file is experimental/test_floatx.py
+    "quantization",
+}
+
+# --- Later: individual files ---
+_LATER_FILES = {
+    # PT2 infra
+    "test_content_store.py",
+    "test_decomp.py",
+    "test_fake_tensor.py",
+    "test_functionalization_of_rng_ops.py",
+    "test_fx.py",
+    "test_ops_unbacked.py",
+    "test_proxy_tensor.py",
+    "test_dynamic_shapes.py",
+    "test_compile_benchmark_util.py",
+    # Revisit for device-genericity
+    "test_matmul_cuda.py",
+    "test_scaled_matmul_cuda.py",
+    "test_varlen_attention.py",
+    "test_cpp_extensions_stream_and_event.py",
+    # Low priority
+    "test_complex.py",
+    "test_linalg.py",
+    "test_spectral_ops.py",
+    "test_foreach.py",
+    "test_prims.py",
+    "test_dlpack.py",
+    "test_fx_experimental.py",
+    # Autograd / functional
+    "test_autograd_fallback.py",
+    "test_functional_autograd_benchmark.py",
+    "test_functionalization.py",
+    # Module / misc
+    "test_opaque_obj_v2.py",
+    "test_stateless.py",
+    "test_out_dtype_op.py",
+    "test_torchfuzz_repros.py",
+    "nn/test_lazy_modules.py",
+    "nn/test_load_state_dict.py",
+    "nn/test_module_hooks.py",
+    # Utils
+    "test_module_tracker.py",
+    "test_flop_counter.py",
+    # Core (needs refactoring to be device-generic)
+    "test_autocast.py",
+    "nn/test_packed_sequence.py",
+    "nn/attention/test_open_registry.py",
+}
+
+# --- Don't care: directories ---
+_DONT_CARE_DIRS = {
+    "onnx",
+    "xpu",
+    "complex_tensor",
+    "lazy",
+    "ao",
+    "backends",
+    "custom_backend",
+    "fx",
+    "jit",
+    "mobile",
+    "package",
+    "python_native",
+    "torch_np",
+    "typing",
+}
+
+# --- Don't care: individual files ---
+_DONT_CARE_FILES = {
+    # Hardware-specific
+    "nn/attention/test_fa3.py",  # maybe revisit
+    "nn/attention/test_fa4.py",  # maybe revisit
+    "test_cuda.py",
+    "test_cuda_compatibility.py",
+    "test_cuda_expandable_segments.py",
+    "test_cuda_multigpu.py",
+    "test_cuda_nvml_based_avail.py",
+    "test_cuda_primary_ctx.py",
+    "test_cuda_sanitizer.py",
+    "test_cuda_trace.py",
+    "test_jiterator.py",
+    "test_kernel_launch_checks.py",
+    "test_metal.py",
+    "test_mkl_verbose.py",
+    "test_mkldnn.py",
+    "test_mkldnn_fusion.py",
+    "test_mkldnn_verbose.py",
+    "test_mps.py",
+    "test_nnapi.py",
+    "test_numa_binding.py",
+    "test_numba_integration.py",
+    "test_openmp.py",
+    "test_sparse_semi_structured.py",
+    "test_vulkan.py",
+    "test_xnnpack_integration.py",
+    "test_xpu.py",
+    "test_xpu_expandable_segments.py",
+    # JIT / TorchScript (legacy)
+    "test_jit.py",
+    "test_jit_autocast.py",
+    "test_jit_disabled.py",
+    "test_jit_fuser.py",
+    "test_jit_fuser_legacy.py",
+    "test_jit_fuser_te.py",
+    "test_jit_legacy.py",
+    "test_jit_llga_fuser.py",
+    "test_jit_profiling.py",
+    "test_jit_simple.py",
+    "test_jit_string.py",
+    "test_ops_jit.py",
+    # Legacy features
     "test_masked.py",
-    "test_modules.py",
-    "test_native_mha.py",
-    "test_nn.py",
-    "test_ops.py",
-    "test_ops_fwd_gradients.py",
-    "test_ops_gradients.py",
-    "test_optim.py",
-    "test_reductions.py",
-    "test_scatter_gather_ops.py",
-    "test_segment_reductions.py",
-    "test_serialization.py",
-    "test_shape_ops.py",
-    "test_sort_and_select.py",
-    "test_tensor_creation_ops.py",
-    "test_testing.py",
-    "test_torch.py",
-    "test_transformers.py",
-    "test_type_promotion.py",
-    "test_unary_ufuncs.py",
-    "test_utils.py",
-    "test_view_ops.py",
-]
+    "test_maskedtensor.py",
+    "test_nestedtensor.py",
+    "test_legacy_vmap.py",
+    "test_namedtensor.py",
+    "test_sparse.py",
+    "test_sparse_csr.py",
+    "test_expanded_weights.py",
+    "nn/test_pruning.py",
+    # Core infra (test once on CPU)
+    "test_accelerator.py",
+    "test_comparison_utils.py",
+    "test_dispatch.py",
+    "test_extension_utils.py",
+    "test_function_schema.py",
+    "test_meta.py",
+    "test_native_functions.py",
+    "test_overrides.py",
+    "test_per_overload_api.py",
+    "test_privateuseone_python_backend.py",
+    "test_public_bindings.py",
+    "test_pytree.py",
+    "test_rename_privateuse1_to_existing_device.py",
+    "test_schema_check.py",
+    "test_subclass.py",
+    "test_type_hints.py",
+    "test_type_info.py",
+    "test_typing.py",
+    # C++ extensions / static runtime / mobile
+    "test_cpp_api_parity.py",
+    "test_cpp_extensions_aot.py",
+    "test_cpp_extensions_jit.py",
+    "test_cpp_extensions_mtia_backend.py",
+    "test_mobile_optimizer.py",
+    "test_static_runtime.py",
+    # FX (CPU-only graph transforms)
+    "test_fx_graph_print.py",
+    "test_fx_passes.py",
+    "test_fx_reinplace_pass.py",
+    # TensorExpr (legacy compiler)
+    "test_tensorexpr.py",
+    "test_tensorexpr_pybind.py",
+    # No device logic at all
+    "test_ao_sparsity.py",
+    "test_appending_byte_serializer.py",
+    "test_as_strided.py",
+    "test_autoload.py",
+    "test_bundled_images.py",
+    "test_bundled_inputs.py",
+    "test_ci_sanity_check_fail.py",
+    "test_datapipe.py",
+    "test_determination.py",
+    "test_file_check.py",
+    "test_functional_optim.py",
+    "test_futures.py",
+    "test_hop_infra.py",
+    "test_hub.py",
+    "test_import_stats.py",
+    "test_itt.py",
+    "test_license.py",
+    "test_logging.py",
+    "test_model_exports_to_core_aten.py",
+    "test_monitor.py",
+    "test_multiprocessing.py",
+    "test_multiprocessing_spawn.py",
+    "test_namedtuple_return_api.py",
+    "test_package.py",
+    "test_pruning_op.py",
+    "test_quantization.py",
+    "test_set_default_mobile_cpu_allocator.py",
+    "test_show_pickle.py",
+    "test_sympy_utils.py",
+    "test_tensorboard.py",
+    "test_throughput_benchmark.py",
+    "test_torch_config_hash_determinism.py",
+    "test_utils_config_module.py",
+    "test_utils_filelock.py",
+    "test_weak.py",
+}
+
+# Combined blocklists used at runtime.
+BLOCKLIST_DIRS = _LATER_DIRS | _DONT_CARE_DIRS
+BLOCKLIST_FILES = _LATER_FILES | _DONT_CARE_FILES
+
+
+def _discover_tests() -> list[str]:
+    """Find all non-blocklisted test files under test/.
+
+    Currently discovers by walking the test directory and excluding
+    blocklisted dirs/files. Long-term, we should move to discovering tests
+    based on instantiate_device_type_tests usage, which is the canonical
+    way to mark a test as device-generic. This would let new test files
+    be auto-excluded unless they opt in, removing the need to maintain
+    a blocklist.    """
+    result = []
+    for root, dirs, files in os.walk(TEST_DIR):
+        dirs[:] = [d for d in sorted(dirs) if not d.startswith((".", "__"))]
+        rel_dir = os.path.relpath(root, TEST_DIR)
+        top_dir = rel_dir.split(os.sep)[0] if rel_dir != "." else None
+
+        if top_dir in BLOCKLIST_DIRS:
+            dirs.clear()
+            continue
+
+        for f in sorted(files):
+            if not (f.startswith("test_") and f.endswith(".py")):
+                continue
+            rel = f if rel_dir == "." else os.path.join(rel_dir, f)
+            if rel in BLOCKLIST_FILES:
+                continue
+            result.append(rel)
+    return result
+
+
+# Threshold for sub-sharding a single test file (seconds).
+# Same as THRESHOLD in tools/testing/test_selections.py.
+_SHARD_THRESHOLD = 600
+
+
+def _load_test_times() -> dict[str, float]:
+    """Load test file timing data, same source as run_test.py.
+
+    Falls back to empty dict if the data can't be downloaded (e.g. running
+    locally without internet). In that case, no sub-sharding is performed.
+    """
+    try:
+        from tools.stats.import_test_stats import get_test_times
+
+        all_times = get_test_times()
+        # Use the "default" config as a proxy for openreg runtimes.
+        # The relative sizes of test files are similar across devices.
+        return all_times.get("default", {}).get("default", {})
+    except Exception:
+        return {}
+
+
+class _ShardedTest:
+    """A test file, possibly sub-sharded."""
+
+    def __init__(self, test_file: str, shard_id: int = 1, num_shards: int = 1,
+                 estimated_time: float = 60):
+        self.test_file = test_file
+        self.shard_id = shard_id
+        self.num_shards = num_shards
+        self.estimated_time = estimated_time
+
+    @property
+    def name(self) -> str:
+        if self.num_shards == 1:
+            return self.test_file
+        return f"{self.test_file} ({self.shard_id}/{self.num_shards})"
+
+    def pytest_args(self) -> list[str]:
+        if self.num_shards == 1:
+            return []
+        return [f"--shard-id={self.shard_id}", f"--num-shards={self.num_shards}"]
+
+
+def _shard_tests(
+    test_files: list[str], shard_id: int, num_shards: int
+) -> list[_ShardedTest]:
+    """Split test files across CI shards, sub-sharding large files.
+
+    Uses the same test timing data as run_test.py to determine which files
+    need sub-sharding and how to balance work across shards.
+    """
+    test_times = _load_test_times()
+
+    # Step 1: expand large files into sub-shards based on estimated runtime
+    items: list[_ShardedTest] = []
+    for test_file in test_files:
+        # test_times keys don't have .py extension
+        key = test_file.replace(".py", "")
+        est = test_times.get(key, 60)
+        if est > _SHARD_THRESHOLD:
+            n = math.ceil(est / _SHARD_THRESHOLD)
+            for i in range(1, n + 1):
+                items.append(_ShardedTest(test_file, i, n, est / n))
+        else:
+            items.append(_ShardedTest(test_file, estimated_time=est))
+
+    if num_shards == 1:
+        return items
+
+    # Step 2: greedy bin-pack by estimated time (longest first)
+    items.sort(key=lambda x: -x.estimated_time)
+    shards: list[tuple[float, list[_ShardedTest]]] = [
+        (0.0, []) for _ in range(num_shards)
+    ]
+    for item in items:
+        min_idx = min(range(num_shards), key=lambda i: shards[i][0])
+        t, lst = shards[min_idx]
+        shards[min_idx] = (t + item.estimated_time, lst)
+        lst.append(item)
+
+    # Step 3: return items for our shard
+    _, our_items = shards[shard_id - 1]
+    return our_items
 
 
 def install_openreg() -> str:
@@ -214,12 +511,12 @@ def _run_and_tee(command, cwd, env, log_file, timeout):
 
 
 def run_test(
-    test_file: str,
+    sharded_test: _ShardedTest,
     openreg_pythonpath: str,
     timeout: int,
     retries: int,
 ) -> tuple[str, float, list[str], list[str], list[dict[str, str]]]:
-    """Run a single test file with timeout and per-test retry.
+    """Run a single test file (possibly sub-sharded) with timeout and per-test retry.
 
     Returns (status, elapsed, consistent_failures, flaky_failures, skipped).
 
@@ -228,6 +525,7 @@ def run_test(
 
     status is one of: "PASS", "FAIL", "FLAKY", "TIMEOUT"
     """
+    test_file = sharded_test.test_file
     full_path = os.path.join(TEST_DIR, test_file)
     pythonpath = openreg_pythonpath
     if "PYTHONPATH" in os.environ:
@@ -243,11 +541,15 @@ def run_test(
 
     log_file = _log_path(test_file)
     print(f"\n{'=' * 60}")
-    print(f"Running {test_file}  (log: {log_file})")
+    print(f"Running {sharded_test.name}  (log: {log_file})")
     print("=" * 60, flush=True)
 
-    command = [sys.executable, "-u", full_path, "--use-pytest", "-v", "-x", "-rs"]
-    stepcurrent_key = f"openreg_{test_file.replace('/', '_').replace('.py', '')}"
+    command = [
+        sys.executable, "-u", full_path, "--use-pytest", "-v", "-x", "-rs",
+        *sharded_test.pytest_args(),
+    ]
+    shard_suffix = f"_s{sharded_test.shard_id}" if sharded_test.num_shards > 1 else ""
+    stepcurrent_key = f"openreg_{test_file.replace('/', '_').replace('.py', '')}{shard_suffix}"
     sc_command = f"--sc={stepcurrent_key}"
     num_failures: dict[str, int] = defaultdict(int)
 
@@ -358,12 +660,12 @@ def main() -> None:
     parser.add_argument(
         "tests",
         nargs="*",
-        help="Specific test files to run (default: full allowlist).",
+        help="Specific test files to run (default: all discovered device-generic tests).",
     )
     parser.add_argument(
         "--list",
         action="store_true",
-        help="Print the allowlist and exit.",
+        help="Print discovered test files and exit.",
     )
     parser.add_argument(
         "-c",
@@ -383,14 +685,30 @@ def main() -> None:
         default=3,
         help="Number of times a test must fail before it's considered a consistent failure (default: 3).",
     )
+    parser.add_argument(
+        "--shard",
+        nargs=2,
+        type=int,
+        metavar=("SHARD_ID", "NUM_SHARDS"),
+        help="Run only tests assigned to this shard (1-indexed). "
+        "E.g., --shard 2 3 runs the second of three shards.",
+    )
     args = parser.parse_args()
 
+    discovered = _discover_tests()
+    test_files = args.tests if args.tests else discovered
+
+    shard_id = args.shard[0] if args.shard else 1
+    num_shards = args.shard[1] if args.shard else 1
+    sharded_tests = _shard_tests(test_files, shard_id, num_shards)
+
     if args.list:
-        for f in ALLOWLIST:
-            print(f)
+        for t in sharded_tests:
+            print(t.name)
         return
 
-    test_files = args.tests if args.tests else ALLOWLIST
+    if num_shards > 1:
+        print(f"Shard {shard_id}/{num_shards}: running {len(sharded_tests)} items")
 
     openreg_pythonpath = install_openreg()
 
@@ -398,16 +716,16 @@ def main() -> None:
     all_consistent_failures: list[str] = []
     all_flaky_failures: list[str] = []
     all_skipped: list[dict[str, str]] = []
-    for test_file in test_files:
+    for sharded_test in sharded_tests:
         status, elapsed, consistent, flaky, skipped = run_test(
-            test_file, openreg_pythonpath, args.timeout, args.retries
+            sharded_test, openreg_pythonpath, args.timeout, args.retries
         )
-        results.append((test_file, status, elapsed))
+        results.append((sharded_test.name, status, elapsed))
         all_consistent_failures.extend(consistent)
         all_flaky_failures.extend(flaky)
         all_skipped.extend(skipped)
         if status in ("FAIL", "TIMEOUT") and not args.continue_on_failure:
-            print(f"\nStopping after failure in {test_file}.")
+            print(f"\nStopping after failure in {sharded_test.name}.")
             break
 
     print_summary(results)
@@ -418,15 +736,20 @@ def main() -> None:
         skipped_by_reason[entry["reason"]] += 1
 
     report = {
+        "shard": f"{shard_id}/{num_shards}",
         "failed": all_consistent_failures,
         "flaky": all_flaky_failures,
         "timed_out": [name for name, s, _ in results if s == "TIMEOUT"],
         "skipped_by_reason": dict(skipped_by_reason),
     }
-    # Write to test/test-reports/ so CI's upload-test-artifacts picks it up
+    # Write to test/test-reports/ so CI's upload-test-artifacts picks it up.
+    # Include shard ID in filename so parallel shards don't overwrite each other.
     report_dir = os.path.join(PYTORCH_ROOT, "test", "test-reports")
     os.makedirs(report_dir, exist_ok=True)
-    report_path = os.path.join(report_dir, "openreg_device_generic_report.json")
+    shard_suffix = f"_shard{shard_id}" if num_shards > 1 else ""
+    report_path = os.path.join(
+        report_dir, f"openreg_device_generic_report{shard_suffix}.json"
+    )
     with open(report_path, "w") as f:
         json.dump(report, f, indent=2)
     print(f"Report: {report_path}")
