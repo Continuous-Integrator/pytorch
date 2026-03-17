@@ -1215,6 +1215,8 @@ class DequeVariable(CommonListMethodsVariable):
         values = []
         any_unrealized = False
         for item in self.items:
+            if item is self:
+                return (False, False, None)
             can_peek, is_unrealized, value = item.try_peek_constant()
             if not can_peek:
                 return (False, False, None)
