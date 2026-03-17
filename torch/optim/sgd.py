@@ -273,15 +273,14 @@ def sgd(
     See :class:`~torch.optim.SGD` for details.
     """
     # Respect when the user inputs False/True for foreach or fused. We only want to change
-    # the default when neither have been user-specified. Note that we default to foreach
-    # and pass False to use_fused. This is not a mistake--we want to give the fused impl
-    # bake-in time before making it the default, even if it is typically faster.
+    # the default when neither have been user-specified. We default to fused when all
+    # params are floating point and on supported devices, otherwise we fall back to foreach.
     if foreach is None and fused is None:
         # why must we be explicit about an if statement for torch.jit.is_scripting here?
         # because JIT can't handle Optionals nor fancy conditionals when scripting
         if not torch.jit.is_scripting():
             fused, foreach = _default_to_fused_or_foreach(
-                params, differentiable=False, use_fused=False
+                params, differentiable=False, use_fused=True
             )
         else:
             foreach = False

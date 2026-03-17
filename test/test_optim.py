@@ -2250,13 +2250,15 @@ class TestOptimRenewed(TestCase):
         [
             o
             for o in optim_db
-            if ("foreach" in o.supported_impls and o.optim_cls.__name__ != "Adafactor")
+            if (
+                "fused" in o.supported_impls
+                and o.optim_cls.__name__ not in ("Adafactor", "Adagrad")
+            )
         ],
         dtypes=[torch.float32],
     )
-    def test_defaults_changed_to_foreach(self, device, dtype, optim_info):
-        # Test that the default implementations for optimizers are changed to foreach
-        # except Adafactor, which defaults to the single tensor impl for memory efficiency.
+    def test_defaults_changed_to_fused(self, device, dtype, optim_info):
+        # Test that fused-capable optimizers default to the fused implementation.
         from torch.optim import Adam, AdamW
 
         optim_cls = optim_info.optim_cls
@@ -2266,13 +2268,46 @@ class TestOptimRenewed(TestCase):
 
         import inspect
 
-        # AdamW dispatches to superclass' adam
         if optim_cls is AdamW:
             module = inspect.getmodule(Adam)
-            module_name = "_multi_tensor_adam"
+            module_name = "_fused_adam"
         else:
             module = inspect.getmodule(optim_cls)
-            module_name = f"_multi_tensor_{optim_cls.__name__.lower()}"
+            module_name = f"_fused_{optim_cls.__name__.lower()}"
+
+        for optim_input in optim_info.optim_inputs_func(device=device):
+            optim = optim_cls(model.parameters(), **optim_input.kwargs)
+            optim.zero_grad()
+            output = model(inpt)
+            loss = output.sum()
+            loss.backward()
+            with patch.object(module, module_name) as mocked_fused_impl:
+                optim.step()
+                self.assertTrue(mocked_fused_impl.called)
+
+    @onlyCUDA
+    @optims(
+        [
+            o
+            for o in optim_db
+            if (
+                "foreach" in o.supported_impls
+                and o.optim_cls.__name__ not in ("Adafactor", "Adam", "AdamW", "SGD")
+            )
+        ],
+        dtypes=[torch.float32],
+    )
+    def test_defaults_changed_to_foreach(self, device, dtype, optim_info):
+        # Test that optimizers without fused-by-default still default to foreach.
+        optim_cls = optim_info.optim_cls
+        model = torch.nn.Linear(5, 5)
+        model.to(dtype=dtype, device=device)
+        inpt = torch.rand(2, 5, dtype=dtype, device=device)
+
+        import inspect
+
+        module = inspect.getmodule(optim_cls)
+        module_name = f"_multi_tensor_{optim_cls.__name__.lower()}"
 
         for optim_input in optim_info.optim_inputs_func(device=device):
             optim = optim_cls(model.parameters(), **optim_input.kwargs)

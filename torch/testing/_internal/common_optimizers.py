@@ -1725,7 +1725,7 @@ optim_db: list[OptimizerInfo] = [
                     "This test uses mocks, which dynamo does not support"
                 ),
                 "TestOptimRenewed",
-                "test_defaults_changed_to_foreach",
+                "test_defaults_changed_to_fused",
             ),
         ),
     ),
@@ -1821,7 +1821,7 @@ optim_db: list[OptimizerInfo] = [
                     "This test uses mocks, which dynamo does not support"
                 ),
                 "TestOptimRenewed",
-                "test_defaults_changed_to_foreach",
+                "test_defaults_changed_to_fused",
             ),
         ),
     ),
@@ -2167,7 +2167,7 @@ optim_db: list[OptimizerInfo] = [
                     "This test uses mocks, which dynamo does not support"
                 ),
                 "TestOptimRenewed",
-                "test_defaults_changed_to_foreach",
+                "test_defaults_changed_to_fused",
             ),
         ),
     ),

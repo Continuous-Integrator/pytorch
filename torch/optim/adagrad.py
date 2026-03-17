@@ -273,8 +273,7 @@ def adagrad(
 
     # Respect when the user inputs False/True for foreach or fused. We only want to change
     # the default when neither have been user-specified. Note that we default to foreach
-    # and pass False to use_fused. This is not a mistake--we want to give the fused impl
-    # bake-in time before making it the default, even if it is typically faster.
+    # for Adagrad because fused Adagrad does not support all devices (e.g., CUDA).
     if fused is None and foreach is None:
         _, foreach = _default_to_fused_or_foreach(
             params, differentiable, use_fused=False
