@@ -2776,6 +2776,7 @@ class BuiltinVariable(VariableTracker):
                 variables.UserDefinedObjectVariable,
                 variables.NestedUserFunctionVariable,
                 variables.UserFunctionVariable,
+                variables.FunctoolsPartialVariable,
                 variables.ExceptionVariable,
                 variables.TracebackVariable,
                 variables.UserDefinedClassVariable,
