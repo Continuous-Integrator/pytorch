@@ -103,7 +103,7 @@ class TestNativeDSLOps(TestCase):
 
             # Import common_utils directly
             import os
-            test_dir = os.path.dirname(os.path.abspath(__file__))
+            test_dir = os.getcwd()
             pytorch_root = os.path.dirname(os.path.dirname(test_dir))
             common_utils_path = os.path.join(pytorch_root, "torch", "_native", "common_utils.py")
 
@@ -124,7 +124,7 @@ class TestNativeDSLOps(TestCase):
 
             # Import common_utils directly
             import os
-            test_dir = os.path.dirname(os.path.abspath(__file__))
+            test_dir = os.getcwd()
             pytorch_root = os.path.dirname(os.path.dirname(test_dir))
             common_utils_path = os.path.join(pytorch_root, "torch", "_native", "common_utils.py")
 
@@ -191,37 +191,7 @@ class TestNativeDSLOps(TestCase):
         """register_op_override does not call through when TORCH_DISABLE_NATIVE_JIT=1."""
         script = textwrap.dedent("""\
             from unittest.mock import patch
-            import importlib.util
-            import sys
-
-            # Import modules directly
-            import os
-            test_dir = os.path.dirname(os.path.abspath(__file__))
-            pytorch_root = os.path.dirname(os.path.dirname(test_dir))
-            common_utils_path = os.path.join(pytorch_root, "torch", "_native", "common_utils.py")
-            registry_path = os.path.join(pytorch_root, "torch", "_native", "registry.py")
-            triton_utils_path = os.path.join(pytorch_root, "torch", "_native", "triton_utils.py")
-            cutedsl_utils_path = os.path.join(pytorch_root, "torch", "_native", "cutedsl_utils.py")
-
-            spec = importlib.util.spec_from_file_location("torch._native.common_utils", common_utils_path)
-            common_utils = importlib.util.module_from_spec(spec)
-            sys.modules["torch._native.common_utils"] = common_utils
-            spec.loader.exec_module(common_utils)
-
-            spec = importlib.util.spec_from_file_location("torch._native.registry", registry_path)
-            registry = importlib.util.module_from_spec(spec)
-            sys.modules["torch._native.registry"] = registry
-            spec.loader.exec_module(registry)
-
-            spec = importlib.util.spec_from_file_location("torch._native.triton_utils", triton_utils_path)
-            triton_utils = importlib.util.module_from_spec(spec)
-            sys.modules["torch._native.triton_utils"] = triton_utils
-            spec.loader.exec_module(triton_utils)
-
-            spec = importlib.util.spec_from_file_location("torch._native.cutedsl_utils", cutedsl_utils_path)
-            cutedsl_utils = importlib.util.module_from_spec(spec)
-            sys.modules["torch._native.cutedsl_utils"] = cutedsl_utils
-            spec.loader.exec_module(cutedsl_utils)
+            from torch._native import registry, triton_utils, cutedsl_utils
 
             with patch.object(registry, '_register_op_override') as mock_reg:
                 triton_utils.register_op_override("aten", "add.Tensor", "CUDA", lambda: None)
@@ -238,37 +208,7 @@ class TestNativeDSLOps(TestCase):
         script = textwrap.dedent("""\
             from unittest.mock import patch
             from packaging.version import Version
-            import importlib.util
-            import sys
-
-            # Import modules directly
-            import os
-            test_dir = os.path.dirname(os.path.abspath(__file__))
-            pytorch_root = os.path.dirname(os.path.dirname(test_dir))
-            common_utils_path = os.path.join(pytorch_root, "torch", "_native", "common_utils.py")
-            registry_path = os.path.join(pytorch_root, "torch", "_native", "registry.py")
-            triton_utils_path = os.path.join(pytorch_root, "torch", "_native", "triton_utils.py")
-            cutedsl_utils_path = os.path.join(pytorch_root, "torch", "_native", "cutedsl_utils.py")
-
-            spec = importlib.util.spec_from_file_location("torch._native.common_utils", common_utils_path)
-            common_utils = importlib.util.module_from_spec(spec)
-            sys.modules["torch._native.common_utils"] = common_utils
-            spec.loader.exec_module(common_utils)
-
-            spec = importlib.util.spec_from_file_location("torch._native.registry", registry_path)
-            registry = importlib.util.module_from_spec(spec)
-            sys.modules["torch._native.registry"] = registry
-            spec.loader.exec_module(registry)
-
-            spec = importlib.util.spec_from_file_location("torch._native.triton_utils", triton_utils_path)
-            triton_utils = importlib.util.module_from_spec(spec)
-            sys.modules["torch._native.triton_utils"] = triton_utils
-            spec.loader.exec_module(triton_utils)
-
-            spec = importlib.util.spec_from_file_location("torch._native.cutedsl_utils", cutedsl_utils_path)
-            cutedsl_utils = importlib.util.module_from_spec(spec)
-            sys.modules["torch._native.cutedsl_utils"] = cutedsl_utils
-            spec.loader.exec_module(cutedsl_utils)
+            from torch._native import triton_utils, cutedsl_utils
 
             fake_version = Version("99.99.99")
 
@@ -293,7 +233,7 @@ class TestNativeDSLOps(TestCase):
 
             os.environ.pop("TORCH_NATIVE_SKIP_VERSION_CHECK", None)
 
-            test_dir = os.path.dirname(os.path.abspath(__file__))
+            test_dir = os.getcwd()
             pytorch_root = os.path.dirname(os.path.dirname(test_dir))
             common_utils_path = os.path.join(pytorch_root, "torch", "_native", "common_utils.py")
             spec = importlib.util.spec_from_file_location("common_utils", common_utils_path)
@@ -309,8 +249,9 @@ class TestNativeDSLOps(TestCase):
         """TORCH_NATIVE_SKIP_VERSION_CHECK=1 -> returns True."""
         script = textwrap.dedent("""\
             import importlib.util
+            import os
 
-            test_dir = os.path.dirname(os.path.abspath(__file__))
+            test_dir = os.getcwd()
             pytorch_root = os.path.dirname(os.path.dirname(test_dir))
             common_utils_path = os.path.join(pytorch_root, "torch", "_native", "common_utils.py")
             spec = importlib.util.spec_from_file_location("common_utils", common_utils_path)
