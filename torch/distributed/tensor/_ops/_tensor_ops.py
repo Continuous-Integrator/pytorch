@@ -1636,11 +1636,6 @@ def searchsorted_single_dim_strategy(
         aten.to_sparse.sparse_dim,
         aten.stft.default,
         aten.stft.center,
-        aten.histogram.bin_ct,
-        aten.histogram.bins_tensor,
-        aten.histogramdd.default,
-        aten.allclose.default,
-        aten.block_diag.default,
         aten.pdist.default,
     ],
 )

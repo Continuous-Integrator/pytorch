@@ -214,7 +214,7 @@ from .functions import (
     FunctoolsPartialVariable,
     SysFunctionVariable,
     TritonKernelVariable,
-    TritonSetAllocatorSkipVariable,
+    TritonSetAllocatorVariable,
     UserFunctionVariable,
     WrapperUserFunctionVariable,
 )
@@ -1183,7 +1183,6 @@ class VariableBuilder:
             # type: ignore[arg-type]
             return StreamContextVariable.create(self.tx, stream_var)
         elif isinstance(value, torch.Stream):
-            # This refers to the device-agnostic torch.Stream
             self.install_guards(GuardBuilder.TYPE_MATCH)
             index = register_user_object(value, self.source)
             stream_proxy = self.tx.output.create_proxy(
@@ -1371,7 +1370,7 @@ class VariableBuilder:
         elif value is TensorDescriptor.from_tensor:
             return CreateTMADescriptorStableVariable()
         elif value is set_allocator:
-            return TritonSetAllocatorSkipVariable(value)
+            return TritonSetAllocatorVariable(value)
         elif isinstance(value, torch.amp.autocast_mode.autocast):
             self.install_guards(GuardBuilder.ID_MATCH)
             return AutocastModeVariable(
@@ -2457,6 +2456,12 @@ class VariableBuilder:
             source=source,
             **options,
         )
+
+        # Track input tensors for attribute mutation, matching how
+        # handle_traced_output tracks intermediate tensors with AttributeMutationNew.
+        # This enables setattr on input tensors (e.g. tensor.custom_attr = val)
+        # without graph breaking.
+        self.tx.output.side_effects.track_object_existing(value, tensor_variable)
 
         if value._is_view():
             # If value is a view, add its base tensor to the tracked fakes list.
