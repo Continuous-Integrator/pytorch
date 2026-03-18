@@ -19,9 +19,11 @@ from torch.testing._internal.common_distributed import (
     skip_if_lt_x_gpu,
 )
 from torch.testing._internal.common_utils import (
+    instantiate_parametrized_tests,
     IS_WINDOWS,
     load_tests,
     NoTest,
+    parametrize,
     requires_cuda_p2p_access,
     run_tests,
     skip_but_pass_in_sandcastle_if,
@@ -221,6 +223,7 @@ class TestNCCL(TestCase):
             self.assertEqual(outputs[i], expected[i])
 
 
+@instantiate_parametrized_tests
 @requires_cuda_p2p_access()
 class NCCLSymmetricMemoryTest(MultiProcContinuousTest):
     @property
@@ -427,6 +430,108 @@ class NCCLSymmetricMemoryTest(MultiProcContinuousTest):
             # handle.wait_signal(src_rank=0)
             # TODO: remove after we have wait_signal
             c10d.barrier()
+
+    @skip_but_pass_in_sandcastle_if(TEST_WITH_ROCM, "Skip NCCL tests for ROCm")
+    @skip_but_pass_in_sandcastle_if(IS_WINDOWS, "NCCL doesn't support Windows")
+    @requires_nccl_version(
+        (2, 29, 7), "nccl_grouped_strided_reduce kernel requires nccl 2.29.7"
+    )
+    @skip_if_lt_x_gpu(2)
+    @parametrize("experts_per_rank", [1, 2])
+    def test_nccl_grouped_strided_reduce_out(self, experts_per_rank: int):
+        """grouped_strided_reduce with `out` tensors: each expert gradient is
+        reduced to its destination rank and written to a separate contiguous
+        tensor; the source Grouped GEMM buffer is left unmodified."""
+        symm_mem.set_backend("NCCL")
+        torch.cuda.set_device(self.rank)
+        c10d.all_reduce(torch.ones(1, device=self.device))
+        group_name = c10d.group.WORLD.group_name
+
+        rows, cols = 64, 32
+        n_experts = experts_per_rank * self.world_size
+
+        buf = symm_mem.empty(
+            rows, n_experts * cols, dtype=torch.float, device=self.device
+        )
+        buf.fill_(float(self.rank + 1))
+        symm_mem.rendezvous(buf, group=group_name)
+
+        # Each expert is a non-contiguous column block of the Grouped GEMM buffer.
+        experts = [buf[:, i * cols : (i + 1) * cols] for i in range(n_experts)]
+        # Round-robin: expert i is reduced to rank i % world_size.
+        dst_ranks = [i % self.world_size for i in range(n_experts)]
+        n_owned = sum(r == self.rank for r in dst_ranks)
+        out = [
+            torch.zeros(rows, cols, dtype=torch.float, device=self.device)
+            for _ in range(n_owned)
+        ]
+
+        symm_mem._grouped_strided_reduce(experts, dst_ranks, group_name, out)
+        torch.cuda.synchronize()
+
+        expected_sum = float(sum(r + 1 for r in range(self.world_size)))
+        for j in range(n_owned):
+            self.assertEqual(
+                out[j],
+                torch.full_like(out[j], expected_sum),
+                msg=f"rank {self.rank}: out[{j}] should contain the reduced sum",
+            )
+        # Source buffer must be unmodified when out is provided.
+        self.assertEqual(
+            buf,
+            torch.full_like(buf, float(self.rank + 1)),
+            msg=f"rank {self.rank}: source buffer should be unchanged when out is provided",
+        )
+
+    @skip_but_pass_in_sandcastle_if(TEST_WITH_ROCM, "Skip NCCL tests for ROCm")
+    @skip_but_pass_in_sandcastle_if(IS_WINDOWS, "NCCL doesn't support Windows")
+    @requires_nccl_version(
+        (2, 29, 7), "nccl_grouped_strided_reduce kernel requires nccl 2.29.7"
+    )
+    @skip_if_lt_x_gpu(2)
+    @parametrize("experts_per_rank", [1, 2])
+    def test_nccl_grouped_strided_reduce(self, experts_per_rank: int):
+        """grouped_strided_reduce without `out`: each expert gradient is reduced
+        in place to its destination rank inside the Grouped GEMM buffer."""
+        symm_mem.set_backend("NCCL")
+        torch.cuda.set_device(self.rank)
+        c10d.all_reduce(torch.ones(1, device=self.device))
+        group_name = c10d.group.WORLD.group_name
+
+        rows, cols = 64, 32
+        n_experts = experts_per_rank * self.world_size
+
+        buf = symm_mem.empty(
+            rows, n_experts * cols, dtype=torch.float, device=self.device
+        )
+        buf.fill_(float(self.rank + 1))
+        symm_mem.rendezvous(buf, group=group_name)
+
+        # Each expert is a non-contiguous column block of the Grouped GEMM buffer.
+        experts = [buf[:, i * cols : (i + 1) * cols] for i in range(n_experts)]
+        for e in experts:
+            self.assertFalse(e.is_contiguous())
+            self.assertEqual(e.stride(0), n_experts * cols)
+
+        # Round-robin: expert i is reduced to rank i % world_size.
+        dst_ranks = [i % self.world_size for i in range(n_experts)]
+        symm_mem._grouped_strided_reduce(experts, dst_ranks, group_name)
+        torch.cuda.synchronize()
+
+        expected_sum = float(sum(r + 1 for r in range(self.world_size)))
+        for i, e in enumerate(experts):
+            if dst_ranks[i] == self.rank:
+                self.assertEqual(
+                    e,
+                    torch.full_like(e, expected_sum),
+                    msg=f"rank {self.rank}: expert {i} should contain the reduced sum",
+                )
+            else:
+                self.assertEqual(
+                    e,
+                    torch.full_like(e, float(self.rank + 1)),
+                    msg=f"rank {self.rank}: expert {i} should be unchanged",
+                )
 
     @skip_but_pass_in_sandcastle_if(TEST_WITH_ROCM, "Skip NCCL tests for ROCm")
     @skip_but_pass_in_sandcastle_if(IS_WINDOWS, "NCCL doesn't support Windows")

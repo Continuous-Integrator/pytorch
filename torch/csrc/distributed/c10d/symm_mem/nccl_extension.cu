@@ -408,6 +408,7 @@ TORCH_LIBRARY_IMPL(symm_mem, CUDA, m) {
   // API that uses internal signal mechanism and accepts handle
   m.impl("nccl_put_signal",
       torch::CppFunction::makeFromBoxedFunction<&nccl_put_signal_boxed>());
+  m.impl("nccl_grouped_strided_reduce", c10d::nccl_extension::nccl_grouped_strided_reduce);
 }
 
 // Use CompositeExplicitAutograd as key since ops do not accept tensor as input

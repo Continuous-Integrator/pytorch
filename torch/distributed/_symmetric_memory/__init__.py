@@ -2195,6 +2195,60 @@ def wait_signal(hdl: _SymmetricMemory, peer: int) -> None:
         raise ValueError(f"wait_signal: unsupported backend: {backend}")
 
 
+def _grouped_strided_reduce(
+    inputs: list[torch.Tensor],
+    dst_ranks: list[int],
+    group_name: str,
+    out: list[torch.Tensor] | None = None,
+) -> None:
+    r"""
+    _grouped_strided_reduce(inputs, dst_ranks, group_name, out=None) -> None
+
+    Reduce ``len(inputs)`` strided 2-D tensors simultaneously, routing each to
+    a specific destination rank.  Only ``dst_ranks[i]`` writes the reduced sum
+    for tensor ``i``; all other ranks participate in the barrier but perform no
+    writes.
+
+    Args:
+        inputs (list[Tensor]): Non-contiguous 2-D views into a buffer allocated
+            via symmetric memory.  All tensors must share the same shape, outer
+            stride, dtype, and device.
+        dst_ranks (list[int]): Destination rank for each input; ``dst_ranks[i]``
+            is the rank that will hold the reduced result for ``inputs[i]``.
+        group_name (str): The process-group name used when the backing buffer
+            was allocated.
+        out (list[Tensor] | None): If provided, must have length equal to the
+            number of inputs owned by this rank (i.e. the count of ``i`` where
+            ``dst_ranks[i] == my_rank``).  Each ``out[j]`` must be a contiguous
+            tensor with ``inputs[i].shape`` and the same dtype; the reduced
+            results are written there instead of back to the symmetric memory
+            window.  Pass ``None`` (or omit) to write back in place.
+
+    Example::
+
+        >>> # doctest: +SKIP
+        >>> # Each rank holds a Grouped GEMM gradient buffer in symmetric memory.
+        >>> # The buffer has W experts laid out as column blocks; each expert is
+        >>> # reduced to a specific rank (dst_ranks[i] == i % world_size).
+        >>> buf = symm_mem.empty(H, W * C, dtype=torch.bfloat16, device="cuda")
+        >>> symm_mem.rendezvous(buf, group=group_name)
+        >>> inputs = [buf[:, i * C : (i + 1) * C] for i in range(W)]
+        >>> dst_ranks = [i % world_size for i in range(W)]
+        >>> n_owned = sum(r == rank for r in dst_ranks)
+        >>> out = [torch.empty(H, C, dtype=torch.bfloat16, device="cuda") for _ in range(n_owned)]
+        >>> symm_mem._grouped_strided_reduce(inputs, dst_ranks, group_name, out)
+    """
+    backend = get_backend(inputs[0].device)
+    if backend == "NCCL":
+        torch.ops.symm_mem.nccl_grouped_strided_reduce(
+            inputs, dst_ranks, group_name, out if out is not None else []
+        )
+    else:
+        raise NotImplementedError(
+            f"_grouped_strided_reduce: unsupported backend: {backend}"
+        )
+
+
 __all__ = [
     "empty",
     "rendezvous",

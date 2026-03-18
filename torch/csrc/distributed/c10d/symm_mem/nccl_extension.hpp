@@ -18,4 +18,12 @@ TORCH_API void nccl_put_with_signal(
     int64_t signal,
     int64_t peer);
 
+// Simultaneously reduce N strided 2-D tensors, routing each to a specific
+// destination rank. All tensors must be views of the same NCCL symmetric
+// memory allocation with the same shape and outer stride.
+TORCH_API void nccl_grouped_strided_reduce(
+    at::TensorList inputs,
+    at::IntArrayRef dst_ranks,
+    const std::string& group_name,
+    at::TensorList out = {});
 } // namespace c10d::nccl_extension
