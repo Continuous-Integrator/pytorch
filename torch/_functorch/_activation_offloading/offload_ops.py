@@ -39,7 +39,6 @@ def offload(
     current_stream = torch.accelerator.current_stream(tensor.device)
 
     transfer_stream.wait_stream(current_stream)
-    tensor.record_stream(transfer_stream)
 
     torch.accelerator.set_stream(transfer_stream)
     result = tensor.to("cpu", non_blocking=True)
@@ -61,15 +60,23 @@ def _(
 def reload(
     transfer_stream_idx: int,
     completion_event_idx: int,
+    start_event_idx: int,
     tensor: torch.Tensor,
     device: torch.device,
 ) -> torch.Tensor:
-    """Async reload a CPU tensor to GPU on a dedicated transfer stream."""
+    """Async reload a CPU tensor to GPU on a dedicated transfer stream.
+
+    The transfer stream waits on ``start_event_idx`` before beginning the
+    H2D copy.  A ``streams::record_event`` node placed at the desired
+    point in the backward graph records this event on the compute stream,
+    gating when the transfer actually starts on the GPU.
+    """
     transfer_stream = _get_stream_by_index(transfer_stream_idx)
     completion_event = _get_event_by_index(completion_event_idx)
+    start_event = _get_event_by_index(start_event_idx)
     current_stream = torch.accelerator.current_stream(device)
 
-    transfer_stream.wait_stream(current_stream)
+    transfer_stream.wait_event(start_event)
 
     torch.accelerator.set_stream(transfer_stream)
     result = tensor.to(device, non_blocking=True)
@@ -84,6 +91,7 @@ def reload(
 def _(
     transfer_stream_idx: int,
     completion_event_idx: int,
+    start_event_idx: int,
     tensor: torch.Tensor,
     device: torch.device,
 ) -> torch.Tensor:
@@ -93,7 +101,9 @@ def _(
 # ao::wait is defined via torch.library with an aliasing schema so the output
 # can alias the input (custom_op forbids this).
 _lib = torch.library.Library("ao", "DEF")
-_lib.define("wait(int current_stream_idx, int completion_event_idx, Tensor(a) tensor) -> Tensor(a)")
+_lib.define(
+    "wait(int current_stream_idx, int completion_event_idx, Tensor(a) tensor) -> Tensor(a)"
+)
 
 
 @torch.library.impl("ao::wait", "cuda")
