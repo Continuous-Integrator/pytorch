@@ -843,6 +843,23 @@ Tensor _scaled_grouped_mm_cublaslt_cuda(
   const auto out_dtype_ = out_dtype.value_or(at::kBFloat16);
   Tensor out = create_grouped_gemm_output_tensor(mat_a, mat_b, offs, out_dtype_);
   cublasCommonGroupedArgs args(mat_a, mat_b, offs, out, scale_a, scale_b, scale_result);
+
+  // MXFP8 block scaling requires out-of-place (C != D). Build a separate
+  // C pointer array backed by a distinct dummy tensor.
+  const bool block_scaling =
+      args.scale_mata_scaling_type == at::blas::ScalingType::BlockWise1x32 ||
+      args.scale_matb_scaling_type == at::blas::ScalingType::BlockWise1x32;
+  Tensor c_dummy;
+  std::optional<cublasCommonGroupedArgs> c_args_holder;
+  const void* const* CPtrArray;
+  if (block_scaling) {
+    c_dummy = at::empty(out.sizes(), out.options());
+    c_args_holder.emplace(mat_a, mat_b, offs, c_dummy);
+    CPtrArray = reinterpret_cast<const void* const*>(c_args_holder->DPtrArray);
+  } else {
+    CPtrArray = reinterpret_cast<const void* const*>(args.DPtrArray);
+  }
+
   at::cuda::blas::scaled_grouped_gemm(
       args.transa, args.transb,
       args.mArray, args.avgM,
@@ -852,7 +869,7 @@ Tensor _scaled_grouped_mm_cublaslt_cuda(
       args.A_dtype, reinterpret_cast<const void* const*>(args.APtrArray), args.scale_mata_ptr, args.ldaArray,
       args.B_dtype, reinterpret_cast<const void* const*>(args.BPtrArray), args.scale_matb_ptr, args.ldbArray,
       reinterpret_cast<const float* const*>(args.betaPtrArray), args.result_dtype,
-      reinterpret_cast<const void* const*>(args.DPtrArray), args.lddArray,
+      CPtrArray, args.lddArray,
       reinterpret_cast<void**>(args.DPtrArray), args.scale_result_ptr, args.lddArray,
       use_fast_accum, args.batchCount,
       args.scale_mata_dtype, args.scale_matb_dtype,

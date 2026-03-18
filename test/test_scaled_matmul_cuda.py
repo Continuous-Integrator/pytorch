@@ -2713,33 +2713,10 @@ class TestFP8Matmul(TestCase):
         ngroups = 4
         BLOCK_SIZE = 32
 
-        # All K dims must be multiples of 32 for MXFP8 blockwise scales
-        # No empty groups allowed
-        if op == "2d/2d":
-            m, n, k_total = 16, 16, 128  # 4 groups x 32
-            offs = torch.tensor([32, 64, 96, k_total], device=device, dtype=torch.int32)
-            A = torch.randn(m, k_total, device=device).to(a_dtype)
-            B_T = torch.randn(n, k_total, device=device).to(b_dtype)
-            scale_a = torch.ones(m, k_total // BLOCK_SIZE, device=device, dtype=torch.float8_e8m0fnu)
-            scale_b = torch.ones(n, k_total // BLOCK_SIZE, device=device, dtype=torch.float8_e8m0fnu)
-        elif op == "2d/3d":
-            n, k = 16, 32
-            m_total = 64
-            offs = torch.tensor([16, 32, 48, m_total], device=device, dtype=torch.int32)
-            A = torch.randn(m_total, k, device=device).to(a_dtype)
-            B_T = torch.randn(ngroups, n, k, device=device).to(b_dtype)
-            scale_a = torch.ones(m_total, k // BLOCK_SIZE, device=device, dtype=torch.float8_e8m0fnu)
-            scale_b = torch.ones(ngroups, n, k // BLOCK_SIZE, device=device, dtype=torch.float8_e8m0fnu)
-        elif op == "3d/2d":
-            m, k = 16, 32
-            n_total = 64
-            offs = torch.tensor([16, 32, 48, n_total], device=device, dtype=torch.int32)
-            A = torch.randn(ngroups, m, k, device=device).to(a_dtype)
-            B_T = torch.randn(n_total, k, device=device).to(b_dtype)
-            scale_a = torch.ones(ngroups, m, k // BLOCK_SIZE, device=device, dtype=torch.float8_e8m0fnu)
-            scale_b = torch.ones(n_total, k // BLOCK_SIZE, device=device, dtype=torch.float8_e8m0fnu)
-        elif op == "3d/3d":
-            m, n, k = 16, 16, 32
+        # Use 128-aligned dims so the naive scale shape (M, K//32) matches
+        # the cuBLAS VEC32_UE8M0 2D tiled layout size.
+        if op == "3d/3d":
+            m, n, k = 128, 128, 128
             offs = None
             A = torch.randn(ngroups, m, k, device=device).to(a_dtype)
             B_T = torch.randn(ngroups, n, k, device=device).to(b_dtype)
@@ -2757,35 +2734,12 @@ class TestFP8Matmul(TestCase):
         )
 
         # Reference: per-group scaled_mm with blockwise MXFP8 scales
-        a_is_2d = A.dim() == 2
-        b_is_2d = B_T.dim() == 2
-        if offs is not None:
-            off_vals = [0] + offs.tolist()
         ref_parts = []
         for g in range(ngroups):
-            if a_is_2d and b_is_2d:
-                start, end = off_vals[g], off_vals[g + 1]
-                a_g = A[:, start:end]
-                b_g = B_T[:, start:end].t()
-                sa_g = scale_a[:, start // BLOCK_SIZE:end // BLOCK_SIZE]
-                sb_g = scale_b[:, start // BLOCK_SIZE:end // BLOCK_SIZE]
-            elif a_is_2d and not b_is_2d:
-                start, end = off_vals[g], off_vals[g + 1]
-                a_g = A[start:end, :]
-                b_g = B_T[g].t()
-                sa_g = scale_a[start:end, :]
-                sb_g = scale_b[g]
-            elif not a_is_2d and b_is_2d:
-                start, end = off_vals[g], off_vals[g + 1]
-                a_g = A[g]
-                b_g = B_T[start:end, :].t()
-                sa_g = scale_a[g]
-                sb_g = scale_b[start:end, :]
-            else:
-                a_g = A[g]
-                b_g = B_T[g].t()
-                sa_g = scale_a[g]
-                sb_g = scale_b[g]
+            a_g = A[g]
+            b_g = B_T[g].t()
+            sa_g = scale_a[g]
+            sb_g = scale_b[g]
             out_g = torch._scaled_mm(
                 a_g, b_g,
                 scale_a=sa_g,
@@ -2794,14 +2748,7 @@ class TestFP8Matmul(TestCase):
             )
             ref_parts.append(out_g)
 
-        if a_is_2d and b_is_2d:
-            C_ref = torch.stack(ref_parts, dim=0)
-        elif a_is_2d and not b_is_2d:
-            C_ref = torch.cat(ref_parts, dim=0)
-        elif not a_is_2d and b_is_2d:
-            C_ref = torch.cat(ref_parts, dim=1)
-        else:
-            C_ref = torch.stack(ref_parts, dim=0)
+        C_ref = torch.stack(ref_parts, dim=0)
 
         self.assertEqual(C, C_ref, atol=1e-2, rtol=1e-2)
 

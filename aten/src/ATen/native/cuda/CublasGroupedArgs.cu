@@ -19,6 +19,7 @@ __global__ void populate_cublas_grouped_args_kernel(
     int64_t* __restrict__ alphaPtr_out, int64_t* __restrict__ betaPtr_out,
     float* __restrict__ alpha_ptr, float* __restrict__ beta_ptr,
     int64_t base_scale_a, int64_t base_scale_b,
+    int64_t scale_a_stride_bytes, int64_t scale_b_stride_bytes,
     int64_t* __restrict__ scalePtrA_out, int64_t* __restrict__ scalePtrB_out) {
   int i = threadIdx.x;
 
@@ -52,10 +53,10 @@ __global__ void populate_cublas_grouped_args_kernel(
   betaPtr_out[i] = reinterpret_cast<int64_t>(beta_ptr);
 
   if (scalePtrA_out != nullptr) {
-    scalePtrA_out[i] = base_scale_a + i * sizeof(float);
+    scalePtrA_out[i] = base_scale_a + i * scale_a_stride_bytes;
   }
   if (scalePtrB_out != nullptr) {
-    scalePtrB_out[i] = base_scale_b + i * sizeof(float);
+    scalePtrB_out[i] = base_scale_b + i * scale_b_stride_bytes;
   }
 }
 
@@ -75,6 +76,7 @@ void launch_populate_cublas_grouped_args(
     int64_t* alphaPtr_out, int64_t* betaPtr_out,
     float* alpha_ptr, float* beta_ptr,
     int64_t base_scale_a, int64_t base_scale_b,
+    int64_t scale_a_stride_bytes, int64_t scale_b_stride_bytes,
     int64_t* scalePtrA_out, int64_t* scalePtrB_out,
     cudaStream_t stream) {
   TORCH_CHECK(batchCount > 0 && batchCount <= 1024,
@@ -93,6 +95,7 @@ void launch_populate_cublas_grouped_args(
       alphaPtr_out, betaPtr_out,
       alpha_ptr, beta_ptr,
       base_scale_a, base_scale_b,
+      scale_a_stride_bytes, scale_b_stride_bytes,
       scalePtrA_out, scalePtrB_out);
   C10_CUDA_KERNEL_LAUNCH_CHECK();
 }

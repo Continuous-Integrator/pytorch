@@ -258,11 +258,23 @@ struct cublasCommonGroupedArgs {
           scale_result_ptr = scale_result->data_ptr();
         }
 
-        // GroupWise scales need device-side pointer arrays (one pointer per
-        // group) because cuBLAS PER_BATCH_SCALAR mode expects the scale
-        // pointer to be an array of device pointers.
-        const bool mata_groupwise = scale_mata_scaling_type == at::blas::ScalingType::GroupWise;
-        const bool matb_groupwise = scale_matb_scaling_type == at::blas::ScalingType::GroupWise;
+        // GroupWise and BlockWise1x32 scales need device-side pointer arrays
+        // (one pointer per group) because cuBLAS expects the scale pointer to
+        // be an array of device pointers for grouped GEMM.
+        auto needs_ptr_array = [](at::blas::ScalingType st) {
+          return st == at::blas::ScalingType::GroupWise
+              || st == at::blas::ScalingType::BlockWise1x32;
+        };
+        const bool mata_needs_ptr = needs_ptr_array(scale_mata_scaling_type);
+        const bool matb_needs_ptr = needs_ptr_array(scale_matb_scaling_type);
+
+        // BlockWise1x32 with 2D (jagged) inputs is not yet supported because
+        // per-group scale tensor sizes vary with the jagged dimension.
+        if (scale_mata_scaling_type == at::blas::ScalingType::BlockWise1x32 ||
+            scale_matb_scaling_type == at::blas::ScalingType::BlockWise1x32) {
+          TORCH_CHECK(!a_is_2d && !b_is_2d,
+              "MXFP8 block scales for grouped GEMM only support 3D x 3D inputs currently");
+        }
 
         // Determine per-case which dimensions are variable (delta-based)
         // and how pointer strides work
@@ -313,7 +325,7 @@ struct cublasCommonGroupedArgs {
         //   5 x int64[batchCount]  = batchCount * 40 bytes  (A,B,D,alpha,beta ptrs)
         //   2 x float              = 8 bytes          (alpha, beta)
         // + optionally up to 2 x int64[batchCount] for per-group scale pointer arrays
-        const int extra_ptr_arrays = (mata_groupwise ? 1 : 0) + (matb_groupwise ? 1 : 0);
+        const int extra_ptr_arrays = (mata_needs_ptr ? 1 : 0) + (matb_needs_ptr ? 1 : 0);
         const int64_t buf_bytes = static_cast<int64_t>(batchCount) * 64 + 8
             + static_cast<int64_t>(extra_ptr_arrays) * batchCount * 8;
         buf = at::empty({buf_bytes}, mat1.options().dtype(at::kByte));
@@ -342,11 +354,11 @@ struct cublasCommonGroupedArgs {
         int64_t extra_offset = static_cast<int64_t>(batchCount) * 64 + 8;
         int64_t* scaleAPtrArray = nullptr;
         int64_t* scaleBPtrArray = nullptr;
-        if (mata_groupwise) {
+        if (mata_needs_ptr) {
           scaleAPtrArray = reinterpret_cast<int64_t*>(base + extra_offset);
           extra_offset += batchCount * 8;
         }
-        if (matb_groupwise) {
+        if (matb_needs_ptr) {
           scaleBPtrArray = reinterpret_cast<int64_t*>(base + extra_offset);
           extra_offset += batchCount * 8;
         }
@@ -354,6 +366,16 @@ struct cublasCommonGroupedArgs {
         // Base addresses for scale data (cuBLAS-A = mat2 → scale_b, cuBLAS-B = mat1 → scale_a)
         const int64_t base_scale_a = scale_b ? reinterpret_cast<int64_t>(scale_b->data_ptr()) : 0;
         const int64_t base_scale_b = scale_a ? reinterpret_cast<int64_t>(scale_a->data_ptr()) : 0;
+
+        // Byte stride between consecutive groups' scale data.
+        // For GroupWise (1D float): stride(0)*elem_size = 1*4 = sizeof(float).
+        // For BlockWise1x32 (3D e8m0): stride(0)*elem_size = per_group_numel*1.
+        const int64_t scale_a_stride_bytes = scale_b && scale_b->dim() >= 2
+            ? scale_b->stride(0) * scale_b->element_size()
+            : (scale_b ? scale_b->element_size() : 0);
+        const int64_t scale_b_stride_bytes = scale_a && scale_a->dim() >= 2
+            ? scale_a->stride(0) * scale_a->element_size()
+            : (scale_a ? scale_a->element_size() : 0);
 
         const int64_t base_A = reinterpret_cast<int64_t>(mat2.data_ptr());
         const int64_t base_B = reinterpret_cast<int64_t>(mat1.data_ptr());
@@ -387,15 +409,16 @@ struct cublasCommonGroupedArgs {
               static_cast<int64_t*>(betaPtrArray),
               alpha_scalar, beta_scalar,
               base_scale_a, base_scale_b,
+              scale_a_stride_bytes, scale_b_stride_bytes,
               scaleAPtrArray, scaleBPtrArray,
               stream);
 
-        // For GroupWise scales, point to the device-side pointer arrays
+        // For per-group scales, point to the device-side pointer arrays
         // instead of the raw data pointer
-        if (mata_groupwise) {
+        if (mata_needs_ptr) {
           scale_mata_ptr = scaleAPtrArray;
         }
-        if (matb_groupwise) {
+        if (matb_needs_ptr) {
           scale_matb_ptr = scaleBPtrArray;
         }
   }
