@@ -131,8 +131,17 @@ inline int64_t matrixStride(const Tensor& batched_matrices) {
   // between cols/rows).
   const auto m = batched_matrices.size(-2);
   const auto n = batched_matrices.size(-1);
+
+  // FIXME: seems like
+  // test/test_proxy_tensor.py::TestProxyTensorOpInfoCPU::test_make_fx_exhaustive_geqrf/ormqr_cpu_float32
+  // end up here (clang + asan). Do we not have a short circuit for empty inputs?
+  if (m == 0 || n == 0) {
+    return 0;
+  }
+
   const int64_t sm = (m != 1) ? batched_matrices.stride(-2) : 1;
   const int64_t sn = (n != 1) ? batched_matrices.stride(-1) : 1;
+
   return std::max(m * sm, n * sn);
 }
 
@@ -147,8 +156,17 @@ inline bool is_non_overlapping_matrices(const Tensor& A) {
   TORCH_INTERNAL_ASSERT_DEBUG_ONLY(A.dim() >= 2);
   const auto m = A.size(-2);
   const auto n = A.size(-1);
+
+  // FIXME: seems like
+  // test/test_proxy_tensor.py::TestProxyTensorOpInfoCPU::test_make_fx_exhaustive_geqrf/ormqr_cpu_float32
+  // end up here (clang + asan). Do we not have a short circuit for empty inputs?
+  if (m == 0 || n == 0) {
+    return true;
+  }
+
   const int64_t sm = (m != 1) ? A.stride(-2) : 1;
   const int64_t sn = (n != 1) ? A.stride(-1) : 1;
+
   return (
       // Checks whether the strides are strictly ordered
       (sn >= std::max<int64_t>(m * sm, 1) || sm >= std::max<int64_t>(n * sn, 1))
