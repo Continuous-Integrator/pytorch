@@ -95,7 +95,13 @@ from ..utils import (
     tensortype_to_dtype,
     tuple_methods,
 )
-from .base import MutationType, raise_type_error_exc, ValueMutationNew, VariableTracker
+from .base import (
+    MutationType,
+    NO_SUCH_SUBOBJ,
+    raise_type_error_exc,
+    ValueMutationNew,
+    VariableTracker,
+)
 from .dicts import ConstDictVariable, DefaultDictVariable, SetVariable
 
 
@@ -352,7 +358,7 @@ class UserDefinedClassVariable(UserDefinedVariable):
                 return VariableTracker.build(tx, obj.__get__(self.value), source)
 
         if ConstantVariable.is_literal(obj):
-            return VariableTracker.build(tx, obj)
+            return VariableTracker.build(tx, obj, source)
         elif isinstance(obj, enum.Enum):
             return VariableTracker.build(tx, obj, source)
         elif self.value is collections.OrderedDict:
@@ -791,13 +797,13 @@ class UserDefinedClassVariable(UserDefinedVariable):
                     )
                 ] + args[1:]
 
-            cm_obj = tx.output.side_effects.track_new_user_defined_object(
-                SourcelessBuilder.create(tx, object),
-                self,
-                arg_new,  # type: ignore[arg-type]
+            return tx.inline_user_function_return(
+                VariableTracker.build(
+                    tx, polyfills.instantiate_user_defined_class_object
+                ),
+                [self, *arg_new],
+                kwargs,
             )
-            cm_obj.call_method(tx, "__init__", arg_new, kwargs)  # type: ignore[arg-type]
-            return cm_obj
         elif is_namedtuple_cls(self.value):
             fields = namedtuple_fields(self.value)  # type: ignore[arg-type]
             # check if this a quasi-namedtuple or a real one
@@ -1028,8 +1034,7 @@ class UserDefinedClassVariable(UserDefinedVariable):
                     functools.partial(GuardBuilder.HASATTR, attr=name)
                 )
             )
-            return VariableTracker.build(tx, hasattr(self.value, name))
-        return super().call_obj_hasattr(tx, name)
+        return VariableTracker.build(tx, hasattr(self.value, name))
 
     def const_getattr(self, tx: "InstructionTranslator", name: str) -> Any:
         if name == "__name__":
@@ -1109,10 +1114,6 @@ class UserDefinedEnumClassVariable(UserDefinedClassVariable):
                 source = self.source and AttrSource(self.source, name)
                 return variables.UserMethodVariable(method, self, source=source)
         return super().var_getattr(tx, name)
-
-
-class NO_SUCH_SUBOBJ:
-    pass
 
 
 class RemovableHandleClass:
@@ -1357,6 +1358,9 @@ class UserDefinedObjectVariable(UserDefinedVariable):
 
     def python_type(self) -> type:
         return self.value_type  # type: ignore[return-value]
+
+    def python_value_for_identity(self) -> object:
+        return self.value
 
     def as_python_constant(self) -> object:
         if self.is_pytree_constant_class and self.source:
