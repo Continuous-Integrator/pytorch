@@ -31,7 +31,9 @@ class TestRegistry(TestCase):
         registry_path = os.path.join(pytorch_root, "torch", "_native", "registry.py")
 
         # Import registry module directly to avoid importing all ops
-        spec = importlib.util.spec_from_file_location("torch._native.registry", registry_path)
+        spec = importlib.util.spec_from_file_location(
+            "torch._native.registry", registry_path
+        )
         registry = importlib.util.module_from_spec(spec)
         sys.modules["torch._native.registry"] = registry
         spec.loader.exec_module(registry)
