@@ -436,7 +436,6 @@ class FakeIdVariable(VariableTracker):
             ),
             hints=[
                 "Avoid using id() on containers in code that may graph-break.",
-                *graph_break_hints.SUPPORTABLE,
             ],
         )
 

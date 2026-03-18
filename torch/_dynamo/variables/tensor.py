@@ -785,12 +785,11 @@ class TensorVariable(VariableTracker):
 
         if name == "__deepcopy__":
             unimplemented(
-                gb_type="copy.deepcopy(tensor)",
+                gb_type="Attempted to copy.deepcopy a tensor",
                 context=f"copy.deepcopy({self})",
                 explanation="Dynamo does not support copy.deepcopy() on tensors.",
                 hints=[
                     "Avoid calling copy.deepcopy() on tensors inside compiled regions.",
-                    *graph_break_hints.SUPPORTABLE,
                 ],
             )
 

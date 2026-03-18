@@ -865,17 +865,6 @@
       "Hints": []
     }
   ],
-  "GB0719": [
-    {
-      "Gb_type": "Reconstruction of FakeIdVariable",
-      "Context": "str(self.value)",
-      "Explanation": "A fake id produced by id() on a compile-time container cannot be reconstructed across a graph break.",
-      "Hints": [
-        "Avoid using id() on containers in code that may graph-break.",
-        "It may be possible to write Dynamo tracing rules for this code. Please report an issue to PyTorch if you encounter this graph break often and it is causing performance issues."
-      ]
-    }
-  ],
   "GB0072": [
     {
       "Gb_type": "Inplace op on input tensor",
@@ -1020,17 +1009,6 @@
       "Explanation": "Dynamo requires the attribute name passed to `super().__delattr__(...)` to be a constant (string).",
       "Hints": [
         "Ensure the attribute name is a string literal or a constant variable."
-      ]
-    }
-  ],
-  "GB7581": [
-    {
-      "Gb_type": "copy.deepcopy(tensor)",
-      "Context": "copy.deepcopy({self})",
-      "Explanation": "Dynamo does not support copy.deepcopy() on tensors.",
-      "Hints": [
-        "Avoid calling copy.deepcopy() on tensors inside compiled regions.",
-        "It may be possible to write Dynamo tracing rules for this code. Please report an issue to PyTorch if you encounter this graph break often and it is causing performance issues."
       ]
     }
   ],
@@ -4267,6 +4245,26 @@
       "Explanation": "Expect combine_fn to return a tuple (next_carry, y) but got {combine_result_vars}.",
       "Hints": [
         "Your code may result in an error when running in eager. Please double check that your code doesn't contain a similar error when actually running eager/uncompiled. You can do this by removing the `torch.compile` call, or by using `torch.compiler.set_stance(\"force_eager\")`. "
+      ]
+    }
+  ],
+  "GB4501": [
+    {
+      "Gb_type": "Reconstruction of FakeIdVariable",
+      "Context": "str(self.value)",
+      "Explanation": "A fake id produced by id() on a compile-time container cannot be reconstructed across a graph break.",
+      "Hints": [
+        "Avoid using id() on containers in code that may graph-break."
+      ]
+    }
+  ],
+  "GB4198": [
+    {
+      "Gb_type": "Attempted to copy.deepcopy a tensor",
+      "Context": "copy.deepcopy({self})",
+      "Explanation": "Dynamo does not support copy.deepcopy() on tensors.",
+      "Hints": [
+        "Avoid calling copy.deepcopy() on tensors inside compiled regions."
       ]
     }
   ],
