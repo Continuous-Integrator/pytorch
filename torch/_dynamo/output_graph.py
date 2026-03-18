@@ -718,6 +718,10 @@ class OutputGraph(OutputGraphCommon):
         # Cached variable trackers. This makes symbolic analysis of LOAD_GLOBAL
         # and LOAD_ATTR for same python objects free.
         self.variable_tracker_cache: dict[Source, VariableTracker] = {}
+        # When the same Python object is accessed through different source
+        # paths, we reuse the first VariableTracker and install an
+        # OBJECT_ALIASING dupe guard instead of creating redundant guards.
+        self.id_to_vt_cache: dict[int, VariableTracker] = {}
         # Cache for sources resolved via MRO walk, keyed by id(obj).
         # When the same descriptor (e.g. property) is reached from multiple
         # subclasses, we reuse the first source to avoid redundant guards.
@@ -3194,6 +3198,7 @@ class OutputGraph(OutputGraphCommon):
         self.input_name_to_proxy.clear()
         self.side_effects.clear()
         self.variable_tracker_cache.clear()
+        self.id_to_vt_cache.clear()
         self.mro_source_cache.clear()
         self.guarded_mro_absent_keys.clear()
         self.signature_cache.clear()
