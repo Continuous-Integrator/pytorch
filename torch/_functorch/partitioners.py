@@ -180,6 +180,15 @@ def must_offload(node: fx.Node) -> bool:
     ]
 
 
+def _is_offloading_op(node: fx.Node) -> bool:
+    """Check if a node is part of the activation offloading infrastructure."""
+    target_str = str(getattr(node, "target", ""))
+    return any(
+        kw in target_str
+        for kw in ("ao.offload", "ao.reload", "ao.wait", "sync_dealloc")
+    )
+
+
 def has_recomputable_ops(fx_g: fx.GraphModule) -> bool:
     for node in fx_g.graph.nodes:
         if must_recompute(node):
@@ -1227,13 +1236,14 @@ def _propagate_save_for_offloaded_deps(
     from collections import deque
 
     offloaded = [
-        n for n in joint_module.graph.nodes
+        n
+        for n in joint_module.graph.nodes
         if must_offload(n) and n.name in forward_node_names
     ]
     if not offloaded:
         return
 
-    visited: set[fx.Node] = set()
+    visited: OrderedSet[fx.Node] = OrderedSet()
     queue: deque[fx.Node] = deque(offloaded)
     flipped = 0
 
@@ -1330,7 +1340,19 @@ def default_partition(
     # downstream forward nodes whose recompute chain would require the
     # offloaded tensor.  BFS from each offloaded node through forward users
     # and flip PREFER_RECOMPUTE/MUST_RECOMPUTE to MUST_SAVE.
-    _propagate_save_for_offloaded_deps(joint_module, forward_node_names)
+    #
+    # NOTE: When offloading is done via a joint graph pass that inserts
+    # ao.reload/ao.wait ops, downstream nodes can safely be recomputed from
+    # the reloaded tensor. Skip propagation to avoid inflating peak memory.
+    has_reload_ops = any(
+        n.op == "call_function"
+        and hasattr(n.target, "__name__")
+        and "reload" in str(n.target)
+        and "ao" in str(n.target)
+        for n in joint_module.graph.nodes
+    )
+    if not has_reload_ops:
+        _propagate_save_for_offloaded_deps(joint_module, forward_node_names)
 
     if not config.unsafe_allow_optimization_of_collectives:
         force_save_collectives(joint_module)
@@ -1412,6 +1434,10 @@ def default_partition(
             # handles the forward→backward crossing instead.
             continue
         if is_impure(node):
+            # Offloading ops (ao::offload, ao::wait, sync_dealloc) are impure
+            # but safe to skip — they don't produce saved values.
+            if _is_offloading_op(node):
+                continue
             if graph_has_recomputable_ops:
                 raise AssertionError(
                     f"Trying to apply AC on a graph with impure op: {node}, {node.target}"
