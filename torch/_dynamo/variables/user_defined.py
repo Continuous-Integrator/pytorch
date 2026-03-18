@@ -524,6 +524,8 @@ class UserDefinedClassVariable(UserDefinedVariable):
                     explanation="Dyanmo does not support tracing mutations on a class when its __dict__ is materialized",
                     hints=graph_break_hints.SUPPORTABLE,
                 )
+            if not tx.output.side_effects.is_attribute_mutation(self):
+                tx.output.side_effects.track_object_existing(self.value, self)
             attr_name = args[0].as_python_constant()
             tx.output.side_effects.store_attr(self, attr_name, args[1])
             return variables.ConstantVariable.create(None)
