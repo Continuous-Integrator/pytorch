@@ -44,7 +44,7 @@ from torch.fx.experimental.symbolic_shapes import (
     find_symbol_binding_fx_nodes,
     free_symbols,
     is_symbol_binding_fx_node,
-    size_hint,
+    optimization_hint,
     statically_known_false,
     statically_known_true,
 )
@@ -187,6 +187,7 @@ def _is_offloading_op(node: fx.Node) -> bool:
         kw in target_str
         for kw in ("ao.offload", "ao.reload", "ao.wait", "sync_dealloc")
     )
+
 
 
 def has_recomputable_ops(fx_g: fx.GraphModule) -> bool:
@@ -413,6 +414,12 @@ def _extract_graph_with_inputs_outputs(
             output_values.append(x)
     out = new_graph.output(tuple(output_values))
     out.meta["desc"] = outputs_descs
+    # Snapshot stack traces on the output node before passes run,
+    # as later passes may strip stack_trace from individual nodes.
+    out.meta["output_stack_traces"] = [
+        v.meta.get("stack_trace") if isinstance(v, fx.Node) else None
+        for v in output_values
+    ]
 
     new_graph.eliminate_dead_code()
     new_graph.lint()
@@ -1524,7 +1531,7 @@ def _size_of(node: fx.Node) -> int:
     def object_nbytes(x: object) -> int:
         if not isinstance(x, torch.Tensor):
             return 0
-        return _tensor_nbytes(size_hint(x.numel(), fallback=4096), x.dtype)
+        return _tensor_nbytes(optimization_hint(x.numel(), fallback=4096), x.dtype)
 
     if "val" in node.meta:
         val = node.meta["val"]
@@ -2335,7 +2342,7 @@ def solve_min_cut(
                 return False
         # This bans recomputation of the node unless we've been forced not to by
         # user annotation
-        if must_recompute(node) or must_offload(node):
+        if must_recompute(node):
             return False
 
         if "val" in node.meta and isinstance(node.meta["val"], torch.SymFloat):
@@ -2374,14 +2381,6 @@ def solve_min_cut(
                     reason="must be computed in backward: required for gradient",
                 )
                 continue
-
-        if must_offload(node):
-            # Offloaded nodes: don't save the GPU tensor and don't recompute.
-            # The value is available in backward via a CPU offload/reload path.
-            # We set weight=0 so the min-cut effectively ignores this node;
-            # the ao_offload output (CPU tensor) will be saved instead.
-            nx_graph.add_edge(node.name + "_in", node.name + "_out", capacity=0)
-            continue
 
         if must_recompute(node):
             # If user explicitly says they want to recompute a node, we honor it
@@ -3075,7 +3074,7 @@ def _remove_symbols_without_guarding(x: torch.Tensor, fallback: int) -> torch.Te
     shape = list(x.shape)
 
     def realize_symbol(d: torch.SymInt | int) -> int:
-        return size_hint(d, fallback=fallback)
+        return optimization_hint(d, fallback=fallback)
 
     shape = [realize_symbol(s) for s in shape]
     stride = [realize_symbol(s) for s in x.stride()]
@@ -3089,7 +3088,7 @@ def estimate_runtime(node: fx.Node) -> float:
         if isinstance(x, fx.Node) and isinstance(x.meta["val"], torch.Tensor):
             return _remove_symbols_without_guarding(x.meta["val"], fallback=4096)
         elif isinstance(x, fx.Node) and isinstance(x.meta["val"], torch.SymInt):
-            return size_hint(x.meta["val"], fallback=4096)
+            return optimization_hint(x.meta["val"], fallback=4096)
         elif isinstance(x, fx.Node) and isinstance(x.meta["val"], torch.SymFloat):
             return 1.0
         elif isinstance(x, fx.Node) and isinstance(x.meta["val"], torch.SymBool):

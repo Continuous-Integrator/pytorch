@@ -653,7 +653,8 @@ print(t.is_pinned())
         def _check_default():
             default = torch.backends.cuda.preferred_blas_library()
             if torch.version.cuda:
-                self.assertTrue(default == torch._C._BlasBackend.Cublaslt)
+                # CUDA logic is easy, it's always cublas
+                self.assertTrue(default == torch._C._BlasBackend.Cublas)
             else:
                 # ROCm logic is less so, it's cublaslt for some Instinct, cublas for all else
                 gcn_arch = str(
@@ -4185,7 +4186,7 @@ print(ret)
 
 @unittest.skipIf(not TEST_CUDA, "CUDA not available, skipping tests")
 @torch.testing._internal.common_utils.markDynamoStrictTest
-class TestCudaMallocAsync(TestCase):
+class TestCudaAllocator(TestCase):
     @unittest.skipIf(
         TEST_CUDAMALLOCASYNC, "setContextRecorder not supported by CUDAMallocAsync"
     )
@@ -8582,7 +8583,7 @@ class TestFXMemoryProfiler(TestCase):
 
 
 instantiate_parametrized_tests(TestCuda)
-instantiate_parametrized_tests(TestCudaMallocAsync)
+instantiate_parametrized_tests(TestCudaAllocator)
 instantiate_parametrized_tests(TestCompileKernel)
 instantiate_parametrized_tests(TestCachingHostAllocatorCudaGraph)
 instantiate_device_type_tests(TestCudaOptims, globals())
