@@ -17,36 +17,17 @@ namespace at::cuda {
 using CaptureId_t = c10::cuda::CaptureId_t;
 using CaptureStatus = c10::cuda::CaptureStatus;
 
-// Returns the capture status of the given stream (or current stream if not specified).
-// Safe version that checks for existing context before potentially creating one.
-// If no stream is provided and no context exists, returns CaptureStatus::None.
-inline CaptureStatus currentStreamCaptureStatus(
-    std::optional<cudaStream_t> stream = std::nullopt) {
-  // If stream is explicitly provided, it's safe to query it directly
-  if (stream.has_value()) {
-    return c10::cuda::currentStreamCaptureStatusMayInitCtx(stream);
-  }
-  // Otherwise, check if context exists before using current stream
+// Use this version where you don't want to create a CUDA context if none exists.
+inline CaptureStatus currentStreamCaptureStatus() {
   if (c10::cuda::hasPrimaryContext(c10::cuda::current_device())) {
-    return c10::cuda::currentStreamCaptureStatusMayInitCtx(stream);
+    return c10::cuda::currentStreamCaptureStatusMayInitCtx();
   }
   return CaptureStatus::None;
 }
 
-inline bool isStreamCapturing(
-    std::optional<cudaStream_t> stream = std::nullopt) {
-  return currentStreamCaptureStatus(stream) == CaptureStatus::Active;
-}
-
-inline std::optional<CaptureId_t> currentStreamCaptureId(
-    std::optional<cudaStream_t> stream = std::nullopt) {
-  // If stream is explicitly provided, it's safe to query it directly
-  if (stream.has_value()) {
-    return c10::cuda::currentStreamCaptureIdMayInitCtx(stream);
-  }
-  // Otherwise, check if context exists before using current stream
+inline std::optional<CaptureId_t> currentStreamCaptureId() {
   if (c10::cuda::hasPrimaryContext(c10::cuda::current_device())) {
-    return c10::cuda::currentStreamCaptureIdMayInitCtx(stream);
+    return c10::cuda::currentStreamCaptureIdMayInitCtx();
   }
   return std::nullopt;
 }

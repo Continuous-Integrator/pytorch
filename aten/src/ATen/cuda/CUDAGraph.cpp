@@ -79,7 +79,7 @@ void CUDAGraph::register_generator_state(const at::Generator& generator) {
 template <>
 std::function<bool(cudaStream_t)> CUDAGraph::create_allocate_filter<cudaStream_t>() const {
   return [this](cudaStream_t stream) {
-    auto capture_id_opt = currentStreamCaptureId(std::optional<cudaStream_t>(stream));
+    auto capture_id_opt = c10::cuda::captureIdMayInitCtx(stream);
     return capture_id_opt.has_value() && capture_id_opt.value() == capture_id_;
   };
 }
@@ -88,7 +88,7 @@ template <>
 std::function<bool(c10::Stream)> CUDAGraph::create_allocate_filter<c10::Stream>() const {
   return [this](c10::Stream stream) {
     cudaStream_t cuda_stream = CUDAStream(CUDAStream::UNCHECKED, stream);
-    auto capture_id_opt = currentStreamCaptureId(std::optional<cudaStream_t>(cuda_stream));
+    auto capture_id_opt = c10::cuda::captureIdMayInitCtx(cuda_stream);
     return capture_id_opt.has_value() && capture_id_opt.value() == capture_id_;
   };
 }
@@ -146,7 +146,7 @@ void CUDAGraph::capture_begin(MempoolId_t pool/*={0,0}*/, cudaStreamCaptureMode 
   // https://docs.nvidia.com/cuda/cuda-runtime-api/group__CUDART__STREAM.html#group__CUDART__STREAM_1g9d0535d93a214cbf126835257b16ba85
   AT_CUDA_CHECK(cudaStreamBeginCapture(capture_stream_, capture_mode));
 
-  auto capture_id_opt = c10::cuda::currentStreamCaptureIdMayInitCtx(stream);
+  auto capture_id_opt = c10::cuda::captureIdMayInitCtx(stream);
   TORCH_INTERNAL_ASSERT(capture_id_opt.has_value(),
       "Stream should be actively capturing after cudaStreamBeginCapture");
   capture_id_ = capture_id_opt.value();
@@ -467,7 +467,7 @@ getCurrentCUDAStream(), &cond_node, nullptr, 1, cudaStreamSetCaptureDependencies
   AT_CUDA_CHECK(cudaStreamBeginCaptureToGraph(
       child_stream, if_node_child_graph, nullptr, nullptr, 0, capture_mode_));
 
-  auto child_capture_id_opt = c10::cuda::currentStreamCaptureIdMayInitCtx(child_stream);
+  auto child_capture_id_opt = c10::cuda::captureIdMayInitCtx(child_stream);
   TORCH_INTERNAL_ASSERT(child_capture_id_opt.has_value(),
       "Child stream should be actively capturing after cudaStreamBeginCaptureToGraph");
   conditional_graph_capture_ids_.top() = child_capture_id_opt.value();
@@ -554,7 +554,7 @@ void CUDAGraph::end_capture_to_conditional_node() {
 std::function<bool(cudaStream_t)> CUDAGraph::create_child_allocate_filter() {
 #if !defined(USE_ROCM) && (defined(CUDA_VERSION) && CUDA_VERSION >= 12040)
   return [&current_capture_id = conditional_graph_capture_ids_.top()](cudaStream_t stream) {
-      auto capture_id_opt = currentStreamCaptureId(std::optional<cudaStream_t>(stream));
+      auto capture_id_opt = c10::cuda::captureIdMayInitCtx(stream);
       return capture_id_opt.has_value() && capture_id_opt.value() == current_capture_id;
   };
 #else // !defined(USE_ROCM) && (defined(CUDA_VERSION) && CUDA_VERSION >= 12040)
