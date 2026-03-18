@@ -46,7 +46,7 @@ import torch.nn
 from torch._guards import Source, TracingContext
 from torch.utils._python_dispatch import is_traceable_wrapper_subclass_type
 
-from .. import graph_break_hints, polyfills, variables
+from .. import config, graph_break_hints, polyfills, variables
 from ..bytecode_transformation import create_call_function
 from ..create_parameter_op import do_not_convert_to_tracable_parameter
 from ..exc import (
@@ -117,6 +117,7 @@ if TYPE_CHECKING:
     from torch._dynamo.symbolic_convert import InstructionTranslator
     from torch._dynamo.variables.constant import ConstantVariable
 
+    from .dicts import DunderDictVariable
     from .lists import ListVariable, TupleVariable
 
 
@@ -320,12 +321,13 @@ class UserDefinedClassVariable(UserDefinedVariable):
             obj = inspect.getattr_static(self.value, name)
         except AttributeError:
             if type(self.value) is type:
+                error_message = VariableTracker.build(
+                    tx, f"type object '{self.value.__name__}' has no attribute '{name}'"
+                )
                 raise_observed_exception(
                     AttributeError,
                     tx,
-                    args=[
-                        f"type object '{self.value.__name__}' has no attribute '{name}'"
-                    ],
+                    args=[error_message],
                 )
 
         if name == "__new__" and UserDefinedClassVariable.is_supported_new_method(obj):
@@ -351,9 +353,9 @@ class UserDefinedClassVariable(UserDefinedVariable):
                 return VariableTracker.build(tx, obj.__get__(self.value), source)
 
         if ConstantVariable.is_literal(obj):
-            return VariableTracker.build(tx, obj)
+            return VariableTracker.build(tx, obj, source)
         elif isinstance(obj, enum.Enum):
-            return VariableTracker.build(tx, obj)
+            return VariableTracker.build(tx, obj, source)
         elif self.value is collections.OrderedDict:
             return variables.GetAttrVariable(self, name)
         elif name in getattr(self.value, "__dict__", {}) or (
@@ -534,6 +536,25 @@ class UserDefinedClassVariable(UserDefinedVariable):
         from .ctx_manager import GenericContextWrappingVariable
 
         constant_args = check_constant_args(args, kwargs)
+
+        if torch.distributed.is_available() and self.value is torch.distributed.P2POp:
+            if not config.enable_p2p_compilation:
+                unimplemented(
+                    gb_type="P2P compilation disabled for P2POp construction",
+                    context="torch.distributed.P2POp",
+                    explanation="P2P compilation is disabled.",
+                    hints=[
+                        "Set TORCHDYNAMO_ENABLE_P2P_COMPILATION=1 to enable.",
+                    ],
+                )
+
+            var = tx.output.side_effects.track_new_user_defined_object(
+                SourcelessBuilder.create(tx, object),
+                self,
+                [],
+            )
+            var.call_method(tx, "__init__", list(args), kwargs)  # type: ignore[arg-type]
+            return var
 
         if self.can_constant_fold_through() and constant_args:
             # constant fold
@@ -771,13 +792,13 @@ class UserDefinedClassVariable(UserDefinedVariable):
                     )
                 ] + args[1:]
 
-            cm_obj = tx.output.side_effects.track_new_user_defined_object(
-                SourcelessBuilder.create(tx, object),
-                self,
-                arg_new,  # type: ignore[arg-type]
+            return tx.inline_user_function_return(
+                VariableTracker.build(
+                    tx, polyfills.instantiate_user_defined_class_object
+                ),
+                [self, *arg_new],
+                kwargs,
             )
-            cm_obj.call_method(tx, "__init__", arg_new, kwargs)  # type: ignore[arg-type]
-            return cm_obj
         elif is_namedtuple_cls(self.value):
             fields = namedtuple_fields(self.value)  # type: ignore[arg-type]
             # check if this a quasi-namedtuple or a real one
@@ -989,6 +1010,7 @@ class UserDefinedClassVariable(UserDefinedVariable):
                     [self, *args],
                     kwargs,
                 )
+
         return super().call_function(tx, args, kwargs)
 
     def is_standard_new(self) -> bool:
@@ -1007,8 +1029,7 @@ class UserDefinedClassVariable(UserDefinedVariable):
                     functools.partial(GuardBuilder.HASATTR, attr=name)
                 )
             )
-            return VariableTracker.build(tx, hasattr(self.value, name))
-        return super().call_obj_hasattr(tx, name)
+        return VariableTracker.build(tx, hasattr(self.value, name))
 
     def const_getattr(self, tx: "InstructionTranslator", name: str) -> Any:
         if name == "__name__":
@@ -1112,6 +1133,8 @@ def call_random_fn(
     args = [x.as_python_constant() for x in args]
     kwargs = {k: v.as_python_constant() for k, v in kwargs.items()}
     random_call_index = len(tx.output.random_calls)
+    # NB: it is probably not important for the example_value to be exactly correct,
+    # we just need the right type
     example_value = fn(*args, **kwargs)
     source = RandomValueSource(random_call_index)
     tx.output.random_calls.append((fn, args, kwargs))  # type: ignore[arg-type]
@@ -1129,7 +1152,6 @@ class UserDefinedObjectVariable(UserDefinedVariable):
     _nonvar_fields = {
         "value",
         "value_type",
-        "attrs_directly_modifed_on_dict",
         *UserDefinedVariable._nonvar_fields,
     }
 
@@ -1159,12 +1181,9 @@ class UserDefinedObjectVariable(UserDefinedVariable):
         self.base_cls_vt = base_cls_vt
         self.init_args = init_args
 
-        # This records names of the attributes that were modified via instance
+        # This records the attributes that were modified via instance
         # `__dict__` directly, rather than the normal setattr path.
-        #
-        # TODO consider emulating `obj.__dict__` as a `ConstDictVariable` to get
-        # rid of these workarounds here and in `GetAttrVariable`.
-        self.attrs_directly_modifed_on_dict: set[str] = set()
+        self.dict_vt: DunderDictVariable | None = None
 
         # Cache inspect.getattr_static outputs for the same name. This is fine
         # because if there is a mutation for the name, we use side-effects infra
@@ -1195,6 +1214,20 @@ class UserDefinedObjectVariable(UserDefinedVariable):
 
     def __repr__(self) -> str:
         return f"{self.__class__.__name__}({self.value_type.__name__})"
+
+    def get_dict_vt(self, tx: "InstructionTranslator") -> "DunderDictVariable":
+        if self.dict_vt is None:
+            dict_proxy = {
+                key: VariableTracker.build(
+                    tx,
+                    value,
+                    source=self.source
+                    and DictGetItemSource(AttrSource(self.source, "__dict__"), key),
+                )
+                for key, value in self.value.__dict__.items()
+            }
+            self.dict_vt = variables.DunderDictVariable.create(tx, self, dict_proxy)
+        return self.dict_vt
 
     def is_underlying_vt_modified(self, side_effects: "SideEffects") -> bool:
         return False
@@ -1367,6 +1400,23 @@ class UserDefinedObjectVariable(UserDefinedVariable):
             "an AttributeMutation mutation_type"
         )
 
+        if (
+            torch.distributed.is_available()
+            and type(self.value) is torch.distributed.P2POp
+            and (
+                tx.output.side_effects.has_pending_mutation_of_attr(self, name_str)
+                or name_str in self.value.__dict__
+            )
+        ):
+            unimplemented(
+                gb_type="P2POp mutation",
+                context=f"object={self}, name={name}, value={value}",
+                explanation="Dynamo does not support mutating torch.distributed.P2POp instances.",
+                hints=[
+                    "Construct a new torch.distributed.P2POp instead of mutating an existing one inside torch.compile.",
+                ],
+            )
+
         if name_str == "__class__":
             unimplemented(
                 gb_type="__class__ assignment on user-defined object",
@@ -1378,7 +1428,7 @@ class UserDefinedObjectVariable(UserDefinedVariable):
             )
 
         if directly_update_dict:
-            self.attrs_directly_modifed_on_dict.add(name_str)
+            self.get_dict_vt(tx).setitem(name_str, value)
         else:
             tmp = self.try_get_descritor_and_setter_py_func(name_str)
             if tmp:
@@ -1393,8 +1443,27 @@ class UserDefinedObjectVariable(UserDefinedVariable):
                     func_source = AttrSource(TypeSource(desc_source), "__set__")
                 desc_var = VariableTracker.build(tx, descriptor, desc_source)
                 func_var = VariableTracker.build(tx, setter, func_source, realize=True)
-                args = [desc_var, self, value]
+                if isinstance(descriptor, property):
+                    args = [self, value]  # property.fset(self, value)
+                else:
+                    args = [desc_var, self, value]  # __set__(desc, self, value)
                 return func_var.call_function(tx, args, {})
+
+            # Handle Python property descriptors whose __set__ is a C slot
+            # wrapper (not a Python function), which the above check misses.
+            # Mirrors the property getter handling in var_getattr.
+            descriptor = inspect.getattr_static(type(self.value), name_str, None)
+            if isinstance(descriptor, property) and descriptor.fset is not None:
+                fset_source = None
+                if self.cls_source:
+                    fset_source = AttrSource(
+                        self.get_source_by_walking_mro(tx, name_str), "fset"
+                    )
+                fset_var = VariableTracker.build(
+                    tx, descriptor.fset, source=fset_source
+                )
+                return fset_var.call_function(tx, [self, value], {})
+
             # NOTE: else we assume the descriptor (if any) has a
             # side-effect-free `__set__` as far as Dynamo tracing is concerned.
 
@@ -1596,7 +1665,7 @@ class UserDefinedObjectVariable(UserDefinedVariable):
                 return True
             # For untraceable `__set__` we should still skip if the attribute
             # was mutated via instance `__dict__`.
-            elif attr_name in self.attrs_directly_modifed_on_dict:
+            elif self.dict_vt and self.dict_vt.contains(attr_name):
                 return True
         return False
 
@@ -1604,6 +1673,9 @@ class UserDefinedObjectVariable(UserDefinedVariable):
         self, attr_name: str
     ) -> tuple[object, object] | None:
         descriptor = inspect.getattr_static(type(self.value), attr_name, None)
+        # Handle property descriptors with setters - call fset directly
+        if isinstance(descriptor, property) and descriptor.fset is not None:
+            return (descriptor, descriptor.fset)
         setter = inspect.getattr_static(type(descriptor), "__set__", None)
         if inspect.isfunction(setter):
             return (descriptor, setter)
@@ -1720,18 +1792,19 @@ class UserDefinedObjectVariable(UserDefinedVariable):
         if tx.output.side_effects.has_pending_mutation_of_attr(self, name):
             result = tx.output.side_effects.load_attr(self, name, deleted_ok=True)
             if isinstance(result, variables.DeletedVariable):
+                error_message = VariableTracker.build(
+                    tx,
+                    f"'{type(self.value).__name__}' object has no attribute '{name}'",
+                )
                 raise_observed_exception(
                     AttributeError,
                     tx,
-                    args=[
-                        f"'{type(self.value).__name__}' object has no attribute '{name}'"
-                    ],
+                    args=[error_message],
                 )
             return result
 
         if name == "__dict__":
-            options_dict = {"source": source}
-            return variables.GetAttrVariable(self, name, None, **options_dict)
+            return self.get_dict_vt(tx)
 
         # TODO(anijain2305) - Investigate if we need specialization for more
         # dunder attrs. inspect.getattr_static does not return correct value for
@@ -1847,10 +1920,13 @@ class UserDefinedObjectVariable(UserDefinedVariable):
             )
 
         # Step 7: AttributeError.
+        error_message = VariableTracker.build(
+            tx, f"'{type(self.value).__name__}' object has no attribute '{name}'"
+        )
         raise_observed_exception(
             AttributeError,
             tx,
-            args=[f"'{type(self.value).__name__}' object has no attribute '{name}'"],
+            args=[error_message],
         )
 
     def resolve_data_descriptor(
@@ -1885,12 +1961,13 @@ class UserDefinedObjectVariable(UserDefinedVariable):
         try:
             resolved = type(self.value).__getattribute__(self.value, name)
         except AttributeError:
+            error_message = VariableTracker.build(
+                tx, f"'{type(self.value).__name__}' object has no attribute '{name}'"
+            )
             raise_observed_exception(
                 AttributeError,
                 tx,
-                args=[
-                    f"'{type(self.value).__name__}' object has no attribute '{name}'"
-                ],
+                args=[error_message],
             )
         return VariableTracker.build(tx, resolved, source)
 
@@ -2944,7 +3021,6 @@ class UserDefinedTupleVariable(UserDefinedObjectVariable):
 class MutableMappingVariable(UserDefinedObjectVariable):
     def __init__(self, value: object, **kwargs: Any) -> None:
         super().__init__(value, **kwargs)
-        self.generic_dict_vt = ConstDictVariable({})
 
     def method_setattr_standard(
         self,
@@ -2986,26 +3062,14 @@ class MutableMappingVariable(UserDefinedObjectVariable):
 
     def var_getattr(self, tx: "InstructionTranslator", name: str) -> VariableTracker:
         # A common pattern in the init code of MutableMapping objects is to
-        # update the __dict__ attribute. To prevent graph break, we directly
-        # return a ConstDictVariable for the __dict__attr.
-        #
-        # However, users can try to add a new attribute to the class using the
-        # __dict__ attribute. To catch this, we save the ConstDictVariable for
-        # the __dict__ and then lookup into this vt for each attr lookup.
+        # update the __dict__ attribute. The parent class
+        # (UserDefinedObjectVariable) implements __dict__ lookups using a VT
+        # (self.dict_vt) that uses the side effects table as source of truth.
         if name == "get" and type(self.value).get in (  # type: ignore[attr-defined]
             collections.abc.Mapping.get,
             dict.get,
         ):
             return variables.UserMethodVariable(polyfills.mapping_get, self)
-        elif name == "__dict__" and self.source:
-            self.generic_dict_vt = variables.LazyVariableTracker.create(  # type: ignore[assignment]
-                self.value.__dict__, AttrSource(self.source, "__dict__")
-            )
-            return self.generic_dict_vt
-        elif out := self.generic_dict_vt.maybe_getitem_const(
-            VariableTracker.build(tx, name)
-        ):
-            return out
         else:
             return super().var_getattr(tx, name)
 
