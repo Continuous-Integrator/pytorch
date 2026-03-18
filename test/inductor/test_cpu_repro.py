@@ -40,6 +40,7 @@ from torch.testing._internal.common_utils import (
     IS_MACOS,
     MI200_ARCH,
     parametrize,
+    skipIfNoLapack,
     skipIfRocmArch,
     slowTest,
     TEST_MKL,
@@ -69,6 +70,7 @@ run_and_get_cpp_code = test_torchinductor.run_and_get_cpp_code
 TestCase = test_torchinductor.TestCase
 aten = torch.ops.aten
 check_model = test_torchinductor.check_model
+skip_if_cpp_wrapper = test_torchinductor.skip_if_cpp_wrapper
 
 requires_vectorization = unittest.skipUnless(
     cpu_vec_isa.valid_vec_isa_list() and os.getenv("ATEN_CPU_CAPABILITY") != "default",
@@ -138,6 +140,7 @@ class LstmModule(torch.nn.Module):
 class CPUReproTests(TestCase):
     common = check_model
 
+    @skipIfNoLapack
     def test_torch_linalg_qr_tuple_slice(self):
         def fn(x):
             return torch.linalg.qr(x)[:1]
@@ -227,6 +230,8 @@ class CPUReproTests(TestCase):
                 (v,),
             )
 
+    @skipIfNoLapack
+    @skip_if_cpp_wrapper("conj issue, to be fixed")
     def test_complex_cholesky_mh_view_fallback(self):
         torch.manual_seed(0)
 
@@ -4637,6 +4642,35 @@ class CPUReproTests(TestCase):
         torch.testing.assert_close(x_cmp.grad, x_ref.grad)
         torch.testing.assert_close(weight_cmp.grad, weight_ref.grad)
         torch.testing.assert_close(bias_cmp.grad, bias_ref.grad)
+
+    @torch._dynamo.config.patch(
+        capture_scalar_outputs=True, capture_dynamic_output_shape_ops=True
+    )
+    def test_backward_dynamic_item_from_size1_tensor(self):
+        def fn(x, w):
+            num = x.nonzero().numel()
+            num = x.new_tensor([num]).item()
+            y = w * x
+            return y.sum() / num
+
+        torch._dynamo.reset()
+        metrics.reset()
+
+        x = torch.tensor([0.0, 1.0, -1.0, 0.5])
+        w_ref = torch.tensor(0.0, requires_grad=True)
+        w_cmp = w_ref.detach().clone().requires_grad_(True)
+
+        eager_out = fn(x, w_ref)
+        eager_out.backward()
+
+        compiled = torch.compile(fn, backend="inductor", fullgraph=True, dynamic=True)
+        compiled_out = compiled(x, w_cmp)
+        compiled_out.backward()
+
+        self.assertEqual(eager_out.shape, torch.Size([]))
+        self.assertEqual(compiled_out.shape, eager_out.shape)
+        torch.testing.assert_close(compiled_out, eager_out)
+        torch.testing.assert_close(w_cmp.grad, w_ref.grad)
 
     @config.patch(emulate_precision_casts=True)
     def test_emulate_precision_casts_cpp_backend_no_error(self):
