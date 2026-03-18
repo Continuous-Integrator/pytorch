@@ -16,10 +16,7 @@ from torch._prims.rng_prims import run_dtensor_rng_op
 from torch.distributed._functional_collectives import _are_we_tracing
 from torch.distributed.device_mesh import DeviceMesh
 from torch.distributed.tensor._dtensor_spec import DTensorSpec, TensorMeta
-from torch.distributed.tensor._nonlinear_redux import (
-    argminmax_handler,
-    minmax_dim_handler,
-)
+from torch.distributed.tensor._nonlinear_redux import argminmax_handler
 from torch.distributed.tensor._op_schema import (
     OpInfo,
     OpSchema,
@@ -51,6 +48,18 @@ except ImportError:
 aten = torch.ops.aten
 logger = logging.getLogger(__name__)
 
+# The C++ DTensor dispatch fast path caches whether debug logging is
+# enabled.  Wrap setLevel so the cached flag is reset automatically.
+_orig_setLevel = logger.setLevel
+
+
+def _setLevel_and_reinit(level: int) -> None:
+    _orig_setLevel(level)
+    torch._C._reinit_DTensor_dispatch_logger()
+
+
+logger.setLevel = _setLevel_and_reinit  # type: ignore[method-assign]
+
 
 def as_strided_handler(
     op_call: torch._ops.OpOverload,
@@ -78,6 +87,15 @@ def is_same_size_handler(
     lhs = cast(torch.Tensor, args[0])
     rhs = cast(torch.Tensor, args[1])
     return lhs.shape == rhs.shape
+
+
+def is_pinned_handler(
+    op_call: torch._ops.OpOverload,
+    args: tuple[object, ...],
+    kwargs: dict[str, object],
+) -> bool:
+    tensor = cast(dtensor.DTensor, args[0])
+    return tensor._local_tensor.is_pinned()
 
 
 def found_inf_reduce_handler(
@@ -158,14 +176,13 @@ class OpDispatcher:
         }
         self._custom_op_handlers = {
             aten.is_same_size.default: is_same_size_handler,
+            aten.is_pinned.default: is_pinned_handler,
             aten.convolution.default: convolution_handler,
             aten.convolution_backward.default: convolution_backward_handler,
             aten._amp_foreach_non_finite_check_and_unscale_.default: found_inf_reduce_handler,
             aten.as_strided.default: as_strided_handler,
             aten.argmin.default: argminmax_handler,
             aten.argmax.default: argminmax_handler,
-            aten.max.dim: minmax_dim_handler,
-            aten.min.dim: minmax_dim_handler,
         }
 
     # ********************************************************************************************

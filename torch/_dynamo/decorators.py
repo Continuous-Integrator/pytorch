@@ -9,10 +9,11 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from types import TracebackType
 from typing import Any, overload, TYPE_CHECKING, TypeVar
-from typing_extensions import ParamSpec
+from typing_extensions import deprecated, ParamSpec
 
 import torch
 import torch.utils._pytree as pytree
+from torch._opaque_base import OpaqueBase
 from torch.compiler import is_compiling
 from torch.utils._contextlib import _DecoratorContextManager
 from torch.utils._python_dispatch import is_traceable_wrapper_subclass
@@ -177,6 +178,11 @@ def assume_constant_result(fn):  # type: ignore[no-untyped-def]
     return fn
 
 
+@deprecated(
+    "torch._dynamo.allow_in_graph is deprecated and will be removed in a future version. "
+    "Use torch._dynamo.nonstrict_trace instead.",
+    category=FutureWarning,
+)
 def allow_in_graph(fn):  # type: ignore[no-untyped-def]
     """
     Tells the compiler frontend (Dynamo) to skip symbolic introspection of the function
@@ -1031,9 +1037,16 @@ def _apply_func_to_inner_tensors_of_same_dim(
     attrs, _ctx = t.__tensor_flatten__()
     assert isinstance(t, torch.Tensor)
     for attr in attrs:
-        inner = getattr(t, attr)
-        if inner.dim() == t.dim():
-            func(inner, *args, **kwargs)
+        match getattr(t, attr):
+            case torch.Tensor() as inner:
+                if inner.dim() == t.dim():
+                    func(inner, *args, **kwargs)
+            case OpaqueBase():
+                pass
+            case unexpected:
+                raise AssertionError(
+                    f"expected Tensor or OpaqueBase, got {type(unexpected)}"
+                )
 
 
 @dataclass(frozen=True, slots=True)
@@ -1047,18 +1060,6 @@ class _DimRange:
     dim: int
     min: int
     max: int
-
-
-def _normalize_dim_index(t: torch.Tensor, index: int) -> int:
-    # Mimic c10::maybe_wrap_dim which allows dim=0 for 0-dim (scalar) tensors.
-    ndim = max(t.ndim, 1)
-    if not (-ndim <= index < ndim):
-        raise IndexError(
-            f"Dimension out of range (expected in [{-ndim}, {ndim - 1}], but got {index})"
-        )
-    if index < 0:
-        index += ndim
-    return index
 
 
 @forbid_in_graph
@@ -1111,8 +1112,6 @@ def mark_unbacked(
         assert not is_traceable_wrapper_subclass(t), "not implemented yet"
 
     if isinstance(index, int):
-        index = _normalize_dim_index(t, index)
-
         if strict:
             if not hasattr(t, "_dynamo_strict_unbacked_indices"):
                 t._dynamo_strict_unbacked_indices = set()
@@ -1172,10 +1171,6 @@ def mark_dynamic(
 ) -> None:
     """
     Mark a tensor as having a dynamic dim and set corresponding min and max range for the dim.
-
-    The ``index`` argument follows standard Python indexing conventions: negative values
-    are supported (e.g., -1 for the last dimension) and out-of-range values raise
-    ``IndexError``.
 
     [Note - on the state of mark_dynamic]
 
@@ -1237,10 +1232,9 @@ def mark_dynamic(
             # pyrefly: ignore [implicit-any]
             t._specialize_on = {}
 
-        index = _normalize_dim_index(t, index)
-
         if hint_override:
             t._dynamo_hint_overrides[index] = hint_override
+        # TODO(voz): Should we bounds check?
 
         t._dynamo_dynamic_indices.add(index)
         t._dynamo_dynamic_range.add(_DimRange(index, min, max))  # type: ignore[arg-type]
@@ -1273,8 +1267,8 @@ def maybe_mark_dynamic(t: Any, index: int | list[Any] | tuple[Any]) -> None:
     if isinstance(index, int):
         if not hasattr(t, "_dynamo_weak_dynamic_indices"):
             t._dynamo_weak_dynamic_indices = set()
+        # TODO(voz): Should we bounds check?
 
-        index = _normalize_dim_index(t, index)
         t._dynamo_weak_dynamic_indices.add(index)
         return
 
@@ -1337,7 +1331,7 @@ def mark_static(t: Any, index: int | list[Any] | tuple[Any] | None = None) -> No
     if isinstance(index, int):
         if not hasattr(t, "_dynamo_static_indices"):
             t._dynamo_static_indices = set()  # type: ignore[attr-defined]
-        index = _normalize_dim_index(t, index)
+        # TODO(voz): Should we bounds check?
         t._dynamo_static_indices.add(index)  # type: ignore[attr-defined]
     elif index is None:
         for i in range(t.dim()):
@@ -1366,6 +1360,25 @@ def mark_static_address(t: Any, guard: bool = False) -> None:
         t._dynamo_static_input_type = "unguarded"  # type: ignore[attr-defined]
 
 
+def _patch_einops_symint_compat(einops_mod: Any) -> None:
+    """Backport the SymInt lru_cache fix from einops 0.7.0 into einops <= 0.6.1."""
+    for name in ("_reconstruct_from_shape", "_prepare_transformation_recipe"):
+        cached = getattr(einops_mod, name)
+        uncached = cached.__wrapped__
+
+        def make_wrapper(cached_fn: Any, uncached_fn: Any) -> Any:
+            @functools.wraps(cached_fn)
+            def wrapper(*args: Any, **kwargs: Any) -> Any:
+                try:
+                    return cached_fn(*args, **kwargs)
+                except TypeError:
+                    return uncached_fn(*args, **kwargs)
+
+            return wrapper
+
+        setattr(einops_mod, name, make_wrapper(cached, uncached))
+
+
 # One day, Dynamo will support tracing into einops directly (no allow_in_graph needed)
 # Note that PyTorch supports multiple versions of einops, so when that day comes,
 # we still need to be really careful about version matches.
@@ -1390,7 +1403,10 @@ def _allow_in_graph_einops() -> None:
 
         # einops > 0.6.1 will call the op registration logic as it is imported.
     except ImportError:
-        # einops <= 0.6.1
+        # einops <= 0.6.1 doesn't handle unhashable SymInt in its lru_cache'd
+        # helpers. Backport the try/except TypeError fallback from einops 0.7.0+
+        # so allow_in_graph works during fake tensor validation.
+        _patch_einops_symint_compat(einops.einops)  # type: ignore[attr-defined]
         allow_in_graph(einops.rearrange)
         allow_in_graph(einops.reduce)
         if hasattr(einops, "repeat"):
