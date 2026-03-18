@@ -18,6 +18,7 @@ import torch
 from torch._library.custom_ops import custom_op
 from torch.fx import has_side_effect
 
+
 _transfer_streams: dict[str, torch.cuda.Stream] = {}
 
 
