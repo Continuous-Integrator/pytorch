@@ -325,9 +325,15 @@ struct cublasCommonGroupedArgs {
         //   5 x int64[batchCount]  = batchCount * 40 bytes  (A,B,D,alpha,beta ptrs)
         //   2 x float              = 8 bytes          (alpha, beta)
         // + optionally up to 2 x int64[batchCount] for per-group scale pointer arrays
-        const int extra_ptr_arrays = (mata_needs_ptr ? 1 : 0) + (matb_needs_ptr ? 1 : 0);
+        //   (GroupWise scales: embedded in the main buffer)
+        //   (BlockWise1x32 scales: separate allocation required by cuBLAS)
+        const bool mata_blockwise = scale_mata_scaling_type == at::blas::ScalingType::BlockWise1x32;
+        const bool matb_blockwise = scale_matb_scaling_type == at::blas::ScalingType::BlockWise1x32;
+        const int embedded_ptr_arrays =
+            ((mata_needs_ptr && !mata_blockwise) ? 1 : 0) +
+            ((matb_needs_ptr && !matb_blockwise) ? 1 : 0);
         const int64_t buf_bytes = static_cast<int64_t>(batchCount) * 64 + 8
-            + static_cast<int64_t>(extra_ptr_arrays) * batchCount * 8;
+            + static_cast<int64_t>(embedded_ptr_arrays) * batchCount * 8;
         buf = at::empty({buf_bytes}, mat1.options().dtype(at::kByte));
         char* base = static_cast<char*>(buf.data_ptr());
 
@@ -350,17 +356,33 @@ struct cublasCommonGroupedArgs {
         float* alpha_scalar = reinterpret_cast<float*>(base + batchCount * 64);
         float* beta_scalar  = reinterpret_cast<float*>(base + batchCount * 64 + 4);
 
-        // Optional per-group scale pointer arrays follow alpha/beta
+        // Per-group scale pointer arrays: embedded for GroupWise, separate for BlockWise1x32
         int64_t extra_offset = static_cast<int64_t>(batchCount) * 64 + 8;
         int64_t* scaleAPtrArray = nullptr;
         int64_t* scaleBPtrArray = nullptr;
-        if (mata_needs_ptr) {
+        if (mata_needs_ptr && !mata_blockwise) {
           scaleAPtrArray = reinterpret_cast<int64_t*>(base + extra_offset);
           extra_offset += batchCount * 8;
         }
-        if (matb_needs_ptr) {
+        if (matb_needs_ptr && !matb_blockwise) {
           scaleBPtrArray = reinterpret_cast<int64_t*>(base + extra_offset);
           extra_offset += batchCount * 8;
+        }
+        // BlockWise1x32 scale pointer arrays need separate allocations
+        const int blockwise_ptr_arrays = (mata_blockwise ? 1 : 0) + (matb_blockwise ? 1 : 0);
+        if (blockwise_ptr_arrays > 0) {
+          scale_ptr_buf = at::empty(
+              {static_cast<int64_t>(blockwise_ptr_arrays) * batchCount * 8},
+              mat1.options().dtype(at::kByte));
+          char* sbase = static_cast<char*>(scale_ptr_buf.data_ptr());
+          int64_t soffset = 0;
+          if (mata_blockwise) {
+            scaleAPtrArray = reinterpret_cast<int64_t*>(sbase + soffset);
+            soffset += batchCount * 8;
+          }
+          if (matb_blockwise) {
+            scaleBPtrArray = reinterpret_cast<int64_t*>(sbase + soffset);
+          }
         }
 
         // Base addresses for scale data (cuBLAS-A = mat2 → scale_b, cuBLAS-B = mat1 → scale_a)
@@ -430,6 +452,8 @@ struct cublasCommonGroupedArgs {
 
   // All arrays live in a single device allocation
   Tensor buf;
+  // BlockWise1x32 scale pointer arrays need a separate allocation
+  Tensor scale_ptr_buf;
   void* mArray;
   void* nArray;
   void* kArray;
