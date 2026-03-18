@@ -2247,14 +2247,7 @@ class TestOptimRenewed(TestCase):
 
     @onlyCUDA
     @optims(
-        [
-            o
-            for o in optim_db
-            if (
-                "fused" in o.supported_impls
-                and o.optim_cls.__name__ not in ("Adafactor", "Adagrad")
-            )
-        ],
+        [o for o in optim_db if "fused" in o.supported_impls],
         dtypes=[torch.float32],
     )
     def test_defaults_changed_to_fused(self, device, dtype, optim_info):
@@ -2285,6 +2278,11 @@ class TestOptimRenewed(TestCase):
                 optim.step()
                 self.assertTrue(mocked_fused_impl.called)
 
+            # Additionally check that step is hosted on device.
+            for state in optim.state.values():
+                if "step" in state and torch.is_tensor(state["step"]):
+                    self.assertTrue(state["step"].is_cuda)
+
     @onlyCUDA
     @optims(
         [
@@ -2292,7 +2290,8 @@ class TestOptimRenewed(TestCase):
             for o in optim_db
             if (
                 "foreach" in o.supported_impls
-                and o.optim_cls.__name__ not in ("Adafactor", "Adam", "AdamW", "SGD")
+                and "fused" not in o.supported_impls
+                and o.optim_cls.__name__ != "Adafactor"
             )
         ],
         dtypes=[torch.float32],
@@ -2318,6 +2317,11 @@ class TestOptimRenewed(TestCase):
             with patch.object(module, module_name) as mocked_foreach_impl:
                 optim.step()
                 self.assertTrue(mocked_foreach_impl.called)
+
+            # Also check that step is hosted on CPU
+            for state in optim.state.values():
+                if "step" in state and torch.is_tensor(state["step"]):
+                    self.assertTrue(state["step"].is_cpu)
 
     @optims(optim_db, dtypes=[torch.float32])
     def test_non_empty_state(self, device, dtype, optim_info):
