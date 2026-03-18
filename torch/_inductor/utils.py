@@ -68,6 +68,7 @@ OPTIMUS_EXCLUDE_POST_GRAD = [
     "inductor_autotune_lookup_table",
 ]
 
+from torch.fx.experimental._size_hinting import _sympy_subs
 from torch.fx.experimental.symbolic_shapes import (
     free_symbols,
     free_unbacked_symbols,
@@ -276,7 +277,7 @@ def fp8_bench(fn: Callable[[], Any], warmup: int = 25, rep: int = 100) -> float:
             [s.elapsed_time(e) for s, e in zip(start_event, end_event)]
         )
 
-    res = torch.mean(times).item()
+    res = cast(float, torch.mean(times).item())
     log.debug("raw events")
     log.debug(p.key_averages().table(sort_by="self_device_time_total", row_limit=-1))
     filtered_events = EventList(
@@ -651,7 +652,7 @@ def print_performance(
     )
     took = torch.median(timings) / times
     print(f"{took / baseline:.6f}")
-    return took.item()
+    return cast(float, took.item())
 
 
 def precompute_method(obj: Any, method: str) -> None:
@@ -1171,22 +1172,7 @@ def sympy_subs(expr: sympy.Expr, replacements: dict[sympy.Expr, Any]) -> sympy.E
     When the passed replacement symbol v is a string, it is converted to a symbol with name v that
     have the same replaced expression integer and nonnegative properties.
     """
-
-    def to_symbol(replaced: sympy.Expr, replacement: sympy.Expr | str) -> sympy.Symbol:
-        assert isinstance(replaced, sympy.Expr)
-        if isinstance(replacement, str):
-            return sympy.Symbol(
-                replacement,
-                integer=replaced.is_integer,  # type: ignore[attr-defined]
-                nonnegative=replaced.is_nonnegative,  # type: ignore[attr-defined]
-            )
-        else:
-            return replacement
-
-    # xreplace is faster than subs, but is way more picky
-    return sympy.sympify(expr).xreplace(
-        {k: to_symbol(k, v) for k, v in replacements.items()}
-    )
+    return _sympy_subs(expr, replacements)
 
 
 def is_symbolic(a: Any) -> TypeGuard[torch.SymInt | torch.Tensor]:
@@ -2017,9 +2003,36 @@ def ensure_nv_universal_gemm_available() -> bool:
     in the same interpreter to retry the import.
     """
     try:
-        return importlib.util.find_spec("cutlass_api") is not None
+        available = importlib.util.find_spec("cutlass_api") is not None
     except ImportError:
         return False
+    if available:
+        _ensure_fp4_dtype_registered()
+    return available
+
+
+def _ensure_fp4_dtype_registered():
+    """Patch cutlass_api to handle torch.float4_e2m1fn_x2 -> cutlass.Float4E2M1FN.
+
+    NOTE: cutlass_api doesn't natively map this dtype. We patch the lookup function
+    in-place so all callers (including TensorWrapper) pick up the change.
+    Remove once cutlass_api adds native FP4 support.
+    """
+    import cutlass_api.utils
+
+    try:
+        cutlass_api.utils.cutlass_type_from_torch_type(torch.float4_e2m1fn_x2)
+    except (KeyError, AttributeError):
+        import cutlass
+
+        _orig = cutlass_api.utils.cutlass_type_from_torch_type
+
+        def _patched(dtype):
+            if dtype == torch.float4_e2m1fn_x2:
+                return cutlass.Float4E2M1FN
+            return _orig(dtype)
+
+        cutlass_api.utils.cutlass_type_from_torch_type = _patched
 
 
 @functools.lru_cache(maxsize=1)
@@ -2576,7 +2589,12 @@ def run_and_get_kernels(
     result, source_codes = run_and_get_code(fn, *args, **kwargs)
     kernels = []
     for code in source_codes:
-        kernels.extend(re.findall(r"'''.*?'''", code, re.DOTALL))
+        if config.cpp_wrapper and config.triton.autotune_at_compile_time is False:
+            # With lazy Triton kernel compilation, kernel sources are embedded
+            # inside C++ R"TRITON(...)TRITON" raw strings.
+            kernels.extend(re.findall(r'R"TRITON\((.*?)\)TRITON"', code, re.DOTALL))
+        else:
+            kernels.extend(re.findall(r"'''.*?'''", code, re.DOTALL))
         if remove_quote:
             kernels = [kernel[3:-3] for kernel in kernels]
     return result, kernels
@@ -3168,6 +3186,22 @@ def count_tangents(fx_g: torch.fx.GraphModule) -> int:
     return len(static_arg_idxs)
 
 
+def get_static_bw_input_idxs(fx_g: torch.fx.GraphModule) -> list[int]:
+    """
+    Returns indices of backward graph inputs that are always at fixed
+    addresses: primals (parameters/buffers/user inputs saved for backward).
+    Excludes saved activations which may not be at fixed addresses when
+    the forward is partitioned for CUDA graphs.
+    """
+    static_idxs = []
+    for idx, n in enumerate(fx_g.graph.nodes):
+        if n.op != "placeholder":
+            break
+        if n.name.startswith("primals_"):
+            static_idxs.append(idx)
+    return static_idxs
+
+
 @dataclasses.dataclass
 class BoxedBool:
     value: bool
@@ -3492,7 +3526,7 @@ def expr_fits_within_32bit(e: sympy.Expr) -> bool:
 
     int_max = torch.iinfo(torch.int32).max
     guarding_hint_or_throw = V.graph.sizevars.guarding_hint_or_throw
-    has_hint = V.graph.sizevars.shape_env.has_hint
+    has_guarding_hint = V.graph.sizevars.shape_env.has_guarding_hint
 
     if config.assume_32bit_indexing:
         V.graph.sizevars.check_leq(e, int_max)  # type: ignore[arg-type]
@@ -3523,7 +3557,7 @@ def expr_fits_within_32bit(e: sympy.Expr) -> bool:
             return False
 
     # Otherwise, the hint MUST exist and be in range
-    return has_hint(e) and guarding_hint_or_throw(e) <= int_max
+    return has_guarding_hint(e) and guarding_hint_or_throw(e) <= int_max
 
 
 def set_tracing_context_output_strides(
@@ -4378,6 +4412,9 @@ COLLECTIVE_OPS = OrderedSet(
         "torch.ops._c10d_functional_autograd.all_gather_into_tensor.default",
         "torch.ops._c10d_functional_autograd.reduce_scatter_tensor.default",
         "torch.ops._c10d_functional_autograd.all_to_all_single.default",
+        "torch.ops._c10d_functional.isend.default",
+        "torch.ops._c10d_functional.irecv.default",
+        "torch.ops._c10d_functional.batch_p2p_ops.default",
     ]
 )
 
