@@ -129,12 +129,10 @@ inline int64_t matrixStride(const Tensor& batched_matrices) {
   // Note: this works for both col-major-/row-major-like matrices,
   // i.e. (contiguous cols/rows some stride apart, with potential holes
   // between cols/rows).
-  // TODO: do we call this function on row-major input?
-  // If not, then simplify the function's body.
   const auto m = batched_matrices.size(-2);
   const auto n = batched_matrices.size(-1);
-  const auto sm = batched_matrices.stride(-2);
-  const auto sn = batched_matrices.stride(-1);
+  const int64_t sm = (m != 1) ? batched_matrices.stride(-2) : 1;
+  const int64_t sn = (n != 1) ? batched_matrices.stride(-1) : 1;
   return std::max(m * sm, n * sn);
 }
 
@@ -149,8 +147,8 @@ inline bool is_non_overlapping_matrices(const Tensor& A) {
   TORCH_INTERNAL_ASSERT_DEBUG_ONLY(A.dim() >= 2);
   const auto m = A.size(-2);
   const auto n = A.size(-1);
-  const auto sm = A.stride(-2);
-  const auto sn = A.stride(-1);
+  const int64_t sm = (m != 1) ? A.stride(-2) : 1;
+  const int64_t sn = (n != 1) ? A.stride(-1) : 1;
   return (
       // Checks whether the strides are strictly ordered
       (sn >= std::max<int64_t>(m * sm, 1) || sm >= std::max<int64_t>(n * sn, 1))
