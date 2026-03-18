@@ -1540,11 +1540,10 @@ class VariableBuilder:
                     source=self.source,
                 )
 
-            result = UserDefinedClassVariable(
+            return UserDefinedClassVariable(
                 value,
                 source=self.source,
             )
-            return self.tx.output.side_effects.track_object_existing(value, result)
         elif TorchScriptObjectVariable.is_matching_cls(type(value)):
             from ..source import (
                 FlattenScriptObjectSource,
