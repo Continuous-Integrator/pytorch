@@ -1605,23 +1605,30 @@ def searchsorted_single_dim_strategy(
     self_meta = cast(TensorMeta, args_schema[1])
     sorted_ndim = len(sorted_meta.shape)
     self_ndim = len(self_meta.shape)
+    has_sorter = isinstance(kwargs_schema.get("sorter"), TensorMeta)
     strategies: list[list[Placement | _ShardingPlaceholder]] = []
     if sorted_ndim <= 1:
         # 1D sorted_sequence: shard self (and output) on any dim
         for d in range(self_ndim):
-            strategies.append(
-                [_ShardingPlaceholder(d), Replicate(), _ShardingPlaceholder(d)]
-            )
+            row: list[Placement | _ShardingPlaceholder] = [
+                _ShardingPlaceholder(d),
+                Replicate(),
+                _ShardingPlaceholder(d),
+            ]
+            if has_sorter:
+                row.append(Replicate())
+            strategies.append(row)
     else:
         # Multi-dim sorted_sequence: shard both on matching batch dims
         for d in range(min(sorted_ndim - 1, self_ndim)):
-            strategies.append(
-                [
-                    _ShardingPlaceholder(d),
-                    _ShardingPlaceholder(d),
-                    _ShardingPlaceholder(d),
-                ]
-            )
+            row = [
+                _ShardingPlaceholder(d),
+                _ShardingPlaceholder(d),
+                _ShardingPlaceholder(d),
+            ]
+            if has_sorter:
+                row.append(Replicate())
+            strategies.append(row)
     return strategies
 
 
@@ -1636,7 +1643,7 @@ def searchsorted_single_dim_strategy(
         aten.to_sparse.sparse_dim,
         aten.stft.default,
         aten.stft.center,
-        aten.pdist.default,
+        aten._pdist_forward.default,
     ],
 )
 def replicate_only_single_dim_strategy(

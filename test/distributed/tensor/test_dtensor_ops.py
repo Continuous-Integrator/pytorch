@@ -266,7 +266,6 @@ dtensor_fails = {
 
 dtensor_multi_threaded_fails = {
     xfail("full_like"),
-    xfail("masked.cumprod"),
     xfail("multinomial"),
     xfail("nn.functional.dropout2d"),
     xfail("nn.functional.dropout3d"),
