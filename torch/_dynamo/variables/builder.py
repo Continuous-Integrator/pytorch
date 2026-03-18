@@ -455,6 +455,11 @@ ITERTOOLS_POLYFILLED_TYPE_IDS: set[int] = set()
 og_module_named_buffers_fn_ptr = torch.nn.Module.named_buffers
 og_module_named_parameters_fn_ptr = torch.nn.Module.named_parameters
 
+# VT types that must not be deduped by id(value). CPython interns small ints,
+# strings, bools, and None so same id does not imply same semantic source.
+# LazyVariableTracker hasn't been realized yet so caching would be premature.
+_VT_TYPES_NOT_CACHEABLE_BY_ID = (ConstantVariable, EnumVariable, LazyVariableTracker)
+
 
 class VariableBuilder:
     """Wrap a python value in a VariableTracker() instance"""
@@ -518,6 +523,13 @@ class VariableBuilder:
             ):
                 return cached_vt
 
+        cached_vt = self.tx.output.id_to_vt_cache.get(id(value))
+        if cached_vt is not None:
+            dup_guard = make_dupe_guard(self.source, cached_vt.source)
+            if dup_guard:
+                self.install_guards(dup_guard)
+            return cached_vt
+
         vt = self._wrap(value)
 
         if vt.source is None:
@@ -541,6 +553,9 @@ class VariableBuilder:
             and not is_wrapper_or_member_descriptor(value)
         ):
             vt = self.tx.output.side_effects.track_object_existing(value, vt)
+
+        if not isinstance(vt, _VT_TYPES_NOT_CACHEABLE_BY_ID):
+            self.tx.output.id_to_vt_cache[id(value)] = vt
 
         # Skip caching for JVP_NESTING source because
         # JvpIncrementNestingCtxManagerVariable hides global JVP mutation from
@@ -1448,7 +1463,9 @@ class VariableBuilder:
                 value, source=self.source
             )
             if isinstance(result, UserFunctionVariable):
-                return self.tx.output.side_effects.track_object_existing(value, result)
+                return self.tx.output.side_effects.track_object_existing(
+                    value, result
+                )
             return result
         elif value is random.Random:
             self.install_guards(GuardBuilder.ID_MATCH)
