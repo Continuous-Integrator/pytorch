@@ -5,6 +5,8 @@ import os
 import subprocess
 import sys
 import textwrap
+import uuid
+from unittest.mock import patch
 
 from torch.testing._internal.common_utils import run_tests, TestCase
 
@@ -39,6 +41,30 @@ def _import_module_directly(module_name, file_name):
 
 class TestNativeDSLOps(TestCase):
     """Tests for the torch._native DSL ops framework."""
+
+    def setUp(self):
+        """Clear all caches before each test to ensure test isolation."""
+        try:
+            # Clear function caches that might affect test behavior
+            from torch._native.common_utils import (
+                check_native_jit_disabled,
+                check_native_version_skip,
+            )
+
+            check_native_jit_disabled.cache_clear()
+            check_native_version_skip.cache_clear()
+
+            from torch._native import cutedsl_utils, triton_utils
+
+            triton_utils._version_is_sufficient.cache_clear()
+            cutedsl_utils._version_is_ok.cache_clear()
+            triton_utils.check_native_jit_disabled.cache_clear()
+            cutedsl_utils.check_native_jit_disabled.cache_clear()
+            triton_utils.check_native_version_skip.cache_clear()
+            cutedsl_utils.check_native_version_skip.cache_clear()
+        except (AttributeError, ImportError):
+            # Some functions might not exist or be cached, ignore errors
+            pass
 
     def test_consistent_helper_interface(self):
         """triton_utils and cutedsl_utils expose the same public API."""
@@ -98,26 +124,23 @@ class TestNativeDSLOps(TestCase):
 
     def test_check_native_jit_disabled_default(self):
         """TORCH_DISABLE_NATIVE_JIT unset -> check returns False."""
-        script = textwrap.dedent("""\
-            import os
-            from torch._native.common_utils import check_native_jit_disabled
+        from torch._native.common_utils import check_native_jit_disabled
 
+        with patch.dict(os.environ, {}, clear=False):
+            # Ensure TORCH_DISABLE_NATIVE_JIT is not set
             os.environ.pop("TORCH_DISABLE_NATIVE_JIT", None)
-            print(check_native_jit_disabled())
-        """)
-        result = _subprocess_lastline(script)
-        self.assertEqual(result, "False")
+            # Clear the cache so the function re-reads the environment variable
+            check_native_jit_disabled.cache_clear()
+            self.assertFalse(check_native_jit_disabled())
 
     def test_check_native_jit_disabled_set(self):
         """TORCH_DISABLE_NATIVE_JIT=1 -> check returns True."""
-        script = textwrap.dedent("""\
-            from torch._native.common_utils import check_native_jit_disabled
-            print(check_native_jit_disabled())
-        """)
-        env = os.environ.copy()
-        env["TORCH_DISABLE_NATIVE_JIT"] = "1"
-        result = _subprocess_lastline(script, env=env)
-        self.assertEqual(result, "True")
+        from torch._native.common_utils import check_native_jit_disabled
+
+        with patch.dict(os.environ, {"TORCH_DISABLE_NATIVE_JIT": "1"}):
+            # Clear the cache so the function re-reads the environment variable
+            check_native_jit_disabled.cache_clear()
+            self.assertTrue(check_native_jit_disabled())
 
     def test_unavailable_reason_missing(self):
         """Nonexistent package -> _unavailable_reason returns a string."""
@@ -192,64 +215,94 @@ class TestNativeDSLOps(TestCase):
 
     def test_register_op_skips_when_jit_disabled(self):
         """register_op_override does not call through when TORCH_DISABLE_NATIVE_JIT=1."""
-        script = textwrap.dedent("""\
-            from unittest.mock import patch
-            from torch._native import registry, triton_utils, cutedsl_utils
+        from torch._native import cutedsl_utils, triton_utils
 
-            with patch.object(registry, '_register_op_override') as mock_reg:
-                triton_utils.register_op_override("aten", "add.Tensor", "CUDA", lambda: None)
-                cutedsl_utils.register_op_override("aten", "add.Tensor", "CUDA", lambda: None)
-                print(mock_reg.call_count == 0)
-        """)
-        env = os.environ.copy()
-        env["TORCH_DISABLE_NATIVE_JIT"] = "1"
-        result = _subprocess_lastline(script, env=env)
-        self.assertEqual(result, "True")
+        # Test the actual environment variable behavior to ensure it works
+        # Set TORCH_DISABLE_NATIVE_JIT=1 and clear caches
+        with patch.dict(os.environ, {"TORCH_DISABLE_NATIVE_JIT": "1"}):
+            # Import and clear caches for both modules
+            from torch._native.common_utils import check_native_jit_disabled
+
+            check_native_jit_disabled.cache_clear()
+
+            # Import functions from each module and clear their caches too
+            triton_utils.check_native_jit_disabled.cache_clear()
+            cutedsl_utils.check_native_jit_disabled.cache_clear()
+
+            # Verify the function returns True
+            self.assertTrue(check_native_jit_disabled())
+
+            # Mock the registry calls to count how many times they would be called
+            with patch("torch._native.registry._register_op_override") as registry_mock:
+                # Use a unique operation name
+                unique_op = f"test_jit_disabled_{uuid.uuid4().hex[:8]}.Tensor"
+                triton_utils.register_op_override(
+                    "aten", unique_op, "CPU", lambda: None
+                )
+                cutedsl_utils.register_op_override(
+                    "aten", unique_op, "CPU", lambda: None
+                )
+                # Should not call the registry function at all since JIT is disabled
+                self.assertEqual(registry_mock.call_count, 0)
 
     def test_version_skip_env_var_overrides(self):
         """TORCH_NATIVE_SKIP_VERSION_CHECK=1 allows non-blessed versions."""
-        script = textwrap.dedent("""\
-            from unittest.mock import patch
-            from packaging.version import Version
-            from torch._native import triton_utils, cutedsl_utils
+        from packaging.version import Version
 
-            fake_version = Version("99.99.99")
+        from torch._native import cutedsl_utils, triton_utils
 
-            with patch.object(triton_utils, '_check_runtime_available', return_value=(True, fake_version)), \\
-                 patch.object(cutedsl_utils, '_check_runtime_available', return_value=(True, fake_version)), \\
-                 patch.object(triton_utils, '_register_op_override') as triton_mock, \\
-                 patch.object(cutedsl_utils, '_register_op_override') as cute_mock:
-                triton_utils.register_op_override("aten", "add.Tensor", "CUDA", lambda: None)
-                cutedsl_utils.register_op_override("aten", "add.Tensor", "CUDA", lambda: None)
-                print(triton_mock.call_count + cute_mock.call_count)
-        """)
-        env = os.environ.copy()
-        env["TORCH_NATIVE_SKIP_VERSION_CHECK"] = "1"
-        result = _subprocess_lastline(script, env=env)
-        self.assertEqual(result, "2")
+        fake_version = Version("99.99.99")
+
+        # Set the environment variable and clear caches
+        with patch.dict(os.environ, {"TORCH_NATIVE_SKIP_VERSION_CHECK": "1"}):
+            # Clear caches for version check functions
+            from torch._native.common_utils import check_native_version_skip
+
+            check_native_version_skip.cache_clear()
+            triton_utils._version_is_sufficient.cache_clear()
+            cutedsl_utils._version_is_ok.cache_clear()
+            triton_utils.check_native_version_skip.cache_clear()
+            cutedsl_utils.check_native_version_skip.cache_clear()
+
+            with (
+                patch.object(
+                    triton_utils,
+                    "_check_runtime_available",
+                    return_value=(True, fake_version),
+                ),
+                patch.object(
+                    cutedsl_utils,
+                    "_check_runtime_available",
+                    return_value=(True, fake_version),
+                ),
+                patch.object(triton_utils, "_register_op_override") as triton_mock,
+                patch.object(cutedsl_utils, "_register_op_override") as cute_mock,
+            ):
+                # Use unique operation names to avoid conflicts
+                op_name = f"test_version_skip_{uuid.uuid4().hex[:8]}.Tensor"
+                triton_utils.register_op_override("aten", op_name, "CPU", lambda: None)
+                cutedsl_utils.register_op_override("aten", op_name, "CPU", lambda: None)
+                self.assertEqual(triton_mock.call_count + cute_mock.call_count, 2)
 
     def test_check_native_version_skip_default(self):
         """TORCH_NATIVE_SKIP_VERSION_CHECK unset -> returns False."""
-        script = textwrap.dedent("""\
-            import os
-            from torch._native.common_utils import check_native_version_skip
+        from torch._native.common_utils import check_native_version_skip
 
+        with patch.dict(os.environ, {}, clear=False):
+            # Ensure TORCH_NATIVE_SKIP_VERSION_CHECK is not set
             os.environ.pop("TORCH_NATIVE_SKIP_VERSION_CHECK", None)
-            print(check_native_version_skip())
-        """)
-        result = _subprocess_lastline(script)
-        self.assertEqual(result, "False")
+            # Clear the cache so the function re-reads the environment variable
+            check_native_version_skip.cache_clear()
+            self.assertFalse(check_native_version_skip())
 
     def test_check_native_version_skip_set(self):
         """TORCH_NATIVE_SKIP_VERSION_CHECK=1 -> returns True."""
-        script = textwrap.dedent("""\
-            from torch._native.common_utils import check_native_version_skip
-            print(check_native_version_skip())
-        """)
-        env = os.environ.copy()
-        env["TORCH_NATIVE_SKIP_VERSION_CHECK"] = "1"
-        result = _subprocess_lastline(script, env=env)
-        self.assertEqual(result, "True")
+        from torch._native.common_utils import check_native_version_skip
+
+        with patch.dict(os.environ, {"TORCH_NATIVE_SKIP_VERSION_CHECK": "1"}):
+            # Clear the cache so the function re-reads the environment variable
+            check_native_version_skip.cache_clear()
+            self.assertTrue(check_native_version_skip())
 
     def test_available_version_prerelease(self):
         """_available_version parses valid versions and rejects unparsable ones."""
