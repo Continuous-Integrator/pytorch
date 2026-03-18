@@ -51,6 +51,7 @@ class TestNativeDSLOps(TestCase):
             "runtime_available",
             "runtime_version",
             "register_op_override",
+            "deregister_op_overrides",
         }
 
         for mod in (cutedsl_utils, triton_utils):
@@ -186,6 +187,29 @@ class TestNativeDSLOps(TestCase):
         # cleanup
         registry._libs.pop(key, None)
         registry._libs.pop(key2, None)
+
+    def test_deregister_op_overrides_functionality(self):
+        """deregister_op_overrides methods are callable and exist."""
+        # Import modules directly to avoid dependency issues
+        triton_utils = _import_module_directly(
+            "torch._native.triton_utils", "triton_utils.py"
+        )
+        cutedsl_utils = _import_module_directly(
+            "torch._native.cutedsl_utils", "cutedsl_utils.py"
+        )
+
+        # Test that deregister_op_overrides methods exist and are callable
+        for mod in (triton_utils, cutedsl_utils):
+            self.assertTrue(hasattr(mod, "deregister_op_overrides"))
+            self.assertTrue(callable(mod.deregister_op_overrides))
+
+        # Test that the methods can be called without error (they should be no-ops
+        # when no overrides are registered)
+        try:
+            triton_utils.deregister_op_overrides()
+            cutedsl_utils.deregister_op_overrides()
+        except Exception as e:
+            self.fail(f"deregister_op_overrides raised an exception: {e}")
 
     def test_register_op_skips_when_jit_disabled(self):
         """register_op_override does not call through when TORCH_DISABLE_NATIVE_JIT=1."""
