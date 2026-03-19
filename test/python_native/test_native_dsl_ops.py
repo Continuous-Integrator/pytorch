@@ -18,9 +18,7 @@ def _subprocess_lastline(script, env=None):
     pytorch_root = os.path.dirname(os.path.dirname(test_dir))
     result = subprocess.check_output(
         [sys.executable, "-c", script],
-        cwd=pytorch_root,
-        # env=env,
-        # stderr=subprocess.DEVNULL,
+        cwd=os.path.dirname(os.path.realpath(__file__)),
         text=True,
     ).strip()
     return result.rsplit("\n", 1)[-1]
