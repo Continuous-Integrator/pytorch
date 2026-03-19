@@ -303,25 +303,50 @@ uint64_t CUDAGeneratorImpl::get_offset() const {
   return state_->philox_offset_per_thread_;
 }
 
+static void validate_sharding_spec(
+    uint64_t tensor_ndim,
+    const std::array<uint64_t, MAX_DIMS>& local_shape,
+    const std::array<uint64_t, MAX_DIMS>& global_shape) {
+  TORCH_CHECK(
+      tensor_ndim <= MAX_DIMS,
+      "tensor has too many (",
+      tensor_ndim,
+      " > ",
+      MAX_DIMS,
+      ") dims");
+  for (uint64_t i = 0; i < tensor_ndim; ++i) {
+    TORCH_CHECK(
+        local_shape[i] <= global_shape[i],
+        "local_shape[",
+        i,
+        "]=",
+        local_shape[i],
+        " exceeds global_shape[",
+        i,
+        "]=",
+        global_shape[i]);
+  }
+}
+
 /**
  * Gets the current sharding spec of CUDAGeneratorImpl.
- * Returns 0 when use_thread_based_rng_ is false.
+ * Returns 0 when no sharding spec is set.
  */
 uint64_t CUDAGeneratorImpl::get_sharding_spec(
     std::array<uint64_t, MAX_DIMS>& local_shape,
     std::array<uint64_t, MAX_DIMS>& global_offset,
     std::array<uint64_t, MAX_DIMS>& global_shape,
     std::array<uint64_t, MAX_DIMS>& global_strides) const {
-  if (!use_thread_based_rng_) {
+  if (!sharding_spec_) {
     return 0;
   }
   at::cuda::assertNotCapturing(
       "Cannot call CUDAGeneratorImpl::get_sharding_spec");
-  local_shape = this->local_shape_;
-  global_offset = this->global_offset_;
-  global_shape = this->global_shape_;
-  global_strides = this->global_strides_;
-  return this->tensor_ndim_;
+  local_shape = sharding_spec_->local_shape;
+  global_offset = sharding_spec_->global_offset;
+  global_shape = sharding_spec_->global_shape;
+  global_strides = sharding_spec_->global_strides;
+  return sharding_spec_->tensor_ndim;
 }
 
 void CUDAGeneratorImpl::set_sharding_spec(
@@ -332,11 +357,15 @@ void CUDAGeneratorImpl::set_sharding_spec(
     const std::array<uint64_t, MAX_DIMS>& global_strides) {
   at::cuda::assertNotCapturing(
       "Cannot call CUDAGeneratorImpl::set_sharding_spec");
-  this->tensor_ndim_ = tensor_ndim;
-  this->local_shape_ = local_shape;
-  this->global_offset_ = global_offset;
-  this->global_shape_ = global_shape;
-  this->global_strides_ = global_strides;
+  validate_sharding_spec(tensor_ndim, local_shape, global_shape);
+  if (!sharding_spec_) {
+    sharding_spec_ = std::make_unique<ShardingSpec>();
+  }
+  sharding_spec_->tensor_ndim = tensor_ndim;
+  sharding_spec_->local_shape = local_shape;
+  sharding_spec_->global_offset = global_offset;
+  sharding_spec_->global_shape = global_shape;
+  sharding_spec_->global_strides = global_strides;
 }
 
 /**
@@ -368,10 +397,13 @@ c10::intrusive_ptr<c10::TensorImpl> CUDAGeneratorImpl::get_state() const {
   // The RNG state comprises the seed, and an offset used for Philox.
   constexpr size_t seed_size = sizeof(uint64_t);
   constexpr size_t offset_size = sizeof(int64_t);
+  constexpr size_t sharding_spec_entry_size = sizeof(uint64_t);
 
-  // Only include sharding_spec when thread-based RNG is enabled
-  const size_t sharding_spec_size =
-      use_thread_based_rng_ ? sizeof(uint64_t) * this->tensor_ndim_ * 4 : 0;
+  // Only include sharding spec when one is set:
+  // 4 arrays (local_shape, global_offset, global_shape, global_strides),
+  // each with one entry per tensor dim
+  const uint64_t spec_ndim = sharding_spec_ ? sharding_spec_->tensor_ndim : 0;
+  const size_t sharding_spec_size = 4 * sharding_spec_entry_size * spec_ndim;
   size_t total_size = seed_size + offset_size + sharding_spec_size;
 
   auto state_tensor = at::detail::empty_cpu(
@@ -387,13 +419,13 @@ c10::intrusive_ptr<c10::TensorImpl> CUDAGeneratorImpl::get_state() const {
   memcpy(rng_state, &current_seed, seed_size);
   memcpy(rng_state + seed_size, &offset, offset_size);
 
-  if (use_thread_based_rng_) {
-    const size_t dim_size = sizeof(uint64_t) * this->tensor_ndim_;
+  if (sharding_spec_ && spec_ndim > 0) {
+    const size_t dim_bytes = sharding_spec_entry_size * spec_ndim;
     size_t ptr = seed_size + offset_size;
-    memcpy(rng_state + ptr, local_shape_.data(), dim_size);
-    memcpy(rng_state + ptr + dim_size, global_offset_.data(), dim_size);
-    memcpy(rng_state + ptr + 2 * dim_size, global_shape_.data(), dim_size);
-    memcpy(rng_state + ptr + 3 * dim_size, global_strides_.data(), dim_size);
+    memcpy(rng_state + ptr, sharding_spec_->local_shape.data(), dim_bytes);
+    memcpy(rng_state + ptr + dim_bytes, sharding_spec_->global_offset.data(), dim_bytes);
+    memcpy(rng_state + ptr + 2 * dim_bytes, sharding_spec_->global_shape.data(), dim_bytes);
+    memcpy(rng_state + ptr + 3 * dim_bytes, sharding_spec_->global_strides.data(), dim_bytes);
   }
 
   return state_tensor.getIntrusivePtr();
@@ -411,18 +443,32 @@ void CUDAGeneratorImpl::set_state(const c10::TensorImpl& new_state) {
 
   detail::check_rng_state(new_state);
 
-  bool no_philox_seed = false;
+  // Each sharding spec array stores one uint64_t per tensor dim
+  constexpr size_t sharding_spec_entry_size = sizeof(uint64_t);
+  // 4 arrays total: local_shape, global_offset, global_shape, global_strides
+  constexpr size_t sharding_spec_stride =
+      4 * sharding_spec_entry_size;
+
   auto new_state_size = new_state.numel();
-  if (new_state_size % (4 * seed_size) == seed_size) {
+  auto new_rng_state = new_state.data_dtype_initialized<uint8_t>();
+
+  // Step 1: Determine base format and read seed + offset
+  bool no_philox_seed = false;
+  if (new_state_size == static_cast<int64_t>(seed_size)) {
     no_philox_seed = true;
+  } else if (new_state_size == static_cast<int64_t>(seed_size + offset_size)) {
+    no_philox_seed = false;
   } else {
     TORCH_CHECK(
-        new_state_size % (4 * seed_size) == 2 * seed_size,
+        new_state_size > static_cast<int64_t>(seed_size + offset_size) &&
+            (new_state_size - (seed_size + offset_size)) %
+                    sharding_spec_stride ==
+                0,
         "RNG state is wrong size");
+    no_philox_seed = false;
   }
 
   uint64_t input_seed = 0;
-  auto new_rng_state = new_state.data_dtype_initialized<uint8_t>();
   memcpy(&input_seed, new_rng_state, seed_size);
   this->set_current_seed(input_seed);
   int64_t philox_offset = 0;
@@ -431,37 +477,32 @@ void CUDAGeneratorImpl::set_state(const c10::TensorImpl& new_state) {
   }
   this->set_philox_offset_per_thread(static_cast<uint64_t>(philox_offset));
 
-  // Only process sharding_spec if extra data is present in the state
+  // Step 2: Read sharding spec if present
   size_t base_size = no_philox_seed ? seed_size : seed_size + offset_size;
   if (new_state_size > static_cast<int64_t>(base_size)) {
-    uint64_t tensor_ndim = (new_state_size - base_size) / (4 * seed_size);
-    TORCH_CHECK(
-        tensor_ndim <= MAX_DIMS,
-        "tensor has too many (",
-        tensor_ndim,
-        " > ",
-        MAX_DIMS,
-        ") dims");
+    uint64_t tensor_ndim =
+        (new_state_size - base_size) / sharding_spec_stride;
 
     std::array<uint64_t, MAX_DIMS> local_shape{};
     std::array<uint64_t, MAX_DIMS> global_offset{};
     std::array<uint64_t, MAX_DIMS> global_shape{};
     std::array<uint64_t, MAX_DIMS> global_strides{};
 
-    memcpy(
-        local_shape.data(), new_rng_state + base_size, tensor_ndim * seed_size);
+    const size_t dim_bytes = tensor_ndim * sharding_spec_entry_size;
+    memcpy(local_shape.data(), new_rng_state + base_size, dim_bytes);
     memcpy(
         global_offset.data(),
-        new_rng_state + base_size + tensor_ndim * seed_size,
-        tensor_ndim * seed_size);
+        new_rng_state + base_size + dim_bytes,
+        dim_bytes);
     memcpy(
         global_shape.data(),
-        new_rng_state + base_size + 2 * tensor_ndim * seed_size,
-        tensor_ndim * seed_size);
+        new_rng_state + base_size + 2 * dim_bytes,
+        dim_bytes);
     memcpy(
         global_strides.data(),
-        new_rng_state + base_size + 3 * tensor_ndim * seed_size,
-        tensor_ndim * seed_size);
+        new_rng_state + base_size + 3 * dim_bytes,
+        dim_bytes);
+    // set_sharding_spec calls validate_sharding_spec internally
     this->set_sharding_spec(
         tensor_ndim, local_shape, global_offset, global_shape, global_strides);
   }
@@ -608,14 +649,9 @@ std::shared_ptr<CUDAGeneratorImpl> CUDAGeneratorImpl::clone() const {
 CUDAGeneratorImpl* CUDAGeneratorImpl::clone_impl() const {
   at::cuda::assertNotCapturing("Cannot call CUDAGeneratorImpl::clone_impl");
   auto gen = new CUDAGeneratorImpl(this->device().index(), state_->clone());
-  gen->use_thread_based_rng_ = this->use_thread_based_rng_;
-  if (use_thread_based_rng_) {
-    gen->set_sharding_spec(
-        this->tensor_ndim_,
-        this->local_shape_,
-        this->global_offset_,
-        this->global_shape_,
-        this->global_strides_);
+  gen->use_shard_aware_rng_ = this->use_shard_aware_rng_;
+  if (sharding_spec_) {
+    gen->sharding_spec_ = std::make_unique<ShardingSpec>(*sharding_spec_);
   }
   return gen;
 }

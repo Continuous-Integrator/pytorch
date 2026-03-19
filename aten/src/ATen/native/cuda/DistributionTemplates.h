@@ -88,51 +88,43 @@ __global__ void distribution_elementwise_grid_stride_kernel(int64_t numel,
   }
 }
 
-// grid stride loop kernel for sharded distributions (ThreadBasedRNGTracker)
-// This kernel computes virtual global indices based on sharding_spec to ensure
-// reproducible random number generation across sharded tensors.
+// Sharding-aware grid stride loop kernel for distributions.
+//
+// Unlike the non-sharded kernel where each thread's index directly maps to a
+// Philox subsequence, this kernel computes a *virtual* global element index
+// from sharding metadata (local_shape, global_offset, global_shape,
+// global_strides) supplied by virtual_idx_func. The global index is then
+// decomposed into (virtual_thread_idx, virtual_offset), so that
+// curand_init(seed, virtual_thread_idx, virtual_offset) produces the same
+// random value as the corresponding thread on a single-GPU execution. This
+// guarantees that random sequences are reproducible regardless of how the
+// tensor is partitioned across devices.
 template<typename accscalar_t, int unroll_factor, typename dist_t, typename transform_t, typename virtual_idx_t>
 C10_LAUNCH_BOUNDS_2(block_size_bound, grid_size_bound)
 __global__ void distribution_elementwise_grid_stride_kernel_sharded(int64_t numel,
                                                             PhiloxCudaState philox_args,
                                                             const dist_t dist_func,
                                                             const transform_t transform_func,
-                                                            const virtual_idx_t virtual_idx_func,
-                                                            bool has_valid_sharding_spec = false) {
+                                                            const virtual_idx_t virtual_idx_func) {
   auto [seed, offset] = at::cuda::philox::unpack(philox_args);
   int64_t idx = ((int64_t) blockIdx.x) * blockDim.x + threadIdx.x;
   curandStatePhilox4_32_10_t state;
 
   int64_t rounded_size =
       ((numel - 1) / (blockDim.x * gridDim.x * unroll_factor) + 1) * blockDim.x * gridDim.x * unroll_factor;
-  if (has_valid_sharding_spec) {
-    for (int linear_index = idx; linear_index < rounded_size; linear_index += blockDim.x * gridDim.x * unroll_factor) {
+  for (int linear_index = idx; linear_index < rounded_size; linear_index += blockDim.x * gridDim.x * unroll_factor) {
 #pragma unroll
-      for (int ii = 0; ii < unroll_factor; ii++) {
-        int li = linear_index + blockDim.x * gridDim.x * ii;
-        if (li < numel) {
-          auto [virtual_idx, virtual_offset, single_thread_n] = virtual_idx_func(li);
-          virtual_offset += offset;
-          curand_init(seed, virtual_idx, 4 * (virtual_offset / 4), &state);
-          auto rand = dist_func(&state);
-          transform_func(li, static_cast<accscalar_t>((&rand.x)[virtual_offset % unroll_factor]));
-        }
+    for (int ii = 0; ii < unroll_factor; ii++) {
+      int li = linear_index + blockDim.x * gridDim.x * ii;
+      if (li < numel) {
+        auto [virtual_idx, virtual_offset, single_thread_n] = virtual_idx_func(li);
+        virtual_offset += offset;
+        curand_init(seed, virtual_idx, 4 * (virtual_offset / 4), &state);
+        auto rand = dist_func(&state);
+        transform_func(li, static_cast<accscalar_t>((&rand.x)[virtual_offset % unroll_factor]));
       }
-      __syncthreads();
     }
-  } else {
-    curand_init(seed, idx, offset, &state);
-    for (int linear_index = idx; linear_index < rounded_size; linear_index += blockDim.x * gridDim.x * unroll_factor) {
-      auto rand = dist_func(&state);
-#pragma unroll
-      for (int ii = 0; ii < unroll_factor; ii++) {
-        int li = linear_index + blockDim.x * gridDim.x * ii;
-        if (li < numel) {
-          transform_func(li, static_cast<accscalar_t>((&rand.x)[ii]));
-        }
-      }
-      __syncthreads();
-    }
+    __syncthreads();
   }
 }
 
@@ -176,13 +168,13 @@ void distribution_nullary_kernel(at::TensorIteratorBase& iter,
   std::array<uint64_t, MAX_DIMS> global_shape{};
   std::array<uint64_t, MAX_DIMS> global_strides{};
   PhiloxCudaState rng_engine_inputs;
-  bool use_thread_based_rng = false;
+  bool use_shard_aware_rng = false;
   {
     // See Note [Acquire lock when using random generators]
     std::lock_guard<std::mutex> lock(gen->mutex_);
     rng_engine_inputs = gen->philox_cuda_state(counter_offset);
     tensor_ndim = gen->get_sharding_spec(local_shape, global_offset, global_shape, global_strides);
-    use_thread_based_rng = gen->use_thread_based_rng();
+    use_shard_aware_rng = gen->use_shard_aware_rng();
   }
 
   if (!iter.can_use_32bit_indexing()) {
@@ -195,36 +187,45 @@ void distribution_nullary_kernel(at::TensorIteratorBase& iter,
 
   char* out_data = (char*)iter.data_ptr(0);
 
-  uint64_t global_numel = numel;
+  // Compute the total number of threads that would run a single-GPU execution
+  // of the global tensor. This is used by virtual_idx_func to map local element
+  // indices to the correct Philox subsequence/offset pair.
   uint64_t single_thread_n = grid.x * block.x;
-  bool has_valid_sharding_spec = false;
   if (tensor_ndim > 0) {
-    has_valid_sharding_spec = true;
-    global_numel = 1;
-    for (int i = 0; i < (int)tensor_ndim; ++i) {
+    uint64_t global_numel = 1;
+    for (uint64_t i = 0; i < tensor_ndim; ++i) {
       global_numel *= global_shape[i];
-      if (local_shape[i] == 0)
-        has_valid_sharding_spec = false;
     }
     auto single_exec_policy = calc_execution_policy(global_numel, unroll_factor);
     single_thread_n = std::get<1>(single_exec_policy).x * std::get<2>(single_exec_policy).x;
   }
-  TORCH_CHECK(single_thread_n > 0, "single_thread_n is 0!!!");
+  TORCH_CHECK(single_thread_n > 0, "single_thread_n must be positive");
+  TORCH_CHECK(
+      !use_shard_aware_rng || tensor_ndim > 0,
+      "shard-aware RNG requires a sharding spec (tensor_ndim > 0)");
 
-  auto virtual_idx_func = [=] __device__(uint64_t local_entry_linear_idx) {
-    if (tensor_ndim == 0) { // not a dtensor
-      return std::make_tuple(
-          local_entry_linear_idx % single_thread_n, local_entry_linear_idx / single_thread_n, single_thread_n);
-    }
-    uint64_t tmp_idx = local_entry_linear_idx;
-    uint64_t global_entry_linear_idx = 0;
+  // Maps a local element's linear index to the (virtual_thread_idx,
+  // virtual_offset) pair that curand_init would use if the full global
+  // tensor were generated on a single device.
+  //
+  // Args:
+  //   local_linear_idx: flat index into the local shard (0..local_numel-1)
+  //
+  // Returns (virtual_thread_idx, virtual_offset, single_thread_n):
+  //   virtual_thread_idx  — Philox subsequence index
+  //   virtual_offset      — offset within that subsequence (pre-scaled by
+  //                         max_generator_offsets_per_curand_call)
+  //   single_thread_n     — total thread count for the global tensor
+  auto virtual_idx_func = [=] __device__(uint64_t local_linear_idx) {
+    uint64_t tmp_idx = local_linear_idx;
+    uint64_t global_linear_idx = 0;
     for (int i = tensor_ndim - 1; i >= 0; --i) {
       uint64_t global_idx_at_i = global_offset[i] + tmp_idx % local_shape[i];
       tmp_idx /= local_shape[i];
-      global_entry_linear_idx += global_idx_at_i * global_strides[i];
+      global_linear_idx += global_idx_at_i * global_strides[i];
     }
-    uint64_t virtual_thread_idx = global_entry_linear_idx % single_thread_n;
-    uint64_t virtual_offset = global_entry_linear_idx / single_thread_n;
+    uint64_t virtual_thread_idx = global_linear_idx % single_thread_n;
+    uint64_t virtual_offset = global_linear_idx / single_thread_n;
     virtual_offset *= max_generator_offsets_per_curand_call / unroll_factor;
     return std::make_tuple(virtual_thread_idx, virtual_offset, single_thread_n);
   };
@@ -234,8 +235,7 @@ void distribution_nullary_kernel(at::TensorIteratorBase& iter,
   if (iter.is_trivial_1d()) {
     auto strides = iter.get_inner_strides();
     int stride0 = strides[0];
-    // use_thread_based_rng controls kernel selection
-    if (use_thread_based_rng) {
+    if (use_shard_aware_rng) {
       distribution_elementwise_grid_stride_kernel_sharded<accscalar_t, unroll_factor><<<grid, block, 0, stream>>>(
         numel,
         rng_engine_inputs,
@@ -244,8 +244,7 @@ void distribution_nullary_kernel(at::TensorIteratorBase& iter,
           scalar_t* out = (scalar_t*)&out_data[stride0 * idx];
           *out = transform_func(rand);
         },
-        virtual_idx_func,
-        has_valid_sharding_spec);
+        virtual_idx_func);
     } else {
       distribution_elementwise_grid_stride_kernel<accscalar_t, unroll_factor><<<grid, block, 0, stream>>>(
         numel,
@@ -259,8 +258,7 @@ void distribution_nullary_kernel(at::TensorIteratorBase& iter,
     C10_CUDA_KERNEL_LAUNCH_CHECK();
   } else {
     auto offset_calc = make_offset_calculator<1>(iter);
-    // use_thread_based_rng controls kernel selection
-    if (use_thread_based_rng) {
+    if (use_shard_aware_rng) {
       distribution_elementwise_grid_stride_kernel_sharded<accscalar_t, unroll_factor><<<grid, block, 0, stream>>>(
         numel,
         rng_engine_inputs,
@@ -270,8 +268,7 @@ void distribution_nullary_kernel(at::TensorIteratorBase& iter,
           scalar_t* out = (scalar_t*)&out_data[offsets[0]];
           *out = transform_func(rand);
         },
-        virtual_idx_func,
-        has_valid_sharding_spec);
+        virtual_idx_func);
     } else {
       distribution_elementwise_grid_stride_kernel<accscalar_t, unroll_factor><<<grid, block, 0, stream>>>(
         numel,

@@ -6,7 +6,7 @@ import math
 import sys
 from collections import namedtuple
 from collections.abc import Callable, Sequence
-from typing import Any, Optional
+from typing import Any
 from unittest.mock import patch
 
 import sympy
@@ -43,6 +43,7 @@ DTYPE_TO_CPP = {
     torch.bool: "bool",
     torch.bfloat16: "at::BFloat16",
     torch.complex32: "at::complex<at::Half>",
+    torch.complex32: "at::complex<at::BFloat16>",
     torch.complex64: "at::complex<float>",
     torch.complex128: "at::complex<double>",
     torch.float8_e4m3fn: "at::Float8_e4m3fn",
@@ -68,6 +69,7 @@ DTYPE_TO_ATEN = {
     torch.bool: "at::kBool",
     torch.bfloat16: "at::kBFloat16",
     torch.complex32: "at::kComplexHalf",
+    torch.bcomplex32: "at::kBComplex32",
     torch.complex64: "at::kComplexFloat",
     torch.complex128: "at::kComplexDouble",
     torch.float8_e4m3fn: "at::kFloat8_e4m3fn",
@@ -146,7 +148,7 @@ class CppCSEVariable(CSEVariable):
         self,
         name,
         bounds: ValueRanges[Any],
-        dtype: Optional[torch.dtype] = None,
+        dtype: torch.dtype | None = None,
         shape: BlockShapeType = None,
     ) -> None:
         super().__init__(name, bounds, dtype, shape=shape)
@@ -206,6 +208,7 @@ class CppPrinter(_CppPrinter):
         if isinstance(item, sympy.Mod):
             # use parenthesis to enforce precedence.
             # in sympy 1.13.3, -2*Mod(x,y) becomes -2*x%y, which is wrong.
+            # pyrefly: ignore [missing-attribute]
             return f"({self._print(item)})"
         else:
             return super().parenthesize(item, level, strict)
@@ -377,7 +380,7 @@ class LocalBufferContext:
         self.exit_stack.__exit__(exc_type, exc_val, exc_tb)
 
     def add_local_buffer(
-        self, local_buffer: ir.Buffer, global_buffers: Optional[list[ir.Buffer]] = None
+        self, local_buffer: ir.Buffer, global_buffers: list[ir.Buffer] | None = None
     ):
         assert local_buffer.get_name() not in self.local_buffers
         self.local_buffers[local_buffer.get_name()] = local_buffer

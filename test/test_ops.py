@@ -80,17 +80,10 @@ from torch.utils._python_dispatch import TorchDispatchMode
 from torch.utils._pytree import tree_map
 
 
-# If env var PYTORCH_TEST_OPS_ONLY_MPS is set, add 'mps' to the PYTORCH_TESTING_DEVICE_ONLY_FOR env var
-# so that only MPS tests (and any others in PYTORCH_TESTING_DEVICE_ONLY_FOR) are run.
-if os.getenv("PYTORCH_TEST_OPS_ONLY_MPS"):
-    key = "PYTORCH_TESTING_DEVICE_ONLY_FOR"
-    value = os.environ.get(key)
-    devices = value.split(",") if value else []
-    if "mps" not in devices:
-        devices.append("mps")
-        os.environ[key] = ",".join(devices)
-
-assert torch.get_default_dtype() == torch.float32
+if torch.get_default_dtype() != torch.float32:
+    raise AssertionError(
+        f"default dtype should be float32, got {torch.get_default_dtype()}"
+    )
 
 # variant testing is only done with torch.float and torch.cfloat to avoid
 #   excessive test times and maximize signal to noise ratio
@@ -242,7 +235,8 @@ class TestCommon(TestCase):
                 fmt_str = opinfo.utils.str_format_dynamic_dtype(op)
                 err_msg += "\n" + fmt_str
 
-            assert len(filtered_ops) == 0, err_msg
+            if len(filtered_ops) != 0:
+                raise AssertionError(err_msg)
 
     # Validates that each OpInfo works correctly on different CUDA devices
     @onlyOn(["cuda", "xpu"])
@@ -607,10 +601,11 @@ class TestCommon(TestCase):
             if skip_bfloat and (
                 (
                     isinstance(sample.input, torch.Tensor)
-                    and sample.input.dtype == torch.bfloat16
+                    and sample.input.dtype in {torch.bfloat16, torch.bcomplex32}
                 )
                 or any(
-                    isinstance(arg, torch.Tensor) and arg.dtype == torch.bfloat16
+                    isinstance(arg, torch.Tensor)
+                    and arg.dtype in {torch.bfloat16, torch.bcomplex32}
                     for arg in sample.args
                 )
             ):
@@ -684,7 +679,10 @@ class TestCommon(TestCase):
             def _distance(a, b):
                 # Special-cases boolean comparisons
                 if prims.utils.is_boolean_dtype(a.dtype):
-                    assert b.dtype is torch.bool
+                    if b.dtype is not torch.bool:
+                        raise AssertionError(
+                            f"expected dtype torch.bool, got {b.dtype}"
+                        )
                     return (a ^ b).sum()
 
                 same = a == b
@@ -968,7 +966,8 @@ class TestCommon(TestCase):
             # Validates the op doesn't support out if it claims not to
             if not op.supports_out:
                 with self.assertRaises(Exception):
-                    assert op_out(out=expected) != NotImplemented
+                    if op_out(out=expected) == NotImplemented:
+                        raise AssertionError("op_out returned NotImplemented")
                 return
 
             # A wrapper around map that works with single tensors and always
@@ -1097,7 +1096,8 @@ class TestCommon(TestCase):
             # Validates the op doesn't support out if it claims not to
             if not op.supports_out:
                 with self.assertRaises(Exception):
-                    assert op_out(out=expected) != NotImplemented
+                    if op_out(out=expected) == NotImplemented:
+                        raise AssertionError("op_out returned NotImplemented")
                 return
 
             # A wrapper around map that works with single tensors and always
@@ -1542,12 +1542,20 @@ class TestCommon(TestCase):
             unittest.skip("Does not support complex32")
 
         for sample in op.sample_inputs(device, dtype):
+            # MPS doesn't support float64
+            if torch.float64 in (
+                *sample.args,
+                *sample.kwargs.values(),
+            ) and not op.supports_dtype(torch.float64, device):
+                continue
+
             actual = op(sample.input, *sample.args, **sample.kwargs)
             # sample.transform applies the lambda to torch.Tensor and torch.dtype.
             # However, we only want to apply it to Tensors with dtype `torch.complex32`..
             transformed_sample = sample.transform(
                 lambda x: x.to(torch.complex64)
-                if isinstance(x, torch.Tensor) and x.dtype is torch.complex32
+                if isinstance(x, torch.Tensor)
+                and x.dtype in (torch.complex32, torch.bcomplex32)
                 else x
             )
             expected = op(
@@ -2228,7 +2236,8 @@ class TestMathBits(TestCase):
                 # view created in no_grad mode. Here it's ok to do so, so as a workaround we call conj
                 # before resetting the requires_grad field for input
                 input = math_op_view(input)
-                assert input.is_leaf
+                if not input.is_leaf:
+                    raise AssertionError("expected input to be a leaf tensor")
                 return input.requires_grad_(requires_grad)
 
             if isinstance(input, Sequence):
@@ -2395,7 +2404,8 @@ def check_inplace_view(func, input, rs, input_size, input_strides):
             # Reference: https://github.com/pytorch/pytorch/issues/78759
             if func is not torch.ops.aten.resize_.default:
                 # TODO: use self.assertIn when we have separate tests for each tag
-                assert torch.Tag.inplace_view in func.tags
+                if torch.Tag.inplace_view not in func.tags:
+                    raise AssertionError(f"expected inplace_view tag in {func.tags}")
 
 
 # A mode that when enabled runs correctness checks to ensure

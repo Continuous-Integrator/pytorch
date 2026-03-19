@@ -403,7 +403,12 @@ class TestViewOps(TestCase):
     @dtypesIfMPS(torch.cfloat, torch.chalf)
     def test_view_as_real(self, device, dtype):
         def fn(contiguous_input=True):
-            t = torch.randn(3, 4, dtype=dtype, device=device)
+            # `torch.bcomplex32` doesn't have randn yet
+            real_dt = torch.empty((0,), dtype=dtype, device=device).real.dtype
+            r = torch.randn(3, 4, dtype=real_dt, device=device)
+            c = torch.randn(3, 4, dtype=real_dt, device=device)
+            t = torch.complex(r, c)
+            self.assertEqual(t.dtype, dtype)
             input = self._do_transpose(t, contiguous_input)
             res = torch.view_as_real(input)
             self.assertEqual(res[:, :, 0], input.real)
@@ -796,7 +801,8 @@ class TestViewOps(TestCase):
                 y = prepro_fn(x) if prepro_fn is not None else x
                 max_offset = sum((si - 1) * st for si, st in zip(size, strides))
                 max_offset += offset if offset is not None else y.storage_offset()
-                assert max_offset < len(y.storage()), "test case resizes storage"
+                if max_offset >= len(y.storage()):
+                    raise AssertionError("test case resizes storage")
 
             def closure(x):
                 if prepro_fn is not None:

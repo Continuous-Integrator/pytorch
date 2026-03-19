@@ -130,6 +130,14 @@ constexpr int MAX_DIMS = 16;
 constexpr int MAX_DIMS = 25;
 #endif
 
+struct ShardingSpec {
+  uint64_t tensor_ndim = 0;
+  std::array<uint64_t, MAX_DIMS> local_shape{};
+  std::array<uint64_t, MAX_DIMS> global_offset{};
+  std::array<uint64_t, MAX_DIMS> global_shape{};
+  std::array<uint64_t, MAX_DIMS> global_strides{};
+};
+
 struct TORCH_CUDA_CPP_API CUDAGeneratorImpl : public c10::GeneratorImpl {
   // Constructors
   CUDAGeneratorImpl(DeviceIndex device_index = -1);
@@ -186,23 +194,19 @@ struct TORCH_CUDA_CPP_API CUDAGeneratorImpl : public c10::GeneratorImpl {
   CUDAGeneratorImpl* clone_impl() const override;
 
   c10::intrusive_ptr<CUDAGeneratorState> state_;
-  uint64_t tensor_ndim_ = 0;
-  std::array<uint64_t, MAX_DIMS> local_shape_{};
-  std::array<uint64_t, MAX_DIMS> global_offset_{};
-  std::array<uint64_t, MAX_DIMS> global_shape_{};
-  std::array<uint64_t, MAX_DIMS> global_strides_{};
+  std::unique_ptr<ShardingSpec> sharding_spec_;
   std::atomic_flag no_reset_rnn_state_;
-  bool use_thread_based_rng_ = false;
+  bool use_shard_aware_rng_ = false;
 
  public:
-  // Returns true if ThreadBasedRNGTracker is being used (sharded kernel),
-  // false for OffsetBasedRNGTracker (original kernel).
-  bool use_thread_based_rng() const override {
-    return use_thread_based_rng_;
+  // Returns true if CUDA RNG is configured for sharding-aware RNG mode,
+  // false otherwise.
+  bool use_shard_aware_rng() const override {
+    return use_shard_aware_rng_;
   }
 
-  void set_use_thread_based_rng(bool value) override {
-    use_thread_based_rng_ = value;
+  void set_use_shard_aware_rng(bool value) override {
+    use_shard_aware_rng_ = value;
   }
 };
 

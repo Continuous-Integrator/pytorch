@@ -903,21 +903,27 @@ class TestCustomOp(CustomOpTestCaseBase):
             return [torch.float32]
         if typ is torch.device:
             return [torch.device("cpu")]
-        if typ == torch.types.Number:
+        # int | float | bool is the BC alias for torch.types.Number (before
+        # it included SymInt/SymFloat); infer_schema accepts both.
+        if typ == torch.types.Number or typ == (int | float | bool):
             return [2.718]
         if typ is torch.Tensor:
             return [torch.tensor(3)]
-        if typ == Optional[torch.types.Number]:
+        if typ == Optional[torch.types.Number] or typ == Optional[int | float | bool]:
             return [None, 2.718]
         origin = typing.get_origin(typ)
         if origin is Union:
             args = typing.get_args(typ)
-            assert len(args) == 2 and (args[0] is type(None) or args[1] is type(None))
+            if not (
+                len(args) == 2 and (args[0] is type(None) or args[1] is type(None))
+            ):
+                raise AssertionError(f"expected Optional type, got {args}")
             elt = args[0] if args[1] is type(None) else args[1]
             return self._generate_examples(elt) + [None]
         if origin is list:
             args = typing.get_args(typ)
-            assert len(args) == 1
+            if len(args) != 1:
+                raise AssertionError(f"expected list with 1 arg, got {len(args)}")
             elt = args[0]
             return [
                 self._generate_examples(elt),
@@ -926,7 +932,8 @@ class TestCustomOp(CustomOpTestCaseBase):
             ]
         if origin is collections.abc.Sequence:
             args = typing.get_args(typ)
-            assert len(args) == 1
+            if len(args) != 1:
+                raise AssertionError(f"expected Sequence with 1 arg, got {len(args)}")
             examples = self._generate_examples(args[0])
             return list(itertools.product(examples, examples)) + []
         raise NotImplementedError(
@@ -2084,7 +2091,8 @@ Dynamic shape operator
 
         x = torch.randn(3)
         y = self.ns().foo(x)
-        assert torch.allclose(y, x.sin())
+        if not torch.allclose(y, x.sin()):
+            raise AssertionError("expected y to equal x.sin()")
 
     def test_define_validation(self):
         with self.assertRaisesRegex(ValueError, "namespace"):
@@ -2099,7 +2107,8 @@ Dynamic shape operator
 
         x = torch.randn(3)
         y = self.ns().foo(x)
-        assert torch.allclose(y, x.sin())
+        if not torch.allclose(y, x.sin()):
+            raise AssertionError("expected y to equal x.sin()")
 
     def test_impl_function(self):
         lib = self.lib()
@@ -2111,7 +2120,8 @@ Dynamic shape operator
         torch.library.impl(f"{self.test_ns}::foo", "CPU", f, lib=lib)
         x = torch.randn(3)
         y = self.ns().foo(x)
-        assert torch.allclose(y, x.sin())
+        if not torch.allclose(y, x.sin()):
+            raise AssertionError("expected y to equal x.sin()")
 
     def test_legacy_impl(self):
         lib = self.lib()
@@ -2123,7 +2133,8 @@ Dynamic shape operator
 
         x = torch.randn(3)
         y = self.ns().foo(x)
-        assert torch.allclose(y, x.sin())
+        if not torch.allclose(y, x.sin()):
+            raise AssertionError("expected y to equal x.sin()")
 
     def test_defined_in_python(self):
         self.assertFalse(torch.ops.aten.sin.default._defined_in_python)
@@ -2151,7 +2162,8 @@ Dynamic shape operator
 
         x = torch.randn(3, device=device)
         y = getattr(self.ns(), name)(x)
-        assert torch.allclose(y, x.sin())
+        if not torch.allclose(y, x.sin()):
+            raise AssertionError("expected y to equal x.sin()")
 
     def test_impl_device_cpu(self):
         self._test_impl_device("foo1", "default", "cpu")
@@ -2176,7 +2188,8 @@ Dynamic shape operator
         torch.library.impl(f"{self.test_ns}::foo", "default", f, lib=lib)
         x = torch.randn(3)
         y = self.ns().foo(x)
-        assert torch.allclose(y, x.sin())
+        if not torch.allclose(y, x.sin()):
+            raise AssertionError("expected y to equal x.sin()")
 
     def test_impl_device_invalid(self):
         with self.assertRaisesRegex(RuntimeError, "Expected one of cpu, cuda"):
@@ -2725,7 +2738,10 @@ class TestCustomOpAPI(TestCase):
                 return grad * ctx.y
 
             def setup_context(ctx, inputs, keyword_only_inputs, output):
-                assert tuple(keyword_only_inputs.keys()) == ("y",)
+                if tuple(keyword_only_inputs.keys()) != ("y",):
+                    raise AssertionError(
+                        f"expected keyword_only_inputs.keys() == ('y',), got {tuple(keyword_only_inputs.keys())}"
+                    )
                 ctx.y = keyword_only_inputs["y"]
 
             torch.library.register_autograd(
@@ -2755,9 +2771,16 @@ class TestCustomOpAPI(TestCase):
                 return grad * ctx.c
 
             def setup_context(ctx, inputs, keyword_only_inputs, output):
-                assert len(inputs) == 2
-                assert inputs[1] == 2
-                assert keyword_only_inputs == {"y": 3, "z": 42}
+                if len(inputs) != 2:
+                    raise AssertionError(
+                        f"expected len(inputs) == 2, got {len(inputs)}"
+                    )
+                if inputs[1] != 2:
+                    raise AssertionError(f"expected inputs[1] == 2, got {inputs[1]}")
+                if keyword_only_inputs != {"y": 3, "z": 42}:
+                    raise AssertionError(
+                        f"expected keyword_only_inputs == {{'y': 3, 'z': 42}}, got {keyword_only_inputs}"
+                    )
                 ctx.c = keyword_only_inputs["y"] * keyword_only_inputs["z"] * inputs[1]
 
             torch.library.register_autograd(
@@ -3070,7 +3093,8 @@ with warnings.catch_warnings(record=True) as w:
 
             def TwoTensor_foo(cls, func, types, args, kwargs):
                 nonlocal called
-                assert cls is TwoTensor
+                if cls is not TwoTensor:
+                    raise AssertionError(f"expected cls is TwoTensor, got {cls}")
                 called += 1
                 return x.sin()
 
@@ -3114,7 +3138,8 @@ with warnings.catch_warnings(record=True) as w:
         op = getattr(torch.ops._torch_testing, opname).default
         entry = torch._library.simple_registry.singleton.find(op._name)
         source = entry.fake_impl.kernel.source
-        assert source is not None
+        if source is None:
+            raise AssertionError("expected source to be not None")
         self.assertTrue("custom_op_db.py" in source)
 
     @skipIfTorchDynamo("Expected to fail due to no FakeTensor support; not a bug")
@@ -3214,7 +3239,10 @@ with warnings.catch_warnings(record=True) as w:
                 if mode == "qualname":
                     op = "_torch_testing::add10"
                 else:
-                    assert mode == "opoverload"
+                    if mode != "opoverload":
+                        raise AssertionError(
+                            f"expected mode == 'opoverload', got {mode!r}"
+                        )
                     op = torch.ops._torch_testing.add10.default
 
                 called = False
@@ -3233,7 +3261,10 @@ with warnings.catch_warnings(record=True) as w:
                         return x + y
 
                 else:
-                    assert call == "function"
+                    if call != "function":
+                        raise AssertionError(
+                            f"expected call == 'function', got {call!r}"
+                        )
 
                     def add_stuff(mode, func, types, args, kwargs):
                         x, y = args
@@ -3275,7 +3306,8 @@ with warnings.catch_warnings(record=True) as w:
             elif mode == "qualname":
                 op = "_torch_testing::add"
             else:
-                assert mode == "opoverload"
+                if mode != "opoverload":
+                    raise AssertionError(f"expected mode == 'opoverload', got {mode!r}")
                 op = torch.ops._torch_testing.add.default
 
             called = False
@@ -3291,7 +3323,8 @@ with warnings.catch_warnings(record=True) as w:
                     return torch.from_numpy(out_np)
 
             else:
-                assert call == "function"
+                if call != "function":
+                    raise AssertionError(f"expected call == 'function', got {call!r}")
 
                 def add_cpu(x, y):
                     nonlocal called
@@ -3323,7 +3356,10 @@ with warnings.catch_warnings(record=True) as w:
                 if mode == "qualname":
                     op = "_torch_testing::add9"
                 else:
-                    assert mode == "opoverload"
+                    if mode != "opoverload":
+                        raise AssertionError(
+                            f"expected mode == 'opoverload', got {mode!r}"
+                        )
                     op = torch.ops._torch_testing.add9.default
 
                 called = False
@@ -3339,7 +3375,10 @@ with warnings.catch_warnings(record=True) as w:
                         return torch.from_numpy(out_np)
 
                 else:
-                    assert call == "function"
+                    if call != "function":
+                        raise AssertionError(
+                            f"expected call == 'function', got {call!r}"
+                        )
 
                     def add_cpu(x, y):
                         nonlocal called
@@ -3665,12 +3704,24 @@ Please use `add.register_fake` to add an fake impl.""",
         def _(x, weight, bias):
             nonlocal called_abstract
             called_abstract = True
-            assert x.dim() == 2
-            assert weight.dim() == 2
-            assert bias.dim() == 1
-            assert x.shape[1] == weight.shape[1]
-            assert weight.shape[0] == bias.shape[0]
-            assert x.device == weight.device
+            if x.dim() != 2:
+                raise AssertionError(f"expected x.dim() == 2, got {x.dim()}")
+            if weight.dim() != 2:
+                raise AssertionError(f"expected weight.dim() == 2, got {weight.dim()}")
+            if bias.dim() != 1:
+                raise AssertionError(f"expected bias.dim() == 1, got {bias.dim()}")
+            if x.shape[1] != weight.shape[1]:
+                raise AssertionError(
+                    f"expected x.shape[1] == weight.shape[1], got {x.shape[1]} vs {weight.shape[1]}"
+                )
+            if weight.shape[0] != bias.shape[0]:
+                raise AssertionError(
+                    f"expected weight.shape[0] == bias.shape[0], got {weight.shape[0]} vs {bias.shape[0]}"
+                )
+            if x.device != weight.device:
+                raise AssertionError(
+                    f"expected x.device == weight.device, got {x.device} vs {weight.device}"
+                )
             return x.new_empty(x.size(0), weight.size(0))
 
         x = torch.randn(2, 2)
@@ -4223,7 +4274,8 @@ Please use `add.register_fake` to add an fake impl.""",
         t = torch.randn(2, 2)
         t_refcount = sys.getrefcount(t)
         test_fn((t,), {"a": t}, ())
-        assert sys.getrefcount(t) == t_refcount
+        if sys.getrefcount(t) != t_refcount:
+            raise AssertionError(f"refcount leak: {sys.getrefcount(t)} != {t_refcount}")
 
         x = torch.randn(2, 2)
         y = torch.randn(2, 2)
@@ -4448,6 +4500,32 @@ Please use `add.register_fake` to add an fake impl.""",
                 RuntimeError, "no kernel for CUDA for test_invalid_kernel::cpu_only_op"
             ):
                 torch.library.get_kernel("test_invalid_kernel::cpu_only_op", "CUDA")
+
+
+class TestLibrarySourceLocation(TestCase):
+    def test_library_source_location(self):
+        # Library.__init__ uses sys._getframe(1) to capture the caller's
+        # filename and line number. Verify this works correctly by creating
+        # a Library and checking the source location in the error message
+        # that appears when a duplicate DEF library is created.
+        script = """\
+import torch
+lib1 = torch.library.Library("_test_loc", "DEF")
+lib1.define("foo(Tensor x) -> Tensor")
+try:
+    lib2 = torch.library.Library("_test_loc", "DEF")
+except RuntimeError as e:
+    print(str(e))
+"""
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        # The error message should reference <string>:2, since
+        # lib1 = torch.library.Library(...) is on line 2 of the script.
+        self.assertIn("<string>:2", result.stdout)
 
 
 class MiniOpTestOther(CustomOpTestCaseBase):
@@ -4745,10 +4823,10 @@ class TestTypeConversion(TestCase):
 
     def test_mixed_types(self):
         result_type = tuple_to_list(Tuple[int, float])
-        self.assertEqual(result_type, list[typing.Union[int, float]])
+        self.assertEqual(result_type, list[int | float])
 
         result_type = tuple_to_list(Tuple[int, float, str])
-        self.assertEqual(result_type, list[typing.Union[int, float, str]])
+        self.assertEqual(result_type, list[int | float | str])
 
 
 class TestOpProfiles(TestCase):
