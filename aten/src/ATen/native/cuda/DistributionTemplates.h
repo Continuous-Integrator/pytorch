@@ -124,7 +124,6 @@ __global__ void distribution_elementwise_grid_stride_kernel_sharded(int64_t nume
         transform_func(li, static_cast<accscalar_t>((&rand.x)[virtual_offset % unroll_factor]));
       }
     }
-    __syncthreads();
   }
 }
 

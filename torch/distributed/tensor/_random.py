@@ -4,7 +4,6 @@ import contextlib
 import warnings
 from collections.abc import Sequence
 from logging import getLogger
-from typing import Optional
 
 import torch
 from torch.distributed._local_tensor import maybe_run_for_local_tensor
@@ -23,7 +22,7 @@ __all__ = [
     "set_use_shard_aware_rng",
 ]
 
-_rng_tracker: Optional["_RNGStateTracker"] = None
+_rng_tracker: "_RNGStateTracker | None" = None
 
 # When True, use the sharding-aware RNG kernel that produces globally
 # reproducible random sequences regardless of tensor partitioning.
@@ -32,7 +31,7 @@ _USE_SHARD_AWARE_RNG: bool = False
 
 
 def set_use_shard_aware_rng(
-    use_shard_aware: bool, device: Optional[torch.device] = None
+    use_shard_aware: bool, device: torch.device | None = None
 ) -> None:
     """Sets whether to use shard-aware RNG mode for random ops."""
     global _USE_SHARD_AWARE_RNG
