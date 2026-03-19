@@ -1572,7 +1572,7 @@ class LoweringTest(MultiProcContinuousTest):
         )
         # The codegen should have a triton copy kernel (pointwise identity)
         self.assertIn(
-            "one_shot_all_reduce.out",
+            "one_shot_all_reduce_out",
             code,
             "Expected out-variant allreduce in generated code",
         )
@@ -1595,14 +1595,8 @@ class LoweringTest(MultiProcContinuousTest):
     def test_symm_mem_upstream_propagation(self):
         """
         Verify that when a pointwise op (add) sits between a data source and
-        a symm_mem collective, the upstream buffer is propagated to P2P via
-        CommBufferLayout and the pointwise op writes in-place via MutationLayout.
-
-        This tests the fix for the "disconnected P2P buffer" bug where the
-        triton kernel would read from an uninitialized P2P buffer.
-
-        CUDAGraph replay correctness is tested separately in
-        test_symm_mem_upstream_propagation_cudagraph (PR #175450).
+        a symm_mem collective, the ComputedBuffer's CommBufferLayout prevents
+        incorrect in-place reuse with the upstream regular CUDA buffer.
         """
         self._init_process()
 
@@ -1630,7 +1624,7 @@ class LoweringTest(MultiProcContinuousTest):
             "Expected P2P allocation in generated code",
         )
         self.assertIn(
-            "one_shot_all_reduce.out",
+            "one_shot_all_reduce_out",
             code,
             "Expected out-variant allreduce in generated code",
         )
