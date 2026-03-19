@@ -1121,6 +1121,11 @@ class aten_distributed_optimizations:
     # blocks the compute stream.  Supersedes manual_bucketing_rs_stream.
     manual_bucketing_comm_streams: bool = False
 
+    # Don't defer the first backward RS_wait in manual bucketing overlap.
+    # The first backward bucket has no prior compute to overlap with, so
+    # deferring its RS_wait only delays freeing the weight grad buffer.
+    manual_bucketing_no_defer_first_rs_wait: bool = False
+
     # Number of round-robin comm streams for auto-bucketed collectives.
     # 0 = disabled (default), 1 = single comm stream, 2+ = pool.
     comm_stream_pool_size: int = 0

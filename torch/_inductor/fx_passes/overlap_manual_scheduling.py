@@ -259,6 +259,8 @@ class ManualOverlapScheduler(OverlapScheduler):
         delayed_rs_wait_nodes: list[fx.Node] = []
         current_rs_start_nodes: list[fx.Node] = []
         overlap_deps: dict[fx.Node, OrderedSet[fx.Node]] = defaultdict(OrderedSet)
+        no_defer_first = config.aten_distributed_optimizations.manual_bucketing_no_defer_first_rs_wait
+        seen_rs_wait = False
 
         # Re-initialize after graph modification in _manual_bucket_collectives
         self.node_idx = {n: i for i, n in enumerate(self.nodes)}
@@ -289,7 +291,11 @@ class ManualOverlapScheduler(OverlapScheduler):
                             overlap_deps[delayed].add(rs_start)
                     delayed_rs_wait_nodes.clear()
                     current_rs_start_nodes.clear()
-                delayed_rs_wait_nodes.append(node)
+                # The first backward RS_wait has no prior compute to overlap
+                # with — deferring it only delays freeing the weight grad.
+                if seen_rs_wait or not no_defer_first:
+                    delayed_rs_wait_nodes.append(node)
+                seen_rs_wait = True
 
             self._schedule(node)
 
