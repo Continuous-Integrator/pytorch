@@ -435,6 +435,36 @@ bucket_all_reduces_fx: Literal["none", "all"] = "none"
 # By default torch._inductor.fx_passes.bucketing.bucket_size_determinator is used
 bucket_all_reduces_fx_bucket_size_determinator: Callable[[int], int] | None = None
 
+# Use process group allocator for bucketed collective operations.
+# When enabled, allocates memory from the process group's registered allocator
+# (e.g., NCCL's multicast-compatible allocator) which can improve communication
+# performance. Set via config or USE_PG_ALLOC env var.
+comms_use_pg_alloc: bool = os.environ.get("USE_PG_ALLOC", "0") == "1"
+
+# Max pg_alloc memory (GB). Allocations exceeding this fall back to torch.empty().
+# None means no limit.
+comms_pg_alloc_max_gb: float | None = (
+    float(v) if (v := os.environ.get("USE_PG_ALLOC_MAX_GB")) else None
+)
+
+# Strategy for pg_alloc. None = inductor decides where to apply pg_alloc (all buffers for now).
+# Tokens: "only_all_gather", "only_reduce", "only_inputs", "only_outputs"
+# Combine with comma: "only_all_gather,only_outputs"
+comms_use_pg_alloc_strategy: str | None = os.environ.get("USE_PG_ALLOC_STRATEGY", None)
+
+# Allow non-comm ops to borrow idle pg_alloc buffers. Reduces CUDA caching
+# allocator fragmentation by reusing NCCL-registered memory for compute when
+# the buffer won't be needed for comms. Requires comms_use_pg_alloc=True.
+comms_pg_alloc_allow_borrow: bool = os.environ.get("USE_PG_ALLOC_BORROW", "0") == "1"
+
+# Strategy for cross-pool borrowing. Requires comms_pg_alloc_allow_borrow=True.
+# "greedy": single-pass, borrow first safe match (with reuse chain guard).
+# "peak_aware": two-pass — simulate to find peak, only borrow buffers live at peak.
+# "min_cost_flow": bipartite matching for optimal borrow assignment minimizing peak.
+comms_pg_alloc_borrow_strategy: str = os.environ.get(
+    "USE_PG_ALLOC_BORROW_STRATEGY", "greedy"
+)
+
 # runtime estimation function for ops
 # for built-in estimation function, pass in "default"; for user-defined estimation function, pass in the function handle
 estimate_op_runtime = "default"
@@ -755,6 +785,16 @@ realize_acc_reads_size_threshold: int | None = (
     None  # TODO(xuanzh): harden this to make it non optional
 )
 
+# Defer early realization of cheap output nodes (0 buffer reads, small opcount)
+# to prevent cascade materialization in fullgraph compilation.
+# Shared constants/indices saved for backward get eagerly materialized because
+# they are graph outputs with multiple users, which inflates downstream read
+# counts and can trigger suboptimal Triton block size heuristics.
+delay_realize_cheap_outputs: bool = Config(
+    env_name_force="TORCHINDUCTOR_DELAY_REALIZE_CHEAP_OUTPUTS",
+    default=False,
+)
+
 # fallback to eager for random/dropout, this is slow but useful for debugging
 fallback_random = False
 
@@ -894,6 +934,10 @@ combo_kernel_max_num_args = 250
 combo_kernel_per_subkernel_blocks = False
 # When True, only pointwise kernels are eligible for combo kernel fusion.
 combo_kernels_pointwise_only = False
+
+# Replace _foreach_copy_ with cat(out=) in collective bucketing merge functions.
+# Reduces N individual Triton kernels to 1 for the param-packing step.
+_foreach_improv = os.environ.get("TORCHINDUCTOR_FOREACH_IMPROV", "0") == "1"
 
 # constant folding on the joint graph
 joint_graph_constant_folding = True
@@ -1069,8 +1113,43 @@ class aten_distributed_optimizations:
     # as atomic units with memory-bound runtime estimates.
     enable_fusion_regions: bool | None = None
 
+    # Put reduce-scatter wait_tensor on a dedicated CUDA stream so it
+    # doesn't block compute/AG on the main stream.
+    manual_bucketing_rs_stream: bool = False
+
+    # Run AG and RS on dedicated CUDA streams (like FSDP2) so neither
+    # blocks the compute stream.  Supersedes manual_bucketing_rs_stream.
+    manual_bucketing_comm_streams: bool = False
+
+    # Don't defer the first backward RS_wait in manual bucketing overlap.
+    # The first backward bucket has no prior compute to overlap with, so
+    # deferring its RS_wait only delays freeing the weight grad buffer.
+    manual_bucketing_no_defer_first_rs_wait: bool = False
+
+    # Number of round-robin comm streams for auto-bucketed collectives.
+    # 0 = disabled (default), 1 = single comm stream, 2+ = pool.
+    comm_stream_pool_size: int = 0
+
+    # Stream assignment strategy for the comm stream pool.
+    # "round_robin": cycle streams in order (simple, even distribution)
+    # "ag_rs": separate AllGather and ReduceScatter onto different streams
+    # "greedy": pack collectives into streams to minimise idle time
+    comm_stream_pool_strategy: str = "round_robin"
+
+    # Max extra memory (GB) allowed from parallel collectives on different
+    # streams.  When in-flight memory across all pool streams would exceed
+    # this budget, new collectives are serialized onto a busy stream.
+    # None = no guardrail, 0.0 = no increase allowed.
+    comm_stream_pool_exceed_budget_gb: float | None = None
+
     # Prioritize bucketing during overlap scheduling by grouping candidates by bucket key
     prioritize_bucketing_during_scheduling: bool = True
+
+    # Bucket mode for collective bucketing.
+    # "default": plain torch.cat (visible to Inductor for fusion)
+    # "custom_ops": opaque custom op (FallbackKernel, no fusion)
+    # "custom_ops_multidtype": custom op with multi-dtype support
+    bucket_mode: str | None = None
 
 
 def parallel_compile_enabled_internally() -> bool:
