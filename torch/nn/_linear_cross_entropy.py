@@ -38,12 +38,12 @@ def linear_cross_entropy_chunking(
             "LinearCrossEntropyFunction does not support probability targets"
         )
     else:
-        weight_target = weight.index_select(0, target)
+        neg_weight = -weight
+        neg_weight_target = neg_weight.index_select(0, target)
         if reduction == "mean":
-            weight = weight.clone()
-            d = weight_target.sum()
-            weight.div_(d)
-            weight_target.div_(d)
+            d = -neg_weight_target.sum()
+            neg_weight.div_(d)
+            neg_weight_target.div_(d)
         elif reduction == "sum":
             pass
         else:
@@ -79,7 +79,7 @@ def linear_cross_entropy_chunking(
             requires_grad=False,
         )
     else:
-        G = None
+        G = torch.empty(())
         grad_linear_weight = torch.empty(
             (0,), dtype=dtype, device=device, requires_grad=False
         )
@@ -95,35 +95,30 @@ def linear_cross_entropy_chunking(
     for bchunk_start, bchunk_size in chunk_iter(num_batches, batch_chunk_size):
         x = input.narrow(0, bchunk_start, bchunk_size)
         t = target.narrow(0, bchunk_start, bchunk_size)
-        weight_t = weight_target.narrow(0, bchunk_start, bchunk_size)
+        neg_weight_t = neg_weight_target.narrow(0, bchunk_start, bchunk_size)
         X_ = ensure_size(X, 0, bchunk_size)
-        expXsum: torch.Tensor = torch.empty(())
-        Xmax: torch.Tensor = torch.empty(())
 
         # Compute output.
-        L_ = linear_weight.narrow(0, 0, num_classes)
-        X__ = ensure_size(X_, 1, num_classes)
+        torch.mm(x, linear_weight.T, out=X_)  # projection
 
-        torch.mm(x, L_.T, out=X__)  # projection
+        Xmax = X_.max(dim=1, keepdim=True)[0]
 
-        Xmax = X__.max(dim=1, keepdim=True)[0]
+        X_.sub_(Xmax)
 
-        X__.sub_(Xmax)
+        output.add_(neg_weight_t.dot(X_.gather(1, t.unsqueeze(1)).squeeze(1)))
 
-        output.sub_(weight_t.dot(X__.gather(1, t.unsqueeze(1)).squeeze(1)))
+        X_.exp_()
 
-        X__.exp_()
-
-        expXsum = X__.sum(dim=1)
+        expXsum = X_.sum(dim=1)
 
         if compute_input_grad or compute_linear_weight_grad:
-            # X__ content will be reused in the classes
+            # X_ content will be reused in the classes
             # chunking for-loop below
-            X__.mul_(-(weight_t / expXsum).unsqueeze(1))
+            X_.mul_((neg_weight_t / expXsum).unsqueeze(1))
 
         expXsum.log_()
 
-        output.add_(weight_t.dot(expXsum))
+        output.sub_(neg_weight_t.dot(expXsum))
 
         # Compute gradients.
 
@@ -131,25 +126,22 @@ def linear_cross_entropy_chunking(
             if compute_input_grad:
                 grad_x = grad_input.narrow(0, bchunk_start, bchunk_size)
                 torch.index_select(linear_weight, 0, t, out=grad_x)
-                grad_x.mul_(-weight_t.unsqueeze(1))  # todo: eliminate neg
+                grad_x.mul_(neg_weight_t.unsqueeze(1))
             else:
                 grad_x = None
 
-            X__ = ensure_size(X_, 1, num_classes)
+            X_ = ensure_size(X_, 1, num_classes)
 
             if grad_x is not None:
-                grad_x.addmm_(X__, linear_weight, alpha=-1)
+                grad_x.addmm_(X_, linear_weight, alpha=-1)
 
             if compute_linear_weight_grad:
-                G_ = ensure_size(G, 0, num_classes)
                 grad_L_ = grad_linear_weight.narrow(0, 0, num_classes)
-                x_ = x.narrow(1, 0, in_features)
-                G__ = ensure_size(G_, 1, in_features)
-                G__.zero_()
-                G__.index_add_(0, t, x_)
-                G__.mul_(weight.unsqueeze(1))
-                G__.addmm_(X__.T, x_, alpha=-1, beta=-1)
-                grad_L_.narrow(1, 0, in_features).add_(G__)
+                G.zero_()
+                G.index_add_(0, t, x)
+                G.mul_(neg_weight.unsqueeze(1))
+                G.addmm_(X_.T, x, alpha=-1)
+                grad_L_.narrow(1, 0, in_features).add_(G)
 
     return output, grad_input, grad_linear_weight
 
