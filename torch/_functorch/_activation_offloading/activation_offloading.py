@@ -41,6 +41,20 @@ CPU_OFFLOAD_PREFIX = "cpu_offload_"
 GPU_RELOAD_PREFIX = "gpu_reload_"
 
 
+def _find_all_effective_users(node: fx.Node, op_types: OpTypes) -> OrderedSet[fx.Node]:
+    """Find all effective users of a node, where view ops extend the lifetime
+    of the original node. If a user is a view op, recursively find users of
+    the view."""
+    effective_users: OrderedSet[fx.Node] = OrderedSet()
+    for user in node.users:
+        if user.op == "output":
+            continue
+        effective_users.add(user)
+        if op_types.is_view(user):
+            effective_users.update(_find_all_effective_users(user, op_types))
+    return effective_users
+
+
 @dataclass
 class ReloadNodeInfo:
     """
@@ -97,21 +111,6 @@ def offload_activation_fw(graph: fx.Graph) -> None:
 
     op_types: OpTypes = get_default_op_list()
 
-    def find_all_effective_users(node: fx.Node) -> OrderedSet[fx.Node]:
-        """
-        Find all effective users of a node, where view ops extend the lifetime of the
-        original node. If a user is a view op, recursively find users of the view.
-        """
-        effective_users: OrderedSet[fx.Node] = OrderedSet()
-        for user in node.users:
-            if user.op == "output":
-                continue
-            effective_users.add(user)
-            if op_types.is_view(user):
-                effective_users.update(find_all_effective_users(user))
-
-        return effective_users
-
     output_node: fx.Node = graph.find_nodes(op="output")[0]
     # pyrefly: ignore [bad-assignment]
     fwd_outputs: tuple[fx.Node, ...] = output_node.args[
@@ -127,8 +126,7 @@ def offload_activation_fw(graph: fx.Graph) -> None:
             continue
 
         # Find insertion point, which is the last use
-        all_effective_users: OrderedSet[fx.Node] = find_all_effective_users(node)
-        if all_effective_users := find_all_effective_users(node):
+        if all_effective_users := _find_all_effective_users(node, op_types):
             last_user = max(all_effective_users, key=lambda n: node_to_index[n])
         else:
             last_user: fx.Node = node
@@ -211,16 +209,6 @@ def offload_activation_fw_async(graph: fx.Graph) -> None:
 
     op_types: OpTypes = get_default_op_list()
 
-    def find_all_effective_users(node: fx.Node) -> OrderedSet[fx.Node]:
-        effective_users: OrderedSet[fx.Node] = OrderedSet()
-        for user in node.users:
-            if user.op == "output":
-                continue
-            effective_users.add(user)
-            if op_types.is_view(user):
-                effective_users.update(find_all_effective_users(user))
-        return effective_users
-
     output_node: fx.Node = graph.find_nodes(op="output")[0]
     # pyrefly: ignore [bad-assignment]
     fwd_outputs: tuple[fx.Node, ...] = output_node.args[
@@ -242,14 +230,16 @@ def offload_activation_fw_async(graph: fx.Graph) -> None:
     )
     transfer_stream_id: int = new_stream()
 
+    # Track (completion_event, gpu_tensor) for sync_dealloc at end of graph
+    offloaded_tensors: list[tuple[int, fx.Node]] = []
+
     for node in fwd_outputs:
         if node.meta.get("saved_for_offloading", False) is False:
             continue
 
         completion_event_id: int = new_event()
 
-        all_effective_users: OrderedSet[fx.Node] = find_all_effective_users(node)
-        if all_effective_users:
+        if all_effective_users := _find_all_effective_users(node, op_types):
             last_user = max(all_effective_users, key=lambda n: node_to_index[n])
         else:
             last_user: fx.Node = node
@@ -274,6 +264,18 @@ def offload_activation_fw_async(graph: fx.Graph) -> None:
             wait_node.meta["tensor_meta"] = offload_node.meta["tensor_meta"]
 
         node_to_offload[node] = wait_node
+        offloaded_tensors.append((completion_event_id, node))
+
+    # Insert sync_dealloc at end of graph for each offloaded GPU tensor.
+    # By this point the D2H transfer is long done, so the event wait is
+    # essentially free — we just need to extend the GPU tensor's lifetime
+    # so the allocator doesn't reuse its memory before the copy completes.
+    with graph.inserting_before(output_node):
+        for completion_event_id, gpu_tensor in offloaded_tensors:
+            graph.call_function(
+                torch.ops.streams.sync_dealloc.default,
+                args=(completion_event_id, current_stream_id, gpu_tensor),
+            )
 
     output_node.update_arg(
         0, tuple(node_to_offload.get(node, node) for node in fwd_outputs)
@@ -321,6 +323,7 @@ def reload_activation_bw_async(graph: fx.Graph) -> None:
                 args=(
                     transfer_stream_id,
                     completion_event_id,
+                    None,
                     node,
                     original_device,
                 ),
@@ -585,12 +588,12 @@ def activation_reload_prefetch_async(bwd_module: fx.GraphModule) -> None:
 def _calculate_transfer_size(device_put_node: fx.Node) -> int:
     """Calculate the size in bytes of data being transferred."""
 
-    # For ao.reload/ao.offload ops, the tensor is args[2]; for device_put, it's args[0]
-    if device_put_node.target in (
-        torch.ops.ao.reload.default,
-        torch.ops.ao.offload.default,
-    ):
+    # ao.offload(stream, event, tensor) -> tensor at args[2]
+    # ao.reload(stream, completion_event, start_event, tensor, device) -> tensor at args[3]
+    if device_put_node.target == torch.ops.ao.offload.default:
         return _size_of(device_put_node.args[2])  # pyrefly: ignore [bad-argument-type]
+    if device_put_node.target == torch.ops.ao.reload.default:
+        return _size_of(device_put_node.args[3])  # pyrefly: ignore [bad-argument-type]
     return _size_of(device_put_node.args[0])  # pyrefly: ignore [bad-argument-type]
 
 
