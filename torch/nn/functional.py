@@ -3652,7 +3652,7 @@ def linear_cross_entropy(
     linear_weight: Tensor,
     target: Tensor,
     *,
-    weight: Optional[Tensor] = None,
+    weight: Tensor | None = None,
     reduction: str = "mean",
     ignore_index: int = -100,
     label_smoothing: float = 0.0,
@@ -3662,7 +3662,7 @@ def linear_cross_entropy(
     ::
       loss = linear_cross_entropy(input, linear_weight, target, **kwargs)
 
-    is equivalent to
+    is equivalent to the following reference implementation of linear_cross_entropy
 
     ::
       logits = linear(input, linear_weight)
@@ -3732,17 +3732,26 @@ def linear_cross_entropy(
             reduction=reduction,
             label_smoothing=label_smoothing,
         )
-    num_classes = linear_weight.shape[0]
-    if len(linear_weight.shape) > 2:
-        # linear supports 2-D weights only
-        linear_weight = linear_weight.reshape((-1, linear_weight.shape[-1]))
+
+    out_features = linear_weight.shape[:-2]
+    num_classes = linear_weight.shape[-2]
+    in_features = input.shape[-1]
+    if out_features:
+        linear_weight = linear_weight.reshape(
+            (math.prod(out_features, start=num_classes), in_features)
+        )
+
     logits = linear(input, linear_weight)
     # recover logits shape that corresponds to the shape of specified
     # linear_weight:
     if target.dtype.is_floating_point:
         logits_shape = target.shape
     elif target.shape:
-        logits_shape = (target.shape[0], num_classes, *target.shape[1:])
+        if input.dim() == 1:
+            logits_shape = (num_classes, *out_features)
+        else:
+            num_batches = input.shape[0]
+            logits_shape = (num_batches, num_classes, *out_features)
     else:
         logits_shape = (num_classes,)
     logits = logits.reshape(logits_shape)

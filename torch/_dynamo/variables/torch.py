@@ -965,6 +965,60 @@ class TorchInGraphFunctionVariable(BaseTorchVariable):
             torch._C._set_deterministic_algorithms(value)
             return CONSTANT_VARIABLE_NONE
 
+        @register(torch.autocast_increment_nesting)
+        def handle_autocast_increment_nesting(
+            self, tx: "InstructionTranslator"
+        ) -> VariableTracker:
+            tx.output.create_node(
+                "call_function", torch.autocast_increment_nesting, (), {}
+            )
+            prev = torch.autocast_increment_nesting()
+            tx.output.add_cleanup_hook(lambda: torch.autocast_decrement_nesting())
+            return VariableTracker.build(tx, prev)
+
+        @register(torch.autocast_decrement_nesting)
+        def handle_autocast_decrement_nesting(
+            self, tx: "InstructionTranslator"
+        ) -> VariableTracker:
+            tx.output.create_node(
+                "call_function", torch.autocast_decrement_nesting, (), {}
+            )
+            prev = torch.autocast_decrement_nesting()
+            tx.output.add_cleanup_hook(lambda: torch.autocast_increment_nesting())
+            return VariableTracker.build(tx, prev)
+
+        @register(torch.set_autocast_enabled)
+        def handle_set_autocast_enabled(
+            self,
+            tx: "InstructionTranslator",
+            device_type: VariableTracker,
+            enabled: VariableTracker,
+        ) -> VariableTracker:
+            tx.output.create_node(
+                "call_function",
+                torch.set_autocast_enabled,
+                (device_type.as_proxy(), enabled.as_proxy()),
+            )
+            dev_py_const = device_type.as_python_constant()
+            prev = torch.is_autocast_enabled(dev_py_const)
+            torch.set_autocast_enabled(dev_py_const, enabled.as_python_constant())
+            tx.output.add_cleanup_hook(
+                lambda: torch.set_autocast_enabled(dev_py_const, prev)
+            )
+            return CONSTANT_VARIABLE_NONE
+
+        @register(torch.set_autocast_cache_enabled)
+        def handle_set_autocast_cache_enabled(
+            self, tx: "InstructionTranslator", enabled: VariableTracker
+        ) -> VariableTracker:
+            tx.output.create_node(
+                "call_function", torch.set_autocast_cache_enabled, (enabled.as_proxy(),)
+            )
+            prev = torch.is_autocast_cache_enabled()
+            torch.set_autocast_cache_enabled(enabled.as_python_constant())
+            tx.output.add_cleanup_hook(lambda: torch.set_autocast_cache_enabled(prev))
+            return CONSTANT_VARIABLE_NONE
+
         @register(torch.are_deterministic_algorithms_enabled)
         def handle_are_deterministic_algorithms_enabled(
             self, tx: "InstructionTranslator"
@@ -1919,6 +1973,52 @@ class TorchInGraphFunctionVariable(BaseTorchVariable):
                     proxy_args,
                     {},
                 ),
+            )
+
+        def exchange_device_helper(
+            tx: "InstructionTranslator",
+            args: Sequence[VariableTracker],
+            kwargs: dict[str, VariableTracker],
+            fn: Callable[[int], int | None],
+        ) -> VariableTracker:
+            if len(args) != 1 or kwargs:
+                raise_type_error_exc(
+                    tx,
+                    f"{fn.__name__} takes exactly one argument ({len(args)} given)",
+                )
+            current_device_source = CallFunctionNoArgsSource(
+                AttrSource(AttrSource(ImportSource("torch"), "cuda"), "current_device")
+            )
+            install_guard(current_device_source.make_guard(GuardBuilder.EQUALS_MATCH))
+            arg = args[0].as_python_constant()
+            prev = fn(arg)
+            tx.output.create_node(
+                "call_function",
+                fn,
+                (arg,),
+                {},
+            )
+            tx.output.add_cleanup_hook(lambda: torch.cuda.set_device(prev))
+            return VariableTracker.build(tx, prev)
+
+        @register(torch.cuda._exchange_device)
+        def handle_exchange_device(
+            self,
+            tx: "InstructionTranslator",
+            *args: VariableTracker,
+            **kwargs: VariableTracker,
+        ) -> VariableTracker:
+            return exchange_device_helper(tx, args, kwargs, torch.cuda._exchange_device)
+
+        @register(torch.cuda._maybe_exchange_device)
+        def handle_maybe_exchange_device(
+            self,
+            tx: "InstructionTranslator",
+            *args: VariableTracker,
+            **kwargs: VariableTracker,
+        ) -> VariableTracker:
+            return exchange_device_helper(
+                tx, args, kwargs, torch.cuda._maybe_exchange_device
             )
 
         @register(torch.autograd.grad)
