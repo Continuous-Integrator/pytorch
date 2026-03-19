@@ -225,9 +225,7 @@ def offload_activation_fw_async(graph: fx.Graph) -> None:
     if not nodes_to_offload:
         return
 
-    current_stream_id: int = get_current_stream(
-        nodes_to_offload[0].meta["val"].device
-    )
+    current_stream_id: int = get_current_stream(nodes_to_offload[0].meta["val"].device)
     transfer_stream_id: int = new_stream()
 
     # Track (completion_event, gpu_tensor) for sync_dealloc at end of graph
@@ -563,8 +561,7 @@ def activation_reload_prefetch_async(bwd_module: fx.GraphModule) -> None:
     reload_patterns: dict[fx.Node, ReloadNodeInfo] = {}
     for node in graph.nodes:
         if not (
-            node.op == "call_function"
-            and node.target == torch.ops.ao.reload.default
+            node.op == "call_function" and node.target == torch.ops.ao.reload.default
         ):
             continue
         wait_node = next(
@@ -652,7 +649,8 @@ def identify_reload_patterns(
         wait_event_node: fx.Node = nodes_list[reload_node_idx + 3]
 
         # Validate the nodes are what we expect
-        _validate_pattern_nodes(
+        # Removed in follow-up commit
+        _validate_pattern_nodes(  # noqa: F821  # pyrefly: ignore [unknown-name]
             fork_node,
             wait_stream_node,
             record_event_node,
