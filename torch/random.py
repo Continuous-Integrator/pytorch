@@ -1,7 +1,7 @@
 # mypy: allow-untyped-defs
 import contextlib
 import warnings
-from collections.abc import Generator
+from collections.abc import Generator, Sequence
 from typing import Optional, TYPE_CHECKING
 
 import torch
@@ -14,6 +14,10 @@ __all__ = [
     "seed",
     "initial_seed",
     "fork_rng",
+    "split",
+    "fold_in",
+    "normal",
+    "uniform",
     "thread_safe_generator",
 ]
 
@@ -22,6 +26,62 @@ if TYPE_CHECKING:
     from torch.utils.data._utils.worker import WorkerInfo
 
 from torch._C import default_generator
+
+
+def key(seed: int, impl: str = "philox", device: torch.device = None) -> torch.Tensor:
+    if impl != "philox":
+        raise NotImplementedError(
+            f"torch.random.key() does not support PRNG impl '{impl}'"
+        )
+
+    # (seed, offset)
+    return torch.tensor([seed, 0], dtype=torch.uint64, device=device)
+
+
+def split(key: torch.Tensor, num: int = 2) -> torch.Tensor:
+    return torch.ops.aten._philox_key_split(key, num)
+
+
+def fold_in(key: torch.Tensor, data: int) -> torch.Tensor:
+    return torch.ops.aten._philox_key_fold_in(key, data)
+
+
+def normal(
+    key: torch.Tensor,
+    *shape: tuple[int, ...],
+    mean: float = 0.0,
+    std: float = 1.0,
+    dtype: torch.dtype | None = None,
+    device: torch.device | str | None = None,
+    portable: bool = True,
+) -> torch.Tensor:
+    if len(shape) == 1 and isinstance(shape[0], Sequence):
+        shape = tuple(shape[0])
+    if dtype is None:
+        dtype = torch.float32
+    if device is None:
+        device = key.device
+    result = torch.empty(shape, dtype=dtype, device=device)
+    return torch.ops.aten._philox_normal_(result, key, mean, std, portable)
+
+
+def uniform(
+    key: torch.Tensor,
+    *shape: tuple[int, ...],
+    low: float = 0.0,
+    high: float = 1.0,
+    dtype: torch.dtype | None = None,
+    device: torch.device | str | None = None,
+    portable: bool = True,
+) -> torch.Tensor:
+    if len(shape) == 1 and isinstance(shape[0], Sequence):
+        shape = tuple(shape[0])
+    if dtype is None:
+        dtype = torch.float32
+    if device is None:
+        device = key.device
+    result = torch.empty(shape, dtype=dtype, device=device)
+    return torch.ops.aten._philox_uniform_(result, key, low, high, portable)
 
 
 def set_rng_state(new_state: torch.Tensor) -> None:
