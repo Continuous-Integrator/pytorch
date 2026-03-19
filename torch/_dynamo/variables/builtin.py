@@ -3056,7 +3056,7 @@ class BuiltinVariable(VariableTracker):
         ):
             from .constant import FakeIdVariable
 
-            return FakeIdVariable(id(args[0]))
+            return FakeIdVariable(id(args[0].python_value_for_identity()))
         else:
             unimplemented(
                 gb_type="id() with unsupported args",
