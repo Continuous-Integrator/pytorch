@@ -14,7 +14,6 @@ from torch.testing._internal.common_utils import run_tests, TestCase
 def _subprocess_lastline(script, env=None):
     """Run script in a fresh interpreter and return the last line of stdout."""
     # Run from PyTorch root directory so torch._native imports work correctly
-    test_dir = os.path.dirname(os.path.realpath(__file__))
     result = subprocess.check_output(
         [sys.executable, "-c", script],
         cwd=os.path.dirname(os.path.realpath(__file__)),
