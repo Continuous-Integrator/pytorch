@@ -2772,6 +2772,12 @@ Your tensor subclass must implement __coerce_same_metadata_as_tangent__."""
 
             @staticmethod
             def backward(ctx: Any, *flat_args: Any) -> tuple[Any, ...]:
+                # Wrap flat_args in a list and pop it during the call so that
+                # the tuple is only alive as a temporary during unpacking.
+                # This lets compiled backward actually free tangent inputs
+                # via del (otherwise flat_args on the stack frame keeps them alive).
+                _flat_args_ref = [flat_args]
+                del flat_args
                 # Combine tensors from both sources:
                 # 1. ctx.saved_tensors - tensors that went through save_for_backward (with VC check)
                 # 2. ctx._tensors_no_vc_check - tensors stashed directly on ctx (no VC check)
@@ -2785,7 +2791,7 @@ Your tensor subclass must implement __coerce_same_metadata_as_tangent__."""
                     ctx.opaque_objects,
                     CompiledFunction.metadata,
                     CompiledFunction.maybe_subclass_metadata,
-                    *flat_args,
+                    *_flat_args_ref.pop(),
                 )
 
                 if num_rng:

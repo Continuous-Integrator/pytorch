@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import heapq
+import operator
 from collections import Counter, defaultdict
 from typing import Any, Optional, TYPE_CHECKING
 
 import torch
 import torch.fx as fx
 from torch._dynamo.graph_deduplication import _stable_topological_sort
+from torch._inductor import config
 from torch._inductor.fx_passes.bucketing import (
     _schedulable_wait_node,
+    BucketMode,
     is_all_gather_into_tensor as is_all_gather,
     is_fsdp_all_gather,
     is_fsdp_reduce_scatter,
@@ -72,7 +75,7 @@ class ManualOverlapPreservingBucketer(OverlapPreservingBucketer):
                 coll_nodes,
                 wait_insertion_point=first_wait,
                 insert_before=next_node,
-                mode="custom_ops",
+                mode=self.bucket_mode,
             )
         elif is_reduce_scatter(first):
             new_nodes, replacements = merge_reduce_scatter_bucket(
@@ -80,7 +83,7 @@ class ManualOverlapPreservingBucketer(OverlapPreservingBucketer):
                 coll_nodes,
                 wait_insertion_point=first_wait,
                 insert_before=next_node,
-                mode="custom_ops",
+                mode=self.bucket_mode,
             )
         else:
             raise ValueError(
@@ -89,12 +92,27 @@ class ManualOverlapPreservingBucketer(OverlapPreservingBucketer):
 
         logger.debug(f"bucketing nodes: {coll_nodes} into {new_nodes}")  # noqa: G004
 
-        # Identify the new wait and start
+        # Identify the new wait(s) and start
         new_waits = [n for n in new_nodes if _schedulable_wait_node(n)]
-        assert len(new_waits) == 1, f"Expected exactly one new wait, got {new_waits}"
-        new_wait = new_waits[0]
-        new_start = new_wait.args[0]
-        assert isinstance(new_start, fx.Node)
+        assert len(new_waits) >= 1, f"Expected at least one new wait, got {new_waits}"
+
+        if len(new_waits) == 1:
+            new_wait = new_waits[0]
+            new_start: fx.Node = new_wait.args[0]  # pyrefly: ignore[bad-assignment]
+            assert isinstance(new_start, fx.Node)
+        else:
+            # Coalesced bucketing: N waits, find the collective start through getitem
+            coll_start = new_waits[0].args[0]
+            assert isinstance(coll_start, fx.Node)
+            if (
+                coll_start.op == "call_function"
+                and coll_start.target is operator.getitem
+            ):
+                coll_start = coll_start.args[0]  # pyrefly: ignore[bad-assignment]
+            assert isinstance(coll_start, fx.Node)
+            new_start = coll_start
+            # Use last wait as the canonical wait for scheduling
+            new_wait = new_waits[-1]
 
         # Set manual bucketing-specific metadata
         # Note: Generic metadata (nn_module_stack, fwd_nn_module_stack, custom, stack_trace)
@@ -102,12 +120,13 @@ class ManualOverlapPreservingBucketer(OverlapPreservingBucketer):
         node_type = (
             "bucketed_all_gather" if is_all_gather(first) else "bucketed_reduce_scatter"
         )
+        wait_set = OrderedSet(new_waits)
         for n in new_nodes:
-            if n == new_wait:
-                node_type = node_type + "_wait"
-            n.meta["manual_bucket_node_type"] = node_type
-            if "wait" in node_type:
+            if n in wait_set:
+                n.meta["manual_bucket_node_type"] = node_type + "_wait"
                 self.node_to_wait_map[n] = new_wait
+            elif n is new_start:
+                n.meta["manual_bucket_node_type"] = node_type
 
     def manual_bucket_collectives(self, nodes: list[fx.Node]) -> None:
         """
@@ -143,6 +162,7 @@ class ManualOverlapScheduler(OverlapScheduler):
         module_bucket_plans: list[list[str] | str],
         insert_overlap_deps: bool,
         module_stack_fn: Callable[[fx.Node], list[tuple[str, type[Any]]]] | None = None,
+        bucket_mode: BucketMode | None = None,
     ):
         super().__init__(
             gm,
@@ -156,14 +176,19 @@ class ManualOverlapScheduler(OverlapScheduler):
             collective_estimator="analytical",
             max_memory_increase_gb=None,
             max_memory_increase_ratio=None,
+            bucket_mode=bucket_mode or "custom_ops_multidtype",
         )
         self.module_bucket_plans = module_bucket_plans
         self.nodes_in_subgraph: list[list[fx.Node]] = []
 
+        bucketer_kwargs: dict[str, object] = {}
+        if bucket_mode is not None:
+            bucketer_kwargs["bucket_mode"] = bucket_mode
         self.bucketer = ManualOverlapPreservingBucketer(
             graph=self.graph,
             collective_info=self.collective_info,
             scheduled=OrderedSet(self.graph.nodes),
+            **bucketer_kwargs,
         )
         self.insert_overlap_deps = insert_overlap_deps
 
@@ -234,6 +259,8 @@ class ManualOverlapScheduler(OverlapScheduler):
         delayed_rs_wait_nodes: list[fx.Node] = []
         current_rs_start_nodes: list[fx.Node] = []
         overlap_deps: dict[fx.Node, OrderedSet[fx.Node]] = defaultdict(OrderedSet)
+        no_defer_first = config.aten_distributed_optimizations.manual_bucketing_no_defer_first_rs_wait
+        seen_rs_wait = False
 
         # Re-initialize after graph modification in _manual_bucket_collectives
         self.node_idx = {n: i for i, n in enumerate(self.nodes)}
@@ -264,7 +291,11 @@ class ManualOverlapScheduler(OverlapScheduler):
                             overlap_deps[delayed].add(rs_start)
                     delayed_rs_wait_nodes.clear()
                     current_rs_start_nodes.clear()
-                delayed_rs_wait_nodes.append(node)
+                # The first backward RS_wait has no prior compute to overlap
+                # with — deferring it only delays freeing the weight grad.
+                if seen_rs_wait or not no_defer_first:
+                    delayed_rs_wait_nodes.append(node)
+                seen_rs_wait = True
 
             self._schedule(node)
 
@@ -295,6 +326,25 @@ class ManualOverlapScheduler(OverlapScheduler):
 
         _stable_topological_sort(self.graph, overlap_deps)
         self.graph.lint()
+
+        if config.aten_distributed_optimizations.manual_bucketing_comm_streams:
+            _tag = {
+                "bucketed_all_gather": "ag",
+                "bucketed_all_gather_wait": "ag",
+                "bucketed_reduce_scatter": "rs",
+                "bucketed_reduce_scatter_wait": "rs",
+            }
+            for node in self.graph.nodes:
+                stream = _tag.get(node.meta.get("manual_bucket_node_type", ""))
+                if stream is not None:
+                    node.meta["use_comm_stream"] = stream
+        elif config.aten_distributed_optimizations.manual_bucketing_rs_stream:
+            for node in self.graph.nodes:
+                if (
+                    node.meta.get("manual_bucket_node_type")
+                    == "bucketed_reduce_scatter_wait"
+                ):
+                    node.meta["use_rs_stream"] = True
 
         if self.insert_overlap_deps:
             from torch._inductor.fx_passes.control_dependencies import (
@@ -352,6 +402,7 @@ def manual_overlap_bucketing(
     module_bucket_plans: list[list[str] | str],
     insert_overlap_deps: bool = False,
     module_stack_fn: Callable[[fx.Node], list[tuple[str, type[Any]]]] | None = None,
+    bucket_mode: BucketMode | None = None,
 ) -> torch.fx.GraphModule:
     """Schedule nodes based on user specifications in module_bucket_plans
     The manual overlapping consists of two steps:
@@ -370,10 +421,15 @@ def manual_overlap_bucketing(
 
             See the `module_stack_fn` parameter in `make_graph_view` (graph_view.py) for
             detailed documentation on signature, return format, and usage examples.
+        bucket_mode: Bucket mode for collective bucketing. None uses default.
     """
     # decode abbreviated FQNs to actual FQNs
     overlapped_gm = ManualOverlapScheduler(
-        gm, module_bucket_plans, insert_overlap_deps, module_stack_fn
+        gm,
+        module_bucket_plans,
+        insert_overlap_deps,
+        module_stack_fn,
+        bucket_mode=bucket_mode,
     ).run()
     overlapped_gm.recompile()
     return overlapped_gm
