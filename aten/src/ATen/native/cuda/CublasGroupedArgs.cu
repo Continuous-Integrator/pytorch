@@ -4,6 +4,17 @@
 
 namespace at::native {
 
+// cuBLAS VEC32_UE8M0 scale tensor size (bytes, since e8m0 is 1 byte each).
+// Mirrors getScaleTensorSize() from the cuBLAS samples.
+__device__ __forceinline__ int64_t cublas_vec32_scale_size(int inner, int outer) {
+  const int BLOCK_ROWS = 128; // S_BLOCK_INNER(4) * S_VSCALE(32)
+  const int BLOCK_COLS = 128; // S_BLOCK_COLS(32) * S_BLOCK_ROWS(4)
+  const int S_VSCALE = 32;
+  int64_t s_rows = ((inner + BLOCK_ROWS - 1) / BLOCK_ROWS) * (BLOCK_ROWS / S_VSCALE);
+  int64_t s_cols = ((outer + BLOCK_COLS - 1) / BLOCK_COLS) * BLOCK_COLS;
+  return s_rows * s_cols;
+}
+
 __global__ void populate_cublas_grouped_args_kernel(
     const int32_t* __restrict__ offs,
     int64_t base_A, int64_t base_B, int64_t base_D,
@@ -20,6 +31,8 @@ __global__ void populate_cublas_grouped_args_kernel(
     float* __restrict__ alpha_ptr, float* __restrict__ beta_ptr,
     int64_t base_scale_a, int64_t base_scale_b,
     int64_t scale_a_stride_bytes, int64_t scale_b_stride_bytes,
+    int32_t scale_a_inner, int32_t scale_a_outer,
+    int32_t scale_b_inner, int32_t scale_b_outer,
     int64_t* __restrict__ scalePtrA_out, int64_t* __restrict__ scalePtrB_out) {
   int i = threadIdx.x;
 
@@ -53,10 +66,35 @@ __global__ void populate_cublas_grouped_args_kernel(
   betaPtr_out[i] = reinterpret_cast<int64_t>(beta_ptr);
 
   if (scalePtrA_out != nullptr) {
-    scalePtrA_out[i] = base_scale_a + i * scale_a_stride_bytes;
+    if (scale_a_stride_bytes != 0) {
+      // Uniform stride (3D/3D or GroupWise)
+      scalePtrA_out[i] = base_scale_a + i * scale_a_stride_bytes;
+    } else {
+      // Variable-size groups: prefix-sum over per-group scale sizes.
+      // A 0 value in scale_a_inner or scale_a_outer means "use delta from offs".
+      int64_t offset = 0;
+      for (int j = 0; j < i; j++) {
+        int32_t dim_j = (j == 0) ? offs[j] : offs[j] - offs[j - 1];
+        int32_t inner = scale_a_inner ? scale_a_inner : dim_j;
+        int32_t outer = scale_a_outer ? scale_a_outer : dim_j;
+        offset += cublas_vec32_scale_size(inner, outer);
+      }
+      scalePtrA_out[i] = base_scale_a + offset;
+    }
   }
   if (scalePtrB_out != nullptr) {
-    scalePtrB_out[i] = base_scale_b + i * scale_b_stride_bytes;
+    if (scale_b_stride_bytes != 0) {
+      scalePtrB_out[i] = base_scale_b + i * scale_b_stride_bytes;
+    } else {
+      int64_t offset = 0;
+      for (int j = 0; j < i; j++) {
+        int32_t dim_j = (j == 0) ? offs[j] : offs[j] - offs[j - 1];
+        int32_t inner = scale_b_inner ? scale_b_inner : dim_j;
+        int32_t outer = scale_b_outer ? scale_b_outer : dim_j;
+        offset += cublas_vec32_scale_size(inner, outer);
+      }
+      scalePtrB_out[i] = base_scale_b + offset;
+    }
   }
 }
 
@@ -77,6 +115,8 @@ void launch_populate_cublas_grouped_args(
     float* alpha_ptr, float* beta_ptr,
     int64_t base_scale_a, int64_t base_scale_b,
     int64_t scale_a_stride_bytes, int64_t scale_b_stride_bytes,
+    int32_t scale_a_inner, int32_t scale_a_outer,
+    int32_t scale_b_inner, int32_t scale_b_outer,
     int64_t* scalePtrA_out, int64_t* scalePtrB_out,
     cudaStream_t stream) {
   TORCH_CHECK(batchCount > 0 && batchCount <= 1024,
@@ -96,6 +136,8 @@ void launch_populate_cublas_grouped_args(
       alpha_ptr, beta_ptr,
       base_scale_a, base_scale_b,
       scale_a_stride_bytes, scale_b_stride_bytes,
+      scale_a_inner, scale_a_outer,
+      scale_b_inner, scale_b_outer,
       scalePtrA_out, scalePtrB_out);
   C10_CUDA_KERNEL_LAUNCH_CHECK();
 }

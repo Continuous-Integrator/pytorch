@@ -21,6 +21,8 @@ void launch_populate_cublas_grouped_args(
     float* alpha_ptr, float* beta_ptr,
     int64_t base_scale_a, int64_t base_scale_b,
     int64_t scale_a_stride_bytes, int64_t scale_b_stride_bytes,
+    int32_t scale_a_inner, int32_t scale_a_outer,
+    int32_t scale_b_inner, int32_t scale_b_outer,
     int64_t* scalePtrA_out, int64_t* scalePtrB_out,
     cudaStream_t stream);
 

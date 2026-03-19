@@ -268,14 +268,6 @@ struct cublasCommonGroupedArgs {
         const bool mata_needs_ptr = needs_ptr_array(scale_mata_scaling_type);
         const bool matb_needs_ptr = needs_ptr_array(scale_matb_scaling_type);
 
-        // BlockWise1x32 with 2D (jagged) inputs is not yet supported because
-        // per-group scale tensor sizes vary with the jagged dimension.
-        if (scale_mata_scaling_type == at::blas::ScalingType::BlockWise1x32 ||
-            scale_matb_scaling_type == at::blas::ScalingType::BlockWise1x32) {
-          TORCH_CHECK(!a_is_2d && !b_is_2d,
-              "MXFP8 block scales for grouped GEMM only support 3D x 3D inputs currently");
-        }
-
         // Determine per-case which dimensions are variable (delta-based)
         // and how pointer strides work
         bool m_is_delta = false, n_is_delta = false, k_is_delta = false;
@@ -391,13 +383,38 @@ struct cublasCommonGroupedArgs {
 
         // Byte stride between consecutive groups' scale data.
         // For GroupWise (1D float): stride(0)*elem_size = 1*4 = sizeof(float).
-        // For BlockWise1x32 (3D e8m0): stride(0)*elem_size = per_group_numel*1.
-        const int64_t scale_a_stride_bytes = scale_b && scale_b->dim() >= 2
-            ? scale_b->stride(0) * scale_b->element_size()
-            : (scale_b ? scale_b->element_size() : 0);
-        const int64_t scale_b_stride_bytes = scale_a && scale_a->dim() >= 2
-            ? scale_a->stride(0) * scale_a->element_size()
-            : (scale_a ? scale_a->element_size() : 0);
+        // For BlockWise1x32 3D/3D: stride(0)*elem_size = per_group_numel*1.
+        // For BlockWise1x32 with jagged dims: 0 signals variable-size mode.
+        const bool blockwise_variable_a = mata_blockwise && (a_is_2d || b_is_2d);
+        const bool blockwise_variable_b = matb_blockwise && (a_is_2d || b_is_2d);
+        const int64_t scale_a_stride_bytes = blockwise_variable_a ? 0 :
+            (scale_b && scale_b->dim() >= 2
+                ? scale_b->stride(0) * scale_b->element_size()
+                : (scale_b ? scale_b->element_size() : 0));
+        const int64_t scale_b_stride_bytes = blockwise_variable_b ? 0 :
+            (scale_a && scale_a->dim() >= 2
+                ? scale_a->stride(0) * scale_a->element_size()
+                : (scale_a ? scale_a->element_size() : 0));
+
+        // For variable-size BlockWise1x32, pass inner/outer dims for per-group
+        // scale size computation. A value of 0 means "substitute the jagged
+        // dimension (delta from offsets) at runtime".
+        // cuBLAS-A scale: getScaleTensorSize(inner=K, outer=cublas_m=user_N)
+        // cuBLAS-B scale: getScaleTensorSize(inner=K, outer=cublas_n=user_M)
+        int32_t scale_a_inner = 0, scale_a_outer = 0;
+        int32_t scale_b_inner = 0, scale_b_outer = 0;
+        if (blockwise_variable_a) {
+          // K varies (2D/2D): inner=0, outer=cublas_m
+          // cublas_m varies (3D/2D): inner=cublas_k, outer=0
+          scale_a_inner = k_is_delta ? 0 : cublas_k;
+          scale_a_outer = m_is_delta ? 0 : cublas_m;
+        }
+        if (blockwise_variable_b) {
+          // K varies (2D/2D): inner=0, outer=cublas_n
+          // cublas_n varies (2D/3D): inner=cublas_k, outer=0
+          scale_b_inner = k_is_delta ? 0 : cublas_k;
+          scale_b_outer = n_is_delta ? 0 : cublas_n;
+        }
 
         const int64_t base_A = reinterpret_cast<int64_t>(mat2.data_ptr());
         const int64_t base_B = reinterpret_cast<int64_t>(mat1.data_ptr());
@@ -432,6 +449,8 @@ struct cublasCommonGroupedArgs {
               alpha_scalar, beta_scalar,
               base_scale_a, base_scale_b,
               scale_a_stride_bytes, scale_b_stride_bytes,
+              scale_a_inner, scale_a_outer,
+              scale_b_inner, scale_b_outer,
               scaleAPtrArray, scaleBPtrArray,
               stream);
 

@@ -2704,24 +2704,83 @@ class TestFP8Matmul(TestCase):
         torch.cuda.get_device_capability()[0] not in [10, 11],
         "cublaslt grouped gemm requires SM 10.x or 11.0"
     )
-    @parametrize("op", ["3d/3d"])
+    @parametrize("op", ["2d/2d", "2d/3d", "3d/2d", "3d/3d"])
+    @parametrize("out_dtype", [torch.bfloat16, torch.float16, torch.float32])
     @parametrize("fast_accum", [False, True])
-    def test_scaled_grouped_gemm_cublaslt_mxfp8(self, op, fast_accum):
+    def test_scaled_grouped_gemm_cublaslt_mxfp8(self, op, out_dtype, fast_accum):
         device = "cuda"
         a_dtype, b_dtype = torch.float8_e4m3fn, torch.float8_e4m3fn
-        out_dtype = torch.bfloat16
         ngroups = 4
-        BLOCK_SIZE = 32
 
-        # Use 128-aligned dims so the naive scale shape (M, K//32) matches
-        # the cuBLAS VEC32_UE8M0 2D tiled layout size.
-        if op == "3d/3d":
+        def scale_size(inner, outer):
+            """Number of e8m0 elements for cuBLAS VEC32_UE8M0 scale tensor."""
+            BLOCK_ROWS = 128
+            BLOCK_COLS = 128
+            S_VSCALE = 32
+            s_rows = ceil_div(inner, BLOCK_ROWS) * (BLOCK_ROWS // S_VSCALE)
+            s_cols = ceil_div(outer, BLOCK_COLS) * BLOCK_COLS
+            return s_rows * s_cols
+
+        # All dims must be 128-aligned so per-group scale sizes match the
+        # cuBLAS VEC32_UE8M0 2D tiled layout.
+        if op == "2d/2d":
+            m, n = 128, 128
+            # Jagged K: each group gets 128 elements of K
+            k_per_group = [128] * ngroups
+            k_total = sum(k_per_group)
+            offs = torch.tensor(
+                [sum(k_per_group[:i + 1]) for i in range(ngroups)],
+                device=device, dtype=torch.int32,
+            )
+            A = torch.randn(m, k_total, device=device).to(a_dtype)
+            B_T = torch.randn(n, k_total, device=device).to(b_dtype)
+            # scale_a for mat1 (cuBLAS-B): getScaleTensorSize(K_g, cublas_n=m)
+            # scale_b for mat2 (cuBLAS-A): getScaleTensorSize(K_g, cublas_m=n)
+            sa_parts = [torch.ones(scale_size(k_per_group[g], m), device=device, dtype=torch.float8_e8m0fnu) for g in range(ngroups)]
+            sb_parts = [torch.ones(scale_size(k_per_group[g], n), device=device, dtype=torch.float8_e8m0fnu) for g in range(ngroups)]
+            scale_a = torch.cat(sa_parts)
+            scale_b = torch.cat(sb_parts)
+        elif op == "2d/3d":
+            n, k = 128, 128
+            # Jagged M: each group gets 128 rows
+            m_per_group = [128] * ngroups
+            m_total = sum(m_per_group)
+            offs = torch.tensor(
+                [sum(m_per_group[:i + 1]) for i in range(ngroups)],
+                device=device, dtype=torch.int32,
+            )
+            A = torch.randn(m_total, k, device=device).to(a_dtype)
+            B_T = torch.randn(ngroups, n, k, device=device).to(b_dtype)
+            # scale_a (cuBLAS-B): getScaleTensorSize(K, cublas_n=M_g) - M varies
+            sa_parts = [torch.ones(scale_size(k, m_per_group[g]), device=device, dtype=torch.float8_e8m0fnu) for g in range(ngroups)]
+            scale_a = torch.cat(sa_parts)
+            # scale_b (cuBLAS-A): getScaleTensorSize(K, cublas_m=N) - uniform
+            sb_per_group = scale_size(k, n)
+            scale_b = torch.ones(ngroups, sb_per_group, device=device, dtype=torch.float8_e8m0fnu)
+        elif op == "3d/2d":
+            m, k = 128, 128
+            # Jagged N: each group gets 128 columns
+            n_per_group = [128] * ngroups
+            n_total = sum(n_per_group)
+            offs = torch.tensor(
+                [sum(n_per_group[:i + 1]) for i in range(ngroups)],
+                device=device, dtype=torch.int32,
+            )
+            A = torch.randn(ngroups, m, k, device=device).to(a_dtype)
+            B_T = torch.randn(n_total, k, device=device).to(b_dtype)
+            # scale_a (cuBLAS-B): getScaleTensorSize(K, cublas_n=M) - uniform
+            sa_per_group = scale_size(k, m)
+            scale_a = torch.ones(ngroups, sa_per_group, device=device, dtype=torch.float8_e8m0fnu)
+            # scale_b (cuBLAS-A): getScaleTensorSize(K, cublas_m=N_g) - N varies
+            sb_parts = [torch.ones(scale_size(k, n_per_group[g]), device=device, dtype=torch.float8_e8m0fnu) for g in range(ngroups)]
+            scale_b = torch.cat(sb_parts)
+        elif op == "3d/3d":
             m, n, k = 128, 128, 128
             offs = None
             A = torch.randn(ngroups, m, k, device=device).to(a_dtype)
             B_T = torch.randn(ngroups, n, k, device=device).to(b_dtype)
-            scale_a = torch.ones(ngroups, m, k // BLOCK_SIZE, device=device, dtype=torch.float8_e8m0fnu)
-            scale_b = torch.ones(ngroups, n, k // BLOCK_SIZE, device=device, dtype=torch.float8_e8m0fnu)
+            scale_a = torch.ones(ngroups, m, k // 32, device=device, dtype=torch.float8_e8m0fnu)
+            scale_b = torch.ones(ngroups, n, k // 32, device=device, dtype=torch.float8_e8m0fnu)
 
         C = torch._scaled_grouped_mm_cublaslt(
             A,
@@ -2734,12 +2793,48 @@ class TestFP8Matmul(TestCase):
         )
 
         # Reference: per-group scaled_mm with blockwise MXFP8 scales
+        a_is_2d = A.dim() == 2
+        b_is_2d = B_T.dim() == 2
+        if offs is not None:
+            off_vals = [0] + offs.tolist()
         ref_parts = []
+        # Track scale offsets for variable-size groups
+        sa_offset, sb_offset = 0, 0
         for g in range(ngroups):
-            a_g = A[g]
-            b_g = B_T[g].t()
-            sa_g = scale_a[g]
-            sb_g = scale_b[g]
+            if a_is_2d and b_is_2d:
+                start, end = off_vals[g], off_vals[g + 1]
+                a_g = A[:, start:end]
+                b_g = B_T[:, start:end].t()
+                k_g = end - start
+                sa_size = scale_size(k_g, m)
+                sb_size = scale_size(k_g, n)
+                sa_g = scale_a[sa_offset:sa_offset + sa_size].view(-1)
+                sb_g = scale_b[sb_offset:sb_offset + sb_size].view(-1)
+                sa_offset += sa_size
+                sb_offset += sb_size
+            elif a_is_2d and not b_is_2d:
+                start, end = off_vals[g], off_vals[g + 1]
+                a_g = A[start:end, :]
+                b_g = B_T[g].t()
+                m_g = end - start
+                sa_size = scale_size(k, m_g)
+                sa_g = scale_a[sa_offset:sa_offset + sa_size].view(-1)
+                sb_g = scale_b[g]
+                sa_offset += sa_size
+            elif not a_is_2d and b_is_2d:
+                start, end = off_vals[g], off_vals[g + 1]
+                a_g = A[g]
+                b_g = B_T[start:end, :].t()
+                sa_g = scale_a[g]
+                n_g = end - start
+                sb_size = scale_size(k, n_g)
+                sb_g = scale_b[sb_offset:sb_offset + sb_size].view(-1)
+                sb_offset += sb_size
+            else:
+                a_g = A[g]
+                b_g = B_T[g].t()
+                sa_g = scale_a[g]
+                sb_g = scale_b[g]
             out_g = torch._scaled_mm(
                 a_g, b_g,
                 scale_a=sa_g,
@@ -2748,9 +2843,101 @@ class TestFP8Matmul(TestCase):
             )
             ref_parts.append(out_g)
 
-        C_ref = torch.stack(ref_parts, dim=0)
-
+        if a_is_2d and b_is_2d:
+            C_ref = torch.stack(ref_parts, dim=0)
+        elif a_is_2d and not b_is_2d:
+            C_ref = torch.cat(ref_parts, dim=0)
+        elif not a_is_2d and b_is_2d:
+            C_ref = torch.cat(ref_parts, dim=1)
+        else:
+            C_ref = torch.stack(ref_parts, dim=0)
         self.assertEqual(C, C_ref, atol=1e-2, rtol=1e-2)
+
+    @skipIfRocm
+    @unittest.skipIf(
+        torch.cuda.get_device_capability()[0] not in [10, 11],
+        "cublaslt grouped gemm requires SM 10.x or 11.0"
+    )
+    @parametrize("op", ["2d/2d", "2d/3d", "3d/2d", "3d/3d"])
+    @parametrize("fast_accum", [False, True])
+    @parametrize("mode", ["default", "reduce-overhead"])
+    def test_scaled_grouped_gemm_cublaslt_mxfp8_compiled(self, op, fast_accum, mode):
+        device = "cuda"
+        a_dtype, b_dtype = torch.float8_e4m3fn, torch.float8_e4m3fn
+        out_dtype = torch.bfloat16
+        ngroups = 4
+
+        def scale_size(inner, outer):
+            BLOCK_ROWS = 128
+            BLOCK_COLS = 128
+            S_VSCALE = 32
+            s_rows = ceil_div(inner, BLOCK_ROWS) * (BLOCK_ROWS // S_VSCALE)
+            s_cols = ceil_div(outer, BLOCK_COLS) * BLOCK_COLS
+            return s_rows * s_cols
+
+        if op == "2d/2d":
+            m, n = 128, 128
+            k_per_group = [128] * ngroups
+            k_total = sum(k_per_group)
+            offs = torch.tensor(
+                [sum(k_per_group[:i + 1]) for i in range(ngroups)],
+                device=device, dtype=torch.int32,
+            )
+            A = torch.randn(m, k_total, device=device).to(a_dtype)
+            B_T = torch.randn(n, k_total, device=device).to(b_dtype)
+            sa_parts = [torch.ones(scale_size(k_per_group[g], m), device=device, dtype=torch.float8_e8m0fnu) for g in range(ngroups)]
+            sb_parts = [torch.ones(scale_size(k_per_group[g], n), device=device, dtype=torch.float8_e8m0fnu) for g in range(ngroups)]
+            scale_a = torch.cat(sa_parts)
+            scale_b = torch.cat(sb_parts)
+        elif op == "2d/3d":
+            n, k = 128, 128
+            m_per_group = [128] * ngroups
+            m_total = sum(m_per_group)
+            offs = torch.tensor(
+                [sum(m_per_group[:i + 1]) for i in range(ngroups)],
+                device=device, dtype=torch.int32,
+            )
+            A = torch.randn(m_total, k, device=device).to(a_dtype)
+            B_T = torch.randn(ngroups, n, k, device=device).to(b_dtype)
+            sa_parts = [torch.ones(scale_size(k, m_per_group[g]), device=device, dtype=torch.float8_e8m0fnu) for g in range(ngroups)]
+            scale_a = torch.cat(sa_parts)
+            sb_per_group = scale_size(k, n)
+            scale_b = torch.ones(ngroups, sb_per_group, device=device, dtype=torch.float8_e8m0fnu)
+        elif op == "3d/2d":
+            m, k = 128, 128
+            n_per_group = [128] * ngroups
+            n_total = sum(n_per_group)
+            offs = torch.tensor(
+                [sum(n_per_group[:i + 1]) for i in range(ngroups)],
+                device=device, dtype=torch.int32,
+            )
+            A = torch.randn(ngroups, m, k, device=device).to(a_dtype)
+            B_T = torch.randn(n_total, k, device=device).to(b_dtype)
+            sa_per_group = scale_size(k, m)
+            scale_a = torch.ones(ngroups, sa_per_group, device=device, dtype=torch.float8_e8m0fnu)
+            sb_parts = [torch.ones(scale_size(k, n_per_group[g]), device=device, dtype=torch.float8_e8m0fnu) for g in range(ngroups)]
+            scale_b = torch.cat(sb_parts)
+        elif op == "3d/3d":
+            m, n, k = 128, 128, 128
+            offs = None
+            A = torch.randn(ngroups, m, k, device=device).to(a_dtype)
+            B_T = torch.randn(ngroups, n, k, device=device).to(b_dtype)
+            scale_a = torch.ones(ngroups, m, k // 32, device=device, dtype=torch.float8_e8m0fnu)
+            scale_b = torch.ones(ngroups, n, k // 32, device=device, dtype=torch.float8_e8m0fnu)
+
+        torch._dynamo.reset()
+        f_ref = torch._scaled_grouped_mm_cublaslt
+        f = torch.compile(f_ref, fullgraph=True, mode=mode)
+
+        C_ref = f_ref(
+            A, B_T.transpose(-2, -1), scale_a, scale_b,
+            offs=offs, use_fast_accum=fast_accum, out_dtype=out_dtype,
+        )
+        C = f(
+            A, B_T.transpose(-2, -1), scale_a, scale_b,
+            offs=offs, use_fast_accum=fast_accum, out_dtype=out_dtype,
+        )
+        self.assertEqual(C, C_ref)
 
     @unittest.skipIf(not PLATFORM_SUPPORTS_MX_GEMM, mx_skip_msg)
     def test_blockwise_mxfp8_compile(self) -> None:
