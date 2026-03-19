@@ -924,10 +924,17 @@ class CUDAGraphNode:
         # P2P symmetric memory inputs (allocated via empty_strided_p2p with
         # alloc_id).  These have stable addresses and are passed through
         # without copying into the cudagraph pool.
+        #
+        # Detection: P2P buffers are allocated via cuMemCreate/cuMemMap (not
+        # the CUDA caching allocator), so they lack a standard deleter.
+        # In the cudagraph input context, non-standard-deleter CUDA tensors
+        # are P2P allocations — other non-standard-deleter types (e.g., CUDA
+        # IPC) are not expected as compiled graph inputs.
         self.p2p_input_idxs: list[int] = [
             idx
             for idx, t in enumerate(inputs)
             if isinstance(t, torch.Tensor)
+            and t.is_cuda
             and not torch._C._has_Standard_Deleter(t.untyped_storage()._cdata)
         ]
 
