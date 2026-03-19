@@ -11,11 +11,6 @@ from torch.utils._python_dispatch import _disable_current_modes
 log = logging.getLogger(__name__)
 
 
-def _reconstruct_fake_script_object(real_obj, script_class_name):
-    """Reconstruct a FakeScriptObject from its pickled real_obj."""
-    return FakeScriptObject(real_obj, script_class_name, real_obj)
-
-
 class FakeScriptObject:
     def __init__(
         self, wrapped_obj: Any, script_class_name: str, x: torch.ScriptObject | None
@@ -82,15 +77,9 @@ class FakeScriptObject:
         return hash(self.real_obj)
 
     def __reduce__(self):
-        # Delegate pickling to the real_obj which knows how to handle
-        # unpicklable internal state (e.g., DeviceMesh strips _pg_registry
-        # via __getstate__). Without this, pickle traverses our __dict__
-        # which includes attributes like _pg_registry copied from the real
-        # object, hitting unpicklable C++ objects like ProcessGroup.
-        return (
-            _reconstruct_fake_script_object,
-            (self.real_obj, self.script_class_name),
-        )
+        # FakeScriptObject is a tracing artifact; when pickled (e.g. for
+        # autograd cache), serialize the real object instead.
+        return self.real_obj.__reduce__()
 
     def __deepcopy__(self, memo: dict[int, Any]) -> "FakeScriptObject":
         if id(self) in memo:
