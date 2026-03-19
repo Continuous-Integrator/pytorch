@@ -4749,12 +4749,16 @@ def forward(self, tangents_1):
 
     @unittest.skipIf(not torch.cuda.is_available(), "CUDA is unavailable")
     def test_tangent_freed_compiled_model_and_loss(self):
-        """Scenario: compiled model + compiled loss (torchtitan pattern).
+        """Scenario: compiled model + compiled loss (torchtitan simple_fsdp pattern).
 
-        The tangent for the model backward (grad w.r.t. pred) is created
-        internally by the loss backward. No user code holds a reference.
-        With boxed calling convention, all framework refs should be released
-        and the tangent freed during model backward."""
+        Mirrors torchtitan's simple_fsdp training loop:
+          pred = compiled_model(input)   # torch.compile(model)
+          loss = compiled_loss(pred, labels)  # torch.compile(loss_fn)
+          loss.backward()
+
+        The tangent for model backward is created internally by loss backward.
+        No user variable holds it — only the C++ pyInputs tuple on the stack.
+        The boxed calling convention alone frees it (no resize_(0) needed)."""
         model, x, labels = self._make_model_and_input()
         compiled_model = torch.compile(model, backend="inductor")
 
@@ -4789,10 +4793,10 @@ def forward(self, tangents_1):
 
     @unittest.skipIf(not torch.cuda.is_available(), "CUDA is unavailable")
     def test_tangent_freed_compiled_model_eager_loss(self):
-        """Scenario: compiled model + eager loss.
+        """Scenario: compiled model + eager loss (common training pattern).
 
-        Same as above but loss is not compiled. The tangent (grad w.r.t. pred)
-        is created by eager cross_entropy backward."""
+        Similar to torchtitan but loss is not compiled. The tangent is
+        created by eager cross_entropy backward. Boxed convention frees it."""
         model, x, labels = self._make_model_and_input()
         compiled_model = torch.compile(model, backend="inductor")
 
@@ -4802,36 +4806,12 @@ def forward(self, tangents_1):
         loss.backward()
 
     @unittest.skipIf(not torch.cuda.is_available(), "CUDA is unavailable")
-    def test_tangent_user_provided(self):
-        """Scenario: user provides tangents via out.backward(tangents).
-
-        The user holds a reference to the tangent tensor. The framework
-        cannot free the underlying TensorImpl during backward because the
-        user's Python variable shares the same TensorImpl. This scenario
-        requires resize_(0) in codegen to free CUDA memory."""
-        model, x, _labels = self._make_model_and_input()
-        compiled_model = torch.compile(model, backend="inductor")
-
-        out = compiled_model(x)
-        tangents = torch.randn_like(out)
-        tangent_storage = tangents.untyped_storage()
-        self.assertGreater(tangent_storage.nbytes(), 0)
-
-        out.backward(tangents)
-        # User still holds 'tangents' — TensorImpl alive, storage has data.
-        # Only resize_(0) in codegen can free CUDA memory in this case.
-        # Without resize_(0), storage keeps its original size.
-        del tangents
-        # After del, tensor is gone but storage object is still held by us.
-        # Storage nbytes stays at original size (no resize_(0) applied).
-
-    @unittest.skipIf(not torch.cuda.is_available(), "CUDA is unavailable")
     def test_tangent_refcount_during_backward(self):
-        """Verify tangent refcount drops inside compiled model backward.
+        """Verify tangent refcount drops at model/loss boundary.
 
-        Uses a custom autograd function between model and loss to capture
-        the tangent's refcount at the boundary, then checks that the boxed
-        calling convention reduces refs vs the baseline tuple convention."""
+        Mirrors torchtitan simple_fsdp layout with a probe between compiled
+        model and compiled loss. Checks that boxed calling convention keeps
+        refcount low enough for deallocation when no user ref exists."""
         model, x, labels = self._make_model_and_input()
         compiled_model = torch.compile(model, backend="inductor")
 
@@ -4869,29 +4849,6 @@ def forward(self, tangents_1):
             "expected <= 6 with boxed calling convention",
         )
 
-    @unittest.skipIf(not torch.cuda.is_available(), "CUDA is unavailable")
-    @torch._inductor.config.patch(force_bw_tangent_early_storage_release=True)
-    def test_tangent_storage_resize_zero(self):
-        """With force_bw_tangent_early_storage_release=True, tangent storage is resized
-        to 0 after last use in the compiled backward, even when the user
-        holds a reference to the tangent tensor."""
-        torch._dynamo.reset()
-        model, x, _labels = self._make_model_and_input()
-        compiled_model = torch.compile(model, backend="inductor")
-
-        out = compiled_model(x)
-        tangents = torch.randn_like(out)
-        tangent_storage = tangents.untyped_storage()
-        self.assertGreater(tangent_storage.nbytes(), 0)
-
-        out.backward(tangents)
-        del tangents
-
-        self.assertEqual(
-            tangent_storage.nbytes(),
-            0,
-            "Tangent storage should be resized to 0 with force_bw_tangent_early_storage_release",
-        )
 
 
 def extract_graph(fx_g, _, graph_cell):

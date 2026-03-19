@@ -162,15 +162,7 @@ auto PyNode::apply(variable_list&& inputs) -> variable_list {
   THPObjectPtr pyInputs(to_py_args(inputs, &_device_guard));
   inputs.clear();
 
-  // Check if this function opts into the boxed calling convention.
-  // Only CompiledFunction (AOTAutograd) sets _supports_boxed_grads = True.
-  THPObjectPtr supports_boxed(
-      PyObject_GetAttrString(obj, "_supports_boxed_grads"));
-  bool use_boxed = supports_boxed && PyObject_IsTrue(supports_boxed.get());
-  if (PyErr_Occurred())
-    PyErr_Clear();
-
-  if (use_boxed) {
+  if (py_fn->boxed_grads) {
     // Move grad tensors from the immutable args tuple into a mutable Python
     // list on the function object. Replace tuple items with None so pyInputs
     // doesn't keep tensors alive during the blocking PyObject_CallObject.
@@ -195,7 +187,7 @@ auto PyNode::apply(variable_list&& inputs) -> variable_list {
     throw_python_error();
   THPObjectPtr r(PyObject_CallObject(apply_fn, pyInputs.get()));
   pyInputs = nullptr;
-  if (use_boxed) {
+  if (py_fn->boxed_grads) {
     PyObject_SetAttrString(obj, "_boxed_grads", Py_None);
   }
   if (!r)
@@ -610,6 +602,7 @@ static PyObject* THPFunction_new(
   self->materialize_grads = true;
   self->pure_view = false;
   self->materialize_non_diff_grads = true;
+  self->boxed_grads = false;
   self->clear_saved_tensors_on_access = false;
   self->saved_tensors_accessed_and_cleared = false;
   return obj;
@@ -1542,6 +1535,21 @@ int THPFunction_set_materialize_grads(
   END_HANDLE_TH_ERRORS_RET(-1)
 }
 
+int THPFunction_set_boxed_grads(
+    THPFunction* self,
+    PyObject* value,
+    void* unused) {
+  HANDLE_TH_ERRORS
+  if (!PyBool_Check(value)) {
+    THPUtils_invalidArguments(
+        value, nullptr, "set_boxed_grads", 1, "(bool)");
+    return -1;
+  }
+  self->boxed_grads = (value == Py_True);
+  return 0;
+  END_HANDLE_TH_ERRORS_RET(-1)
+}
+
 int THPFunction_set_pure_view(
     THPFunction* self,
     PyObject* value,
@@ -1875,6 +1883,11 @@ static struct PyGetSetDef THPFunction_properties[] = {
     {"_compiled_autograd_backward_state",
      (getter)THPFunction_get_compiled_autograd_backward_state,
      (setter)THPFunction_set_compiled_autograd_backward_state,
+     nullptr,
+     nullptr},
+    {"_supports_boxed_grads",
+     nullptr,
+     (setter)THPFunction_set_boxed_grads,
      nullptr,
      nullptr},
     {nullptr}};

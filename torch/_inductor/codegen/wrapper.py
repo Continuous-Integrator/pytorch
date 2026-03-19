@@ -3570,16 +3570,6 @@ class PythonWrapperCodegen(CodeGen):
 
         # can be freed but not reused
         if isinstance(buffer, (ir.InputBuffer, ir.TorchBindObject)):
-            if (
-                config.force_bw_tangent_early_storage_release
-                and V.graph.is_backward
-                and isinstance(buffer, ir.InputBuffer)
-                and name.startswith("tangents")
-            ):
-                self.writeline(
-                    "if not torch._C._autograd._get_current_graph_task_keep_graph():"
-                )
-                self.writeline(f"    {name}.untyped_storage().resize_(0)")
             self.writeline(FreeLine(self, buffer))
             return
 

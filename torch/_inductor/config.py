@@ -245,13 +245,6 @@ inplace_buffers = True
 # reuse a buffer for an unrelated purpose
 allow_buffer_reuse = True
 
-# In backward graphs, release storage of tangent (grad_output) inputs after
-# their last use via untyped_storage().resize_(0). This frees CUDA memory
-# even when the tangent tensor was provided by the user (e.g. out.backward(t))
-# and Python/C++ references keep the tensor object alive.
-# Skipped at runtime when retain_graph=True.
-force_bw_tangent_early_storage_release = False
-
 # Enable pooled allocations for non-output tensors
 memory_planning = os.environ.get("TORCHINDUCTOR_MEMORY_PLANNING", "0") == "1"
 

@@ -2558,7 +2558,6 @@ Your tensor subclass must implement __coerce_same_metadata_as_tangent__."""
             num_symints_saved_for_bw = num_symints_saved_for_bw_
             _aot_id = aot_config.aot_id
             _lazy_backward_info = lazy_backward_info
-            _supports_boxed_grads = True
 
             @staticmethod
             def _compiled_autograd_key(ctx: Any) -> tuple[Any, ...]:
@@ -2672,6 +2671,7 @@ Your tensor subclass must implement __coerce_same_metadata_as_tangent__."""
                 # Only save tensors that need VC checks via save_for_backward
                 ctx.save_for_backward(*tensors_to_save)
                 ctx._tensors_no_vc_check = tensors_no_vc
+                ctx._supports_boxed_grads = True
 
                 symint_outs = fw_outs[
                     CompiledFunction.metadata.symints_saved_for_backwards_slice
