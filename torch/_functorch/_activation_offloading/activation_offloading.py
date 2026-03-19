@@ -301,8 +301,10 @@ def reload_activation_bw_async(graph: fx.Graph) -> None:
     if not nodes_to_reload:
         return
 
-    original_device: torch.Device = nodes_to_reload[0].meta["original_device"]
-    current_stream_id: int = get_current_stream(original_device)
+    original_device: torch.device = nodes_to_reload[0].meta["original_device"]
+    current_stream_id: int = get_current_stream(
+        original_device
+    )  # pyrefly: ignore [bad-argument-type]
     transfer_stream_id: int = new_stream()
 
     for node in nodes_to_reload:
@@ -314,7 +316,7 @@ def reload_activation_bw_async(graph: fx.Graph) -> None:
             else output_node
         )
 
-        original_device: torch.Device = node.meta["original_device"]
+        original_device = node.meta["original_device"]
         with graph.inserting_before(insert_point):
             reload_node: fx.Node = graph.call_function(
                 torch.ops.ao.reload.default,
