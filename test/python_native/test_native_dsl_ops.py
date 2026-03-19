@@ -19,8 +19,8 @@ def _subprocess_lastline(script, env=None):
     result = subprocess.check_output(
         [sys.executable, "-c", script],
         cwd=pytorch_root,
-        env=env,
-        stderr=subprocess.DEVNULL,
+        # env=env,
+        # stderr=subprocess.DEVNULL,
         text=True,
     ).strip()
     return result.rsplit("\n", 1)[-1]
