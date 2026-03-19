@@ -15,7 +15,6 @@ def _subprocess_lastline(script, env=None):
     """Run script in a fresh interpreter and return the last line of stdout."""
     # Run from PyTorch root directory so torch._native imports work correctly
     test_dir = os.path.dirname(os.path.realpath(__file__))
-    pytorch_root = os.path.dirname(os.path.dirname(test_dir))
     result = subprocess.check_output(
         [sys.executable, "-c", script],
         cwd=os.path.dirname(os.path.realpath(__file__)),
