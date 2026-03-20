@@ -1,5 +1,6 @@
 # mypy: allow-untyped-defs
 import math
+import os
 from collections.abc import Callable, Sequence
 from enum import Enum
 from functools import wraps
@@ -8459,6 +8460,8 @@ def meta_grouped_mm(
     bias: Tensor | None = None,
     out_dtype: torch.dtype | None = None,
 ) -> Tensor:
+    if os.environ.get("TORCH_GROUPED_MM_PREFER_CUBLASLT") == "1":
+        return meta_grouped_mm_cublaslt(mat_a, mat_b, offs=offs, bias=bias, out_dtype=out_dtype)
     return _meta_grouped_mm_common(
         mat_a,
         mat_b,
@@ -8602,6 +8605,13 @@ def meta_scaled_grouped_mm(
 ):
     # matching _scaled_grouped_mm_cuda Blas.cpp implementation
     out_dtype = out_dtype or torch.bfloat16
+
+    if os.environ.get("TORCH_GROUPED_MM_PREFER_CUBLASLT") == "1":
+        return meta_scaled_grouped_mm_cublaslt(
+            mat_a, mat_b, scale_a, scale_b,
+            offs=offs, bias=bias, scale_result=scale_result,
+            out_dtype=out_dtype, use_fast_accum=use_fast_accum,
+        )
 
     return _meta_grouped_mm_common(
         mat_a,

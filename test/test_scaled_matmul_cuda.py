@@ -3,6 +3,7 @@
 import contextlib
 import json
 import math
+import os
 import re
 import itertools
 import tempfile
@@ -2514,7 +2515,9 @@ class TestFP8Matmul(TestCase):
     def test_scaled_grouped_gemm_cublaslt(self, op, dtypes, out_dtype, fast_accum):
         a_dtype, b_dtype = dtypes
         A, B_T, scale_a, scale_b, offs = self.scaled_grouped_gemm_cublaslt_helper(op, a_dtype, b_dtype)
-        C = torch._scaled_grouped_mm_cublaslt(
+        os.environ["TORCH_GROUPED_MM_PREFER_CUBLASLT"] = "1"
+        self.addCleanup(os.environ.pop, "TORCH_GROUPED_MM_PREFER_CUBLASLT", None)
+        C = torch._scaled_grouped_mm(
             A,
             B_T.transpose(-2, -1),
             scale_a,
@@ -2591,7 +2594,9 @@ class TestFP8Matmul(TestCase):
         a_dtype, b_dtype = dtypes
         A, B_T, scale_a, scale_b, offs = self.scaled_grouped_gemm_cublaslt_helper(op, a_dtype, b_dtype)
 
-        f_ref = torch._scaled_grouped_mm_cublaslt
+        os.environ["TORCH_GROUPED_MM_PREFER_CUBLASLT"] = "1"
+        self.addCleanup(os.environ.pop, "TORCH_GROUPED_MM_PREFER_CUBLASLT", None)
+        f_ref = torch._scaled_grouped_mm
         f = torch.compile(f_ref, fullgraph=True, mode=mode)
 
         C_ref = f_ref(
@@ -2647,7 +2652,9 @@ class TestFP8Matmul(TestCase):
         scale_a = torch.rand(ngroups, device=device, dtype=torch.float32) + 0.5
         scale_b = torch.rand(ngroups, device=device, dtype=torch.float32) + 0.5
 
-        C = torch._scaled_grouped_mm_cublaslt(
+        os.environ["TORCH_GROUPED_MM_PREFER_CUBLASLT"] = "1"
+        self.addCleanup(os.environ.pop, "TORCH_GROUPED_MM_PREFER_CUBLASLT", None)
+        C = torch._scaled_grouped_mm(
             A,
             B_T.transpose(-2, -1),
             scale_a,
@@ -2792,7 +2799,9 @@ class TestFP8Matmul(TestCase):
             scale_a = torch.stack(a_sb_list, dim=0)
             scale_b = torch.stack(b_sb_list, dim=0)
 
-        C = torch._scaled_grouped_mm_cublaslt(
+        os.environ["TORCH_GROUPED_MM_PREFER_CUBLASLT"] = "1"
+        self.addCleanup(os.environ.pop, "TORCH_GROUPED_MM_PREFER_CUBLASLT", None)
+        C = torch._scaled_grouped_mm(
             A,
             B_T.transpose(-2, -1),
             scale_a,
@@ -2947,7 +2956,9 @@ class TestFP8Matmul(TestCase):
             scale_b = torch.stack(b_sb_list, dim=0)
 
         torch._dynamo.reset()
-        f_ref = torch._scaled_grouped_mm_cublaslt
+        os.environ["TORCH_GROUPED_MM_PREFER_CUBLASLT"] = "1"
+        self.addCleanup(os.environ.pop, "TORCH_GROUPED_MM_PREFER_CUBLASLT", None)
+        f_ref = torch._scaled_grouped_mm
         f = torch.compile(f_ref, fullgraph=True, mode=mode)
 
         C_ref = f_ref(

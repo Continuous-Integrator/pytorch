@@ -427,11 +427,11 @@ class TestMatmulCuda(InductorTestCase):
         if backend == "cublaslt":
             if dtype == torch.float32:
                 self.skipTest("cublaslt grouped gemm does not support float32")
-            f = torch._grouped_mm_cublaslt
-        elif backend == "cutlass":
-            f = F.grouped_mm
+            os.environ["TORCH_GROUPED_MM_PREFER_CUBLASLT"] = "1"
         else:
-            raise ValueError(f"Invalid backend: {backend}")
+            os.environ["TORCH_GROUPED_MM_PREFER_CUBLASLT"] = "0"
+        self.addCleanup(os.environ.pop, "TORCH_GROUPED_MM_PREFER_CUBLASLT", None)
+        f = torch._grouped_mm
 
         device = "cuda"
         m, n, k, n_groups = 16, 32, 64, 4
@@ -476,11 +476,11 @@ class TestMatmulCuda(InductorTestCase):
         if backend == "cublaslt":
             if dtype == torch.float32:
                 self.skipTest("cublaslt grouped gemm does not support float32")
-            f = torch._grouped_mm_cublaslt
-        elif backend == "cutlass":
-            f = F.grouped_mm
+            os.environ["TORCH_GROUPED_MM_PREFER_CUBLASLT"] = "1"
         else:
-            raise ValueError(f"Invalid backend: {backend}")
+            os.environ["TORCH_GROUPED_MM_PREFER_CUBLASLT"] = "0"
+        self.addCleanup(os.environ.pop, "TORCH_GROUPED_MM_PREFER_CUBLASLT", None)
+        f = torch._grouped_mm
 
         device = "cuda"
         s_int = int(strided)
@@ -543,11 +543,11 @@ class TestMatmulCuda(InductorTestCase):
         if backend == "cublaslt":
             if dtype == torch.float32:
                 self.skipTest("cublaslt grouped gemm does not support float32")
-            f = torch._grouped_mm_cublaslt
-        elif backend == "cutlass":
-            f = F.grouped_mm
+            os.environ["TORCH_GROUPED_MM_PREFER_CUBLASLT"] = "1"
         else:
-            raise ValueError(f"Invalid backend: {backend}")
+            os.environ["TORCH_GROUPED_MM_PREFER_CUBLASLT"] = "0"
+        self.addCleanup(os.environ.pop, "TORCH_GROUPED_MM_PREFER_CUBLASLT", None)
+        f = torch._grouped_mm
 
         device = "cuda"
         s_int = int(strided)
@@ -588,11 +588,11 @@ class TestMatmulCuda(InductorTestCase):
         if backend == "cublaslt":
             if dtype == torch.float32:
                 self.skipTest("cublaslt grouped gemm does not support float32")
-            f = torch._grouped_mm_cublaslt
-        elif backend == "cutlass":
-            f = F.grouped_mm
+            os.environ["TORCH_GROUPED_MM_PREFER_CUBLASLT"] = "1"
         else:
-            raise ValueError(f"Invalid backend: {backend}")
+            os.environ["TORCH_GROUPED_MM_PREFER_CUBLASLT"] = "0"
+        self.addCleanup(os.environ.pop, "TORCH_GROUPED_MM_PREFER_CUBLASLT", None)
+        f = torch._grouped_mm
 
         device = "cuda"
         s_int = int(strided)
@@ -877,8 +877,11 @@ class TestMatmulCuda(InductorTestCase):
         if not aligned:
             self.skipTest("Arguments don't meet alignment requirements")
 
+        os.environ["TORCH_GROUPED_MM_PREFER_CUBLASLT"] = "0"
         C_ref = torch.nn.functional.grouped_mm(A, B, offs=offs)
-        C = torch._grouped_mm_cublaslt(A, B, offs=offs)
+        os.environ["TORCH_GROUPED_MM_PREFER_CUBLASLT"] = "1"
+        self.addCleanup(os.environ.pop, "TORCH_GROUPED_MM_PREFER_CUBLASLT", None)
+        C = torch._grouped_mm(A, B, offs=offs)
         self.assertEqual(C, C_ref)
 
     @unittest.skipIf(TEST_WITH_ROCM, "ROCm doesn't support cuBLASLt grouped GEMM")
@@ -890,7 +893,9 @@ class TestMatmulCuda(InductorTestCase):
     @parametrize("dtype", [torch.float16, torch.bfloat16])
     @parametrize("mode", ["default", "reduce-overhead"])
     def test_grouped_gemm_cublaslt_compiled(self, op, jagged_size, a_row_major, b_row_major, dtype, mode):
-        f_ref = torch._grouped_mm_cublaslt
+        os.environ["TORCH_GROUPED_MM_PREFER_CUBLASLT"] = "1"
+        self.addCleanup(os.environ.pop, "TORCH_GROUPED_MM_PREFER_CUBLASLT", None)
+        f_ref = torch._grouped_mm
         f = torch.compile(f_ref, fullgraph=True, mode=mode)
 
         A, B, offs, aligned = self.grouped_gemm_cublaslt_common(op, jagged_size, a_row_major, b_row_major, dtype)

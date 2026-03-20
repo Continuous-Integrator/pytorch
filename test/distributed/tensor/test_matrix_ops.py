@@ -3,6 +3,7 @@
 
 import itertools
 import math
+import os
 import unittest
 from typing import cast
 
@@ -1070,11 +1071,11 @@ class DistMatrixOpsTest(DTensorTestBase):
         offs = torch.tensor([16, 64], device=self.device_type, dtype=torch.int32)
 
         if backend == "cublaslt":
-            f = torch._grouped_mm_cublaslt
-        elif backend == "cutlass":
-            f = F.grouped_mm
+            os.environ["TORCH_GROUPED_MM_PREFER_CUBLASLT"] = "1"
         else:
-            raise ValueError(f"Invalid backend: {backend}")
+            os.environ["TORCH_GROUPED_MM_PREFER_CUBLASLT"] = "0"
+        self.addCleanup(os.environ.pop, "TORCH_GROUPED_MM_PREFER_CUBLASLT", None)
+        f = torch._grouped_mm
 
         h = f(inp, w1, offs=offs)
         out = f(h, w2, offs=offs)

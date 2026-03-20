@@ -68,6 +68,22 @@ using scaled_blas::convert_int_to_enum;
 
 namespace at::native {
 
+// Forward declarations for cuBLASLt grouped GEMM variants, called from the
+// standard ops when TORCH_GROUPED_MM_PREFER_CUBLASLT=1 is set.
+Tensor _grouped_mm_cublaslt_cuda(
+    const Tensor& mat_a, const Tensor& mat_b,
+    const std::optional<at::Tensor>& offs,
+    const std::optional<at::Tensor>& bias,
+    std::optional<c10::ScalarType> out_dtype);
+Tensor _scaled_grouped_mm_cublaslt_cuda(
+    const Tensor& mat_a, const Tensor& mat_b,
+    const Tensor& scale_a, const Tensor& scale_b,
+    const std::optional<at::Tensor>& offs,
+    const std::optional<at::Tensor>& bias,
+    const std::optional<at::Tensor>& scale_result,
+    std::optional<c10::ScalarType> out_dtype,
+    bool use_fast_accum);
+
 namespace {
 
 bool _scaled_mm_allowed_device(bool sm90_only=false, bool sm100_only=false) {
@@ -429,6 +445,14 @@ _scaled_grouped_mm_cuda(
   bool allowed_device = _scaled_mm_allowed_device(/*sm90_only*/true, /*sm100_only*/true);
   TORCH_CHECK_VALUE(allowed_device, "torch._scaled_grouped_mm is only supported on CUDA devices with compute capability = [9.0, 10.0], or ROCm MI300+");
 
+#if !defined(USE_ROCM) && defined(CUDA_VERSION) && CUDA_VERSION >= 13020
+  if (at::globalContext().preferCublasltGroupedGemm()) {
+    return _scaled_grouped_mm_cublaslt_cuda(
+        mat_a, mat_b, scale_a, scale_b, offs, bias,
+        scale_result, out_dtype, use_fast_accum);
+  }
+#endif
+
   TORCH_CHECK_VALUE(!check_valid_strides_and_return_transposed(mat_a), "Expected mat1 to not be transposed");
   TORCH_CHECK_VALUE(check_valid_strides_and_return_transposed(mat_b), "Expected mat2 to be transposed");
   TORCH_CHECK_VALUE(mat_a.dim() == 2 || mat_a.dim() == 3, "mat_a has to be 2 or 3d");
@@ -544,6 +568,23 @@ _scaled_grouped_mm_cuda_v2(
           bool use_fast_accum) {
   bool allowed_device = _scaled_mm_allowed_device(/*sm90_only*/true, /*sm100_only*/true);
   TORCH_CHECK_VALUE(allowed_device, "torch._scaled_grouped_mm is only supported on CUDA devices with compute capability = [9.0, 10.0], or ROCm MI300+");
+
+#if !defined(USE_ROCM) && defined(CUDA_VERSION) && CUDA_VERSION >= 13020
+  if (at::globalContext().preferCublasltGroupedGemm()) {
+    auto recipe_a_enum = convert_int_to_enum<ScalingType>(scale_recipe_a);
+    if (recipe_a_enum.size() == 1) {
+      bool supported = recipe_a_enum[0] == ScalingType::TensorWise
+          || recipe_a_enum[0] == ScalingType::GroupWise
+          || recipe_a_enum[0] == ScalingType::BlockWise1x32;
+      if (supported) {
+        return _scaled_grouped_mm_cublaslt_cuda(
+            mat_a, mat_b, scale_a[0], scale_b[0],
+            offs, bias, /*scale_result=*/std::nullopt,
+            out_dtype, use_fast_accum);
+      }
+    }
+  }
+#endif
 
   TORCH_CHECK_VALUE(!check_valid_strides_and_return_transposed(mat_a), "Expected mat1 to not be transposed");
   TORCH_CHECK_VALUE(check_valid_strides_and_return_transposed(mat_b), "Expected mat2 to be transposed");
@@ -692,6 +733,11 @@ const std::optional<at::Tensor>& offs,
 const std::optional<at::Tensor>& bias,
 std::optional<c10::ScalarType> out_dtype) {
   _grouped_mm_validate_inputs(mat_a, mat_b, offs, bias, out_dtype);
+#if !defined(USE_ROCM) && defined(CUDA_VERSION) && CUDA_VERSION >= 13020
+  if (at::globalContext().preferCublasltGroupedGemm()) {
+    return _grouped_mm_cublaslt_cuda(mat_a, mat_b, offs, bias, out_dtype);
+  }
+#endif
   bool a_b_and_out_are_bf16 = (
     mat_a.dtype() == at::kBFloat16 &&
     mat_b.dtype() == at::kBFloat16 &&
