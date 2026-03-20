@@ -543,12 +543,20 @@ class TracebackVariable(VariableTracker):
         args: list[VariableTracker],
         kwargs: dict[str, VariableTracker],
     ) -> VariableTracker:
-        if name == "__eq__":
-            # Two traceback variables are only equal if they are the same object
-            return VariableTracker.build(tx, self is args[0])
-        elif name == "__setattr__":
+        if name == "__setattr__":
             return self.call_setattr(tx, *args)
         return super().call_method(tx, name, args, kwargs)
+
+    def richcompare_impl(
+        self,
+        tx: "InstructionTranslator",
+        other: VariableTracker,
+        op: str,
+    ) -> VariableTracker:
+        if op == "__eq__":
+            # Two traceback variables are only equal if they are the same object
+            return VariableTracker.build(tx, self is other)
+        return ConstantVariable.create(NotImplemented)
 
 
 class ExceptionVariable(VariableTracker):
@@ -697,7 +705,7 @@ class ExceptionVariable(VariableTracker):
         elif name == "__traceback__":
             return self.__traceback__
         elif name == "args":
-            return variables.ListVariable(list(self.args), source=self.source)
+            return variables.TupleVariable(list(self.args), source=self.source)
         return super().var_getattr(tx, name)
 
     def __str__(self) -> str:
@@ -1650,19 +1658,18 @@ class TypingVariable(VariableTracker):
         if name == "__getitem__" and len(args) == 1:
             new_typing = self.value[args[0].as_python_constant()]
             return TypingVariable(new_typing)
-        elif name == "__eq__":
-            if len(args) == 1 and not kwargs:
-                result = istype(args[0], TypingVariable) and self.value == args[0].value
-                return variables.ConstantVariable.create(result)
-        unimplemented(
-            gb_type="unsupported method call on `typing` variable",
-            context=f"typing variable: {self.value}, method name: {name}, args: {args}, kwargs: {kwargs}",
-            explanation=f"`torch.compile` does not support method call `{name}` on `typing` variable f{self.value}.",
-            hints=[
-                f"Avoid calling the {name} method on {self.value}.",
-                *graph_break_hints.SUPPORTABLE,
-            ],
-        )
+        return super().call_method(tx, name, args, kwargs)
+
+    def richcompare_impl(
+        self,
+        tx: "InstructionTranslator",
+        other: VariableTracker,
+        op: str,
+    ) -> VariableTracker:
+        if op == "__eq__":
+            result = istype(other, TypingVariable) and self.value == other.value  # type: ignore[attr-defined]
+            return variables.ConstantVariable.create(result)
+        return variables.ConstantVariable.create(NotImplemented)
 
     def var_getattr(self, tx: "InstructionTranslator", name: str) -> VariableTracker:
         from .builder import SourcelessBuilder, VariableBuilder

@@ -185,6 +185,105 @@ def is_data_descriptor(obj: object) -> bool:
     )
 
 
+_reflected_richcompare_op: dict[str, str] = {
+    "__eq__": "__eq__",
+    "__ne__": "__ne__",
+    "__lt__": "__gt__",
+    "__le__": "__ge__",
+    "__gt__": "__lt__",
+    "__ge__": "__le__",
+}
+
+
+def _is_richcompare_not_implemented(vt: "VariableTracker") -> bool:
+    from .constant import ConstantVariable
+
+    return isinstance(vt, ConstantVariable) and vt.value is NotImplemented
+
+
+def _type_overrides_richcompare(tp: type, op: str) -> bool:
+    method = getattr(tp, op, None)
+    obj_method = getattr(object, op, None)
+    return method is not None and method is not obj_method
+
+
+def generic_richcompare(
+    tx: "InstructionTranslator",
+    lhs: "VariableTracker",
+    rhs: "VariableTracker",
+    op: str,
+) -> "VariableTracker":
+    """Implement CPython's PyObject_RichCompare algorithm.
+
+    Steps:
+      1. If type(rhs) is a proper subclass of type(lhs) with overriding reflected op: try rhs first
+      2. Try lhs.__op__(rhs)
+      3. If NotImplemented, try rhs.__reflected_op__(lhs)
+      4. If still NotImplemented: for __eq__/__ne__ use identity; for others TypeError
+    """
+    import operator as _operator
+
+    from .builder import SourcelessBuilder
+
+    reflected = _reflected_richcompare_op[op]
+
+    # Step 1: subclass priority
+    try:
+        lhs_type = lhs.python_type()
+        rhs_type = rhs.python_type()
+        rhs_first = (
+            lhs_type is not rhs_type
+            and issubclass(rhs_type, lhs_type)
+            and _type_overrides_richcompare(rhs_type, reflected)
+        )
+    except NotImplementedError:
+        rhs_first = False
+
+    if rhs_first:
+        result = rhs.richcompare_impl(tx, lhs, reflected)
+        if not _is_richcompare_not_implemented(result):
+            return result
+
+    # Step 2: forward
+    result = lhs.richcompare_impl(tx, rhs, op)
+    if not _is_richcompare_not_implemented(result):
+        return result
+
+    # Step 3: reflected (if not already tried in step 1)
+    if not rhs_first:
+        result = rhs.richcompare_impl(tx, lhs, reflected)
+        if not _is_richcompare_not_implemented(result):
+            return result
+
+    # Step 4: fallback
+    if op in ("__eq__", "__ne__"):
+        # CPython: fall back to identity (a is b)
+        # Compute identity at trace time: VT identity implies Python identity.
+        from .base import NO_SUCH_SUBOBJ
+
+        are_same = lhs is rhs
+        if not are_same:
+            lhs_val = lhs.get_real_python_backed_value()
+            rhs_val = rhs.get_real_python_backed_value()
+            if lhs_val is not NO_SUCH_SUBOBJ and rhs_val is not NO_SUCH_SUBOBJ:
+                are_same = lhs_val is rhs_val
+        from .constant import ConstantVariable
+
+        result = are_same if op == "__eq__" else not are_same
+        return ConstantVariable.create(result)
+    else:
+        from ..utils import cmp_name_to_op_str_mapping
+
+        lhs_name = lhs.python_type_name()
+        rhs_name = rhs.python_type_name()
+        op_str = cmp_name_to_op_str_mapping[op]
+        msg = VariableTracker.build(
+            tx,
+            f"'{op_str}' not supported between instances of '{lhs_name}' and '{rhs_name}'",
+        )
+        raise_observed_exception(TypeError, tx, args=[msg])
+
+
 class UserDefinedVariable(VariableTracker):
     value: object
 
@@ -2993,18 +3092,22 @@ class UserDefinedTupleVariable(UserDefinedObjectVariable):
         kwargs: dict[str, VariableTracker],
     ) -> VariableTracker:
         assert self._tuple_vt is not None
-        if name == "__eq__":
-            if len(args) != 1 or kwargs:
-                raise ValueError("Improper arguments for method.")
-            return VariableTracker.build(tx, self.is_python_equal(args[0]))
-        elif name == "__ne__":
-            if len(args) != 1 or kwargs:
-                raise ValueError("Improper arguments for method.")
-            return VariableTracker.build(tx, not self.is_python_equal(args[0]))
         method = self._maybe_get_baseclass_method(name)
         if method in tuple_methods:
             return self._tuple_vt.call_method(tx, name, args, kwargs)
         return super().call_method(tx, name, args, kwargs)
+
+    def richcompare_impl(
+        self,
+        tx: "InstructionTranslator",
+        other: "VariableTracker",
+        op: str,
+    ) -> "VariableTracker":
+        from .constant import ConstantVariable
+
+        assert self._tuple_vt is not None
+        other_vt = other._tuple_vt if isinstance(other, UserDefinedTupleVariable) else other  # type: ignore[attr-defined]
+        return self._tuple_vt.richcompare_impl(tx, other_vt, op)
 
     def unpack_var_sequence(self, tx: "InstructionTranslator") -> list[VariableTracker]:
         assert self._tuple_vt is not None
