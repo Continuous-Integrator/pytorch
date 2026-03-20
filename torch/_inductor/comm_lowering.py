@@ -506,8 +506,8 @@ def register_symm_mem_lowerings():
         Fallback: insert a Pointwise identity copy allocated in P2P via
         CommBufferLayout.  Used when we don't control the input's allocation.
         """
-        # TODO: For InputBuffer with static shapes, PR #175486 (Layout allocator)
-        # replaces this with a DMA .copy_() outside the graph.
+        # TODO: Follow-up PR replaces this with a DMA .copy_() outside the graph
+        # for InputBuffer with static shapes.
         inp.realize()
         copy = ir.Pointwise.create(
             device=inp.get_device(),
@@ -526,16 +526,21 @@ def register_symm_mem_lowerings():
         """
         Ensure inp is in P2P memory for a symm_mem collective.
 
-        Returns the (possibly replaced) TensorBox. Callers must use
-        the return value since a new identity-copy buffer may be created.
-        # TODO: PR#5 adds a Layout-based path (Path 2) for InputBuffer.
+        If the buffer can be realized as CommBufferLayout (e.g. a
+        ComputedBuffer), it is done in-place (zero-copy).  Otherwise
+        an identity copy to a P2P-allocated buffer is inserted.
+
+        Returns the (possibly replaced) TensorBox.  Callers must use
+        the return value since a new buffer may be created.
         """
         if can_realize_as_comm_buffer(inp, ir.CommBufferType.SYMM_MEM):
             realize_as_comm_buffer(inp, ir.CommBufferType.SYMM_MEM, group_name)  # type: ignore[arg-type]
             return inp
         else:
             return _copy_input_to_comm_buffer(
-                inp, ir.CommBufferType.SYMM_MEM, group_name  # type: ignore[arg-type]
+                inp,
+                ir.CommBufferType.SYMM_MEM,
+                group_name,  # type: ignore[arg-type]
             )
 
     @register_lowering(symm_mem.one_shot_all_reduce)

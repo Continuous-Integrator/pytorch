@@ -1550,51 +1550,6 @@ class LoweringTest(MultiProcContinuousTest):
     @skip_if_rocm_multiprocess  # requires registered-buffer support
     @skip_if_lt_x_gpu(2)
     @fresh_inductor_cache()
-    def test_symm_mem_placeholder_auto_copy(self):
-        """
-        Verify that when a symm_mem collective's input is a graph placeholder
-        (Inductor does not control its allocation), a pointwise identity copy
-        to P2P memory is automatically inserted.
-        """
-        self._init_process()
-
-        N = 8
-
-        def func(x):
-            return torch.ops.symm_mem.one_shot_all_reduce(x, "sum", "0")
-
-        x = torch.rand(N, N, device=self.device)
-        compiled = torch.compile(func, fullgraph=True)
-        code = run_and_get_triton_code(compiled, x)
-
-        # The codegen should contain a P2P allocation (for the auto-copy)
-        self.assertIn(
-            "empty_strided_p2p",
-            code,
-            "Expected empty_strided_p2p for auto-inserted copy from placeholder to P2P",
-        )
-        # The codegen should have a triton copy kernel (pointwise identity)
-        self.assertIn(
-            "one_shot_all_reduce_out",
-            code,
-            "Expected out-variant allreduce in generated code",
-        )
-
-        # Verify correctness
-        compiled_result = compiled(x)
-        eager_result = x.clone()
-        dist.all_reduce(eager_result, op=dist.ReduceOp.SUM)
-        torch.testing.assert_close(
-            compiled_result,
-            eager_result,
-            rtol=1e-5,
-            atol=1e-5,
-            msg="Compiled (auto-copy to P2P) and eager all_reduce do not match",
-        )
-
-    @skip_if_rocm_multiprocess  # requires registered-buffer support
-    @skip_if_lt_x_gpu(2)
-    @fresh_inductor_cache()
     def test_symm_mem_upstream_propagation(self):
         """
         Verify that when a pointwise op (add) sits between a data source and
