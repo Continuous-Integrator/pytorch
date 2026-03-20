@@ -188,6 +188,8 @@ class TestConfigModule(TestCase):
                     "e_env_default_str_empty": "",
                     "e_env_force": True,
                     "e_optional": True,
+                    "e_deprecated": True,
+                    "e_not_deprecated": False,
                 },
             )
 
