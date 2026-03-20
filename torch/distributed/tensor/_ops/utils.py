@@ -505,6 +505,8 @@ def expand_to_full_mesh_op_strategy(
         # different *elements* in a tensor list may live on different
         # sub-meshes (e.g. param group A on 2-D mesh, param group B on
         # 1-D mesh).
+        # TODO: refactor fused_ops handling so that there are no longer
+        # args on different meshes
         if different_mesh_args is not None:
             for idx in different_mesh_args:
                 if idx < len(input_args_strategy):
