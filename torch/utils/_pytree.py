@@ -2248,8 +2248,17 @@ def key_get(obj: Any, kp: KeyPath) -> Any:
     return obj
 
 
-# Pre-load to make `torch.utils.pytree` available immediately after `torch.utils` is imported.
-# See the `if TYPE_CHECKING` block at the top of `torch/utils/__init__.py` for more details.
+# Note [pytree circular import]
+# This import MUST remain at the bottom of this file. It triggers the loading of
+# `torch.utils.pytree`, whose `__init__.py` imports this module (`torch.utils._pytree`)
+# back as `python`. Because this line runs after all classes and functions above are
+# defined, the partially-initialized module seen during the circular import already has
+# every attribute that `torch.utils.pytree.__init__` needs.
+#
+# Purpose: ensures `torch.utils.pytree` is in `sys.modules` immediately after
+# `torch.utils._pytree` is imported (which happens during torch startup), so the public
+# module is available without an explicit user import.
+# See also: `torch/utils/__init__.py` and `torch/utils/pytree/__init__.py`.
 import torch.utils.pytree as _
 
 

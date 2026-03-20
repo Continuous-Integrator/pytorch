@@ -21,7 +21,11 @@ from torch.utils.cpp_backtrace import get_cpp_backtrace
 from torch.utils.throughput_benchmark import ThroughputBenchmark
 
 
+
 if TYPE_CHECKING:
+    # Cannot import pytree eagerly above because it would create a circular import.
+    # Instead, _pytree.py pre-loads it at the bottom of its own file once all definitions
+    # are in place. See Note [pytree circular import] in torch/utils/_pytree.py.
     from torch.utils import pytree as pytree
 
 
