@@ -7359,16 +7359,6 @@
     CompositeExplicitAutograd: _grouped_mm
     CUDA: _grouped_mm_cuda
 
-- func: _grouped_mm_cublaslt(Tensor self, Tensor mat2, Tensor? offs=None, Tensor? bias=None, ScalarType? out_dtype=None) -> Tensor
-  variants: function
-  dispatch:
-    CUDA: _grouped_mm_cublaslt_cuda
-
-- func: _scaled_grouped_mm_cublaslt(Tensor self, Tensor mat2, Tensor scale_a, Tensor scale_b, Tensor? offs=None, Tensor? bias=None, Tensor? scale_result=None, ScalarType? out_dtype=None, bool use_fast_accum=False) -> Tensor
-  variants: function
-  dispatch:
-    CUDA: _scaled_grouped_mm_cublaslt_cuda
-
 # NOTE [ Sparse: autograd and API ]
 #
 #

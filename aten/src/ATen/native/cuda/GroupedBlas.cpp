@@ -68,14 +68,14 @@ using scaled_blas::convert_int_to_enum;
 
 namespace at::native {
 
-// Forward declarations for cuBLASLt grouped GEMM variants, called from the
-// standard ops when TORCH_GROUPED_MM_PREFER_CUBLASLT=1 is set.
-Tensor _grouped_mm_cublaslt_cuda(
+// Forward declarations for cuBLASLt grouped GEMM, called from the standard ops
+// when TORCH_GROUPED_MM_PREFER_CUBLASLT=1 is set.
+static Tensor grouped_mm_cublaslt(
     const Tensor& mat_a, const Tensor& mat_b,
     const std::optional<at::Tensor>& offs,
     const std::optional<at::Tensor>& bias,
     std::optional<c10::ScalarType> out_dtype);
-Tensor _scaled_grouped_mm_cublaslt_cuda(
+static Tensor scaled_grouped_mm_cublaslt(
     const Tensor& mat_a, const Tensor& mat_b,
     const Tensor& scale_a, const Tensor& scale_b,
     const std::optional<at::Tensor>& offs,
@@ -447,7 +447,7 @@ _scaled_grouped_mm_cuda(
 
 #if !defined(USE_ROCM) && defined(CUDA_VERSION) && CUDA_VERSION >= 13020
   if (at::globalContext().preferCublasltGroupedGemm()) {
-    return _scaled_grouped_mm_cublaslt_cuda(
+    return scaled_grouped_mm_cublaslt(
         mat_a, mat_b, scale_a, scale_b, offs, bias,
         scale_result, out_dtype, use_fast_accum);
   }
@@ -577,7 +577,7 @@ _scaled_grouped_mm_cuda_v2(
           || recipe_a_enum[0] == ScalingType::GroupWise
           || recipe_a_enum[0] == ScalingType::BlockWise1x32;
       if (supported) {
-        return _scaled_grouped_mm_cublaslt_cuda(
+        return scaled_grouped_mm_cublaslt(
             mat_a, mat_b, scale_a[0], scale_b[0],
             offs, bias, /*scale_result=*/std::nullopt,
             out_dtype, use_fast_accum);
@@ -735,7 +735,7 @@ std::optional<c10::ScalarType> out_dtype) {
   _grouped_mm_validate_inputs(mat_a, mat_b, offs, bias, out_dtype);
 #if !defined(USE_ROCM) && defined(CUDA_VERSION) && CUDA_VERSION >= 13020
   if (at::globalContext().preferCublasltGroupedGemm()) {
-    return _grouped_mm_cublaslt_cuda(mat_a, mat_b, offs, bias, out_dtype);
+    return grouped_mm_cublaslt(mat_a, mat_b, offs, bias, out_dtype);
   }
 #endif
   bool a_b_and_out_are_bf16 = (
@@ -775,7 +775,7 @@ std::optional<c10::ScalarType> out_dtype) {
   return out;
 }
 
-Tensor _grouped_mm_cublaslt_cuda(const Tensor& mat_a, const Tensor& mat_b,
+static Tensor grouped_mm_cublaslt(const Tensor& mat_a, const Tensor& mat_b,
 const std::optional<at::Tensor>& offs,
 const std::optional<at::Tensor>& bias,
 std::optional<c10::ScalarType> out_dtype) {
@@ -823,7 +823,7 @@ std::optional<c10::ScalarType> out_dtype) {
 #endif // !defined(USE_ROCM) && defined(CUDA_VERSION) && CUDA_VERSION >= 13020
 }
 
-Tensor _scaled_grouped_mm_cublaslt_cuda(
+static Tensor scaled_grouped_mm_cublaslt(
     const Tensor& mat_a,
     const Tensor& mat_b,
     const Tensor& scale_a,

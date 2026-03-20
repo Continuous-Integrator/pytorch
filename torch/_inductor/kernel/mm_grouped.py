@@ -204,25 +204,10 @@ aten__grouped_mm = ExternKernelChoice(
     has_out_variant=False,
 )
 
-
-aten__grouped_mm_cublaslt = ExternKernelChoice(
-    torch._grouped_mm_cublaslt,
-    "at::_grouped_mm_cublaslt",
-    op_overload=aten._grouped_mm_cublaslt.default,
-    has_out_variant=False,
-)
-
 aten__scaled_grouped_mm = ExternKernelChoice(
     torch._scaled_grouped_mm,
     "at::_scaled_grouped_mm",
     op_overload=aten._scaled_grouped_mm.default,
-    has_out_variant=False,
-)
-
-aten__scaled_grouped_mm_cublaslt = ExternKernelChoice(
-    torch._scaled_grouped_mm_cublaslt,
-    "at::_scaled_grouped_mm_cublaslt",
-    op_overload=aten._scaled_grouped_mm_cublaslt.default,
     has_out_variant=False,
 )
 
@@ -497,35 +482,6 @@ def tuned_grouped_mm(
     )
 
 
-@register_lowering(aten._grouped_mm_cublaslt.default, type_promotion_kind=None)
-def tuned_grouped_mm_cublaslt(
-    mat_a: TensorBox,
-    mat_b: TensorBox,
-    offs: Optional[TensorBox] = None,
-    bias: Optional[TensorBox] = None,
-    out_dtype: Optional[torch.dtype] = None,
-    layout: Optional[Layout] = None,
-) -> TensorBox:
-    """Auto-tuning for _grouped_mm_cublaslt() operator."""
-
-    return _tuned_grouped_mm_common(
-        "aten._grouped_mm_cublaslt.default",
-        "grouped_mm_cublaslt",
-        aten__grouped_mm_cublaslt,
-        triton_grouped_mm_template,
-        mat_a,
-        mat_b,
-        None,
-        None,
-        offs,
-        bias,
-        None,
-        out_dtype,
-        None,
-        layout,
-    )
-
-
 @register_lowering(aten._scaled_grouped_mm.default, type_promotion_kind=None)
 def tuned_scaled_grouped_mm(
     mat_a: TensorBox,
@@ -556,41 +512,6 @@ def tuned_scaled_grouped_mm(
         offs,
         bias,
         scale_result,
-        out_dtype,
-        use_fast_accum,
-        layout,
-    )
-
-
-@register_lowering(aten._scaled_grouped_mm_cublaslt.default, type_promotion_kind=None)
-def tuned_scaled_grouped_mm_cublaslt(
-    mat_a: TensorBox,
-    mat_b: TensorBox,
-    scale_a: TensorBox,
-    scale_b: TensorBox,
-    offs: Optional[TensorBox] = None,
-    bias: Optional[TensorBox] = None,
-    scale_result: Optional[TensorBox] = None,
-    out_dtype: Optional[torch.dtype] = None,
-    use_fast_accum: bool = False,
-    layout: Optional[Layout] = None,
-) -> TensorBox:
-    """Auto-tuning for _scaled_grouped_mm_cublaslt() operator."""
-
-    out_dtype = out_dtype or torch.bfloat16
-
-    return _tuned_grouped_mm_common(
-        "aten._scaled_grouped_mm_cublaslt.default",
-        "scaled_grouped_mm_cublaslt",
-        aten__scaled_grouped_mm_cublaslt,
-        triton_scaled_grouped_mm_template,
-        mat_a,
-        mat_b,
-        scale_a,
-        scale_b,
-        offs,
-        bias,
-        None,
         out_dtype,
         use_fast_accum,
         layout,

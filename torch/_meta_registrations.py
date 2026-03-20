@@ -8461,7 +8461,7 @@ def meta_grouped_mm(
     out_dtype: torch.dtype | None = None,
 ) -> Tensor:
     if os.environ.get("TORCH_GROUPED_MM_PREFER_CUBLASLT") == "1":
-        return meta_grouped_mm_cublaslt(mat_a, mat_b, offs=offs, bias=bias, out_dtype=out_dtype)
+        return _meta_grouped_mm_cublaslt(mat_a, mat_b, offs=offs, bias=bias, out_dtype=out_dtype)
     return _meta_grouped_mm_common(
         mat_a,
         mat_b,
@@ -8474,9 +8474,7 @@ def meta_grouped_mm(
     )
 
 
-@register_meta(aten._grouped_mm_cublaslt)
-@out_wrapper()
-def meta_grouped_mm_cublaslt(
+def _meta_grouped_mm_cublaslt(
     mat_a: Tensor,
     mat_b: Tensor,
     offs: Tensor | None = None,
@@ -8522,9 +8520,7 @@ def meta_grouped_mm_cublaslt(
     return _create_grouped_mm_output_tensor(mat_a, mat_b, offs, out_dtype)
 
 
-@register_meta(aten._scaled_grouped_mm_cublaslt)
-@out_wrapper()
-def meta_scaled_grouped_mm_cublaslt(
+def _meta_scaled_grouped_mm_cublaslt(
     mat_a: Tensor,
     mat_b: Tensor,
     scale_a: Tensor,
@@ -8607,7 +8603,7 @@ def meta_scaled_grouped_mm(
     out_dtype = out_dtype or torch.bfloat16
 
     if os.environ.get("TORCH_GROUPED_MM_PREFER_CUBLASLT") == "1":
-        return meta_scaled_grouped_mm_cublaslt(
+        return _meta_scaled_grouped_mm_cublaslt(
             mat_a, mat_b, scale_a, scale_b,
             offs=offs, bias=bias, scale_result=scale_result,
             out_dtype=out_dtype, use_fast_accum=use_fast_accum,

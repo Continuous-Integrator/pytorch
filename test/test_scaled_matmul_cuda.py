@@ -2459,9 +2459,8 @@ class TestFP8Matmul(TestCase):
 
 
     def scaled_grouped_gemm_cublaslt_helper(self, op, a_dtype, b_dtype):
-        """Build FP8 inputs with tensorwise scales, run
-        _scaled_grouped_mm_cublaslt, and compare against per-group
-        torch._scaled_mm with the same tensorwise scales."""
+        """Build FP8 inputs with tensorwise scales for testing the cuBLASLt
+        grouped GEMM path via TORCH_GROUPED_MM_PREFER_CUBLASLT=1."""
         device = "cuda"
         ngroups = 5
         # FP8 is 1 byte, so 16-byte alignment requires dims/offsets to be multiples of 16

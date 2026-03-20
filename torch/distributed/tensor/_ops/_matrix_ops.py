@@ -1123,7 +1123,7 @@ def scaled_scaled_dot_product_cudnn_attention_backward_strategy(
 
 
 @register_op_strategy(
-    [aten._grouped_mm.default, aten._grouped_mm_cublaslt.default]
+    [aten._grouped_mm.default]
 )
 def grouped_mm_strategy(op_schema: OpSchema) -> OpStrategy:
     mesh = op_schema.get_mesh_from_args()
