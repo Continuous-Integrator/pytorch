@@ -1,9 +1,12 @@
+import logging
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from typing import Concatenate, ParamSpec, TypeVar
 
 import torch.library
 
+
+log = logging.getLogger(__name__)
 
 P = ParamSpec("P")
 R = TypeVar("R")
@@ -154,7 +157,7 @@ def _print_override_graphs(*, print_inactive: bool = False) -> None:
                 print(s)
 
 
-def _get_library(op_symbol: str, dispatch_key: str) -> torch.library.Library:
+def _get_or_create_library(op_symbol: str, dispatch_key: str) -> torch.library.Library:
     global _libs
 
     key = (op_symbol, dispatch_key)
@@ -214,6 +217,12 @@ def _reenable_op_overrides(
     """
     Re-enable some ops - we're given the appropriate keys
     """
+    log.info(
+        "Re-registering ops by dsl: %s, op_symbol: %s, dispatch_key: %s",
+        enable_dsl_names,
+        enable_op_symbols,
+        enable_dispatch_keys,
+    )
 
     # Update the filters - note `remove_keys=True` because
     # We are removing keys from the filters (vs. adding them)
@@ -234,7 +243,7 @@ def _reenable_op_overrides(
         op_symbol, dispatch_key = key
 
         # get the appropriate graph
-        lib = _get_library(*key)
+        lib = _get_or_create_library(*key)
 
         # Re-register
         for node in _graphs[key]:
@@ -265,6 +274,13 @@ def _deregister_op_overrides(
     """
     global _libs
 
+    log.info(
+        "De-registering ops by dsl: %s, op_symbol: %s, dispatch_key: %s",
+        disable_dsl_names,
+        disable_op_symbols,
+        disable_dispatch_keys,
+    )
+
     # Need to resolve each of the `disable_*` arguments in an ideally
     # optimal way.
     # Libraries are stored in a dict[op_symbol, dispatch_key], but we also
@@ -281,7 +297,7 @@ def _deregister_op_overrides(
         # Remove the old graph
         del _libs[key]
         # create a new graph
-        lib = _get_library(*key)
+        lib = _get_or_create_library(*key)
 
         # Re-register
         for node in _graphs[key]:
@@ -317,9 +333,9 @@ def _update_registration_maps(
             l = [
                 key,
             ]
+            registration[symbol] = l
         else:
             l.append(key)
-        registration[symbol] = l
 
     _get_new_entry_or_append(_dsl_name_to_lib_graph, dsl_name, key)
     _get_new_entry_or_append(_op_symbol_to_lib_graph, op_symbol, key)
@@ -348,9 +364,8 @@ def _register_op_override(
     unconditional_override: bool - Impl doesn't have a fallback, and doesn't require
                                    torch.DispatchKeySet as the first argument.
     """
-    # lib = _get_library(backend, lib_symbol, dispatch_key)
     key = (op_symbol, dispatch_key)
-    lib = _get_library(*key)
+    lib = _get_or_create_library(*key)
 
     global _graphs
     op_graph = _graphs.get(key, [])

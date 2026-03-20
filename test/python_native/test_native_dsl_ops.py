@@ -163,7 +163,7 @@ class TestNativeDSLOps(TestCase):
         self.assertIsInstance(ver, Version)
 
     def test_registry_mechanics(self):
-        """_get_library caches Library instances per (lib, dispatch_key)."""
+        """_get_or_create_library caches Library instances per (lib, dispatch_key)."""
         import torch.library
 
         registry = _import_module_directly("torch._native.registry", "registry.py")
@@ -171,15 +171,15 @@ class TestNativeDSLOps(TestCase):
         key = ("_test_native_dsl_registry", "CPU")
         registry._libs.pop(key, None)
 
-        lib1 = registry._get_library(*key)
+        lib1 = registry._get_or_create_library(*key)
         self.assertIsInstance(lib1, torch.library.Library)
-        lib2 = registry._get_library(*key)
+        lib2 = registry._get_or_create_library(*key)
         self.assertIs(lib1, lib2, "should return cached instance")
 
         # Different dispatch key -> different Library
         key2 = ("_test_native_dsl_registry", "CUDA")
         registry._libs.pop(key2, None)
-        lib3 = registry._get_library(*key2)
+        lib3 = registry._get_or_create_library(*key2)
         self.assertIsNot(lib1, lib3)
 
         # cleanup

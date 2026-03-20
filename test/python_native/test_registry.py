@@ -73,18 +73,18 @@ class TestRegistry(TestCase):
         self.assertTrue(node.unconditional_override)
         self.assertFalse(node.active)
 
-    def test_get_library_caching(self):
-        """Test _get_library creates and caches Library instances."""
+    def test_get_or_create_library_caching(self):
+        """Test _get_or_create_library creates and caches Library instances."""
         # Test library creation and caching
-        lib1 = self.registry._get_library("add.Tensor", "CPU")
+        lib1 = self.registry._get_or_create_library("add.Tensor", "CPU")
         self.assertIsInstance(lib1, torch.library.Library)
 
         # Should return cached instance
-        lib2 = self.registry._get_library("add.Tensor", "CPU")
+        lib2 = self.registry._get_or_create_library("add.Tensor", "CPU")
         self.assertIs(lib1, lib2)
 
         # Different key should create different instance
-        lib3 = self.registry._get_library("add.Tensor", "CUDA")
+        lib3 = self.registry._get_or_create_library("add.Tensor", "CUDA")
         self.assertIsNot(lib1, lib3)
 
         # Check that libraries are stored in _libs
@@ -530,7 +530,7 @@ class TestRegistry(TestCase):
         self.assertTrue(backend3_node.active)
 
         # The mock should have been called for re-registering active overrides
-        # Note: the exact number of calls depends on how many times _get_library creates new instances
+        # Note: the exact number of calls depends on how many times _get_or_create_library creates new instances
         self.assertTrue(mock_lib.impl.call_count >= 2)
 
     @patch("torch.library.Library")
@@ -727,7 +727,7 @@ class TestRegistry(TestCase):
         self.assertTrue(all(not node.active for node in nodes))
 
         # No re-registrations should occur since all are filtered out
-        # Note: _get_library might still be called to create the new lib instance
+        # Note: _get_or_create_library might still be called to create the new lib instance
 
     @patch("torch.library.Library")
     def test_deregister_by_op_symbol_affects_all_backends(self, mock_library_cls):
