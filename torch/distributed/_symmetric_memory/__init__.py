@@ -2195,6 +2195,70 @@ def wait_signal(hdl: _SymmetricMemory, peer: int) -> None:
         raise ValueError(f"wait_signal: unsupported backend: {backend}")
 
 
+def reduce_scatter_columns(
+    input: torch.Tensor,
+    out: list[torch.Tensor],
+    group: str,
+    *,
+    offsets: list[int] | None = None,
+    dst_ranks: list[int] | None = None,
+    red_op: str = "sum",
+) -> None:
+    r"""
+    reduce_scatter_columns(input, out, group, *, offsets, dst_ranks, red_op='sum') -> None
+
+    Simultaneously reduce N column-block 2-D tensors from ``input``, routing
+    each to a specific destination rank.  Only ``dst_ranks[i]`` writes the
+    reduced result for block ``i``; all other ranks participate in the barrier
+    but perform no writes.
+
+    Column blocks are described by ``offsets``, an inclusive prefix-sum of
+    column widths: block ``i`` spans ``input[:, offsets[i-1] : offsets[i]]``
+    (with the first block starting at index 0 by convention).  All blocks must
+    have equal width.
+
+    Args:
+        input (Tensor): 2-D tensor allocated via symmetric memory (innermost
+            dimension must be contiguous).
+        out (list[Tensor]): Output tensors for this rank's owned blocks.  Must
+            have length equal to the number of blocks owned by this rank (i.e.
+            the count of ``i`` where ``dst_ranks[i] == my_rank``).  Each
+            ``out[j]`` must be contiguous with shape ``(rows, col_width)`` and
+            the same dtype as ``input``.
+        group (str): The name of the ``ProcessGroup`` to perform the operation on.
+        offsets (list[int] | None): Inclusive prefix-sum of column widths, length N. If
+            not provided, the function will divide the input tensor into
+            equal-width blocks, based on the size of the ``group``.
+        dst_ranks (list[int] | None): Destination rank for each column block. If not
+            provided, the function will assume ``dst_ranks`` is a round-robin
+            of the ranks in the ``ProcessGroup``.
+        red_op (str): Reduction operation; currently only ``'sum'`` is supported.
+
+    Example::
+
+        >>> # doctest: +SKIP
+        >>> # Each rank holds a Grouped GEMM gradient buffer in symmetric memory.
+        >>> # The buffer has W experts laid out as equal column blocks; each expert
+        >>> # is reduced to a specific rank (dst_ranks[i] == i % world_size).
+        >>> buf = symm_mem.empty(H, W * C, dtype=torch.bfloat16, device="cuda")
+        >>> symm_mem.rendezvous(buf, group=group_name)
+        >>> offsets = [i * C for i in range(1, W + 1)]  # inclusive prefix-sum
+        >>> dst_ranks = [i % world_size for i in range(W)]
+        >>> n_owned = sum(r == rank for r in dst_ranks)
+        >>> out = [torch.empty(H, C, dtype=torch.bfloat16, device="cuda") for _ in range(n_owned)]
+        >>> symm_mem.reduce_scatter_columns(buf, out, group_name, offsets=offsets, dst_ranks=dst_ranks)
+    """
+    backend = get_backend(input.device)
+    if backend == "NCCL":
+        torch.ops.symm_mem.nccl_reduce_scatter_columns(
+            input, out, group, offsets, dst_ranks, red_op
+        )
+    else:
+        raise NotImplementedError(
+            f"reduce_scatter_columns: unsupported backend: {backend}"
+        )
+
+
 __all__ = [
     "empty",
     "rendezvous",
@@ -2204,4 +2268,5 @@ __all__ = [
     "set_signal_pad_size",
     "get_signal_pad_size",
     "get_mem_pool",
+    "reduce_scatter_columns",
 ]

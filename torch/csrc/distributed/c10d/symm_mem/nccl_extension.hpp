@@ -18,4 +18,14 @@ TORCH_API void nccl_put_with_signal(
     int64_t signal,
     int64_t peer);
 
+// Simultaneously reduce N column-block 2-D tensors from a shared input buffer,
+// routing each to a specific destination rank. Column blocks are described by
+// inclusive-prefix-sum offsets; all blocks must have equal width.
+TORCH_API void nccl_reduce_scatter_columns(
+    const at::Tensor& input,
+    at::TensorList out,
+    const std::string& group_name,
+    std::optional<at::IntArrayRef> offsets,
+    std::optional<at::IntArrayRef> dst_ranks,
+    const std::string& red_op);
 } // namespace c10d::nccl_extension

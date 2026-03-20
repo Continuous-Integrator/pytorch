@@ -19,9 +19,11 @@ from torch.testing._internal.common_distributed import (
     skip_if_lt_x_gpu,
 )
 from torch.testing._internal.common_utils import (
+    instantiate_parametrized_tests,
     IS_WINDOWS,
     load_tests,
     NoTest,
+    parametrize,
     requires_cuda_p2p_access,
     run_tests,
     skip_but_pass_in_sandcastle_if,
@@ -221,6 +223,7 @@ class TestNCCL(TestCase):
             self.assertEqual(outputs[i], expected[i])
 
 
+@instantiate_parametrized_tests
 @requires_cuda_p2p_access()
 class NCCLSymmetricMemoryTest(MultiProcContinuousTest):
     @property
@@ -427,6 +430,71 @@ class NCCLSymmetricMemoryTest(MultiProcContinuousTest):
             # handle.wait_signal(src_rank=0)
             # TODO: remove after we have wait_signal
             c10d.barrier()
+
+    @skip_but_pass_in_sandcastle_if(TEST_WITH_ROCM, "Skip NCCL tests for ROCm")
+    @skip_but_pass_in_sandcastle_if(IS_WINDOWS, "NCCL doesn't support Windows")
+    @requires_nccl_version(
+        (2, 29, 7), "nccl_reduce_scatter_columns requires nccl 2.29.7"
+    )
+    @skip_if_lt_x_gpu(2)
+    @parametrize("experts_per_rank", [1, 2])
+    def test_reduce_scatter_columns(self, experts_per_rank: int):
+        """reduce_scatter_columns: each expert gradient is reduced to its
+        destination rank and written to a separate contiguous tensor; the source
+        Grouped GEMM buffer is left unmodified."""
+        symm_mem.set_backend("NCCL")
+        torch.cuda.set_device(self.rank)
+        c10d.all_reduce(torch.ones(1, device=self.device))
+        group_name = c10d.group.WORLD.group_name
+
+        rows, cols = 64, 32
+        n_experts = experts_per_rank * self.world_size
+
+        buf = symm_mem.empty(
+            rows, n_experts * cols, dtype=torch.float, device=self.device
+        )
+        # Fill each column block i with (rank + 1) * (i + 1).
+        for i in range(n_experts):
+            buf[:, i * cols : (i + 1) * cols] = float((self.rank + 1) * (i + 1))
+        symm_mem.rendezvous(buf, group=group_name)
+
+        # Round-robin: expert i is reduced to rank i % world_size.
+        dst_ranks = [i % self.world_size for i in range(n_experts)]
+        n_owned = sum(r == self.rank for r in dst_ranks)
+        out = [
+            torch.zeros(rows, cols, dtype=torch.float, device=self.device)
+            for _ in range(n_owned)
+        ]
+        offsets = [i * cols for i in range(1, n_experts + 1)]
+
+        symm_mem.reduce_scatter_columns(
+            buf, out, group_name, offsets=offsets, dst_ranks=dst_ranks
+        )
+        torch.cuda.synchronize()
+
+        # out[j] corresponds to expert (rank + j * world_size); expected value is
+        # (expert_idx + 1) * sum(r + 1 for r in range(world_size)).
+        rank_sum = float(sum(r + 1 for r in range(self.world_size)))
+        for j in range(n_owned):
+            expert_idx = self.rank + j * self.world_size
+            expected = float(expert_idx + 1) * rank_sum
+            self.assertEqual(
+                out[j],
+                torch.full_like(out[j], expected),
+                msg=f"rank {self.rank}: out[{j}] should contain the reduced sum",
+            )
+        # Source buffer must be unmodified.
+        for i in range(n_experts):
+            self.assertEqual(
+                buf[:, i * cols : (i + 1) * cols],
+                torch.full(
+                    (rows, cols),
+                    float((self.rank + 1) * (i + 1)),
+                    dtype=torch.float,
+                    device=self.device,
+                ),
+                msg=f"rank {self.rank}: source buffer column {i} should be unchanged",
+            )
 
     @skip_but_pass_in_sandcastle_if(TEST_WITH_ROCM, "Skip NCCL tests for ROCm")
     @skip_but_pass_in_sandcastle_if(IS_WINDOWS, "NCCL doesn't support Windows")
