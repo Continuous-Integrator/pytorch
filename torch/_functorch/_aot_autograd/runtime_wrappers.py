@@ -2792,6 +2792,9 @@ Your tensor subclass must implement __coerce_same_metadata_as_tangent__."""
                 else:
                     grad_args = list(flat_args)
                 del flat_args
+                # Combine tensors from both sources:
+                # 1. ctx.saved_tensors - tensors that went through save_for_backward (with VC check)
+                # 2. ctx._tensors_no_vc_check - tensors stashed directly on ctx (no VC check)
                 all_args = _backward_prologue_functional(
                     (
                         list(ctx.saved_tensors) + ctx._tensors_no_vc_check

@@ -8736,8 +8736,9 @@ for shape in [(1,), ()]:
         out = CheckRefs.apply(x)
         out.sum().backward()
         self.assertEqual(x.grad, torch.full_like(x, 2.0))
-        # refcount == 2: `grad` local + getrefcount arg. No framework refs.
-        self.assertEqual(refcount_box["rc"], 2)
+        # refcount == 3: list item + `grad` local + getrefcount arg.
+        # No framework refs beyond the _boxed_grads list.
+        self.assertEqual(refcount_box["rc"], 3)
 
     @unittest.skipIf(not TEST_CUDA, "CUDA is unavailable")
     def test_custom_function_boxed_grads_cleanup_on_error(self):

@@ -223,6 +223,7 @@ class OpNamespace:
         assert not hasattr(self, name)
         result = Op(name, fn, is_custom_function)
         if is_traceable:
+            # pyrefly: ignore [deprecated]
             setattr(self, name, torch._dynamo.allow_in_graph(result))
         else:
             # C++ autograd function was not marked as traceable
@@ -489,7 +490,7 @@ class AutogradCompilerInstance:
             ctx_saved_tensors: Sequence[torch.Tensor],
             ctx_symints: Sequence[IntLikeType],
             ctx_opaque_objs: Sequence[Any],
-            *flat_args: Any,
+            flat_args: Sequence[Any],
         ) -> Any:
             out = torch._functorch._aot_autograd.runtime_wrappers._backward_prologue_functional(
                 ctx_saved_tensors,
@@ -497,7 +498,7 @@ class AutogradCompilerInstance:
                 ctx_opaque_objs,
                 metadata,
                 maybe_subclass_metadata,
-                list(flat_args),
+                flat_args,
             )
             return out
 
@@ -508,7 +509,7 @@ class AutogradCompilerInstance:
                 psaved_tensors,
                 psymints,
                 popaque_objects,
-                *pinputs,
+                pinputs,
             ),
             kwargs={},
         )

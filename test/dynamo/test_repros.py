@@ -4342,16 +4342,18 @@ class ReproTests(torch._dynamo.test_case.TestCase):
         self.assertTrue(same(fn(x), opt_fn(x)))
 
     def test_add_sub_alpha_out(self):
-        inp = torch.randn(2, 3, 4)
-        other = 1
-        alpha = 2
+        test_cases = (
+            (torch.randn(2, 3, 4), 1, 2, torch.zeros(2, 3, 4)),
+            (2, 1.1, 0.4, torch.tensor(0.0)),
+        )
         for op in [torch.add, torch.sub]:
-            out = torch.zeros(2, 3, 4)
-            compile_out = torch.zeros(2, 3, 4)
-            op(inp, other, alpha=alpha, out=out)
-            compiled_fn = torch.compile(op, dynamic=True, backend="eager")
-            compiled_fn(inp, other, alpha=alpha, out=compile_out)
-            self.assertTrue(same(out, compile_out))
+            for inp, other, alpha, out in test_cases:
+                compiled_fn = torch.compile(op, dynamic=True, backend="eager")
+                eager_out = out.clone()
+                compiled_out = out.clone()
+                op(inp, other, alpha=alpha, out=eager_out)
+                compiled_fn(inp, other, alpha=alpha, out=compiled_out)
+                self.assertTrue(same(eager_out, compiled_out))
 
     def test_negative_shape_guard(self):
         def fn(x):
@@ -8038,6 +8040,24 @@ SavedForBackwardsAOTOutput(idx=5)""",
 
         result = f(torch.randn(5))
         self.assertEqual(result, 5)
+
+    def test_one_hot_bounds_check_compiled(self):
+        # https://github.com/pytorch/pytorch/issues/144211
+        # torch.compile(one_hot) should raise on out-of-bounds indices,
+        # not silently produce wrong results.
+        one_hot = torch.compile(torch.nn.functional.one_hot, fullgraph=True)
+
+        a = torch.arange(0, 5) % 3  # [0, 1, 2, 0, 1]
+        with self.assertRaises(RuntimeError):
+            one_hot(a, 1)
+
+        torch._dynamo.reset()
+        with self.assertRaises(RuntimeError):
+            one_hot(torch.tensor([-1, 0, 1]), 3)
+
+        torch._dynamo.reset()
+        expected = torch.nn.functional.one_hot(a, 3)
+        self.assertEqual(one_hot(a, 3), expected)
 
 
 class ReproTestsDevice(torch._dynamo.test_case.TestCase):

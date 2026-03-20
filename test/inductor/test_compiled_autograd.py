@@ -5417,6 +5417,13 @@ skipped_tests.add("test_checkpoint_automatic_dynamic_graph_shadowing")
 skipped_tests.add("test_checkpoint_automatic_dynamic_mark_dynamic_workaround")
 skipped_tests.add("test_checkpoint_automatic_dynamic_lru_disabled_workaround")
 
+# boxed_grads_call relies on eager C++ PyNode::apply, incompatible with compiled autograd
+skipped_tests.add("test_custom_function_boxed_grads")
+skipped_tests.add("test_custom_function_boxed_grads_multi_output")
+skipped_tests.add("test_custom_function_boxed_grads_no_extra_refs")
+skipped_tests.add("test_custom_function_boxed_grads_cleanup_on_error")
+skipped_tests.add("test_custom_function_boxed_grads_chain")
+
 test_autograd = load_test_module("test_autograd")
 test_custom_ops = load_test_module("test_custom_ops")
 test_higher_order_ops = load_test_module("dynamo/test_higher_order_ops")
