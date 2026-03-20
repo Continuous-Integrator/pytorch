@@ -144,7 +144,10 @@ _XCCL_AVAILABLE = True
 
 try:
     # pyrefly: ignore [missing-import]
-    from torchcomms._comms import _BackendWrapper, new_comm
+    from torchcomms._backend_wrapper import _BackendWrapper
+
+    # pyrefly: ignore [missing-import]
+    from torchcomms._comms import new_comm
 
     # pyrefly: ignore [missing-import]
     from torchcomms.hooks import FlightRecorderHook
@@ -1144,9 +1147,11 @@ def _get_group_size(group: ProcessGroup | None) -> int:
     return group.size()
 
 
-def _get_group_size_by_name(group_name: GroupName) -> int:
-    group = _resolve_process_group(group_name)
-    return group.size()
+def _get_group_size_by_name(group_name: GroupName | ProcessGroup) -> int:
+    if isinstance(group_name, str):
+        # pyrefly: ignore[bad-argument-type]  # pyrefly bug
+        group_name = _resolve_process_group(group_name)
+    return group_name.size()
 
 
 def _resolve_group_name_by_ranks_and_tag(ranks: list[int], tag: str) -> GroupName:
