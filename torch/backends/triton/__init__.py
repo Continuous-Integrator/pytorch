@@ -22,8 +22,15 @@ def version() -> Version | None:
 
 
 def _set_enabled(_enabled: bool) -> None:
+    from torch._native.registry import _deregister_op_overrides, _reenable_op_overrides
+
     global enabled
     enabled = _enabled
+
+    if enabled:
+        _reenable_op_overrides(enable_dsl_names="triton")
+    else:
+        _deregister_op_overrides(disable_dsl_names="triton")
 
 
 def _get_enabled() -> bool:
@@ -40,7 +47,7 @@ def set_flags(_enabled=None):
 @contextmanager
 def flags(enabled=None):
     with __allow_nonbracketed_mutation():
-        orig_flags = set_flags(enabled)
+        orig_flags = set_flags(_enabled=enabled)
     try:
         yield
     finally:
