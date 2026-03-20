@@ -46,7 +46,7 @@ import torch.nn
 from torch._guards import Source, TracingContext
 from torch.utils._python_dispatch import is_traceable_wrapper_subclass_type
 
-from .. import graph_break_hints, polyfills, variables
+from .. import config, graph_break_hints, polyfills, variables
 from ..bytecode_transformation import create_call_function
 from ..create_parameter_op import do_not_convert_to_tracable_parameter
 from ..exc import (
@@ -96,7 +96,13 @@ from ..utils import (
     tuple_methods,
     unpatched_nn_module_getattr,
 )
-from .base import MutationType, raise_type_error_exc, ValueMutationNew, VariableTracker
+from .base import (
+    MutationType,
+    NO_SUCH_SUBOBJ,
+    raise_type_error_exc,
+    ValueMutationNew,
+    VariableTracker,
+)
 from .dicts import ConstDictVariable, DefaultDictVariable, SetVariable
 
 
@@ -353,7 +359,7 @@ class UserDefinedClassVariable(UserDefinedVariable):
                 return VariableTracker.build(tx, obj.__get__(self.value), source)
 
         if ConstantVariable.is_literal(obj):
-            return VariableTracker.build(tx, obj)
+            return VariableTracker.build(tx, obj, source)
         elif isinstance(obj, enum.Enum):
             return VariableTracker.build(tx, obj, source)
         elif self.value is collections.OrderedDict:
@@ -536,6 +542,25 @@ class UserDefinedClassVariable(UserDefinedVariable):
         from .ctx_manager import GenericContextWrappingVariable
 
         constant_args = check_constant_args(args, kwargs)
+
+        if torch.distributed.is_available() and self.value is torch.distributed.P2POp:
+            if not config.enable_p2p_compilation:
+                unimplemented(
+                    gb_type="P2P compilation disabled for P2POp construction",
+                    context="torch.distributed.P2POp",
+                    explanation="P2P compilation is disabled.",
+                    hints=[
+                        "Set TORCHDYNAMO_ENABLE_P2P_COMPILATION=1 to enable.",
+                    ],
+                )
+
+            var = tx.output.side_effects.track_new_user_defined_object(
+                SourcelessBuilder.create(tx, object),
+                self,
+                [],
+            )
+            var.call_method(tx, "__init__", list(args), kwargs)  # type: ignore[arg-type]
+            return var
 
         if self.can_constant_fold_through() and constant_args:
             # constant fold
@@ -773,13 +798,13 @@ class UserDefinedClassVariable(UserDefinedVariable):
                     )
                 ] + args[1:]
 
-            cm_obj = tx.output.side_effects.track_new_user_defined_object(
-                SourcelessBuilder.create(tx, object),
-                self,
-                arg_new,  # type: ignore[arg-type]
+            return tx.inline_user_function_return(
+                VariableTracker.build(
+                    tx, polyfills.instantiate_user_defined_class_object
+                ),
+                [self, *arg_new],
+                kwargs,
             )
-            cm_obj.call_method(tx, "__init__", arg_new, kwargs)  # type: ignore[arg-type]
-            return cm_obj
         elif is_namedtuple_cls(self.value):
             fields = namedtuple_fields(self.value)  # type: ignore[arg-type]
             # check if this a quasi-namedtuple or a real one
@@ -991,6 +1016,7 @@ class UserDefinedClassVariable(UserDefinedVariable):
                     [self, *args],
                     kwargs,
                 )
+
         return super().call_function(tx, args, kwargs)
 
     def is_standard_new(self) -> bool:
@@ -1009,8 +1035,7 @@ class UserDefinedClassVariable(UserDefinedVariable):
                     functools.partial(GuardBuilder.HASATTR, attr=name)
                 )
             )
-            return VariableTracker.build(tx, hasattr(self.value, name))
-        return super().call_obj_hasattr(tx, name)
+        return VariableTracker.build(tx, hasattr(self.value, name))
 
     def const_getattr(self, tx: "InstructionTranslator", name: str) -> Any:
         if name == "__name__":
@@ -1028,6 +1053,9 @@ class UserDefinedClassVariable(UserDefinedVariable):
             isinstance(other, variables.UserDefinedClassVariable)
             and self.value is other.value
         )
+
+    def get_real_python_backed_value(self) -> object:
+        return self.value
 
 
 class UserDefinedExceptionClassVariable(UserDefinedClassVariable):
@@ -1090,10 +1118,6 @@ class UserDefinedEnumClassVariable(UserDefinedClassVariable):
                 source = self.source and AttrSource(self.source, name)
                 return variables.UserMethodVariable(method, self, source=source)
         return super().var_getattr(tx, name)
-
-
-class NO_SUCH_SUBOBJ:
-    pass
 
 
 class RemovableHandleClass:
@@ -1215,6 +1239,9 @@ class UserDefinedObjectVariable(UserDefinedVariable):
 
     def python_type(self) -> type:
         return self.value_type  # type: ignore[return-value]
+
+    def get_real_python_backed_value(self) -> object:
+        return self.value
 
     def as_python_constant(self) -> object:
         if self.is_pytree_constant_class and self.source:
@@ -1380,6 +1407,23 @@ class UserDefinedObjectVariable(UserDefinedVariable):
             "Attempted setattr on a user-defined object that does not have "
             "an AttributeMutation mutation_type"
         )
+
+        if (
+            torch.distributed.is_available()
+            and type(self.value) is torch.distributed.P2POp
+            and (
+                tx.output.side_effects.has_pending_mutation_of_attr(self, name_str)
+                or name_str in self.value.__dict__
+            )
+        ):
+            unimplemented(
+                gb_type="P2POp mutation",
+                context=f"object={self}, name={name}, value={value}",
+                explanation="Dynamo does not support mutating torch.distributed.P2POp instances.",
+                hints=[
+                    "Construct a new torch.distributed.P2POp instead of mutating an existing one inside torch.compile.",
+                ],
+            )
 
         if name_str == "__class__":
             unimplemented(
