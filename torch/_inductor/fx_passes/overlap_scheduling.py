@@ -1,6 +1,7 @@
 import functools
 import heapq
 import itertools
+import json
 import logging
 import sys
 from collections import Counter, defaultdict
@@ -1719,6 +1720,50 @@ def align_estimations_across_ranks(
     return dict(zip(nodes, medians))
 
 
+def _collect_analytical_estimates(
+    gm: torch.fx.GraphModule,
+    pgle_estimator: Callable[[fx.Node, int | None], float | None],
+) -> dict[str, float]:
+    """Collect analytical runtime estimates for nodes that PGLE matched.
+
+    Runs the analytical estimator (no custom override) over the same nodes
+    to enable PGLE vs analytical comparison.
+    """
+    estimation_log = getattr(pgle_estimator, "estimation_log", [])
+    matched_names = OrderedSet([e["node"] for e in estimation_log])
+    if not matched_names:
+        return {}
+
+    analytical: dict[str, float] = {}
+    for node in gm.graph.nodes:
+        if node.name not in matched_names:
+            continue
+        # Collective: use analytical NCCL estimator
+        if _schedulable_wait_node(node):
+            start = node.args[0]
+            if isinstance(start, fx.Node) and start.name in matched_names:
+                est = torch._inductor.comm_analysis.estimate_nccl_collective_runtime_from_fx_node(
+                    start
+                )
+                analytical[start.name] = est
+        elif node.target in (
+            torch.ops._c10d_functional.all_gather_into_tensor.default,
+            torch.ops._c10d_functional.reduce_scatter_tensor.default,
+            torch.ops._c10d_functional.all_reduce.default,
+            torch.ops._c10d_functional.all_to_all_single.default,
+        ):
+            est = torch._inductor.comm_analysis.estimate_nccl_collective_runtime_from_fx_node(
+                node
+            )
+            analytical[node.name] = est
+        # Compute: use roofline estimation
+        elif is_compute_node(node) and node.name in matched_names:
+            est = estimate_roofline_runtime_ms(node)
+            if est is not None:
+                analytical[node.name] = est
+    return analytical
+
+
 def schedule_overlap_bucketing(
     gm: torch.fx.GraphModule,
     max_in_flight_gb: float = 5,
@@ -1769,6 +1814,49 @@ def schedule_overlap_bucketing(
     if not any(is_wait_tensor(n) for n in gm.graph.nodes):
         return gm
 
+    # Auto-load PGLE if configured and no custom estimation provided
+    if custom_runtime_estimation is None:
+        from torch._inductor import config as inductor_config
+
+        pgle_path = inductor_config.aten_distributed_optimizations.profile_guided_estimation_path
+        if pgle_path:
+            from torch._inductor.fx_passes.node_runtime_estimation import (
+                make_profile_guided_estimator,
+            )
+            from torch._inductor.fx_passes.profile_guided_estimation import _rank_stride
+
+            custom_runtime_estimation = make_profile_guided_estimator(pgle_path)
+            log.info("PGLE: using profile-guided estimation from %s", pgle_path)
+            # Log profile stats
+            profile = custom_runtime_estimation.profile  # type: ignore[union-attr]
+            coll_keys = list(profile._collective_index.keys())
+            mm_count = len(profile._matmul_index)
+            sdpa_count = len(profile._sdpa_index)
+            trace_structured(
+                "artifact",
+                metadata_fn=lambda: {
+                    "name": "pgle_profile_loaded",
+                    "encoding": "json",
+                },
+                payload_fn=lambda: json.dumps(
+                    {
+                        "path": pgle_path,
+                        "collective_keys": [
+                            {
+                                "name": k[0],
+                                "ranks": list(k[1]),
+                                "group_size": len(k[1]),
+                                "stride": _rank_stride(k[1]),
+                                "dtype": k[2],
+                            }
+                            for k in coll_keys
+                        ],
+                        "matmul_count": mm_count,
+                        "sdpa_count": sdpa_count,
+                    }
+                ),
+            )
+
     trace_structured(
         "artifact",
         metadata_fn=lambda: {
@@ -1805,6 +1893,19 @@ def schedule_overlap_bucketing(
         },
         payload_fn=lambda: ret.print_readable(False),
     )
+
+    # Log PGLE estimations to trace_structured for tlparse
+    if custom_runtime_estimation is not None and hasattr(
+        custom_runtime_estimation, "estimation_log"
+    ):
+        from torch._inductor.fx_passes.node_runtime_estimation import (
+            log_pgle_estimations,
+        )
+
+        # Collect analytical estimates for comparison
+        analytical = _collect_analytical_estimates(ret, custom_runtime_estimation)
+        log_pgle_estimations(custom_runtime_estimation, analytical)
+
     return ret
 
 
@@ -1846,5 +1947,16 @@ def schedule_overlap_bucketing_from_inductor_configs(
     for key in config_keys:
         if (val := getattr(dist_opts, key, None)) is not None:
             kwargs[key] = val
+
+    # Profile-guided latency estimation: load profile and set as custom estimator
+    pgle_path = dist_opts.profile_guided_estimation_path
+    if pgle_path and "custom_runtime_estimation" not in kwargs:
+        from torch._inductor.fx_passes.node_runtime_estimation import (
+            make_profile_guided_estimator,
+        )
+
+        pgle_estimator = make_profile_guided_estimator(pgle_path)
+        kwargs["custom_runtime_estimation"] = pgle_estimator
+        log.info("PGLE: using profile-guided estimation from %s", pgle_path)
 
     return schedule_overlap_bucketing(gm, **kwargs)  # type: ignore[arg-type]
