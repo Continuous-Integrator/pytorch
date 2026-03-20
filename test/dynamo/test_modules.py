@@ -2168,7 +2168,6 @@ class OptimizedModuleTest(torch._dynamo.test_case.TestCase):
         # fn compiles twice
         self.assertEqual(cnts.frame_count, 2)
 
-    @patch.object(torch._dynamo.config, "inline_inbuilt_nn_modules", True)
     def test_inline_inbuilt_nn_modules(self):
         size = (10, 10)
         recompile_limit = 1
@@ -2913,7 +2912,6 @@ class OptimizedModuleTest(torch._dynamo.test_case.TestCase):
         expected = mod(x)
         self.assertEqual(actual, expected)
 
-    @torch._dynamo.config.patch("inline_inbuilt_nn_modules", True)
     def test_mark_static_previously_seen_tensor(self):
         # This test verifies that dynamo will mark
         # the buffers/params of a module as static
@@ -2959,7 +2957,6 @@ class OptimizedModuleTest(torch._dynamo.test_case.TestCase):
         fn(inp, buf, mod)
         self.assertEqual(num_compiles, 1)
 
-    @torch._dynamo.config.patch("inline_inbuilt_nn_modules", True)
     def test_mark_static_nn_module_tensor(self):
         # This test verifies that dynamo will mark
         # the nn module tensor attributes as static
@@ -3002,7 +2999,6 @@ class OptimizedModuleTest(torch._dynamo.test_case.TestCase):
         fn(inp)
         self.assertEqual(num_compiles, 1)
 
-    @torch._dynamo.config.patch("inline_inbuilt_nn_modules", True)
     @torch._inductor.config.patch("freezing", True)
     @torch.no_grad()
     def test_mark_static_with_freezing(self):
@@ -3242,8 +3238,6 @@ class OptimizedModuleTest(torch._dynamo.test_case.TestCase):
             self.assertEqual(cnt.frame_count, 2)
 
         helper()
-        with torch._dynamo.config.patch(inline_inbuilt_nn_modules=True):
-            helper()
 
     def test_user_defined_nn_module_dynamic(self):
         class Conv2d(torch.nn.Conv2d):
@@ -3279,7 +3273,6 @@ class OptimizedModuleTest(torch._dynamo.test_case.TestCase):
         # Must be 3 compilations. If not marked static there would be 2, because strides would be converted to symints.
         self.assertEqual(cnts.frame_count, 3)
 
-    @patch.object(torch._dynamo.config, "inline_inbuilt_nn_modules", True)
     def test_overridden_call(self):
         class OverRiddenCallModule(torch.nn.Module):
             def __init__(self):
@@ -3304,7 +3297,6 @@ class OptimizedModuleTest(torch._dynamo.test_case.TestCase):
         res = opt_fn(x)
         self.assertEqual(ref, res)
 
-    @torch._dynamo.config.patch("inline_inbuilt_nn_modules", True)
     def test_param_requires_grad(self):
         def adjust_model(model):
             to_freeze = model.num_iter % 2 == 0
@@ -3351,7 +3343,6 @@ class OptimizedModuleTest(torch._dynamo.test_case.TestCase):
         self.assertEqual(cnt.frame_count, 3)
 
     @torch._dynamo.config.patch("use_recursive_dict_tags_for_guards", False)
-    @torch._dynamo.config.patch("inline_inbuilt_nn_modules", True)
     def test_param_requires_grad_no_recursive_dict_tags(self):
         class MyModule(torch.nn.Module):
             def __init__(self):
@@ -3377,7 +3368,35 @@ class OptimizedModuleTest(torch._dynamo.test_case.TestCase):
         self.assertEqual(cnt.frame_count, 2)
         self.assertIsNotNone(model.linear.weight.grad)
 
-    @torch._dynamo.config.patch("inline_inbuilt_nn_modules", True)
+    @torch._dynamo.config.patch(skip_tensor_guards_with_matching_dict_tags=True)
+    @torch._dynamo.config.patch("use_recursive_dict_tags_for_guards", True)
+    def test_param_dtype_change_recompiles_with_recursive_dict_tags(self):
+        class MyModule(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.scale = torch.nn.Parameter(torch.randn(4))
+
+            def forward(self, x):
+                return x * self.scale
+
+        model = MyModule()
+        x = torch.randn(4)
+
+        cnt = torch._dynamo.testing.CompileCounter()
+        compiled = torch.compile(model, backend=cnt, fullgraph=True)
+
+        self.assertTrue(torch._dynamo.testing.same(model(x), compiled(x)))
+        self.assertEqual(cnt.frame_count, 1)
+
+        model.to(dtype=torch.float64)
+
+        recompiled = torch.compile(model, backend=cnt, fullgraph=True)
+        result = recompiled(x)
+
+        self.assertEqual(result.dtype, torch.float64)
+        self.assertTrue(torch._dynamo.testing.same(model(x), result))
+        self.assertEqual(cnt.frame_count, 2)
+
     def test_param_requires_grad_submodule(self):
         class Inner(torch.nn.Module):
             def __init__(self):
