@@ -315,7 +315,7 @@ class FunctionTests(torch._dynamo.test_case.TestCaseWithNestedGraphBreaks):
             map(lambda x: x, [1, 2]),
             filter(lambda x: True, [1, 2]),
         )
-        return a
+        return a + 0
 
     def test_itertools_permutations_basic(self):
         def fn():
@@ -689,6 +689,7 @@ class FunctionTests(torch._dynamo.test_case.TestCaseWithNestedGraphBreaks):
 
     def test_size_tuple_add(self):
         def fn():
+            _ = torch.randn(1) + 0
             size = torch.Size([])
             assert isinstance(size + size, torch.Size)  # noqa: S101
             assert isinstance(size + (), tuple)  # noqa: S101
@@ -1937,16 +1938,19 @@ class FunctionTests(torch._dynamo.test_case.TestCaseWithNestedGraphBreaks):
     def test_sum_with_start_kwarg(a, b, c, d):
         return sum([b, c, d], start=a)
 
-    @make_test(expected_frame_count=0)
+    @make_test
     def test_sum_shortcut():
+        _ = torch.randn(1) + 0
         return sum([0, 1.0, 2, 3.0])
 
-    @make_test(expected_frame_count=0)
+    @make_test
     def test_sum_shortcut_with_start_arg():
+        _ = torch.randn(1) + 0
         return sum([0, 1.0, 2, 3.0], -10)
 
-    @make_test(expected_frame_count=0)
+    @make_test
     def test_sum_shortcut_with_start_kwarg():
+        _ = torch.randn(1) + 0
         return sum([0, 1.0, 2, 3.0], start=-10)
 
     @make_test
@@ -1959,14 +1963,16 @@ class FunctionTests(torch._dynamo.test_case.TestCaseWithNestedGraphBreaks):
 
     @make_test
     def test_reduce_with_single(x):
-        return functools.reduce(lambda a, b: (a, b), [x])
+        return functools.reduce(lambda a, b: (a, b), [x]) + 0
 
-    @make_test(expected_frame_count=0)
+    @make_test
     def test_reduce_with_single_with_initial(x, y):
+        _ = x + 0
         return functools.reduce(lambda a, b: (a, b), [y], x)
 
-    @make_test(expected_frame_count=0)
+    @make_test
     def test_reduce_with_none_initial(x):
+        _ = x + 0
         return functools.reduce(lambda a, b: (a, b), [x], None)
 
     @make_test
@@ -2583,16 +2589,16 @@ class FunctionTests(torch._dynamo.test_case.TestCaseWithNestedGraphBreaks):
             return math.fma(a, b, c)
 
         # Test with scalar constants (constant folding path)
-        cnt = torch._dynamo.testing.CompileCounter()
-        cfma_scalars = torch._dynamo.optimize_assert(cnt)(fma_func)
+        def fma_scalars():
+            _ = torch.randn(1) + 0
+            return fma_func(2.0, 3.0, 4.0)
 
-        if cnt.frame_count != 0:
-            raise AssertionError(f"Expected frame_count 0, got {cnt.frame_count}")
-        expected = fma_func(2.0, 3.0, 4.0)
-        output = cfma_scalars(2.0, 3.0, 4.0)
+        cnt = torch._dynamo.testing.CompileCounter()
+        cfma_scalars = torch.compile(fma_scalars, backend=cnt, fullgraph=True)
+
+        expected = fma_scalars()
+        output = cfma_scalars()
         self.assertEqual(output, expected)
-        if cnt.frame_count != 0:
-            raise AssertionError(f"Expected frame_count 0, got {cnt.frame_count}")
 
         # Test with tensors (Inductor path)
         cnt2 = torch._dynamo.testing.CompileCounter()
@@ -3641,10 +3647,21 @@ class GraphModule(torch.nn.Module):
 
         test(torch.ones(4), 1)
         test(1, torch.ones(4))
+        test(torch.ones(4, dtype=torch.float32), 1.1)
+
+    def test_pos_scalars(self):
+        def fn(x, y):
+            _ = torch.randn(1) + 0
+            return operator.pos(x) * +y
+
+        opt_fn = torch.compile(fullgraph=True, dynamic=True, backend="eager")(fn)
+
+        def test(x, y):
+            self.assertEqual(opt_fn(x, y), fn(x, y))
+
         test(-1, -1)
         test(-1.1, 1.1)
         test(True, False)
-        test(torch.ones(4, dtype=torch.float32), 1.1)
 
     def test_index(self):
         def fn(x, t):
@@ -3686,6 +3703,7 @@ class GraphModule(torch.nn.Module):
             with self.subTest(op=op):
 
                 def fn():
+                    _ = torch.randn(1) + 0
                     a = range(-10, 10)
                     return list(map(op, a))
 
@@ -3697,6 +3715,7 @@ class GraphModule(torch.nn.Module):
             with self.subTest(op=op):
 
                 def fn():
+                    _ = torch.randn(1) + 0
                     a = [tuple(range(-10, i)) for i in range(10)]
                     return tuple(map(op, a))
 
@@ -4042,6 +4061,7 @@ class GraphModule(torch.nn.Module):
 
     def test_map_return(self):
         def fn(a, b):
+            _ = a + 0
             return map(lambda x: x + 1, [a, b])
 
         opt_fn = torch.compile(fn, backend="eager", fullgraph=True)
@@ -4297,6 +4317,165 @@ class GraphModule(torch.nn.Module):
         opt_fn = torch.compile(fn, backend="eager", fullgraph=True)
         self.assertEqual(fn(x), opt_fn(x))
 
+    def test_wrapper_user_function_hasattr(self):
+        # WrapperUserFunctionVariable (e.g. lru_cache-wrapped fn) passed to a
+        # decorator that calls functools.wraps at tracing time should not graph
+        # break on hasattr(fn, '__dict__').
+        @functools.lru_cache
+        def cached_fn(x):
+            return x * 2
+
+        def retry(func):
+            @functools.wraps(func)
+            def wrapper(*args, **kwargs):
+                return func(*args, **kwargs)
+
+            return wrapper
+
+        def fn(x):
+            return retry(cached_fn)(x)
+
+        x = torch.tensor(2.0, device="cpu")
+        opt_fn = torch.compile(fn, backend="eager", fullgraph=True)
+        self.assertEqual(fn(x), opt_fn(x))
+
+    def test_wraps_on_lru_cache_preserves_name(self):
+        # functools.wraps copies __name__ and __qualname__ from the wrapped fn;
+        # when applied to an lru_cache-wrapped function at trace time,
+        # WrapperUserFunctionVariable must expose those attributes.
+        @functools.lru_cache
+        def my_op(x):
+            """my docstring"""
+            return x + 1
+
+        def apply_wraps(func):
+            @functools.wraps(func)
+            def inner(*args, **kwargs):
+                return func(*args, **kwargs)
+
+            return inner
+
+        def fn(x):
+            wrapped = apply_wraps(my_op)
+            if wrapped.__name__ != "my_op":
+                raise AssertionError(f"Expected 'my_op', got {wrapped.__name__!r}")
+            if wrapped.__qualname__ != my_op.__qualname__:
+                raise AssertionError(
+                    f"Expected {my_op.__qualname__!r}, got {wrapped.__qualname__!r}"
+                )
+            if wrapped.__doc__ != "my docstring":
+                raise AssertionError(
+                    f"Expected 'my docstring', got {wrapped.__doc__!r}"
+                )
+            return wrapped(x)
+
+        x = torch.tensor(1.0)
+        opt_fn = torch.compile(fn, backend="eager", fullgraph=True)
+        self.assertEqual(fn(x), opt_fn(x))
+
+    def test_wraps_on_lru_cache_copies_annotations(self):
+        # functools.wraps should copy __annotations__ from an lru_cache-wrapped fn.
+        @functools.lru_cache
+        def annotated_fn(x: torch.Tensor) -> torch.Tensor:
+            return x * 3
+
+        def decorator(func):
+            @functools.wraps(func)
+            def inner(*args, **kwargs):
+                return func(*args, **kwargs)
+
+            return inner
+
+        def fn(x):
+            return decorator(annotated_fn)(x)
+
+        x = torch.tensor(2.0)
+        opt_fn = torch.compile(fn, backend="eager", fullgraph=True)
+        self.assertEqual(fn(x), opt_fn(x))
+
+    def test_wraps_on_nested_fn(self):
+        # functools.wraps applied to a locally defined (NestedUserFunctionVariable)
+        # function should also work without graph breaks.
+        def fn(x):
+            def inner_op(t):
+                """inner doc"""
+                return t * 2
+
+            @functools.wraps(inner_op)
+            def wrapper(*args, **kwargs):
+                return inner_op(*args, **kwargs)
+
+            if wrapper.__name__ != "inner_op":
+                raise AssertionError(f"Expected 'inner_op', got {wrapper.__name__!r}")
+            if wrapper.__doc__ != "inner doc":
+                raise AssertionError(f"Expected 'inner doc', got {wrapper.__doc__!r}")
+            return wrapper(x)
+
+        x = torch.tensor(3.0)
+        opt_fn = torch.compile(fn, backend="eager", fullgraph=True)
+        self.assertEqual(fn(x), opt_fn(x))
+
+    def test_wraps_stacked_on_lru_cache(self):
+        # Stacking two functools.wraps layers over an lru_cache-wrapped fn.
+        @functools.lru_cache
+        def base_fn(x):
+            return x - 1
+
+        def outer_decorator(func):
+            @functools.wraps(func)
+            def middle(*args, **kwargs):
+                return func(*args, **kwargs)
+
+            return middle
+
+        def inner_decorator(func):
+            @functools.wraps(func)
+            def innermost(*args, **kwargs):
+                return func(*args, **kwargs)
+
+            return innermost
+
+        def fn(x):
+            return inner_decorator(outer_decorator(base_fn))(x)
+
+        x = torch.tensor(5.0)
+        opt_fn = torch.compile(fn, backend="eager", fullgraph=True)
+        self.assertEqual(fn(x), opt_fn(x))
+
+    def test_lru_cache_dunder_name_access(self):
+        # Accessing __name__ on an lru_cache-wrapped function during tracing
+        # should return the original function's name as a constant.
+        @functools.lru_cache
+        def compute(x):
+            return x + 10
+
+        def fn(x):
+            name = compute.__name__
+            if name != "compute":
+                raise AssertionError(f"Expected 'compute', got {name!r}")
+            return compute(x)
+
+        x = torch.tensor(1.0)
+        opt_fn = torch.compile(fn, backend="eager", fullgraph=True)
+        self.assertEqual(fn(x), opt_fn(x))
+
+    def test_lru_cache_dunder_doc_access(self):
+        # Accessing __doc__ on an lru_cache-wrapped function during tracing.
+        @functools.lru_cache
+        def documented_fn(x):
+            """returns x squared"""
+            return x**2
+
+        def fn(x):
+            doc = documented_fn.__doc__
+            if doc != "returns x squared":
+                raise AssertionError(f"Expected 'returns x squared', got {doc!r}")
+            return documented_fn(x)
+
+        x = torch.tensor(3.0)
+        opt_fn = torch.compile(fn, backend="eager", fullgraph=True)
+        self.assertEqual(fn(x), opt_fn(x))
+
     def test_functools_cache_guard(self):
         class Foo:
             @functools.lru_cache  # noqa: B019
@@ -4314,6 +4493,7 @@ class GraphModule(torch.nn.Module):
 
     def test_torch_get_device_module(self):
         def f1():
+            _ = torch.randn(1) + 0
             mod1 = torch.get_device_module()
             mod2 = torch.get_device_module("cpu")
             mod3 = torch.get_device_module(torch.device(device_type))
@@ -4345,6 +4525,7 @@ class GraphModule(torch.nn.Module):
         # test for changing torch.get_device_module() (super rare case due to lru_cache)
         @torch.compile(backend="eager", fullgraph=True)
         def f5():
+            _ = torch.randn(1) + 0
             return torch.get_device_module()
 
         f5()
@@ -4378,9 +4559,11 @@ class GraphModule(torch.nn.Module):
         global torch
 
         g = torch.get_device_module
+        _randn = torch.randn
 
         @torch.compile(backend="eager", fullgraph=True)
         def f():
+            _ = _randn(1) + 0
             return g()
 
         try:
