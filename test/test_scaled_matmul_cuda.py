@@ -2709,78 +2709,88 @@ class TestFP8Matmul(TestCase):
     @parametrize("fast_accum", [False, True])
     def test_scaled_grouped_gemm_cublaslt_mxfp8(self, op, out_dtype, fast_accum):
         device = "cuda"
-        a_dtype, b_dtype = torch.float8_e4m3fn, torch.float8_e4m3fn
         ngroups = 4
+        block_size = 32
+        torch.manual_seed(42)
 
-        def scale_size(inner, outer):
-            """Number of e8m0 elements for cuBLAS VEC32_UE8M0 scale tensor."""
-            BLOCK_ROWS = 128
-            BLOCK_COLS = 128
-            S_VSCALE = 32
-            s_rows = ceil_div(inner, BLOCK_ROWS) * (BLOCK_ROWS // S_VSCALE)
-            s_cols = ceil_div(outer, BLOCK_COLS) * BLOCK_COLS
-            return s_rows * s_cols
-
-        # All dims must be 128-aligned so per-group scale sizes match the
-        # cuBLAS VEC32_UE8M0 2D tiled layout.
+        # Generate bf16 data, quantize with to_mxfp, swizzle with to_blocked.
+        # All dims are 128-aligned for blocked scale compatibility.
         if op == "2d/2d":
-            m, n = 128, 128
-            # Jagged K: each group gets 128 elements of K
-            k_per_group = [128] * ngroups
-            k_total = sum(k_per_group)
+            m, n, k_g = 128, 128, 128
+            k_total = k_g * ngroups
             offs = torch.tensor(
-                [sum(k_per_group[:i + 1]) for i in range(ngroups)],
+                [k_g * (i + 1) for i in range(ngroups)],
                 device=device, dtype=torch.int32,
             )
-            A = torch.randn(m, k_total, device=device).to(a_dtype)
-            B_T = torch.randn(n, k_total, device=device).to(b_dtype)
-            # scale_a for mat1 (cuBLAS-B): getScaleTensorSize(K_g, cublas_n=m)
-            # scale_b for mat2 (cuBLAS-A): getScaleTensorSize(K_g, cublas_m=n)
-            sa_parts = [torch.ones(scale_size(k_per_group[g], m), device=device, dtype=torch.float8_e8m0fnu) for g in range(ngroups)]
-            sb_parts = [torch.ones(scale_size(k_per_group[g], n), device=device, dtype=torch.float8_e8m0fnu) for g in range(ngroups)]
-            scale_a = torch.cat(sa_parts)
-            scale_b = torch.cat(sb_parts)
+            A_bf16 = torch.randn(m, k_total, device=device, dtype=torch.bfloat16) * 0.1
+            B_bf16 = torch.randn(n, k_total, device=device, dtype=torch.bfloat16) * 0.01
+            # Quantize per-group slices along K
+            a_fp8_list, a_sb_list, b_fp8_list, b_sb_list = [], [], [], []
+            for g in range(ngroups):
+                s, e = g * k_g, (g + 1) * k_g
+                sa, aq = to_mxfp(A_bf16[:, s:e].contiguous(), format="mxfp8")
+                sb, bq = to_mxfp(B_bf16[:, s:e].contiguous(), format="mxfp8")
+                a_fp8_list.append(aq); a_sb_list.append(to_blocked(sa))
+                b_fp8_list.append(bq); b_sb_list.append(to_blocked(sb))
+            A = torch.cat(a_fp8_list, dim=1).contiguous()
+            B_T = torch.cat(b_fp8_list, dim=1).contiguous()
+            scale_a = torch.cat(a_sb_list)
+            scale_b = torch.cat(b_sb_list)
         elif op == "2d/3d":
             n, k = 128, 128
-            # Jagged M: each group gets 128 rows
-            m_per_group = [128] * ngroups
-            m_total = sum(m_per_group)
+            m_per_group = 128
+            m_total = m_per_group * ngroups
             offs = torch.tensor(
-                [sum(m_per_group[:i + 1]) for i in range(ngroups)],
+                [m_per_group * (i + 1) for i in range(ngroups)],
                 device=device, dtype=torch.int32,
             )
-            A = torch.randn(m_total, k, device=device).to(a_dtype)
-            B_T = torch.randn(ngroups, n, k, device=device).to(b_dtype)
-            # scale_a (cuBLAS-B): getScaleTensorSize(K, cublas_n=M_g) - M varies
-            sa_parts = [torch.ones(scale_size(k, m_per_group[g]), device=device, dtype=torch.float8_e8m0fnu) for g in range(ngroups)]
-            scale_a = torch.cat(sa_parts)
-            # scale_b (cuBLAS-A): getScaleTensorSize(K, cublas_m=N) - uniform
-            sb_per_group = scale_size(k, n)
-            scale_b = torch.ones(ngroups, sb_per_group, device=device, dtype=torch.float8_e8m0fnu)
+            A_bf16 = torch.randn(m_total, k, device=device, dtype=torch.bfloat16) * 0.1
+            B_bf16 = torch.randn(ngroups, n, k, device=device, dtype=torch.bfloat16) * 0.01
+            a_fp8_list, a_sb_list, b_fp8_list, b_sb_list = [], [], [], []
+            for g in range(ngroups):
+                sa, aq = to_mxfp(A_bf16[g * m_per_group:(g + 1) * m_per_group], format="mxfp8")
+                sb, bq = to_mxfp(B_bf16[g], format="mxfp8")
+                a_fp8_list.append(aq); a_sb_list.append(to_blocked(sa))
+                b_fp8_list.append(bq); b_sb_list.append(to_blocked(sb))
+            A = torch.cat(a_fp8_list, dim=0).contiguous()
+            B_T = torch.stack(b_fp8_list, dim=0).contiguous()
+            scale_a = torch.cat(a_sb_list).reshape(-1, k // block_size)
+            scale_b = torch.stack(b_sb_list, dim=0)
         elif op == "3d/2d":
             m, k = 128, 128
-            # Jagged N: each group gets 128 columns
-            n_per_group = [128] * ngroups
-            n_total = sum(n_per_group)
+            n_per_group = 128
+            n_total = n_per_group * ngroups
             offs = torch.tensor(
-                [sum(n_per_group[:i + 1]) for i in range(ngroups)],
+                [n_per_group * (i + 1) for i in range(ngroups)],
                 device=device, dtype=torch.int32,
             )
-            A = torch.randn(ngroups, m, k, device=device).to(a_dtype)
-            B_T = torch.randn(n_total, k, device=device).to(b_dtype)
-            # scale_a (cuBLAS-B): getScaleTensorSize(K, cublas_n=M) - uniform
-            sa_per_group = scale_size(k, m)
-            scale_a = torch.ones(ngroups, sa_per_group, device=device, dtype=torch.float8_e8m0fnu)
-            # scale_b (cuBLAS-A): getScaleTensorSize(K, cublas_m=N_g) - N varies
-            sb_parts = [torch.ones(scale_size(k, n_per_group[g]), device=device, dtype=torch.float8_e8m0fnu) for g in range(ngroups)]
-            scale_b = torch.cat(sb_parts)
+            A_bf16 = torch.randn(ngroups, m, k, device=device, dtype=torch.bfloat16) * 0.1
+            B_bf16 = torch.randn(n_total, k, device=device, dtype=torch.bfloat16) * 0.01
+            a_fp8_list, a_sb_list, b_fp8_list, b_sb_list = [], [], [], []
+            for g in range(ngroups):
+                sa, aq = to_mxfp(A_bf16[g], format="mxfp8")
+                sb, bq = to_mxfp(B_bf16[g * n_per_group:(g + 1) * n_per_group], format="mxfp8")
+                a_fp8_list.append(aq); a_sb_list.append(to_blocked(sa))
+                b_fp8_list.append(bq); b_sb_list.append(to_blocked(sb))
+            A = torch.stack(a_fp8_list, dim=0).contiguous()
+            B_T = torch.cat(b_fp8_list, dim=0).contiguous()
+            scale_a = torch.stack(a_sb_list, dim=0)
+            scale_b = torch.cat(b_sb_list).reshape(-1, k // block_size)
         elif op == "3d/3d":
             m, n, k = 128, 128, 128
             offs = None
-            A = torch.randn(ngroups, m, k, device=device).to(a_dtype)
-            B_T = torch.randn(ngroups, n, k, device=device).to(b_dtype)
-            scale_a = torch.ones(ngroups, m, k // 32, device=device, dtype=torch.float8_e8m0fnu)
-            scale_b = torch.ones(ngroups, n, k // 32, device=device, dtype=torch.float8_e8m0fnu)
+            A_bf16 = torch.randn(ngroups, m, k, device=device, dtype=torch.bfloat16) * 0.1
+            B_bf16 = torch.randn(ngroups, n, k, device=device, dtype=torch.bfloat16) * 0.01
+            a_fp8_list, a_sb_list, b_fp8_list, b_sb_list = [], [], [], []
+            for g in range(ngroups):
+                sa, aq = to_mxfp(A_bf16[g], format="mxfp8")
+                sb, bq = to_mxfp(B_bf16[g], format="mxfp8")
+                a_fp8_list.append(aq); a_sb_list.append(to_blocked(sa))
+                b_fp8_list.append(bq); b_sb_list.append(to_blocked(sb))
+            A = torch.stack(a_fp8_list, dim=0).contiguous()
+            B_T = torch.stack(b_fp8_list, dim=0).contiguous()
+            scale_a = torch.stack(a_sb_list, dim=0)
+            scale_b = torch.stack(b_sb_list, dim=0)
 
         C = torch._scaled_grouped_mm_cublaslt(
             A,
@@ -2792,44 +2802,36 @@ class TestFP8Matmul(TestCase):
             out_dtype=out_dtype,
         )
 
-        # Reference: per-group scaled_mm with blockwise MXFP8 scales
+        # Reference: per-group _scaled_mm with the same blocked scales
         a_is_2d = A.dim() == 2
         b_is_2d = B_T.dim() == 2
         if offs is not None:
             off_vals = [0] + offs.tolist()
         ref_parts = []
-        # Track scale offsets for variable-size groups
         sa_offset, sb_offset = 0, 0
         for g in range(ngroups):
             if a_is_2d and b_is_2d:
                 start, end = off_vals[g], off_vals[g + 1]
                 a_g = A[:, start:end]
                 b_g = B_T[:, start:end].t()
-                k_g = end - start
-                sa_size = scale_size(k_g, m)
-                sb_size = scale_size(k_g, n)
-                sa_g = scale_a[sa_offset:sa_offset + sa_size].view(-1)
-                sb_g = scale_b[sb_offset:sb_offset + sb_size].view(-1)
+                sa_size = a_sb_list[g].numel()
+                sb_size = b_sb_list[g].numel()
+                sa_g = scale_a[sa_offset:sa_offset + sa_size]
+                sb_g = scale_b[sb_offset:sb_offset + sb_size]
                 sa_offset += sa_size
                 sb_offset += sb_size
             elif a_is_2d and not b_is_2d:
                 start, end = off_vals[g], off_vals[g + 1]
                 a_g = A[start:end, :]
                 b_g = B_T[g].t()
-                m_g = end - start
-                sa_size = scale_size(k, m_g)
-                sa_g = scale_a[sa_offset:sa_offset + sa_size].view(-1)
+                sa_g = scale_a[start:end]
                 sb_g = scale_b[g]
-                sa_offset += sa_size
             elif not a_is_2d and b_is_2d:
                 start, end = off_vals[g], off_vals[g + 1]
                 a_g = A[g]
                 b_g = B_T[start:end, :].t()
                 sa_g = scale_a[g]
-                n_g = end - start
-                sb_size = scale_size(k, n_g)
-                sb_g = scale_b[sb_offset:sb_offset + sb_size].view(-1)
-                sb_offset += sb_size
+                sb_g = scale_b[start:end]
             else:
                 a_g = A[g]
                 b_g = B_T[g].t()
@@ -2863,67 +2865,86 @@ class TestFP8Matmul(TestCase):
     @parametrize("mode", ["default", "reduce-overhead"])
     def test_scaled_grouped_gemm_cublaslt_mxfp8_compiled(self, op, fast_accum, mode):
         device = "cuda"
-        a_dtype, b_dtype = torch.float8_e4m3fn, torch.float8_e4m3fn
         out_dtype = torch.bfloat16
         ngroups = 4
-
-        def scale_size(inner, outer):
-            BLOCK_ROWS = 128
-            BLOCK_COLS = 128
-            S_VSCALE = 32
-            s_rows = ceil_div(inner, BLOCK_ROWS) * (BLOCK_ROWS // S_VSCALE)
-            s_cols = ceil_div(outer, BLOCK_COLS) * BLOCK_COLS
-            return s_rows * s_cols
+        block_size = 32
+        torch.manual_seed(42)
 
         if op == "2d/2d":
-            m, n = 128, 128
-            k_per_group = [128] * ngroups
-            k_total = sum(k_per_group)
+            m, n, k_g = 128, 128, 128
+            k_total = k_g * ngroups
             offs = torch.tensor(
-                [sum(k_per_group[:i + 1]) for i in range(ngroups)],
+                [k_g * (i + 1) for i in range(ngroups)],
                 device=device, dtype=torch.int32,
             )
-            A = torch.randn(m, k_total, device=device).to(a_dtype)
-            B_T = torch.randn(n, k_total, device=device).to(b_dtype)
-            sa_parts = [torch.ones(scale_size(k_per_group[g], m), device=device, dtype=torch.float8_e8m0fnu) for g in range(ngroups)]
-            sb_parts = [torch.ones(scale_size(k_per_group[g], n), device=device, dtype=torch.float8_e8m0fnu) for g in range(ngroups)]
-            scale_a = torch.cat(sa_parts)
-            scale_b = torch.cat(sb_parts)
+            A_bf16 = torch.randn(m, k_total, device=device, dtype=torch.bfloat16) * 0.1
+            B_bf16 = torch.randn(n, k_total, device=device, dtype=torch.bfloat16) * 0.01
+            a_fp8_list, a_sb_list, b_fp8_list, b_sb_list = [], [], [], []
+            for g in range(ngroups):
+                s, e = g * k_g, (g + 1) * k_g
+                sa, aq = to_mxfp(A_bf16[:, s:e].contiguous(), format="mxfp8")
+                sb, bq = to_mxfp(B_bf16[:, s:e].contiguous(), format="mxfp8")
+                a_fp8_list.append(aq); a_sb_list.append(to_blocked(sa))
+                b_fp8_list.append(bq); b_sb_list.append(to_blocked(sb))
+            A = torch.cat(a_fp8_list, dim=1).contiguous()
+            B_T = torch.cat(b_fp8_list, dim=1).contiguous()
+            scale_a = torch.cat(a_sb_list)
+            scale_b = torch.cat(b_sb_list)
         elif op == "2d/3d":
             n, k = 128, 128
-            m_per_group = [128] * ngroups
-            m_total = sum(m_per_group)
+            m_per_group = 128
+            m_total = m_per_group * ngroups
             offs = torch.tensor(
-                [sum(m_per_group[:i + 1]) for i in range(ngroups)],
+                [m_per_group * (i + 1) for i in range(ngroups)],
                 device=device, dtype=torch.int32,
             )
-            A = torch.randn(m_total, k, device=device).to(a_dtype)
-            B_T = torch.randn(ngroups, n, k, device=device).to(b_dtype)
-            sa_parts = [torch.ones(scale_size(k, m_per_group[g]), device=device, dtype=torch.float8_e8m0fnu) for g in range(ngroups)]
-            scale_a = torch.cat(sa_parts)
-            sb_per_group = scale_size(k, n)
-            scale_b = torch.ones(ngroups, sb_per_group, device=device, dtype=torch.float8_e8m0fnu)
+            A_bf16 = torch.randn(m_total, k, device=device, dtype=torch.bfloat16) * 0.1
+            B_bf16 = torch.randn(ngroups, n, k, device=device, dtype=torch.bfloat16) * 0.01
+            a_fp8_list, a_sb_list, b_fp8_list, b_sb_list = [], [], [], []
+            for g in range(ngroups):
+                sa, aq = to_mxfp(A_bf16[g * m_per_group:(g + 1) * m_per_group], format="mxfp8")
+                sb, bq = to_mxfp(B_bf16[g], format="mxfp8")
+                a_fp8_list.append(aq); a_sb_list.append(to_blocked(sa))
+                b_fp8_list.append(bq); b_sb_list.append(to_blocked(sb))
+            A = torch.cat(a_fp8_list, dim=0).contiguous()
+            B_T = torch.stack(b_fp8_list, dim=0).contiguous()
+            scale_a = torch.cat(a_sb_list).reshape(-1, k // block_size)
+            scale_b = torch.stack(b_sb_list, dim=0)
         elif op == "3d/2d":
             m, k = 128, 128
-            n_per_group = [128] * ngroups
-            n_total = sum(n_per_group)
+            n_per_group = 128
+            n_total = n_per_group * ngroups
             offs = torch.tensor(
-                [sum(n_per_group[:i + 1]) for i in range(ngroups)],
+                [n_per_group * (i + 1) for i in range(ngroups)],
                 device=device, dtype=torch.int32,
             )
-            A = torch.randn(ngroups, m, k, device=device).to(a_dtype)
-            B_T = torch.randn(n_total, k, device=device).to(b_dtype)
-            sa_per_group = scale_size(k, m)
-            scale_a = torch.ones(ngroups, sa_per_group, device=device, dtype=torch.float8_e8m0fnu)
-            sb_parts = [torch.ones(scale_size(k, n_per_group[g]), device=device, dtype=torch.float8_e8m0fnu) for g in range(ngroups)]
-            scale_b = torch.cat(sb_parts)
+            A_bf16 = torch.randn(ngroups, m, k, device=device, dtype=torch.bfloat16) * 0.1
+            B_bf16 = torch.randn(n_total, k, device=device, dtype=torch.bfloat16) * 0.01
+            a_fp8_list, a_sb_list, b_fp8_list, b_sb_list = [], [], [], []
+            for g in range(ngroups):
+                sa, aq = to_mxfp(A_bf16[g], format="mxfp8")
+                sb, bq = to_mxfp(B_bf16[g * n_per_group:(g + 1) * n_per_group], format="mxfp8")
+                a_fp8_list.append(aq); a_sb_list.append(to_blocked(sa))
+                b_fp8_list.append(bq); b_sb_list.append(to_blocked(sb))
+            A = torch.stack(a_fp8_list, dim=0).contiguous()
+            B_T = torch.cat(b_fp8_list, dim=0).contiguous()
+            scale_a = torch.stack(a_sb_list, dim=0)
+            scale_b = torch.cat(b_sb_list).reshape(-1, k // block_size)
         elif op == "3d/3d":
             m, n, k = 128, 128, 128
             offs = None
-            A = torch.randn(ngroups, m, k, device=device).to(a_dtype)
-            B_T = torch.randn(ngroups, n, k, device=device).to(b_dtype)
-            scale_a = torch.ones(ngroups, m, k // 32, device=device, dtype=torch.float8_e8m0fnu)
-            scale_b = torch.ones(ngroups, n, k // 32, device=device, dtype=torch.float8_e8m0fnu)
+            A_bf16 = torch.randn(ngroups, m, k, device=device, dtype=torch.bfloat16) * 0.1
+            B_bf16 = torch.randn(ngroups, n, k, device=device, dtype=torch.bfloat16) * 0.01
+            a_fp8_list, a_sb_list, b_fp8_list, b_sb_list = [], [], [], []
+            for g in range(ngroups):
+                sa, aq = to_mxfp(A_bf16[g], format="mxfp8")
+                sb, bq = to_mxfp(B_bf16[g], format="mxfp8")
+                a_fp8_list.append(aq); a_sb_list.append(to_blocked(sa))
+                b_fp8_list.append(bq); b_sb_list.append(to_blocked(sb))
+            A = torch.stack(a_fp8_list, dim=0).contiguous()
+            B_T = torch.stack(b_fp8_list, dim=0).contiguous()
+            scale_a = torch.stack(a_sb_list, dim=0)
+            scale_b = torch.stack(b_sb_list, dim=0)
 
         torch._dynamo.reset()
         f_ref = torch._scaled_grouped_mm_cublaslt
