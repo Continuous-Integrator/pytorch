@@ -4,6 +4,8 @@ import argparse  # noqa: TC003
 import logging
 
 from cli.lib.common.cli_helper import register_targets, RichHelp, TargetSpec
+from cli.lib.core.pytorch.lib import PYTORCH_TEST_LIBRARY
+from cli.lib.core.pytorch.pytorch_test import PytorchTestRunner
 from cli.lib.core.torchtitan.torchtitan_test import TorchtitanTestRunner
 from cli.lib.core.vllm.vllm_test import VllmTestRunner
 
@@ -49,6 +51,64 @@ def common_args(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _register_pytorch_core_commands(subparsers: argparse._SubParsersAction) -> None:
+    available = "\n".join(
+        f"  {gid:40} {plan.title}" for gid, plan in PYTORCH_TEST_LIBRARY.items()
+    )
+    parser = subparsers.add_parser(
+        "pytorch-core",
+        help="Run PyTorch core tests",
+        description="Run PyTorch CI test plans.\n\nAvailable group IDs:\n" + available,
+        formatter_class=RichHelp,
+    )
+
+    # Mutually exclusive: either name the plan directly, or let TEST_CONFIG drive it.
+    dispatch = parser.add_mutually_exclusive_group(required=True)
+    dispatch.add_argument(
+        "--group-id",
+        metavar="GROUP_ID",
+        help="run a specific plan by name, e.g. 'pytorch_cpuonly'",
+    )
+    dispatch.add_argument(
+        "--test-config",
+        metavar="TEST_CONFIG",
+        help="resolve plan from TEST_CONFIG (+ --build-env), replacing test.sh dispatch",
+    )
+
+    parser.add_argument(
+        "--build-env",
+        default=None,
+        metavar="BUILD_ENVIRONMENT",
+        help="build environment string for plan resolution and env_vars (default: $BUILD_ENVIRONMENT)",
+    )
+    parser.add_argument(
+        "--test-id",
+        default=None,
+        metavar="TEST_ID",
+        help="run a single step within the group (for reproduction)",
+    )
+    parser.add_argument(
+        "--cmd",
+        default=None,
+        metavar="CMD",
+        help="replay setup context of --test-id but run this command instead "
+             "(e.g. a specific pytest line)",
+    )
+    parser.add_argument(
+        "--shard-id",
+        type=int,
+        default=1,
+        help="current shard index (1-based)",
+    )
+    parser.add_argument(
+        "--num-shards",
+        type=int,
+        default=1,
+        help="total number of shards",
+    )
+    parser.set_defaults(func=lambda args: PytorchTestRunner(args).run())
+
+
 def register_test_commands(subparsers: argparse._SubParsersAction) -> None:
     build_parser = subparsers.add_parser(
         "test",
@@ -66,3 +126,4 @@ def register_test_commands(subparsers: argparse._SubParsersAction) -> None:
         formatter_class=RichHelp,
     )
     register_targets(external_parser, _TARGETS, common_args=common_args)
+    _register_pytorch_core_commands(build_subparsers)
