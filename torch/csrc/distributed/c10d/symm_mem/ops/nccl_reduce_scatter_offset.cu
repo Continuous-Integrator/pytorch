@@ -363,12 +363,13 @@ void nccl_reduce_scatter_offset(
           reduce_scatter_offset_kernel<scalar_t, true>
               <<<total_ctas, RS_THREADS_PER_CTA, 0, stream>>>(
                   window, info, fixed_dim_size, col_sharded, outer_stride, devcomm);
+          C10_CUDA_KERNEL_LAUNCH_CHECK();
         } else {
           reduce_scatter_offset_kernel<scalar_t, false>
               <<<total_ctas, RS_THREADS_PER_CTA, 0, stream>>>(
                   window, info, fixed_dim_size, col_sharded, outer_stride, devcomm);
+          C10_CUDA_KERNEL_LAUNCH_CHECK();
         }
-        C10_CUDA_KERNEL_LAUNCH_CHECK();
       });
 #else
   TORCH_CHECK(
