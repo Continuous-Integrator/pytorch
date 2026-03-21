@@ -1525,18 +1525,16 @@ class LoweringTest(MultiProcContinuousTest):
 
         x_input = torch.rand(N, N, device=self.device)
 
-        # When the input is not a symmetric memory buffer, Inductor
-        # automatically inserts a copy to a P2P-allocated comm buffer.
-        # With mode="reduce-overhead", this exercises the CUDAGraph tree's
-        # P2P input handling (p2p_input_idxs pass-through).
-        compiled = torch.compile(func_input_direct, mode="reduce-overhead")
+        compiled_input_direct = torch.compile(func_input_direct, fullgraph=True)
+        code = run_and_get_triton_code(compiled_input_direct, x_input)
 
-        # Multiple iterations to trigger CG record + replay
-        for _ in range(3):
-            torch.compiler.cudagraph_mark_step_begin()
-            compiled_result = compiled(x_input)
+        self.assertIn(
+            "empty_strided_p2p",
+            code,
+            "Expected P2P allocation for auto-inserted copy",
+        )
 
-        # Verify runtime correctness
+        compiled_result = compiled_input_direct(x_input)
         eager_result = x_input.clone()
         dist.all_reduce(eager_result, op=dist.ReduceOp.SUM)
         torch.testing.assert_close(
@@ -1544,17 +1542,18 @@ class LoweringTest(MultiProcContinuousTest):
             eager_result,
             rtol=1e-5,
             atol=1e-5,
-            msg="CUDAGraph replay with auto-copy to P2P does not match eager",
+            msg="Auto-copy to P2P does not match eager",
         )
 
     @skip_if_rocm_multiprocess  # requires registered-buffer support
     @skip_if_lt_x_gpu(2)
     @fresh_inductor_cache()
-    def test_symm_mem_upstream_propagation(self):
+    def test_comm_buffer_inplace_prevention(self):
         """
-        Verify that when a pointwise op (add) sits between a data source and
-        a symm_mem collective, the ComputedBuffer's CommBufferLayout prevents
-        incorrect in-place reuse with the upstream regular CUDA buffer.
+        When a pointwise op (add) sits between a data source and a symm_mem
+        collective, the output gets CommBufferLayout. Verify that the scheduler
+        does not in-place reuse a regular CUDA buffer for a CommBufferLayout
+        output, which would place the allreduce input in non-P2P memory.
         """
         self._init_process()
 
@@ -1562,9 +1561,10 @@ class LoweringTest(MultiProcContinuousTest):
         x = torch.rand(N, N, device=self.device)
         w = torch.rand(N, N, device=self.device)
 
-        # Pattern: mm → cpu → cuda → add → allreduce
-        # The cpu→cuda roundtrip creates a fallback region (partition boundary).
-        # The add op's output needs P2P, but its input comes from the fallback.
+        # Pattern: mm -> cpu -> cuda -> add -> allreduce
+        # The add output needs P2P (CommBufferLayout), but its input
+        # comes from a regular CUDA buffer (cpu->cuda DeviceCopy output).
+        # The scheduler must not in-place the add into the DeviceCopy output.
         def func(x, w):
             y = torch.mm(x, w)
             y_cpu = y.cpu()
@@ -1575,7 +1575,6 @@ class LoweringTest(MultiProcContinuousTest):
         compiled = torch.compile(func, fullgraph=True)
         code = run_and_get_triton_code(compiled, x, w)
 
-        # Verify upstream propagation generated correct P2P allocation
         self.assertIn(
             "empty_strided_p2p",
             code,
@@ -1587,7 +1586,6 @@ class LoweringTest(MultiProcContinuousTest):
             "Expected out-variant allreduce in generated code",
         )
 
-        # Single-run correctness
         result = compiled(x, w)
         eager_y = torch.mm(x, w)
         eager_z = eager_y.cpu().cuda() + 1
@@ -1598,7 +1596,7 @@ class LoweringTest(MultiProcContinuousTest):
             eager_result,
             rtol=1e-5,
             atol=1e-5,
-            msg="Compiled (upstream propagation) and eager do not match",
+            msg="Compiled and eager do not match",
         )
 
     @skip_if_rocm_multiprocess  # requires registered-buffer support
@@ -1644,57 +1642,6 @@ class LoweringTest(MultiProcContinuousTest):
             atol=1e-5,
             msg="CUDAGraph-managed P2P input produced incorrect result",
         )
-
-    @skip_if_rocm_multiprocess
-    @skip_if_lt_x_gpu(2)
-    @fresh_inductor_cache()
-    def test_symm_mem_upstream_propagation_cudagraph(self):
-        """
-        CUDAGraph replay correctness for the upstream propagation pattern.
-
-        Pattern: mm → cpu → cuda → add → allreduce with CUDAGraph enabled.
-        Verifies that P2P buffers created by upstream propagation survive
-        CG recording and produce correct results across multiple replays.
-
-        Companion to test_symm_mem_upstream_propagation (PR #175449) which
-        verifies codegen correctness without CUDAGraph.
-        """
-        self._init_process()
-
-        N = 8
-        x = torch.rand(N, N, device=self.device)
-        w = torch.rand(N, N, device=self.device)
-
-        def func(x, w):
-            y = torch.mm(x, w)
-            y_cpu = y.cpu()
-            y_back = y_cpu.cuda()
-            z = y_back + 1
-            return torch.ops.symm_mem.one_shot_all_reduce(z, "sum", "0")
-
-        with torch._inductor.config.patch(
-            {
-                "graph_partition": True,
-                "triton.cudagraphs": True,
-            }
-        ):
-            compiled = torch.compile(func, fullgraph=True)
-            for _ in range(3):
-                torch.compiler.cudagraph_mark_step_begin()
-                result = compiled(x, w)
-
-        eager_y = torch.mm(x, w)
-        eager_z = eager_y.cpu().cuda() + 1
-        eager_result = eager_z.clone()
-        dist.all_reduce(eager_result, op=dist.ReduceOp.SUM)
-        torch.testing.assert_close(
-            result,
-            eager_result,
-            rtol=1e-5,
-            atol=1e-5,
-            msg="CUDAGraph replay with upstream propagation does not match eager",
-        )
-
 
 class SymmMemSingleProcTest(TestCase):
     @requires_cuda

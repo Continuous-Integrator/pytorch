@@ -927,9 +927,7 @@ class CUDAGraphNode:
         #
         # Detection: P2P buffers are allocated via cuMemCreate/cuMemMap (not
         # the CUDA caching allocator), so they lack a standard deleter.
-        # In the cudagraph input context, non-standard-deleter CUDA tensors
-        # are P2P allocations — other non-standard-deleter types (e.g., CUDA
-        # IPC) are not expected as compiled graph inputs.
+        # TODO: Replace with a positive is_p2p check on StorageImpl (requires C++ change).
         self.p2p_input_idxs: list[int] = [
             idx
             for idx, t in enumerate(inputs)
