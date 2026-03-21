@@ -1667,12 +1667,37 @@ class TypingVariable(VariableTracker):
         other: VariableTracker,
         op: str,
     ) -> VariableTracker:
-        # CPython: _GenericAlias.__eq__ in Lib/typing.py
         # https://github.com/python/cpython/blob/main/Lib/typing.py
-        if op == "__eq__":
-            result = istype(other, TypingVariable) and self.value == other.value  # type: ignore[attr-defined]
-            return variables.ConstantVariable.create(result)
-        return variables.ConstantVariable.create(NotImplemented)
+        from .builder import SourcelessBuilder
+
+        if op not in ("__eq__", "__ne__"):
+            return variables.ConstantVariable.create(NotImplemented)
+
+        eq_method = type(self.value).__eq__
+        if hasattr(eq_method, "__code__"):
+            # Pure-Python __eq__ (e.g., typing._GenericAlias): trace into it directly
+            # instead of reimplementing the comparison logic here.
+            result = SourcelessBuilder.create(tx, eq_method).call_function(
+                tx, [self, other], {}
+            )
+            if op == "__ne__":
+                if result.is_python_constant():
+                    val = result.as_python_constant()
+                    if val is NotImplemented:
+                        return result
+                    return variables.ConstantVariable.create(not val)
+                return variables.ConstantVariable.create(NotImplemented)
+            return result
+
+        # C-extension __eq__ (e.g., types.GenericAlias): both values are known at
+        # trace time, so constant-fold.
+        if not istype(other, TypingVariable):
+            return variables.ConstantVariable.create(NotImplemented)
+        from ..utils import cmp_name_to_op_mapping
+
+        return variables.ConstantVariable.create(
+            cmp_name_to_op_mapping[op](self.value, other.value)  # type: ignore[attr-defined]
+        )
 
     def var_getattr(self, tx: "InstructionTranslator", name: str) -> VariableTracker:
         from .builder import SourcelessBuilder, VariableBuilder
