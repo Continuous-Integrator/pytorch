@@ -421,17 +421,15 @@ class TestMatmulCuda(InductorTestCase):
     @parametrize("backend", ["cublaslt", "cutlass"])
     @dtypes(torch.bfloat16, torch.float32, torch.float16)
     def test_grouped_gemm_2d_2d(self, strided, a_row_major, b_row_major, backend, dtype):
-        if backend == "cublaslt" and torch.cuda.get_device_capability()[0] not in [10, 11]:
-            self.skipTest("cublaslt grouped gemm requires SM 10.x or 11.0")
-
         if backend == "cublaslt":
+            if torch.cuda.get_device_capability()[0] not in [10, 11]:
+                self.skipTest("cublaslt grouped gemm requires SM 10.x or 11.0")
             if dtype == torch.float32:
                 self.skipTest("cublaslt grouped gemm does not support float32")
             os.environ["TORCH_GROUPED_MM_PREFER_CUBLASLT"] = "1"
         else:
             os.environ["TORCH_GROUPED_MM_PREFER_CUBLASLT"] = "0"
         self.addCleanup(os.environ.pop, "TORCH_GROUPED_MM_PREFER_CUBLASLT", None)
-        f = torch._grouped_mm
 
         device = "cuda"
         m, n, k, n_groups = 16, 32, 64, 4
@@ -449,6 +447,7 @@ class TestMatmulCuda(InductorTestCase):
         b.requires_grad_(True)
         offs = torch.arange(k, n_groups * k + 1, k, device=device, dtype=torch.int32)
 
+        f = F.grouped_mm
         out = f(a, b.t(), offs=offs, out_dtype=dtype)
         gO = torch.rand_like(out)
         out.backward(gO)
@@ -470,17 +469,15 @@ class TestMatmulCuda(InductorTestCase):
     @parametrize("backend", ["cublaslt", "cutlass"])
     @dtypes(torch.bfloat16, torch.float32, torch.float16)
     def test_grouped_gemm_2d_3d(self, strided, a_row_major, b_row_major, backend, dtype):
-        if backend == "cublaslt" and torch.cuda.get_device_capability()[0] not in [10, 11]:
-            self.skipTest("cublaslt grouped gemm requires SM 10.x or 11.0")
-
         if backend == "cublaslt":
+            if torch.cuda.get_device_capability()[0] not in [10, 11]:
+                self.skipTest("cublaslt grouped gemm requires SM 10.x or 11.0")
             if dtype == torch.float32:
                 self.skipTest("cublaslt grouped gemm does not support float32")
             os.environ["TORCH_GROUPED_MM_PREFER_CUBLASLT"] = "1"
         else:
             os.environ["TORCH_GROUPED_MM_PREFER_CUBLASLT"] = "0"
         self.addCleanup(os.environ.pop, "TORCH_GROUPED_MM_PREFER_CUBLASLT", None)
-        f = torch._grouped_mm
 
         device = "cuda"
         s_int = int(strided)
@@ -513,6 +510,7 @@ class TestMatmulCuda(InductorTestCase):
             if check_zero_size:
                 offs[0] = offs[1]
 
+            f = F.grouped_mm
             out = f(a, b.transpose(-2, -1), offs=offs, out_dtype=dtype)
             gO = torch.rand_like(out)
             if not check_zero_size:
@@ -537,17 +535,15 @@ class TestMatmulCuda(InductorTestCase):
     @parametrize("backend", ["cublaslt", "cutlass"])
     @dtypes(torch.bfloat16, torch.float32, torch.float16)
     def test_grouped_gemm_3d_3d(self, strided, a_row_major, b_row_major, backend, dtype):
-        if backend == "cublaslt" and torch.cuda.get_device_capability()[0] not in [10, 11]:
-            self.skipTest("cublaslt grouped gemm requires SM 10.x or 11.0")
-
         if backend == "cublaslt":
+            if torch.cuda.get_device_capability()[0] not in [10, 11]:
+                self.skipTest("cublaslt grouped gemm requires SM 10.x or 11.0")
             if dtype == torch.float32:
                 self.skipTest("cublaslt grouped gemm does not support float32")
             os.environ["TORCH_GROUPED_MM_PREFER_CUBLASLT"] = "1"
         else:
             os.environ["TORCH_GROUPED_MM_PREFER_CUBLASLT"] = "0"
         self.addCleanup(os.environ.pop, "TORCH_GROUPED_MM_PREFER_CUBLASLT", None)
-        f = torch._grouped_mm
 
         device = "cuda"
         s_int = int(strided)
@@ -570,6 +566,7 @@ class TestMatmulCuda(InductorTestCase):
         b_contig = b if b_row_major else b.transpose(-2, -1)
         self.assertTrue(b_contig.is_contiguous() is not strided)
 
+        f = F.grouped_mm
         out = f(a, b.transpose(-2, -1), out_dtype=dtype)
         gO = torch.rand_like(out)
         out.backward(gO)
@@ -582,17 +579,15 @@ class TestMatmulCuda(InductorTestCase):
     @parametrize("backend", ["cublaslt", "cutlass"])
     @dtypes(torch.bfloat16, torch.float32, torch.float16)
     def test_grouped_gemm_3d_2d(self, strided, a_row_major, b_row_major, backend, dtype):
-        if backend == "cublaslt" and torch.cuda.get_device_capability()[0] not in [10, 11]:
-            self.skipTest("cublaslt grouped gemm requires SM 10.x or 11.0")
-
         if backend == "cublaslt":
+            if torch.cuda.get_device_capability()[0] not in [10, 11]:
+                self.skipTest("cublaslt grouped gemm requires SM 10.x or 11.0")
             if dtype == torch.float32:
                 self.skipTest("cublaslt grouped gemm does not support float32")
             os.environ["TORCH_GROUPED_MM_PREFER_CUBLASLT"] = "1"
         else:
             os.environ["TORCH_GROUPED_MM_PREFER_CUBLASLT"] = "0"
         self.addCleanup(os.environ.pop, "TORCH_GROUPED_MM_PREFER_CUBLASLT", None)
-        f = torch._grouped_mm
 
         device = "cuda"
         s_int = int(strided)
@@ -622,6 +617,7 @@ class TestMatmulCuda(InductorTestCase):
             if check_zero_size:
                 offs[0] = offs[1]
 
+            f = F.grouped_mm
             out = f(a, b.transpose(-2, -1), offs=offs, out_dtype=dtype)
             gO = torch.rand_like(out)
             if not check_zero_size:

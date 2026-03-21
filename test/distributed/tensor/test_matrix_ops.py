@@ -1075,10 +1075,9 @@ class DistMatrixOpsTest(DTensorTestBase):
         else:
             os.environ["TORCH_GROUPED_MM_PREFER_CUBLASLT"] = "0"
         self.addCleanup(os.environ.pop, "TORCH_GROUPED_MM_PREFER_CUBLASLT", None)
-        f = torch._grouped_mm
 
-        h = f(inp, w1, offs=offs)
-        out = f(h, w2, offs=offs)
+        h = F.grouped_mm(inp, w1, offs=offs)
+        out = F.grouped_mm(h, w2, offs=offs)
 
         dist_inp = distribute_tensor(inp, device_mesh, kwargs["inp_placements"])
         # colwise sharded
@@ -1088,8 +1087,8 @@ class DistMatrixOpsTest(DTensorTestBase):
         dist_offs = distribute_tensor(offs, device_mesh, [Replicate()])
 
         with comm_mode:
-            dist_h = f(dist_inp, dist_w1, offs=dist_offs)
-            dist_out = f(dist_h, dist_w2, offs=dist_offs)
+            dist_h = F.grouped_mm(dist_inp, dist_w1, offs=dist_offs)
+            dist_out = F.grouped_mm(dist_h, dist_w2, offs=dist_offs)
             self.assertEqual(
                 comm_mode.get_total_counts(), kwargs["expected_comm_counts_fwd"]
             )
