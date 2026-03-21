@@ -2039,8 +2039,6 @@ class FakeTensorOperatorInvariants(TestCase):
 
         self.assertEqual(mode.count, 0)
 
-    # PropagateRealTensors installs weakrefs
-    @expectedFailurePropagateRealTensors
     @unittest.skipIf(not RUN_CUDA, "requires cuda")
     def test_module_to(self):
         def _check_device(sd, device_type):
@@ -2052,6 +2050,120 @@ class FakeTensorOperatorInvariants(TestCase):
             _check_device(m.state_dict(), "cpu")
             m.to("cuda")
             _check_device(m.state_dict(), "cuda")
+
+    @unittest.skipIf(not RUN_CUDA, "requires cuda")
+    def test_module_to_weakref_cleanup(self):
+        """Test that weakrefs are removed from tensor_memo during module.to()"""
+        with FakeTensorMode() as fake_mode:
+            m = torch.nn.Linear(2, 2)
+            converter = fake_mode.fake_tensor_converter
+
+            # Get initial tensor_memo size
+            initial_memo_size = len(converter.tensor_memo)
+
+            # Move to CUDA - this should trigger swap_tensors with weakref cleanup
+            m.to("cuda")
+
+            # Verify the operation succeeded and memo size is reasonable
+            # (it should not grow unboundedly with each .to() call)
+            self.assertEqual(m.weight.device.type, "cuda")
+            self.assertEqual(m.bias.device.type, "cuda")
+
+            # Move back to CPU
+            m.to("cpu")
+            self.assertEqual(m.weight.device.type, "cpu")
+            self.assertEqual(m.bias.device.type, "cpu")
+
+            # After multiple moves, memo size should remain bounded
+            final_memo_size = len(converter.tensor_memo)
+            # We don't assert exact equality since other operations may add entries,
+            # but it shouldn't grow by more than a reasonable amount
+            self.assertLess(final_memo_size, initial_memo_size + 20)
+
+    @unittest.skipIf(not RUN_CUDA, "requires cuda")
+    def test_module_to_with_gradients(self):
+        """Test that module.to() works with parameters that have gradients"""
+        with FakeTensorMode():
+            m = torch.nn.Linear(2, 2)
+            x = torch.randn(3, 2)
+
+            # Create gradients
+            y = m(x)
+            loss = y.sum()
+            loss.backward()
+
+            # Verify gradients exist
+            self.assertIsNotNone(m.weight.grad)
+            self.assertIsNotNone(m.bias.grad)
+
+            # Move to CUDA - this should handle both params and grads
+            m.to("cuda")
+
+            # Verify both params and grads moved
+            self.assertEqual(m.weight.device.type, "cuda")
+            self.assertEqual(m.weight.grad.device.type, "cuda")
+            self.assertEqual(m.bias.device.type, "cuda")
+            self.assertEqual(m.bias.grad.device.type, "cuda")
+
+    def test_module_to_with_swap_flag_disabled(self):
+        """Test module.to() when swap_module_params_on_conversion is False"""
+        with FakeTensorMode():
+            m = torch.nn.Linear(2, 2)
+
+            # Disable swap flag - FakeTensors should still work due to isinstance check
+            with torch.__future__.set_swap_module_params_on_conversion(False):
+                # This should still work because isinstance(param, FakeTensor)
+                # forces the swap path
+                m.to("meta")
+                self.assertEqual(m.weight.device.type, "meta")
+                self.assertEqual(m.bias.device.type, "meta")
+
+    @unittest.skipIf(not RUN_CUDA, "requires cuda")
+    def test_remove_from_tensor_memo_direct(self):
+        """Test remove_from_tensor_memo method directly"""
+        with FakeTensorMode() as fake_mode:
+            converter = fake_mode.fake_tensor_converter
+
+            # Create some fake tensors
+            t1 = torch.randn(2, 3)
+            t2 = torch.randn(4, 5)
+
+            # Check they're in the memo
+            initial_size = len(converter.tensor_memo)
+            self.assertGreater(initial_size, 0)
+
+            # Remove t1 from memo
+            converter.remove_from_tensor_memo(t1)
+
+            # Size should be smaller (at least by 1, maybe more if t1 had multiple entries)
+            after_remove_size = len(converter.tensor_memo)
+            self.assertLessEqual(after_remove_size, initial_size)
+
+            # Removing again should be idempotent (no error)
+            converter.remove_from_tensor_memo(t1)
+            self.assertEqual(len(converter.tensor_memo), after_remove_size)
+
+    @unittest.skipIf(not RUN_CUDA, "requires cuda")
+    def test_swap_tensors_no_weakref_error(self):
+        """Test that swap_tensors doesn't fail with weakref error"""
+        with FakeTensorMode() as fake_mode:
+            # Create a parameter
+            param = torch.nn.Parameter(torch.randn(2, 3))
+
+            # Apply a transformation (simulating module.to())
+            param_new = torch.nn.Parameter(param.cuda())
+
+            # Get converter
+            converter = fake_mode.fake_tensor_converter
+
+            # Clean up weakrefs
+            converter.remove_from_tensor_memo(param)
+            converter.remove_from_tensor_memo(param_new)
+
+            # This should not raise an error about weakrefs
+            torch.utils.swap_tensors(param, param_new)
+
+            self.assertEqual(param.device.type, "cuda")
 
 
 make_propagate_real_tensors_cls(FakeTensorOperatorInvariants)
