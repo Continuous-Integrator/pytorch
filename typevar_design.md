@@ -130,6 +130,14 @@ the full CPython algorithm. Unify `is_python_equal` to delegate to this
 `richcompare_impl(tx, other, op)` that returns a result or
 `NotImplemented`.
 
+**Base class convention**: The base `VariableTracker.richcompare_impl`
+(and the base hook for each future `generic_*` function) should raise
+`unimplemented()` rather than returning a silent fallback. This ensures
+that when a new VT is added and someone tries to compare it, the missing
+implementation surfaces immediately as a visible graph break rather than
+silently returning a wrong answer. Each concrete VT must explicitly
+declare what it supports.
+
 #### `generic_hash` — `tp_hash`
 
 **CPython algorithm**:

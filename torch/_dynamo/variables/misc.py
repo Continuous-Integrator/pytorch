@@ -553,8 +553,9 @@ class TracebackVariable(VariableTracker):
         other: VariableTracker,
         op: str,
     ) -> VariableTracker:
+        # CPython: tracebacks use identity-based comparison (object_richcompare)
+        # https://github.com/python/cpython/blob/main/Objects/typeobject.c
         if op == "__eq__":
-            # Two traceback variables are only equal if they are the same object
             return VariableTracker.build(tx, self is other)
         return ConstantVariable.create(NotImplemented)
 
@@ -1666,6 +1667,8 @@ class TypingVariable(VariableTracker):
         other: VariableTracker,
         op: str,
     ) -> VariableTracker:
+        # CPython: _GenericAlias.__eq__ in Lib/typing.py
+        # https://github.com/python/cpython/blob/main/Lib/typing.py
         if op == "__eq__":
             result = istype(other, TypingVariable) and self.value == other.value  # type: ignore[attr-defined]
             return variables.ConstantVariable.create(result)

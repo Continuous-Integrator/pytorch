@@ -207,6 +207,56 @@ def _type_overrides_richcompare(tp: type, op: str) -> bool:
     return method is not None and method is not obj_method
 
 
+def vt_identity_compare(
+    tx: "InstructionTranslator",
+    left: "VariableTracker",
+    right: "VariableTracker",
+) -> "VariableTracker | None":
+    """Try to determine Python identity (left is right) at trace time.
+
+    Returns ConstantVariable(True/False) if determinable, else None.
+    Mirrors the logic in BuiltinVariable's handle_is handler.
+    """
+    if left is right:
+        return VariableTracker.build(tx, True)
+
+    left_val = left.get_real_python_backed_value()
+    right_val = right.get_real_python_backed_value()
+    left_known = left_val is not NO_SUCH_SUBOBJ
+    right_known = right_val is not NO_SUCH_SUBOBJ
+
+    if left_known and right_known:
+        return VariableTracker.build(tx, left_val is right_val)
+
+    # One side has a concrete backing object, the other doesn't — they can't
+    # be the same object.
+    if left_known != right_known:
+        return VariableTracker.build(tx, False)
+
+    # Mutable containers created during tracing: VT identity = Python identity.
+    from .lists import ListVariable
+
+    if isinstance(left, (ConstDictVariable, ListVariable)):
+        return VariableTracker.build(tx, False)
+
+    # Different Python types can never be the same object.
+    try:
+        if left.python_type() is not right.python_type():
+            return VariableTracker.build(tx, False)
+    except NotImplementedError:
+        pass
+
+    # Different exception types are never identical.
+    if (
+        istype(left, variables.ExceptionVariable)
+        and istype(right, variables.ExceptionVariable)
+        and left.exc_type is not right.exc_type  # type: ignore[attr-defined]
+    ):
+        return VariableTracker.build(tx, False)
+
+    return None
+
+
 def generic_richcompare(
     tx: "InstructionTranslator",
     lhs: "VariableTracker",
@@ -255,19 +305,21 @@ def generic_richcompare(
     # Step 4: fallback
     if op in ("__eq__", "__ne__"):
         # CPython: fall back to identity (a is b)
-        # Compute identity at trace time: VT identity implies Python identity.
-        from .base import NO_SUCH_SUBOBJ
+        identity = vt_identity_compare(tx, lhs, rhs)
+        if identity is None:
+            from ..exc import unimplemented
+            from .. import graph_break_hints
 
-        are_same = lhs is rhs
-        if not are_same:
-            lhs_val = lhs.get_real_python_backed_value()
-            rhs_val = rhs.get_real_python_backed_value()
-            if lhs_val is not NO_SUCH_SUBOBJ and rhs_val is not NO_SUCH_SUBOBJ:
-                are_same = lhs_val is rhs_val
+            unimplemented(
+                gb_type="Cannot determine object identity at trace time",
+                context=f"comparing {type(lhs).__name__} and {type(rhs).__name__}",
+                explanation="Dynamo cannot resolve identity of these objects at trace time.",
+                hints=[*graph_break_hints.FUNDAMENTAL],
+            )
+        is_same = identity.as_python_constant()
         from .constant import ConstantVariable
 
-        result = are_same if op == "__eq__" else not are_same
-        return ConstantVariable.create(result)
+        return ConstantVariable.create(is_same if op == "__eq__" else not is_same)
     else:
         from ..utils import cmp_name_to_op_str_mapping
 
@@ -3100,8 +3152,16 @@ class UserDefinedTupleVariable(UserDefinedObjectVariable):
         other: "VariableTracker",
         op: str,
     ) -> "VariableTracker":
+        # CPython: tuple_richcompare in Objects/tupleobject.c
+        # https://github.com/python/cpython/blob/main/Objects/tupleobject.c
         assert self._tuple_vt is not None
         if op in ("__eq__", "__ne__"):
+            # polyfills.list_cmp does `if a != b` per element, which causes
+            # data-dependent branching when elements are TensorVariables.
+            # is_python_equal uses VT/fake-tensor identity for tensors
+            # (same VT → same tensor → equal) and value comparison for constants,
+            # avoiding the branch. This matches what CPython does for identity
+            # (PyObject_RichCompareBool checks `v == w` before calling __eq__).
             result = self.is_python_equal(other)
             return VariableTracker.build(tx, result if op == "__eq__" else not result)
         other_vt = (

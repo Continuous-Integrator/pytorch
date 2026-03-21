@@ -380,6 +380,8 @@ class BaseListVariable(VariableTracker):
         other: VariableTracker,
         op: str,
     ) -> VariableTracker:
+        # CPython: list_richcompare / tuplerichcompare in Objects/listobject.c, Objects/tupleobject.c
+        # https://github.com/python/cpython/blob/main/Objects/listobject.c
         from .builder import SourcelessBuilder
 
         if not isinstance(other, BaseListVariable):
@@ -672,6 +674,8 @@ class RangeVariable(BaseListVariable):
         other: VariableTracker,
         op: str,
     ) -> VariableTracker:
+        # CPython: range_richcompare in Objects/rangeobject.c
+        # https://github.com/python/cpython/blob/main/Objects/rangeobject.c
         from .builder import SourcelessBuilder
 
         if op not in ("__eq__", "__ne__"):

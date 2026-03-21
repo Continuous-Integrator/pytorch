@@ -878,22 +878,21 @@ class VariableTracker(metaclass=VariableTrackerMeta):
         other: "VariableTracker",
         op: str,
     ) -> "VariableTracker":
-        """Hook for generic_richcompare. Return result VT or ConstantVariable(NotImplemented)."""
-        if (
-            self.is_python_constant()
-            and other.is_python_constant()
-            and not tx.output.side_effects.has_pending_mutation(self)
-            and not tx.output.side_effects.has_pending_mutation(other)
-        ):
-            try:
-                return variables.ConstantVariable.create(
-                    cmp_name_to_op_mapping[op](
-                        self.as_python_constant(), other.as_python_constant()
-                    )
-                )
-            except Exception:
-                pass
-        return variables.ConstantVariable.create(NotImplemented)
+        """Hook for generic_richcompare. Return result VT or ConstantVariable(NotImplemented).
+
+        Every concrete VariableTracker subclass that can appear in a comparison
+        must override this. Reaching this base means richcompare_impl is missing
+        for the subclass — add one rather than silently falling through.
+
+        CPython: object_richcompare in Objects/typeobject.c
+        https://github.com/python/cpython/blob/main/Objects/typeobject.c
+        """
+        unimplemented(
+            gb_type="Missing richcompare_impl",
+            context=f"{type(self).__name__}.{op}({type(other).__name__})",
+            explanation=f"Dynamo does not support {op} on {type(self).__name__}. Add richcompare_impl to this VariableTracker subclass.",
+            hints=[*graph_break_hints.SUPPORTABLE],
+        )
 
     def __init__(
         self,
