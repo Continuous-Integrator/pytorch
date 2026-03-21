@@ -1026,6 +1026,42 @@ std::tuple<Tensor, Tensor, Tensor, Tensor, c10::SymInt, c10::SymInt, Tensor, Ten
   return at::_cudnn_attention_forward(query, key, value, attn_bias, std::nullopt, std::nullopt, max_seqlen_batch_q, max_seqlen_batch_k, compute_logsumexp, dropout_p, is_causal, return_debug_mask, scale);
 }
 
+namespace {
+
+// Ensure non-last strides of attn_bias are multiples of alignment.
+// This is done here (in the CUDA kernel) rather than in the traced
+// composite so that symbolic-shape export never sees round-up
+// expressions in the tensor strides, which would generate
+// unsatisfiable shape guards.
+template <int alignment>
+at::Tensor align_bias_strides(const at::Tensor& attn_bias) {
+  bool needs_align = false;
+  for (int64_t i = 0; i < attn_bias.dim() - 1; ++i) {
+    if (attn_bias.stride(i) % alignment != 0) {
+      needs_align = true;
+      break;
+    }
+  }
+  if (!needs_align && attn_bias.stride(-1) == 1) {
+    return attn_bias;
+  }
+  auto last_dim = attn_bias.size(-1);
+  auto padded = (last_dim + alignment - 1) / alignment * alignment;
+  std::vector<int64_t> aligned_strides(attn_bias.dim());
+  aligned_strides.back() = 1;
+  int64_t next_stride = padded;
+  for (int64_t dim = attn_bias.dim() - 2; dim >= 0; --dim) {
+    aligned_strides[dim] = next_stride;
+    next_stride *= attn_bias.size(dim);
+  }
+  auto aligned = at::empty_strided(
+      attn_bias.sizes(), aligned_strides, attn_bias.options());
+  aligned.copy_(attn_bias);
+  return aligned;
+}
+
+} // namespace
+
 std::tuple<Tensor, Tensor, Tensor, Tensor> _scaled_dot_product_efficient_attention_cuda(
     const Tensor& query,
     const Tensor& key,
@@ -1045,6 +1081,13 @@ std::tuple<Tensor, Tensor, Tensor, Tensor> _scaled_dot_product_efficient_attenti
                 "Efficient attention cannot produce valid seed and offset outputs when "
                 "the batch size exceeds (", MAX_BATCH_SIZE, ").");
   }
+
+  constexpr int mem_eff_alignment = 8;
+  std::optional<Tensor> aligned_bias = attn_bias;
+  if (aligned_bias.has_value()) {
+    aligned_bias.value() = align_bias_strides<mem_eff_alignment>(aligned_bias.value());
+  }
+
   auto process_chunk = [&](const Tensor& q_chunk,
                            const Tensor& k_chunk,
                            const Tensor& v_chunk,
@@ -1089,8 +1132,8 @@ std::tuple<Tensor, Tensor, Tensor, Tensor> _scaled_dot_product_efficient_attenti
     Tensor key_chunk = key.slice(0, start, end);
     Tensor value_chunk = value.slice(0, start, end);
     std::optional<Tensor> bias_chunk;
-    if (attn_bias.has_value()) {
-      bias_chunk = attn_bias.value().slice(0, start, end);
+    if (aligned_bias.has_value()) {
+      bias_chunk = aligned_bias.value().slice(0, start, end);
     }
     auto [attn, log_sumexp, seed, offset] =
         process_chunk(query_chunk, key_chunk, value_chunk, bias_chunk);
@@ -1120,8 +1163,8 @@ std::tuple<Tensor, Tensor, Tensor, Tensor> _scaled_dot_product_efficient_attenti
       query_chunk = query.slice(0, start, end);
       key_chunk = key.slice(0, start, end);
       value_chunk = value.slice(0, start, end);
-      if (attn_bias.has_value()) {
-        bias_chunk = attn_bias.value().slice(0, start, end);
+      if (aligned_bias.has_value()) {
+        bias_chunk = aligned_bias.value().slice(0, start, end);
       } else {
         bias_chunk.reset();
       }
@@ -1141,7 +1184,7 @@ std::tuple<Tensor, Tensor, Tensor, Tensor> _scaled_dot_product_efficient_attenti
   }
   // when bs is within the allowed size, no need to chunk it
   else {
-    return process_chunk(query, key, value, attn_bias);
+    return process_chunk(query, key, value, aligned_bias);
   }
 }
 

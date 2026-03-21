@@ -563,47 +563,16 @@ std::optional<Tensor> convert_boolean_attn_mask_cudnn(const std::optional<Tensor
   return convert_boolean_attn_mask_(attn_mask, dtype, -65504.0);
 }
 
-// Memory Efficient Attention requires a padded attn mask bias
-// This function pads the attn_mask bias to be a multiple of 16
-// Then slices the padded bias to the original size
-// We apply this function to the top level SDPA so that
-// if padding is done it will be tracked for backward automatically
-
-template<int alignment>
-bool aligned_tensor(const at::Tensor& tensor){
-  for(const auto i : c10::irange(tensor.dim() - 1)){
-    auto stride = tensor.sym_stride(i).maybe_as_int();
-    // If the stride is unknown at compilation time, assume it is unaligned
-    // and always pad it. This is helpful to avoid unnecessary guards.
-    if (!stride)
-      return false;
-
-    if((*stride) % alignment != 0){
-      return false;
-    }
-  }
-  return tensor.sym_stride(-1) == 1;
-}
-
-template <int alignment>
-at::Tensor pad_bias(const at::Tensor& attn_bias) {
-  auto last_dim_size = attn_bias.sym_size(-1);
-  auto pad_count = alignment - (last_dim_size % alignment);
-  auto padded_bias = at::pad_symint(attn_bias, {c10::SymInt(0), pad_count});
-  return padded_bias.slice_symint(-1, 0, last_dim_size);
-}
-
+// Memory Efficient Attention mask preprocessing: expand the mask to
+// the expected shape.  Stride alignment is now handled inside the
+// CUDA kernel (_scaled_dot_product_efficient_attention_cuda) so that
+// symbolic-shape export never sees alignment-related expressions.
 at::Tensor preprocess_mask(
     const at::Tensor& mask,
     const at::Tensor& query,
     const at::Tensor& key,
     const at::Tensor& value) {
-  constexpr int mem_eff_alignment = 8;
-  at::Tensor result_mask = mask;
-  if (!aligned_tensor<mem_eff_alignment>(mask)) {
-    result_mask = pad_bias<mem_eff_alignment>(mask);
-  }
-  return result_mask.expand_symint(
+  return mask.expand_symint(
       {query.sym_size(0),
        query.sym_size(1),
        query.sym_size(2),
