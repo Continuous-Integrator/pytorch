@@ -8527,7 +8527,7 @@ def _meta_grouped_mm_cublaslt(
     )
     out_dtype = out_dtype or mat_a.dtype
     torch._check(
-        out_dtype == mat_a.dtype, or out_dtype == torch.float32,
+        out_dtype == mat_a.dtype or out_dtype == torch.float32,
         lambda: f"If output dtype provided, it must be torch.float32 or match input dtype.",
     )
     _cublaslt_grouped_mm_validate_inputs(mat_a, mat_b, offs, bias)
