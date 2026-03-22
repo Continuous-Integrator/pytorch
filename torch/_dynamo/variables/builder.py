@@ -1523,14 +1523,17 @@ class VariableBuilder:
                 # ID_MATCH even if its a global variable.
                 self.install_guards(GuardBuilder.CLASS_MATCH)
 
-            if is_opaque_type(value):
-                return OpaqueObjectClassVariable(
+            if isinstance(value, type) and issubclass(value, enum.Enum):
+                # Order this before OpaqueObjectClassVariable since it's better
+                # to use the native UserDefinedEnumClassVariable
+                return UserDefinedEnumClassVariable(
                     value,
                     source=self.source,
                 )
 
-            if isinstance(value, type) and issubclass(value, enum.Enum):
-                return UserDefinedEnumClassVariable(
+            if is_opaque_type(value):
+                assert not (isinstance(value, type) and issubclass(value, enum.Enum))
+                return OpaqueObjectClassVariable(
                     value,
                     source=self.source,
                 )
@@ -2676,6 +2679,7 @@ class VariableBuilder:
             return self.tx.output.unspec_variable_map[self.name]
 
         shape_env = self.tx.output.shape_env
+        frame_state_entry: FrameStateSizeEntry | None = None
         if TracingContext.get().force_unspec_int_unbacked_size_like:
             wrapped_value = shape_env.create_unbacked_symint()
             _constrain_range_for_size(wrapped_value)
@@ -2739,10 +2743,17 @@ class VariableBuilder:
                 self.install_guards(GuardBuilder.CONSTANT_MATCH)
                 return ConstantVariable.create(value=value)
 
+            excluded_scalar = (
+                frame_state_entry.excluded_scalar
+                if config.automatic_dynamic_exclusion_guard
+                and frame_state_entry is not None
+                else None
+            )
             wrapped_value = shape_env.create_unspecified_symint_and_symbol(
                 value,
                 source=self.source,
                 dynamic_dim=dynamic_dim,
+                excluded_value=excluded_scalar,
             )
 
             self.tx.output.tracked_fakes.append(
@@ -4019,6 +4030,7 @@ def _automatic_dynamic(
         shape_env_to_source_to_symbol_cache=shape_env_to_source_to_symbol_cache,
         shape_ids=getattr(e, "_dynamo_shape_ids", None),
         unbacked_bounds=getattr(e, "_dynamo_unbacked_bounds", None),
+        excluded_sizes=frame_state_entry.excluded_sizes,
     )
 
 
@@ -4220,7 +4232,7 @@ class SourcelessBuilder:
         if isinstance(value, VariableTracker):
             # This is always valid to call, and useful for recursive calls.
             return value
-        elif is_opaque_value_type(type(value)):
+        elif is_opaque_value_type(type(value)) and not isinstance(value, enum.Enum):
             return TorchScriptObjectVariable.create(value, value)
         elif is_opaque_reference_type(type(value)):
             # This is for handling opaque objects in custom ops
@@ -4228,7 +4240,7 @@ class SourcelessBuilder:
                 tx.output.fake_mode, value
             )
             return TorchScriptObjectVariable.create(
-                value,
+                value,  # pyrefly: ignore[bad-argument-type]
                 fake_script_obj,
             )
         # type: ignore[attr-defined]
