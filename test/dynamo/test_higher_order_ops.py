@@ -4487,7 +4487,6 @@ class GraphModule(torch.nn.Module):
 """,
         )
 
-    @config.patch(inline_inbuilt_nn_modules=True)
     def test_functional_call(self):
         def wrapper_fn(model, params, inputs, targets):
             prediction = torch.func.functional_call(model, params, (inputs,))
@@ -4537,7 +4536,6 @@ class GraphModule(torch.nn.Module):
 """,
             )
 
-    @config.patch(inline_inbuilt_nn_modules=True)
     def test_functional_call_sequential_params_and_buffers(self):
         # copied from test/test_stateless.py
         class MockModule(torch.nn.Module):
@@ -4598,30 +4596,6 @@ class GraphModule(torch.nn.Module):
         return (add,)
 """,
             )
-
-    @config.patch(inline_inbuilt_nn_modules=False)
-    def test_functional_call_disable_inline_nn_module(self):
-        counters.clear()
-
-        def wrapper_fn(model, params, inputs, targets):
-            prediction = torch.func.functional_call(model, params, (inputs,))
-            return torch.nn.functional.mse_loss(prediction, targets)
-
-        model = torch.nn.Linear(3, 3)
-        params = dict(model.named_parameters())
-        inputs = torch.randn(64, 3)
-        targets = torch.randn(64, 3)
-
-        actual = wrapper_fn(model, params, inputs, targets)
-        expected = torch.compile(wrapper_fn, backend="aot_eager", fullgraph=False)(
-            model, params, inputs, targets
-        )
-        self.assertEqual(len(counters["graph_break"]), 1)
-        self.assertIn(
-            "torch.func.functional_call capture is disabled",
-            next(iter(counters["graph_break"].keys())),
-        )
-        self.assertEqual(actual, expected)
 
     def test_grad(self):
         counters.clear()
