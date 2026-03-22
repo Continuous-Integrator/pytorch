@@ -548,7 +548,8 @@ class EnumVariable(VariableTracker):
             try:
                 return ConstantVariable.create(
                     cmp_name_to_op_mapping[op](
-                        self.as_python_constant(), other.as_python_constant()
+                        self.as_python_constant(),  # pyrefly: ignore[bad-argument-type]
+                        other.as_python_constant(),
                     )
                 )
             except Exception:

@@ -2990,7 +2990,9 @@ class UserDefinedDictVariable(UserDefinedObjectVariable):
         if method is not base_method and hasattr(method, "__code__"):
             return super().richcompare_impl(tx, other, op)
         # Otherwise delegate to the underlying dict variable
-        other_dict_vt = other._dict_vt if isinstance(other, UserDefinedDictVariable) else other
+        other_dict_vt = (
+            other._dict_vt if isinstance(other, UserDefinedDictVariable) else other
+        )
         return self._dict_vt.richcompare_impl(tx, other_dict_vt, op)
 
     def is_python_hashable(self) -> Literal[False]:
@@ -3105,7 +3107,9 @@ class UserDefinedSetVariable(UserDefinedObjectVariable):
         if method is not base_method and hasattr(method, "__code__"):
             return super().richcompare_impl(tx, other, op)
         # Otherwise delegate to the underlying set variable
-        other_set_vt = other._set_vt if isinstance(other, UserDefinedSetVariable) else other
+        other_set_vt = (
+            other._set_vt if isinstance(other, UserDefinedSetVariable) else other
+        )
         return self._set_vt.richcompare_impl(tx, other_set_vt, op)
 
 
@@ -3157,6 +3161,23 @@ class UserDefinedListVariable(UserDefinedObjectVariable):
     def is_python_hashable(self) -> Literal[False]:
         raise_on_overridden_hash(self.value, self)
         return False
+
+    def richcompare_impl(
+        self,
+        tx: "InstructionTranslator",
+        other: "VariableTracker",
+        op: str,
+    ) -> "VariableTracker":
+        # If the subclass defines its own pure-Python comparison, trace into it
+        method = getattr(type(self.value), op, None)
+        base_method = getattr(list, op, None)
+        if method is not base_method and hasattr(method, "__code__"):
+            return super().richcompare_impl(tx, other, op)
+        # Otherwise delegate to the underlying list variable
+        other_list_vt = (
+            other._list_vt if isinstance(other, UserDefinedListVariable) else other
+        )
+        return self._list_vt.richcompare_impl(tx, other_list_vt, op)
 
 
 class UserDefinedTupleVariable(UserDefinedObjectVariable):

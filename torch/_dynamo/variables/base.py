@@ -896,7 +896,10 @@ class VariableTracker(metaclass=VariableTrackerMeta):
         unimplemented(
             gb_type="Missing richcompare_impl",
             context=f"{type(self).__name__}.{op}({type(other).__name__})",
-            explanation=f"Dynamo does not support {op} on {type(self).__name__}. Add richcompare_impl to this VariableTracker subclass.",
+            explanation=(
+                f"Dynamo does not support {op} on {type(self).__name__}."
+                " Add richcompare_impl to this VariableTracker subclass."
+            ),
             hints=[*graph_break_hints.SUPPORTABLE],
         )
 

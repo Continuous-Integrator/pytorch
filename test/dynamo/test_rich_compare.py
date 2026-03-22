@@ -1,3 +1,4 @@
+# Owner(s): ["module: dynamo"]
 """Tests for generic_richcompare: unified comparison protocol in Dynamo."""
 
 import torch
@@ -162,25 +163,25 @@ class RichCompareTests(TestCase):
 
     def test_constant_eq(self):
         def fn(x):
-            return 1 == 1
+            return 1 == 1  # noqa: PLR0133
 
         self.assertTrue(self._compile(fn, torch.tensor(0)))
 
     def test_constant_ne(self):
         def fn(x):
-            return 1 != 2
+            return 1 != 2  # noqa: PLR0133
 
         self.assertTrue(self._compile(fn, torch.tensor(0)))
 
     def test_constant_lt(self):
         def fn(x):
-            return 1 < 2
+            return 1 < 2  # noqa: PLR0133
 
         self.assertTrue(self._compile(fn, torch.tensor(0)))
 
     def test_constant_eq_cross_type_int_str(self):
         def fn(x):
-            return 1 == "1"
+            return 1 == "1"  # noqa: PLR0133
 
         self.assertFalse(self._compile(fn, torch.tensor(0)))
 
@@ -566,7 +567,7 @@ class RichCompareTests(TestCase):
     def test_cross_type_ordering_int_lt_str_raises_type_error(self):
         def fn(x):
             try:
-                return 1 < "abc"
+                return 1 < "abc"  # noqa: PLR0133
             except TypeError as e:
                 return str(e)
 
