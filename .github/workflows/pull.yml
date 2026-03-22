@@ -177,7 +177,7 @@ jobs:
     secrets: inherit
 
   # ╠══════════════════════════════════════════════════════════════════════╣
-  # ║ linux-docs                                                           ║
+  # ║ linux-docs (TODO (huydhn): EC2-only)                                 ║
   # ╠══════════════════════════════════════════════════════════════════════╣
 
   linux-docs:
@@ -273,12 +273,12 @@ jobs:
       # sync-tag: asan-test
     secrets: inherit
 
-  # ╠══════════════════════════════════════════════════════════════════════╣
-  # ║ linux-jammy-py3.10-clang15-onnx (build + test)                       ║
-  # ╠══════════════════════════════════════════════════════════════════════╣
+  # ╠══════════════════════════════════════════════════════════════════════════╣
+  # ║ linux-jammy-py3.10-clang15-onnx (build + test) (TODO (huydhn): EC2-only) ║
+  # ╠══════════════════════════════════════════════════════════════════════════╣
 
   linux-jammy-py3_10-clang15-onnx-build:
-    if: ${{ (needs.job-filter.outputs.jobs == '' || contains(needs.job-filter.outputs.jobs, ' linux-jammy-py3.10-clang15-onnx ')) }}
+    if: ${{ (needs.job-filter.outputs.jobs == '' || contains(needs.job-filter.outputs.jobs, ' linux-jammy-py3.10-clang15-onnx ')) && needs.get-label-type.outputs.use-arc != 'true' }}
     name: linux-jammy-py3.10-clang15-onnx
     uses: ./.github/workflows/_linux-build.yml
     needs:
@@ -300,7 +300,7 @@ jobs:
     secrets: inherit
 
   linux-jammy-py3_10-clang15-onnx-test:
-    if: ${{ (needs.job-filter.outputs.jobs == '' || contains(needs.job-filter.outputs.jobs, ' linux-jammy-py3.10-clang15-onnx ')) }}
+    if: ${{ (needs.job-filter.outputs.jobs == '' || contains(needs.job-filter.outputs.jobs, ' linux-jammy-py3.10-clang15-onnx ')) && needs.get-label-type.outputs.use-arc != 'true' }}
     name: linux-jammy-py3.10-clang15-onnx
     uses: ./.github/workflows/_linux-test.yml
     needs:
@@ -454,7 +454,7 @@ jobs:
     secrets: inherit
 
   # ╠══════════════════════════════════════════════════════════════════════╣
-  # ║ linux-jammy-cpu-py3.10-gcc11-bazel-test (EC2-only)                   ║
+  # ║ linux-jammy-cpu-py3.10-gcc11-bazel-test (TODO (huydhn): EC2-only)    ║
   # ╠══════════════════════════════════════════════════════════════════════╣
 
   linux-jammy-cpu-py3_10-gcc11-bazel-test:
@@ -502,11 +502,11 @@ jobs:
     secrets: inherit
 
   # ╠══════════════════════════════════════════════════════════════════════╣
-  # ║ linux-jammy-rocm-py3.10 (build + test)                               ║
+  # ║ linux-jammy-rocm-py3.10 (build + test) (TODO (huydhn): EC2-only)     ║
   # ╠══════════════════════════════════════════════════════════════════════╣
 
   linux-jammy-rocm-py3_10-build:
-    if: ${{ (github.event_name == 'pull_request' || (needs.job-filter.outputs.jobs != '' && contains(needs.job-filter.outputs.jobs, ' linux-jammy-rocm-py3.10 '))) }}
+    if: ${{ (github.event_name == 'pull_request' || (needs.job-filter.outputs.jobs != '' && contains(needs.job-filter.outputs.jobs, ' linux-jammy-rocm-py3.10 '))) && needs.get-label-type.outputs.use-arc != 'true' }}
     # don't run build twice on main
     name: linux-jammy-rocm-py3.10
     uses: ./.github/workflows/_linux-build.yml
@@ -576,11 +576,11 @@ jobs:
     secrets: inherit
 
   # ╠══════════════════════════════════════════════════════════════════════╣
-  # ║ linux-jammy-xpu-n-py3.10 (build + test)                              ║
+  # ║ linux-jammy-xpu-n-py3.10 (build + test) (TODO (huydhn): EC2-only)    ║
   # ╠══════════════════════════════════════════════════════════════════════╣
 
   linux-jammy-xpu-n-py3_10-build:
-    if: ${{ (needs.job-filter.outputs.jobs == '' || contains(needs.job-filter.outputs.jobs, ' linux-jammy-xpu-n-py3.10 ')) }}
+    if: ${{ (needs.job-filter.outputs.jobs == '' || contains(needs.job-filter.outputs.jobs, ' linux-jammy-xpu-n-py3.10 ')) && needs.get-label-type.outputs.use-arc != 'true' }}
     name: linux-jammy-xpu-n-py3.10
     uses: ./.github/workflows/_linux-build.yml
     needs:
@@ -630,7 +630,7 @@ jobs:
     needs: [get-label-type, dynamo-cpython-build]
     with:
       build-environment: linux-jammy-py3.13-clang15
-      docker-image: ci-image:pytorch-linux-jammy-py3.13-clang15
+      docker-images: ${{ needs.dynamo-cpython-build.outputs.docker-image }}
       test-matrix: ${{ needs.dynamo-cpython-build.outputs.test-matrix }}
       use-arc: ${{ needs.get-label-type.outputs.use-arc == 'true' }}
       python-version: "3.13"
