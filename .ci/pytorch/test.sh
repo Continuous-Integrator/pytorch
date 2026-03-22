@@ -425,6 +425,7 @@ test_h100_cutlass_backend() {
 
 test_xpu_sycl_tla_backend() {
   # Inductor sycl-tla backend tests for XPU
+  source  /opt/intel/oneapi/mkl/latest/env/vars.sh
   sycl_tla_dir=$(realpath "./third_party/sycl-tla")
   rm -rf "${sycl_tla_dir}" && git clone --depth 1 --single-branch -b v0.7 --quiet https://github.com/intel/sycl-tla.git "${sycl_tla_dir}"
   TORCHINDUCTOR_CUTLASS_DIR=$(realpath "./third_party/sycl-tla") python test/run_test.py --include inductor/test_cutlass_backend -k "not addmm" $PYTHON_TEST_EXTRA_OPTION --upload-artifacts-while-running

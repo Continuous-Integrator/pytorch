@@ -343,7 +343,7 @@ def gen_ops(device_type: str) -> dict[Any, Any]:
 from ..cpp_utils import DTYPE_TO_CPP
 
 
-if torch.xpu.is_available():
+if torch.xpu._is_compiled():
     DTYPE_TO_CUTLASS_TYPE = {
         **DTYPE_TO_CPP,
         torch.float16: "uint16_t",
