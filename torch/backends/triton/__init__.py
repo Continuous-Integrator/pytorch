@@ -42,6 +42,7 @@ def _get_enabled() -> bool:
 
 def set_flags(_enabled=None):
     import sys
+
     current_module = sys.modules[__name__]
     orig_flags = (current_module.enabled,)
     if _enabled is not None:
