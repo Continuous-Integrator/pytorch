@@ -16,6 +16,8 @@ def get_xpu_arch() -> str | None:
         21479031808: "Xe20",
         21483225088: "Xe20",
     }
+    if not torch.xpu._is_compiled():
+        return None
     try:
         arch_code = torch.xpu.get_device_capability()["architecture"]
         return arch_code2name[arch_code]
