@@ -4617,6 +4617,20 @@ class TestCustomOpFastPath(TestCase):
         result = torch.ops._torch_testing.fp_ops(x)
         self.assertEqual(result, x + 1)
 
+    def test_fast_path_falls_back_for_autocast(self):
+        @torch.library.custom_op("_torch_testing::fp_ac", mutates_args=())
+        def fp_ac(x: Tensor) -> Tensor:
+            return x.clone()
+
+        fp_ac.register_autocast("cpu", torch.float16)
+
+        x = torch.randn(3, dtype=torch.float32)
+        with torch.autocast("cpu", dtype=torch.float16):
+            r_direct = fp_ac(x)
+            r_packet = torch.ops._torch_testing.fp_ac(x)
+        self.assertEqual(r_direct.dtype, torch.float16)
+        self.assertEqual(r_packet.dtype, torch.float16)
+
 
 class TestLibrarySourceLocation(TestCase):
     def test_library_source_location(self):
