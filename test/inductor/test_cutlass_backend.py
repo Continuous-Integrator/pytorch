@@ -268,6 +268,7 @@ class TestCutlassBackend(TestCase):
 
                 self.assertEqual(choices, [])
 
+    @skipXPUIf(not PLATFORM_SUPPORTS_SYCLTLA, "")
     @mock.patch.dict(os.environ, {"PATH": _get_path_without_sccache()})
     def test_import_cutlass(self):
         from torch._inductor.codegen.cutlass.utils import try_import_cutlass
@@ -277,6 +278,7 @@ class TestCutlassBackend(TestCase):
         import cutlass_cppgen  # type: ignore[import-not-found]  # noqa: F401
         import cutlass_library  # noqa: F401
 
+    @skipXPUIf(not PLATFORM_SUPPORTS_SYCLTLA, "")
     def test_cutlass_key(self):
         from torch._inductor.codegen.cutlass.utils import try_import_cutlass
 
