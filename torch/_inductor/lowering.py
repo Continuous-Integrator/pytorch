@@ -31,6 +31,7 @@ from torch._library.utils import get_layout_constraint_tag
 from torch._prims_common import (
     canonicalize_dim,
     canonicalize_dims,
+    check,
     dtype_to_type,
     elementwise_dtypes,
     ELEMENTWISE_TYPE_PROMOTION_KIND,
@@ -2084,7 +2085,7 @@ def diagonal(input, offset: int = 0, dim1: int = 0, dim2: int = 1):
     dim1 = canonicalize_dim(idx=dim1, rank=num_dims)
     dim2 = canonicalize_dim(idx=dim2, rank=num_dims)
 
-    torch._check(
+    check(
         dim1 != dim2, lambda: f"diagonal dimensions cannot be identical {dim1}, {dim2}"
     )
 
@@ -2432,15 +2433,8 @@ def fallback_node_due_to_unsupported_type(node: torch.fx.Node, allow_cpu_inputs=
     return check_skip_condition(node, is_output=True)
 
 
-def make_fallback(
-    op,
-    layout_constraint=None,
-    warn=True,
-    override_decomp=False,
-    get_decomp_fn=None,
-):
-    check_decomps = get_decomp_fn() if get_decomp_fn is not None else decompositions
-    assert op not in check_decomps or override_decomp, (
+def make_fallback(op, layout_constraint=None, warn=True, override_decomp=False):
+    assert op not in decompositions or override_decomp, (
         f"both a fallback and a decomp for same op: {op}"
     )
     if (
