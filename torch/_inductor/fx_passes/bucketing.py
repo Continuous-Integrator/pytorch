@@ -918,14 +918,9 @@ def all_gather_merge_fn_to_trace(
     new_ag_out = torch.empty(ag_input_numel * group_size, dtype=dtype, device=device)
     new_ag_in = new_ag_out.narrow(0, ag_input_numel * rank, ag_input_numel)
     ag_ins_flattened = [ag_in.reshape(-1) for ag_in in ag_ins]
-    if torch._inductor.config._foreach_improv:
-        # cat + copy_ produces 2 kernels (often fused to 1 by inductor)
-        # instead of N individual Triton kernels from _foreach_copy_.
-        # Note: cat(out=) is not supported by inductor lowering.
-        new_ag_in.copy_(torch.cat(ag_ins_flattened))
-    else:
-        foreach_copy_dsts = torch.split(new_ag_in, ins_split_sizes)
-        torch._foreach_copy_(foreach_copy_dsts, ag_ins_flattened)
+    # cat + copy_ creates an explicit FX data edge from buffer fill to the
+    # _out collective, which is required for correct scheduling.
+    new_ag_in.copy_(torch.cat(ag_ins_flattened))
     wait_tensor = torch.ops.c10d_functional.wait_tensor(
         torch.ops._c10d_functional.all_gather_into_tensor_out.default(
             new_ag_in, group_size, group_name, out=new_ag_out
