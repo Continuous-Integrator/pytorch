@@ -466,10 +466,17 @@ Please make sure the checkpointed region does not contain in-place ops (e.g. tor
     kwargs["preserve_rng_state"] = False
     kwargs["context_fn"] = context_fn_with_graph_id
     # Using interpreter allows preservation of metadata through torch.compile stack.
+    # We use a wrapper instead of passing Interpreter(gmod).run directly because
+    # checkpoint's recompute_fn captures the function in a closure. A bound method
+    # reference would keep the Interpreter alive, whose env dict retains the output
+    # tensors and prevents the autograd graph from being freed.
+    def run_with_interpreter(*args):
+        return Interpreter(gmod).run(*args)
+
     with fx_traceback.preserve_node_meta():
         from torch.utils.checkpoint import checkpoint
 
-        return checkpoint(Interpreter(gmod).run, *args, **kwargs)
+        return checkpoint(run_with_interpreter, *args, **kwargs)
 
 
 @tag_activation_checkpoint.py_impl(ProxyTorchDispatchMode)
