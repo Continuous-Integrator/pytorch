@@ -28,8 +28,8 @@ if TYPE_CHECKING:
 from torch._C import default_generator
 
 
-def key(seed: int, impl: str = "philox", device: torch.device = None) -> torch.Tensor:
-    if impl != "philox":
+def key(seed: int, impl: str = "philox4x32-10", device: torch.device = None) -> torch.Tensor:
+    if impl != "philox4x32-10":
         raise NotImplementedError(
             f"torch.random.key() does not support PRNG impl '{impl}'"
         )
