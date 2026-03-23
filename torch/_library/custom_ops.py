@@ -778,10 +778,10 @@ class CustomOpDef:
         )
 
         disabled_kernel = self._disabled_kernel
-        # c10::default_included_set — the TLS local include keyset when no
-        # special dispatch contexts (vmap, functionalize, fake-tensor, etc.)
-        # are active.  Mirrors the constexpr in c10/core/DispatchKeySet.h.
-        normal_tls_include_raw = (
+        # c10::default_included_set — the TLS local include keyset in normal
+        # eager mode. The fast path also accepts subsets of this set so that
+        # inference_mode still works after ADInplaceOrView is removed.
+        default_included_raw = (
             _C.DispatchKeySet(_C.DispatchKey.BackendSelect)
             | _C.DispatchKeySet(_C.DispatchKey.ADInplaceOrView)
         ).raw_repr()
@@ -790,25 +790,35 @@ class CustomOpDef:
             if torch.compiler.is_compiling():
                 return NotImplemented
 
-            if not args or kwargs or disabled_kernel:
+            if not args or kwargs:
                 return NotImplemented
 
-            first_arg = args[0]
-            if type(first_arg) is not Tensor:
+            first_tensor = args[0]
+            if type(first_tensor) is not Tensor:
                 return NotImplemented
 
-            if any(type(a) is not Tensor for a in args if isinstance(a, Tensor)):
+            if any(type(arg) is not Tensor for arg in args if isinstance(arg, Tensor)):
                 return NotImplemented
             if _C._is_torch_function_mode_enabled():
                 return NotImplemented
             if _C._is_any_autocast_enabled():
                 return NotImplemented
-            if _C._dispatch_tls_local_include_set().raw_repr() != normal_tls_include_raw:
+
+            device_type = first_tensor.device.type
+            if device_type == "meta" or device_type in disabled_kernel:
+                return NotImplemented
+            if raw_fns.get(None) is None and len(raw_fns) > 1:
+                if any(
+                    isinstance(arg, Tensor) and arg.device.type != device_type
+                    for arg in args[1:]
+                ):
+                    return NotImplemented
+            if (
+                _C._dispatch_tls_local_include_set().raw_repr() | default_included_raw
+                != default_included_raw
+            ):
                 return NotImplemented
 
-            device_type = first_arg.device.type
-            if device_type == "meta":
-                return NotImplemented
             fn = raw_fns.get(device_type) or raw_fns.get(None)
             if fn is None:
                 return NotImplemented
@@ -817,7 +827,7 @@ class CustomOpDef:
                 for idx in mutated_idxs:
                     increment_version(args[idx])
 
-            if _C.is_grad_enabled() and _C._any_requires_grad(*args):
+            if torch.is_grad_enabled() and _C._any_requires_grad(*args):
                 return Generated.apply(*args)
 
             result = fn(*args)
@@ -1064,10 +1074,11 @@ def _cast(value, device_type: str, dtype: _dtype):
 
 def increment_version(val: Any) -> None:
     if isinstance(val, Tensor):
-        torch.autograd.graph.increment_version(val)
+        if not val.is_inference():
+            torch.autograd.graph.increment_version(val)
     elif isinstance(val, (tuple, list)):
         for v in val:
-            if isinstance(v, Tensor):
+            if isinstance(v, Tensor) and not v.is_inference():
                 torch.autograd.graph.increment_version(v)
 
 

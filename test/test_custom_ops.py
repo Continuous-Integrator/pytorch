@@ -4691,6 +4691,30 @@ class TestCustomOpFastPath(TestCase):
         self.assertIs(fp_tl(x, [y]), sentinel)
         self.assertIs(torch.ops._torch_testing.fp_tl(x, [y]), sentinel)
 
+    def test_fast_path_mutable_normal_tensor_under_inference_mode_bumps_version(self):
+        @torch.library.custom_op("_torch_testing::fp_im_bump", mutates_args=("x",))
+        def fp_im_bump(x: Tensor) -> None:
+            x.data.add_(1)
+
+        x = torch.randn(3)
+        expected = x + 1
+        v_before = x._version
+        with torch.inference_mode():
+            fp_im_bump(x)
+        self.assertEqual(x, expected)
+        self.assertEqual(x._version, v_before + 1)
+
+    def test_fast_path_mutable_op_under_inference_mode(self):
+        @torch.library.custom_op("_torch_testing::fp_im_mut", mutates_args=("x",))
+        def fp_im_mut(x: Tensor) -> None:
+            x.data.add_(1)
+
+        with torch.inference_mode():
+            x = torch.randn(3)
+            expected = x + 1
+            fp_im_mut(x)
+            self.assertEqual(x, expected)
+
     def test_fast_path_disabled_for_tensorlist_dispatch_subclass(self):
         from torch.testing._internal.two_tensor import TwoTensor
 
