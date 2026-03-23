@@ -1071,9 +1071,9 @@ class skip_if_cpp_wrapper:
     def __init__(self, reason: str = "") -> None:
         self.reason = reason
 
-    def __call__(self, fn):
+    def __call__(self, fn, *args, **kwargs):
         @functools.wraps(fn)
-        def wrapper(test_self, *args, **kwargs):
+        def wrapper(test_self):
             if config.cpp_wrapper:
                 raise unittest.SkipTest(f"cpp wrapper bug to be fixed: {self.reason}")
             return fn(test_self, *args, **kwargs)
