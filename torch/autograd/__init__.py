@@ -9,8 +9,9 @@ half, float, double and bfloat16) and complex :class:`Tensor` types (cfloat, cdo
 """
 
 import warnings
-from collections.abc import Sequence
-from typing import cast
+from collections import OrderedDict
+from collections.abc import Mapping, Sequence
+from typing import cast, overload
 
 import torch
 from torch import _vmap_internals
@@ -256,7 +257,7 @@ def backward(
     retain_graph: bool | None = None,
     create_graph: bool = False,
     grad_variables: _TensorOrOptionalTensors | None = None,
-    inputs: _TensorOrTensorsOrGradEdge | None = None,
+    inputs: _TensorOrTensorsOrGradEdge | Mapping[str, torch.Tensor] | None = None,
 ) -> None:
     r"""Compute the sum of gradients of given tensors with respect to graph leaves.
 
@@ -309,10 +310,13 @@ def backward(
         create_graph (bool, optional): If ``True``, graph of the derivative will
             be constructed, allowing to compute higher order derivative products.
             Defaults to ``False``.
-        inputs (Sequence[Tensor] or Tensor or Sequence[GradientEdge], optional): Inputs w.r.t. which the gradient
-            be will accumulated into ``.grad``. All other Tensors will be ignored. If
-            not provided, the gradient is accumulated into all the leaf Tensors that
-            were used to compute the :attr:`tensors`.
+        inputs (Sequence[Tensor] or Tensor or Sequence[GradientEdge] or dict[str, Tensor], optional):
+            Inputs w.r.t. which the gradient be will accumulated into ``.grad``.
+            All other Tensors will be ignored. If not provided, the gradient is
+            accumulated into all the leaf Tensors that were used to compute the
+            :attr:`tensors`. A dict of tensors (e.g. from
+            :meth:`~torch.nn.Module.named_parameters`) is also accepted, in which
+            case the values are used as the input tensors.
     """
     if torch._C._are_functorch_transforms_active():
         raise RuntimeError(
@@ -341,6 +345,10 @@ def backward(
         inputs_tuple = ()
     elif isinstance(inputs, (torch.Tensor, graph.GradientEdge)):
         inputs_tuple = (inputs,)
+    elif isinstance(inputs, Mapping):
+        inputs_tuple = tuple(inputs.values())
+        if len(inputs_tuple) == 0:
+            raise RuntimeError("`inputs` argument to `backward()` cannot be empty.")
     else:
         inputs_tuple = tuple(inputs)
         if len(inputs_tuple) == 0:
@@ -387,9 +395,37 @@ def backward(
     )
 
 
+@overload
 def grad(
     outputs: _TensorOrTensorsOrGradEdge,
     inputs: _TensorOrTensorsOrGradEdge,
+    grad_outputs: _TensorOrOptionalTensors | None = ...,
+    retain_graph: bool | None = ...,
+    create_graph: bool = ...,
+    only_inputs: bool = ...,
+    allow_unused: bool | None = ...,
+    is_grads_batched: bool = ...,
+    materialize_grads: bool = ...,
+) -> tuple[torch.Tensor, ...]: ...
+
+
+@overload
+def grad(
+    outputs: _TensorOrTensorsOrGradEdge,
+    inputs: Mapping[str, torch.Tensor],
+    grad_outputs: _TensorOrOptionalTensors | None = ...,
+    retain_graph: bool | None = ...,
+    create_graph: bool = ...,
+    only_inputs: bool = ...,
+    allow_unused: bool | None = ...,
+    is_grads_batched: bool = ...,
+    materialize_grads: bool = ...,
+) -> dict[str, torch.Tensor]: ...
+
+
+def grad(
+    outputs: _TensorOrTensorsOrGradEdge,
+    inputs: _TensorOrTensorsOrGradEdge | Mapping[str, torch.Tensor],
     grad_outputs: _TensorOrOptionalTensors | None = None,
     retain_graph: bool | None = None,
     create_graph: bool = False,
@@ -397,7 +433,7 @@ def grad(
     allow_unused: bool | None = None,
     is_grads_batched: bool = False,
     materialize_grads: bool = False,
-) -> tuple[torch.Tensor, ...]:
+) -> tuple[torch.Tensor, ...] | dict[str, torch.Tensor]:
     r"""Compute and return the sum of gradients of outputs with respect to the inputs.
 
     ``grad_outputs`` should be a sequence of length matching ``output``
@@ -419,8 +455,10 @@ def grad(
 
     Args:
         outputs (sequence of Tensor or GradientEdge): outputs of the differentiated function.
-        inputs (sequence of Tensor or GradientEdge): Inputs w.r.t. which the gradient will be
-            returned (and not accumulated into ``.grad``).
+        inputs (sequence of Tensor or GradientEdge or dict[str, Tensor]): Inputs w.r.t. which
+            the gradient will be returned (and not accumulated into ``.grad``).
+            When a dict is provided (e.g. from :meth:`~torch.nn.Module.named_parameters`),
+            the result is returned as a dict with matching keys.
         grad_outputs (sequence of [Tensor or None] or Tensor, optional): The "vector" in the
             vector-Jacobian product. Usually gradients w.r.t. each output. None values can be
             specified for scalar Tensors or ones that don't require grad. If a None value would be
@@ -467,13 +505,18 @@ def grad(
     else:
         # pyrefly: ignore [bad-argument-type]
         outputs = tuple(outputs)
-    if is_tensor_like(inputs) or isinstance(inputs, graph.GradientEdge):
-        inputs = cast(_TensorOrTensorsOrGradEdge, (inputs,))
+
+    inputs_tuple: tuple[torch.Tensor | graph.GradientEdge, ...]
+    if isinstance(inputs, Mapping):
+        inputs_tuple = tuple(inputs.values())
+    elif is_tensor_like(inputs) or isinstance(inputs, graph.GradientEdge):
+        inputs_tuple = cast(tuple[torch.Tensor | graph.GradientEdge, ...], (inputs,))
     else:
         # pyrefly: ignore [bad-argument-type]
-        inputs = tuple(inputs)
+        inputs_tuple = tuple(inputs)
+
     t_outputs = tuple(i for i in outputs if is_tensor_like(i))
-    t_inputs = tuple(i for i in inputs if is_tensor_like(i))
+    t_inputs = tuple(i for i in inputs_tuple if is_tensor_like(i))
     overridable_args = t_outputs + t_inputs
     if has_torch_function(overridable_args):
         return handle_torch_function(
@@ -518,7 +561,7 @@ def grad(
                 gO,
                 retain_graph,
                 create_graph,
-                inputs,
+                inputs_tuple,
                 allow_unused,
                 accumulate_grad=False,
             )
@@ -532,14 +575,14 @@ def grad(
             grad_outputs_,
             retain_graph,
             create_graph,
-            inputs,
+            inputs_tuple,
             allow_unused,
             accumulate_grad=False,
         )
     if materialize_grads:
         if any(
-            result[i] is None and not is_tensor_like(inputs[i])
-            for i in range(len(inputs))
+            result[i] is None and not is_tensor_like(inputs_tuple[i])
+            for i in range(len(inputs_tuple))
         ):
             raise RuntimeError(
                 "materialize_grads cannot be used when the given input is a GradientEdge"
@@ -548,8 +591,12 @@ def grad(
             output
             if output is not None
             else torch.zeros_like(input, requires_grad=create_graph)
-            for (output, input) in zip(result, inputs)
+            for (output, input) in zip(result, inputs_tuple)
         )
+    if isinstance(inputs, Mapping):
+        if isinstance(inputs, OrderedDict):
+            return OrderedDict(zip(inputs.keys(), result))
+        return dict(zip(inputs.keys(), result))
     return result
 
 

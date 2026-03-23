@@ -126,6 +126,47 @@ class <lambda>(torch.nn.Module):
         )
 
     @skipIfCrossRef
+    def test_autograd_grad_dict_inputs(self):
+        mod = torch.nn.Linear(4, 4)
+        x = torch.randn(2, 4)
+
+        def fn(x):
+            res = mod(x)
+            loss = res.sum()
+            params = dict(mod.named_parameters())
+            grads = torch.autograd.grad(loss, params)
+            return loss.detach(), grads["weight"], grads["bias"]
+
+        backend = EagerAndRecordGraphs()
+        compiled_fn = torch.compile(fn, backend=backend, fullgraph=True)
+
+        eager_result = fn(x)
+        compiled_result = compiled_fn(x)
+
+        for e, c in zip(eager_result, compiled_result):
+            self.assertEqual(e, c)
+
+    @skipIfCrossRef
+    def test_autograd_grad_dict_inputs_kwargs(self):
+        mod = torch.nn.Linear(4, 4)
+        x = torch.randn(2, 4)
+
+        def fn(x):
+            res = mod(x)
+            loss = res.sum()
+            params = dict(mod.named_parameters())
+            grads = torch.autograd.grad(outputs=loss, inputs=params)
+            return loss.detach(), grads["weight"], grads["bias"]
+
+        compiled_fn = torch.compile(fn, backend="eager", fullgraph=True)
+
+        eager_result = fn(x)
+        compiled_result = compiled_fn(x)
+
+        for e, c in zip(eager_result, compiled_result):
+            self.assertEqual(e, c)
+
+    @skipIfCrossRef
     def test_autograd_grad_with_kwargs(self):
         mod = torch.nn.Linear(4, 4)
         x = torch.randn(2, 4)
