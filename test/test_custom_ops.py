@@ -4628,6 +4628,21 @@ class TestCustomOpFastPath(TestCase):
         self.assertEqual(r_direct.dtype, torch.float16)
         self.assertEqual(r_packet.dtype, torch.float16)
 
+    @unittest.skipIf(not torch.cuda.is_available(), "requires CUDA")
+    def test_fast_path_falls_back_for_autocast_cuda(self):
+        @torch.library.custom_op("_torch_testing::fp_ac_cuda", mutates_args=())
+        def fp_ac_cuda(x: Tensor) -> Tensor:
+            return x.clone()
+
+        fp_ac_cuda.register_autocast("cuda", torch.float16)
+
+        x = torch.randn(3, dtype=torch.float32, device="cuda")
+        with torch.autocast("cuda", dtype=torch.float16):
+            r_direct = fp_ac_cuda(x)
+            r_packet = torch.ops._torch_testing.fp_ac_cuda(x)
+        self.assertEqual(r_direct.dtype, torch.float16)
+        self.assertEqual(r_packet.dtype, torch.float16)
+
     def test_fast_path_falls_back_for_torch_function_mode(self):
         @torch.library.custom_op("_torch_testing::fp_tfm", mutates_args=())
         def fp_tfm(x: Tensor) -> Tensor:
@@ -4675,6 +4690,33 @@ class TestCustomOpFastPath(TestCase):
         y = MySub(torch.randn(3))
         self.assertIs(fp_tl(x, [y]), sentinel)
         self.assertIs(torch.ops._torch_testing.fp_tl(x, [y]), sentinel)
+
+    def test_fast_path_disabled_for_tensorlist_dispatch_subclass(self):
+        from torch.testing._internal.two_tensor import TwoTensor
+
+        @torch.library.custom_op("_torch_testing::fp_tl2", mutates_args=())
+        def fp_tl2(x: Tensor, ys: list[Tensor]) -> Tensor:
+            return x.clone()
+
+        called = False
+
+        with torch.library._scoped_library("_torch_testing", "FRAGMENT") as m:
+
+            def twotensor_impl(cls, func, types, args, kwargs):
+                nonlocal called
+                called = True
+                return args[0].clone()
+
+            m._register_torch_dispatch_rule("fp_tl2", TwoTensor, twotensor_impl)
+
+            x = torch.randn(3)
+            tt = TwoTensor(torch.randn(3), torch.randn(3))
+            fp_tl2(x, [tt])
+            self.assertTrue(called)
+
+            called = False
+            torch.ops._torch_testing.fp_tl2(x, [tt])
+            self.assertTrue(called)
 
 
 class TestLibrarySourceLocation(TestCase):
