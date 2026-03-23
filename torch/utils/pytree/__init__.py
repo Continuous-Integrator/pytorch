@@ -17,7 +17,7 @@ collection support for PyTorch APIs.
 import os as _os
 import sys as _sys
 from types import ModuleType as _ModuleType
-from typing import Any as _Any, TYPE_CHECKING as _TYPE_CHECKING, TypeAlias as _TypeAlias
+from typing import Any as _Any, TYPE_CHECKING as _TYPE_CHECKING
 
 import torch.utils._pytree as python
 from torch.utils._pytree import (  # these type aliases are identical in both implementations
@@ -198,9 +198,6 @@ else:
         tree_unflatten,
         treespec_pprint,
     )
-
-
-TreeSpec: _TypeAlias = PyTreeSpec
 
 
 def register_pytree_node(
