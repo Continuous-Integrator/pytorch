@@ -20,6 +20,19 @@ from .effects import EffectType
 device_types_t = str | Sequence[str] | None
 log = logging.getLogger(__name__)
 
+# Precomputed "normal eager mode" TLS include set raw repr.
+# Lazily initialized on first use.
+_NORMAL_TLS_INCLUDE_RAW: int | None = None
+
+
+def _get_normal_tls_include_raw() -> int:
+    global _NORMAL_TLS_INCLUDE_RAW
+    if _NORMAL_TLS_INCLUDE_RAW is None:
+        _NORMAL_TLS_INCLUDE_RAW = (
+            _C._dispatch_tls_local_include_set().raw_repr()
+        )
+    return _NORMAL_TLS_INCLUDE_RAW
+
 
 @overload
 def custom_op(
@@ -231,6 +244,8 @@ class CustomOpDef:
         self._init_fn = fn
 
         self._backend_fns: dict[str | None, Callable] = {}
+        self._raw_fns: dict[str | None, Callable] = {}
+        self._fast_call: Callable | None = None
         self._abstract_fn: Callable | None = None
         self._setup_context_fn: Callable | None = None
         self._backward_fn: Callable | None = None
@@ -400,9 +415,6 @@ class CustomOpDef:
                             _C._dispatch_key_for_device(device_type),
                         )
 
-                # Wrap function to choose between the default implementation or the device-specific
-                # implementation depending on if the kernel is disabled.
-                @torch._disable_dynamo
                 def wrapped_fn(*args, **kwargs):
                     if device_type in self._disabled_kernel:
                         return self._init_fn(*args, **kwargs)
@@ -410,6 +422,8 @@ class CustomOpDef:
                         return fn(*args, **kwargs)
 
                 self._backend_fns[device_type] = wrapped_fn
+                self._raw_fns[device_type] = fn
+            self._install_fast_call()
             return fn
 
         if device_types is not None and not utils.has_tensor_arg(
@@ -674,6 +688,7 @@ class CustomOpDef:
 
         if schema.is_mutable:
             mutated_idxs, mutated_keys = utils.mutated_args_kwargs(schema)
+            self._mutated_idxs = tuple(mutated_idxs)
 
             original_kernel = torch._C._dispatch_get_computed_kernel_for_dispatch_key(
                 f"{lib.ns}::{self._name}", "ADInplaceOrView"
@@ -702,6 +717,113 @@ class CustomOpDef:
                     with_keyset=True,
                 )
 
+    def _install_fast_call(self):
+        schema = self._opoverload._schema
+
+        # View ops have special ADInplaceOrView handling that the fast path
+        # can't replicate, so we skip the fast path entirely.
+        if schema._is_view_op():
+            return
+
+        is_mutable = schema.is_mutable
+        mutated_idxs = getattr(self, "_mutated_idxs", ())
+        raw_fns = self._raw_fns
+        opdef = self
+        op = self._opoverload
+        has_kwarg_only_args = utils.has_kwarg_only_args(schema)
+        normal_tls_include_raw = _get_normal_tls_include_raw()
+
+        has_tensorlist = any(
+            utils.is_tensorlist_like_type(a.type)
+            for a in (*schema.arguments, *schema.returns)
+        )
+
+        def forward(ctx, *args):
+            if is_mutable:
+                for idx in mutated_idxs:
+                    increment_version(args[idx])
+
+            device_type = args[0].device.type
+            fn = raw_fns.get(device_type) or raw_fns.get(None)
+            result = fn(*args)
+
+            if opdef._setup_context_fn:
+                filled_args, filled_kwargs = utils.fill_defaults(
+                    op._schema, args, {}
+                )
+                if has_kwarg_only_args:
+                    opdef._setup_context_fn(
+                        ctx=ctx,
+                        inputs=filled_args,
+                        keyword_only_inputs=filled_kwargs,
+                        output=result,
+                    )
+                else:
+                    opdef._setup_context_fn(
+                        ctx=ctx, inputs=filled_args, output=result
+                    )
+
+            return result
+
+        def backward(ctx, *grads):
+            if opdef._backward_fn:
+                return opdef._backward_fn(ctx, *grads)
+            raise RuntimeError(
+                f"Trying to backward through {op} but no autograd "
+                f"formula was registered. "
+                f"Please use register_autograd to add one."
+            )
+
+        Generated = type(
+            f"FastGeneratedBackwardFor_{op._namespace}_{op._opname}",
+            (torch.autograd.Function,),
+            {
+                "forward": staticmethod(forward),
+                "backward": staticmethod(backward),
+            },
+        )
+
+        if has_tensorlist:
+            Generated = autograd.supports_tensorlist(Generated)
+
+        disabled_kernel = opdef._disabled_kernel
+
+        def fast_call(*args, **kwargs):
+            if torch.compiler.is_compiling():
+                return NotImplemented
+
+            if kwargs or disabled_kernel:
+                return NotImplemented
+
+            first_arg = args[0]
+            if type(first_arg) is not Tensor:
+                return NotImplemented
+
+            # Check for subclass tensors (__torch_function__ or __torch_dispatch__)
+            if any(type(a) is not Tensor for a in args if isinstance(a, Tensor)):
+                return NotImplemented
+            # Check for special dispatch modes (vmap, functionalize, etc.)
+            if _C._dispatch_tls_local_include_set().raw_repr() != normal_tls_include_raw:
+                return NotImplemented
+
+            device_type = first_arg.device.type
+            if device_type == "meta":
+                return NotImplemented
+            fn = raw_fns.get(device_type) or raw_fns.get(None)
+            if fn is None:
+                return NotImplemented
+
+            if _C.is_grad_enabled() and _C._any_requires_grad(*args):
+                return Generated.apply(*args)
+
+            if is_mutable:
+                for idx in mutated_idxs:
+                    increment_version(args[idx])
+            return fn(*args)
+
+        self._fast_call = fast_call
+        self._opoverload._overloadpacket._fast_call = fast_call
+
     def _register_backend_select_dispatcher(self, device_arg_index: int):
         """
         Switch on the device argument to select the correct backend to dispatch to.
@@ -723,6 +845,10 @@ class CustomOpDef:
         self._lib.impl(self._name, backend_select, "BackendSelect", with_keyset=True)
 
     def __call__(self, *args, **kwargs):
+        if self._fast_call is not None:
+            result = self._fast_call(*args, **kwargs)
+            if result is not NotImplemented:
+                return result
         return self._opoverload(*args, **kwargs)
 
     def register_vmap(

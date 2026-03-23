@@ -3839,13 +3839,16 @@ Please use `add.register_fake` to add an fake impl.""",
         self.assertEqual(called_f1, 1)
 
     def test_disallows_output_aliasing(self):
+        # The aliasing check runs on the slow dispatch path (via the C++
+        # dispatcher). The fast path skips it for performance. We test via
+        # _opoverload to exercise the slow path.
         @torch.library.custom_op("_torch_testing::f", mutates_args=())
         def f(x: Tensor) -> Tensor:
             return x.view(-1)
 
         x = torch.randn(3)
         with self.assertRaisesRegex(RuntimeError, "may not alias"):
-            f(x)
+            f._opoverload(x)
 
         @torch.library.custom_op("_torch_testing::f", mutates_args=())
         def f(x: Tensor) -> Tensor:
@@ -3853,7 +3856,7 @@ Please use `add.register_fake` to add an fake impl.""",
 
         x = torch.randn(3)
         with self.assertRaisesRegex(RuntimeError, "may not alias"):
-            f(x)
+            f._opoverload(x)
 
         @torch.library.custom_op(
             "_torch_testing::f", mutates_args={"x"}, device_types="cpu"
@@ -3865,7 +3868,7 @@ Please use `add.register_fake` to add an fake impl.""",
 
         x = torch.randn(3)
         with self.assertRaisesRegex(RuntimeError, "may not alias"):
-            numpy_sin_inplace(x)
+            numpy_sin_inplace._opoverload(x)
 
     @skipIfTorchDynamo("Expected to fail due to no FakeTensor support; not a bug")
     def test_factory_function(self):
@@ -4498,6 +4501,121 @@ Please use `add.register_fake` to add an fake impl.""",
                 RuntimeError, "no kernel for CUDA for test_invalid_kernel::cpu_only_op"
             ):
                 torch.library.get_kernel("test_invalid_kernel::cpu_only_op", "CUDA")
+
+
+class TestCustomOpFastPath(TestCase):
+    """Tests for the fast dispatch path in custom_op."""
+
+    def test_fast_path_basic(self):
+        @torch.library.custom_op("_torch_testing::fp_add", mutates_args=())
+        def fp_add(x: Tensor, y: Tensor) -> Tensor:
+            return x + y
+
+        x = torch.randn(3)
+        y = torch.randn(3)
+        self.assertEqual(fp_add(x, y), x + y)
+        self.assertEqual(torch.ops._torch_testing.fp_add(x, y), x + y)
+
+    def test_fast_path_mutable(self):
+        @torch.library.custom_op("_torch_testing::fp_inplace", mutates_args={"x"})
+        def fp_inplace(x: Tensor) -> None:
+            x.mul_(2)
+
+        x = torch.randn(3)
+        x_orig = x.clone()
+        v_before = x._version
+        fp_inplace(x)
+        self.assertTrue(x._version > v_before)
+        self.assertEqual(x, x_orig * 2)
+
+    def test_fast_path_autograd(self):
+        @torch.library.custom_op("_torch_testing::fp_square", mutates_args=())
+        def fp_square(x: Tensor) -> Tensor:
+            return x**2
+
+        @fp_square.register_fake
+        def _(x):
+            return torch.empty_like(x)
+
+        def _backward(ctx, grad):
+            (x,) = ctx.saved_tensors
+            return grad * 2 * x
+
+        def _setup_context(ctx, inputs, output):
+            ctx.save_for_backward(*inputs)
+
+        fp_square.register_autograd(_backward, setup_context=_setup_context)
+
+        x = torch.randn(3, requires_grad=True)
+        y = fp_square(x)
+        y.sum().backward()
+        self.assertEqual(x.grad, 2 * x)
+
+    def test_fast_path_no_grad(self):
+        called = [0]
+
+        @torch.library.custom_op("_torch_testing::fp_ng", mutates_args=())
+        def fp_ng(x: Tensor) -> Tensor:
+            called[0] += 1
+            return x.clone()
+
+        x = torch.randn(3)
+        with torch.no_grad():
+            result = fp_ng(x)
+        self.assertEqual(result, x)
+        self.assertEqual(called[0], 1)
+
+    def test_fast_path_inference_mode(self):
+        @torch.library.custom_op("_torch_testing::fp_im", mutates_args=())
+        def fp_im(x: Tensor) -> Tensor:
+            return x.clone()
+
+        with torch.inference_mode():
+            x = torch.randn(3)
+            result = fp_im(x)
+        self.assertEqual(result, x)
+
+    def test_fast_path_falls_back_for_compile(self):
+        @torch.library.custom_op("_torch_testing::fp_compile", mutates_args=())
+        def fp_compile(x: Tensor) -> Tensor:
+            return x.clone()
+
+        @fp_compile.register_fake
+        def _(x):
+            return x.clone()
+
+        @torch.compile(backend="eager", fullgraph=True)
+        def compiled_fn(x):
+            return fp_compile(x)
+
+        x = torch.randn(3)
+        result = compiled_fn(x)
+        self.assertEqual(result, x)
+
+    def test_fast_path_falls_back_for_fake_tensor(self):
+        @torch.library.custom_op("_torch_testing::fp_fake", mutates_args=())
+        def fp_fake(x: Tensor) -> Tensor:
+            return x.clone()
+
+        @fp_fake.register_fake
+        def _(x):
+            return x.clone()
+
+        from torch._subclasses.fake_tensor import FakeTensorMode
+
+        with FakeTensorMode():
+            x = torch.randn(3)
+            result = fp_fake(x)
+        self.assertEqual(result.shape, torch.Size([3]))
+
+    def test_fast_path_via_ops(self):
+        @torch.library.custom_op("_torch_testing::fp_ops", mutates_args=())
+        def fp_ops(x: Tensor) -> Tensor:
+            return x + 1
+
+        x = torch.randn(3)
+        result = torch.ops._torch_testing.fp_ops(x)
+        self.assertEqual(result, x + 1)
 
 
 class TestLibrarySourceLocation(TestCase):
