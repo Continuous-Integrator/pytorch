@@ -109,6 +109,9 @@ jobs:
       build_name: manywheel-py3_10-cpu
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
     uses: ./.github/workflows/_binary-upload.yml
 
   manywheel-py3_10-cuda12_6-build:
@@ -129,7 +132,7 @@ jobs:
       runner_prefix: "${{ needs.get-label-type.outputs.label-type }}"
       build_name: manywheel-py3_10-cuda12_6
       build_environment: linux-binary-manywheel
-      PYTORCH_EXTRA_INSTALL_REQUIREMENTS: cuda-toolkit[nvrtc,cudart,cupti,cufft,curand,cusolver,cusparse,cublas,cufile,nvjitlink,nvtx]==12.6.3; platform_system == 'Linux' | cuda-bindings==12.9.4; platform_system == 'Linux' | nvidia-cudnn-cu12==9.10.2.21; platform_system == 'Linux' | nvidia-cusparselt-cu12==0.7.1; platform_system == 'Linux' | nvidia-nccl-cu12==2.28.9; platform_system == 'Linux' | nvidia-nvshmem-cu12==3.4.5; platform_system == 'Linux'
+      PYTORCH_EXTRA_INSTALL_REQUIREMENTS: cuda-toolkit[nvrtc,cudart,cupti,cufft,curand,cusolver,cusparse,cublas,cufile,nvjitlink,nvtx]==12.6.3; platform_system == 'Linux' | cuda-bindings>=12.9.4,<13; platform_system == 'Linux' | nvidia-cudnn-cu12==9.10.2.21; platform_system == 'Linux' | nvidia-cusparselt-cu12==0.7.1; platform_system == 'Linux' | nvidia-nccl-cu12==2.29.3; platform_system == 'Linux' | nvidia-nvshmem-cu12==3.4.5; platform_system == 'Linux'
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -153,7 +156,7 @@ jobs:
       build_name: manywheel-py3_10-cuda12_6
       build_environment: linux-binary-manywheel
       runner_prefix: "${{ needs.get-label-type.outputs.label-type }}"
-      runs_on: linux.4xlarge.nvidia.gpu  # 12.6 build can use maxwell (sm_50) runner
+      runs_on: linux.g4dn.4xlarge.nvidia.gpu
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
   manywheel-py3_10-cuda12_6-upload:  # Uploading
@@ -176,6 +179,9 @@ jobs:
       build_name: manywheel-py3_10-cuda12_6
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
     uses: ./.github/workflows/_binary-upload.yml
 
   manywheel-py3_10-cuda12_8-build:
@@ -196,7 +202,7 @@ jobs:
       runner_prefix: "${{ needs.get-label-type.outputs.label-type }}"
       build_name: manywheel-py3_10-cuda12_8
       build_environment: linux-binary-manywheel
-      PYTORCH_EXTRA_INSTALL_REQUIREMENTS: cuda-toolkit[nvrtc,cudart,cupti,cufft,curand,cusolver,cusparse,cublas,cufile,nvjitlink,nvtx]==12.8.1; platform_system == 'Linux' | cuda-bindings==12.9.4; platform_system == 'Linux' | nvidia-cudnn-cu12==9.19.0.56; platform_system == 'Linux' | nvidia-cusparselt-cu12==0.7.1; platform_system == 'Linux' | nvidia-nccl-cu12==2.28.9; platform_system == 'Linux' | nvidia-nvshmem-cu12==3.4.5; platform_system == 'Linux'
+      PYTORCH_EXTRA_INSTALL_REQUIREMENTS: cuda-toolkit[nvrtc,cudart,cupti,cufft,curand,cusolver,cusparse,cublas,cufile,nvjitlink,nvtx]==12.8.1; platform_system == 'Linux' | cuda-bindings>=12.9.4,<13; platform_system == 'Linux' | nvidia-cudnn-cu12==9.20.0.48; platform_system == 'Linux' | nvidia-cusparselt-cu12==0.7.1; platform_system == 'Linux' | nvidia-nccl-cu12==2.29.7; platform_system == 'Linux' | nvidia-nvshmem-cu12==3.4.5; platform_system == 'Linux'
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -220,7 +226,7 @@ jobs:
       build_name: manywheel-py3_10-cuda12_8
       build_environment: linux-binary-manywheel
       runner_prefix: "${{ needs.get-label-type.outputs.label-type }}"
-      runs_on: linux.g4dn.4xlarge.nvidia.gpu # 12.8+ builds need sm_70+ runner
+      runs_on: linux.g4dn.4xlarge.nvidia.gpu
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
   manywheel-py3_10-cuda12_8-upload:  # Uploading
@@ -243,6 +249,9 @@ jobs:
       build_name: manywheel-py3_10-cuda12_8
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
     uses: ./.github/workflows/_binary-upload.yml
 
   manywheel-py3_10-cuda12_9-build:
@@ -263,7 +272,7 @@ jobs:
       runner_prefix: "${{ needs.get-label-type.outputs.label-type }}"
       build_name: manywheel-py3_10-cuda12_9
       build_environment: linux-binary-manywheel
-      PYTORCH_EXTRA_INSTALL_REQUIREMENTS: cuda-toolkit[nvrtc,cudart,cupti,cufft,curand,cusolver,cusparse,cublas,cufile,nvjitlink,nvtx]==12.9.1; platform_system == 'Linux' | cuda-bindings==12.9.4; platform_system == 'Linux' | nvidia-cudnn-cu12==9.17.1.4; platform_system == 'Linux' | nvidia-cusparselt-cu12==0.7.1; platform_system == 'Linux' | nvidia-nccl-cu12==2.28.9; platform_system == 'Linux' | nvidia-nvshmem-cu12==3.4.5; platform_system == 'Linux'
+      PYTORCH_EXTRA_INSTALL_REQUIREMENTS: cuda-toolkit[nvrtc,cudart,cupti,cufft,curand,cusolver,cusparse,cublas,cufile,nvjitlink,nvtx]==12.9.1; platform_system == 'Linux' | cuda-bindings>=12.9.4,<13; platform_system == 'Linux' | nvidia-cudnn-cu12==9.20.0.48; platform_system == 'Linux' | nvidia-cusparselt-cu12==0.7.1; platform_system == 'Linux' | nvidia-nccl-cu12==2.29.7; platform_system == 'Linux' | nvidia-nvshmem-cu12==3.4.5; platform_system == 'Linux'
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -287,7 +296,7 @@ jobs:
       build_name: manywheel-py3_10-cuda12_9
       build_environment: linux-binary-manywheel
       runner_prefix: "${{ needs.get-label-type.outputs.label-type }}"
-      runs_on: linux.g4dn.4xlarge.nvidia.gpu # 12.8+ builds need sm_70+ runner
+      runs_on: linux.g4dn.4xlarge.nvidia.gpu
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
   manywheel-py3_10-cuda12_9-upload:  # Uploading
@@ -310,6 +319,9 @@ jobs:
       build_name: manywheel-py3_10-cuda12_9
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
     uses: ./.github/workflows/_binary-upload.yml
 
   manywheel-py3_10-cuda13_0-build:
@@ -330,7 +342,7 @@ jobs:
       runner_prefix: "${{ needs.get-label-type.outputs.label-type }}"
       build_name: manywheel-py3_10-cuda13_0
       build_environment: linux-binary-manywheel
-      PYTORCH_EXTRA_INSTALL_REQUIREMENTS: cuda-toolkit[nvrtc,cudart,cupti,cufft,curand,cusolver,cusparse,cublas,cufile,nvjitlink,nvtx]==13.0.2; platform_system == 'Linux' | cuda-bindings==13.0.3; platform_system == 'Linux' | nvidia-cudnn-cu13==9.19.0.56; platform_system == 'Linux' | nvidia-cusparselt-cu13==0.8.0; platform_system == 'Linux' | nvidia-nccl-cu13==2.28.9; platform_system == 'Linux' | nvidia-nvshmem-cu13==3.4.5; platform_system == 'Linux'
+      PYTORCH_EXTRA_INSTALL_REQUIREMENTS: cuda-toolkit[nvrtc,cudart,cupti,cufft,curand,cusolver,cusparse,cublas,cufile,nvjitlink,nvtx]==13.0.2; platform_system == 'Linux' | cuda-bindings>=13.0.3,<14; platform_system == 'Linux' | nvidia-cudnn-cu13==9.20.0.48; platform_system == 'Linux' | nvidia-cusparselt-cu13==0.8.0; platform_system == 'Linux' | nvidia-nccl-cu13==2.29.7; platform_system == 'Linux' | nvidia-nvshmem-cu13==3.4.5; platform_system == 'Linux'
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -354,7 +366,7 @@ jobs:
       build_name: manywheel-py3_10-cuda13_0
       build_environment: linux-binary-manywheel
       runner_prefix: "${{ needs.get-label-type.outputs.label-type }}"
-      runs_on: linux.g4dn.4xlarge.nvidia.gpu # 12.8+ builds need sm_70+ runner
+      runs_on: linux.g4dn.4xlarge.nvidia.gpu
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
   manywheel-py3_10-cuda13_0-upload:  # Uploading
@@ -377,6 +389,79 @@ jobs:
       build_name: manywheel-py3_10-cuda13_0
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+    uses: ./.github/workflows/_binary-upload.yml
+
+  manywheel-py3_10-cuda13_2-build:
+    if: ${{ github.repository_owner == 'pytorch' }}
+    uses: ./.github/workflows/_binary-build-linux.yml
+    needs: get-label-type
+    with:
+      PYTORCH_ROOT: /pytorch
+      PACKAGE_TYPE: manywheel
+      # TODO: This is a legacy variable that we eventually want to get rid of in
+      #       favor of GPU_ARCH_VERSION
+      DESIRED_CUDA: cu132
+      GPU_ARCH_VERSION: "13.2"
+      GPU_ARCH_TYPE: cuda
+      DOCKER_IMAGE: manylinux2_28-builder
+      DOCKER_IMAGE_TAG_PREFIX: cuda13.2
+      DESIRED_PYTHON: "3.10"
+      runner_prefix: "${{ needs.get-label-type.outputs.label-type }}"
+      build_name: manywheel-py3_10-cuda13_2
+      build_environment: linux-binary-manywheel
+      PYTORCH_EXTRA_INSTALL_REQUIREMENTS: cuda-toolkit[nvrtc,cudart,cupti,cufft,curand,cusolver,cusparse,cublas,cufile,nvjitlink,nvtx]==13.2.0; platform_system == 'Linux' | cuda-bindings>=13.0.3,<14; platform_system == 'Linux' | nvidia-cudnn-cu13==9.20.0.48; platform_system == 'Linux' | nvidia-cusparselt-cu13==0.8.1; platform_system == 'Linux' | nvidia-nccl-cu13==2.29.7; platform_system == 'Linux' | nvidia-nvshmem-cu13==3.4.5; platform_system == 'Linux'
+    secrets:
+      github-token: ${{ secrets.GITHUB_TOKEN }}
+
+  manywheel-py3_10-cuda13_2-test:  # Testing
+    if: ${{ github.repository_owner == 'pytorch' }}
+    needs:
+      - manywheel-py3_10-cuda13_2-build
+      - get-label-type
+    uses: ./.github/workflows/_binary-test-linux.yml
+    with:
+      PYTORCH_ROOT: /pytorch
+      PACKAGE_TYPE: manywheel
+      # TODO: This is a legacy variable that we eventually want to get rid of in
+      #       favor of GPU_ARCH_VERSION
+      DESIRED_CUDA: cu132
+      GPU_ARCH_VERSION: "13.2"
+      GPU_ARCH_TYPE: cuda
+      DOCKER_IMAGE: manylinux2_28-builder
+      DOCKER_IMAGE_TAG_PREFIX: cuda13.2
+      DESIRED_PYTHON: "3.10"
+      build_name: manywheel-py3_10-cuda13_2
+      build_environment: linux-binary-manywheel
+      runner_prefix: "${{ needs.get-label-type.outputs.label-type }}"
+      runs_on: linux.g4dn.4xlarge.nvidia.gpu
+    secrets:
+      github-token: ${{ secrets.GITHUB_TOKEN }}
+  manywheel-py3_10-cuda13_2-upload:  # Uploading
+    if: ${{ github.repository_owner == 'pytorch' }}
+    permissions:
+      id-token: write
+      contents: read
+    needs: manywheel-py3_10-cuda13_2-test
+    with:
+      PYTORCH_ROOT: /pytorch
+      PACKAGE_TYPE: manywheel
+      # TODO: This is a legacy variable that we eventually want to get rid of in
+      #       favor of GPU_ARCH_VERSION
+      DESIRED_CUDA: cu132
+      GPU_ARCH_VERSION: "13.2"
+      GPU_ARCH_TYPE: cuda
+      DOCKER_IMAGE: manylinux2_28-builder
+      DOCKER_IMAGE_TAG_PREFIX: cuda13.2
+      DESIRED_PYTHON: "3.10"
+      build_name: manywheel-py3_10-cuda13_2
+    secrets:
+      github-token: ${{ secrets.GITHUB_TOKEN }}
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
     uses: ./.github/workflows/_binary-upload.yml
 
   manywheel-py3_10-rocm7_1-build:
@@ -406,7 +491,7 @@ jobs:
     needs:
       - manywheel-py3_10-rocm7_1-build
       - get-label-type
-    runs-on: linux.rocm.gpu.mi250.1
+    runs-on: linux.rocm.gpu.gfx942.1
     timeout-minutes: 240
     env:
       PYTORCH_ROOT: /pytorch
@@ -424,6 +509,16 @@ jobs:
       id-token: write
       contents: read
     steps:
+      - name: Checkout PyTorch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          submodules: recursive
+          show-progress: false
+      - name: Clean PyTorch checkout
+        run: |
+          # Remove any artifacts from the previous checkouts
+          git clean -fxd
       - name: Setup ROCm
         uses: ./.github/actions/setup-rocm
       - uses: actions/download-artifact@v4.1.7
@@ -431,18 +526,6 @@ jobs:
         with:
           name: manywheel-py3_10-rocm7_1
           path: "${{ runner.temp }}/artifacts/"
-      - name: Checkout PyTorch
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
-          submodules: recursive
-          path: pytorch
-          show-progress: false
-      - name: Clean PyTorch checkout
-        run: |
-          # Remove any artifacts from the previous checkouts
-          git clean -fxd
-        working-directory: pytorch
       - name: ROCm set GPU_FLAG
         run: |
           echo "GPU_FLAG=--device=/dev/mem --device=/dev/kfd --device=/dev/dri --group-add video --group-add daemon" >> "${GITHUB_ENV}"
@@ -462,13 +545,12 @@ jobs:
           docker-image-name: manylinux2_28-builder
           custom-tag-prefix: rocm7.1
           docker-build-dir: .ci/docker
-          working-directory: pytorch
       - name: Pull Docker image
         uses: pytorch/test-infra/.github/actions/pull-docker-image@main
         with:
           docker-image: ${{ steps.calculate-docker-image.outputs.docker-image }}
       - name: Test Pytorch binary
-        uses: ./pytorch/.github/actions/test-pytorch-binary
+        uses: ./.github/actions/test-pytorch-binary
         env:
           DOCKER_IMAGE: ${{ steps.calculate-docker-image.outputs.docker-image }}
       - name: Teardown ROCm
@@ -493,6 +575,9 @@ jobs:
       build_name: manywheel-py3_10-rocm7_1
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
     uses: ./.github/workflows/_binary-upload.yml
 
   manywheel-py3_10-rocm7_2-build:
@@ -522,7 +607,7 @@ jobs:
     needs:
       - manywheel-py3_10-rocm7_2-build
       - get-label-type
-    runs-on: linux.rocm.gpu.mi250.1
+    runs-on: linux.rocm.gpu.gfx942.1
     timeout-minutes: 240
     env:
       PYTORCH_ROOT: /pytorch
@@ -540,6 +625,16 @@ jobs:
       id-token: write
       contents: read
     steps:
+      - name: Checkout PyTorch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          submodules: recursive
+          show-progress: false
+      - name: Clean PyTorch checkout
+        run: |
+          # Remove any artifacts from the previous checkouts
+          git clean -fxd
       - name: Setup ROCm
         uses: ./.github/actions/setup-rocm
       - uses: actions/download-artifact@v4.1.7
@@ -547,18 +642,6 @@ jobs:
         with:
           name: manywheel-py3_10-rocm7_2
           path: "${{ runner.temp }}/artifacts/"
-      - name: Checkout PyTorch
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
-          submodules: recursive
-          path: pytorch
-          show-progress: false
-      - name: Clean PyTorch checkout
-        run: |
-          # Remove any artifacts from the previous checkouts
-          git clean -fxd
-        working-directory: pytorch
       - name: ROCm set GPU_FLAG
         run: |
           echo "GPU_FLAG=--device=/dev/mem --device=/dev/kfd --device=/dev/dri --group-add video --group-add daemon" >> "${GITHUB_ENV}"
@@ -578,13 +661,12 @@ jobs:
           docker-image-name: manylinux2_28-builder
           custom-tag-prefix: rocm7.2
           docker-build-dir: .ci/docker
-          working-directory: pytorch
       - name: Pull Docker image
         uses: pytorch/test-infra/.github/actions/pull-docker-image@main
         with:
           docker-image: ${{ steps.calculate-docker-image.outputs.docker-image }}
       - name: Test Pytorch binary
-        uses: ./pytorch/.github/actions/test-pytorch-binary
+        uses: ./.github/actions/test-pytorch-binary
         env:
           DOCKER_IMAGE: ${{ steps.calculate-docker-image.outputs.docker-image }}
       - name: Teardown ROCm
@@ -609,6 +691,9 @@ jobs:
       build_name: manywheel-py3_10-rocm7_2
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
     uses: ./.github/workflows/_binary-upload.yml
 
   manywheel-py3_10-xpu-build:
@@ -654,6 +739,16 @@ jobs:
       id-token: write
       contents: read
     steps:
+      - name: Checkout PyTorch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          submodules: recursive
+          show-progress: false
+      - name: Clean PyTorch checkout
+        run: |
+          # Remove any artifacts from the previous checkouts
+          git clean -fxd
       - name: Setup XPU
         uses: pytorch/pytorch/.github/actions/setup-xpu@main
       - name: Login to ECR
@@ -663,18 +758,6 @@ jobs:
         with:
           name: manywheel-py3_10-xpu
           path: "${{ runner.temp }}/artifacts/"
-      - name: Checkout PyTorch
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
-          submodules: recursive
-          path: pytorch
-          show-progress: false
-      - name: Clean PyTorch checkout
-        run: |
-          # Remove any artifacts from the previous checkouts
-          git clean -fxd
-        working-directory: pytorch
       - name: Calculate docker image
         id: calculate-docker-image
         uses: pytorch/test-infra/.github/actions/calculate-docker-image@main
@@ -683,13 +766,12 @@ jobs:
           docker-image-name: manylinux2_28-builder
           custom-tag-prefix: xpu
           docker-build-dir: .ci/docker
-          working-directory: pytorch
       - name: Pull Docker image
         uses: pytorch/test-infra/.github/actions/pull-docker-image@main
         with:
           docker-image: ${{ steps.calculate-docker-image.outputs.docker-image }}
       - name: Test Pytorch binary
-        uses: ./pytorch/.github/actions/test-pytorch-binary
+        uses: ./.github/actions/test-pytorch-binary
         env:
           DOCKER_IMAGE: ${{ steps.calculate-docker-image.outputs.docker-image }}
       - name: Teardown XPU
@@ -713,6 +795,9 @@ jobs:
       build_name: manywheel-py3_10-xpu
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
     uses: ./.github/workflows/_binary-upload.yml
 
   manywheel-py3_11-cpu-build:
@@ -776,6 +861,9 @@ jobs:
       build_name: manywheel-py3_11-cpu
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
     uses: ./.github/workflows/_binary-upload.yml
 
   manywheel-py3_11-cuda12_6-build:
@@ -796,7 +884,7 @@ jobs:
       runner_prefix: "${{ needs.get-label-type.outputs.label-type }}"
       build_name: manywheel-py3_11-cuda12_6
       build_environment: linux-binary-manywheel
-      PYTORCH_EXTRA_INSTALL_REQUIREMENTS: cuda-toolkit[nvrtc,cudart,cupti,cufft,curand,cusolver,cusparse,cublas,cufile,nvjitlink,nvtx]==12.6.3; platform_system == 'Linux' | cuda-bindings==12.9.4; platform_system == 'Linux' | nvidia-cudnn-cu12==9.10.2.21; platform_system == 'Linux' | nvidia-cusparselt-cu12==0.7.1; platform_system == 'Linux' | nvidia-nccl-cu12==2.28.9; platform_system == 'Linux' | nvidia-nvshmem-cu12==3.4.5; platform_system == 'Linux'
+      PYTORCH_EXTRA_INSTALL_REQUIREMENTS: cuda-toolkit[nvrtc,cudart,cupti,cufft,curand,cusolver,cusparse,cublas,cufile,nvjitlink,nvtx]==12.6.3; platform_system == 'Linux' | cuda-bindings>=12.9.4,<13; platform_system == 'Linux' | nvidia-cudnn-cu12==9.10.2.21; platform_system == 'Linux' | nvidia-cusparselt-cu12==0.7.1; platform_system == 'Linux' | nvidia-nccl-cu12==2.29.3; platform_system == 'Linux' | nvidia-nvshmem-cu12==3.4.5; platform_system == 'Linux'
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -820,7 +908,7 @@ jobs:
       build_name: manywheel-py3_11-cuda12_6
       build_environment: linux-binary-manywheel
       runner_prefix: "${{ needs.get-label-type.outputs.label-type }}"
-      runs_on: linux.4xlarge.nvidia.gpu  # 12.6 build can use maxwell (sm_50) runner
+      runs_on: linux.g4dn.4xlarge.nvidia.gpu
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
   manywheel-py3_11-cuda12_6-upload:  # Uploading
@@ -843,6 +931,9 @@ jobs:
       build_name: manywheel-py3_11-cuda12_6
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
     uses: ./.github/workflows/_binary-upload.yml
 
   manywheel-py3_11-cuda12_8-build:
@@ -863,7 +954,7 @@ jobs:
       runner_prefix: "${{ needs.get-label-type.outputs.label-type }}"
       build_name: manywheel-py3_11-cuda12_8
       build_environment: linux-binary-manywheel
-      PYTORCH_EXTRA_INSTALL_REQUIREMENTS: cuda-toolkit[nvrtc,cudart,cupti,cufft,curand,cusolver,cusparse,cublas,cufile,nvjitlink,nvtx]==12.8.1; platform_system == 'Linux' | cuda-bindings==12.9.4; platform_system == 'Linux' | nvidia-cudnn-cu12==9.19.0.56; platform_system == 'Linux' | nvidia-cusparselt-cu12==0.7.1; platform_system == 'Linux' | nvidia-nccl-cu12==2.28.9; platform_system == 'Linux' | nvidia-nvshmem-cu12==3.4.5; platform_system == 'Linux'
+      PYTORCH_EXTRA_INSTALL_REQUIREMENTS: cuda-toolkit[nvrtc,cudart,cupti,cufft,curand,cusolver,cusparse,cublas,cufile,nvjitlink,nvtx]==12.8.1; platform_system == 'Linux' | cuda-bindings>=12.9.4,<13; platform_system == 'Linux' | nvidia-cudnn-cu12==9.20.0.48; platform_system == 'Linux' | nvidia-cusparselt-cu12==0.7.1; platform_system == 'Linux' | nvidia-nccl-cu12==2.29.7; platform_system == 'Linux' | nvidia-nvshmem-cu12==3.4.5; platform_system == 'Linux'
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -887,7 +978,7 @@ jobs:
       build_name: manywheel-py3_11-cuda12_8
       build_environment: linux-binary-manywheel
       runner_prefix: "${{ needs.get-label-type.outputs.label-type }}"
-      runs_on: linux.g4dn.4xlarge.nvidia.gpu # 12.8+ builds need sm_70+ runner
+      runs_on: linux.g4dn.4xlarge.nvidia.gpu
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
   manywheel-py3_11-cuda12_8-upload:  # Uploading
@@ -910,6 +1001,9 @@ jobs:
       build_name: manywheel-py3_11-cuda12_8
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
     uses: ./.github/workflows/_binary-upload.yml
 
   manywheel-py3_11-cuda12_9-build:
@@ -930,7 +1024,7 @@ jobs:
       runner_prefix: "${{ needs.get-label-type.outputs.label-type }}"
       build_name: manywheel-py3_11-cuda12_9
       build_environment: linux-binary-manywheel
-      PYTORCH_EXTRA_INSTALL_REQUIREMENTS: cuda-toolkit[nvrtc,cudart,cupti,cufft,curand,cusolver,cusparse,cublas,cufile,nvjitlink,nvtx]==12.9.1; platform_system == 'Linux' | cuda-bindings==12.9.4; platform_system == 'Linux' | nvidia-cudnn-cu12==9.17.1.4; platform_system == 'Linux' | nvidia-cusparselt-cu12==0.7.1; platform_system == 'Linux' | nvidia-nccl-cu12==2.28.9; platform_system == 'Linux' | nvidia-nvshmem-cu12==3.4.5; platform_system == 'Linux'
+      PYTORCH_EXTRA_INSTALL_REQUIREMENTS: cuda-toolkit[nvrtc,cudart,cupti,cufft,curand,cusolver,cusparse,cublas,cufile,nvjitlink,nvtx]==12.9.1; platform_system == 'Linux' | cuda-bindings>=12.9.4,<13; platform_system == 'Linux' | nvidia-cudnn-cu12==9.20.0.48; platform_system == 'Linux' | nvidia-cusparselt-cu12==0.7.1; platform_system == 'Linux' | nvidia-nccl-cu12==2.29.7; platform_system == 'Linux' | nvidia-nvshmem-cu12==3.4.5; platform_system == 'Linux'
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -954,7 +1048,7 @@ jobs:
       build_name: manywheel-py3_11-cuda12_9
       build_environment: linux-binary-manywheel
       runner_prefix: "${{ needs.get-label-type.outputs.label-type }}"
-      runs_on: linux.g4dn.4xlarge.nvidia.gpu # 12.8+ builds need sm_70+ runner
+      runs_on: linux.g4dn.4xlarge.nvidia.gpu
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
   manywheel-py3_11-cuda12_9-upload:  # Uploading
@@ -977,6 +1071,9 @@ jobs:
       build_name: manywheel-py3_11-cuda12_9
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
     uses: ./.github/workflows/_binary-upload.yml
 
   manywheel-py3_11-cuda13_0-build:
@@ -997,7 +1094,7 @@ jobs:
       runner_prefix: "${{ needs.get-label-type.outputs.label-type }}"
       build_name: manywheel-py3_11-cuda13_0
       build_environment: linux-binary-manywheel
-      PYTORCH_EXTRA_INSTALL_REQUIREMENTS: cuda-toolkit[nvrtc,cudart,cupti,cufft,curand,cusolver,cusparse,cublas,cufile,nvjitlink,nvtx]==13.0.2; platform_system == 'Linux' | cuda-bindings==13.0.3; platform_system == 'Linux' | nvidia-cudnn-cu13==9.19.0.56; platform_system == 'Linux' | nvidia-cusparselt-cu13==0.8.0; platform_system == 'Linux' | nvidia-nccl-cu13==2.28.9; platform_system == 'Linux' | nvidia-nvshmem-cu13==3.4.5; platform_system == 'Linux'
+      PYTORCH_EXTRA_INSTALL_REQUIREMENTS: cuda-toolkit[nvrtc,cudart,cupti,cufft,curand,cusolver,cusparse,cublas,cufile,nvjitlink,nvtx]==13.0.2; platform_system == 'Linux' | cuda-bindings>=13.0.3,<14; platform_system == 'Linux' | nvidia-cudnn-cu13==9.20.0.48; platform_system == 'Linux' | nvidia-cusparselt-cu13==0.8.0; platform_system == 'Linux' | nvidia-nccl-cu13==2.29.7; platform_system == 'Linux' | nvidia-nvshmem-cu13==3.4.5; platform_system == 'Linux'
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -1021,7 +1118,7 @@ jobs:
       build_name: manywheel-py3_11-cuda13_0
       build_environment: linux-binary-manywheel
       runner_prefix: "${{ needs.get-label-type.outputs.label-type }}"
-      runs_on: linux.g4dn.4xlarge.nvidia.gpu # 12.8+ builds need sm_70+ runner
+      runs_on: linux.g4dn.4xlarge.nvidia.gpu
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
   manywheel-py3_11-cuda13_0-upload:  # Uploading
@@ -1044,6 +1141,79 @@ jobs:
       build_name: manywheel-py3_11-cuda13_0
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+    uses: ./.github/workflows/_binary-upload.yml
+
+  manywheel-py3_11-cuda13_2-build:
+    if: ${{ github.repository_owner == 'pytorch' }}
+    uses: ./.github/workflows/_binary-build-linux.yml
+    needs: get-label-type
+    with:
+      PYTORCH_ROOT: /pytorch
+      PACKAGE_TYPE: manywheel
+      # TODO: This is a legacy variable that we eventually want to get rid of in
+      #       favor of GPU_ARCH_VERSION
+      DESIRED_CUDA: cu132
+      GPU_ARCH_VERSION: "13.2"
+      GPU_ARCH_TYPE: cuda
+      DOCKER_IMAGE: manylinux2_28-builder
+      DOCKER_IMAGE_TAG_PREFIX: cuda13.2
+      DESIRED_PYTHON: "3.11"
+      runner_prefix: "${{ needs.get-label-type.outputs.label-type }}"
+      build_name: manywheel-py3_11-cuda13_2
+      build_environment: linux-binary-manywheel
+      PYTORCH_EXTRA_INSTALL_REQUIREMENTS: cuda-toolkit[nvrtc,cudart,cupti,cufft,curand,cusolver,cusparse,cublas,cufile,nvjitlink,nvtx]==13.2.0; platform_system == 'Linux' | cuda-bindings>=13.0.3,<14; platform_system == 'Linux' | nvidia-cudnn-cu13==9.20.0.48; platform_system == 'Linux' | nvidia-cusparselt-cu13==0.8.1; platform_system == 'Linux' | nvidia-nccl-cu13==2.29.7; platform_system == 'Linux' | nvidia-nvshmem-cu13==3.4.5; platform_system == 'Linux'
+    secrets:
+      github-token: ${{ secrets.GITHUB_TOKEN }}
+
+  manywheel-py3_11-cuda13_2-test:  # Testing
+    if: ${{ github.repository_owner == 'pytorch' }}
+    needs:
+      - manywheel-py3_11-cuda13_2-build
+      - get-label-type
+    uses: ./.github/workflows/_binary-test-linux.yml
+    with:
+      PYTORCH_ROOT: /pytorch
+      PACKAGE_TYPE: manywheel
+      # TODO: This is a legacy variable that we eventually want to get rid of in
+      #       favor of GPU_ARCH_VERSION
+      DESIRED_CUDA: cu132
+      GPU_ARCH_VERSION: "13.2"
+      GPU_ARCH_TYPE: cuda
+      DOCKER_IMAGE: manylinux2_28-builder
+      DOCKER_IMAGE_TAG_PREFIX: cuda13.2
+      DESIRED_PYTHON: "3.11"
+      build_name: manywheel-py3_11-cuda13_2
+      build_environment: linux-binary-manywheel
+      runner_prefix: "${{ needs.get-label-type.outputs.label-type }}"
+      runs_on: linux.g4dn.4xlarge.nvidia.gpu
+    secrets:
+      github-token: ${{ secrets.GITHUB_TOKEN }}
+  manywheel-py3_11-cuda13_2-upload:  # Uploading
+    if: ${{ github.repository_owner == 'pytorch' }}
+    permissions:
+      id-token: write
+      contents: read
+    needs: manywheel-py3_11-cuda13_2-test
+    with:
+      PYTORCH_ROOT: /pytorch
+      PACKAGE_TYPE: manywheel
+      # TODO: This is a legacy variable that we eventually want to get rid of in
+      #       favor of GPU_ARCH_VERSION
+      DESIRED_CUDA: cu132
+      GPU_ARCH_VERSION: "13.2"
+      GPU_ARCH_TYPE: cuda
+      DOCKER_IMAGE: manylinux2_28-builder
+      DOCKER_IMAGE_TAG_PREFIX: cuda13.2
+      DESIRED_PYTHON: "3.11"
+      build_name: manywheel-py3_11-cuda13_2
+    secrets:
+      github-token: ${{ secrets.GITHUB_TOKEN }}
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
     uses: ./.github/workflows/_binary-upload.yml
 
   manywheel-py3_11-rocm7_1-build:
@@ -1073,7 +1243,7 @@ jobs:
     needs:
       - manywheel-py3_11-rocm7_1-build
       - get-label-type
-    runs-on: linux.rocm.gpu.mi250.1
+    runs-on: linux.rocm.gpu.gfx942.1
     timeout-minutes: 240
     env:
       PYTORCH_ROOT: /pytorch
@@ -1091,6 +1261,16 @@ jobs:
       id-token: write
       contents: read
     steps:
+      - name: Checkout PyTorch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          submodules: recursive
+          show-progress: false
+      - name: Clean PyTorch checkout
+        run: |
+          # Remove any artifacts from the previous checkouts
+          git clean -fxd
       - name: Setup ROCm
         uses: ./.github/actions/setup-rocm
       - uses: actions/download-artifact@v4.1.7
@@ -1098,18 +1278,6 @@ jobs:
         with:
           name: manywheel-py3_11-rocm7_1
           path: "${{ runner.temp }}/artifacts/"
-      - name: Checkout PyTorch
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
-          submodules: recursive
-          path: pytorch
-          show-progress: false
-      - name: Clean PyTorch checkout
-        run: |
-          # Remove any artifacts from the previous checkouts
-          git clean -fxd
-        working-directory: pytorch
       - name: ROCm set GPU_FLAG
         run: |
           echo "GPU_FLAG=--device=/dev/mem --device=/dev/kfd --device=/dev/dri --group-add video --group-add daemon" >> "${GITHUB_ENV}"
@@ -1129,13 +1297,12 @@ jobs:
           docker-image-name: manylinux2_28-builder
           custom-tag-prefix: rocm7.1
           docker-build-dir: .ci/docker
-          working-directory: pytorch
       - name: Pull Docker image
         uses: pytorch/test-infra/.github/actions/pull-docker-image@main
         with:
           docker-image: ${{ steps.calculate-docker-image.outputs.docker-image }}
       - name: Test Pytorch binary
-        uses: ./pytorch/.github/actions/test-pytorch-binary
+        uses: ./.github/actions/test-pytorch-binary
         env:
           DOCKER_IMAGE: ${{ steps.calculate-docker-image.outputs.docker-image }}
       - name: Teardown ROCm
@@ -1160,6 +1327,9 @@ jobs:
       build_name: manywheel-py3_11-rocm7_1
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
     uses: ./.github/workflows/_binary-upload.yml
 
   manywheel-py3_11-rocm7_2-build:
@@ -1189,7 +1359,7 @@ jobs:
     needs:
       - manywheel-py3_11-rocm7_2-build
       - get-label-type
-    runs-on: linux.rocm.gpu.mi250.1
+    runs-on: linux.rocm.gpu.gfx942.1
     timeout-minutes: 240
     env:
       PYTORCH_ROOT: /pytorch
@@ -1207,6 +1377,16 @@ jobs:
       id-token: write
       contents: read
     steps:
+      - name: Checkout PyTorch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          submodules: recursive
+          show-progress: false
+      - name: Clean PyTorch checkout
+        run: |
+          # Remove any artifacts from the previous checkouts
+          git clean -fxd
       - name: Setup ROCm
         uses: ./.github/actions/setup-rocm
       - uses: actions/download-artifact@v4.1.7
@@ -1214,18 +1394,6 @@ jobs:
         with:
           name: manywheel-py3_11-rocm7_2
           path: "${{ runner.temp }}/artifacts/"
-      - name: Checkout PyTorch
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
-          submodules: recursive
-          path: pytorch
-          show-progress: false
-      - name: Clean PyTorch checkout
-        run: |
-          # Remove any artifacts from the previous checkouts
-          git clean -fxd
-        working-directory: pytorch
       - name: ROCm set GPU_FLAG
         run: |
           echo "GPU_FLAG=--device=/dev/mem --device=/dev/kfd --device=/dev/dri --group-add video --group-add daemon" >> "${GITHUB_ENV}"
@@ -1245,13 +1413,12 @@ jobs:
           docker-image-name: manylinux2_28-builder
           custom-tag-prefix: rocm7.2
           docker-build-dir: .ci/docker
-          working-directory: pytorch
       - name: Pull Docker image
         uses: pytorch/test-infra/.github/actions/pull-docker-image@main
         with:
           docker-image: ${{ steps.calculate-docker-image.outputs.docker-image }}
       - name: Test Pytorch binary
-        uses: ./pytorch/.github/actions/test-pytorch-binary
+        uses: ./.github/actions/test-pytorch-binary
         env:
           DOCKER_IMAGE: ${{ steps.calculate-docker-image.outputs.docker-image }}
       - name: Teardown ROCm
@@ -1276,6 +1443,9 @@ jobs:
       build_name: manywheel-py3_11-rocm7_2
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
     uses: ./.github/workflows/_binary-upload.yml
 
   manywheel-py3_11-xpu-build:
@@ -1321,6 +1491,16 @@ jobs:
       id-token: write
       contents: read
     steps:
+      - name: Checkout PyTorch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          submodules: recursive
+          show-progress: false
+      - name: Clean PyTorch checkout
+        run: |
+          # Remove any artifacts from the previous checkouts
+          git clean -fxd
       - name: Setup XPU
         uses: pytorch/pytorch/.github/actions/setup-xpu@main
       - name: Login to ECR
@@ -1330,18 +1510,6 @@ jobs:
         with:
           name: manywheel-py3_11-xpu
           path: "${{ runner.temp }}/artifacts/"
-      - name: Checkout PyTorch
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
-          submodules: recursive
-          path: pytorch
-          show-progress: false
-      - name: Clean PyTorch checkout
-        run: |
-          # Remove any artifacts from the previous checkouts
-          git clean -fxd
-        working-directory: pytorch
       - name: Calculate docker image
         id: calculate-docker-image
         uses: pytorch/test-infra/.github/actions/calculate-docker-image@main
@@ -1350,13 +1518,12 @@ jobs:
           docker-image-name: manylinux2_28-builder
           custom-tag-prefix: xpu
           docker-build-dir: .ci/docker
-          working-directory: pytorch
       - name: Pull Docker image
         uses: pytorch/test-infra/.github/actions/pull-docker-image@main
         with:
           docker-image: ${{ steps.calculate-docker-image.outputs.docker-image }}
       - name: Test Pytorch binary
-        uses: ./pytorch/.github/actions/test-pytorch-binary
+        uses: ./.github/actions/test-pytorch-binary
         env:
           DOCKER_IMAGE: ${{ steps.calculate-docker-image.outputs.docker-image }}
       - name: Teardown XPU
@@ -1380,6 +1547,9 @@ jobs:
       build_name: manywheel-py3_11-xpu
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
     uses: ./.github/workflows/_binary-upload.yml
 
   manywheel-py3_12-cpu-build:
@@ -1443,6 +1613,9 @@ jobs:
       build_name: manywheel-py3_12-cpu
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
     uses: ./.github/workflows/_binary-upload.yml
 
   manywheel-py3_12-cuda12_6-build:
@@ -1463,7 +1636,7 @@ jobs:
       runner_prefix: "${{ needs.get-label-type.outputs.label-type }}"
       build_name: manywheel-py3_12-cuda12_6
       build_environment: linux-binary-manywheel
-      PYTORCH_EXTRA_INSTALL_REQUIREMENTS: cuda-toolkit[nvrtc,cudart,cupti,cufft,curand,cusolver,cusparse,cublas,cufile,nvjitlink,nvtx]==12.6.3; platform_system == 'Linux' | cuda-bindings==12.9.4; platform_system == 'Linux' | nvidia-cudnn-cu12==9.10.2.21; platform_system == 'Linux' | nvidia-cusparselt-cu12==0.7.1; platform_system == 'Linux' | nvidia-nccl-cu12==2.28.9; platform_system == 'Linux' | nvidia-nvshmem-cu12==3.4.5; platform_system == 'Linux'
+      PYTORCH_EXTRA_INSTALL_REQUIREMENTS: cuda-toolkit[nvrtc,cudart,cupti,cufft,curand,cusolver,cusparse,cublas,cufile,nvjitlink,nvtx]==12.6.3; platform_system == 'Linux' | cuda-bindings>=12.9.4,<13; platform_system == 'Linux' | nvidia-cudnn-cu12==9.10.2.21; platform_system == 'Linux' | nvidia-cusparselt-cu12==0.7.1; platform_system == 'Linux' | nvidia-nccl-cu12==2.29.3; platform_system == 'Linux' | nvidia-nvshmem-cu12==3.4.5; platform_system == 'Linux'
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -1487,7 +1660,7 @@ jobs:
       build_name: manywheel-py3_12-cuda12_6
       build_environment: linux-binary-manywheel
       runner_prefix: "${{ needs.get-label-type.outputs.label-type }}"
-      runs_on: linux.4xlarge.nvidia.gpu  # 12.6 build can use maxwell (sm_50) runner
+      runs_on: linux.g4dn.4xlarge.nvidia.gpu
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
   manywheel-py3_12-cuda12_6-upload:  # Uploading
@@ -1510,6 +1683,9 @@ jobs:
       build_name: manywheel-py3_12-cuda12_6
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
     uses: ./.github/workflows/_binary-upload.yml
 
   manywheel-py3_12-cuda12_8-build:
@@ -1530,7 +1706,7 @@ jobs:
       runner_prefix: "${{ needs.get-label-type.outputs.label-type }}"
       build_name: manywheel-py3_12-cuda12_8
       build_environment: linux-binary-manywheel
-      PYTORCH_EXTRA_INSTALL_REQUIREMENTS: cuda-toolkit[nvrtc,cudart,cupti,cufft,curand,cusolver,cusparse,cublas,cufile,nvjitlink,nvtx]==12.8.1; platform_system == 'Linux' | cuda-bindings==12.9.4; platform_system == 'Linux' | nvidia-cudnn-cu12==9.19.0.56; platform_system == 'Linux' | nvidia-cusparselt-cu12==0.7.1; platform_system == 'Linux' | nvidia-nccl-cu12==2.28.9; platform_system == 'Linux' | nvidia-nvshmem-cu12==3.4.5; platform_system == 'Linux'
+      PYTORCH_EXTRA_INSTALL_REQUIREMENTS: cuda-toolkit[nvrtc,cudart,cupti,cufft,curand,cusolver,cusparse,cublas,cufile,nvjitlink,nvtx]==12.8.1; platform_system == 'Linux' | cuda-bindings>=12.9.4,<13; platform_system == 'Linux' | nvidia-cudnn-cu12==9.20.0.48; platform_system == 'Linux' | nvidia-cusparselt-cu12==0.7.1; platform_system == 'Linux' | nvidia-nccl-cu12==2.29.7; platform_system == 'Linux' | nvidia-nvshmem-cu12==3.4.5; platform_system == 'Linux'
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -1554,7 +1730,7 @@ jobs:
       build_name: manywheel-py3_12-cuda12_8
       build_environment: linux-binary-manywheel
       runner_prefix: "${{ needs.get-label-type.outputs.label-type }}"
-      runs_on: linux.g4dn.4xlarge.nvidia.gpu # 12.8+ builds need sm_70+ runner
+      runs_on: linux.g4dn.4xlarge.nvidia.gpu
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
   manywheel-py3_12-cuda12_8-upload:  # Uploading
@@ -1577,6 +1753,9 @@ jobs:
       build_name: manywheel-py3_12-cuda12_8
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
     uses: ./.github/workflows/_binary-upload.yml
 
   manywheel-py3_12-cuda12_9-build:
@@ -1597,7 +1776,7 @@ jobs:
       runner_prefix: "${{ needs.get-label-type.outputs.label-type }}"
       build_name: manywheel-py3_12-cuda12_9
       build_environment: linux-binary-manywheel
-      PYTORCH_EXTRA_INSTALL_REQUIREMENTS: cuda-toolkit[nvrtc,cudart,cupti,cufft,curand,cusolver,cusparse,cublas,cufile,nvjitlink,nvtx]==12.9.1; platform_system == 'Linux' | cuda-bindings==12.9.4; platform_system == 'Linux' | nvidia-cudnn-cu12==9.17.1.4; platform_system == 'Linux' | nvidia-cusparselt-cu12==0.7.1; platform_system == 'Linux' | nvidia-nccl-cu12==2.28.9; platform_system == 'Linux' | nvidia-nvshmem-cu12==3.4.5; platform_system == 'Linux'
+      PYTORCH_EXTRA_INSTALL_REQUIREMENTS: cuda-toolkit[nvrtc,cudart,cupti,cufft,curand,cusolver,cusparse,cublas,cufile,nvjitlink,nvtx]==12.9.1; platform_system == 'Linux' | cuda-bindings>=12.9.4,<13; platform_system == 'Linux' | nvidia-cudnn-cu12==9.20.0.48; platform_system == 'Linux' | nvidia-cusparselt-cu12==0.7.1; platform_system == 'Linux' | nvidia-nccl-cu12==2.29.7; platform_system == 'Linux' | nvidia-nvshmem-cu12==3.4.5; platform_system == 'Linux'
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -1621,7 +1800,7 @@ jobs:
       build_name: manywheel-py3_12-cuda12_9
       build_environment: linux-binary-manywheel
       runner_prefix: "${{ needs.get-label-type.outputs.label-type }}"
-      runs_on: linux.g4dn.4xlarge.nvidia.gpu # 12.8+ builds need sm_70+ runner
+      runs_on: linux.g4dn.4xlarge.nvidia.gpu
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
   manywheel-py3_12-cuda12_9-upload:  # Uploading
@@ -1644,6 +1823,9 @@ jobs:
       build_name: manywheel-py3_12-cuda12_9
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
     uses: ./.github/workflows/_binary-upload.yml
 
   manywheel-py3_12-cuda13_0-build:
@@ -1664,7 +1846,7 @@ jobs:
       runner_prefix: "${{ needs.get-label-type.outputs.label-type }}"
       build_name: manywheel-py3_12-cuda13_0
       build_environment: linux-binary-manywheel
-      PYTORCH_EXTRA_INSTALL_REQUIREMENTS: cuda-toolkit[nvrtc,cudart,cupti,cufft,curand,cusolver,cusparse,cublas,cufile,nvjitlink,nvtx]==13.0.2; platform_system == 'Linux' | cuda-bindings==13.0.3; platform_system == 'Linux' | nvidia-cudnn-cu13==9.19.0.56; platform_system == 'Linux' | nvidia-cusparselt-cu13==0.8.0; platform_system == 'Linux' | nvidia-nccl-cu13==2.28.9; platform_system == 'Linux' | nvidia-nvshmem-cu13==3.4.5; platform_system == 'Linux'
+      PYTORCH_EXTRA_INSTALL_REQUIREMENTS: cuda-toolkit[nvrtc,cudart,cupti,cufft,curand,cusolver,cusparse,cublas,cufile,nvjitlink,nvtx]==13.0.2; platform_system == 'Linux' | cuda-bindings>=13.0.3,<14; platform_system == 'Linux' | nvidia-cudnn-cu13==9.20.0.48; platform_system == 'Linux' | nvidia-cusparselt-cu13==0.8.0; platform_system == 'Linux' | nvidia-nccl-cu13==2.29.7; platform_system == 'Linux' | nvidia-nvshmem-cu13==3.4.5; platform_system == 'Linux'
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -1688,7 +1870,7 @@ jobs:
       build_name: manywheel-py3_12-cuda13_0
       build_environment: linux-binary-manywheel
       runner_prefix: "${{ needs.get-label-type.outputs.label-type }}"
-      runs_on: linux.g4dn.4xlarge.nvidia.gpu # 12.8+ builds need sm_70+ runner
+      runs_on: linux.g4dn.4xlarge.nvidia.gpu
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
   manywheel-py3_12-cuda13_0-upload:  # Uploading
@@ -1711,6 +1893,79 @@ jobs:
       build_name: manywheel-py3_12-cuda13_0
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+    uses: ./.github/workflows/_binary-upload.yml
+
+  manywheel-py3_12-cuda13_2-build:
+    if: ${{ github.repository_owner == 'pytorch' }}
+    uses: ./.github/workflows/_binary-build-linux.yml
+    needs: get-label-type
+    with:
+      PYTORCH_ROOT: /pytorch
+      PACKAGE_TYPE: manywheel
+      # TODO: This is a legacy variable that we eventually want to get rid of in
+      #       favor of GPU_ARCH_VERSION
+      DESIRED_CUDA: cu132
+      GPU_ARCH_VERSION: "13.2"
+      GPU_ARCH_TYPE: cuda
+      DOCKER_IMAGE: manylinux2_28-builder
+      DOCKER_IMAGE_TAG_PREFIX: cuda13.2
+      DESIRED_PYTHON: "3.12"
+      runner_prefix: "${{ needs.get-label-type.outputs.label-type }}"
+      build_name: manywheel-py3_12-cuda13_2
+      build_environment: linux-binary-manywheel
+      PYTORCH_EXTRA_INSTALL_REQUIREMENTS: cuda-toolkit[nvrtc,cudart,cupti,cufft,curand,cusolver,cusparse,cublas,cufile,nvjitlink,nvtx]==13.2.0; platform_system == 'Linux' | cuda-bindings>=13.0.3,<14; platform_system == 'Linux' | nvidia-cudnn-cu13==9.20.0.48; platform_system == 'Linux' | nvidia-cusparselt-cu13==0.8.1; platform_system == 'Linux' | nvidia-nccl-cu13==2.29.7; platform_system == 'Linux' | nvidia-nvshmem-cu13==3.4.5; platform_system == 'Linux'
+    secrets:
+      github-token: ${{ secrets.GITHUB_TOKEN }}
+
+  manywheel-py3_12-cuda13_2-test:  # Testing
+    if: ${{ github.repository_owner == 'pytorch' }}
+    needs:
+      - manywheel-py3_12-cuda13_2-build
+      - get-label-type
+    uses: ./.github/workflows/_binary-test-linux.yml
+    with:
+      PYTORCH_ROOT: /pytorch
+      PACKAGE_TYPE: manywheel
+      # TODO: This is a legacy variable that we eventually want to get rid of in
+      #       favor of GPU_ARCH_VERSION
+      DESIRED_CUDA: cu132
+      GPU_ARCH_VERSION: "13.2"
+      GPU_ARCH_TYPE: cuda
+      DOCKER_IMAGE: manylinux2_28-builder
+      DOCKER_IMAGE_TAG_PREFIX: cuda13.2
+      DESIRED_PYTHON: "3.12"
+      build_name: manywheel-py3_12-cuda13_2
+      build_environment: linux-binary-manywheel
+      runner_prefix: "${{ needs.get-label-type.outputs.label-type }}"
+      runs_on: linux.g4dn.4xlarge.nvidia.gpu
+    secrets:
+      github-token: ${{ secrets.GITHUB_TOKEN }}
+  manywheel-py3_12-cuda13_2-upload:  # Uploading
+    if: ${{ github.repository_owner == 'pytorch' }}
+    permissions:
+      id-token: write
+      contents: read
+    needs: manywheel-py3_12-cuda13_2-test
+    with:
+      PYTORCH_ROOT: /pytorch
+      PACKAGE_TYPE: manywheel
+      # TODO: This is a legacy variable that we eventually want to get rid of in
+      #       favor of GPU_ARCH_VERSION
+      DESIRED_CUDA: cu132
+      GPU_ARCH_VERSION: "13.2"
+      GPU_ARCH_TYPE: cuda
+      DOCKER_IMAGE: manylinux2_28-builder
+      DOCKER_IMAGE_TAG_PREFIX: cuda13.2
+      DESIRED_PYTHON: "3.12"
+      build_name: manywheel-py3_12-cuda13_2
+    secrets:
+      github-token: ${{ secrets.GITHUB_TOKEN }}
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
     uses: ./.github/workflows/_binary-upload.yml
 
   manywheel-py3_12-rocm7_1-build:
@@ -1740,7 +1995,7 @@ jobs:
     needs:
       - manywheel-py3_12-rocm7_1-build
       - get-label-type
-    runs-on: linux.rocm.gpu.mi250.1
+    runs-on: linux.rocm.gpu.gfx942.1
     timeout-minutes: 240
     env:
       PYTORCH_ROOT: /pytorch
@@ -1758,6 +2013,16 @@ jobs:
       id-token: write
       contents: read
     steps:
+      - name: Checkout PyTorch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          submodules: recursive
+          show-progress: false
+      - name: Clean PyTorch checkout
+        run: |
+          # Remove any artifacts from the previous checkouts
+          git clean -fxd
       - name: Setup ROCm
         uses: ./.github/actions/setup-rocm
       - uses: actions/download-artifact@v4.1.7
@@ -1765,18 +2030,6 @@ jobs:
         with:
           name: manywheel-py3_12-rocm7_1
           path: "${{ runner.temp }}/artifacts/"
-      - name: Checkout PyTorch
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
-          submodules: recursive
-          path: pytorch
-          show-progress: false
-      - name: Clean PyTorch checkout
-        run: |
-          # Remove any artifacts from the previous checkouts
-          git clean -fxd
-        working-directory: pytorch
       - name: ROCm set GPU_FLAG
         run: |
           echo "GPU_FLAG=--device=/dev/mem --device=/dev/kfd --device=/dev/dri --group-add video --group-add daemon" >> "${GITHUB_ENV}"
@@ -1796,13 +2049,12 @@ jobs:
           docker-image-name: manylinux2_28-builder
           custom-tag-prefix: rocm7.1
           docker-build-dir: .ci/docker
-          working-directory: pytorch
       - name: Pull Docker image
         uses: pytorch/test-infra/.github/actions/pull-docker-image@main
         with:
           docker-image: ${{ steps.calculate-docker-image.outputs.docker-image }}
       - name: Test Pytorch binary
-        uses: ./pytorch/.github/actions/test-pytorch-binary
+        uses: ./.github/actions/test-pytorch-binary
         env:
           DOCKER_IMAGE: ${{ steps.calculate-docker-image.outputs.docker-image }}
       - name: Teardown ROCm
@@ -1827,6 +2079,9 @@ jobs:
       build_name: manywheel-py3_12-rocm7_1
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
     uses: ./.github/workflows/_binary-upload.yml
 
   manywheel-py3_12-rocm7_2-build:
@@ -1856,7 +2111,7 @@ jobs:
     needs:
       - manywheel-py3_12-rocm7_2-build
       - get-label-type
-    runs-on: linux.rocm.gpu.mi250.1
+    runs-on: linux.rocm.gpu.gfx942.1
     timeout-minutes: 240
     env:
       PYTORCH_ROOT: /pytorch
@@ -1874,6 +2129,16 @@ jobs:
       id-token: write
       contents: read
     steps:
+      - name: Checkout PyTorch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          submodules: recursive
+          show-progress: false
+      - name: Clean PyTorch checkout
+        run: |
+          # Remove any artifacts from the previous checkouts
+          git clean -fxd
       - name: Setup ROCm
         uses: ./.github/actions/setup-rocm
       - uses: actions/download-artifact@v4.1.7
@@ -1881,18 +2146,6 @@ jobs:
         with:
           name: manywheel-py3_12-rocm7_2
           path: "${{ runner.temp }}/artifacts/"
-      - name: Checkout PyTorch
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
-          submodules: recursive
-          path: pytorch
-          show-progress: false
-      - name: Clean PyTorch checkout
-        run: |
-          # Remove any artifacts from the previous checkouts
-          git clean -fxd
-        working-directory: pytorch
       - name: ROCm set GPU_FLAG
         run: |
           echo "GPU_FLAG=--device=/dev/mem --device=/dev/kfd --device=/dev/dri --group-add video --group-add daemon" >> "${GITHUB_ENV}"
@@ -1912,13 +2165,12 @@ jobs:
           docker-image-name: manylinux2_28-builder
           custom-tag-prefix: rocm7.2
           docker-build-dir: .ci/docker
-          working-directory: pytorch
       - name: Pull Docker image
         uses: pytorch/test-infra/.github/actions/pull-docker-image@main
         with:
           docker-image: ${{ steps.calculate-docker-image.outputs.docker-image }}
       - name: Test Pytorch binary
-        uses: ./pytorch/.github/actions/test-pytorch-binary
+        uses: ./.github/actions/test-pytorch-binary
         env:
           DOCKER_IMAGE: ${{ steps.calculate-docker-image.outputs.docker-image }}
       - name: Teardown ROCm
@@ -1943,6 +2195,9 @@ jobs:
       build_name: manywheel-py3_12-rocm7_2
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
     uses: ./.github/workflows/_binary-upload.yml
 
   manywheel-py3_12-xpu-build:
@@ -1988,6 +2243,16 @@ jobs:
       id-token: write
       contents: read
     steps:
+      - name: Checkout PyTorch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          submodules: recursive
+          show-progress: false
+      - name: Clean PyTorch checkout
+        run: |
+          # Remove any artifacts from the previous checkouts
+          git clean -fxd
       - name: Setup XPU
         uses: pytorch/pytorch/.github/actions/setup-xpu@main
       - name: Login to ECR
@@ -1997,18 +2262,6 @@ jobs:
         with:
           name: manywheel-py3_12-xpu
           path: "${{ runner.temp }}/artifacts/"
-      - name: Checkout PyTorch
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
-          submodules: recursive
-          path: pytorch
-          show-progress: false
-      - name: Clean PyTorch checkout
-        run: |
-          # Remove any artifacts from the previous checkouts
-          git clean -fxd
-        working-directory: pytorch
       - name: Calculate docker image
         id: calculate-docker-image
         uses: pytorch/test-infra/.github/actions/calculate-docker-image@main
@@ -2017,13 +2270,12 @@ jobs:
           docker-image-name: manylinux2_28-builder
           custom-tag-prefix: xpu
           docker-build-dir: .ci/docker
-          working-directory: pytorch
       - name: Pull Docker image
         uses: pytorch/test-infra/.github/actions/pull-docker-image@main
         with:
           docker-image: ${{ steps.calculate-docker-image.outputs.docker-image }}
       - name: Test Pytorch binary
-        uses: ./pytorch/.github/actions/test-pytorch-binary
+        uses: ./.github/actions/test-pytorch-binary
         env:
           DOCKER_IMAGE: ${{ steps.calculate-docker-image.outputs.docker-image }}
       - name: Teardown XPU
@@ -2047,6 +2299,9 @@ jobs:
       build_name: manywheel-py3_12-xpu
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
     uses: ./.github/workflows/_binary-upload.yml
 
   manywheel-py3_13-cpu-build:
@@ -2110,6 +2365,9 @@ jobs:
       build_name: manywheel-py3_13-cpu
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
     uses: ./.github/workflows/_binary-upload.yml
 
   manywheel-py3_13-cuda12_6-build:
@@ -2130,7 +2388,7 @@ jobs:
       runner_prefix: "${{ needs.get-label-type.outputs.label-type }}"
       build_name: manywheel-py3_13-cuda12_6
       build_environment: linux-binary-manywheel
-      PYTORCH_EXTRA_INSTALL_REQUIREMENTS: cuda-toolkit[nvrtc,cudart,cupti,cufft,curand,cusolver,cusparse,cublas,cufile,nvjitlink,nvtx]==12.6.3; platform_system == 'Linux' | cuda-bindings==12.9.4; platform_system == 'Linux' | nvidia-cudnn-cu12==9.10.2.21; platform_system == 'Linux' | nvidia-cusparselt-cu12==0.7.1; platform_system == 'Linux' | nvidia-nccl-cu12==2.28.9; platform_system == 'Linux' | nvidia-nvshmem-cu12==3.4.5; platform_system == 'Linux'
+      PYTORCH_EXTRA_INSTALL_REQUIREMENTS: cuda-toolkit[nvrtc,cudart,cupti,cufft,curand,cusolver,cusparse,cublas,cufile,nvjitlink,nvtx]==12.6.3; platform_system == 'Linux' | cuda-bindings>=12.9.4,<13; platform_system == 'Linux' | nvidia-cudnn-cu12==9.10.2.21; platform_system == 'Linux' | nvidia-cusparselt-cu12==0.7.1; platform_system == 'Linux' | nvidia-nccl-cu12==2.29.3; platform_system == 'Linux' | nvidia-nvshmem-cu12==3.4.5; platform_system == 'Linux'
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -2154,7 +2412,7 @@ jobs:
       build_name: manywheel-py3_13-cuda12_6
       build_environment: linux-binary-manywheel
       runner_prefix: "${{ needs.get-label-type.outputs.label-type }}"
-      runs_on: linux.4xlarge.nvidia.gpu  # 12.6 build can use maxwell (sm_50) runner
+      runs_on: linux.g4dn.4xlarge.nvidia.gpu
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
   manywheel-py3_13-cuda12_6-upload:  # Uploading
@@ -2177,6 +2435,9 @@ jobs:
       build_name: manywheel-py3_13-cuda12_6
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
     uses: ./.github/workflows/_binary-upload.yml
 
   manywheel-py3_13-cuda12_8-build:
@@ -2197,7 +2458,7 @@ jobs:
       runner_prefix: "${{ needs.get-label-type.outputs.label-type }}"
       build_name: manywheel-py3_13-cuda12_8
       build_environment: linux-binary-manywheel
-      PYTORCH_EXTRA_INSTALL_REQUIREMENTS: cuda-toolkit[nvrtc,cudart,cupti,cufft,curand,cusolver,cusparse,cublas,cufile,nvjitlink,nvtx]==12.8.1; platform_system == 'Linux' | cuda-bindings==12.9.4; platform_system == 'Linux' | nvidia-cudnn-cu12==9.19.0.56; platform_system == 'Linux' | nvidia-cusparselt-cu12==0.7.1; platform_system == 'Linux' | nvidia-nccl-cu12==2.28.9; platform_system == 'Linux' | nvidia-nvshmem-cu12==3.4.5; platform_system == 'Linux'
+      PYTORCH_EXTRA_INSTALL_REQUIREMENTS: cuda-toolkit[nvrtc,cudart,cupti,cufft,curand,cusolver,cusparse,cublas,cufile,nvjitlink,nvtx]==12.8.1; platform_system == 'Linux' | cuda-bindings>=12.9.4,<13; platform_system == 'Linux' | nvidia-cudnn-cu12==9.20.0.48; platform_system == 'Linux' | nvidia-cusparselt-cu12==0.7.1; platform_system == 'Linux' | nvidia-nccl-cu12==2.29.7; platform_system == 'Linux' | nvidia-nvshmem-cu12==3.4.5; platform_system == 'Linux'
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -2221,7 +2482,7 @@ jobs:
       build_name: manywheel-py3_13-cuda12_8
       build_environment: linux-binary-manywheel
       runner_prefix: "${{ needs.get-label-type.outputs.label-type }}"
-      runs_on: linux.g4dn.4xlarge.nvidia.gpu # 12.8+ builds need sm_70+ runner
+      runs_on: linux.g4dn.4xlarge.nvidia.gpu
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
   manywheel-py3_13-cuda12_8-upload:  # Uploading
@@ -2244,6 +2505,9 @@ jobs:
       build_name: manywheel-py3_13-cuda12_8
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
     uses: ./.github/workflows/_binary-upload.yml
 
   manywheel-py3_13-cuda12_9-build:
@@ -2264,7 +2528,7 @@ jobs:
       runner_prefix: "${{ needs.get-label-type.outputs.label-type }}"
       build_name: manywheel-py3_13-cuda12_9
       build_environment: linux-binary-manywheel
-      PYTORCH_EXTRA_INSTALL_REQUIREMENTS: cuda-toolkit[nvrtc,cudart,cupti,cufft,curand,cusolver,cusparse,cublas,cufile,nvjitlink,nvtx]==12.9.1; platform_system == 'Linux' | cuda-bindings==12.9.4; platform_system == 'Linux' | nvidia-cudnn-cu12==9.17.1.4; platform_system == 'Linux' | nvidia-cusparselt-cu12==0.7.1; platform_system == 'Linux' | nvidia-nccl-cu12==2.28.9; platform_system == 'Linux' | nvidia-nvshmem-cu12==3.4.5; platform_system == 'Linux'
+      PYTORCH_EXTRA_INSTALL_REQUIREMENTS: cuda-toolkit[nvrtc,cudart,cupti,cufft,curand,cusolver,cusparse,cublas,cufile,nvjitlink,nvtx]==12.9.1; platform_system == 'Linux' | cuda-bindings>=12.9.4,<13; platform_system == 'Linux' | nvidia-cudnn-cu12==9.20.0.48; platform_system == 'Linux' | nvidia-cusparselt-cu12==0.7.1; platform_system == 'Linux' | nvidia-nccl-cu12==2.29.7; platform_system == 'Linux' | nvidia-nvshmem-cu12==3.4.5; platform_system == 'Linux'
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -2288,7 +2552,7 @@ jobs:
       build_name: manywheel-py3_13-cuda12_9
       build_environment: linux-binary-manywheel
       runner_prefix: "${{ needs.get-label-type.outputs.label-type }}"
-      runs_on: linux.g4dn.4xlarge.nvidia.gpu # 12.8+ builds need sm_70+ runner
+      runs_on: linux.g4dn.4xlarge.nvidia.gpu
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
   manywheel-py3_13-cuda12_9-upload:  # Uploading
@@ -2311,6 +2575,9 @@ jobs:
       build_name: manywheel-py3_13-cuda12_9
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
     uses: ./.github/workflows/_binary-upload.yml
 
   manywheel-py3_13-cuda13_0-build:
@@ -2331,7 +2598,7 @@ jobs:
       runner_prefix: "${{ needs.get-label-type.outputs.label-type }}"
       build_name: manywheel-py3_13-cuda13_0
       build_environment: linux-binary-manywheel
-      PYTORCH_EXTRA_INSTALL_REQUIREMENTS: cuda-toolkit[nvrtc,cudart,cupti,cufft,curand,cusolver,cusparse,cublas,cufile,nvjitlink,nvtx]==13.0.2; platform_system == 'Linux' | cuda-bindings==13.0.3; platform_system == 'Linux' | nvidia-cudnn-cu13==9.19.0.56; platform_system == 'Linux' | nvidia-cusparselt-cu13==0.8.0; platform_system == 'Linux' | nvidia-nccl-cu13==2.28.9; platform_system == 'Linux' | nvidia-nvshmem-cu13==3.4.5; platform_system == 'Linux'
+      PYTORCH_EXTRA_INSTALL_REQUIREMENTS: cuda-toolkit[nvrtc,cudart,cupti,cufft,curand,cusolver,cusparse,cublas,cufile,nvjitlink,nvtx]==13.0.2; platform_system == 'Linux' | cuda-bindings>=13.0.3,<14; platform_system == 'Linux' | nvidia-cudnn-cu13==9.20.0.48; platform_system == 'Linux' | nvidia-cusparselt-cu13==0.8.0; platform_system == 'Linux' | nvidia-nccl-cu13==2.29.7; platform_system == 'Linux' | nvidia-nvshmem-cu13==3.4.5; platform_system == 'Linux'
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -2355,7 +2622,7 @@ jobs:
       build_name: manywheel-py3_13-cuda13_0
       build_environment: linux-binary-manywheel
       runner_prefix: "${{ needs.get-label-type.outputs.label-type }}"
-      runs_on: linux.g4dn.4xlarge.nvidia.gpu # 12.8+ builds need sm_70+ runner
+      runs_on: linux.g4dn.4xlarge.nvidia.gpu
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
   manywheel-py3_13-cuda13_0-upload:  # Uploading
@@ -2378,6 +2645,79 @@ jobs:
       build_name: manywheel-py3_13-cuda13_0
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+    uses: ./.github/workflows/_binary-upload.yml
+
+  manywheel-py3_13-cuda13_2-build:
+    if: ${{ github.repository_owner == 'pytorch' }}
+    uses: ./.github/workflows/_binary-build-linux.yml
+    needs: get-label-type
+    with:
+      PYTORCH_ROOT: /pytorch
+      PACKAGE_TYPE: manywheel
+      # TODO: This is a legacy variable that we eventually want to get rid of in
+      #       favor of GPU_ARCH_VERSION
+      DESIRED_CUDA: cu132
+      GPU_ARCH_VERSION: "13.2"
+      GPU_ARCH_TYPE: cuda
+      DOCKER_IMAGE: manylinux2_28-builder
+      DOCKER_IMAGE_TAG_PREFIX: cuda13.2
+      DESIRED_PYTHON: "3.13"
+      runner_prefix: "${{ needs.get-label-type.outputs.label-type }}"
+      build_name: manywheel-py3_13-cuda13_2
+      build_environment: linux-binary-manywheel
+      PYTORCH_EXTRA_INSTALL_REQUIREMENTS: cuda-toolkit[nvrtc,cudart,cupti,cufft,curand,cusolver,cusparse,cublas,cufile,nvjitlink,nvtx]==13.2.0; platform_system == 'Linux' | cuda-bindings>=13.0.3,<14; platform_system == 'Linux' | nvidia-cudnn-cu13==9.20.0.48; platform_system == 'Linux' | nvidia-cusparselt-cu13==0.8.1; platform_system == 'Linux' | nvidia-nccl-cu13==2.29.7; platform_system == 'Linux' | nvidia-nvshmem-cu13==3.4.5; platform_system == 'Linux'
+    secrets:
+      github-token: ${{ secrets.GITHUB_TOKEN }}
+
+  manywheel-py3_13-cuda13_2-test:  # Testing
+    if: ${{ github.repository_owner == 'pytorch' }}
+    needs:
+      - manywheel-py3_13-cuda13_2-build
+      - get-label-type
+    uses: ./.github/workflows/_binary-test-linux.yml
+    with:
+      PYTORCH_ROOT: /pytorch
+      PACKAGE_TYPE: manywheel
+      # TODO: This is a legacy variable that we eventually want to get rid of in
+      #       favor of GPU_ARCH_VERSION
+      DESIRED_CUDA: cu132
+      GPU_ARCH_VERSION: "13.2"
+      GPU_ARCH_TYPE: cuda
+      DOCKER_IMAGE: manylinux2_28-builder
+      DOCKER_IMAGE_TAG_PREFIX: cuda13.2
+      DESIRED_PYTHON: "3.13"
+      build_name: manywheel-py3_13-cuda13_2
+      build_environment: linux-binary-manywheel
+      runner_prefix: "${{ needs.get-label-type.outputs.label-type }}"
+      runs_on: linux.g4dn.4xlarge.nvidia.gpu
+    secrets:
+      github-token: ${{ secrets.GITHUB_TOKEN }}
+  manywheel-py3_13-cuda13_2-upload:  # Uploading
+    if: ${{ github.repository_owner == 'pytorch' }}
+    permissions:
+      id-token: write
+      contents: read
+    needs: manywheel-py3_13-cuda13_2-test
+    with:
+      PYTORCH_ROOT: /pytorch
+      PACKAGE_TYPE: manywheel
+      # TODO: This is a legacy variable that we eventually want to get rid of in
+      #       favor of GPU_ARCH_VERSION
+      DESIRED_CUDA: cu132
+      GPU_ARCH_VERSION: "13.2"
+      GPU_ARCH_TYPE: cuda
+      DOCKER_IMAGE: manylinux2_28-builder
+      DOCKER_IMAGE_TAG_PREFIX: cuda13.2
+      DESIRED_PYTHON: "3.13"
+      build_name: manywheel-py3_13-cuda13_2
+    secrets:
+      github-token: ${{ secrets.GITHUB_TOKEN }}
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
     uses: ./.github/workflows/_binary-upload.yml
 
   manywheel-py3_13-rocm7_1-build:
@@ -2407,7 +2747,7 @@ jobs:
     needs:
       - manywheel-py3_13-rocm7_1-build
       - get-label-type
-    runs-on: linux.rocm.gpu.mi250.1
+    runs-on: linux.rocm.gpu.gfx942.1
     timeout-minutes: 240
     env:
       PYTORCH_ROOT: /pytorch
@@ -2425,6 +2765,16 @@ jobs:
       id-token: write
       contents: read
     steps:
+      - name: Checkout PyTorch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          submodules: recursive
+          show-progress: false
+      - name: Clean PyTorch checkout
+        run: |
+          # Remove any artifacts from the previous checkouts
+          git clean -fxd
       - name: Setup ROCm
         uses: ./.github/actions/setup-rocm
       - uses: actions/download-artifact@v4.1.7
@@ -2432,18 +2782,6 @@ jobs:
         with:
           name: manywheel-py3_13-rocm7_1
           path: "${{ runner.temp }}/artifacts/"
-      - name: Checkout PyTorch
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
-          submodules: recursive
-          path: pytorch
-          show-progress: false
-      - name: Clean PyTorch checkout
-        run: |
-          # Remove any artifacts from the previous checkouts
-          git clean -fxd
-        working-directory: pytorch
       - name: ROCm set GPU_FLAG
         run: |
           echo "GPU_FLAG=--device=/dev/mem --device=/dev/kfd --device=/dev/dri --group-add video --group-add daemon" >> "${GITHUB_ENV}"
@@ -2463,13 +2801,12 @@ jobs:
           docker-image-name: manylinux2_28-builder
           custom-tag-prefix: rocm7.1
           docker-build-dir: .ci/docker
-          working-directory: pytorch
       - name: Pull Docker image
         uses: pytorch/test-infra/.github/actions/pull-docker-image@main
         with:
           docker-image: ${{ steps.calculate-docker-image.outputs.docker-image }}
       - name: Test Pytorch binary
-        uses: ./pytorch/.github/actions/test-pytorch-binary
+        uses: ./.github/actions/test-pytorch-binary
         env:
           DOCKER_IMAGE: ${{ steps.calculate-docker-image.outputs.docker-image }}
       - name: Teardown ROCm
@@ -2494,6 +2831,9 @@ jobs:
       build_name: manywheel-py3_13-rocm7_1
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
     uses: ./.github/workflows/_binary-upload.yml
 
   manywheel-py3_13-rocm7_2-build:
@@ -2523,7 +2863,7 @@ jobs:
     needs:
       - manywheel-py3_13-rocm7_2-build
       - get-label-type
-    runs-on: linux.rocm.gpu.mi250.1
+    runs-on: linux.rocm.gpu.gfx942.1
     timeout-minutes: 240
     env:
       PYTORCH_ROOT: /pytorch
@@ -2541,6 +2881,16 @@ jobs:
       id-token: write
       contents: read
     steps:
+      - name: Checkout PyTorch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          submodules: recursive
+          show-progress: false
+      - name: Clean PyTorch checkout
+        run: |
+          # Remove any artifacts from the previous checkouts
+          git clean -fxd
       - name: Setup ROCm
         uses: ./.github/actions/setup-rocm
       - uses: actions/download-artifact@v4.1.7
@@ -2548,18 +2898,6 @@ jobs:
         with:
           name: manywheel-py3_13-rocm7_2
           path: "${{ runner.temp }}/artifacts/"
-      - name: Checkout PyTorch
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
-          submodules: recursive
-          path: pytorch
-          show-progress: false
-      - name: Clean PyTorch checkout
-        run: |
-          # Remove any artifacts from the previous checkouts
-          git clean -fxd
-        working-directory: pytorch
       - name: ROCm set GPU_FLAG
         run: |
           echo "GPU_FLAG=--device=/dev/mem --device=/dev/kfd --device=/dev/dri --group-add video --group-add daemon" >> "${GITHUB_ENV}"
@@ -2579,13 +2917,12 @@ jobs:
           docker-image-name: manylinux2_28-builder
           custom-tag-prefix: rocm7.2
           docker-build-dir: .ci/docker
-          working-directory: pytorch
       - name: Pull Docker image
         uses: pytorch/test-infra/.github/actions/pull-docker-image@main
         with:
           docker-image: ${{ steps.calculate-docker-image.outputs.docker-image }}
       - name: Test Pytorch binary
-        uses: ./pytorch/.github/actions/test-pytorch-binary
+        uses: ./.github/actions/test-pytorch-binary
         env:
           DOCKER_IMAGE: ${{ steps.calculate-docker-image.outputs.docker-image }}
       - name: Teardown ROCm
@@ -2610,6 +2947,9 @@ jobs:
       build_name: manywheel-py3_13-rocm7_2
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
     uses: ./.github/workflows/_binary-upload.yml
 
   manywheel-py3_13-xpu-build:
@@ -2655,6 +2995,16 @@ jobs:
       id-token: write
       contents: read
     steps:
+      - name: Checkout PyTorch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          submodules: recursive
+          show-progress: false
+      - name: Clean PyTorch checkout
+        run: |
+          # Remove any artifacts from the previous checkouts
+          git clean -fxd
       - name: Setup XPU
         uses: pytorch/pytorch/.github/actions/setup-xpu@main
       - name: Login to ECR
@@ -2664,18 +3014,6 @@ jobs:
         with:
           name: manywheel-py3_13-xpu
           path: "${{ runner.temp }}/artifacts/"
-      - name: Checkout PyTorch
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
-          submodules: recursive
-          path: pytorch
-          show-progress: false
-      - name: Clean PyTorch checkout
-        run: |
-          # Remove any artifacts from the previous checkouts
-          git clean -fxd
-        working-directory: pytorch
       - name: Calculate docker image
         id: calculate-docker-image
         uses: pytorch/test-infra/.github/actions/calculate-docker-image@main
@@ -2684,13 +3022,12 @@ jobs:
           docker-image-name: manylinux2_28-builder
           custom-tag-prefix: xpu
           docker-build-dir: .ci/docker
-          working-directory: pytorch
       - name: Pull Docker image
         uses: pytorch/test-infra/.github/actions/pull-docker-image@main
         with:
           docker-image: ${{ steps.calculate-docker-image.outputs.docker-image }}
       - name: Test Pytorch binary
-        uses: ./pytorch/.github/actions/test-pytorch-binary
+        uses: ./.github/actions/test-pytorch-binary
         env:
           DOCKER_IMAGE: ${{ steps.calculate-docker-image.outputs.docker-image }}
       - name: Teardown XPU
@@ -2714,6 +3051,9 @@ jobs:
       build_name: manywheel-py3_13-xpu
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
     uses: ./.github/workflows/_binary-upload.yml
 
   manywheel-py3_13t-cpu-build:
@@ -2777,6 +3117,9 @@ jobs:
       build_name: manywheel-py3_13t-cpu
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
     uses: ./.github/workflows/_binary-upload.yml
 
   manywheel-py3_13t-cuda12_6-build:
@@ -2797,7 +3140,7 @@ jobs:
       runner_prefix: "${{ needs.get-label-type.outputs.label-type }}"
       build_name: manywheel-py3_13t-cuda12_6
       build_environment: linux-binary-manywheel
-      PYTORCH_EXTRA_INSTALL_REQUIREMENTS: cuda-toolkit[nvrtc,cudart,cupti,cufft,curand,cusolver,cusparse,cublas,cufile,nvjitlink,nvtx]==12.6.3; platform_system == 'Linux' | cuda-bindings==12.9.4; platform_system == 'Linux' | nvidia-cudnn-cu12==9.10.2.21; platform_system == 'Linux' | nvidia-cusparselt-cu12==0.7.1; platform_system == 'Linux' | nvidia-nccl-cu12==2.28.9; platform_system == 'Linux' | nvidia-nvshmem-cu12==3.4.5; platform_system == 'Linux'
+      PYTORCH_EXTRA_INSTALL_REQUIREMENTS: cuda-toolkit[nvrtc,cudart,cupti,cufft,curand,cusolver,cusparse,cublas,cufile,nvjitlink,nvtx]==12.6.3; platform_system == 'Linux' | cuda-bindings>=12.9.4,<13; platform_system == 'Linux' | nvidia-cudnn-cu12==9.10.2.21; platform_system == 'Linux' | nvidia-cusparselt-cu12==0.7.1; platform_system == 'Linux' | nvidia-nccl-cu12==2.29.3; platform_system == 'Linux' | nvidia-nvshmem-cu12==3.4.5; platform_system == 'Linux'
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -2821,7 +3164,7 @@ jobs:
       build_name: manywheel-py3_13t-cuda12_6
       build_environment: linux-binary-manywheel
       runner_prefix: "${{ needs.get-label-type.outputs.label-type }}"
-      runs_on: linux.4xlarge.nvidia.gpu  # 12.6 build can use maxwell (sm_50) runner
+      runs_on: linux.g4dn.4xlarge.nvidia.gpu
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
   manywheel-py3_13t-cuda12_6-upload:  # Uploading
@@ -2844,6 +3187,9 @@ jobs:
       build_name: manywheel-py3_13t-cuda12_6
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
     uses: ./.github/workflows/_binary-upload.yml
 
   manywheel-py3_13t-cuda12_8-build:
@@ -2864,7 +3210,7 @@ jobs:
       runner_prefix: "${{ needs.get-label-type.outputs.label-type }}"
       build_name: manywheel-py3_13t-cuda12_8
       build_environment: linux-binary-manywheel
-      PYTORCH_EXTRA_INSTALL_REQUIREMENTS: cuda-toolkit[nvrtc,cudart,cupti,cufft,curand,cusolver,cusparse,cublas,cufile,nvjitlink,nvtx]==12.8.1; platform_system == 'Linux' | cuda-bindings==12.9.4; platform_system == 'Linux' | nvidia-cudnn-cu12==9.19.0.56; platform_system == 'Linux' | nvidia-cusparselt-cu12==0.7.1; platform_system == 'Linux' | nvidia-nccl-cu12==2.28.9; platform_system == 'Linux' | nvidia-nvshmem-cu12==3.4.5; platform_system == 'Linux'
+      PYTORCH_EXTRA_INSTALL_REQUIREMENTS: cuda-toolkit[nvrtc,cudart,cupti,cufft,curand,cusolver,cusparse,cublas,cufile,nvjitlink,nvtx]==12.8.1; platform_system == 'Linux' | cuda-bindings>=12.9.4,<13; platform_system == 'Linux' | nvidia-cudnn-cu12==9.20.0.48; platform_system == 'Linux' | nvidia-cusparselt-cu12==0.7.1; platform_system == 'Linux' | nvidia-nccl-cu12==2.29.7; platform_system == 'Linux' | nvidia-nvshmem-cu12==3.4.5; platform_system == 'Linux'
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -2888,7 +3234,7 @@ jobs:
       build_name: manywheel-py3_13t-cuda12_8
       build_environment: linux-binary-manywheel
       runner_prefix: "${{ needs.get-label-type.outputs.label-type }}"
-      runs_on: linux.g4dn.4xlarge.nvidia.gpu # 12.8+ builds need sm_70+ runner
+      runs_on: linux.g4dn.4xlarge.nvidia.gpu
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
   manywheel-py3_13t-cuda12_8-upload:  # Uploading
@@ -2911,6 +3257,9 @@ jobs:
       build_name: manywheel-py3_13t-cuda12_8
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
     uses: ./.github/workflows/_binary-upload.yml
 
   manywheel-py3_13t-cuda12_9-build:
@@ -2931,7 +3280,7 @@ jobs:
       runner_prefix: "${{ needs.get-label-type.outputs.label-type }}"
       build_name: manywheel-py3_13t-cuda12_9
       build_environment: linux-binary-manywheel
-      PYTORCH_EXTRA_INSTALL_REQUIREMENTS: cuda-toolkit[nvrtc,cudart,cupti,cufft,curand,cusolver,cusparse,cublas,cufile,nvjitlink,nvtx]==12.9.1; platform_system == 'Linux' | cuda-bindings==12.9.4; platform_system == 'Linux' | nvidia-cudnn-cu12==9.17.1.4; platform_system == 'Linux' | nvidia-cusparselt-cu12==0.7.1; platform_system == 'Linux' | nvidia-nccl-cu12==2.28.9; platform_system == 'Linux' | nvidia-nvshmem-cu12==3.4.5; platform_system == 'Linux'
+      PYTORCH_EXTRA_INSTALL_REQUIREMENTS: cuda-toolkit[nvrtc,cudart,cupti,cufft,curand,cusolver,cusparse,cublas,cufile,nvjitlink,nvtx]==12.9.1; platform_system == 'Linux' | cuda-bindings>=12.9.4,<13; platform_system == 'Linux' | nvidia-cudnn-cu12==9.20.0.48; platform_system == 'Linux' | nvidia-cusparselt-cu12==0.7.1; platform_system == 'Linux' | nvidia-nccl-cu12==2.29.7; platform_system == 'Linux' | nvidia-nvshmem-cu12==3.4.5; platform_system == 'Linux'
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -2955,7 +3304,7 @@ jobs:
       build_name: manywheel-py3_13t-cuda12_9
       build_environment: linux-binary-manywheel
       runner_prefix: "${{ needs.get-label-type.outputs.label-type }}"
-      runs_on: linux.g4dn.4xlarge.nvidia.gpu # 12.8+ builds need sm_70+ runner
+      runs_on: linux.g4dn.4xlarge.nvidia.gpu
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
   manywheel-py3_13t-cuda12_9-upload:  # Uploading
@@ -2978,6 +3327,9 @@ jobs:
       build_name: manywheel-py3_13t-cuda12_9
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
     uses: ./.github/workflows/_binary-upload.yml
 
   manywheel-py3_13t-cuda13_0-build:
@@ -2998,7 +3350,7 @@ jobs:
       runner_prefix: "${{ needs.get-label-type.outputs.label-type }}"
       build_name: manywheel-py3_13t-cuda13_0
       build_environment: linux-binary-manywheel
-      PYTORCH_EXTRA_INSTALL_REQUIREMENTS: cuda-toolkit[nvrtc,cudart,cupti,cufft,curand,cusolver,cusparse,cublas,cufile,nvjitlink,nvtx]==13.0.2; platform_system == 'Linux' | cuda-bindings==13.0.3; platform_system == 'Linux' | nvidia-cudnn-cu13==9.19.0.56; platform_system == 'Linux' | nvidia-cusparselt-cu13==0.8.0; platform_system == 'Linux' | nvidia-nccl-cu13==2.28.9; platform_system == 'Linux' | nvidia-nvshmem-cu13==3.4.5; platform_system == 'Linux'
+      PYTORCH_EXTRA_INSTALL_REQUIREMENTS: cuda-toolkit[nvrtc,cudart,cupti,cufft,curand,cusolver,cusparse,cublas,cufile,nvjitlink,nvtx]==13.0.2; platform_system == 'Linux' | cuda-bindings>=13.0.3,<14; platform_system == 'Linux' | nvidia-cudnn-cu13==9.20.0.48; platform_system == 'Linux' | nvidia-cusparselt-cu13==0.8.0; platform_system == 'Linux' | nvidia-nccl-cu13==2.29.7; platform_system == 'Linux' | nvidia-nvshmem-cu13==3.4.5; platform_system == 'Linux'
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -3022,7 +3374,7 @@ jobs:
       build_name: manywheel-py3_13t-cuda13_0
       build_environment: linux-binary-manywheel
       runner_prefix: "${{ needs.get-label-type.outputs.label-type }}"
-      runs_on: linux.g4dn.4xlarge.nvidia.gpu # 12.8+ builds need sm_70+ runner
+      runs_on: linux.g4dn.4xlarge.nvidia.gpu
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
   manywheel-py3_13t-cuda13_0-upload:  # Uploading
@@ -3045,6 +3397,79 @@ jobs:
       build_name: manywheel-py3_13t-cuda13_0
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+    uses: ./.github/workflows/_binary-upload.yml
+
+  manywheel-py3_13t-cuda13_2-build:
+    if: ${{ github.repository_owner == 'pytorch' }}
+    uses: ./.github/workflows/_binary-build-linux.yml
+    needs: get-label-type
+    with:
+      PYTORCH_ROOT: /pytorch
+      PACKAGE_TYPE: manywheel
+      # TODO: This is a legacy variable that we eventually want to get rid of in
+      #       favor of GPU_ARCH_VERSION
+      DESIRED_CUDA: cu132
+      GPU_ARCH_VERSION: "13.2"
+      GPU_ARCH_TYPE: cuda
+      DOCKER_IMAGE: manylinux2_28-builder
+      DOCKER_IMAGE_TAG_PREFIX: cuda13.2
+      DESIRED_PYTHON: "3.13t"
+      runner_prefix: "${{ needs.get-label-type.outputs.label-type }}"
+      build_name: manywheel-py3_13t-cuda13_2
+      build_environment: linux-binary-manywheel
+      PYTORCH_EXTRA_INSTALL_REQUIREMENTS: cuda-toolkit[nvrtc,cudart,cupti,cufft,curand,cusolver,cusparse,cublas,cufile,nvjitlink,nvtx]==13.2.0; platform_system == 'Linux' | cuda-bindings>=13.0.3,<14; platform_system == 'Linux' | nvidia-cudnn-cu13==9.20.0.48; platform_system == 'Linux' | nvidia-cusparselt-cu13==0.8.1; platform_system == 'Linux' | nvidia-nccl-cu13==2.29.7; platform_system == 'Linux' | nvidia-nvshmem-cu13==3.4.5; platform_system == 'Linux'
+    secrets:
+      github-token: ${{ secrets.GITHUB_TOKEN }}
+
+  manywheel-py3_13t-cuda13_2-test:  # Testing
+    if: ${{ github.repository_owner == 'pytorch' }}
+    needs:
+      - manywheel-py3_13t-cuda13_2-build
+      - get-label-type
+    uses: ./.github/workflows/_binary-test-linux.yml
+    with:
+      PYTORCH_ROOT: /pytorch
+      PACKAGE_TYPE: manywheel
+      # TODO: This is a legacy variable that we eventually want to get rid of in
+      #       favor of GPU_ARCH_VERSION
+      DESIRED_CUDA: cu132
+      GPU_ARCH_VERSION: "13.2"
+      GPU_ARCH_TYPE: cuda
+      DOCKER_IMAGE: manylinux2_28-builder
+      DOCKER_IMAGE_TAG_PREFIX: cuda13.2
+      DESIRED_PYTHON: "3.13t"
+      build_name: manywheel-py3_13t-cuda13_2
+      build_environment: linux-binary-manywheel
+      runner_prefix: "${{ needs.get-label-type.outputs.label-type }}"
+      runs_on: linux.g4dn.4xlarge.nvidia.gpu
+    secrets:
+      github-token: ${{ secrets.GITHUB_TOKEN }}
+  manywheel-py3_13t-cuda13_2-upload:  # Uploading
+    if: ${{ github.repository_owner == 'pytorch' }}
+    permissions:
+      id-token: write
+      contents: read
+    needs: manywheel-py3_13t-cuda13_2-test
+    with:
+      PYTORCH_ROOT: /pytorch
+      PACKAGE_TYPE: manywheel
+      # TODO: This is a legacy variable that we eventually want to get rid of in
+      #       favor of GPU_ARCH_VERSION
+      DESIRED_CUDA: cu132
+      GPU_ARCH_VERSION: "13.2"
+      GPU_ARCH_TYPE: cuda
+      DOCKER_IMAGE: manylinux2_28-builder
+      DOCKER_IMAGE_TAG_PREFIX: cuda13.2
+      DESIRED_PYTHON: "3.13t"
+      build_name: manywheel-py3_13t-cuda13_2
+    secrets:
+      github-token: ${{ secrets.GITHUB_TOKEN }}
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
     uses: ./.github/workflows/_binary-upload.yml
 
   manywheel-py3_13t-rocm7_1-build:
@@ -3074,7 +3499,7 @@ jobs:
     needs:
       - manywheel-py3_13t-rocm7_1-build
       - get-label-type
-    runs-on: linux.rocm.gpu.mi250.1
+    runs-on: linux.rocm.gpu.gfx942.1
     timeout-minutes: 240
     env:
       PYTORCH_ROOT: /pytorch
@@ -3092,6 +3517,16 @@ jobs:
       id-token: write
       contents: read
     steps:
+      - name: Checkout PyTorch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          submodules: recursive
+          show-progress: false
+      - name: Clean PyTorch checkout
+        run: |
+          # Remove any artifacts from the previous checkouts
+          git clean -fxd
       - name: Setup ROCm
         uses: ./.github/actions/setup-rocm
       - uses: actions/download-artifact@v4.1.7
@@ -3099,18 +3534,6 @@ jobs:
         with:
           name: manywheel-py3_13t-rocm7_1
           path: "${{ runner.temp }}/artifacts/"
-      - name: Checkout PyTorch
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
-          submodules: recursive
-          path: pytorch
-          show-progress: false
-      - name: Clean PyTorch checkout
-        run: |
-          # Remove any artifacts from the previous checkouts
-          git clean -fxd
-        working-directory: pytorch
       - name: ROCm set GPU_FLAG
         run: |
           echo "GPU_FLAG=--device=/dev/mem --device=/dev/kfd --device=/dev/dri --group-add video --group-add daemon" >> "${GITHUB_ENV}"
@@ -3130,13 +3553,12 @@ jobs:
           docker-image-name: manylinux2_28-builder
           custom-tag-prefix: rocm7.1
           docker-build-dir: .ci/docker
-          working-directory: pytorch
       - name: Pull Docker image
         uses: pytorch/test-infra/.github/actions/pull-docker-image@main
         with:
           docker-image: ${{ steps.calculate-docker-image.outputs.docker-image }}
       - name: Test Pytorch binary
-        uses: ./pytorch/.github/actions/test-pytorch-binary
+        uses: ./.github/actions/test-pytorch-binary
         env:
           DOCKER_IMAGE: ${{ steps.calculate-docker-image.outputs.docker-image }}
       - name: Teardown ROCm
@@ -3161,6 +3583,9 @@ jobs:
       build_name: manywheel-py3_13t-rocm7_1
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
     uses: ./.github/workflows/_binary-upload.yml
 
   manywheel-py3_13t-rocm7_2-build:
@@ -3190,7 +3615,7 @@ jobs:
     needs:
       - manywheel-py3_13t-rocm7_2-build
       - get-label-type
-    runs-on: linux.rocm.gpu.mi250.1
+    runs-on: linux.rocm.gpu.gfx942.1
     timeout-minutes: 240
     env:
       PYTORCH_ROOT: /pytorch
@@ -3208,6 +3633,16 @@ jobs:
       id-token: write
       contents: read
     steps:
+      - name: Checkout PyTorch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          submodules: recursive
+          show-progress: false
+      - name: Clean PyTorch checkout
+        run: |
+          # Remove any artifacts from the previous checkouts
+          git clean -fxd
       - name: Setup ROCm
         uses: ./.github/actions/setup-rocm
       - uses: actions/download-artifact@v4.1.7
@@ -3215,18 +3650,6 @@ jobs:
         with:
           name: manywheel-py3_13t-rocm7_2
           path: "${{ runner.temp }}/artifacts/"
-      - name: Checkout PyTorch
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
-          submodules: recursive
-          path: pytorch
-          show-progress: false
-      - name: Clean PyTorch checkout
-        run: |
-          # Remove any artifacts from the previous checkouts
-          git clean -fxd
-        working-directory: pytorch
       - name: ROCm set GPU_FLAG
         run: |
           echo "GPU_FLAG=--device=/dev/mem --device=/dev/kfd --device=/dev/dri --group-add video --group-add daemon" >> "${GITHUB_ENV}"
@@ -3246,13 +3669,12 @@ jobs:
           docker-image-name: manylinux2_28-builder
           custom-tag-prefix: rocm7.2
           docker-build-dir: .ci/docker
-          working-directory: pytorch
       - name: Pull Docker image
         uses: pytorch/test-infra/.github/actions/pull-docker-image@main
         with:
           docker-image: ${{ steps.calculate-docker-image.outputs.docker-image }}
       - name: Test Pytorch binary
-        uses: ./pytorch/.github/actions/test-pytorch-binary
+        uses: ./.github/actions/test-pytorch-binary
         env:
           DOCKER_IMAGE: ${{ steps.calculate-docker-image.outputs.docker-image }}
       - name: Teardown ROCm
@@ -3277,6 +3699,9 @@ jobs:
       build_name: manywheel-py3_13t-rocm7_2
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
     uses: ./.github/workflows/_binary-upload.yml
 
   manywheel-py3_13t-xpu-build:
@@ -3322,6 +3747,16 @@ jobs:
       id-token: write
       contents: read
     steps:
+      - name: Checkout PyTorch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          submodules: recursive
+          show-progress: false
+      - name: Clean PyTorch checkout
+        run: |
+          # Remove any artifacts from the previous checkouts
+          git clean -fxd
       - name: Setup XPU
         uses: pytorch/pytorch/.github/actions/setup-xpu@main
       - name: Login to ECR
@@ -3331,18 +3766,6 @@ jobs:
         with:
           name: manywheel-py3_13t-xpu
           path: "${{ runner.temp }}/artifacts/"
-      - name: Checkout PyTorch
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
-          submodules: recursive
-          path: pytorch
-          show-progress: false
-      - name: Clean PyTorch checkout
-        run: |
-          # Remove any artifacts from the previous checkouts
-          git clean -fxd
-        working-directory: pytorch
       - name: Calculate docker image
         id: calculate-docker-image
         uses: pytorch/test-infra/.github/actions/calculate-docker-image@main
@@ -3351,13 +3774,12 @@ jobs:
           docker-image-name: manylinux2_28-builder
           custom-tag-prefix: xpu
           docker-build-dir: .ci/docker
-          working-directory: pytorch
       - name: Pull Docker image
         uses: pytorch/test-infra/.github/actions/pull-docker-image@main
         with:
           docker-image: ${{ steps.calculate-docker-image.outputs.docker-image }}
       - name: Test Pytorch binary
-        uses: ./pytorch/.github/actions/test-pytorch-binary
+        uses: ./.github/actions/test-pytorch-binary
         env:
           DOCKER_IMAGE: ${{ steps.calculate-docker-image.outputs.docker-image }}
       - name: Teardown XPU
@@ -3381,6 +3803,9 @@ jobs:
       build_name: manywheel-py3_13t-xpu
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
     uses: ./.github/workflows/_binary-upload.yml
 
   manywheel-py3_14-cpu-build:
@@ -3444,6 +3869,9 @@ jobs:
       build_name: manywheel-py3_14-cpu
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
     uses: ./.github/workflows/_binary-upload.yml
 
   manywheel-py3_14-cuda12_6-build:
@@ -3464,7 +3892,7 @@ jobs:
       runner_prefix: "${{ needs.get-label-type.outputs.label-type }}"
       build_name: manywheel-py3_14-cuda12_6
       build_environment: linux-binary-manywheel
-      PYTORCH_EXTRA_INSTALL_REQUIREMENTS: cuda-toolkit[nvrtc,cudart,cupti,cufft,curand,cusolver,cusparse,cublas,cufile,nvjitlink,nvtx]==12.6.3; platform_system == 'Linux' | cuda-bindings==12.9.4; platform_system == 'Linux' | nvidia-cudnn-cu12==9.10.2.21; platform_system == 'Linux' | nvidia-cusparselt-cu12==0.7.1; platform_system == 'Linux' | nvidia-nccl-cu12==2.28.9; platform_system == 'Linux' | nvidia-nvshmem-cu12==3.4.5; platform_system == 'Linux'
+      PYTORCH_EXTRA_INSTALL_REQUIREMENTS: cuda-toolkit[nvrtc,cudart,cupti,cufft,curand,cusolver,cusparse,cublas,cufile,nvjitlink,nvtx]==12.6.3; platform_system == 'Linux' | cuda-bindings>=12.9.4,<13; platform_system == 'Linux' | nvidia-cudnn-cu12==9.10.2.21; platform_system == 'Linux' | nvidia-cusparselt-cu12==0.7.1; platform_system == 'Linux' | nvidia-nccl-cu12==2.29.3; platform_system == 'Linux' | nvidia-nvshmem-cu12==3.4.5; platform_system == 'Linux'
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -3488,7 +3916,7 @@ jobs:
       build_name: manywheel-py3_14-cuda12_6
       build_environment: linux-binary-manywheel
       runner_prefix: "${{ needs.get-label-type.outputs.label-type }}"
-      runs_on: linux.4xlarge.nvidia.gpu  # 12.6 build can use maxwell (sm_50) runner
+      runs_on: linux.g4dn.4xlarge.nvidia.gpu
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
   manywheel-py3_14-cuda12_6-upload:  # Uploading
@@ -3511,6 +3939,9 @@ jobs:
       build_name: manywheel-py3_14-cuda12_6
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
     uses: ./.github/workflows/_binary-upload.yml
 
   manywheel-py3_14-cuda12_8-build:
@@ -3531,7 +3962,7 @@ jobs:
       runner_prefix: "${{ needs.get-label-type.outputs.label-type }}"
       build_name: manywheel-py3_14-cuda12_8
       build_environment: linux-binary-manywheel
-      PYTORCH_EXTRA_INSTALL_REQUIREMENTS: cuda-toolkit[nvrtc,cudart,cupti,cufft,curand,cusolver,cusparse,cublas,cufile,nvjitlink,nvtx]==12.8.1; platform_system == 'Linux' | cuda-bindings==12.9.4; platform_system == 'Linux' | nvidia-cudnn-cu12==9.19.0.56; platform_system == 'Linux' | nvidia-cusparselt-cu12==0.7.1; platform_system == 'Linux' | nvidia-nccl-cu12==2.28.9; platform_system == 'Linux' | nvidia-nvshmem-cu12==3.4.5; platform_system == 'Linux'
+      PYTORCH_EXTRA_INSTALL_REQUIREMENTS: cuda-toolkit[nvrtc,cudart,cupti,cufft,curand,cusolver,cusparse,cublas,cufile,nvjitlink,nvtx]==12.8.1; platform_system == 'Linux' | cuda-bindings>=12.9.4,<13; platform_system == 'Linux' | nvidia-cudnn-cu12==9.20.0.48; platform_system == 'Linux' | nvidia-cusparselt-cu12==0.7.1; platform_system == 'Linux' | nvidia-nccl-cu12==2.29.7; platform_system == 'Linux' | nvidia-nvshmem-cu12==3.4.5; platform_system == 'Linux'
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -3555,7 +3986,7 @@ jobs:
       build_name: manywheel-py3_14-cuda12_8
       build_environment: linux-binary-manywheel
       runner_prefix: "${{ needs.get-label-type.outputs.label-type }}"
-      runs_on: linux.g4dn.4xlarge.nvidia.gpu # 12.8+ builds need sm_70+ runner
+      runs_on: linux.g4dn.4xlarge.nvidia.gpu
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
   manywheel-py3_14-cuda12_8-upload:  # Uploading
@@ -3578,6 +4009,9 @@ jobs:
       build_name: manywheel-py3_14-cuda12_8
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
     uses: ./.github/workflows/_binary-upload.yml
 
   manywheel-py3_14-cuda12_9-build:
@@ -3598,7 +4032,7 @@ jobs:
       runner_prefix: "${{ needs.get-label-type.outputs.label-type }}"
       build_name: manywheel-py3_14-cuda12_9
       build_environment: linux-binary-manywheel
-      PYTORCH_EXTRA_INSTALL_REQUIREMENTS: cuda-toolkit[nvrtc,cudart,cupti,cufft,curand,cusolver,cusparse,cublas,cufile,nvjitlink,nvtx]==12.9.1; platform_system == 'Linux' | cuda-bindings==12.9.4; platform_system == 'Linux' | nvidia-cudnn-cu12==9.17.1.4; platform_system == 'Linux' | nvidia-cusparselt-cu12==0.7.1; platform_system == 'Linux' | nvidia-nccl-cu12==2.28.9; platform_system == 'Linux' | nvidia-nvshmem-cu12==3.4.5; platform_system == 'Linux'
+      PYTORCH_EXTRA_INSTALL_REQUIREMENTS: cuda-toolkit[nvrtc,cudart,cupti,cufft,curand,cusolver,cusparse,cublas,cufile,nvjitlink,nvtx]==12.9.1; platform_system == 'Linux' | cuda-bindings>=12.9.4,<13; platform_system == 'Linux' | nvidia-cudnn-cu12==9.20.0.48; platform_system == 'Linux' | nvidia-cusparselt-cu12==0.7.1; platform_system == 'Linux' | nvidia-nccl-cu12==2.29.7; platform_system == 'Linux' | nvidia-nvshmem-cu12==3.4.5; platform_system == 'Linux'
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -3622,7 +4056,7 @@ jobs:
       build_name: manywheel-py3_14-cuda12_9
       build_environment: linux-binary-manywheel
       runner_prefix: "${{ needs.get-label-type.outputs.label-type }}"
-      runs_on: linux.g4dn.4xlarge.nvidia.gpu # 12.8+ builds need sm_70+ runner
+      runs_on: linux.g4dn.4xlarge.nvidia.gpu
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
   manywheel-py3_14-cuda12_9-upload:  # Uploading
@@ -3645,6 +4079,9 @@ jobs:
       build_name: manywheel-py3_14-cuda12_9
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
     uses: ./.github/workflows/_binary-upload.yml
 
   manywheel-py3_14-cuda13_0-build:
@@ -3665,7 +4102,7 @@ jobs:
       runner_prefix: "${{ needs.get-label-type.outputs.label-type }}"
       build_name: manywheel-py3_14-cuda13_0
       build_environment: linux-binary-manywheel
-      PYTORCH_EXTRA_INSTALL_REQUIREMENTS: cuda-toolkit[nvrtc,cudart,cupti,cufft,curand,cusolver,cusparse,cublas,cufile,nvjitlink,nvtx]==13.0.2; platform_system == 'Linux' | cuda-bindings==13.0.3; platform_system == 'Linux' | nvidia-cudnn-cu13==9.19.0.56; platform_system == 'Linux' | nvidia-cusparselt-cu13==0.8.0; platform_system == 'Linux' | nvidia-nccl-cu13==2.28.9; platform_system == 'Linux' | nvidia-nvshmem-cu13==3.4.5; platform_system == 'Linux'
+      PYTORCH_EXTRA_INSTALL_REQUIREMENTS: cuda-toolkit[nvrtc,cudart,cupti,cufft,curand,cusolver,cusparse,cublas,cufile,nvjitlink,nvtx]==13.0.2; platform_system == 'Linux' | cuda-bindings>=13.0.3,<14; platform_system == 'Linux' | nvidia-cudnn-cu13==9.20.0.48; platform_system == 'Linux' | nvidia-cusparselt-cu13==0.8.0; platform_system == 'Linux' | nvidia-nccl-cu13==2.29.7; platform_system == 'Linux' | nvidia-nvshmem-cu13==3.4.5; platform_system == 'Linux'
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -3689,7 +4126,7 @@ jobs:
       build_name: manywheel-py3_14-cuda13_0
       build_environment: linux-binary-manywheel
       runner_prefix: "${{ needs.get-label-type.outputs.label-type }}"
-      runs_on: linux.g4dn.4xlarge.nvidia.gpu # 12.8+ builds need sm_70+ runner
+      runs_on: linux.g4dn.4xlarge.nvidia.gpu
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
   manywheel-py3_14-cuda13_0-upload:  # Uploading
@@ -3712,6 +4149,79 @@ jobs:
       build_name: manywheel-py3_14-cuda13_0
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+    uses: ./.github/workflows/_binary-upload.yml
+
+  manywheel-py3_14-cuda13_2-build:
+    if: ${{ github.repository_owner == 'pytorch' }}
+    uses: ./.github/workflows/_binary-build-linux.yml
+    needs: get-label-type
+    with:
+      PYTORCH_ROOT: /pytorch
+      PACKAGE_TYPE: manywheel
+      # TODO: This is a legacy variable that we eventually want to get rid of in
+      #       favor of GPU_ARCH_VERSION
+      DESIRED_CUDA: cu132
+      GPU_ARCH_VERSION: "13.2"
+      GPU_ARCH_TYPE: cuda
+      DOCKER_IMAGE: manylinux2_28-builder
+      DOCKER_IMAGE_TAG_PREFIX: cuda13.2
+      DESIRED_PYTHON: "3.14"
+      runner_prefix: "${{ needs.get-label-type.outputs.label-type }}"
+      build_name: manywheel-py3_14-cuda13_2
+      build_environment: linux-binary-manywheel
+      PYTORCH_EXTRA_INSTALL_REQUIREMENTS: cuda-toolkit[nvrtc,cudart,cupti,cufft,curand,cusolver,cusparse,cublas,cufile,nvjitlink,nvtx]==13.2.0; platform_system == 'Linux' | cuda-bindings>=13.0.3,<14; platform_system == 'Linux' | nvidia-cudnn-cu13==9.20.0.48; platform_system == 'Linux' | nvidia-cusparselt-cu13==0.8.1; platform_system == 'Linux' | nvidia-nccl-cu13==2.29.7; platform_system == 'Linux' | nvidia-nvshmem-cu13==3.4.5; platform_system == 'Linux'
+    secrets:
+      github-token: ${{ secrets.GITHUB_TOKEN }}
+
+  manywheel-py3_14-cuda13_2-test:  # Testing
+    if: ${{ github.repository_owner == 'pytorch' }}
+    needs:
+      - manywheel-py3_14-cuda13_2-build
+      - get-label-type
+    uses: ./.github/workflows/_binary-test-linux.yml
+    with:
+      PYTORCH_ROOT: /pytorch
+      PACKAGE_TYPE: manywheel
+      # TODO: This is a legacy variable that we eventually want to get rid of in
+      #       favor of GPU_ARCH_VERSION
+      DESIRED_CUDA: cu132
+      GPU_ARCH_VERSION: "13.2"
+      GPU_ARCH_TYPE: cuda
+      DOCKER_IMAGE: manylinux2_28-builder
+      DOCKER_IMAGE_TAG_PREFIX: cuda13.2
+      DESIRED_PYTHON: "3.14"
+      build_name: manywheel-py3_14-cuda13_2
+      build_environment: linux-binary-manywheel
+      runner_prefix: "${{ needs.get-label-type.outputs.label-type }}"
+      runs_on: linux.g4dn.4xlarge.nvidia.gpu
+    secrets:
+      github-token: ${{ secrets.GITHUB_TOKEN }}
+  manywheel-py3_14-cuda13_2-upload:  # Uploading
+    if: ${{ github.repository_owner == 'pytorch' }}
+    permissions:
+      id-token: write
+      contents: read
+    needs: manywheel-py3_14-cuda13_2-test
+    with:
+      PYTORCH_ROOT: /pytorch
+      PACKAGE_TYPE: manywheel
+      # TODO: This is a legacy variable that we eventually want to get rid of in
+      #       favor of GPU_ARCH_VERSION
+      DESIRED_CUDA: cu132
+      GPU_ARCH_VERSION: "13.2"
+      GPU_ARCH_TYPE: cuda
+      DOCKER_IMAGE: manylinux2_28-builder
+      DOCKER_IMAGE_TAG_PREFIX: cuda13.2
+      DESIRED_PYTHON: "3.14"
+      build_name: manywheel-py3_14-cuda13_2
+    secrets:
+      github-token: ${{ secrets.GITHUB_TOKEN }}
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
     uses: ./.github/workflows/_binary-upload.yml
 
   manywheel-py3_14-rocm7_1-build:
@@ -3741,7 +4251,7 @@ jobs:
     needs:
       - manywheel-py3_14-rocm7_1-build
       - get-label-type
-    runs-on: linux.rocm.gpu.mi250.1
+    runs-on: linux.rocm.gpu.gfx942.1
     timeout-minutes: 240
     env:
       PYTORCH_ROOT: /pytorch
@@ -3759,6 +4269,16 @@ jobs:
       id-token: write
       contents: read
     steps:
+      - name: Checkout PyTorch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          submodules: recursive
+          show-progress: false
+      - name: Clean PyTorch checkout
+        run: |
+          # Remove any artifacts from the previous checkouts
+          git clean -fxd
       - name: Setup ROCm
         uses: ./.github/actions/setup-rocm
       - uses: actions/download-artifact@v4.1.7
@@ -3766,18 +4286,6 @@ jobs:
         with:
           name: manywheel-py3_14-rocm7_1
           path: "${{ runner.temp }}/artifacts/"
-      - name: Checkout PyTorch
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
-          submodules: recursive
-          path: pytorch
-          show-progress: false
-      - name: Clean PyTorch checkout
-        run: |
-          # Remove any artifacts from the previous checkouts
-          git clean -fxd
-        working-directory: pytorch
       - name: ROCm set GPU_FLAG
         run: |
           echo "GPU_FLAG=--device=/dev/mem --device=/dev/kfd --device=/dev/dri --group-add video --group-add daemon" >> "${GITHUB_ENV}"
@@ -3797,13 +4305,12 @@ jobs:
           docker-image-name: manylinux2_28-builder
           custom-tag-prefix: rocm7.1
           docker-build-dir: .ci/docker
-          working-directory: pytorch
       - name: Pull Docker image
         uses: pytorch/test-infra/.github/actions/pull-docker-image@main
         with:
           docker-image: ${{ steps.calculate-docker-image.outputs.docker-image }}
       - name: Test Pytorch binary
-        uses: ./pytorch/.github/actions/test-pytorch-binary
+        uses: ./.github/actions/test-pytorch-binary
         env:
           DOCKER_IMAGE: ${{ steps.calculate-docker-image.outputs.docker-image }}
       - name: Teardown ROCm
@@ -3828,6 +4335,9 @@ jobs:
       build_name: manywheel-py3_14-rocm7_1
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
     uses: ./.github/workflows/_binary-upload.yml
 
   manywheel-py3_14-rocm7_2-build:
@@ -3857,7 +4367,7 @@ jobs:
     needs:
       - manywheel-py3_14-rocm7_2-build
       - get-label-type
-    runs-on: linux.rocm.gpu.mi250.1
+    runs-on: linux.rocm.gpu.gfx942.1
     timeout-minutes: 240
     env:
       PYTORCH_ROOT: /pytorch
@@ -3875,6 +4385,16 @@ jobs:
       id-token: write
       contents: read
     steps:
+      - name: Checkout PyTorch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          submodules: recursive
+          show-progress: false
+      - name: Clean PyTorch checkout
+        run: |
+          # Remove any artifacts from the previous checkouts
+          git clean -fxd
       - name: Setup ROCm
         uses: ./.github/actions/setup-rocm
       - uses: actions/download-artifact@v4.1.7
@@ -3882,18 +4402,6 @@ jobs:
         with:
           name: manywheel-py3_14-rocm7_2
           path: "${{ runner.temp }}/artifacts/"
-      - name: Checkout PyTorch
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
-          submodules: recursive
-          path: pytorch
-          show-progress: false
-      - name: Clean PyTorch checkout
-        run: |
-          # Remove any artifacts from the previous checkouts
-          git clean -fxd
-        working-directory: pytorch
       - name: ROCm set GPU_FLAG
         run: |
           echo "GPU_FLAG=--device=/dev/mem --device=/dev/kfd --device=/dev/dri --group-add video --group-add daemon" >> "${GITHUB_ENV}"
@@ -3913,13 +4421,12 @@ jobs:
           docker-image-name: manylinux2_28-builder
           custom-tag-prefix: rocm7.2
           docker-build-dir: .ci/docker
-          working-directory: pytorch
       - name: Pull Docker image
         uses: pytorch/test-infra/.github/actions/pull-docker-image@main
         with:
           docker-image: ${{ steps.calculate-docker-image.outputs.docker-image }}
       - name: Test Pytorch binary
-        uses: ./pytorch/.github/actions/test-pytorch-binary
+        uses: ./.github/actions/test-pytorch-binary
         env:
           DOCKER_IMAGE: ${{ steps.calculate-docker-image.outputs.docker-image }}
       - name: Teardown ROCm
@@ -3944,6 +4451,9 @@ jobs:
       build_name: manywheel-py3_14-rocm7_2
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
     uses: ./.github/workflows/_binary-upload.yml
 
   manywheel-py3_14-xpu-build:
@@ -3989,6 +4499,16 @@ jobs:
       id-token: write
       contents: read
     steps:
+      - name: Checkout PyTorch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          submodules: recursive
+          show-progress: false
+      - name: Clean PyTorch checkout
+        run: |
+          # Remove any artifacts from the previous checkouts
+          git clean -fxd
       - name: Setup XPU
         uses: pytorch/pytorch/.github/actions/setup-xpu@main
       - name: Login to ECR
@@ -3998,18 +4518,6 @@ jobs:
         with:
           name: manywheel-py3_14-xpu
           path: "${{ runner.temp }}/artifacts/"
-      - name: Checkout PyTorch
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
-          submodules: recursive
-          path: pytorch
-          show-progress: false
-      - name: Clean PyTorch checkout
-        run: |
-          # Remove any artifacts from the previous checkouts
-          git clean -fxd
-        working-directory: pytorch
       - name: Calculate docker image
         id: calculate-docker-image
         uses: pytorch/test-infra/.github/actions/calculate-docker-image@main
@@ -4018,13 +4526,12 @@ jobs:
           docker-image-name: manylinux2_28-builder
           custom-tag-prefix: xpu
           docker-build-dir: .ci/docker
-          working-directory: pytorch
       - name: Pull Docker image
         uses: pytorch/test-infra/.github/actions/pull-docker-image@main
         with:
           docker-image: ${{ steps.calculate-docker-image.outputs.docker-image }}
       - name: Test Pytorch binary
-        uses: ./pytorch/.github/actions/test-pytorch-binary
+        uses: ./.github/actions/test-pytorch-binary
         env:
           DOCKER_IMAGE: ${{ steps.calculate-docker-image.outputs.docker-image }}
       - name: Teardown XPU
@@ -4048,6 +4555,9 @@ jobs:
       build_name: manywheel-py3_14-xpu
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
     uses: ./.github/workflows/_binary-upload.yml
 
   manywheel-py3_14t-cpu-build:
@@ -4111,6 +4621,9 @@ jobs:
       build_name: manywheel-py3_14t-cpu
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
     uses: ./.github/workflows/_binary-upload.yml
 
   manywheel-py3_14t-cuda12_6-build:
@@ -4131,7 +4644,7 @@ jobs:
       runner_prefix: "${{ needs.get-label-type.outputs.label-type }}"
       build_name: manywheel-py3_14t-cuda12_6
       build_environment: linux-binary-manywheel
-      PYTORCH_EXTRA_INSTALL_REQUIREMENTS: cuda-toolkit[nvrtc,cudart,cupti,cufft,curand,cusolver,cusparse,cublas,cufile,nvjitlink,nvtx]==12.6.3; platform_system == 'Linux' | cuda-bindings==12.9.4; platform_system == 'Linux' | nvidia-cudnn-cu12==9.10.2.21; platform_system == 'Linux' | nvidia-cusparselt-cu12==0.7.1; platform_system == 'Linux' | nvidia-nccl-cu12==2.28.9; platform_system == 'Linux' | nvidia-nvshmem-cu12==3.4.5; platform_system == 'Linux'
+      PYTORCH_EXTRA_INSTALL_REQUIREMENTS: cuda-toolkit[nvrtc,cudart,cupti,cufft,curand,cusolver,cusparse,cublas,cufile,nvjitlink,nvtx]==12.6.3; platform_system == 'Linux' | cuda-bindings>=12.9.4,<13; platform_system == 'Linux' | nvidia-cudnn-cu12==9.10.2.21; platform_system == 'Linux' | nvidia-cusparselt-cu12==0.7.1; platform_system == 'Linux' | nvidia-nccl-cu12==2.29.3; platform_system == 'Linux' | nvidia-nvshmem-cu12==3.4.5; platform_system == 'Linux'
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -4155,7 +4668,7 @@ jobs:
       build_name: manywheel-py3_14t-cuda12_6
       build_environment: linux-binary-manywheel
       runner_prefix: "${{ needs.get-label-type.outputs.label-type }}"
-      runs_on: linux.4xlarge.nvidia.gpu  # 12.6 build can use maxwell (sm_50) runner
+      runs_on: linux.g4dn.4xlarge.nvidia.gpu
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
   manywheel-py3_14t-cuda12_6-upload:  # Uploading
@@ -4178,6 +4691,9 @@ jobs:
       build_name: manywheel-py3_14t-cuda12_6
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
     uses: ./.github/workflows/_binary-upload.yml
 
   manywheel-py3_14t-cuda12_8-build:
@@ -4198,7 +4714,7 @@ jobs:
       runner_prefix: "${{ needs.get-label-type.outputs.label-type }}"
       build_name: manywheel-py3_14t-cuda12_8
       build_environment: linux-binary-manywheel
-      PYTORCH_EXTRA_INSTALL_REQUIREMENTS: cuda-toolkit[nvrtc,cudart,cupti,cufft,curand,cusolver,cusparse,cublas,cufile,nvjitlink,nvtx]==12.8.1; platform_system == 'Linux' | cuda-bindings==12.9.4; platform_system == 'Linux' | nvidia-cudnn-cu12==9.19.0.56; platform_system == 'Linux' | nvidia-cusparselt-cu12==0.7.1; platform_system == 'Linux' | nvidia-nccl-cu12==2.28.9; platform_system == 'Linux' | nvidia-nvshmem-cu12==3.4.5; platform_system == 'Linux'
+      PYTORCH_EXTRA_INSTALL_REQUIREMENTS: cuda-toolkit[nvrtc,cudart,cupti,cufft,curand,cusolver,cusparse,cublas,cufile,nvjitlink,nvtx]==12.8.1; platform_system == 'Linux' | cuda-bindings>=12.9.4,<13; platform_system == 'Linux' | nvidia-cudnn-cu12==9.20.0.48; platform_system == 'Linux' | nvidia-cusparselt-cu12==0.7.1; platform_system == 'Linux' | nvidia-nccl-cu12==2.29.7; platform_system == 'Linux' | nvidia-nvshmem-cu12==3.4.5; platform_system == 'Linux'
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -4222,7 +4738,7 @@ jobs:
       build_name: manywheel-py3_14t-cuda12_8
       build_environment: linux-binary-manywheel
       runner_prefix: "${{ needs.get-label-type.outputs.label-type }}"
-      runs_on: linux.g4dn.4xlarge.nvidia.gpu # 12.8+ builds need sm_70+ runner
+      runs_on: linux.g4dn.4xlarge.nvidia.gpu
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
   manywheel-py3_14t-cuda12_8-upload:  # Uploading
@@ -4245,6 +4761,9 @@ jobs:
       build_name: manywheel-py3_14t-cuda12_8
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
     uses: ./.github/workflows/_binary-upload.yml
 
   manywheel-py3_14t-cuda12_9-build:
@@ -4265,7 +4784,7 @@ jobs:
       runner_prefix: "${{ needs.get-label-type.outputs.label-type }}"
       build_name: manywheel-py3_14t-cuda12_9
       build_environment: linux-binary-manywheel
-      PYTORCH_EXTRA_INSTALL_REQUIREMENTS: cuda-toolkit[nvrtc,cudart,cupti,cufft,curand,cusolver,cusparse,cublas,cufile,nvjitlink,nvtx]==12.9.1; platform_system == 'Linux' | cuda-bindings==12.9.4; platform_system == 'Linux' | nvidia-cudnn-cu12==9.17.1.4; platform_system == 'Linux' | nvidia-cusparselt-cu12==0.7.1; platform_system == 'Linux' | nvidia-nccl-cu12==2.28.9; platform_system == 'Linux' | nvidia-nvshmem-cu12==3.4.5; platform_system == 'Linux'
+      PYTORCH_EXTRA_INSTALL_REQUIREMENTS: cuda-toolkit[nvrtc,cudart,cupti,cufft,curand,cusolver,cusparse,cublas,cufile,nvjitlink,nvtx]==12.9.1; platform_system == 'Linux' | cuda-bindings>=12.9.4,<13; platform_system == 'Linux' | nvidia-cudnn-cu12==9.20.0.48; platform_system == 'Linux' | nvidia-cusparselt-cu12==0.7.1; platform_system == 'Linux' | nvidia-nccl-cu12==2.29.7; platform_system == 'Linux' | nvidia-nvshmem-cu12==3.4.5; platform_system == 'Linux'
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -4289,7 +4808,7 @@ jobs:
       build_name: manywheel-py3_14t-cuda12_9
       build_environment: linux-binary-manywheel
       runner_prefix: "${{ needs.get-label-type.outputs.label-type }}"
-      runs_on: linux.g4dn.4xlarge.nvidia.gpu # 12.8+ builds need sm_70+ runner
+      runs_on: linux.g4dn.4xlarge.nvidia.gpu
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
   manywheel-py3_14t-cuda12_9-upload:  # Uploading
@@ -4312,6 +4831,9 @@ jobs:
       build_name: manywheel-py3_14t-cuda12_9
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
     uses: ./.github/workflows/_binary-upload.yml
 
   manywheel-py3_14t-cuda13_0-build:
@@ -4332,7 +4854,7 @@ jobs:
       runner_prefix: "${{ needs.get-label-type.outputs.label-type }}"
       build_name: manywheel-py3_14t-cuda13_0
       build_environment: linux-binary-manywheel
-      PYTORCH_EXTRA_INSTALL_REQUIREMENTS: cuda-toolkit[nvrtc,cudart,cupti,cufft,curand,cusolver,cusparse,cublas,cufile,nvjitlink,nvtx]==13.0.2; platform_system == 'Linux' | cuda-bindings==13.0.3; platform_system == 'Linux' | nvidia-cudnn-cu13==9.19.0.56; platform_system == 'Linux' | nvidia-cusparselt-cu13==0.8.0; platform_system == 'Linux' | nvidia-nccl-cu13==2.28.9; platform_system == 'Linux' | nvidia-nvshmem-cu13==3.4.5; platform_system == 'Linux'
+      PYTORCH_EXTRA_INSTALL_REQUIREMENTS: cuda-toolkit[nvrtc,cudart,cupti,cufft,curand,cusolver,cusparse,cublas,cufile,nvjitlink,nvtx]==13.0.2; platform_system == 'Linux' | cuda-bindings>=13.0.3,<14; platform_system == 'Linux' | nvidia-cudnn-cu13==9.20.0.48; platform_system == 'Linux' | nvidia-cusparselt-cu13==0.8.0; platform_system == 'Linux' | nvidia-nccl-cu13==2.29.7; platform_system == 'Linux' | nvidia-nvshmem-cu13==3.4.5; platform_system == 'Linux'
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -4356,7 +4878,7 @@ jobs:
       build_name: manywheel-py3_14t-cuda13_0
       build_environment: linux-binary-manywheel
       runner_prefix: "${{ needs.get-label-type.outputs.label-type }}"
-      runs_on: linux.g4dn.4xlarge.nvidia.gpu # 12.8+ builds need sm_70+ runner
+      runs_on: linux.g4dn.4xlarge.nvidia.gpu
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
   manywheel-py3_14t-cuda13_0-upload:  # Uploading
@@ -4379,6 +4901,79 @@ jobs:
       build_name: manywheel-py3_14t-cuda13_0
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+    uses: ./.github/workflows/_binary-upload.yml
+
+  manywheel-py3_14t-cuda13_2-build:
+    if: ${{ github.repository_owner == 'pytorch' }}
+    uses: ./.github/workflows/_binary-build-linux.yml
+    needs: get-label-type
+    with:
+      PYTORCH_ROOT: /pytorch
+      PACKAGE_TYPE: manywheel
+      # TODO: This is a legacy variable that we eventually want to get rid of in
+      #       favor of GPU_ARCH_VERSION
+      DESIRED_CUDA: cu132
+      GPU_ARCH_VERSION: "13.2"
+      GPU_ARCH_TYPE: cuda
+      DOCKER_IMAGE: manylinux2_28-builder
+      DOCKER_IMAGE_TAG_PREFIX: cuda13.2
+      DESIRED_PYTHON: "3.14t"
+      runner_prefix: "${{ needs.get-label-type.outputs.label-type }}"
+      build_name: manywheel-py3_14t-cuda13_2
+      build_environment: linux-binary-manywheel
+      PYTORCH_EXTRA_INSTALL_REQUIREMENTS: cuda-toolkit[nvrtc,cudart,cupti,cufft,curand,cusolver,cusparse,cublas,cufile,nvjitlink,nvtx]==13.2.0; platform_system == 'Linux' | cuda-bindings>=13.0.3,<14; platform_system == 'Linux' | nvidia-cudnn-cu13==9.20.0.48; platform_system == 'Linux' | nvidia-cusparselt-cu13==0.8.1; platform_system == 'Linux' | nvidia-nccl-cu13==2.29.7; platform_system == 'Linux' | nvidia-nvshmem-cu13==3.4.5; platform_system == 'Linux'
+    secrets:
+      github-token: ${{ secrets.GITHUB_TOKEN }}
+
+  manywheel-py3_14t-cuda13_2-test:  # Testing
+    if: ${{ github.repository_owner == 'pytorch' }}
+    needs:
+      - manywheel-py3_14t-cuda13_2-build
+      - get-label-type
+    uses: ./.github/workflows/_binary-test-linux.yml
+    with:
+      PYTORCH_ROOT: /pytorch
+      PACKAGE_TYPE: manywheel
+      # TODO: This is a legacy variable that we eventually want to get rid of in
+      #       favor of GPU_ARCH_VERSION
+      DESIRED_CUDA: cu132
+      GPU_ARCH_VERSION: "13.2"
+      GPU_ARCH_TYPE: cuda
+      DOCKER_IMAGE: manylinux2_28-builder
+      DOCKER_IMAGE_TAG_PREFIX: cuda13.2
+      DESIRED_PYTHON: "3.14t"
+      build_name: manywheel-py3_14t-cuda13_2
+      build_environment: linux-binary-manywheel
+      runner_prefix: "${{ needs.get-label-type.outputs.label-type }}"
+      runs_on: linux.g4dn.4xlarge.nvidia.gpu
+    secrets:
+      github-token: ${{ secrets.GITHUB_TOKEN }}
+  manywheel-py3_14t-cuda13_2-upload:  # Uploading
+    if: ${{ github.repository_owner == 'pytorch' }}
+    permissions:
+      id-token: write
+      contents: read
+    needs: manywheel-py3_14t-cuda13_2-test
+    with:
+      PYTORCH_ROOT: /pytorch
+      PACKAGE_TYPE: manywheel
+      # TODO: This is a legacy variable that we eventually want to get rid of in
+      #       favor of GPU_ARCH_VERSION
+      DESIRED_CUDA: cu132
+      GPU_ARCH_VERSION: "13.2"
+      GPU_ARCH_TYPE: cuda
+      DOCKER_IMAGE: manylinux2_28-builder
+      DOCKER_IMAGE_TAG_PREFIX: cuda13.2
+      DESIRED_PYTHON: "3.14t"
+      build_name: manywheel-py3_14t-cuda13_2
+    secrets:
+      github-token: ${{ secrets.GITHUB_TOKEN }}
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
     uses: ./.github/workflows/_binary-upload.yml
 
   manywheel-py3_14t-rocm7_1-build:
@@ -4408,7 +5003,7 @@ jobs:
     needs:
       - manywheel-py3_14t-rocm7_1-build
       - get-label-type
-    runs-on: linux.rocm.gpu.mi250.1
+    runs-on: linux.rocm.gpu.gfx942.1
     timeout-minutes: 240
     env:
       PYTORCH_ROOT: /pytorch
@@ -4426,6 +5021,16 @@ jobs:
       id-token: write
       contents: read
     steps:
+      - name: Checkout PyTorch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          submodules: recursive
+          show-progress: false
+      - name: Clean PyTorch checkout
+        run: |
+          # Remove any artifacts from the previous checkouts
+          git clean -fxd
       - name: Setup ROCm
         uses: ./.github/actions/setup-rocm
       - uses: actions/download-artifact@v4.1.7
@@ -4433,18 +5038,6 @@ jobs:
         with:
           name: manywheel-py3_14t-rocm7_1
           path: "${{ runner.temp }}/artifacts/"
-      - name: Checkout PyTorch
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
-          submodules: recursive
-          path: pytorch
-          show-progress: false
-      - name: Clean PyTorch checkout
-        run: |
-          # Remove any artifacts from the previous checkouts
-          git clean -fxd
-        working-directory: pytorch
       - name: ROCm set GPU_FLAG
         run: |
           echo "GPU_FLAG=--device=/dev/mem --device=/dev/kfd --device=/dev/dri --group-add video --group-add daemon" >> "${GITHUB_ENV}"
@@ -4464,13 +5057,12 @@ jobs:
           docker-image-name: manylinux2_28-builder
           custom-tag-prefix: rocm7.1
           docker-build-dir: .ci/docker
-          working-directory: pytorch
       - name: Pull Docker image
         uses: pytorch/test-infra/.github/actions/pull-docker-image@main
         with:
           docker-image: ${{ steps.calculate-docker-image.outputs.docker-image }}
       - name: Test Pytorch binary
-        uses: ./pytorch/.github/actions/test-pytorch-binary
+        uses: ./.github/actions/test-pytorch-binary
         env:
           DOCKER_IMAGE: ${{ steps.calculate-docker-image.outputs.docker-image }}
       - name: Teardown ROCm
@@ -4495,6 +5087,9 @@ jobs:
       build_name: manywheel-py3_14t-rocm7_1
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
     uses: ./.github/workflows/_binary-upload.yml
 
   manywheel-py3_14t-rocm7_2-build:
@@ -4524,7 +5119,7 @@ jobs:
     needs:
       - manywheel-py3_14t-rocm7_2-build
       - get-label-type
-    runs-on: linux.rocm.gpu.mi250.1
+    runs-on: linux.rocm.gpu.gfx942.1
     timeout-minutes: 240
     env:
       PYTORCH_ROOT: /pytorch
@@ -4542,6 +5137,16 @@ jobs:
       id-token: write
       contents: read
     steps:
+      - name: Checkout PyTorch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          submodules: recursive
+          show-progress: false
+      - name: Clean PyTorch checkout
+        run: |
+          # Remove any artifacts from the previous checkouts
+          git clean -fxd
       - name: Setup ROCm
         uses: ./.github/actions/setup-rocm
       - uses: actions/download-artifact@v4.1.7
@@ -4549,18 +5154,6 @@ jobs:
         with:
           name: manywheel-py3_14t-rocm7_2
           path: "${{ runner.temp }}/artifacts/"
-      - name: Checkout PyTorch
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
-          submodules: recursive
-          path: pytorch
-          show-progress: false
-      - name: Clean PyTorch checkout
-        run: |
-          # Remove any artifacts from the previous checkouts
-          git clean -fxd
-        working-directory: pytorch
       - name: ROCm set GPU_FLAG
         run: |
           echo "GPU_FLAG=--device=/dev/mem --device=/dev/kfd --device=/dev/dri --group-add video --group-add daemon" >> "${GITHUB_ENV}"
@@ -4580,13 +5173,12 @@ jobs:
           docker-image-name: manylinux2_28-builder
           custom-tag-prefix: rocm7.2
           docker-build-dir: .ci/docker
-          working-directory: pytorch
       - name: Pull Docker image
         uses: pytorch/test-infra/.github/actions/pull-docker-image@main
         with:
           docker-image: ${{ steps.calculate-docker-image.outputs.docker-image }}
       - name: Test Pytorch binary
-        uses: ./pytorch/.github/actions/test-pytorch-binary
+        uses: ./.github/actions/test-pytorch-binary
         env:
           DOCKER_IMAGE: ${{ steps.calculate-docker-image.outputs.docker-image }}
       - name: Teardown ROCm
@@ -4611,6 +5203,9 @@ jobs:
       build_name: manywheel-py3_14t-rocm7_2
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
     uses: ./.github/workflows/_binary-upload.yml
 
   manywheel-py3_14t-xpu-build:
@@ -4656,6 +5251,16 @@ jobs:
       id-token: write
       contents: read
     steps:
+      - name: Checkout PyTorch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          submodules: recursive
+          show-progress: false
+      - name: Clean PyTorch checkout
+        run: |
+          # Remove any artifacts from the previous checkouts
+          git clean -fxd
       - name: Setup XPU
         uses: pytorch/pytorch/.github/actions/setup-xpu@main
       - name: Login to ECR
@@ -4665,18 +5270,6 @@ jobs:
         with:
           name: manywheel-py3_14t-xpu
           path: "${{ runner.temp }}/artifacts/"
-      - name: Checkout PyTorch
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
-          submodules: recursive
-          path: pytorch
-          show-progress: false
-      - name: Clean PyTorch checkout
-        run: |
-          # Remove any artifacts from the previous checkouts
-          git clean -fxd
-        working-directory: pytorch
       - name: Calculate docker image
         id: calculate-docker-image
         uses: pytorch/test-infra/.github/actions/calculate-docker-image@main
@@ -4685,13 +5278,12 @@ jobs:
           docker-image-name: manylinux2_28-builder
           custom-tag-prefix: xpu
           docker-build-dir: .ci/docker
-          working-directory: pytorch
       - name: Pull Docker image
         uses: pytorch/test-infra/.github/actions/pull-docker-image@main
         with:
           docker-image: ${{ steps.calculate-docker-image.outputs.docker-image }}
       - name: Test Pytorch binary
-        uses: ./pytorch/.github/actions/test-pytorch-binary
+        uses: ./.github/actions/test-pytorch-binary
         env:
           DOCKER_IMAGE: ${{ steps.calculate-docker-image.outputs.docker-image }}
       - name: Teardown XPU
@@ -4715,6 +5307,9 @@ jobs:
       build_name: manywheel-py3_14t-xpu
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
     uses: ./.github/workflows/_binary-upload.yml
 
   libtorch-cpu-shared-with-deps-release-extract:
@@ -4733,7 +5328,6 @@ jobs:
         with:
           ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
           sparse-checkout: .ci/libtorch/
-          path: pytorch
           show-progress: false
       - uses: actions/download-artifact@v4.1.7
         name: Download Wheel Artifact
@@ -4744,7 +5338,7 @@ jobs:
         run: |
           set -eux
           mkdir -p "${{ runner.temp }}/libtorch_output"
-          python3 pytorch/.ci/libtorch/extract_libtorch_from_wheel.py \
+          python3 .ci/libtorch/extract_libtorch_from_wheel.py \
             --wheel-dir "${{ runner.temp }}/wheel_artifact" \
             --output-dir "${{ runner.temp }}/libtorch_output" \
             --platform linux \
@@ -4773,6 +5367,9 @@ jobs:
       build_name: libtorch-cpu-shared-with-deps-release
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
     uses: ./.github/workflows/_binary-upload.yml
 
   libtorch-cuda12_6-shared-with-deps-release-extract:
@@ -4791,7 +5388,6 @@ jobs:
         with:
           ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
           sparse-checkout: .ci/libtorch/
-          path: pytorch
           show-progress: false
       - uses: actions/download-artifact@v4.1.7
         name: Download Wheel Artifact
@@ -4802,7 +5398,7 @@ jobs:
         run: |
           set -eux
           mkdir -p "${{ runner.temp }}/libtorch_output"
-          python3 pytorch/.ci/libtorch/extract_libtorch_from_wheel.py \
+          python3 .ci/libtorch/extract_libtorch_from_wheel.py \
             --wheel-dir "${{ runner.temp }}/wheel_artifact" \
             --output-dir "${{ runner.temp }}/libtorch_output" \
             --platform linux \
@@ -4832,6 +5428,9 @@ jobs:
       build_name: libtorch-cuda12_6-shared-with-deps-release
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
     uses: ./.github/workflows/_binary-upload.yml
 
   libtorch-cuda12_8-shared-with-deps-release-extract:
@@ -4850,7 +5449,6 @@ jobs:
         with:
           ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
           sparse-checkout: .ci/libtorch/
-          path: pytorch
           show-progress: false
       - uses: actions/download-artifact@v4.1.7
         name: Download Wheel Artifact
@@ -4861,7 +5459,7 @@ jobs:
         run: |
           set -eux
           mkdir -p "${{ runner.temp }}/libtorch_output"
-          python3 pytorch/.ci/libtorch/extract_libtorch_from_wheel.py \
+          python3 .ci/libtorch/extract_libtorch_from_wheel.py \
             --wheel-dir "${{ runner.temp }}/wheel_artifact" \
             --output-dir "${{ runner.temp }}/libtorch_output" \
             --platform linux \
@@ -4891,6 +5489,9 @@ jobs:
       build_name: libtorch-cuda12_8-shared-with-deps-release
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
     uses: ./.github/workflows/_binary-upload.yml
 
   libtorch-cuda12_9-shared-with-deps-release-extract:
@@ -4909,7 +5510,6 @@ jobs:
         with:
           ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
           sparse-checkout: .ci/libtorch/
-          path: pytorch
           show-progress: false
       - uses: actions/download-artifact@v4.1.7
         name: Download Wheel Artifact
@@ -4920,7 +5520,7 @@ jobs:
         run: |
           set -eux
           mkdir -p "${{ runner.temp }}/libtorch_output"
-          python3 pytorch/.ci/libtorch/extract_libtorch_from_wheel.py \
+          python3 .ci/libtorch/extract_libtorch_from_wheel.py \
             --wheel-dir "${{ runner.temp }}/wheel_artifact" \
             --output-dir "${{ runner.temp }}/libtorch_output" \
             --platform linux \
@@ -4950,6 +5550,9 @@ jobs:
       build_name: libtorch-cuda12_9-shared-with-deps-release
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
     uses: ./.github/workflows/_binary-upload.yml
 
   libtorch-cuda13_0-shared-with-deps-release-extract:
@@ -4968,7 +5571,6 @@ jobs:
         with:
           ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
           sparse-checkout: .ci/libtorch/
-          path: pytorch
           show-progress: false
       - uses: actions/download-artifact@v4.1.7
         name: Download Wheel Artifact
@@ -4979,7 +5581,7 @@ jobs:
         run: |
           set -eux
           mkdir -p "${{ runner.temp }}/libtorch_output"
-          python3 pytorch/.ci/libtorch/extract_libtorch_from_wheel.py \
+          python3 .ci/libtorch/extract_libtorch_from_wheel.py \
             --wheel-dir "${{ runner.temp }}/wheel_artifact" \
             --output-dir "${{ runner.temp }}/libtorch_output" \
             --platform linux \
@@ -5009,6 +5611,70 @@ jobs:
       build_name: libtorch-cuda13_0-shared-with-deps-release
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+    uses: ./.github/workflows/_binary-upload.yml
+
+  libtorch-cuda13_2-shared-with-deps-release-extract:
+    if: ${{ github.repository_owner == 'pytorch' }}
+    needs:
+      - manywheel-py3_10-cuda13_2-build
+      - get-label-type
+    runs-on: "${{ needs.get-label-type.outputs.label-type }}linux.4xlarge"
+    timeout-minutes: 60
+    env:
+      DESIRED_CUDA: cu132
+      LIBTORCH_VARIANT: shared-with-deps
+    steps:
+      - name: Checkout PyTorch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          sparse-checkout: .ci/libtorch/
+          show-progress: false
+      - uses: actions/download-artifact@v4.1.7
+        name: Download Wheel Artifact
+        with:
+          name: manywheel-py3_10-cuda13_2
+          path: "${{ runner.temp }}/wheel_artifact/"
+      - name: Extract libtorch from wheel
+        run: |
+          set -eux
+          mkdir -p "${{ runner.temp }}/libtorch_output"
+          python3 .ci/libtorch/extract_libtorch_from_wheel.py \
+            --wheel-dir "${{ runner.temp }}/wheel_artifact" \
+            --output-dir "${{ runner.temp }}/libtorch_output" \
+            --platform linux \
+            --desired-cuda "$DESIRED_CUDA" \
+            --libtorch-variant "$LIBTORCH_VARIANT"
+      - uses: actions/upload-artifact@v4.4.0
+        if: always()
+        with:
+          name: libtorch-cuda13_2-shared-with-deps-release
+          retention-days: 14
+          if-no-files-found: error
+          path: "${{ runner.temp }}/libtorch_output/"
+  libtorch-cuda13_2-shared-with-deps-release-upload:  # Uploading
+    if: ${{ github.repository_owner == 'pytorch' }}
+    permissions:
+      id-token: write
+      contents: read
+    needs: libtorch-cuda13_2-shared-with-deps-release-extract
+    with:
+      PYTORCH_ROOT: /pytorch
+      PACKAGE_TYPE: libtorch
+      DESIRED_CUDA: cu132
+      GPU_ARCH_VERSION: "13.2"
+      GPU_ARCH_TYPE: cuda
+      LIBTORCH_CONFIG: release
+      LIBTORCH_VARIANT: shared-with-deps
+      build_name: libtorch-cuda13_2-shared-with-deps-release
+    secrets:
+      github-token: ${{ secrets.GITHUB_TOKEN }}
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
     uses: ./.github/workflows/_binary-upload.yml
 
   libtorch-rocm7_1-shared-with-deps-release-extract:
@@ -5027,7 +5693,6 @@ jobs:
         with:
           ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
           sparse-checkout: .ci/libtorch/
-          path: pytorch
           show-progress: false
       - uses: actions/download-artifact@v4.1.7
         name: Download Wheel Artifact
@@ -5038,7 +5703,7 @@ jobs:
         run: |
           set -eux
           mkdir -p "${{ runner.temp }}/libtorch_output"
-          python3 pytorch/.ci/libtorch/extract_libtorch_from_wheel.py \
+          python3 .ci/libtorch/extract_libtorch_from_wheel.py \
             --wheel-dir "${{ runner.temp }}/wheel_artifact" \
             --output-dir "${{ runner.temp }}/libtorch_output" \
             --platform linux \
@@ -5068,6 +5733,9 @@ jobs:
       build_name: libtorch-rocm7_1-shared-with-deps-release
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
     uses: ./.github/workflows/_binary-upload.yml
 
   libtorch-rocm7_2-shared-with-deps-release-extract:
@@ -5086,7 +5754,6 @@ jobs:
         with:
           ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
           sparse-checkout: .ci/libtorch/
-          path: pytorch
           show-progress: false
       - uses: actions/download-artifact@v4.1.7
         name: Download Wheel Artifact
@@ -5097,7 +5764,7 @@ jobs:
         run: |
           set -eux
           mkdir -p "${{ runner.temp }}/libtorch_output"
-          python3 pytorch/.ci/libtorch/extract_libtorch_from_wheel.py \
+          python3 .ci/libtorch/extract_libtorch_from_wheel.py \
             --wheel-dir "${{ runner.temp }}/wheel_artifact" \
             --output-dir "${{ runner.temp }}/libtorch_output" \
             --platform linux \
@@ -5127,4 +5794,7 @@ jobs:
       build_name: libtorch-rocm7_2-shared-with-deps-release
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
     uses: ./.github/workflows/_binary-upload.yml
