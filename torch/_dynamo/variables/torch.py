@@ -2290,8 +2290,7 @@ class TorchInGraphFunctionVariable(BaseTorchVariable):
             inputs_user_cls: type = dict
             if isinstance(inputs_var, ConstDictVariable):
                 inputs_dict_keys = [
-                    hash_key.vt.as_python_constant()
-                    for hash_key in inputs_var.items.keys()
+                    hash_key.vt.as_python_constant() for hash_key in inputs_var.items
                 ]
                 inputs_user_cls = inputs_var.user_cls
                 inputs_as_tuple = TupleVariable(list(inputs_var.items.values()))

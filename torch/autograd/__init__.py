@@ -592,7 +592,10 @@ def grad(
         result = tuple(
             output
             if output is not None
-            else torch.zeros_like(input, requires_grad=create_graph)  # pyrefly: ignore [bad-argument-type]
+            else torch.zeros_like(
+                input,  # pyrefly: ignore [bad-argument-type]
+                requires_grad=create_graph,
+            )
             for (output, input) in zip(result, inputs_tuple)
         )
     if isinstance(inputs, Mapping):
