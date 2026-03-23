@@ -465,6 +465,10 @@ Please make sure the checkpointed region does not contain in-place ops (e.g. tor
     # instead of in AOTAutograd).
     kwargs["preserve_rng_state"] = False
     kwargs["context_fn"] = context_fn_with_graph_id
+    # Disable early stop to prevent _StopRecomputationError from interrupting
+    # recomputation between _vmap_increment_nesting and _vmap_decrement_nesting,
+    # which would leak a functorch dynamic layer.
+    kwargs["early_stop"] = False
     # Using interpreter allows preservation of metadata through torch.compile stack.
     # We use a wrapper instead of passing Interpreter(gmod).run directly because
     # checkpoint's recompute_fn captures the function in a closure. A bound method
