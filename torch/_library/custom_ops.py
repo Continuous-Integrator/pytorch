@@ -802,6 +802,8 @@ class CustomOpDef:
             # Check for subclass tensors (__torch_function__ or __torch_dispatch__)
             if any(type(a) is not Tensor for a in args if isinstance(a, Tensor)):
                 return NotImplemented
+            if _C._is_torch_function_mode_enabled():
+                return NotImplemented
             if _C._is_any_autocast_enabled():
                 return NotImplemented
             # Check for special dispatch modes (vmap, functionalize, etc.)

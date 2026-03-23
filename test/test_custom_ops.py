@@ -4631,6 +4631,24 @@ class TestCustomOpFastPath(TestCase):
         self.assertEqual(r_direct.dtype, torch.float16)
         self.assertEqual(r_packet.dtype, torch.float16)
 
+    def test_fast_path_falls_back_for_torch_function_mode(self):
+        @torch.library.custom_op("_torch_testing::fp_tfm", mutates_args=())
+        def fp_tfm(x: Tensor) -> Tensor:
+            return x.clone()
+
+        sentinel = torch.tensor(-1.0)
+
+        class ReplaceMode(torch.overrides.TorchFunctionMode):
+            def __torch_function__(self, func, types, args=(), kwargs=None):
+                if "fp_tfm" in str(func):
+                    return sentinel
+                return func(*args, **(kwargs or {}))
+
+        x = torch.randn(3)
+        with ReplaceMode():
+            self.assertIs(fp_tfm(x), sentinel)
+            self.assertIs(torch.ops._torch_testing.fp_tfm(x), sentinel)
+
 
 class TestLibrarySourceLocation(TestCase):
     def test_library_source_location(self):
