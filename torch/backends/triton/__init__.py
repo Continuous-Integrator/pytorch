@@ -22,15 +22,15 @@ def version() -> Version | None:
 
 
 def _set_enabled(_enabled: bool) -> None:
-    from torch._native.registry import _deregister_op_overrides, _reenable_op_overrides
+    from torch._native.registry import deregister_op_overrides, reenable_op_overrides
 
     global enabled
     enabled = _enabled
 
     if enabled:
-        _reenable_op_overrides(enable_dsl_names="triton")
+        reenable_op_overrides(enable_dsl_names="triton")
     else:
-        _deregister_op_overrides(disable_dsl_names="triton")
+        deregister_op_overrides(disable_dsl_names="triton")
 
 
 def _get_enabled() -> bool:

@@ -33,27 +33,27 @@ class _OverrideNode:
 
 @dataclass
 class _FilterState:
-    dsl_names: set[str] = field(default_factory=set)
-    op_symbols: set[str] = field(default_factory=set)
-    dispatch_keys: set[str] = field(default_factory=set)
+    _dsl_names: set[str] = field(default_factory=set)
+    _op_symbols: set[str] = field(default_factory=set)
+    _dispatch_keys: set[str] = field(default_factory=set)
 
     def check_enabled(self, node: _OverrideNode) -> bool:
-        if node.dsl_name in self.dsl_names:
+        if node.dsl_name in self._dsl_names:
             return False
 
-        if node.op_symbol in self.op_symbols:
+        if node.op_symbol in self._op_symbols:
             return False
 
-        if node.dispatch_key in self.dispatch_keys:
+        if node.dispatch_key in self._dispatch_keys:
             return False
 
         return True
 
     def update(
         self,
-        _dsl_names: str | Iterable[str] | None,
-        _op_symbols: str | Iterable[str] | None,
-        _dispatch_keys: str | Iterable[str] | None,
+        dsl_names: str | Iterable[str] | None,
+        op_symbols: str | Iterable[str] | None,
+        dispatch_keys: str | Iterable[str] | None,
         remove_keys: bool = False,
     ) -> None:
         """
@@ -65,36 +65,39 @@ class _FilterState:
         update_fn = "discard" if remove_keys else "add"
 
         # Need to catch key errors only when removing
-        for dsl in _resolve_iterable(_dsl_names):
-            getattr(self.dsl_names, update_fn)(dsl)
+        for dsl in _resolve_iterable(dsl_names):
+            getattr(self._dsl_names, update_fn)(dsl)
 
-        for op in _resolve_iterable(_op_symbols):
-            getattr(self.op_symbols, update_fn)(op)
+        for op in _resolve_iterable(op_symbols):
+            getattr(self._op_symbols, update_fn)(op)
 
-        for key in _resolve_iterable(_dispatch_keys):
-            getattr(self.dispatch_keys, update_fn)(key)
+        for key in _resolve_iterable(dispatch_keys):
+            getattr(self._dispatch_keys, update_fn)(key)
 
     def build_disable_key_set(self) -> set:
         """
         Build a set of dictionary keys based on the current filter state(s)
         """
-        return build_key_set(
-            self.dsl_names,
-            self.op_symbols,
-            self.dispatch_keys,
+        return _build_key_set(
+            self._dsl_names,
+            self._op_symbols,
+            self._dispatch_keys,
         )
 
-    def print(self) -> None:
-        print("Filter State:")
-        print("=== DSL: ===")
-        for i, dsl in enumerate(self.dsl_names):
-            print(f"  {i}: {dsl}")
-        print("=== OP SYMBOL: ===")
-        for i, op in enumerate(self.op_symbols):
-            print(f"  {i}: {op}")
-        print("=== DISPATCH KEYS: ===")
-        for i, key in enumerate(self.dispatch_keys):
-            print(f"  {i}: {key}")
+    def __str__(self) -> str:
+        s = ""
+        s += "Filter State:\n"
+        s += "  === DSL: ===\n"
+        for i, dsl in enumerate(self._dsl_names):
+            s += f"    {i}: {dsl}\n"
+        s += "  === OP SYMBOL: ===\n"
+        for i, op in enumerate(self._op_symbols):
+            s += f"    {i}: {op}\n"
+        s += "=== DISPATCH KEYS: ===\n"
+        for i, key in enumerate(self._dispatch_keys):
+            s += f"    {i}: {key}\n"
+
+        return s
 
 
 # Store the global override filtering state
@@ -117,7 +120,7 @@ _dispatch_key_to_lib_graph: _MappingType = {}
 _op_symbol_to_lib_graph: _MappingType = {}
 
 
-def build_key_set(
+def _build_key_set(
     dsl_names: str | Iterable[str] | None,
     op_symbols: str | Iterable[str] | None,
     dispatch_keys: str | Iterable[str] | None,
@@ -130,9 +133,9 @@ def build_key_set(
     def _append_to_set(
         entries: str | Iterable[str] | None, graph_lib_dict: _MappingType
     ) -> None:
-        _entries = _resolve_iterable(entries)
+        resolved_entries = _resolve_iterable(entries)
 
-        for entry in _entries:
+        for entry in resolved_entries:
             if entry in graph_lib_dict:
                 for key in graph_lib_dict[entry]:
                     key_set.add(key)
@@ -208,7 +211,7 @@ def _filter(
     return False
 
 
-def _reenable_op_overrides(
+def reenable_op_overrides(
     *,
     enable_dsl_names: str | list[str] | None = None,
     enable_op_symbols: str | list[str] | None = None,
@@ -233,7 +236,7 @@ def _reenable_op_overrides(
         remove_keys=True,
     )
 
-    key_set: set = build_key_set(
+    key_set: set = _build_key_set(
         enable_dsl_names,
         enable_op_symbols,
         enable_dispatch_keys,
@@ -262,7 +265,7 @@ def _reenable_op_overrides(
                 node.active = False
 
 
-def _deregister_op_overrides(
+def deregister_op_overrides(
     *,
     disable_dsl_names: str | list[str] | None = None,
     disable_op_symbols: str | list[str] | None = None,
@@ -342,7 +345,7 @@ def _update_registration_maps(
     _get_new_entry_or_append(_dispatch_key_to_lib_graph, dispatch_key, key)
 
 
-def _register_op_override(
+def register_op_override(
     backend: str,
     lib_symbol: str,
     op_symbol: str,

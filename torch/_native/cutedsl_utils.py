@@ -9,7 +9,11 @@ from .common_utils import (
     check_native_jit_disabled,
     check_native_version_skip,
 )
-from .registry import _deregister_op_overrides, _OpFn, _register_op_override
+from .registry import (
+    _OpFn,
+    deregister_op_overrides as _deregister_op_overrides_impl,
+    register_op_override as _register_op_override_impl,
+)
 
 
 log = logging.getLogger(__name__)
@@ -79,7 +83,7 @@ def deregister_op_overrides() -> None:
     """
     Deregister all ops through cuteDSL
     """
-    _deregister_op_overrides(disable_dsl_names=_CUTEDSL_DSL_NAME)
+    _deregister_op_overrides_impl(disable_dsl_names=_CUTEDSL_DSL_NAME)
 
 
 def register_op_override(
@@ -94,7 +98,7 @@ def register_op_override(
     """
     See torch/_native/registry.py for the underlying implementation
     and arguments. This is a thin, DSL-checking wrapper over
-    _register_op_override
+    _register_op_override_impl
     """
     available, version = _check_runtime_available()
     if (not available) or check_native_jit_disabled():
@@ -103,7 +107,7 @@ def register_op_override(
     if not _version_is_ok():
         return
 
-    _register_op_override(
+    _register_op_override_impl(
         _CUTEDSL_DSL_NAME,
         lib_symbol,
         op_symbol,
