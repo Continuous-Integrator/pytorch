@@ -65,11 +65,13 @@ from torch._inductor.cpp_builder import (
     _LINKER_SCRIPT,
     _set_gpu_runtime_env,
     _TORCH_PATH,
+    batch_convert_cubins_to_obj,
     convert_cubin_to_obj,
     CppBuilder,
     CppOptions,
     CppTorchDeviceOptions,
     get_compiler_version_info,
+    get_cpp_compiler,
     get_ld_and_objcopy,
     get_name_and_dir_from_output_file_path,
     normalize_path_separator,
@@ -2540,7 +2542,9 @@ end
 
             cubins_o = []
             asm_files = []
+            fatbin_cmds: list[tuple[str, str]] = []
             if not _IS_WINDOWS:
+                cubins_to_embed: list[tuple[str, str]] = []
                 ld, objcopy = get_ld_and_objcopy(use_relative_path)
                 kernels = getattr(V.graph.wrapper_code, "_kernel_name_to_body", {})
                 for kernel_name, value in CudaKernelParamCache.cache.items():
@@ -2558,30 +2562,7 @@ end
                         and device_type == "cuda"
                     ):
                         if torch.version.hip is None:
-                            current_arch = (
-                                cuda_compile_utils._nvcc_arch_as_compile_option()
-                            )
-                            cmd = (
-                                # pyrefly: ignore [unbound-name]
-                                f"{cuda_compile_utils._cuda_compiler()} -fatbin {asm_file} -o {cubin_file} "
-                                # Triton only allows generating PTX version as same as the current arch
-                                f"-gencode arch=compute_{current_arch},code=compute_{current_arch} "
-                                # Include SASS for the current specific arch
-                                f"-gencode arch=compute_{current_arch},code=sm_{current_arch} "
-                            )
-                            try:
-                                subprocess.run(
-                                    cmd.split(),
-                                    capture_output=True,
-                                    text=True,
-                                    check=True,
-                                )
-                            except subprocess.CalledProcessError as e:
-                                print(
-                                    f"{cmd} failed with:\nstdout:\n{e.stdout}\nstderr:\n{e.stderr}",
-                                    file=sys.stderr,
-                                )
-                                raise
+                            fatbin_cmds.append((asm_file, cubin_file))
 
                         else:
                             # ROCm multi-arch: compile LLVM IR to multi-arch bundle
@@ -2615,10 +2596,59 @@ end
                             log.info("Created multi-arch bundle: %s", cubin_file)
 
                     if config.aot_inductor.embed_kernel_binary:
-                        # Embed cubin files into model.so using objcopy
-                        cubins_o.append(
-                            convert_cubin_to_obj(cubin_file, kernel_name, ld, objcopy)
+                        cubins_to_embed.append((cubin_file, kernel_name))
+
+                # Compile PTX → fatbin in parallel (each nvcc call is independent).
+                # Must complete before cubin embedding below.
+                if fatbin_cmds:
+                    from concurrent.futures import ThreadPoolExecutor
+
+                    current_arch = cuda_compile_utils._nvcc_arch_as_compile_option()
+                    nvcc = cuda_compile_utils._cuda_compiler()
+
+                    def _compile_fatbin(asm_and_cubin: tuple[str, str]) -> None:
+                        asm_f, cubin_f = asm_and_cubin
+                        cmd = (
+                            f"{nvcc} -fatbin {asm_f} -o {cubin_f} "
+                            f"-gencode arch=compute_{current_arch},code=compute_{current_arch} "
+                            f"-gencode arch=compute_{current_arch},code=sm_{current_arch} "
                         )
+                        try:
+                            subprocess.run(
+                                cmd.split(), capture_output=True, text=True, check=True
+                            )
+                        except subprocess.CalledProcessError as e:
+                            print(
+                                f"{cmd} failed with:\nstdout:\n{e.stdout}\nstderr:\n{e.stderr}",
+                                file=sys.stderr,
+                            )
+                            raise
+
+                    with ThreadPoolExecutor() as pool:
+                        list(pool.map(_compile_fatbin, fatbin_cmds))
+
+                if cubins_to_embed:
+                    # Batch all cubins into a single .o using .incbin assembly.
+                    # This replaces N * 3 subprocess calls (ld + 2x objcopy per
+                    # cubin) with a single compiler invocation.
+                    try:
+                        combined_obj = batch_convert_cubins_to_obj(
+                            cubins_to_embed,
+                            os.path.dirname(output_so),
+                            cpp_compiler=get_cpp_compiler(),
+                        )
+                        cubins_o.append(combined_obj)
+                    except subprocess.CalledProcessError:
+                        log.warning(
+                            "Batched cubin embedding failed, "
+                            "falling back to per-cubin objcopy"
+                        )
+                        for cubin_file, kernel_name in cubins_to_embed:
+                            cubins_o.append(
+                                convert_cubin_to_obj(
+                                    cubin_file, kernel_name, ld, objcopy
+                                )
+                            )
 
             output_name, output_dir = get_name_and_dir_from_output_file_path(output_so)
             so_build_options = CppTorchDeviceOptions(

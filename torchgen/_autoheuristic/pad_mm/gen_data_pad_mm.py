@@ -1,8 +1,9 @@
 import csv
 import random
 import sys
+from collections.abc import Generator
 from pathlib import Path
-from typing import Any, Generator, List, Tuple
+from typing import Any
 
 
 sys.path.append(str(Path(__file__).absolute().parents[1]))
@@ -15,7 +16,9 @@ from benchmark_utils import (  # type: ignore[import-not-found]
     set_precision,
     transpose_tensors,
 )
-from collect_known_mm_shapes import collect_known_mm_shapes  # type: ignore[import-not-found]
+from collect_known_mm_shapes import (
+    collect_known_mm_shapes,  # type: ignore[import-not-found]
+)
 
 import torch
 from torch._inductor.fx_passes.pad_mm import (  # type: ignore[import-not-found]
@@ -37,39 +40,45 @@ class BenchmarkRunnerPadMM(BenchmarkRunner):  # type: ignore[misc, no-any-unimpo
             "--additional-shape-csv",
             nargs="*",
             default=[],
-            help="List of CSV files containing additional matrix multiplication shapes (M,K,N,dtype format)"
+            help="List of CSV files containing additional matrix multiplication shapes (M,K,N,dtype format)",
         )
 
         # Initialize additional_shape_collections
-        self.additional_shape_collections: List[List[Tuple[int, int, int, torch.dtype, torch.dtype]]] = []
+        self.additional_shape_collections: list[
+            list[tuple[int, int, int, torch.dtype, torch.dtype]]
+        ] = []
 
         # Initialize the shape generator (will be set up after parsing args)
         self.shape_generator = None
 
-    def load_shapes_from_csv(self, csv_file: str) -> List[Tuple[int, int, int, torch.dtype, torch.dtype]]:
+    def load_shapes_from_csv(
+        self, csv_file: str
+    ) -> list[tuple[int, int, int, torch.dtype, torch.dtype]]:
         """Load matrix multiplication shapes from a CSV file in M,K,N,dtype format."""
         shapes = []
         dtype_map = {
             "float16": torch.float16,
             "bfloat16": torch.bfloat16,
-            "float32": torch.float32
+            "float32": torch.float32,
         }
 
         try:
-            with open(csv_file, 'r') as f:
+            with open(csv_file) as f:
                 reader = csv.DictReader(f)
                 for row in reader:
-                    m = int(row['M'])
-                    k = int(row['K'])
-                    n = int(row['N'])
-                    dtype_str = row['dtype']
+                    m = int(row["M"])
+                    k = int(row["K"])
+                    n = int(row["N"])
+                    dtype_str = row["dtype"]
 
                     if dtype_str in dtype_map:
                         dtype = dtype_map[dtype_str]
                         # Store as (m, k, n, dtype1, dtype2) with same dtype for both
                         shapes.append((m, k, n, dtype, dtype))
                     else:
-                        print(f"Warning: Unknown dtype '{dtype_str}' in {csv_file}, skipping row")
+                        print(
+                            f"Warning: Unknown dtype '{dtype_str}' in {csv_file}, skipping row"
+                        )
 
             print(f"Loaded {len(shapes)} shapes from {csv_file}")
         except Exception as e:
@@ -77,7 +86,7 @@ class BenchmarkRunnerPadMM(BenchmarkRunner):  # type: ignore[misc, no-any-unimpo
 
         return shapes
 
-    def setup_shape_collections(self, csv_files: List[str]) -> None:
+    def setup_shape_collections(self, csv_files: list[str]) -> None:
         """Setup additional shape collections from CSV files and built-in collection."""
         self.additional_shape_collections = []
 
@@ -90,7 +99,7 @@ class BenchmarkRunnerPadMM(BenchmarkRunner):  # type: ignore[misc, no-any-unimpo
         self.additional_shape_collections.append(collect_known_mm_shapes())
         self.shape_generator = self.generate_mm_shapes()
 
-    def generate_mm_shapes(self) -> Generator[Tuple[int, int, int, Any], None, None]:
+    def generate_mm_shapes(self) -> Generator[tuple[int, int, int, Any], None, None]:
         """Generator that yields (m, k, n, dtype) tuples for matrix multiplication.
 
         First exhausts all shapes from additional_shape_collections, then generates random shapes.
@@ -227,6 +236,7 @@ class BenchmarkRunnerPadMM(BenchmarkRunner):  # type: ignore[misc, no-any-unimpo
     def run(self) -> None:
         """Override run to setup shape collections before running."""
         import time
+
         from tqdm import tqdm
 
         torch.set_default_device("cuda")
