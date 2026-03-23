@@ -1,7 +1,8 @@
 import random
 import sys
+from collections.abc import Generator
 from pathlib import Path
-from typing import Any, Generator, Tuple
+from typing import Any
 
 
 sys.path.append(str(Path(__file__).absolute().parents[1]))
@@ -32,7 +33,7 @@ class BenchmarkRunnerPadMM(BenchmarkRunner):  # type: ignore[misc, no-any-unimpo
         # Initialize the shape generator
         self.shape_generator = self.generate_mm_shapes()
 
-    def generate_mm_shapes(self) -> Generator[Tuple[int, int, int, Any], None, None]:
+    def generate_mm_shapes(self) -> Generator[tuple[int, int, int, Any], None, None]:
         """Generator that yields (m, k, n, dtype) tuples for matrix multiplication."""
         while True:
             # Generate random dtype
