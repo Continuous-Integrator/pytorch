@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 from ..exc import raise_observed_exception, unimplemented
 from ..utils import istype, richcmp_op_str
 from .base import NO_SUCH_SUBOBJ, VariableTracker
+from .constant import CONSTANT_VARIABLE_FALSE, CONSTANT_VARIABLE_TRUE
 
 
 if TYPE_CHECKING:
@@ -87,9 +88,8 @@ def object_richcompare(
 
 
 def vt_identity_compare(
-    tx: "InstructionTranslator",
-    left: "VariableTracker",
-    right: "VariableTracker",
+    left: VariableTracker,
+    right: VariableTracker,
 ) -> "VariableTracker | None":
     """Try to determine Python identity (left is right) at trace time.
 
@@ -97,7 +97,7 @@ def vt_identity_compare(
     Mirrors the logic in BuiltinVariable's handle_is handler.
     """
     if left is right:
-        return VariableTracker.build(tx, True)
+        return CONSTANT_VARIABLE_TRUE
 
     left_val = left.get_real_python_backed_value()
     right_val = right.get_real_python_backed_value()
@@ -105,24 +105,26 @@ def vt_identity_compare(
     right_known = right_val is not NO_SUCH_SUBOBJ
 
     if left_known and right_known:
-        return VariableTracker.build(tx, left_val is right_val)
+        return (
+            CONSTANT_VARIABLE_TRUE if left_val is right_val else CONSTANT_VARIABLE_FALSE
+        )
 
     # One side has a concrete backing object, the other doesn't — they can't
     # be the same object.
     if left_known != right_known:
-        return VariableTracker.build(tx, False)
+        return CONSTANT_VARIABLE_FALSE
 
     # Mutable containers created during tracing: VT identity = Python identity.
     from .dicts import ConstDictVariable
     from .lists import ListVariable
 
     if isinstance(left, (ConstDictVariable, ListVariable)):
-        return VariableTracker.build(tx, False)
+        return CONSTANT_VARIABLE_FALSE
 
     # Different Python types can never be the same object.
     try:
         if left.python_type() is not right.python_type():
-            return VariableTracker.build(tx, False)
+            return CONSTANT_VARIABLE_FALSE
     except NotImplementedError:
         pass
 
@@ -134,7 +136,7 @@ def vt_identity_compare(
         and istype(right, variables.ExceptionVariable)
         and left.exc_type is not right.exc_type  # type: ignore[attr-defined]
     ):
-        return VariableTracker.build(tx, False)
+        return CONSTANT_VARIABLE_FALSE
 
     return None
 
@@ -190,7 +192,7 @@ def generic_richcompare(
     # Step 4: fallback
     if op in ("__eq__", "__ne__"):
         # CPython: fall back to identity (a is b)
-        identity = vt_identity_compare(tx, lhs, rhs)
+        identity = vt_identity_compare(lhs, rhs)
         if identity is None:
             unimplemented(
                 gb_type="Cannot determine object identity at trace time",

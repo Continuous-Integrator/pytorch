@@ -868,7 +868,7 @@ class BuiltinVariable(VariableTracker):
                 ) -> VariableTracker | None:
                     from .object_protocol import vt_identity_compare
 
-                    result = vt_identity_compare(tx, left, right)
+                    result = vt_identity_compare(left, right)
                     if result is None:
                         return None
                     is_same = result.as_python_constant()
