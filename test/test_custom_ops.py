@@ -3839,16 +3839,13 @@ Please use `add.register_fake` to add an fake impl.""",
         self.assertEqual(called_f1, 1)
 
     def test_disallows_output_aliasing(self):
-        # The aliasing check runs on the slow dispatch path (via the C++
-        # dispatcher). The fast path skips it for performance. We test via
-        # _opoverload to exercise the slow path.
         @torch.library.custom_op("_torch_testing::f", mutates_args=())
         def f(x: Tensor) -> Tensor:
             return x.view(-1)
 
         x = torch.randn(3)
         with self.assertRaisesRegex(RuntimeError, "may not alias"):
-            f._opoverload(x)
+            f(x)
 
         @torch.library.custom_op("_torch_testing::f", mutates_args=())
         def f(x: Tensor) -> Tensor:
@@ -3856,7 +3853,7 @@ Please use `add.register_fake` to add an fake impl.""",
 
         x = torch.randn(3)
         with self.assertRaisesRegex(RuntimeError, "may not alias"):
-            f._opoverload(x)
+            f(x)
 
         @torch.library.custom_op(
             "_torch_testing::f", mutates_args={"x"}, device_types="cpu"
@@ -3868,7 +3865,7 @@ Please use `add.register_fake` to add an fake impl.""",
 
         x = torch.randn(3)
         with self.assertRaisesRegex(RuntimeError, "may not alias"):
-            numpy_sin_inplace._opoverload(x)
+            numpy_sin_inplace(x)
 
     @skipIfTorchDynamo("Expected to fail due to no FakeTensor support; not a bug")
     def test_factory_function(self):
@@ -4648,6 +4645,17 @@ class TestCustomOpFastPath(TestCase):
         with ReplaceMode():
             self.assertIs(fp_tfm(x), sentinel)
             self.assertIs(torch.ops._torch_testing.fp_tfm(x), sentinel)
+
+    def test_fast_path_catches_aliasing(self):
+        @torch.library.custom_op("_torch_testing::fp_alias", mutates_args=())
+        def fp_alias(x: Tensor) -> Tensor:
+            return x
+
+        x = torch.randn(3)
+        with self.assertRaisesRegex(RuntimeError, "may not alias"):
+            fp_alias(x)
+        with self.assertRaisesRegex(RuntimeError, "may not alias"):
+            torch.ops._torch_testing.fp_alias(x)
 
 
 class TestLibrarySourceLocation(TestCase):

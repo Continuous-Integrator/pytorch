@@ -730,6 +730,7 @@ class CustomOpDef:
         raw_fns = self._raw_fns
         opdef = self
         op = self._opoverload
+        op_name = self._name
         has_kwarg_only_args = utils.has_kwarg_only_args(schema)
         normal_tls_include_raw = _get_normal_tls_include_raw()
 
@@ -746,6 +747,8 @@ class CustomOpDef:
             device_type = args[0].device.type
             fn = raw_fns.get(device_type) or raw_fns.get(None)
             result = fn(*args)
+
+            utils._c_check_aliasing_constraint(op_name, args, {}, result)
 
             if opdef._setup_context_fn:
                 filled_args, filled_kwargs = utils.fill_defaults(
@@ -823,7 +826,9 @@ class CustomOpDef:
             if is_mutable:
                 for idx in mutated_idxs:
                     increment_version(args[idx])
-            return fn(*args)
+            result = fn(*args)
+            utils._c_check_aliasing_constraint(op_name, args, {}, result)
+            return result
 
         self._fast_call = fast_call
         self._opoverload._overloadpacket._fast_call = fast_call
