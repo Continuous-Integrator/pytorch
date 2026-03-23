@@ -228,7 +228,7 @@ class TestNativeDSLOps(TestCase):
             self.assertTrue(check_native_jit_disabled())
 
             # Mock the registry calls to count how many times they would be called
-            with patch("torch._native.registry._register_op_override") as registry_mock:
+            with patch("torch._native.registry.register_op_override") as registry_mock:
                 # Use a unique operation name
                 unique_op = f"test_jit_disabled_{uuid.uuid4().hex[:8]}.Tensor"
                 triton_utils.register_op_override(
@@ -270,8 +270,8 @@ class TestNativeDSLOps(TestCase):
                     "_check_runtime_available",
                     return_value=(True, fake_version),
                 ),
-                patch.object(triton_utils, "_register_op_override") as triton_mock,
-                patch.object(cutedsl_utils, "_register_op_override") as cute_mock,
+                patch.object(triton_utils, "_register_op_override_impl") as triton_mock,
+                patch.object(cutedsl_utils, "_register_op_override_impl") as cute_mock,
             ):
                 # Use unique operation names to avoid conflicts
                 op_name = f"test_version_skip_{uuid.uuid4().hex[:8]}.Tensor"

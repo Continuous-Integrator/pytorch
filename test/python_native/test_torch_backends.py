@@ -4,6 +4,7 @@ import sys
 from contextlib import contextmanager
 from unittest.mock import patch
 
+from torch.backends import __allow_nonbracketed_mutation as allow_nonbracketed_mutation
 from torch.testing._internal.common_utils import run_tests, TestCase
 
 
@@ -67,9 +68,15 @@ class TestTorchBackends(TestCase):
             self.assertTrue(result)
 
         # Test with runtime not available
+        # Clear backend and utility modules first to ensure fresh import
+        for module_name in [
+            "torch.backends.cutedsl",
+            "torch._native.cutedsl_utils",
+        ]:
+            if module_name in sys.modules:
+                del sys.modules[module_name]
+
         with self._mock_native_utils(runtime_available=False):
-            if "torch.backends.cutedsl" in sys.modules:
-                del sys.modules["torch.backends.cutedsl"]
             import torch.backends.cutedsl as cutedsl
 
             result = cutedsl.is_available()
@@ -86,9 +93,15 @@ class TestTorchBackends(TestCase):
             self.assertTrue(result)
 
         # Test with runtime not available
+        # Clear backend and utility modules first to ensure fresh import
+        for module_name in [
+            "torch.backends.triton",
+            "torch._native.triton_utils",
+        ]:
+            if module_name in sys.modules:
+                del sys.modules[module_name]
+
         with self._mock_native_utils(runtime_available=False):
-            if "torch.backends.triton" in sys.modules:
-                del sys.modules["torch.backends.triton"]
             import torch.backends.triton as triton
 
             result = triton.is_available()
@@ -107,8 +120,13 @@ class TestTorchBackends(TestCase):
             self.assertEqual(result, test_version)
 
         with self._mock_native_utils(runtime_version=None):
-            if "torch.backends.cutedsl" in sys.modules:
-                del sys.modules["torch.backends.cutedsl"]
+            # Clear both backend and utility modules to ensure fresh import
+            for module_name in [
+                "torch.backends.cutedsl",
+                "torch._native.cutedsl_utils",
+            ]:
+                if module_name in sys.modules:
+                    del sys.modules[module_name]
             import torch.backends.cutedsl as cutedsl
 
             result = cutedsl.version()
@@ -126,8 +144,13 @@ class TestTorchBackends(TestCase):
             self.assertEqual(result, test_version)
 
         with self._mock_native_utils(runtime_version=None):
-            if "torch.backends.triton" in sys.modules:
-                del sys.modules["torch.backends.triton"]
+            # Clear both backend and utility modules to ensure fresh import
+            for module_name in [
+                "torch.backends.triton",
+                "torch._native.triton_utils",
+            ]:
+                if module_name in sys.modules:
+                    del sys.modules[module_name]
             import torch.backends.triton as triton
 
             result = triton.version()
@@ -153,15 +176,18 @@ class TestTorchBackends(TestCase):
         initial_state = cutedsl.enabled
 
         # Test disabling
-        cutedsl.enabled = False
+        with allow_nonbracketed_mutation():
+            cutedsl.enabled = False
         self.assertFalse(cutedsl.enabled)
 
         # Test re-enabling
-        cutedsl.enabled = True
+        with allow_nonbracketed_mutation():
+            cutedsl.enabled = True
         self.assertTrue(cutedsl.enabled)
 
         # Restore initial state
-        cutedsl.enabled = initial_state
+        with allow_nonbracketed_mutation():
+            cutedsl.enabled = initial_state
 
     def test_triton_enabled_setter(self):
         """Test setting torch.backends.triton.enabled."""
@@ -171,18 +197,21 @@ class TestTorchBackends(TestCase):
         initial_state = triton.enabled
 
         # Test disabling
-        triton.enabled = False
+        with allow_nonbracketed_mutation():
+            triton.enabled = False
         self.assertFalse(triton.enabled)
 
         # Test re-enabling
-        triton.enabled = True
+        with allow_nonbracketed_mutation():
+            triton.enabled = True
         self.assertTrue(triton.enabled)
 
         # Restore initial state
-        triton.enabled = initial_state
+        with allow_nonbracketed_mutation():
+            triton.enabled = initial_state
 
-    @patch("torch._native.registry._reenable_op_overrides")
-    @patch("torch._native.registry._deregister_op_overrides")
+    @patch("torch._native.registry.reenable_op_overrides")
+    @patch("torch._native.registry.deregister_op_overrides")
     def test_cutedsl_set_flags(self, mock_disable, mock_reenable):
         """Test torch.backends.cutedsl.set_flags() function."""
         import torch.backends.cutedsl as cutedsl
@@ -202,8 +231,8 @@ class TestTorchBackends(TestCase):
         orig_flags = cutedsl.set_flags(_enabled=None)
         self.assertEqual(orig_flags, (True,))
 
-    @patch("torch._native.registry._reenable_op_overrides")
-    @patch("torch._native.registry._deregister_op_overrides")
+    @patch("torch._native.registry.reenable_op_overrides")
+    @patch("torch._native.registry.deregister_op_overrides")
     def test_triton_set_flags(self, mock_disable, mock_reenable):
         """Test torch.backends.triton.set_flags() function."""
         import torch.backends.triton as triton
@@ -228,7 +257,8 @@ class TestTorchBackends(TestCase):
         import torch.backends.cutedsl as cutedsl
 
         # Ensure starting state is enabled
-        cutedsl.enabled = True
+        with allow_nonbracketed_mutation():
+            cutedsl.enabled = True
         initial_state = cutedsl.enabled
 
         # Test context manager disables and restores
@@ -243,7 +273,8 @@ class TestTorchBackends(TestCase):
         import torch.backends.triton as triton
 
         # Ensure starting state is enabled
-        triton.enabled = True
+        with allow_nonbracketed_mutation():
+            triton.enabled = True
         initial_state = triton.enabled
 
         # Test context manager disables and restores
@@ -258,7 +289,8 @@ class TestTorchBackends(TestCase):
         import torch.backends.cutedsl as cutedsl
 
         # Ensure starting state is enabled
-        cutedsl.enabled = True
+        with allow_nonbracketed_mutation():
+            cutedsl.enabled = True
         initial_state = cutedsl.enabled
 
         # Test exception handling
@@ -275,7 +307,8 @@ class TestTorchBackends(TestCase):
         import torch.backends.triton as triton
 
         # Ensure starting state is enabled
-        triton.enabled = True
+        with allow_nonbracketed_mutation():
+            triton.enabled = True
         initial_state = triton.enabled
 
         # Test exception handling
@@ -349,28 +382,35 @@ class TestTorchBackends(TestCase):
         self.assertTrue(triton.enabled)
 
         # Disable cutedsl, triton should remain enabled
-        cutedsl.enabled = False
+        with allow_nonbracketed_mutation():
+            cutedsl.enabled = False
         self.assertFalse(cutedsl.enabled)
         self.assertTrue(triton.enabled)
 
         # Disable triton, cutedsl should remain disabled
-        triton.enabled = False
+        with allow_nonbracketed_mutation():
+            triton.enabled = False
         self.assertFalse(cutedsl.enabled)
         self.assertFalse(triton.enabled)
 
         # Re-enable cutedsl, triton should remain disabled
-        cutedsl.enabled = True
+        with allow_nonbracketed_mutation():
+            cutedsl.enabled = True
         self.assertTrue(cutedsl.enabled)
         self.assertFalse(triton.enabled)
 
-    @patch("torch._native.registry._reenable_op_overrides")
-    @patch("torch._native.registry._deregister_op_overrides")
+    @patch("torch._native.registry.reenable_op_overrides")
+    @patch("torch._native.registry.deregister_op_overrides")
     def test_nested_context_managers(self, mock_disable, mock_reenable):
         """Test nested context managers for both backends."""
         import torch.backends.cutedsl as cutedsl
         import torch.backends.triton as triton
 
-        # Both start enabled
+        # Ensure both start enabled
+        with allow_nonbracketed_mutation():
+            cutedsl.enabled = True
+            triton.enabled = True
+
         self.assertTrue(cutedsl.enabled)
         self.assertTrue(triton.enabled)
 
@@ -396,17 +436,17 @@ class TestTorchBackends(TestCase):
 
         # These should not raise import errors
         from torch._native.registry import (
-            _deregister_op_overrides,
-            _reenable_op_overrides,
+            deregister_op_overrides,
+            reenable_op_overrides,
         )
 
         # The backends should be able to call these functions without error
         # (though they may be no-ops if no overrides are registered)
         try:
-            _deregister_op_overrides(disable_dsl_names="cutedsl")
-            _reenable_op_overrides(enable_dsl_names="cutedsl")
-            _deregister_op_overrides(disable_dsl_names="triton")
-            _reenable_op_overrides(enable_dsl_names="triton")
+            deregister_op_overrides(disable_dsl_names="cutedsl")
+            reenable_op_overrides(enable_dsl_names="cutedsl")
+            deregister_op_overrides(disable_dsl_names="triton")
+            reenable_op_overrides(enable_dsl_names="triton")
         except Exception as e:
             self.fail(f"Registry integration failed: {e}")
 

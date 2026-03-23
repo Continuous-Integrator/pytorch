@@ -183,8 +183,8 @@ class TestRegistry(TestCase):
         self.assertIn(key, self.registry._dsl_name_to_lib_graph["test_dsl"])
         self.assertIn(key2, self.registry._dsl_name_to_lib_graph["test_dsl"])
 
-    def test_build_key_set(self):
-        """Test _build_key_set creates correct set of keys."""
+    def test__build_key_set(self):
+        """Test __build_key_set creates correct set of keys."""
         # Set up test data
         key1 = ("op1", "CPU")
         key2 = ("op2", "CUDA")
@@ -193,23 +193,23 @@ class TestRegistry(TestCase):
         self.registry._dispatch_key_to_lib_graph["CPU"] = [key1]
 
         # Test single filter
-        result = self.registry.build_key_set("dsl1", None, None)
+        result = self.registry._build_key_set("dsl1", None, None)
         self.assertEqual(result, {key1})
 
         # Test multiple filters
-        result = self.registry.build_key_set("dsl1", "op2", None)
+        result = self.registry._build_key_set("dsl1", "op2", None)
         self.assertEqual(result, {key1, key2})
 
     @patch("torch.library.Library")
-    def test_register_op_override_basic(self, mock_library_cls):
-        """Test basic _register_op_override functionality."""
+    def testregister_op_override_basic(self, mock_library_cls):
+        """Test basic register_op_override functionality."""
         mock_lib = MagicMock()
         mock_library_cls.return_value = mock_lib
 
         def impl_fn(x):
             return x
 
-        self.registry._register_op_override(
+        self.registry.register_op_override(
             backend="test_backend",
             lib_symbol="aten",
             op_symbol="add.Tensor",
@@ -235,15 +235,15 @@ class TestRegistry(TestCase):
         )
 
     @patch("torch.library.Library")
-    def test_register_op_override_unconditional(self, mock_library_cls):
-        """Test _register_op_override with unconditional_override=True."""
+    def testregister_op_override_unconditional(self, mock_library_cls):
+        """Test register_op_override with unconditional_override=True."""
         mock_lib = MagicMock()
         mock_library_cls.return_value = mock_lib
 
         def impl_fn(x):
             return x
 
-        self.registry._register_op_override(
+        self.registry.register_op_override(
             backend="test_backend",
             lib_symbol="aten",
             op_symbol="add.Tensor",
@@ -267,15 +267,15 @@ class TestRegistry(TestCase):
         )
 
     @patch("torch.library.Library")
-    def test_register_op_override_allow_multiple(self, mock_library_cls):
-        """Test _register_op_override with allow_multiple_override=True."""
+    def testregister_op_override_allow_multiple(self, mock_library_cls):
+        """Test register_op_override with allow_multiple_override=True."""
         mock_lib = MagicMock()
         mock_library_cls.return_value = mock_lib
 
         def impl_fn(x):
             return x
 
-        self.registry._register_op_override(
+        self.registry.register_op_override(
             backend="test_backend",
             lib_symbol="aten",
             op_symbol="add.Tensor",
@@ -290,8 +290,8 @@ class TestRegistry(TestCase):
         )
 
     @patch("torch.library.Library")
-    def test_deregister_op_overrides(self, mock_library_cls):
-        """Test _deregister_op_overrides functionality."""
+    def testderegister_op_overrides(self, mock_library_cls):
+        """Test deregister_op_overrides functionality."""
         # Set up test data
         key = ("add.Tensor", "CPU")
 
@@ -311,10 +311,10 @@ class TestRegistry(TestCase):
         self.registry._libs[key] = mock_old_lib
         mock_library_cls.return_value = mock_new_lib
 
-        # Set up mappings for _build_key_set to work
+        # Set up mappings for __build_key_set to work
         self.registry._dsl_name_to_lib_graph["dsl1"] = [key]
 
-        self.registry._deregister_op_overrides(disable_dsl_names="dsl1")
+        self.registry.deregister_op_overrides(disable_dsl_names="dsl1")
 
         # Check that old library was removed and new one created
         self.assertIn(key, self.registry._libs)  # Should have new library
@@ -399,10 +399,10 @@ class TestRegistry(TestCase):
         mock_library_cls.return_value = mock_lib
 
         # Register two overrides
-        self.registry._register_op_override(
+        self.registry.register_op_override(
             "dsl1", "aten", "add.Tensor", "CPU", impl_fn1
         )
-        self.registry._register_op_override(
+        self.registry.register_op_override(
             "dsl2", "aten", "add.Tensor", "CPU", impl_fn2
         )
 
@@ -412,7 +412,7 @@ class TestRegistry(TestCase):
         self.assertTrue(all(node.active for node in self.registry._graphs[key]))
 
         # Deregister one
-        self.registry._deregister_op_overrides(disable_dsl_names="dsl1")
+        self.registry.deregister_op_overrides(disable_dsl_names="dsl1")
 
         # Check that dsl1 is inactive, dsl2 is still active
         nodes = self.registry._graphs[key]
@@ -438,7 +438,7 @@ class TestRegistry(TestCase):
         def impl_fn3(dispatch_keys, x, y):
             return ("backend3", x, y)
 
-        self.registry._register_op_override(
+        self.registry.register_op_override(
             "backend1",
             "aten",
             "mul.Tensor",
@@ -446,7 +446,7 @@ class TestRegistry(TestCase):
             impl_fn1,
             allow_multiple_override=True,
         )
-        self.registry._register_op_override(
+        self.registry.register_op_override(
             "backend2",
             "aten",
             "mul.Tensor",
@@ -454,7 +454,7 @@ class TestRegistry(TestCase):
             impl_fn2,
             allow_multiple_override=True,
         )
-        self.registry._register_op_override(
+        self.registry.register_op_override(
             "backend3",
             "aten",
             "mul.Tensor",
@@ -489,7 +489,7 @@ class TestRegistry(TestCase):
         def impl_fn3(dispatch_keys, x, y):
             return ("backend3", x, y)
 
-        self.registry._register_op_override(
+        self.registry.register_op_override(
             "backend1",
             "aten",
             "mul.Tensor",
@@ -497,7 +497,7 @@ class TestRegistry(TestCase):
             impl_fn1,
             allow_multiple_override=True,
         )
-        self.registry._register_op_override(
+        self.registry.register_op_override(
             "backend2",
             "aten",
             "mul.Tensor",
@@ -505,7 +505,7 @@ class TestRegistry(TestCase):
             impl_fn2,
             allow_multiple_override=True,
         )
-        self.registry._register_op_override(
+        self.registry.register_op_override(
             "backend3",
             "aten",
             "mul.Tensor",
@@ -515,7 +515,7 @@ class TestRegistry(TestCase):
         )
 
         # Remove middle override (backend2)
-        self.registry._deregister_op_overrides(disable_dsl_names="backend2")
+        self.registry.deregister_op_overrides(disable_dsl_names="backend2")
 
         key = ("mul.Tensor", "CUDA")
         nodes = self.registry._graphs[key]
@@ -549,7 +549,7 @@ class TestRegistry(TestCase):
         def impl_fn3(dispatch_keys, x, y):
             return ("backend3", x, y)
 
-        self.registry._register_op_override(
+        self.registry.register_op_override(
             "backend1",
             "aten",
             "mul.Tensor",
@@ -557,7 +557,7 @@ class TestRegistry(TestCase):
             impl_fn1,
             allow_multiple_override=True,
         )
-        self.registry._register_op_override(
+        self.registry.register_op_override(
             "backend2",
             "aten",
             "mul.Tensor",
@@ -565,7 +565,7 @@ class TestRegistry(TestCase):
             impl_fn2,
             allow_multiple_override=True,
         )
-        self.registry._register_op_override(
+        self.registry.register_op_override(
             "backend3",
             "aten",
             "mul.Tensor",
@@ -575,7 +575,7 @@ class TestRegistry(TestCase):
         )
 
         # Remove first override (backend1)
-        self.registry._deregister_op_overrides(disable_dsl_names="backend1")
+        self.registry.deregister_op_overrides(disable_dsl_names="backend1")
 
         key = ("mul.Tensor", "CUDA")
         nodes = self.registry._graphs[key]
@@ -605,7 +605,7 @@ class TestRegistry(TestCase):
         def impl_fn3(dispatch_keys, x, y):
             return ("backend3", x, y)
 
-        self.registry._register_op_override(
+        self.registry.register_op_override(
             "backend1",
             "aten",
             "mul.Tensor",
@@ -613,7 +613,7 @@ class TestRegistry(TestCase):
             impl_fn1,
             allow_multiple_override=True,
         )
-        self.registry._register_op_override(
+        self.registry.register_op_override(
             "backend2",
             "aten",
             "mul.Tensor",
@@ -621,7 +621,7 @@ class TestRegistry(TestCase):
             impl_fn2,
             allow_multiple_override=True,
         )
-        self.registry._register_op_override(
+        self.registry.register_op_override(
             "backend3",
             "aten",
             "mul.Tensor",
@@ -631,7 +631,7 @@ class TestRegistry(TestCase):
         )
 
         # Remove last override (backend3)
-        self.registry._deregister_op_overrides(disable_dsl_names="backend3")
+        self.registry.deregister_op_overrides(disable_dsl_names="backend3")
 
         key = ("mul.Tensor", "CUDA")
         nodes = self.registry._graphs[key]
@@ -663,7 +663,7 @@ class TestRegistry(TestCase):
 
             impl_fn = make_impl_fn(i + 1)
             impl_fns.append(impl_fn)
-            self.registry._register_op_override(
+            self.registry.register_op_override(
                 f"backend{i + 1}",
                 "aten",
                 "mul.Tensor",
@@ -673,7 +673,7 @@ class TestRegistry(TestCase):
             )
 
         # Remove multiple overrides (backend2 and backend4)
-        self.registry._deregister_op_overrides(
+        self.registry.deregister_op_overrides(
             disable_dsl_names=["backend2", "backend4"]
         )
 
@@ -706,7 +706,7 @@ class TestRegistry(TestCase):
                 return impl_fn
 
             impl_fn = make_impl_fn(i + 1)
-            self.registry._register_op_override(
+            self.registry.register_op_override(
                 f"backend{i + 1}",
                 "aten",
                 "mul.Tensor",
@@ -716,7 +716,7 @@ class TestRegistry(TestCase):
             )
 
         # Remove all overrides
-        self.registry._deregister_op_overrides(
+        self.registry.deregister_op_overrides(
             disable_dsl_names=["backend1", "backend2", "backend3"]
         )
 
@@ -742,7 +742,7 @@ class TestRegistry(TestCase):
         def impl_fn2(dispatch_keys, x, y):
             return ("cutedsl", x, y)
 
-        self.registry._register_op_override(
+        self.registry.register_op_override(
             "triton",
             "aten",
             "mul.Tensor",
@@ -750,7 +750,7 @@ class TestRegistry(TestCase):
             impl_fn1,
             allow_multiple_override=True,
         )
-        self.registry._register_op_override(
+        self.registry.register_op_override(
             "cutedsl",
             "aten",
             "mul.Tensor",
@@ -766,7 +766,7 @@ class TestRegistry(TestCase):
         def add_impl_fn2(dispatch_keys, x, y):
             return ("cutedsl", x, y)
 
-        self.registry._register_op_override(
+        self.registry.register_op_override(
             "triton",
             "aten",
             "add.Tensor",
@@ -774,7 +774,7 @@ class TestRegistry(TestCase):
             add_impl_fn1,
             allow_multiple_override=True,
         )
-        self.registry._register_op_override(
+        self.registry.register_op_override(
             "cutedsl",
             "aten",
             "add.Tensor",
@@ -784,7 +784,7 @@ class TestRegistry(TestCase):
         )
 
         # Remove by op_symbol should affect all backends for that op only
-        self.registry._deregister_op_overrides(disable_op_symbols="mul.Tensor")
+        self.registry.deregister_op_overrides(disable_op_symbols="mul.Tensor")
 
         # Check mul.Tensor overrides are inactive
         mul_key = ("mul.Tensor", "CUDA")
@@ -810,7 +810,7 @@ class TestRegistry(TestCase):
             return ("triton_cpu", x, y)
 
         # mul.Tensor on CUDA and CPU
-        self.registry._register_op_override(
+        self.registry.register_op_override(
             "triton",
             "aten",
             "mul.Tensor",
@@ -818,7 +818,7 @@ class TestRegistry(TestCase):
             impl_fn_cuda,
             allow_multiple_override=True,
         )
-        self.registry._register_op_override(
+        self.registry.register_op_override(
             "triton",
             "aten",
             "mul.Tensor",
@@ -828,7 +828,7 @@ class TestRegistry(TestCase):
         )
 
         # add.Tensor on CUDA and CPU
-        self.registry._register_op_override(
+        self.registry.register_op_override(
             "triton",
             "aten",
             "add.Tensor",
@@ -836,7 +836,7 @@ class TestRegistry(TestCase):
             impl_fn_cuda,
             allow_multiple_override=True,
         )
-        self.registry._register_op_override(
+        self.registry.register_op_override(
             "triton",
             "aten",
             "add.Tensor",
@@ -846,7 +846,7 @@ class TestRegistry(TestCase):
         )
 
         # Remove by dispatch_key should affect all operations for CUDA only
-        self.registry._deregister_op_overrides(disable_dispatch_keys="CUDA")
+        self.registry.deregister_op_overrides(disable_dispatch_keys="CUDA")
 
         # Check CUDA overrides are inactive
         mul_cuda_key = ("mul.Tensor", "CUDA")
@@ -891,7 +891,7 @@ class TestRegistry(TestCase):
                         return impl_fn
 
                     impl_fn = make_impl_fn(backend, op, dispatch_key)
-                    self.registry._register_op_override(
+                    self.registry.register_op_override(
                         backend,
                         "aten",
                         op,
@@ -904,7 +904,7 @@ class TestRegistry(TestCase):
         # - Disable triton backend (affects all ops/dispatch_keys for triton)
         # - Disable mul.Tensor operation (affects all backends/dispatch_keys for mul.Tensor)
         # - Disable CPU dispatch key (affects all backends/ops for CPU)
-        self.registry._deregister_op_overrides(
+        self.registry.deregister_op_overrides(
             disable_dsl_names="triton",
             disable_op_symbols="mul.Tensor",
             disable_dispatch_keys="CPU",
@@ -948,7 +948,7 @@ class TestRegistry(TestCase):
                 return x + 2
 
             # Register with real torch.library.Library (no mocking)
-            self.registry._register_op_override(
+            self.registry.register_op_override(
                 "test_backend1",
                 "aten",
                 test_op,
@@ -957,7 +957,7 @@ class TestRegistry(TestCase):
                 allow_multiple_override=True,
             )
 
-            self.registry._register_op_override(
+            self.registry.register_op_override(
                 "test_backend2",
                 "aten",
                 test_op,
@@ -972,7 +972,7 @@ class TestRegistry(TestCase):
             self.assertEqual(len(self.registry._graphs[key]), 2)
 
             # Test deregistration
-            self.registry._deregister_op_overrides(disable_dsl_names="test_backend1")
+            self.registry.deregister_op_overrides(disable_dsl_names="test_backend1")
 
             # Verify backend1 is inactive, backend2 is active
             nodes = self.registry._graphs[key]
@@ -1029,7 +1029,7 @@ class TestRegistry(TestCase):
                 return x.clone() + 300  # Should remain
 
             # Register three overrides in sequence
-            self.registry._register_op_override(
+            self.registry.register_op_override(
                 "integration_backend1",
                 "aten",
                 test_op,
@@ -1037,7 +1037,7 @@ class TestRegistry(TestCase):
                 backend1_impl,
                 allow_multiple_override=True,
             )
-            self.registry._register_op_override(
+            self.registry.register_op_override(
                 "integration_backend2",
                 "aten",
                 test_op,
@@ -1045,7 +1045,7 @@ class TestRegistry(TestCase):
                 backend2_impl,
                 allow_multiple_override=True,
             )
-            self.registry._register_op_override(
+            self.registry.register_op_override(
                 "integration_backend3",
                 "aten",
                 test_op,
@@ -1060,7 +1060,7 @@ class TestRegistry(TestCase):
 
             # Remove middle override (backend2)
             # Note: PyTorch may warn about kernel override (but only shows warning once per session)
-            self.registry._deregister_op_overrides(
+            self.registry.deregister_op_overrides(
                 disable_dsl_names="integration_backend2"
             )
 
@@ -1111,7 +1111,7 @@ class TestRegistry(TestCase):
                             return impl_fn
 
                         impl_fn = make_impl(backend, op, dispatch_key)
-                        self.registry._register_op_override(
+                        self.registry.register_op_override(
                             backend,
                             "aten",
                             op,
@@ -1127,7 +1127,7 @@ class TestRegistry(TestCase):
 
             # Complex deregistration: disable integration_triton backend + test_complex_mul.Tensor operation
             # Note: PyTorch may warn about kernel override (but only shows warning once per session)
-            self.registry._deregister_op_overrides(
+            self.registry.deregister_op_overrides(
                 disable_dsl_names="integration_triton",
                 disable_op_symbols="test_complex_mul.Tensor",
             )
@@ -1181,7 +1181,7 @@ class TestRegistry(TestCase):
                     return impl_fn
 
                 impl_fn = make_impl(i)
-                self.registry._register_op_override(
+                self.registry.register_op_override(
                     backend,
                     "aten",
                     test_op,
@@ -1196,7 +1196,7 @@ class TestRegistry(TestCase):
 
             # Remove all overrides
             # Note: PyTorch may warn about kernel override (but only shows warning once per session)
-            self.registry._deregister_op_overrides(disable_dsl_names=backends)
+            self.registry.deregister_op_overrides(disable_dsl_names=backends)
 
             # Verify all are inactive
             nodes = self.registry._graphs[key]
@@ -1228,7 +1228,7 @@ class TestRegistry(TestCase):
                     return impl_fn
 
                 impl_fn = make_impl_fn(backend)
-                self.registry._register_op_override(
+                self.registry.register_op_override(
                     backend,
                     "aten",
                     test_op,
@@ -1239,7 +1239,7 @@ class TestRegistry(TestCase):
 
             # Partial deregistration
             # Note: PyTorch may warn about kernel override (but only shows warning once per session)
-            self.registry._deregister_op_overrides(
+            self.registry.deregister_op_overrides(
                 disable_dsl_names=["consistency2", "consistency4"]
             )
 
@@ -1255,7 +1255,7 @@ class TestRegistry(TestCase):
             def new_impl(dispatch_keys, x):
                 return x.clone() + 999
 
-            self.registry._register_op_override(
+            self.registry.register_op_override(
                 "consistency2",
                 "aten",
                 test_op,
@@ -1303,13 +1303,13 @@ class TestRegistry(TestCase):
         """Test _FilterState initialization and default values."""
         filter_state = self.registry._FilterState()
 
-        self.assertIsInstance(filter_state.dsl_names, set)
-        self.assertIsInstance(filter_state.op_symbols, set)
-        self.assertIsInstance(filter_state.dispatch_keys, set)
+        self.assertIsInstance(filter_state._dsl_names, set)
+        self.assertIsInstance(filter_state._op_symbols, set)
+        self.assertIsInstance(filter_state._dispatch_keys, set)
 
-        self.assertEqual(len(filter_state.dsl_names), 0)
-        self.assertEqual(len(filter_state.op_symbols), 0)
-        self.assertEqual(len(filter_state.dispatch_keys), 0)
+        self.assertEqual(len(filter_state._dsl_names), 0)
+        self.assertEqual(len(filter_state._op_symbols), 0)
+        self.assertEqual(len(filter_state._dispatch_keys), 0)
 
     def test_filter_state_check_enabled_all_empty(self):
         """Test _FilterState.check_enabled when all filter sets are empty."""
@@ -1326,7 +1326,7 @@ class TestRegistry(TestCase):
     def test_filter_state_check_enabled_dsl_filtered(self):
         """Test _FilterState.check_enabled when DSL is filtered."""
         filter_state = self.registry._FilterState()
-        filter_state.dsl_names.add("filtered_dsl")
+        filter_state._dsl_names.add("filtered_dsl")
 
         def test_fn(x):
             return x
@@ -1346,7 +1346,7 @@ class TestRegistry(TestCase):
     def test_filter_state_check_enabled_op_filtered(self):
         """Test _FilterState.check_enabled when op symbol is filtered."""
         filter_state = self.registry._FilterState()
-        filter_state.op_symbols.add("mul.Tensor")
+        filter_state._op_symbols.add("mul.Tensor")
 
         def test_fn(x):
             return x
@@ -1366,7 +1366,7 @@ class TestRegistry(TestCase):
     def test_filter_state_check_enabled_dispatch_key_filtered(self):
         """Test _FilterState.check_enabled when dispatch key is filtered."""
         filter_state = self.registry._FilterState()
-        filter_state.dispatch_keys.add("CUDA")
+        filter_state._dispatch_keys.add("CUDA")
 
         def test_fn(x):
             return x
@@ -1390,9 +1390,9 @@ class TestRegistry(TestCase):
         # Add single values
         filter_state.update("dsl1", "add.Tensor", "CPU")
 
-        self.assertIn("dsl1", filter_state.dsl_names)
-        self.assertIn("add.Tensor", filter_state.op_symbols)
-        self.assertIn("CPU", filter_state.dispatch_keys)
+        self.assertIn("dsl1", filter_state._dsl_names)
+        self.assertIn("add.Tensor", filter_state._op_symbols)
+        self.assertIn("CPU", filter_state._dispatch_keys)
 
     def test_filter_state_update_add_multiple_values(self):
         """Test _FilterState.update adding multiple values."""
@@ -1403,38 +1403,38 @@ class TestRegistry(TestCase):
             ["dsl1", "dsl2"], ["add.Tensor", "mul.Tensor"], ["CPU", "CUDA"]
         )
 
-        self.assertEqual(filter_state.dsl_names, {"dsl1", "dsl2"})
-        self.assertEqual(filter_state.op_symbols, {"add.Tensor", "mul.Tensor"})
-        self.assertEqual(filter_state.dispatch_keys, {"CPU", "CUDA"})
+        self.assertEqual(filter_state._dsl_names, {"dsl1", "dsl2"})
+        self.assertEqual(filter_state._op_symbols, {"add.Tensor", "mul.Tensor"})
+        self.assertEqual(filter_state._dispatch_keys, {"CPU", "CUDA"})
 
     def test_filter_state_update_remove_values(self):
         """Test _FilterState.update removing values."""
         filter_state = self.registry._FilterState()
 
         # Add initial values
-        filter_state.dsl_names.update(["dsl1", "dsl2", "dsl3"])
-        filter_state.op_symbols.update(["add.Tensor", "mul.Tensor"])
-        filter_state.dispatch_keys.update(["CPU", "CUDA"])
+        filter_state._dsl_names.update(["dsl1", "dsl2", "dsl3"])
+        filter_state._op_symbols.update(["add.Tensor", "mul.Tensor"])
+        filter_state._dispatch_keys.update(["CPU", "CUDA"])
 
         # Remove some values
         filter_state.update(["dsl1", "dsl3"], "mul.Tensor", "CUDA", remove_keys=True)
 
-        self.assertEqual(filter_state.dsl_names, {"dsl2"})
-        self.assertEqual(filter_state.op_symbols, {"add.Tensor"})
-        self.assertEqual(filter_state.dispatch_keys, {"CPU"})
+        self.assertEqual(filter_state._dsl_names, {"dsl2"})
+        self.assertEqual(filter_state._op_symbols, {"add.Tensor"})
+        self.assertEqual(filter_state._dispatch_keys, {"CPU"})
 
     def test_filter_state_update_none_values(self):
         """Test _FilterState.update with None values (should be no-op)."""
         filter_state = self.registry._FilterState()
         initial_dsl = {"dsl1"}
-        filter_state.dsl_names = initial_dsl.copy()
+        filter_state._dsl_names = initial_dsl.copy()
 
         # Update with None should not change anything
         filter_state.update(None, None, None)
 
-        self.assertEqual(filter_state.dsl_names, initial_dsl)
-        self.assertEqual(len(filter_state.op_symbols), 0)
-        self.assertEqual(len(filter_state.dispatch_keys), 0)
+        self.assertEqual(filter_state._dsl_names, initial_dsl)
+        self.assertEqual(len(filter_state._op_symbols), 0)
+        self.assertEqual(len(filter_state._dispatch_keys), 0)
 
     def test_filter_state_build_disable_key_set(self):
         """Test _FilterState.build_disable_key_set creates correct key set."""
@@ -1450,8 +1450,8 @@ class TestRegistry(TestCase):
         self.registry._dispatch_key_to_lib_graph["CPU"] = [key1, key3]
 
         # Add filters
-        filter_state.dsl_names.add("dsl1")
-        filter_state.dispatch_keys.add("CPU")
+        filter_state._dsl_names.add("dsl1")
+        filter_state._dispatch_keys.add("CPU")
 
         key_set = filter_state.build_disable_key_set()
 
@@ -1459,8 +1459,8 @@ class TestRegistry(TestCase):
         expected_keys = {key1, key2, key3}
         self.assertEqual(key_set, expected_keys)
 
-    def test_build_key_set_function(self):
-        """Test build_key_set standalone function."""
+    def test__build_key_set_function(self):
+        """Test _build_key_set standalone function."""
         # Set up test mappings
         key1 = ("add.Tensor", "CPU")
         key2 = ("mul.Tensor", "CUDA")
@@ -1471,17 +1471,17 @@ class TestRegistry(TestCase):
         self.registry._dispatch_key_to_lib_graph["CPU"] = [key1, key3]
 
         # Test with single values
-        key_set = self.registry.build_key_set("dsl1", None, None)
+        key_set = self.registry._build_key_set("dsl1", None, None)
         self.assertEqual(key_set, {key1, key2})
 
         # Test with multiple criteria
-        key_set = self.registry.build_key_set("dsl1", "add.Tensor", "CPU")
+        key_set = self.registry._build_key_set("dsl1", "add.Tensor", "CPU")
         expected_keys = {key1, key2, key3}  # Union of all matching keys
         self.assertEqual(key_set, expected_keys)
 
     @patch("torch.library.Library")
-    def test_reenable_op_overrides_basic(self, mock_library_cls):
-        """Test _reenable_op_overrides basic functionality."""
+    def testreenable_op_overrides_basic(self, mock_library_cls):
+        """Test reenable_op_overrides basic functionality."""
 
         # Set up initial state with some disabled overrides
         def test_fn1(x):
@@ -1502,7 +1502,7 @@ class TestRegistry(TestCase):
         self.registry._dsl_name_to_lib_graph["dsl1"] = [key]
 
         # Add dsl1 to filter (disabled)
-        self.registry._filter_state.dsl_names.add("dsl1")
+        self.registry._filter_state._dsl_names.add("dsl1")
 
         # Mock library
         mock_lib = MagicMock()
@@ -1510,10 +1510,10 @@ class TestRegistry(TestCase):
         self.registry._libs[key] = mock_lib
 
         # Re-enable dsl1
-        self.registry._reenable_op_overrides(enable_dsl_names="dsl1")
+        self.registry.reenable_op_overrides(enable_dsl_names="dsl1")
 
         # dsl1 should be removed from filter
-        self.assertNotIn("dsl1", self.registry._filter_state.dsl_names)
+        self.assertNotIn("dsl1", self.registry._filter_state._dsl_names)
 
         # Both nodes should now be active
         self.assertTrue(node1.active)
@@ -1523,8 +1523,8 @@ class TestRegistry(TestCase):
         self.assertEqual(mock_lib.impl.call_count, 2)  # Once for each active node
 
     @patch("torch.library.Library")
-    def test_reenable_op_overrides_multiple_criteria(self, mock_library_cls):
-        """Test _reenable_op_overrides with multiple enable criteria."""
+    def testreenable_op_overrides_multiple_criteria(self, mock_library_cls):
+        """Test reenable_op_overrides with multiple enable criteria."""
 
         # Set up test state
         def test_fn(x):
@@ -1548,8 +1548,8 @@ class TestRegistry(TestCase):
         self.registry._op_symbol_to_lib_graph["mul.Tensor"] = [key2]
 
         # Add to filters
-        self.registry._filter_state.dsl_names.add("dsl1")
-        self.registry._filter_state.op_symbols.add("mul.Tensor")
+        self.registry._filter_state._dsl_names.add("dsl1")
+        self.registry._filter_state._op_symbols.add("mul.Tensor")
 
         # Mock libraries
         mock_lib1 = MagicMock()
@@ -1557,21 +1557,21 @@ class TestRegistry(TestCase):
         mock_library_cls.side_effect = [mock_lib1, mock_lib2]
 
         # Re-enable both
-        self.registry._reenable_op_overrides(
+        self.registry.reenable_op_overrides(
             enable_dsl_names="dsl1", enable_op_symbols="mul.Tensor"
         )
 
         # Both should be removed from filters
-        self.assertNotIn("dsl1", self.registry._filter_state.dsl_names)
-        self.assertNotIn("mul.Tensor", self.registry._filter_state.op_symbols)
+        self.assertNotIn("dsl1", self.registry._filter_state._dsl_names)
+        self.assertNotIn("mul.Tensor", self.registry._filter_state._op_symbols)
 
         # Both nodes should be active
         self.assertTrue(node1.active)
         self.assertTrue(node2.active)
 
     @patch("torch.library.Library")
-    def test_reenable_op_overrides_with_remaining_filters(self, mock_library_cls):
-        """Test _reenable_op_overrides when some filters remain active."""
+    def testreenable_op_overrides_with_remaining_filters(self, mock_library_cls):
+        """Test reenable_op_overrides when some filters remain active."""
 
         def test_fn(x):
             return x
@@ -1588,7 +1588,7 @@ class TestRegistry(TestCase):
         self.registry._dsl_name_to_lib_graph["allowed_dsl"] = [key]
 
         # Add both DSLs to filter initially
-        self.registry._filter_state.dsl_names.update(["filtered_dsl", "allowed_dsl"])
+        self.registry._filter_state._dsl_names.update(["filtered_dsl", "allowed_dsl"])
 
         # Mock library
         mock_lib = MagicMock()
@@ -1596,11 +1596,11 @@ class TestRegistry(TestCase):
         self.registry._libs[key] = mock_lib
 
         # Re-enable only allowed_dsl
-        self.registry._reenable_op_overrides(enable_dsl_names="allowed_dsl")
+        self.registry.reenable_op_overrides(enable_dsl_names="allowed_dsl")
 
         # Only allowed_dsl should be removed from filter
-        self.assertIn("filtered_dsl", self.registry._filter_state.dsl_names)
-        self.assertNotIn("allowed_dsl", self.registry._filter_state.dsl_names)
+        self.assertIn("filtered_dsl", self.registry._filter_state._dsl_names)
+        self.assertNotIn("allowed_dsl", self.registry._filter_state._dsl_names)
 
         # Only node2 should be active
         self.assertFalse(node1.active)  # Still filtered
@@ -1612,15 +1612,16 @@ class TestRegistry(TestCase):
     def test_filter_state_print_method(self):
         """Test _FilterState.print method (basic functionality check)."""
         filter_state = self.registry._FilterState()
-        filter_state.dsl_names.update(["dsl1", "dsl2"])
-        filter_state.op_symbols.add("add.Tensor")
-        filter_state.dispatch_keys.add("CPU")
+        filter_state._dsl_names.update(["dsl1", "dsl2"])
+        filter_state._op_symbols.add("add.Tensor")
+        filter_state._dispatch_keys.add("CPU")
 
         # Should not raise an exception
         try:
-            filter_state.print()
+            str_repr = str(filter_state)
+            self.assertIn("Filter State:", str_repr)
         except Exception as e:
-            self.fail(f"FilterState.print() raised an exception: {e}")
+            self.fail(f"FilterState.__str__() raised an exception: {e}")
 
     def test_global_filter_state_integration(self):
         """Test that global _filter_state is used correctly."""
@@ -1629,11 +1630,11 @@ class TestRegistry(TestCase):
 
         # Test that it's the same instance across operations
         filter_state_ref1 = self.registry._filter_state
-        self.registry._filter_state.dsl_names.add("test_dsl")
+        self.registry._filter_state._dsl_names.add("test_dsl")
         filter_state_ref2 = self.registry._filter_state
 
         self.assertIs(filter_state_ref1, filter_state_ref2)
-        self.assertIn("test_dsl", filter_state_ref2.dsl_names)
+        self.assertIn("test_dsl", filter_state_ref2._dsl_names)
 
     def _cleanup_test_registration(self, key):
         """Helper method to clean up test registrations."""
