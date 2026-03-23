@@ -45,9 +45,11 @@ inline float philox_uniform_float(uint32_t x) {
   return x * CURAND_2POW32_INV + (CURAND_2POW32_INV / 2.0f);
 }
 
-// Matches curand's _curand_uniform_double(unsigned int): uint32 -> double.
-inline double philox_uniform_double(uint32_t x) {
-  return x * CURAND_2POW32_INV_DOUBLE + CURAND_2POW32_INV_DOUBLE;
+// Matches curand_uniform2_double: 2 uint32 -> 1 double in (0, 1] with 53-bit precision.
+inline double philox_uniform_double(uint32_t x0, uint32_t x1) {
+  auto z = static_cast<unsigned long long>(x0) ^
+      (static_cast<unsigned long long>(x1) << (53 - 32));
+  return z * CURAND_2POW53_INV_DOUBLE + (CURAND_2POW53_INV_DOUBLE / 2.0);
 }
 
 // Matches curand's _curand_box_muller: 2 uint32 -> 2 standard normal floats.
@@ -96,17 +98,12 @@ void uniform_fill<double>(
     double* output, int64_t base, int64_t numel,
     uint64_t seed, uint64_t key_offset, double low, double high) {
   double range = high - low;
-  // outputs_per_value = 2 for double: chunks of ELEMS_PER_CHUNK with gaps
-  // to match CUDA's offset formula (key_offset + elem_start * 2).
-  for (int64_t chunk_start = 0; chunk_start < numel; chunk_start += ELEMS_PER_CHUNK) {
-    int64_t chunk_end = std::min(chunk_start + ELEMS_PER_CHUNK, numel);
-    uint64_t offset = key_offset +
-        static_cast<uint64_t>(chunk_start) * 2;
-    auto engine = make_philox(seed, offset);
-    for (int64_t i = chunk_start; i < chunk_end; i++) {
-      double u = philox_uniform_double(engine());
-      output[base + i] = low + range * u;
-    }
+  // 2 uint32 per double, matching curand_uniform2_double (53-bit precision).
+  auto engine = make_philox(seed, key_offset);
+  for (int64_t i = 0; i < numel; i++) {
+    uint32_t r0 = engine(), r1 = engine();
+    double u = philox_uniform_double(r0, r1);
+    output[base + i] = low + range * u;
   }
 }
 

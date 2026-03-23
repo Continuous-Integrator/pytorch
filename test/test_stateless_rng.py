@@ -392,6 +392,16 @@ class TestPhiloxUniform(TestCase):
         with self.assertRaises(RuntimeError):
             torch.random.uniform(key, (100,))
 
+    def test_offset_shift_consistency_double(self, device):
+        """Float64 uniform: offset shift of 2 = element shift of 1."""
+        seed = 42
+        n = 100
+        key0 = torch.tensor([seed, 0], dtype=torch.uint64, device=device)
+        ref = torch.random.uniform(key0, (n,), dtype=torch.float64)
+        key2 = torch.tensor([seed, 2], dtype=torch.uint64, device=device)
+        result = torch.random.uniform(key2, (n - 1,), dtype=torch.float64)
+        self.assertEqual(result, ref[1:])
+
     @onlyCUDA
     def test_cross_device_uniform_consistency(self, device):
         key_cpu = torch.random.key(42)
@@ -399,6 +409,15 @@ class TestPhiloxUniform(TestCase):
         self.assertEqual(
             torch.random.uniform(key_cpu, (1000,)),
             torch.random.uniform(key_cuda, (1000,)).cpu(),
+        )
+
+    @onlyCUDA
+    def test_cross_device_f64_uniform_consistency(self, device):
+        key_cpu = torch.random.key(42)
+        key_cuda = torch.random.key(42, device=device)
+        self.assertEqual(
+            torch.random.uniform(key_cpu, (1000,), dtype=torch.float64),
+            torch.random.uniform(key_cuda, (1000,), dtype=torch.float64).cpu(),
         )
 
 

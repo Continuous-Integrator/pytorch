@@ -47,11 +47,10 @@ __device__ void uniform_generate<double>(
     double* output, int64_t base, int64_t elem, int64_t elem_end,
     curandStatePhilox4_32_10_t* state, double low, double high) {
   double range = high - low;
-  double u0 = curand_uniform_double(state);
-  output[base + elem] = low + range * u0;
+  double2 u = curand_uniform2_double(state);
+  output[base + elem] = low + range * u.x;
   if (elem + 1 < elem_end) {
-    double u1 = curand_uniform_double(state);
-    output[base + elem + 1] = low + range * u1;
+    output[base + elem + 1] = low + range * u.y;
   }
 }
 
@@ -76,11 +75,10 @@ __device__ void uniform_generate_vec<double>(
     double* output, int64_t pos,
     curandStatePhilox4_32_10_t* state, double low, double high) {
   double range = high - low;
-  double u0 = curand_uniform_double(state);
-  double u1 = curand_uniform_double(state);
+  double2 u = curand_uniform2_double(state);
   AlignedVec<double, 2> v;
-  v.val[0] = low + range * u0;
-  v.val[1] = low + range * u1;
+  v.val[0] = low + range * u.x;
+  v.val[1] = low + range * u.y;
   *reinterpret_cast<AlignedVec<double, 2>*>(&output[pos]) = v;
 }
 
