@@ -19,7 +19,9 @@
 #include <ATen/native/Resize.h>
 #include <c10/util/MaybeOwned.h>
 #include <ATen/native/GroupedMMUtils.h>
-#include <ATen/native/cuda/cuBlasCommonArgs.h>
+#if !defined(USE_ROCM) && defined(CUDA_VERSION) && CUDA_VERSION >= 13020
+#include <ATen/native/cuda/CublasGroupedArgs.h>
+#endif
 #include <ATen/native/cuda/RowwiseScaledMM.h>
 #include <ATen/native/cuda/ScaledGroupMM.h>
 #include <ATen/native/cuda/GroupMM.h>
@@ -806,7 +808,7 @@ std::optional<c10::ScalarType> out_dtype) {
 
   const auto out_dtype_ = _resolve_grouped_mm_out_dtype(mat_a, mat_b, out_dtype);
   Tensor out = create_grouped_gemm_output_tensor(mat_a, mat_b, offs, out_dtype_);
-  cublasCommonGroupedArgs args(mat_a, mat_b, offs, out);
+  cublasGroupedArgs args(mat_a, mat_b, offs, out);
   at::cuda::blas::grouped_gemm(args.transa, args.transb,
                                args.mArray, args.avgM,
                                args.nArray, args.avgN,
@@ -888,7 +890,7 @@ static Tensor scaled_grouped_mm_cublaslt(
 
   const auto out_dtype_ = out_dtype.value_or(at::kBFloat16);
   Tensor out = create_grouped_gemm_output_tensor(mat_a, mat_b, offs, out_dtype_);
-  cublasCommonGroupedArgs args(mat_a, mat_b, offs, out, scale_a, scale_b, scale_result);
+  cublasGroupedArgs args(mat_a, mat_b, offs, out, scale_a, scale_b, scale_result);
   at::cuda::blas::scaled_grouped_gemm(
       args.transa, args.transb,
       args.mArray, args.avgM,

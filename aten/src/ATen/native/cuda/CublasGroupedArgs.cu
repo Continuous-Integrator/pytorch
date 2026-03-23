@@ -1,8 +1,18 @@
-#include <ATen/native/cuda/CublasGroupedArgs.cuh>
+#include <ATen/native/cuda/CublasGroupedArgs.h>
+#include <ATen/cuda/CUDAContext.h>
 #include <c10/cuda/CUDAException.h>
 #include <c10/util/Exception.h>
+#include <cuda_runtime.h>
+
+#ifndef AT_PER_OPERATOR_HEADERS
+#include <ATen/Functions.h>
+#else
+#include <ATen/ops/empty.h>
+#endif
 
 namespace at::native {
+
+namespace {
 
 // cuBLAS VEC32_UE8M0 scale tensor size (bytes, since e8m0 is 1 byte each).
 // Mirrors getScaleTensorSize() from the cuBLAS samples.
@@ -141,5 +151,294 @@ void launch_populate_cublas_grouped_args(
       scalePtrA_out, scalePtrB_out);
   C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
+
+} // namespace
+
+#if !defined(USE_ROCM) && defined(CUDA_VERSION) && CUDA_VERSION >= 13020
+cublasGroupedArgs::cublasGroupedArgs(
+    const Tensor& mat1,
+    const Tensor& mat2,
+    const std::optional<Tensor>& offs,
+    Tensor& c,
+    const std::optional<Tensor>& scale_a,
+    const std::optional<Tensor>& scale_b,
+    const std::optional<Tensor>& scale_result,
+    const std::optional<at::blas::ScalingType>& scaling_choice_a,
+    const std::optional<at::blas::ScalingType>& scaling_choice_b) {
+  const bool a_is_2d = mat1.dim() == 2;
+  const bool b_is_2d = mat2.dim() == 2;
+  if (a_is_2d || b_is_2d) {
+    TORCH_CHECK(offs.has_value(), "Offsets tensor must be provided when at least one input is 2D");
+  }
+
+  A_dtype = mat2.scalar_type();
+  B_dtype = mat1.scalar_type();
+  result_dtype = c.scalar_type();
+  const int64_t esz = mat1.element_size();
+  const int64_t out_esz = c.element_size();
+
+  if (offs.has_value()) {
+    batchCount = offs.value().size(0);
+  } else {
+    batchCount = mat1.size(0);
+  }
+
+  // cuBLAS is column-major. To get a row-major result C = mat1 × mat2,
+  // we use the identity C^T = mat2^T × mat1^T. So cuBLAS-A = mat2 and
+  // cuBLAS-B = mat1. The transpose flags depend on inner-dim layout:
+  //   row-major (stride(-1)==1): cuBLAS sees it as col-major "already
+  //     transposed" → after the B^T×A^T flip, the op flag is 'n'
+  //   col-major (stride(-2)==1): cuBLAS sees it naturally → after
+  //     the flip, the op flag is 't'
+  const bool mat2_row_major = mat2.stride(-1) == 1;
+  const bool mat1_row_major = mat1.stride(-1) == 1;
+  transa = mat2_row_major ? 'n' : 't';
+  transb = mat1_row_major ? 'n' : 't';
+
+  // User-space dimensions
+  const int64_t user_M = mat1.size(-2);
+  const int64_t user_N = mat2.size(-1);
+  const int64_t user_K = mat1.size(-1);
+
+  // In the cuBLAS B^T×A^T convention:
+  //   cublas_m = user_N, cublas_n = user_M, cublas_k = user_K
+  const int32_t cublas_m = static_cast<int32_t>(user_N);
+  const int32_t cublas_n = static_cast<int32_t>(user_M);
+  const int32_t cublas_k = static_cast<int32_t>(user_K);
+
+  // Leading dimensions (constant across groups, from inner-dim strides)
+  // cuBLAS-A = mat2, cuBLAS-B = mat1
+  const int32_t lda_val = static_cast<int32_t>(transa == 't' ? mat2.stride(-1) : mat2.stride(-2));
+  const int32_t ldb_val = static_cast<int32_t>(transb == 't' ? mat1.stride(-1) : mat1.stride(-2));
+  const int32_t ldd_val = static_cast<int32_t>(c.stride(-2));
+
+  if (scale_a && scale_b) {
+    scale_mata_ptr = scale_b->data_ptr();
+    scale_matb_ptr = scale_a->data_ptr();
+    scale_mata_dtype = scale_b->scalar_type();
+    scale_matb_dtype = scale_a->scalar_type();
+
+    auto infer = [&](const Tensor& scale) -> at::blas::ScalingType {
+      if (scale.scalar_type() == at::kFloat8_e8m0fnu)
+        return at::blas::ScalingType::BlockWise1x32;
+      if (scale.numel() == 1)
+        return at::blas::ScalingType::TensorWise;
+      return at::blas::ScalingType::GroupWise;
+    };
+    // mata corresponds to scale_b (cuBLAS-A = mat2)
+    scale_mata_scaling_type = scaling_choice_a.value_or(infer(*scale_b));
+    // matb corresponds to scale_a (cuBLAS-B = mat1)
+    scale_matb_scaling_type = scaling_choice_b.value_or(infer(*scale_a));
+  }
+  if (scale_result) {
+    scale_result_ptr = scale_result->data_ptr();
+  }
+
+  // GroupWise and BlockWise1x32 scales need device-side pointer arrays
+  // (one pointer per group) because cuBLAS expects the scale pointer to
+  // be an array of device pointers for grouped GEMM.
+  auto needs_ptr_array = [](at::blas::ScalingType st) {
+    return st == at::blas::ScalingType::GroupWise
+        || st == at::blas::ScalingType::BlockWise1x32;
+  };
+  const bool mata_needs_ptr = needs_ptr_array(scale_mata_scaling_type);
+  const bool matb_needs_ptr = needs_ptr_array(scale_matb_scaling_type);
+
+  // Determine per-case which dimensions are variable (delta-based)
+  // and how pointer strides work
+  bool m_is_delta = false, n_is_delta = false, k_is_delta = false;
+  int64_t a_offs_stride = 0, a_idx_stride = 0;
+  int64_t b_offs_stride = 0, b_idx_stride = 0;
+  int64_t d_offs_stride = 0, d_idx_stride = 0;
+
+  if (a_is_2d && b_is_2d) {
+    // 2D x 2D: jagged K
+    k_is_delta = true;
+    a_offs_stride = mat2.stride(-2) * esz;
+    b_offs_stride = mat1.stride(-1) * esz;
+    d_idx_stride = c.stride(0) * out_esz;
+    avgM = cublas_m;
+    avgN = cublas_n;
+    avgK = user_K / batchCount;
+  } else if (a_is_2d && !b_is_2d) {
+    // 2D x 3D: jagged M (user M varies, cublas n varies)
+    n_is_delta = true;
+    a_idx_stride = mat2.stride(0) * esz;
+    b_offs_stride = mat1.stride(-2) * esz;
+    d_offs_stride = c.stride(-2) * out_esz;
+    avgM = cublas_m;
+    avgN = user_M / batchCount;
+    avgK = cublas_k;
+  } else if (!a_is_2d && b_is_2d) {
+    // 3D x 2D: jagged N (user N varies, cublas m varies)
+    m_is_delta = true;
+    a_offs_stride = mat2.stride(-1) * esz;
+    b_idx_stride = mat1.stride(0) * esz;
+    d_offs_stride = c.stride(-1) * out_esz;
+    avgM = user_N / batchCount;
+    avgN = cublas_n;
+    avgK = cublas_k;
+  } else {
+    // 3D x 3D: all dimensions fixed
+    a_idx_stride = mat2.stride(0) * esz;
+    b_idx_stride = mat1.stride(0) * esz;
+    d_idx_stride = c.stride(0) * out_esz;
+    avgM = cublas_m;
+    avgN = cublas_n;
+    avgK = cublas_k;
+  }
+
+  // Single device allocation for all arrays:
+  //   6 x int32[batchCount]  = batchCount * 24 bytes  (m,n,k,lda,ldb,ldd)
+  //   5 x int64[batchCount]  = batchCount * 40 bytes  (A,B,D,alpha,beta ptrs)
+  //   2 x float              = 8 bytes          (alpha, beta)
+  // + optionally up to 2 x int64[batchCount] for per-group scale pointer arrays
+  //   (GroupWise scales: embedded in the main buffer)
+  //   (BlockWise1x32 scales: separate allocation required by cuBLAS)
+  const bool mata_blockwise = scale_mata_scaling_type == at::blas::ScalingType::BlockWise1x32;
+  const bool matb_blockwise = scale_matb_scaling_type == at::blas::ScalingType::BlockWise1x32;
+  const int embedded_ptr_arrays =
+      ((mata_needs_ptr && !mata_blockwise) ? 1 : 0) +
+      ((matb_needs_ptr && !matb_blockwise) ? 1 : 0);
+  const int64_t buf_bytes = static_cast<int64_t>(batchCount) * 64 + 8
+      + static_cast<int64_t>(embedded_ptr_arrays) * batchCount * 8;
+  buf = at::empty({buf_bytes}, mat1.options().dtype(at::kByte));
+  char* base = static_cast<char*>(buf.data_ptr());
+
+  // int32 arrays (6 x batchCount)
+  mArray   = reinterpret_cast<void*>(base);
+  nArray   = reinterpret_cast<void*>(base + batchCount * 4);
+  kArray   = reinterpret_cast<void*>(base + batchCount * 8);
+  ldaArray = reinterpret_cast<void*>(base + batchCount * 12);
+  ldbArray = reinterpret_cast<void*>(base + batchCount * 16);
+  lddArray = reinterpret_cast<void*>(base + batchCount * 20);
+
+  // int64 arrays (5 x batchCount), starting at offset batchCount * 24
+  APtrArray     = reinterpret_cast<void*>(base + batchCount * 24);
+  BPtrArray     = reinterpret_cast<void*>(base + batchCount * 32);
+  DPtrArray     = reinterpret_cast<void*>(base + batchCount * 40);
+  alphaPtrArray = reinterpret_cast<void*>(base + batchCount * 48);
+  betaPtrArray  = reinterpret_cast<void*>(base + batchCount * 56);
+
+  // Alpha/beta scalars at the end of the fixed-size region
+  float* alpha_scalar = reinterpret_cast<float*>(base + batchCount * 64);
+  float* beta_scalar  = reinterpret_cast<float*>(base + batchCount * 64 + 4);
+
+  // Per-group scale pointer arrays: embedded for GroupWise, separate for BlockWise1x32
+  int64_t extra_offset = static_cast<int64_t>(batchCount) * 64 + 8;
+  int64_t* scaleAPtrArray = nullptr;
+  int64_t* scaleBPtrArray = nullptr;
+  if (mata_needs_ptr && !mata_blockwise) {
+    scaleAPtrArray = reinterpret_cast<int64_t*>(base + extra_offset);
+    extra_offset += batchCount * 8;
+  }
+  if (matb_needs_ptr && !matb_blockwise) {
+    scaleBPtrArray = reinterpret_cast<int64_t*>(base + extra_offset);
+    extra_offset += batchCount * 8;
+  }
+  // BlockWise1x32 scale pointer arrays need separate allocations
+  const int blockwise_ptr_arrays = (mata_blockwise ? 1 : 0) + (matb_blockwise ? 1 : 0);
+  if (blockwise_ptr_arrays > 0) {
+    scale_ptr_buf = at::empty(
+        {static_cast<int64_t>(blockwise_ptr_arrays) * batchCount * 8},
+        mat1.options().dtype(at::kByte));
+    char* sbase = static_cast<char*>(scale_ptr_buf.data_ptr());
+    int64_t soffset = 0;
+    if (mata_blockwise) {
+      scaleAPtrArray = reinterpret_cast<int64_t*>(sbase + soffset);
+      soffset += batchCount * 8;
+    }
+    if (matb_blockwise) {
+      scaleBPtrArray = reinterpret_cast<int64_t*>(sbase + soffset);
+    }
+  }
+
+  // Base addresses for scale data (cuBLAS-A = mat2 → scale_b, cuBLAS-B = mat1 → scale_a)
+  const int64_t base_scale_a = scale_b ? reinterpret_cast<int64_t>(scale_b->data_ptr()) : 0;
+  const int64_t base_scale_b = scale_a ? reinterpret_cast<int64_t>(scale_a->data_ptr()) : 0;
+
+  // Byte stride between consecutive groups' scale data.
+  // For GroupWise (1D float): stride(0)*elem_size = 1*4 = sizeof(float).
+  // For BlockWise1x32 3D/3D: stride(0)*elem_size = per_group_numel*1.
+  // For BlockWise1x32 with jagged dims: 0 signals variable-size mode.
+  const bool blockwise_variable_a = mata_blockwise && (a_is_2d || b_is_2d);
+  const bool blockwise_variable_b = matb_blockwise && (a_is_2d || b_is_2d);
+  const int64_t scale_a_stride_bytes = blockwise_variable_a ? 0 :
+      (scale_b && scale_b->dim() >= 2
+          ? scale_b->stride(0) * scale_b->element_size()
+          : (scale_b ? scale_b->element_size() : 0));
+  const int64_t scale_b_stride_bytes = blockwise_variable_b ? 0 :
+      (scale_a && scale_a->dim() >= 2
+          ? scale_a->stride(0) * scale_a->element_size()
+          : (scale_a ? scale_a->element_size() : 0));
+
+  // For variable-size BlockWise1x32, pass inner/outer dims for per-group
+  // scale size computation. A value of 0 means "substitute the jagged
+  // dimension (delta from offsets) at runtime".
+  // cuBLAS-A scale: getScaleTensorSize(inner=K, outer=cublas_m=user_N)
+  // cuBLAS-B scale: getScaleTensorSize(inner=K, outer=cublas_n=user_M)
+  int32_t scale_a_inner = 0, scale_a_outer = 0;
+  int32_t scale_b_inner = 0, scale_b_outer = 0;
+  if (blockwise_variable_a) {
+    // K varies (2D/2D): inner=0, outer=cublas_m
+    // cublas_m varies (3D/2D): inner=cublas_k, outer=0
+    scale_a_inner = k_is_delta ? 0 : cublas_k;
+    scale_a_outer = m_is_delta ? 0 : cublas_m;
+  }
+  if (blockwise_variable_b) {
+    // K varies (2D/2D): inner=0, outer=cublas_n
+    // cublas_n varies (2D/3D): inner=cublas_k, outer=0
+    scale_b_inner = k_is_delta ? 0 : cublas_k;
+    scale_b_outer = n_is_delta ? 0 : cublas_n;
+  }
+
+  const int64_t base_A = reinterpret_cast<int64_t>(mat2.data_ptr());
+  const int64_t base_B = reinterpret_cast<int64_t>(mat1.data_ptr());
+  const int64_t base_D = reinterpret_cast<int64_t>(c.data_ptr());
+
+  const int32_t* offs_ptr = offs.has_value()
+      ? static_cast<const int32_t*>(offs.value().data_ptr())
+      : nullptr;
+
+  cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+
+  launch_populate_cublas_grouped_args(
+        batchCount, offs_ptr,
+        base_A, base_B, base_D,
+        cublas_m, cublas_n, cublas_k,
+        m_is_delta, n_is_delta, k_is_delta,
+        lda_val, ldb_val, ldd_val,
+        a_offs_stride, a_idx_stride,
+        b_offs_stride, b_idx_stride,
+        d_offs_stride, d_idx_stride,
+        static_cast<int32_t*>(mArray),
+        static_cast<int32_t*>(nArray),
+        static_cast<int32_t*>(kArray),
+        static_cast<int32_t*>(ldaArray),
+        static_cast<int32_t*>(ldbArray),
+        static_cast<int32_t*>(lddArray),
+        static_cast<int64_t*>(APtrArray),
+        static_cast<int64_t*>(BPtrArray),
+        static_cast<int64_t*>(DPtrArray),
+        static_cast<int64_t*>(alphaPtrArray),
+        static_cast<int64_t*>(betaPtrArray),
+        alpha_scalar, beta_scalar,
+        base_scale_a, base_scale_b,
+        scale_a_stride_bytes, scale_b_stride_bytes,
+        scale_a_inner, scale_a_outer,
+        scale_b_inner, scale_b_outer,
+        scaleAPtrArray, scaleBPtrArray,
+        stream);
+
+  // For per-group scales, point to the device-side pointer arrays
+  // instead of the raw data pointer
+  if (mata_needs_ptr) {
+    scale_mata_ptr = scaleAPtrArray;
+  }
+  if (matb_needs_ptr) {
+    scale_matb_ptr = scaleBPtrArray;
+  }
+}
+#endif // !defined(USE_ROCM) && defined(CUDA_VERSION) && CUDA_VERSION >= 13020
 
 } // namespace at::native
