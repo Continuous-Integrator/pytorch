@@ -803,5 +803,127 @@ class TestGridSplit(TestCase):
 instantiate_device_type_tests(TestGridSplit, globals(), only_for=("cpu", "cuda"))
 
 
+class TestStatefulPRNG(TestCase):
+    def test_uniform_basic(self, device):
+        g = torch.random.StatefulPRNG(42, device=device)
+        result = g.uniform(100)
+        self.assertEqual(result.shape, (100,))
+        self.assertEqual(result.dtype, torch.float32)
+        self.assertEqual(result.device, torch.device(device))
+
+    def test_normal_basic(self, device):
+        g = torch.random.StatefulPRNG(42, device=device)
+        result = g.normal(100)
+        self.assertEqual(result.shape, (100,))
+
+    def test_sequential_calls_differ(self, device):
+        g = torch.random.StatefulPRNG(42, device=device)
+        a = g.uniform(100)
+        b = g.uniform(100)
+        self.assertNotEqual(a, b)
+
+    def test_manual_seed_resets(self, device):
+        g = torch.random.StatefulPRNG(42, device=device)
+        a = g.normal(100)
+        g.manual_seed(42)
+        b = g.normal(100)
+        self.assertEqual(a, b)
+
+    def test_matches_stateless_stream(self, device):
+        """Sequential StatefulPRNG calls produce the same stream as one large stateless call."""
+        g = torch.random.StatefulPRNG(42, device=device)
+        first = g.uniform(100)
+        second = g.uniform(100)
+
+        k = torch.random.key(42, device=device)
+        full = torch.random.uniform(k, (200,), device=device)
+        self.assertEqual(torch.cat([first, second]), full)
+
+    def test_matches_stateless_normal(self, device):
+        g = torch.random.StatefulPRNG(42, device=device)
+        first = g.normal(50)
+        second = g.normal(50)
+
+        k = torch.random.key(42, device=device)
+        full = torch.random.normal(k, (100,), device=device)
+        self.assertEqual(torch.cat([first, second]), full)
+
+    def test_matches_stateless_f64_uniform(self, device):
+        """Float64 uniform stream is contiguous at any split point."""
+        g = torch.random.StatefulPRNG(42, device=device)
+        first = g.uniform(17, dtype=torch.float64)
+        second = g.uniform(33, dtype=torch.float64)
+
+        k = torch.random.key(42, device=device)
+        full = torch.random.uniform(k, (50,), dtype=torch.float64, device=device)
+        self.assertEqual(torch.cat([first, second]), full)
+
+    def test_matches_stateless_f64_normal(self, device):
+        """Float64 normal stream is contiguous at any split point."""
+        g = torch.random.StatefulPRNG(42, device=device)
+        first = g.normal(17, dtype=torch.float64)
+        second = g.normal(33, dtype=torch.float64)
+
+        k = torch.random.key(42, device=device)
+        full = torch.random.normal(k, (50,), dtype=torch.float64, device=device)
+        self.assertEqual(torch.cat([first, second]), full)
+
+    def test_multidim_shape(self, device):
+        g = torch.random.StatefulPRNG(42, device=device)
+        result = g.uniform(10, 20)
+        self.assertEqual(result.shape, (10, 20))
+
+        g.manual_seed(42)
+        flat = g.uniform(200)
+        self.assertEqual(result.flatten(), flat)
+
+    def test_custom_params(self, device):
+        g = torch.random.StatefulPRNG(42, device=device)
+        result = g.uniform(1000, low=2.0, high=5.0)
+        self.assertTrue(result.min().item() >= 2.0)
+        self.assertTrue(result.max().item() <= 5.0)
+
+        g.manual_seed(42)
+        result = g.normal(1000, mean=5.0, std=0.5)
+        self.assertTrue(abs(result.mean().item() - 5.0) < 0.1)
+
+    def test_dtype(self, device):
+        g = torch.random.StatefulPRNG(42, device=device)
+        result = g.uniform(100, dtype=torch.float64)
+        self.assertEqual(result.dtype, torch.float64)
+
+    def test_key_property(self, device):
+        g = torch.random.StatefulPRNG(42, device=device)
+        self.assertIsInstance(g.key, torch.random.PhiloxKey)
+        k_before = g.key
+        g.uniform(10)
+        k_after = g.key
+        self.assertNotEqual(k_before._data, k_after._data)
+
+    def test_different_seeds(self, device):
+        g1 = torch.random.StatefulPRNG(42, device=device)
+        g2 = torch.random.StatefulPRNG(43, device=device)
+        self.assertNotEqual(g1.uniform(100), g2.uniform(100))
+
+    @onlyCUDA
+    def test_cross_device_consistency(self, device):
+        g_cpu = torch.random.StatefulPRNG(42)
+        g_cuda = torch.random.StatefulPRNG(42, device=device)
+        self.assertEqual(g_cpu.uniform(100), g_cuda.uniform(100).cpu())
+        self.assertEqual(g_cpu.normal(100), g_cuda.normal(100).cpu())
+
+    @onlyCUDA
+    def test_cross_device_f64_uniform(self, device):
+        g_cpu = torch.random.StatefulPRNG(42)
+        g_cuda = torch.random.StatefulPRNG(42, device=device)
+        self.assertEqual(
+            g_cpu.uniform(100, dtype=torch.float64),
+            g_cuda.uniform(100, dtype=torch.float64).cpu(),
+        )
+
+
+instantiate_device_type_tests(TestStatefulPRNG, globals(), only_for=("cpu", "cuda"))
+
+
 if __name__ == "__main__":
     run_tests()
