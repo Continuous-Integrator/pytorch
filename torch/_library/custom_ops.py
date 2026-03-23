@@ -20,18 +20,6 @@ from .effects import EffectType
 device_types_t = str | Sequence[str] | None
 log = logging.getLogger(__name__)
 
-# Precomputed "normal eager mode" TLS include set raw repr.
-# Lazily initialized on first use.
-_NORMAL_TLS_INCLUDE_RAW: int | None = None
-
-
-def _get_normal_tls_include_raw() -> int:
-    global _NORMAL_TLS_INCLUDE_RAW
-    if _NORMAL_TLS_INCLUDE_RAW is None:
-        _NORMAL_TLS_INCLUDE_RAW = (
-            _C._dispatch_tls_local_include_set().raw_repr()
-        )
-    return _NORMAL_TLS_INCLUDE_RAW
 
 
 @overload
@@ -415,6 +403,9 @@ class CustomOpDef:
                             _C._dispatch_key_for_device(device_type),
                         )
 
+                # Wrap function to choose between the default implementation or the device-specific
+                # implementation depending on if the kernel is disabled.
+                @torch._disable_dynamo
                 def wrapped_fn(*args, **kwargs):
                     if device_type in self._disabled_kernel:
                         return self._init_fn(*args, **kwargs)
@@ -721,8 +712,18 @@ class CustomOpDef:
         schema = self._opoverload._schema
 
         # View ops have special ADInplaceOrView handling that the fast path
-        # can't replicate, so we skip the fast path entirely.
+        # can't replicate
         if schema._is_view_op():
+            return
+
+        has_tensorlist = any(
+            utils.is_tensorlist_like_type(a.type)
+            for a in (*schema.arguments, *schema.returns)
+        )
+
+        # Tensor-list args can hide subclasses that the top-level arg check
+        # in fast_call wouldn't catch
+        if has_tensorlist:
             return
 
         is_mutable = schema.is_mutable
@@ -732,23 +733,8 @@ class CustomOpDef:
         op = self._opoverload
         op_name = self._name
         has_kwarg_only_args = utils.has_kwarg_only_args(schema)
-        normal_tls_include_raw = _get_normal_tls_include_raw()
-
-        has_tensorlist = any(
-            utils.is_tensorlist_like_type(a.type)
-            for a in (*schema.arguments, *schema.returns)
-        )
-
-        # Tensor-list args can hide subclasses that the top-level arg check
-        # in fast_call wouldn't catch. Bail out entirely for these schemas.
-        if has_tensorlist:
-            return
 
         def forward(ctx, *args):
-            if is_mutable:
-                for idx in mutated_idxs:
-                    increment_version(args[idx])
-
             device_type = args[0].device.type
             fn = raw_fns.get(device_type) or raw_fns.get(None)
             result = fn(*args)
@@ -791,27 +777,32 @@ class CustomOpDef:
             },
         )
 
-        disabled_kernel = opdef._disabled_kernel
+        disabled_kernel = self._disabled_kernel
+        # c10::default_included_set — the TLS local include keyset when no
+        # special dispatch contexts (vmap, functionalize, fake-tensor, etc.)
+        # are active.  Mirrors the constexpr in c10/core/DispatchKeySet.h.
+        normal_tls_include_raw = (
+            _C.DispatchKeySet(_C.DispatchKey.BackendSelect)
+            | _C.DispatchKeySet(_C.DispatchKey.ADInplaceOrView)
+        ).raw_repr()
 
         def fast_call(*args, **kwargs):
             if torch.compiler.is_compiling():
                 return NotImplemented
 
-            if kwargs or disabled_kernel:
+            if not args or kwargs or disabled_kernel:
                 return NotImplemented
 
             first_arg = args[0]
             if type(first_arg) is not Tensor:
                 return NotImplemented
 
-            # Check for subclass tensors (__torch_function__ or __torch_dispatch__)
             if any(type(a) is not Tensor for a in args if isinstance(a, Tensor)):
                 return NotImplemented
             if _C._is_torch_function_mode_enabled():
                 return NotImplemented
             if _C._is_any_autocast_enabled():
                 return NotImplemented
-            # Check for special dispatch modes (vmap, functionalize, etc.)
             if _C._dispatch_tls_local_include_set().raw_repr() != normal_tls_include_raw:
                 return NotImplemented
 
@@ -822,13 +813,15 @@ class CustomOpDef:
             if fn is None:
                 return NotImplemented
 
-            if _C.is_grad_enabled() and _C._any_requires_grad(*args):
-                return Generated.apply(*args)
-
             if is_mutable:
                 for idx in mutated_idxs:
                     increment_version(args[idx])
+
+            if _C.is_grad_enabled() and _C._any_requires_grad(*args):
+                return Generated.apply(*args)
+
             result = fn(*args)
+
             utils._c_check_aliasing_constraint(op_name, args, {}, result)
             return result
 
