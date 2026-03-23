@@ -122,7 +122,7 @@ class Philox4x32_10Key(PRNGKey):
             offsets = base_offset + flat_indices * tile_shape[0]
             seeds = seed.expand_as(offsets)
             keys = torch.stack([seeds, offsets], dim=-1)
-            return PhiloxKey(keys.view(torch.uint64))
+            return Philox4x32_10Key(keys.view(torch.uint64))
 
         # N-D: tiles are not contiguous in the flat stream. Each "row" (innermost
         # slice of size tile_shape[-1]) IS contiguous, so we emit one key per row
@@ -176,7 +176,7 @@ class Philox4x32_10Key(PRNGKey):
 
         seeds = seed.expand_as(offset)
         keys = torch.stack([seeds, offset], dim=-1)
-        return PhiloxKey(keys.view(torch.uint64))
+        return Philox4x32_10Key(keys.view(torch.uint64))
 
     def _split(self, num):
         return Philox4x32_10Key(torch.ops.aten._philox_key_split(self, num))
@@ -262,7 +262,7 @@ class StatefulPRNG:
 
     _key: PRNGKey
 
-    def __init__(self, seed: int = 0, *, impl: str = "philox", device=None):
+    def __init__(self, seed: int = 0, *, impl: str = "philox4x32-10", device=None):
         self._impl = impl
         self._key = key(seed, impl=impl, device=device)
 

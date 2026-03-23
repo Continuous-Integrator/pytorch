@@ -606,7 +606,7 @@ class TestGridSplit(TestCase):
     def test_1d_shape(self, device):
         k = torch.random.key(42, device=device)
         keys = torch.random.grid_split(k, (100,), (10,))
-        self.assertIsInstance(keys, torch.random.PhiloxKey)
+        self.assertIsInstance(keys, torch.random.Philox4x32_10Key)
         # 10 tiles, each of size 10
         self.assertEqual(keys.shape, (10, 2))
 
@@ -894,7 +894,7 @@ class TestStatefulPRNG(TestCase):
 
     def test_key_property(self, device):
         g = torch.random.StatefulPRNG(42, device=device)
-        self.assertIsInstance(g.key, torch.random.PhiloxKey)
+        self.assertIsInstance(g.key, torch.random.Philox4x32_10Key)
         k_before = g.key
         g.uniform(10)
         k_after = g.key
