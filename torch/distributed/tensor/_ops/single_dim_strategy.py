@@ -568,10 +568,10 @@ def _expand_single_dim_strategy_to_mesh(
         # Strip the prefix to get the base op name and find the per-element op.
         # Fused ops (e.g. _fused_adam) have no per-element ATen equivalent,
         # so we keep the original op unchanged.
-        if "_foreach_" in op_name:
-            base_op_name = op_name.replace("_foreach_", "")
-        elif "_amp_foreach_" in op_name:
-            base_op_name = op_name.replace("_amp_foreach_", "")
+        if op_name.startswith("_foreach_"):
+            base_op_name = op_name.replace("_foreach_", "", 1)
+        elif op_name.startswith("_amp_foreach_"):
+            base_op_name = op_name.replace("_amp_foreach_", "", 1)
         else:
             # Fused ops or unknown: keep original op, no translation
             target_op = op_schema.op

@@ -3023,7 +3023,6 @@ class CommonTemplate:
 
         self.common(fn, (torch.randn(4, 4), torch.randn(4, 4)))
 
-    @xfail_if_mps
     @skip_if_halide  # different pow accuracies
     @xfail_if_triton_cpu
     def test_norm_constant_overflow(self):
@@ -3672,6 +3671,34 @@ class CommonTemplate:
             self.common(fn, (a, b))
             b_neg = torch.full_like(a, -divisor)
             self.common(fn, (a, b_neg))
+
+    def test_floordiv_float_accuracy(self):
+        # Triton uses an approximate reciprocal for fp32 division, so a naive
+        # floor(a / b) can be off by one when the true quotient is very close
+        # to an integer.  Verify the corrected lowering matches eager.
+        def fn(a, b):
+            return torch.floor_divide(a, b)
+
+        # The original repro: fp16 values whose exact quotient is 4.0, but
+        # Triton's approximate fp32 division yields 3.9999997…
+        a = torch.full((8,), 84.3125, dtype=torch.float16, device=self.device)
+        b = torch.full((8,), 21.078125, dtype=torch.float16, device=self.device)
+        self.common(fn, (a, b))
+
+        # Negative operands / mixed signs
+        for dtype in [torch.float16, torch.float32]:
+            for a_val, b_val in [
+                (7.0, 2.0),
+                (7.0, -2.0),
+                (-7.0, 2.0),
+                (-7.0, -2.0),
+                (6.0, 3.0),
+                (0.0, 5.0),
+                (0.0, -5.0),
+            ]:
+                a = torch.full((8,), a_val, dtype=dtype, device=self.device)
+                b = torch.full((8,), b_val, dtype=dtype, device=self.device)
+                self.common(fn, (a, b))
 
     def test_div_precision(self):
         # Reproducer for https://github.com/pytorch/pytorch/issues/101039
@@ -10904,7 +10931,6 @@ def forward(self, arg0_1: "Sym(s77)", arg1_1: "Sym(s27)", arg2_1: "Sym(s53)", ar
             ],
         )
 
-    @skipIfXpu(msg="Incorrect XPU reference")
     def test_argmax_argmin2(self):
         def fn(x):
             return (
@@ -10916,7 +10942,6 @@ def forward(self, arg0_1: "Sym(s77)", arg1_1: "Sym(s27)", arg2_1: "Sym(s53)", ar
 
         self.common(fn, (torch.randn([144, 144]),))
 
-    @skipIfXpu(msg="Incorrect XPU reference")
     def test_argmax_argmin_with_duplicates(self):
         def fn(x):
             return (
@@ -10938,7 +10963,6 @@ def forward(self, arg0_1: "Sym(s77)", arg1_1: "Sym(s27)", arg2_1: "Sym(s53)", ar
         t1 = torch.randint(8, size=(1028, 1028))
         self.common(fn, (t1,))
 
-    @skipIfXpu(msg="# Incorrect XPU reference ")
     @xfail_if_mps  # eager nan is wrong, see https://github.com/pytorch/pytorch/issues/130295
     @skip_if_halide  # nan behavior
     def test_argmax_argmin_with_nan(self):
@@ -11063,7 +11087,6 @@ def forward(self, arg0_1: "Sym(s77)", arg1_1: "Sym(s27)", arg2_1: "Sym(s53)", ar
                 [rank4_inps, rank3_inps, rank5_inps],
             )
 
-    @skipIfXpu(msg="Incorrect XPU reference")
     def test_argmax_argmin3(self):
         def fn(x):
             return (
@@ -12802,7 +12825,6 @@ def forward(self, arg0_1: "Sym(s77)", arg1_1: "Sym(s27)", arg2_1: "Sym(s53)", ar
         )
 
     @xfail_if_mps_unimplemented
-    @expectedFailureXPU
     @unittest.skipIf(
         not PLATFORM_SUPPORTS_MEM_EFF_ATTENTION, "Some archs don't support mem eff SDPA"
     )
@@ -15631,7 +15653,7 @@ def forward(self, arg0_1: "Sym(s77)", arg1_1: "Sym(s27)", arg2_1: "Sym(s53)", ar
         self.assertFalse("ReductionHint.INNER" in code)
 
     @skip_if_halide
-    @requires_cuda_and_triton
+    @requires_gpu_and_triton
     def test_triton_argmin_argmax_transpose_logical_index(self):
         def fn(x):
             x.tan_()
@@ -15668,7 +15690,7 @@ def forward(self, arg0_1: "Sym(s77)", arg1_1: "Sym(s27)", arg2_1: "Sym(s53)", ar
         self.common(fn, (torch.randn(6, 4, device=GPU_TYPE).t().contiguous().t(),))
 
     @skip_if_halide
-    @requires_cuda_and_triton
+    @requires_gpu_and_triton
     def test_unbacked_float_item(self):
         def fn(x, max_val):
             return torch.clamp(x, 0, max_val.item())
@@ -15708,7 +15730,7 @@ def forward(self, arg0_1: "Sym(s77)", arg1_1: "Sym(s27)", arg2_1: "Sym(s53)", ar
         if self.device.lower() == "cuda":
             self.assertEqual(torch._inductor.metrics.generated_kernel_count, 2)
 
-    @requires_cuda_and_triton
+    @requires_gpu_and_triton
     @config.patch(combo_kernels=True)
     @torch._dynamo.config.patch(assume_static_by_default=False)
     def test_combo_kernel_store_mask(self):
