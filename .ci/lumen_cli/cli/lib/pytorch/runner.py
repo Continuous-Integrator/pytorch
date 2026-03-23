@@ -27,25 +27,15 @@ def resolve_plans_for_env(
     return [gid for gid, plan in registry.items() if plan.is_eligible(build_env)]
 
 
-def resolve_plan_for_test_config(
+def resolve_plans_for_test_config(
     test_config: str,
     build_env: str,
     library: dict[str, BasePytorchTestPlan] | None = None,
-) -> str:
+) -> list[str]:
     """
-    Resolve exactly one group_id from TEST_CONFIG + build_env.
-
-    Replaces the if/elif dispatch at the bottom of test.sh. In test.sh:
-
-        (cd .ci/lumen_cli && python -m pip install -e .)
-        python -m cli.run test pytorch-core \\
-            --test-config "$TEST_CONFIG" \\
-            --build-env  "$BUILD_ENVIRONMENT" \\
-            --shard-id   "$SHARD_NUMBER" \\
-            --num-shards "$NUM_TEST_SHARDS"
-
-    Raises RuntimeError if zero or more than one plan matches — ambiguity is
-    a configuration error that should be fixed in the plan definitions.
+    Return all group_ids matching TEST_CONFIG + build_env, in registry order.
+    Multiple plans can match and will be run in sequence.
+    Raises RuntimeError if no plan matches.
     """
     if not build_env:
         raise RuntimeError("build_env is required and must be non-empty")
@@ -55,18 +45,12 @@ def resolve_plan_for_test_config(
         for gid, plan in registry.items()
         if plan.is_eligible(build_env, test_config)
     ]
-
     if not matched:
         raise RuntimeError(
             f"No plan matched TEST_CONFIG={test_config!r} build_env={build_env!r}. "
             f"Available group_ids: {sorted(registry)}"
         )
-    if len(matched) > 1:
-        raise RuntimeError(
-            f"Ambiguous match for TEST_CONFIG={test_config!r} build_env={build_env!r}: "
-            f"{matched}. Tighten test_configs/run_on conditions."
-        )
-    return matched[0]
+    return matched
 
 
 # ---------------------------------------------------------------------------
@@ -163,6 +147,11 @@ def run_test_plan(
             f"group '{group_id}' not found. Available: {sorted(registry)}"
         )
     plan = registry[group_id]
+    if plan.run_on and not plan.is_eligible(build_env):
+        logger.warning(
+            "[%s] run_on conditions %s do not match build_env=%r — running anyway",
+            group_id, plan.run_on, build_env,
+        )
     all_steps = plan.get_steps(build_env, shard_id=shard_id, num_shards=num_shards)
 
     steps = all_steps
@@ -252,17 +241,28 @@ class PytorchTestRunner(BaseRunner):
         self.filters = dict(f.split("=", 1) for f in raw_filters) if raw_filters else None
 
     def run(self) -> None:
-        group_id = self.group_id or resolve_plan_for_test_config(
-            test_config=self.test_config,
-            build_env=self.build_env,
-        )
-        run_test_plan(
-            group_id=group_id,
-            build_env=self.build_env,
-            test_id=self.test_id,
-            cmd=self.cmd,
-            filters=self.filters,
-            shard_id=self.shard_id,
-            num_shards=self.num_shards,
-            no_upload=self.no_upload,
-        )
+        if self.group_id:
+            # Explicit group_id: run exactly this plan (hardware mismatch → warning).
+            group_ids = [self.group_id]
+        else:
+            # test_config path: find all plans matching test_config + build_env,
+            # run them in sequence.
+            group_ids = resolve_plans_for_test_config(
+                test_config=self.test_config,
+                build_env=self.build_env,
+            )
+            logger.info(
+                "test_config=%r build_env=%r → %d plan(s) to run: %s",
+                self.test_config, self.build_env, len(group_ids), group_ids,
+            )
+        for group_id in group_ids:
+            run_test_plan(
+                group_id=group_id,
+                build_env=self.build_env,
+                test_id=self.test_id,
+                cmd=self.cmd,
+                filters=self.filters,
+                shard_id=self.shard_id,
+                num_shards=self.num_shards,
+                no_upload=self.no_upload,
+            )

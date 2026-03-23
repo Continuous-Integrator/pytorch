@@ -60,16 +60,16 @@ def patch_lib(monkeypatch):
     monkeypatch.setattr(module, "run_command", run_mock, raising=True)
     monkeypatch.setattr(module, "temp_environ", lambda m: (temp_calls.append(m), nullcontext())[1], raising=True)
     monkeypatch.setattr(module, "working_directory", lambda p: nullcontext(), raising=True)
-    monkeypatch.setattr(module, "logger", SimpleNamespace(
-        info=MagicMock(), warning=MagicMock(), error=MagicMock()
-    ), raising=True)
+    logger_mock = SimpleNamespace(info=MagicMock(), warning=MagicMock(), error=MagicMock())
+    monkeypatch.setattr(module, "logger", logger_mock, raising=True)
 
     ns = SimpleNamespace(
         run_test_plan=module.run_test_plan,
-        resolve_plan_for_test_config=module.resolve_plan_for_test_config,
+        resolve_plans_for_test_config=module.resolve_plans_for_test_config,
         pip=pip_mock,
         run=run_mock,
         temp_calls=temp_calls,
+        logger=logger_mock,
     )
     return ns
 
@@ -172,34 +172,34 @@ class TestCoreTestPlanSteps:
 
 
 # ---------------------------------------------------------------------------
-# resolve_plan_for_test_config
+# resolve_plans_for_test_config
 # ---------------------------------------------------------------------------
 
 
 class TestResolvePlan:
     def test_raises_when_no_build_env(self, patch_lib):
         with pytest.raises(RuntimeError, match="build_env is required"):
-            patch_lib.resolve_plan_for_test_config("default", "", {})
+            patch_lib.resolve_plans_for_test_config("default", "", {})
 
-    def test_exact_match(self, patch_lib):
+    def test_single_match(self, patch_lib):
         lib = _lib(
             _plan(_step(), group_id="cpu", run_on=[is_cpu_only], test_configs=["nogpu"]),
             _plan(_step(), group_id="gpu", run_on=[is_gpu],      test_configs=["default"]),
         )
-        assert patch_lib.resolve_plan_for_test_config("nogpu", "cpuonly", lib) == "cpu"
+        assert patch_lib.resolve_plans_for_test_config("nogpu", "cpuonly", lib) == ["cpu"]
 
-    def test_no_match_raises(self, patch_lib):
-        lib = _lib(_plan(_step(), group_id="p", test_configs=["nogpu"]))
-        with pytest.raises(RuntimeError, match="No plan matched"):
-            patch_lib.resolve_plan_for_test_config("default", "cpuonly", lib)
-
-    def test_ambiguous_raises(self, patch_lib):
+    def test_multiple_match_runs_all(self, patch_lib):
+        # Two plans with same test_config both match — returned in registry order.
         lib = _lib(
             _plan(_step(), group_id="a", test_configs=["default"]),
             _plan(_step(), group_id="b", test_configs=["default"]),
         )
-        with pytest.raises(RuntimeError, match="Ambiguous"):
-            patch_lib.resolve_plan_for_test_config("default", "cuda12.1", lib)
+        assert patch_lib.resolve_plans_for_test_config("default", "cuda12.1", lib) == ["a", "b"]
+
+    def test_no_match_raises(self, patch_lib):
+        lib = _lib(_plan(_step(), group_id="p", test_configs=["nogpu"]))
+        with pytest.raises(RuntimeError, match="No plan matched"):
+            patch_lib.resolve_plans_for_test_config("default", "cpuonly", lib)
 
 
 # ---------------------------------------------------------------------------
@@ -262,3 +262,9 @@ class TestRunTestPlan:
         ))
         patch_lib.run_test_plan("plan_a", "env", library=lib)
         assert order == ["setup", "step"]
+
+    def test_hardware_mismatch_warns(self, patch_lib):
+        # group_id specified explicitly with mismatched build_env → warning, still runs.
+        lib = _lib(_plan(_step(), group_id="plan_a", run_on=[is_gpu]))
+        patch_lib.run_test_plan("plan_a", "cpuonly", library=lib)
+        assert patch_lib.logger.warning.called
