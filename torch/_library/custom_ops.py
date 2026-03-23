@@ -739,6 +739,11 @@ class CustomOpDef:
             for a in (*schema.arguments, *schema.returns)
         )
 
+        # Tensor-list args can hide subclasses that the top-level arg check
+        # in fast_call wouldn't catch. Bail out entirely for these schemas.
+        if has_tensorlist:
+            return
+
         def forward(ctx, *args):
             if is_mutable:
                 for idx in mutated_idxs:
@@ -785,9 +790,6 @@ class CustomOpDef:
                 "backward": staticmethod(backward),
             },
         )
-
-        if has_tensorlist:
-            Generated = autograd.supports_tensorlist(Generated)
 
         disabled_kernel = opdef._disabled_kernel
 

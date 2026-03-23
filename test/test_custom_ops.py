@@ -4657,6 +4657,25 @@ class TestCustomOpFastPath(TestCase):
         with self.assertRaisesRegex(RuntimeError, "may not alias"):
             torch.ops._torch_testing.fp_alias(x)
 
+    def test_fast_path_disabled_for_tensorlist_subclass(self):
+        @torch.library.custom_op("_torch_testing::fp_tl", mutates_args=())
+        def fp_tl(x: Tensor, ys: list[Tensor]) -> Tensor:
+            return x.clone()
+
+        sentinel = torch.tensor(-1.0)
+
+        class MySub(torch.Tensor):
+            @classmethod
+            def __torch_function__(cls, func, types, args=(), kwargs=None):
+                if "fp_tl" in str(func):
+                    return sentinel
+                return super().__torch_function__(func, types, args, kwargs or {})
+
+        x = torch.randn(3)
+        y = MySub(torch.randn(3))
+        self.assertIs(fp_tl(x, [y]), sentinel)
+        self.assertIs(torch.ops._torch_testing.fp_tl(x, [y]), sentinel)
+
 
 class TestLibrarySourceLocation(TestCase):
     def test_library_source_location(self):
