@@ -826,7 +826,17 @@ class CustomOpDef:
             return result
 
         self._fast_call = fast_call
-        self._opoverload._overloadpacket._fast_call = fast_call
+
+        packet = self._opoverload._overloadpacket
+        original_op = packet._op
+
+        def fast_op(*args, **kwargs):
+            result = fast_call(*args, **kwargs)
+            if result is not NotImplemented:
+                return result
+            return original_op(*args, **kwargs)
+
+        packet._op = fast_op
 
     def _register_backend_select_dispatcher(self, device_arg_index: int):
         """

@@ -1273,12 +1273,6 @@ class OpOverloadPacket(Generic[_P, _T]):
             # pyrefly: ignore [bad-argument-type]
             return _call_overload_packet_from_python(self, *args, **kwargs)
 
-        fast_call = getattr(self, "_fast_call", None)
-        if fast_call is not None:
-            result = fast_call(*args, **kwargs)
-            if result is not NotImplemented:
-                return result
-
         return self._op(*args, **kwargs)
 
     # TODO: use this to make a __dir__
