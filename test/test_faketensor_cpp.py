@@ -1,7 +1,8 @@
 import contextlib
 
 import torch
-from torch._subclasses.fake_tensor import FakeTensorConverter
+from torch._subclasses.fake_tensor import FakeTensorConverter, FakeTensorMode
+from torch.fx.experimental.proxy_tensor import make_fx
 from torch.fx.experimental.symbolic_shapes import ShapeEnv
 from torch.testing._internal.common_device_type import instantiate_device_type_tests
 from torch.testing._internal.common_utils import run_tests, TestCase
@@ -266,6 +267,92 @@ class TestFakeTensorCpp(TestCase):
 
 
 instantiate_device_type_tests(TestFakeTensorCpp, globals(), only_for=("cpu", "cuda"))
+
+
+def get_op_targets(gm):
+    return [n.target for n in gm.graph.nodes if n.op == "call_function"]
+
+
+def get_output_shapes(gm):
+    shapes = {}
+    for n in gm.graph.nodes:
+        if n.op == "call_function" and hasattr(n, "meta") and "val" in n.meta:
+            val = n.meta["val"]
+            if isinstance(val, torch.Tensor):
+                shapes[n.target] = val.shape
+    return shapes
+
+
+# class TestMakeFxCpp(TestCase):
+#     def _compare_graphs(self, fn, args):
+#         """Trace fn with Python FakeTensorMode and C++ fake mode, compare graphs."""
+#         py_gm = make_fx(fn, tracing_mode="fake")(*args)
+
+#         with cpp_fake_tensor_mode():
+#             cpp_args = []
+#             for a in args:
+#                 if isinstance(a, torch.Tensor):
+#                     cpp_args.append(
+#                         torch.empty(a.shape, dtype=a.dtype, device=a.device)
+#                     )
+#                 else:
+#                     cpp_args.append(a)
+#             cpp_gm = make_fx(fn, tracing_mode="real")(*cpp_args)
+
+#         py_ops = get_op_targets(py_gm)
+#         cpp_ops = get_op_targets(cpp_gm)
+#         self.assertEqual(py_ops, cpp_ops)
+#         return py_gm, cpp_gm
+
+#     def test_make_fx_add(self, device):
+#         def fn(a, b):
+#             return a + b
+
+#         self._compare_graphs(
+#             fn,
+#             [torch.randn(3, 4, device=device), torch.randn(3, 4, device=device)],
+#         )
+
+#     def test_make_fx_mm(self, device):
+#         def fn(a, b):
+#             return torch.mm(a, b)
+
+#         py_gm, cpp_gm = self._compare_graphs(
+#             fn,
+#             [torch.randn(3, 4, device=device), torch.randn(4, 5, device=device)],
+#         )
+#         # Verify output shape metadata is correct
+#         py_shapes = get_output_shapes(py_gm)
+#         cpp_shapes = get_output_shapes(cpp_gm)
+#         for op in py_shapes:
+#             self.assertEqual(py_shapes[op], cpp_shapes[op])
+
+#     def test_make_fx_cat(self, device):
+#         def fn(a, b):
+#             return torch.cat([a, b], dim=0)
+
+#         self._compare_graphs(
+#             fn,
+#             [torch.randn(2, 4, device=device), torch.randn(3, 4, device=device)],
+#         )
+
+#     def test_make_fx_multi_op(self, device):
+#         def fn(a, b):
+#             c = torch.mm(a, b)
+#             d = c + c
+#             return torch.relu(d)
+
+#         self._compare_graphs(
+#             fn,
+#             [torch.randn(3, 4, device=device), torch.randn(4, 5, device=device)],
+#         )
+
+#     def test_make_fx_factory_op(self, device):
+#         def fn(a):
+#             b = torch.ones(a.shape[0], 3, device=a.device)
+#             return a + b
+
+#         self._compare_graphs(fn, [torch.randn(4, 3, device=device)])
 
 
 if __name__ == "__main__":
