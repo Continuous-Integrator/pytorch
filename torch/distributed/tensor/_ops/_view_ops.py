@@ -804,6 +804,8 @@ class _ViewShardingPropagator:
 
     def _analyze_flatten(self, cmd: Flatten) -> list[InputDim]:
         """Fill self.shard_allowed for Flatten; return sharded input dims."""
+        from torch.fx.experimental.symbolic_shapes import guard_or_true
+
         sharded_dims: list[InputDim] = []
         num_input_dims = len(cmd.input_dims)
         for i, dim in enumerate(cmd.input_dims):
@@ -818,7 +820,9 @@ class _ViewShardingPropagator:
             can_shard_dim = True
             if self.strict_view:
                 is_last_input_dim = i == num_input_dims - 1
-                if not is_last_input_dim and tensor_dim_size % mesh_dim_size != 0:
+                if not is_last_input_dim and guard_or_true(
+                    tensor_dim_size % mesh_dim_size != 0
+                ):
                     raise RuntimeError(
                         f"Cannot flatten unevenly sharded tensor: "
                         f"dimension {dim.input_dim} (size {tensor_dim_size}) "
@@ -834,7 +838,7 @@ class _ViewShardingPropagator:
                 # wasn't originally implemented for this case.
                 if i == 0:
                     sharded_dims.append(dim)
-                    if tensor_dim_size % mesh_dim_size != 0:
+                    if guard_or_true(tensor_dim_size % mesh_dim_size != 0):
                         can_shard_dim = False
                 else:
                     can_shard_dim = False
@@ -851,6 +855,8 @@ class _ViewShardingPropagator:
 
     def _analyze_split(self, cmd: Split) -> list[InputDim]:
         """Fill self.shard_allowed for Split; return shardable input dims."""
+        from torch.fx.experimental.symbolic_shapes import guard_or_false, guard_or_true
+
         in_dims = self._analyze_dim(cmd.input_dim)
         if len(in_dims) == 0:
             return []
@@ -864,7 +870,8 @@ class _ViewShardingPropagator:
         # individual mesh_dim entries via the _StridedShard branch below.
         if cmd.split_id == 0:
             self.shard_allowed[in_dim.input_dim] = [
-                out_size % mesh_dim_size == 0 for mesh_dim_size in self.mesh_sizes
+                guard_or_false(out_size % mesh_dim_size == 0)
+                for mesh_dim_size in self.mesh_sizes
             ]
             plain_mesh_dim, _ = self._find_plain_shard(in_dim)
             # Non-strict silently redistributes via shard_allowed=False above;
@@ -893,7 +900,7 @@ class _ViewShardingPropagator:
             if (
                 self.strict_view
                 and not is_last_split_dim
-                and out_size % self.mesh_sizes[shard_mesh_dim] != 0
+                and guard_or_true(out_size % self.mesh_sizes[shard_mesh_dim] != 0)
             ):
                 raise RuntimeError(
                     f"Cannot unflatten unevenly sharded tensor: "
@@ -907,7 +914,8 @@ class _ViewShardingPropagator:
             self.matched_strided_mesh_dims.add(shard_mesh_dim)
             if in_dim.input_dim in self.shard_allowed:
                 self.shard_allowed[in_dim.input_dim][shard_mesh_dim] = (
-                    out_size % self.mesh_sizes[shard_mesh_dim] == 0 or is_last_split_dim
+                    guard_or_false(out_size % self.mesh_sizes[shard_mesh_dim] == 0)
+                    or is_last_split_dim
                 )
 
         # Only split_id==0 returns the input dim for input_to_output_tensor_dims.
