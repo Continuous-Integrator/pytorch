@@ -1898,16 +1898,8 @@ if ! [[ "${BUILD_ENVIRONMENT}" == *libtorch* || "${BUILD_ENVIRONMENT}" == *-baze
   (cd test && python -c "import torch; print(torch.__config__.parallel_info())")
 fi
 if [[ "${TEST_CONFIG}" == *numpy_2* ]]; then
-  # Install numpy-2.0.2 and compatible scipy & numba versions
-  # Force re-install of pandas to avoid error where pandas checks numpy version from initial install and fails upon import
-  TMP_PANDAS_VERSION=$(python -c "import pandas; print(pandas.__version__)" 2>/dev/null)
-  if [ -n "$TMP_PANDAS_VERSION" ]; then
-    python -m pip install --pre numpy==2.0.2 scipy==1.13.1 numba==0.60.0 pandas=="$TMP_PANDAS_VERSION" --force-reinstall
-  else
-    python -m pip install --pre numpy==2.0.2 scipy==1.13.1 numba==0.60.0
-  fi
-  python test/run_test.py --include dynamo/test_functions.py dynamo/test_unspec.py test_binary_ufuncs.py test_fake_tensor.py test_linalg.py test_numpy_interop.py test_tensor_creation_ops.py test_torch.py torch_np/test_basic.py
-elif [[ "${BUILD_ENVIRONMENT}" == *aarch64* && "${TEST_CONFIG}" == 'default' ]]; then
+  lumen test pytorch-core --group-id pytorch_numpy_2 --build-env "$BUILD_ENVIRONMENT"
+ elif [[ "${BUILD_ENVIRONMENT}" == *aarch64* && "${TEST_CONFIG}" == 'default' ]]; then
   test_linux_aarch64
 elif [[ "${TEST_CONFIG}" == *backward* ]]; then
   test_forward_backward_compatibility
@@ -1928,6 +1920,10 @@ elif [[ "$TEST_CONFIG" == *torchtitan* ]]; then
 elif [[ "${TEST_CONFIG}" == *executorch* ]]; then
   test_executorch
 elif [[ "$TEST_CONFIG" == 'jit_legacy' ]]; then
+  (cd .ci/lumen_cli && python -m pip install -e .)
+  echo "===== test_python_legacy_jit uses lumen_cli ====="
+  python -m cli.run pytorch-core  --build-env "$BUILD_ENVIRONMENT" --group-id pytorch_jit_legacy
+  echo "===== test_python_legacy_jit uses legacy ====="
   test_python_legacy_jit
 elif [[ "$TEST_CONFIG" == 'quantization' ]]; then
   test_quantization

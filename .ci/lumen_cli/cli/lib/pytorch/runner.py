@@ -76,6 +76,7 @@ def _print_repro(
     step: TestStep,
     build_env: str,
     ctx: dict,
+    cmd: str | None = None,
 ) -> None:
     lumen_cmd = (
         f"lumen test pytorch-core"
@@ -86,6 +87,8 @@ def _print_repro(
     )
     for k, v in step.params.items():
         lumen_cmd += f" --filter {k}={v}"
+    if cmd:
+        lumen_cmd += f" --cmd \"{cmd}\""
 
     manual: list[str] = []
     for pip_args in ctx["pip_installs"]:
@@ -94,7 +97,10 @@ def _print_repro(
         manual.append(f"  cd {ctx['working_dir']}")
     for k, v in {**ctx["plan_env_vars"], **ctx["step_env_vars"]}.items():
         manual.append(f"  export {k}={v}")
-    manual.append(f"  # then run your command directly")
+    if cmd:
+        manual.append(f"  {cmd}")
+    else:
+        manual.append(f"  # then run your command directly")
 
     lines = [
         f"\nTo reproduce {group_id}/{step.test_id}:",
@@ -215,7 +221,7 @@ def run_test_plan(
                     logger.info("[%s/%s] passed", group_id, step.test_id)
                 except Exception as e:
                     logger.error("[%s/%s] FAILED: %s", group_id, step.test_id, e)
-                    _print_repro(group_id, step, build_env, ctx)
+                    _print_repro(group_id, step, build_env, ctx, cmd=cmd)
                     failures.append(step.test_id)
 
     if failures:
@@ -237,8 +243,19 @@ class PytorchTestRunner(BaseRunner):
         self.shard_id = getattr(args, "shard_id", 1)
         self.num_shards = getattr(args, "num_shards", 1)
         self.no_upload = getattr(args, "no_upload", False)
+        self.print_plan = getattr(args, "print_plan", False)
         raw_filters = getattr(args, "filter", []) or []
         self.filters = dict(f.split("=", 1) for f in raw_filters) if raw_filters else None
+
+    def _print_plan(self, group_ids: list[str], registry: dict) -> None:
+        print(f"build_env: {self.build_env}")
+        print(f"plans ({len(group_ids)}):")
+        for gid in group_ids:
+            plan = registry[gid]
+            steps = plan.get_steps(self.build_env, self.shard_id, self.num_shards)
+            print(f"  {gid}  —  {plan.title}")
+            for step in steps:
+                print(f"    • {step.test_id}")
 
     def run(self) -> None:
         if self.group_id:
@@ -255,6 +272,10 @@ class PytorchTestRunner(BaseRunner):
                 "test_config=%r build_env=%r → %d plan(s) to run: %s",
                 self.test_config, self.build_env, len(group_ids), group_ids,
             )
+        registry = PYTORCH_TEST_LIBRARY
+        if self.print_plan:
+            self._print_plan(group_ids, registry)
+            return
         for group_id in group_ids:
             run_test_plan(
                 group_id=group_id,

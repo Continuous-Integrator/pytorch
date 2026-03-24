@@ -136,7 +136,7 @@ class BasePytorchTestPlan:
 
     group_id: str
     title: str
-    steps: list[TestStep]
+    steps: list[TestStep] = field(default_factory=list)
     env_vars: EnvVarsSpec = field(default_factory=dict)
     pip_installs: list[list[str]] = field(default_factory=list)
     working_dir: str | None = None

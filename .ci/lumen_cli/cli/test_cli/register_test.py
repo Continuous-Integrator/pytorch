@@ -119,6 +119,12 @@ def _register_pytorch_core_commands(subparsers: argparse._SubParsersAction) -> N
         default=False,
         help="strip artifact-upload flags (e.g. --upload-artifacts-while-running) from test invocations",
     )
+    parser.add_argument(
+        "--print-plan",
+        action="store_true",
+        default=False,
+        help="print resolved test plan and steps without running anything",
+    )
     parser.set_defaults(func=lambda args: PytorchTestRunner(args).run())
 
 
