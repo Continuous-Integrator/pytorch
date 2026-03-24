@@ -15,8 +15,10 @@ from cli.lib.pytorch.base import (
     is_cpu_only,
     is_cuda,
     is_gpu,
+    is_xpu,
     matches_env,
     resolve_env_vars,
+    resolve_extra_arg_list,
     TestStep,
 )
 
@@ -114,6 +116,39 @@ class TestEnvHelpers:
 
         assert resolve_env_vars(fn, "rocm6.0") == {"D": "hip"}
         assert resolve_env_vars(fn, "cuda12.1") == {"D": "cuda"}
+
+
+# ---------------------------------------------------------------------------
+# resolve_extra_arg_list
+# ---------------------------------------------------------------------------
+
+
+class TestResolveExtraArgList:
+    def test_static_string(self):
+        assert resolve_extra_arg_list(["--verbose"], "env") == ["--verbose"]
+
+    def test_callable_returns_value(self):
+        assert resolve_extra_arg_list(
+            [lambda env: "--xpu" if is_xpu(env) else None], "linux-xpu"
+        ) == ["--xpu"]
+
+    def test_callable_returns_none_skipped(self):
+        assert (
+            resolve_extra_arg_list(
+                [lambda env: "--xpu" if is_xpu(env) else None], "linux-cuda"
+            )
+            == []
+        )
+
+    def test_empty(self):
+        assert resolve_extra_arg_list([], "env") == []
+
+    def test_mixed(self):
+        result = resolve_extra_arg_list(
+            ["--flag", lambda env: "--xpu" if is_xpu(env) else None],
+            "linux-xpu",
+        )
+        assert result == ["--flag", "--xpu"]
 
 
 # ---------------------------------------------------------------------------
@@ -310,3 +345,29 @@ class TestRunTestPlan:
         lib = _lib(_plan(_step(), group_id="plan_a", run_on=[is_gpu]))
         patch_lib.run_test_plan("plan_a", "cpuonly", library=lib)
         assert patch_lib.logger.warning.called
+
+
+# ---------------------------------------------------------------------------
+# LUMEN_DRY_RUN
+# ---------------------------------------------------------------------------
+
+
+class TestDryRun:
+    def test_dry_run_prints_and_skips(self, monkeypatch, capsys):
+        import cli.lib.pytorch.base as base_mod
+
+        monkeypatch.setenv("LUMEN_DRY_RUN", "1")
+        run_mock = MagicMock()
+        monkeypatch.setattr(base_mod, "run_command", run_mock)
+        base_mod.run_test("--include", "test_foo")
+        run_mock.assert_not_called()
+        assert "[dry-run]" in capsys.readouterr().out
+
+    def test_no_dry_run_executes(self, monkeypatch):
+        import cli.lib.pytorch.base as base_mod
+
+        monkeypatch.delenv("LUMEN_DRY_RUN", raising=False)
+        run_mock = MagicMock()
+        monkeypatch.setattr(base_mod, "run_command", run_mock)
+        base_mod.run_test("--include", "test_foo")
+        run_mock.assert_called_once()
