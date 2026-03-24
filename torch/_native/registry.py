@@ -256,7 +256,7 @@ def reenable_op_overrides(
                     node.override_fn,
                     dispatch_key,
                     with_keyset=not node.unconditional_override,
-                    allow_override=node.unconditional_override,
+                    allow_override=True,
                 )
                 node.active = True
             else:
@@ -309,7 +309,7 @@ def deregister_op_overrides(
                     node.override_fn,
                     dispatch_key,
                     with_keyset=not node.unconditional_override,
-                    allow_override=node.unconditional_override,
+                    allow_override=True,
                 )
                 node.active = True
             else:
