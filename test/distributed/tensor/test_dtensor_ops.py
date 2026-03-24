@@ -265,11 +265,17 @@ dtensor_fails = {
 
 dtensor_multi_threaded_fails = {
     xfail("full_like"),
+    # index_fill: correctness mismatch in multi-threaded mode when sharding
+    # on non-indexed dim (values differ from single-threaded reference)
+    xfail("index_fill"),
     xfail("multinomial"),
     xfail("nn.functional.dropout2d"),
     xfail("nn.functional.dropout3d"),
     xfail("nn.functional.huber_loss"),
     skip("nn.functional.multi_head_attention_forward"),
+    # searchsorted with sorter kwarg: sorter tensor gets sharded instead of
+    # replicated in multi-threaded mode, causing size mismatch with boundary
+    xfail("searchsorted"),
 }
 
 # Ops that fail to compile with DTensor + torch.compile(fullgraph=True).
