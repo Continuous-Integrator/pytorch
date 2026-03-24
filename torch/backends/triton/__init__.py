@@ -28,11 +28,14 @@ def version() -> Version | None:
 def _set_enabled(_enabled: bool) -> None:
     from torch._native.registry import deregister_op_overrides, reenable_op_overrides
 
+    old_enabled = _state["enabled"]
     _state["enabled"] = _enabled
 
-    if _enabled:
+    if _enabled and (not old_enabled):
+        # now enabled, wasn't before
         reenable_op_overrides(enable_dsl_names="triton")
-    else:
+    elif old_enabled and (not _enabled):
+        # was enabled, now isn't
         deregister_op_overrides(disable_dsl_names="triton")
 
 
