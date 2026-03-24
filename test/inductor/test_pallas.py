@@ -835,7 +835,17 @@ class PallasTestsMixin:
         expected = fn(x, row_indices)
         self.assertEqual(result, expected)
 
-    @skip_if_tpu
+    def complex_tensor(self, size: int, complex_dtype: torch.dtype):
+        if self.DEVICE == "tpu":
+            # randn doesn't work for complex numbers in xla,
+            # so instead we use arange to get non-trivial complex values
+            return (
+                torch.arange(size, dtype=complex_dtype, device=self.DEVICE)
+                + torch.arange(size, dtype=complex_dtype, device=self.DEVICE) * 1.0j
+            )
+        else:
+            return torch.randn(size, dtype=complex_dtype, device=self.DEVICE)
+
     def test_complex64_mul(self):
         """Test complex64 multiplication."""
 
@@ -848,13 +858,12 @@ class PallasTestsMixin:
         for size in sizes:
             with self.subTest(size=size):
                 compiled = self._compile(fn)
-                a = torch.randn(size, dtype=torch.complex64, device=self.DEVICE)
-                b = torch.randn(size, dtype=torch.complex64, device=self.DEVICE)
+                a = self.complex_tensor(size, torch.complex64)
+                b = self.complex_tensor(size, torch.complex64)
                 result = compiled(a, b)
                 expected = fn(a, b)
                 self.assertEqual(result, expected)
 
-    @skip_if_tpu
     def test_complex_conj(self):
         """Test complex conjugate."""
 
@@ -863,12 +872,11 @@ class PallasTestsMixin:
 
         compiled = self._compile(fn)
 
-        x = torch.randn(128, dtype=torch.complex64, device=self.DEVICE)
+        x = self.complex_tensor(128, torch.complex64)
         result = compiled(x)
         expected = fn(x)
         self.assertEqual(result, expected)
 
-    @skip_if_tpu
     def test_complex_real(self):
         """Test extracting real part of complex tensor."""
 
@@ -877,12 +885,11 @@ class PallasTestsMixin:
 
         compiled = self._compile(fn)
 
-        x = torch.randn(128, dtype=torch.complex64, device=self.DEVICE)
+        x = self.complex_tensor(128, torch.complex64)
         result = compiled(x)
         expected = fn(x)
         self.assertEqual(result, expected)
 
-    @skip_if_tpu
     def test_complex_imag(self):
         """Test extracting imaginary part of complex tensor."""
 
@@ -891,12 +898,11 @@ class PallasTestsMixin:
 
         compiled = self._compile(fn)
 
-        x = torch.randn(128, dtype=torch.complex64, device=self.DEVICE)
+        x = self.complex_tensor(128, torch.complex64)
         result = compiled(x)
         expected = fn(x)
         self.assertEqual(result, expected)
 
-    @skip_if_tpu
     def test_complex_abs(self):
         """Test complex absolute value (magnitude)."""
 
@@ -905,12 +911,12 @@ class PallasTestsMixin:
 
         compiled = self._compile(fn)
 
-        x = torch.randn(128, dtype=torch.complex64, device=self.DEVICE)
+        x = self.complex_tensor(128, torch.complex64)
         result = compiled(x)
         expected = fn(x)
         self.assertEqual(result, expected)
 
-    @skip_if_tpu
+    @skip_if_tpu(reason="XLA: Unsupported CVT X{64|128} expansion from f64[] to c128[]")
     def test_complex128_conj(self):
         """Test complex128 conjugate operation."""
 
@@ -919,12 +925,11 @@ class PallasTestsMixin:
 
         compiled = self._compile(fn)
 
-        x = torch.randn(128, dtype=torch.complex128, device=self.DEVICE)
+        x = self.complex_tensor(128, torch.complex128)
         result = compiled(x)
         expected = fn(x)
         self.assertEqual(result, expected)
 
-    @skip_if_tpu
     def test_complex_mul_scalar(self):
         """Test complex multiplication with scalar."""
 
@@ -933,12 +938,11 @@ class PallasTestsMixin:
 
         compiled = self._compile(fn)
 
-        x = torch.randn(128, dtype=torch.complex64, device=self.DEVICE)
+        x = self.complex_tensor(128, torch.complex64)
         result = compiled(x)
         expected = fn(x)
         self.assertEqual(result, expected)
 
-    @skip_if_tpu
     def test_complex_conj_mul(self):
         """Test conjugate followed by multiplication."""
 
@@ -947,10 +951,24 @@ class PallasTestsMixin:
 
         compiled = self._compile(fn)
 
-        x = torch.randn(128, dtype=torch.complex64, device=self.DEVICE)
-        y = torch.randn(128, dtype=torch.complex64, device=self.DEVICE)
+        x = self.complex_tensor(128, torch.complex64)
+        y = self.complex_tensor(128, torch.complex64)
         result = compiled(x, y)
         expected = fn(x, y)
+        self.assertEqual(result, expected)
+
+    @skip_if_tpu(reason="XLA doesn't support randn complex numbers")
+    def test_complex_randn_mul(self):
+        """Test complex64 multiplication."""
+
+        def fn(a, b):
+            return a * b
+
+        compiled = self._compile(fn)
+        a = torch.randn(128, dtype=torch.complex64, device=self.DEVICE)
+        b = torch.randn(128, dtype=torch.complex64, device=self.DEVICE)
+        result = compiled(a, b)
+        expected = fn(a, b)
         self.assertEqual(result, expected)
 
     def test_where(self):
