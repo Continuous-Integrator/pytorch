@@ -311,7 +311,7 @@ def backward(
             be constructed, allowing to compute higher order derivative products.
             Defaults to ``False``.
         inputs (Sequence[Tensor] or Tensor or Sequence[GradientEdge] or dict[str, Tensor], optional):
-            Inputs w.r.t. which the gradient be will accumulated into ``.grad``.
+            Inputs w.r.t. which the gradient will be accumulated into ``.grad``.
             All other Tensors will be ignored. If not provided, the gradient is
             accumulated into all the leaf Tensors that were used to compute the
             :attr:`tensors`. A dict of tensors (e.g. from
