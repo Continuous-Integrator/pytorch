@@ -2289,13 +2289,7 @@ class TorchInGraphFunctionVariable(BaseTorchVariable):
             from .dicts import ConstDictVariable
 
             inputs_var = args[1] if len(args) >= 2 else kwargs.get("inputs")
-            inputs_dict_keys: list[str] | None = None
-            inputs_user_cls: type = dict
             if isinstance(inputs_var, ConstDictVariable):
-                inputs_dict_keys = [
-                    hash_key.vt.as_python_constant() for hash_key in inputs_var.items
-                ]
-                inputs_user_cls = inputs_var.user_cls
                 inputs_as_tuple = TupleVariable(list(inputs_var.items.values()))
                 if len(args) >= 2:
                     args = (args[0], inputs_as_tuple, *args[2:])
@@ -2311,17 +2305,16 @@ class TorchInGraphFunctionVariable(BaseTorchVariable):
                 ),
             )
 
-            if inputs_dict_keys is not None:
+            if isinstance(inputs_var, ConstDictVariable):
                 from .lists import BaseListVariable
 
                 assert isinstance(result, BaseListVariable)
                 result_cls = (
-                    OrderedDict if issubclass(inputs_user_cls, OrderedDict) else dict
+                    OrderedDict
+                    if issubclass(inputs_var.user_cls, OrderedDict)
+                    else dict
                 )
-                items = {
-                    ConstantVariable.create(key): val
-                    for key, val in zip(inputs_dict_keys, result.items)
-                }
+                items = dict(zip(inputs_var.items.keys(), result.items))
                 return ConstDictVariable(items, result_cls)
             return result
 

@@ -10,7 +10,7 @@ half, float, double and bfloat16) and complex :class:`Tensor` types (cfloat, cdo
 
 import warnings
 from collections import OrderedDict
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from typing import cast, overload
 
 import torch
@@ -340,19 +340,21 @@ def backward(
                 "use `grad_tensors`."
             )
 
-    inputs_tuple: tuple[torch.Tensor | graph.GradientEdge, ...]
+    inputs_tuple: tuple[torch.Tensor, ...] | tuple[graph.GradientEdge, ...]
     if inputs is None:
         inputs_tuple = ()
     elif isinstance(inputs, (torch.Tensor, graph.GradientEdge)):
-        inputs_tuple = (inputs,)
+        inputs_tuple = cast(
+            tuple[torch.Tensor, ...] | tuple[graph.GradientEdge, ...], (inputs,)
+        )
     elif isinstance(inputs, Mapping):
+        # pyrefly: ignore [bad-argument-type]
         inputs_tuple = tuple(inputs.values())
-        if len(inputs_tuple) == 0:
-            raise RuntimeError("`inputs` argument to `backward()` cannot be empty.")
     else:
+        # pyrefly: ignore [bad-argument-type]
         inputs_tuple = tuple(inputs)
-        if len(inputs_tuple) == 0:
-            raise RuntimeError("`inputs` argument to `backward()` cannot be empty.")
+    if inputs is not None and len(inputs_tuple) == 0:
+        raise RuntimeError("`inputs` argument to `backward()` cannot be empty.")
 
     if is_tensor_like(tensors) or isinstance(tensors, graph.GradientEdge):
         tensors = cast(tuple[torch.Tensor] | tuple[graph.GradientEdge], (tensors,))
@@ -373,7 +375,7 @@ def backward(
             grad_tensors=grad_tensors,
             retain_graph=retain_graph,
             create_graph=create_graph,
-            inputs=inputs,
+            inputs=inputs_tuple,
         )
 
     grad_tensors_ = _tensor_or_tensors_to_tuple(grad_tensors, len(tensors))
@@ -507,18 +509,18 @@ def grad(
         outputs = tuple(outputs)
 
     inputs_tuple: tuple[torch.Tensor, ...] | tuple[graph.GradientEdge, ...]
-    if isinstance(inputs, Mapping):
-        # pyrefly: ignore [bad-argument-type]
-        inputs_tuple = tuple(inputs.values())
-        if len(inputs_tuple) == 0:
-            raise RuntimeError("`inputs` argument to `grad()` cannot be empty.")
-    elif is_tensor_like(inputs) or isinstance(inputs, graph.GradientEdge):
+    if is_tensor_like(inputs) or isinstance(inputs, graph.GradientEdge):
         inputs_tuple = cast(
             tuple[torch.Tensor, ...] | tuple[graph.GradientEdge, ...], (inputs,)
         )
+    elif isinstance(inputs, Mapping):
+        # pyrefly: ignore [bad-argument-type]
+        inputs_tuple = tuple(inputs.values())
     else:
         # pyrefly: ignore [bad-argument-type]
         inputs_tuple = tuple(inputs)
+    if len(inputs_tuple) == 0:
+        raise RuntimeError("`inputs` argument to `grad()` cannot be empty.")
 
     t_outputs = tuple(i for i in outputs if is_tensor_like(i))
     t_inputs = tuple(i for i in inputs_tuple if is_tensor_like(i))
@@ -591,17 +593,15 @@ def grad(
         )
     if materialize_grads:
         if any(
-            result[i] is None and not is_tensor_like(inputs_tuple[i])
-            for i in range(len(inputs_tuple))
+            r is None and not is_tensor_like(inp)
+            for r, inp in zip(result, inputs_tuple, strict=True)
         ):
             raise RuntimeError(
                 "materialize_grads cannot be used when the given input is a GradientEdge"
             )
         result = tuple(
-            output
-            if output is not None
-            else torch.zeros_like(input, requires_grad=create_graph)
-            for (output, input) in zip(
+            r if r is not None else torch.zeros_like(inp, requires_grad=create_graph)
+            for (r, inp) in zip(
                 result,
                 cast(tuple[torch.Tensor, ...], inputs_tuple),
                 strict=True,
