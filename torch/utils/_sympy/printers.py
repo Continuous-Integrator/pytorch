@@ -70,7 +70,6 @@ class ExprPrinter(StrPrinter):
     # NB: this pow by natural, you should never have used builtin sympy.pow
     # for FloatPow, and a symbolic exponent should be PowByNatural.  These
     # means exp is guaranteed to be integer.
-    # pyrefly: ignore [bad-override]
     def _print_Pow(self, expr: sympy.Expr) -> str:
         base, exp = expr.args
         if exp != int(exp):
@@ -372,6 +371,9 @@ class CppPrinter(ExprPrinter):
             self.parenthesize(arg, PRECEDENCE["Atom"] - 0.5) for arg in expr.args
         )
         return f"{c} ? {p} : {q}"
+
+    def _print_Or(self, expr: sympy.Expr) -> str:
+        return self.stringify(expr.args, " || ", precedence(expr))
 
     def _print_Piecewise(self, expr: sympy.Expr) -> str:
         # Convert Piecewise(expr_cond_pairs) to nested ternary operators
