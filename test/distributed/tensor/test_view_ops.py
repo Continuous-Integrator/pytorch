@@ -36,6 +36,7 @@ from torch.testing._internal.common_utils import run_tests
 from torch.testing._internal.distributed._tensor.common_dtensor import (
     create_local_tensor_test_class,
     DTensorContinuousTestBase,
+    LocalDTensorContinuousTestBase,
 )
 from torch.utils import _pytree as pytree
 
@@ -2273,6 +2274,7 @@ TestViewOpsWithLocalTensor = create_local_tensor_test_class(
         "test_view_groups_unbacked_symint",
         "test_view_groups_unbacked_sharding_propagation",
     ],
+    base_class=LocalDTensorContinuousTestBase,
 )
 
 

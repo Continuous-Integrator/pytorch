@@ -1,6 +1,5 @@
 # mypy: allow-untyped-defs
 # Copyright (c) Meta Platforms, Inc. and affiliates
-import logging
 import math
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
@@ -36,8 +35,6 @@ from torch.distributed.tensor.placement_types import (
     Shard,
 )
 
-
-logger = logging.getLogger(__name__)
 
 aten = torch.ops.aten
 
