@@ -69,15 +69,12 @@ struct CUDAGuardImpl final : public c10::impl::DeviceGuardImplInterface {
 #ifndef USE_ROCM
     cudaDeviceProp device_prop{};
     C10_CUDA_CHECK(cudaGetDeviceProperties(&device_prop, d.index()));
-    // Half precision native arithmetic requires SM 5.3+ (cuda_fp16.h guards all
-    // __half2 intrinsics behind `#if __CUDA_ARCH__ >= 530`), but PyTorch
-    // assumes all supported CUDA devices have half support
+    // PyTorch assumes all supported CUDA devices have half support
     // (torch/cuda/__init__.py: `has_half: bool = True`), so we set it
     // unconditionally here.
     cap.capability_data.capability_bits |= (1ULL << kIndex_Half);
     cap.capability_data.capability_bits |= (1ULL << kIndex_ComplexHalf);
-    // BFloat16 is natively supported (no software emulation) on SM 8.0+ (Ampere
-    // and later). Mirrors the capability check in
+    // Mirrors the capability check in
     // torch/cuda/__init__.py:is_bf16_supported().
     if (device_prop.major >= 8) {
       cap.capability_data.capability_bits |= (1ULL << kIndex_BFloat16);
