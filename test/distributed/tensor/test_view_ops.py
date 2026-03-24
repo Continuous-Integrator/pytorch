@@ -1345,7 +1345,6 @@ class TestViewOps(DTensorContinuousTestBase):
             torch.ops.aten.squeeze_.dim(dist_y, 0)
         self.assertEqual(comm_mode.get_total_counts(), 0)
 
-    @with_comms
     def test_squeeze_variants(self):
         """Test squeeze.default, squeeze.dim, and squeeze.dims with DTensor."""
         mesh = init_device_mesh(self.device_type, (self.world_size,))
@@ -1486,7 +1485,6 @@ class TestViewOps(DTensorContinuousTestBase):
             self.assertEqual(result.placements, (Replicate(),))
             self.assertEqual(result.full_tensor(), x.squeeze())
 
-    @with_comms
     def test_storage_offset_slice(self):
         """
         Test that storage_offset is properly tracked on DTensor when slicing
