@@ -1899,9 +1899,10 @@ if ! [[ "${BUILD_ENVIRONMENT}" == *libtorch* || "${BUILD_ENVIRONMENT}" == *-baze
 fi
 if [[ "${TEST_CONFIG}" == *numpy_2* ]]; then
   (cd .ci/lumen_cli && python -m pip install -e .)
-  python -m cli.run test pytorch-core --group-id pytorch_numpy_2 --build-env "$BUILD_ENVIRONMENT"
+  lumen test pytorch-core --group-id pytorch_numpy_2 --build-env "$BUILD_ENVIRONMENT"
  elif [[ "${BUILD_ENVIRONMENT}" == *aarch64* && "${TEST_CONFIG}" == 'default' ]]; then
-  test_linux_aarch64
+  (cd .ci/lumen_cli && python -m pip install -e .)
+  lumen test pytorch-core --group-id pytorch_linux_aarch64 --build-env "$BUILD_ENVIRONMENT" --shard-id "$SHARD_NUMBER" --num-shards "$NUM_TEST_SHARDS"
 elif [[ "${TEST_CONFIG}" == *backward* ]]; then
   test_forward_backward_compatibility
   # Do NOT add tests after bc check tests, see its comment.

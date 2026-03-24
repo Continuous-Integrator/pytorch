@@ -250,8 +250,8 @@ class PytorchTestRunner(BaseRunner):
         self.build_env = getattr(args, "build_env", None)
         self.test_id = getattr(args, "test_id", None)
         self.cmd = getattr(args, "cmd", None)
-        self.shard_id = getattr(args, "shard_id", 1)
-        self.num_shards = getattr(args, "num_shards", 1)
+        self.shard_id = getattr(args, "shard_id", None) or int(os.environ.get("SHARD_NUMBER", 1))
+        self.num_shards = getattr(args, "num_shards", None) or int(os.environ.get("NUM_TEST_SHARDS", 1))
         self.no_upload = getattr(args, "no_upload", False)
         self.print_plan = getattr(args, "print_plan", False)
         raw_filters = getattr(args, "filter", []) or []

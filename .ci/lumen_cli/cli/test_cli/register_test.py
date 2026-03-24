@@ -97,14 +97,14 @@ def _register_pytorch_core_commands(subparsers: argparse._SubParsersAction) -> N
     parser.add_argument(
         "--shard-id",
         type=int,
-        default=1,
-        help="current shard index (1-based)",
+        default=None,
+        help="current shard index (1-based), defaults to SHARD_NUMBER env var or 1",
     )
     parser.add_argument(
         "--num-shards",
         type=int,
-        default=1,
-        help="total number of shards",
+        default=None,
+        help="total number of shards, defaults to NUM_TEST_SHARDS env var or 1",
     )
     parser.add_argument(
         "--filter",
