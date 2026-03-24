@@ -70,7 +70,7 @@ class Registry {
     // However, TORCH_CHECK_EQ depends on google logging, and since registration
     // is carried out at static initialization time, we do not want to have an
     // explicit dependency on glog's initialization function.
-    if (registry_.count(key) != 0) {
+    if (registry_.contains(key)) {
       auto cur_priority = priority_[key];
       if (priority > cur_priority) {
 #ifdef DEBUG
@@ -111,7 +111,7 @@ class Registry {
   }
 
   inline bool Has(const SrcType& key) {
-    return (registry_.count(key) != 0);
+    return registry_.contains(key);
   }
 
   ObjectPtrType Create(const SrcType& key, Args... args) {
