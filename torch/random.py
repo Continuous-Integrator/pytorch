@@ -3,7 +3,7 @@ import contextlib
 import math
 import warnings
 from collections.abc import Generator, Sequence
-from typing import Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING
 
 import torch
 
@@ -193,7 +193,9 @@ class Philox4x32_10Key(PRNGKey):
 _IMPLS: dict[str, type[PRNGKey]] = {"philox4x32-10": Philox4x32_10Key}
 
 
-def key(seed: int, impl: str = "philox4x32-10", device: torch.device = None) -> PRNGKey:
+def key(
+    seed: int, impl: str = "philox4x32-10", device: torch.device | None = None
+) -> torch.Tensor:
     cls = _IMPLS.get(impl)
     if cls is None:
         raise NotImplementedError(
@@ -508,7 +510,7 @@ def fork_rng(
             device_mod.set_rng_state(device_rng_state, device)
 
 
-def thread_safe_generator() -> Optional[torch.Generator]:
+def thread_safe_generator() -> torch.Generator | None:
     """Returns a thread-safe random number generator for use in DataLoader workers.
     This function provides a convenient way for transforms and user code to use
     thread-safe random number generation without manually checking worker context.
