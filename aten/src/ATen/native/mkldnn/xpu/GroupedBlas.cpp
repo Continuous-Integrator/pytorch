@@ -1,7 +1,7 @@
 #define TORCH_ASSERT_ONLY_METHOD_OPERATORS
 #include <ATen/core/Tensor.h>
 #include <ATen/native/GroupedMMUtils.h>
-#include <ATen/native/xpu/sycltla/GroupedMM.h>
+#include <ATen/native/xpu/GroupedMM.h>
 
 namespace at::native {
 
@@ -18,9 +18,10 @@ Tensor _grouped_mm_xpu(
 
   bool use_fast_path = (mat_a.dtype() == at::kBFloat16 &&
                         mat_b.dtype() == at::kBFloat16 &&
-                        out_dtype_ == at::kBFloat16);
+                        out_dtype_ == at::kBFloat16 &&
+                        at::native::xpu::is_grouped_mm_available());
   if (use_fast_path) {
-    at::xpu::detail::bf16bf16_grouped_mm(mat_a, mat_b, offs, bias, out);
+    at::native::xpu::bf16bf16_grouped_mm(mat_a, mat_b, offs, bias, out);
   } else {
     _grouped_mm_fallback(mat_a, mat_b, offs, bias, out_dtype, out);
   }
