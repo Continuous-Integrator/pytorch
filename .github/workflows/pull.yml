@@ -535,7 +535,7 @@ jobs:
   # ╠══════════════════════════════════════════════════════════════════════╣
 
   linux-jammy-cuda13_0-py3_10-gcc11-inductor-build:
-    if: ${{ (needs.job-filter.outputs.jobs == '' || contains(needs.job-filter.outputs.jobs, ' cuda13.0-py3.10-gcc11-sm75 ')) }}
+    if: ${{ (needs.job-filter.outputs.jobs == '' || contains(needs.job-filter.outputs.jobs, ' cuda13.0-py3.10-gcc11-sm75 ')) && needs.get-label-type.outputs.use-arc != 'true' }}
     name: cuda13.0-py3.10-gcc11-sm75
     uses: ./.github/workflows/_linux-build.yml
     needs:

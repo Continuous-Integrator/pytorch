@@ -154,7 +154,8 @@ function install_triton_wheel() {
   local short_hash="${pinned_commit:0:8}"
   local index_url="https://download.pytorch.org/whl/nightly/triton/"
   local python_version
-  python_version=$(python -c "import sys; print(f'cp{sys.version_info.major}{sys.version_info.minor}')")
+  # Include the 't' suffix for free-threaded builds to distinguish cp314 from cp314t
+  python_version=$(python -c "import sys; t = 't' if hasattr(sys, '_is_gil_enabled') else ''; print(f'cp{sys.version_info.major}{sys.version_info.minor}{t}')")
   local arch
   arch=$(uname -m)
 
@@ -164,7 +165,7 @@ function install_triton_wheel() {
   wheel=$(curl -sL "${index_url}" | \
     grep -oP "triton-[^\"]+" | \
     grep "git${short_hash}" | \
-    grep "${python_version}" | \
+    grep -- "-${python_version}-${python_version}-" | \
     grep "${arch}" | \
     head -1)
 

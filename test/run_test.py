@@ -23,6 +23,7 @@ from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Any, cast, NamedTuple
 
+
 # In containerized environments (e.g., k8s pods on ARC runners),
 # std::thread::hardware_concurrency() returns the host CPU count rather than
 # the cgroup limit. Detect the actual available CPUs via sched_getaffinity
