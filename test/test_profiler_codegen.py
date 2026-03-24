@@ -13,9 +13,15 @@ class TestProfilerCodeGen(TestCase):
     """Tests for ProfilerCodeGen dual-path code generation."""
 
     def _trace_and_recompile(self, model, args=None):  # noqa: ARG002
+        from torch.fx.experimental import _config as fx_config
+
         gm = symbolic_trace(model)
-        gm.graph.set_codegen(ProfilerCodeGen())
-        gm.recompile()
+        old_val = fx_config.profiler_codegen
+        fx_config.profiler_codegen = True
+        try:
+            gm.recompile()
+        finally:
+            fx_config.profiler_codegen = old_val
         return gm
 
     def test_generated_code_structure(self):
@@ -211,6 +217,45 @@ class TestProfilerCodeGen(TestCase):
                 self.assertEqual(len(os.listdir(tmpdir)), 1)
             finally:
                 fx_config.codegen_dump_dir = ""
+
+    def test_flag_auto_enables_profiler_codegen(self):
+        """TORCH_FX_PROFILER_CODEGEN=1 auto-enables ProfilerCodeGen without manual set_codegen."""
+        from torch.fx.experimental import _config as fx_config
+
+        class M(nn.Module):
+            def forward(self, x):
+                return torch.relu(x)
+
+        gm = symbolic_trace(M())
+        old_val = fx_config.profiler_codegen
+        fx_config.profiler_codegen = True
+        try:
+            gm.recompile()
+        finally:
+            fx_config.profiler_codegen = old_val
+
+        self.assertIn("_forward_impl", gm._code)
+        self.assertIn("_forward_profiled", gm._code)
+        self.assertIsInstance(gm._graph._codegen, ProfilerCodeGen)
+
+    def test_flag_off_no_profiler_codegen(self):
+        """When flag is off, default codegen is used."""
+        from torch.fx.experimental import _config as fx_config
+
+        class M(nn.Module):
+            def forward(self, x):
+                return torch.relu(x)
+
+        gm = symbolic_trace(M())
+        old_val = fx_config.profiler_codegen
+        fx_config.profiler_codegen = False
+        try:
+            gm.recompile()
+        finally:
+            fx_config.profiler_codegen = old_val
+
+        self.assertNotIn("_forward_impl", gm._code)
+        self.assertNotIn("_forward_profiled", gm._code)
 
     def test_exec_from_disk(self):
         """When codegen_dump_dir is set, exec from the on-disk file produces correct output."""
