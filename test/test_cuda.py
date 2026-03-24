@@ -436,11 +436,9 @@ print(t.is_pinned())
         self.assertIn(torch.int, supported_dtypes)
         self.assertIn(torch.float, supported_dtypes)
         self.assertIn(torch.double, supported_dtypes)
+        self.assertIn(torch.float16, supported_dtypes)
         if torch.version.hip:
-            self.assertIn(torch.float16, supported_dtypes)
             self.assertIn(torch.bfloat16, supported_dtypes)
-        elif current_device_capability[0] >= 5 and current_device_capability[1] >= 3:
-            self.assertIn(torch.float16, supported_dtypes)
         elif current_device_capability.major[0] >= 8:
             self.assertIn(torch.bfloat16, supported_dtypes)
 
