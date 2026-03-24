@@ -325,7 +325,11 @@ class TestRegistry(TestCase):
 
         # Check that only non-filtered node was re-registered
         mock_new_lib.impl.assert_called_once_with(
-            "aten", node2.override_fn, "CPU", with_keyset=True, allow_override=True
+            "add.Tensor",
+            node2.override_fn,
+            "CPU",
+            with_keyset=True,
+            allow_override=True,
         )
 
     def test_print_override_graphs_active_only(self):
