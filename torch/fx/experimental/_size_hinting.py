@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import logging
 import sys
-from typing import Any, Optional, TYPE_CHECKING, Union
+from typing import Any, TYPE_CHECKING
 
 import sympy
 
@@ -27,15 +27,13 @@ if TYPE_CHECKING:
     from torch.fx.experimental.symbolic_shapes import ShapeEnv
 
 
-def _sympy_subs(expr: sympy.Expr, replacements: dict[sympy.Expr, Any]) -> sympy.Expr:
+def _sympy_subs(expr: sympy.Basic, replacements: dict[sympy.Expr, Any]) -> sympy.Basic:
     """
     When the passed replacement symbol v is a string, it is converted to a symbol with name v that
     have the same replaced expression integer and nonnegative properties.
     """
 
-    def to_symbol(
-        replaced: sympy.Expr, replacement: Union[sympy.Expr, str]
-    ) -> sympy.Symbol:
+    def to_symbol(replaced: sympy.Expr, replacement: sympy.Expr | str) -> sympy.Symbol:
         if not isinstance(replaced, sympy.Expr):
             raise AssertionError(
                 f"Expected sympy.Expr key, got {type(replaced)}: {replaced}"
@@ -56,8 +54,8 @@ def _sympy_subs(expr: sympy.Expr, replacements: dict[sympy.Expr, Any]) -> sympy.
 
 
 def _maybe_realize_expr(
-    expr: sympy.Expr, nan_fallback: Optional[int]
-) -> Optional[Union[int, bool]]:
+    expr: sympy.Basic, nan_fallback: int | None
+) -> int | bool | None:
     """
     Handle special sympy values in hinting APIs.
 
@@ -97,9 +95,9 @@ def _maybe_realize_expr(
 
 def _guarding_hint_or_throw_base(
     shape_env: ShapeEnv,
-    expr: Union[sympy.Expr, sympy.Basic, int, bool],
+    expr: sympy.Expr | sympy.Basic | int | bool,
     precomputed_replacements: dict[sympy.Expr, sympy.Symbol],
-) -> Union[int, bool]:
+) -> int | bool:
     """
     Return a concrete integer hint for an expression that is safe to use for guarding.
 
@@ -131,7 +129,11 @@ def _guarding_hint_or_throw_base(
         SymT,
     )
 
-    expr = sympy.expand(expr).xreplace(shape_env.replacements)
+    # sympy.expand() doesn't work with boolean expressions like Or/And
+    if isinstance(expr, sympy.Expr):
+        expr = sympy.expand(expr).xreplace(shape_env.replacements)
+    else:
+        expr = sympy.sympify(expr).xreplace(shape_env.replacements)
 
     if isinstance(expr, sympy.Expr):
         expr = expr.expand(identity=True)
@@ -144,11 +146,12 @@ def _guarding_hint_or_throw_base(
         raise RuntimeError("isinstance(expr, sympy.Basic)", expr, type(expr))
 
     if any(symbol_is_type(s, SymT.PRECOMPUTED_SIZE) for s in expr.free_symbols):  # type: ignore[attr-defined]
-        expr = _sympy_subs(expr, precomputed_replacements)  # type: ignore[arg-type]
+        expr = _sympy_subs(expr, precomputed_replacements)
 
     # TODO do we need sympy_subs, or just xreplace
     expr = _sympy_subs(expr, shape_env.backed_var_to_val)
-    expr = expr.expand(identity=True)
+    if isinstance(expr, sympy.Expr):
+        expr = expr.expand(identity=True)
 
     if has_free_unbacked_symbols(expr):
         # Note: we could do better here and call
@@ -294,7 +297,12 @@ def _sub_unbacked_exprs(shape_env: ShapeEnv, expr: sympy.Expr) -> sympy.Expr:
         new_expr = expr.subs(replacements)
         if new_expr == expr:
             break
-        expr = sympy.factor(new_expr)
+        # Limit sympy.factor() to expressions with <= 200 free symbols,
+        # as factoring polynomials with many variables is expensive.
+        if len(new_expr.free_symbols) <= 200:
+            expr = sympy.factor(new_expr)
+        else:
+            expr = new_expr
         sub_cnt += 1
     else:
         log.warning("Substitution limit (%d) reached w/ %s", sub_cnt_limit, expr)
@@ -306,9 +314,9 @@ def _sub_unbacked_exprs(shape_env: ShapeEnv, expr: sympy.Expr) -> sympy.Expr:
 
 def _optimization_hint_base(
     shape_env: ShapeEnv,
-    expr: Union[sympy.Expr, int],
+    expr: sympy.Expr | int,
     precomputed_replacements: dict[sympy.Expr, sympy.Symbol],
-    fallback: Optional[int] = None,
+    fallback: int | None = None,
 ) -> int:
     """
     Return a concrete integer hint for an expression using heuristics.
@@ -340,7 +348,11 @@ def _optimization_hint_base(
         fallback = unbacked_symint_fallback
 
     original = expr
-    expr = sympy.expand(expr).xreplace(shape_env.replacements)
+    # sympy.expand() doesn't work with boolean expressions like Or/And
+    if isinstance(expr, sympy.Expr):
+        expr = sympy.expand(expr).xreplace(shape_env.replacements)
+    else:
+        expr = sympy.sympify(expr).xreplace(shape_env.replacements)
 
     result = _maybe_realize_expr(expr, fallback)
     if result is not None:
@@ -358,10 +370,11 @@ def _optimization_hint_base(
         raise RuntimeError("isinstance(expr, sympy.Expr)", expr)
 
     if any(symbol_is_type(s, SymT.PRECOMPUTED_SIZE) for s in expr.free_symbols):  # type: ignore[attr-defined]
-        expr = _sympy_subs(expr, precomputed_replacements)  # type: ignore[arg-type]
+        expr = _sympy_subs(expr, precomputed_replacements)
 
     expr = _sympy_subs(expr, shape_env.backed_var_to_val)
-    expr = expr.expand(identity=True)
+    if isinstance(expr, sympy.Expr):
+        expr = expr.expand(identity=True)
 
     result = _maybe_realize_expr(expr, fallback)
     if result is not None:
@@ -378,8 +391,11 @@ def _optimization_hint_base(
     if has_free_unbacked_symbols(expr):
         # Make sure to substitute with the factored version
         # e.g. 10*(s0 + u0) instead of 10*s0 + 10*u0
-        # TODO optimize _sub_unbacked_exprs
-        expr = _sub_unbacked_exprs(shape_env, sympy.factor(original))
+        # Limit sympy.factor() to expressions with <= 200 free symbols,
+        # as factoring polynomials with many variables is expensive.
+        if isinstance(original, sympy.Expr) and len(original.free_symbols) <= 200:
+            original = sympy.factor(original)
+        expr = _sub_unbacked_exprs(shape_env, original)
 
     # For multiple expressions that depend on an unbacked symint,
     # we want to compute them consistently for a size hint we have chosen.
