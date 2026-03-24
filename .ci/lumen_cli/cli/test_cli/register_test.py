@@ -4,10 +4,9 @@ import argparse  # noqa: TC003
 import logging
 
 from cli.lib.common.cli_helper import register_targets, RichHelp, TargetSpec
-from cli.lib.pytorch.runner import PYTORCH_TEST_LIBRARY
-from cli.lib.pytorch.runner import PytorchTestRunner
 from cli.lib.core.torchtitan.torchtitan_test import TorchtitanTestRunner
 from cli.lib.core.vllm.vllm_test import VllmTestRunner
+from cli.lib.pytorch.runner import PYTORCH_TEST_LIBRARY, PytorchTestRunner
 
 
 logger = logging.getLogger(__name__)

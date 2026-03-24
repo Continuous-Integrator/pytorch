@@ -89,7 +89,7 @@ def _print_repro(
     for k, v in step.params.items():
         lumen_cmd += f" --filter {k}={v}"
     if cmd:
-        lumen_cmd += f" --cmd \"{cmd}\""
+        lumen_cmd += f' --cmd "{cmd}"'
 
     manual: list[str] = []
     for pip_args in ctx["pip_installs"]:
@@ -101,7 +101,7 @@ def _print_repro(
     if cmd:
         manual.append(f"  {cmd}")
     else:
-        manual.append(f"  # then run your command directly")
+        manual.append("  # then run your command directly")
 
     lines = [
         f"\nTo reproduce {group_id}/{step.test_id}:",
@@ -154,7 +154,9 @@ def run_test_plan(
     if plan.run_on and not any(matches_env(c, build_env) for c in plan.run_on):
         logger.warning(
             "[%s] run_on conditions %s do not match build_env=%r — running anyway",
-            group_id, plan.run_on, build_env,
+            group_id,
+            plan.run_on,
+            build_env,
         )
     all_steps = plan.get_steps(build_env, shard_id=shard_id, num_shards=num_shards)
 
@@ -162,7 +164,9 @@ def run_test_plan(
     if test_id:
         steps = [s for s in steps if s.test_id == test_id]
     if filters:
-        steps = [s for s in steps if all(s.params.get(k) == v for k, v in filters.items())]
+        steps = [
+            s for s in steps if all(s.params.get(k) == v for k, v in filters.items())
+        ]
 
     if not steps:
         raise RuntimeError(
@@ -206,10 +210,12 @@ def run_test_plan(
                 f' --cmd "{{repro}}"'
             )
             with (
-                temp_environ({
-                    **ctx["step_env_vars"],
-                    "PYTORCH_EXTRA_REPRO_MESSAGE": lumen_msg,
-                }),
+                temp_environ(
+                    {
+                        **ctx["step_env_vars"],
+                        "PYTORCH_EXTRA_REPRO_MESSAGE": lumen_msg,
+                    }
+                ),
                 working_directory(ctx["working_dir"] or ""),
             ):
                 try:
@@ -250,12 +256,18 @@ class PytorchTestRunner(BaseRunner):
         self.build_env = getattr(args, "build_env", None)
         self.test_id = getattr(args, "test_id", None)
         self.cmd = getattr(args, "cmd", None)
-        self.shard_id = getattr(args, "shard_id", None) or int(os.environ.get("SHARD_NUMBER", 1))
-        self.num_shards = getattr(args, "num_shards", None) or int(os.environ.get("NUM_TEST_SHARDS", 1))
+        self.shard_id = getattr(args, "shard_id", None) or int(
+            os.environ.get("SHARD_NUMBER", 1)
+        )
+        self.num_shards = getattr(args, "num_shards", None) or int(
+            os.environ.get("NUM_TEST_SHARDS", 1)
+        )
         self.no_upload = getattr(args, "no_upload", False)
         self.print_plan = getattr(args, "print_plan", False)
         raw_filters = getattr(args, "filter", []) or []
-        self.filters = dict(f.split("=", 1) for f in raw_filters) if raw_filters else None
+        self.filters = (
+            dict(f.split("=", 1) for f in raw_filters) if raw_filters else None
+        )
 
     def _print_plan(self, group_ids: list[str], registry: dict) -> None:
         print(f"build_env: {self.build_env}")
@@ -280,7 +292,10 @@ class PytorchTestRunner(BaseRunner):
             )
             logger.info(
                 "test_config=%r build_env=%r → %d plan(s) to run: %s",
-                self.test_config, self.build_env, len(group_ids), group_ids,
+                self.test_config,
+                self.build_env,
+                len(group_ids),
+                group_ids,
             )
         registry = PYTORCH_TEST_LIBRARY
         if self.print_plan:
