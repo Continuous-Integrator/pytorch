@@ -93,7 +93,7 @@ class _FilterState:
         s += "  === OP SYMBOL: ===\n"
         for i, op in enumerate(self._op_symbols):
             s += f"    {i}: {op}\n"
-        s += "=== DISPATCH KEYS: ===\n"
+        s += "  === DISPATCH KEYS: ===\n"
         for i, key in enumerate(self._dispatch_keys):
             s += f"    {i}: {key}\n"
 
@@ -105,12 +105,11 @@ _filter_state: _FilterState = _FilterState()
 
 
 # Store torch.library.Library instances
-# libs: dict[[str, str, str], torch.library.Library] = {}
 _libs: dict[tuple[str, str], torch.library.Library] = {}
 
 # store graph structures
 _GraphsType = dict[tuple[str, str], list[_OverrideNode]]
-_graphs: _GraphsType = {}  # dict[[str, str], list[_OverrideNode]] = {}
+_graphs: _GraphsType = {}
 
 _MappingType = dict[str, list[tuple[str, str]]]
 
@@ -171,8 +170,8 @@ def _get_or_create_library(op_symbol: str, dispatch_key: str) -> torch.library.L
 
 
 def _resolve_iterable(iterable: str | Iterable[str] | None) -> Iterable[str]:
-    if not iterable:
-        return ()
+    if iterable is None:
+        return []
 
     if not isinstance(iterable, Iterable) or isinstance(iterable, str):
         return (iterable,)
@@ -251,14 +250,13 @@ def reenable_op_overrides(
         # Re-register
         for node in _graphs[key]:
             node_enabled = _filter_state.check_enabled(node)
-            # if not filter_node:
             if node_enabled:
                 lib.impl(
-                    "aten",
+                    op_symbol,
                     node.override_fn,
                     dispatch_key,
-                    with_keyset=True,
-                    allow_override=True,
+                    with_keyset=not node.unconditional_override,
+                    allow_override=node.unconditional_override,
                 )
                 node.active = True
             else:
@@ -305,14 +303,13 @@ def deregister_op_overrides(
         # Re-register
         for node in _graphs[key]:
             node_enabled = _filter_state.check_enabled(node)
-            # if not filter_node:
             if node_enabled:
                 lib.impl(
-                    "aten",
+                    op_symbol,
                     node.override_fn,
                     dispatch_key,
-                    with_keyset=True,
-                    allow_override=True,
+                    with_keyset=not node.unconditional_override,
+                    allow_override=node.unconditional_override,
                 )
                 node.active = True
             else:
@@ -359,7 +356,7 @@ def register_op_override(
     Register a passed override function to the dispatcher, based on the
     passed lib and op symbols, and the dispatch key.
 
-    lib_symbol: str - library yourve overriding symbols in (generally "aten")
+    lib_symbol: str - library you're overriding symbols in (generally "aten")
     op_symbol: str - name of the op you're overriding
     dispatch_key: str - dispatch key to override
     impl: Fn - implementation for the override
