@@ -386,19 +386,18 @@ class ProfilerCodeGen(CodeGen):
         dispatcher_code = self._generate_dispatcher(free_vars)
 
         profiler_import = "import torch.autograd.profiler as _autograd_profiler"
-        combined = (
-            f"\n{wrap_stmts}\n\n"
-            f"{profiler_import}\n\n"
-            f"{impl_code}\n\n"
-            f"{profiled_code}\n\n"
-            f"{dispatcher_code}\n"
-        )
+        prefix = f"\n{wrap_stmts}\n\n{profiler_import}\n\n"
+        combined = f"{prefix}{impl_code}\n\n{profiled_code}\n\n{dispatcher_code}\n"
+
+        # Shift lineno_map keys to account for prefix lines before impl_code
+        prefix_lines = prefix.count("\n")
+        shifted_lineno_map = {k + prefix_lines: v for k, v in impl_lineno_map.items()}
 
         return PythonCode(
             combined,
             globals_,
-            _lineno_map=impl_lineno_map,
-            _prologue_start=impl_prologue_start,
+            _lineno_map=shifted_lineno_map,
+            _prologue_start=impl_prologue_start + prefix_lines,
         )
 
     def _gen_fn_def_with_name(

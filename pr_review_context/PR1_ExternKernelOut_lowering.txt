@@ -1,0 +1,428 @@
+--- PR #174856 Description ---
+title:	[inductor] Lower functional symm_mem ops to ExternKernelOut for output buffer reuse
+state:	CLOSED
+author:	tianrengao
+labels:	ciflow/h100-symm-mem, ciflow/inductor, ciflow/torchtitan, ciflow/trunk, Merged, module: inductor, release notes: inductor
+assignees:	
+reviewers:	eellison (Approved), kwen2501 (Requested)
+projects:	
+milestone:	2.12.0
+number:	174856
+url:	https://github.com/pytorch/pytorch/pull/174856
+additions:	148
+deletions:	19
+auto-merge:	disabled
+--
+Stack from [ghstack](https://github.com/ezyang/ghstack) (oldest at bottom):
+* #175797
+* #175476
+* #175450
+* #175449
+* __->__ #174856
+
+## Stack Overview
+
+Previous [pr](https://github.com/pytorch/pytorch/pull/171909) enabled torch.compile for symm mem op, but it has issue: "We don't always have the ability to own the allocation of a tensor, e.g. if it is a graph input or allocated by a custom kernel without an out variant. This is going to fail in those cases." This stack resolves the issue. 
+
+The entire stack goal:
+- sym memory planning that succeeds when the buffer that needs to be pre-planned is an input to the graph, or other tensor that we dont control allocation of. 
+- for cudagraph, it can pre allocate the output for the fallback region in the prior graph
+
+
+The stack addresses this incrementally:
+
+  #174856 [1/5] ExternKernelOut lowering(this pr) 
+    Lower symm_mem ops from FallbackKernel to ExternKernelOut so output buffer is visible to inductor.  Foundation for all subsequent diffs.
+
+  #175449 [2/5] Identity copy for uncontrolled inputs
+    When the input is a graph placeholder or comes from a fallback region, auto-insert a Pointwise identity copy to P2P. Also propagate CommBufferLayout upstream through pointwise ops. 
+    For graph inupt, this copy to P2P will be optimized out in pr5 layout change(see https://github.com/pytorch/pytorch/issues/138280). For other cases, say inputs come from fallback region, the copy is default to avoid crash.
+
+  #175450 [3/5] CUDAGraph P2P pool handling
+    Teach the CUDAGraph tree to detect P2P inputs (non-standard deleter), skip managed-buffer copy for them, and exclude them from pool checks.  Without this, CG tree would copy P2P inputs into its managed pool (losing the P2P property).
+
+  #175476 [4/5] Hoist fallback output allocs into prior CG partition
+    Move output buffer allocations from non-CG fallback regions into the prior CG partition for pointer stability during replay.
+
+  #175486 [5/5] Layout allocator approach
+    Replace the identity copy (diff 2) with a Layout-based approach for InputBuffer: annotate layout.allocator=SYMM_MEM, generate a persistent P2P buffer at module level + DMA .copy_() in Runner.call(). 
+
+## PR Summary
+
+Functional symm_mem ops (`one_shot_all_reduce`, `one_shot_all_reduce_copy`, `multimem_one_shot_all_reduce`) are lowered via `FallbackKernel`, which has `should_allocate()=False`. This makes their output buffers opaque to Inductor's memory planner. Each collective allocates its own output internally, and Inductor cannot 1) pre-allocate the output buffer within symmetric memory planning, and also cannot 2) reuse buffer(for cpu).
+
+This diff switches the these ops to `ExternKernelOut` (via their corresponding `.out` variants), which has `should_allocate()=True`. The output buffer becomes visible to inductor for following p2p memory planning and buffer reuse. 
+
+This PR is the basis of follow up PRs in the ghstack.
+
+**Result**: 1) In codegen, out buffer is allocated explicitly, instead of in the kernel. 2) In an 8-layer `matmul → one_shot_all_reduce` model, intermediate buffer count drops from 9 to 2 (one P2P + one regular, ping-ponging across all layers).
+
+## Codegen diff (8 layers, hidden=4096, bf16, 2×H100)
+
+**Before** — each all_reduce allocates internally, output immediately freed:
+```python
+extern_kernels.mm(arg1_1, arg0_1, out=buf0)
+buf1 = torch.ops.symm_mem.one_shot_all_reduce.default(buf0, 'sum', '0')  # opaque alloc
+buf2 = buf1; del buf1
+buf3 = buf0; del buf0  # reuse (P2P only)
+extern_kernels.mm(buf2, arg2_1, out=buf3)
+del buf2                                                                   # output freed, never reused
+```
+
+**After** — all_reduce output is pre-allocated, reused across layers:
+```python
+extern_kernels.mm(arg1_1, arg0_1, out=buf0)
+buf1 = empty_strided_cuda(...)                                             # explicit alloc
+torch.ops.symm_mem.one_shot_all_reduce.out(buf0, 'sum', '0', out=buf1)
+buf2 = buf0; del buf0  # reuse (P2P)
+extern_kernels.mm(buf1, arg2_1, out=buf2)
+buf3 = buf1; del buf1  # reuse (regular)                                  # ← output reused!
+torch.ops.symm_mem.one_shot_all_reduce.out(buf2, 'sum', '0', out=buf3)
+```
+
+<img width="1668" height="779" alt="Screenshot 2026-02-11 at 11 35 39 PM" src="https://github.com/user-attachments/assets/fa49acf6-bca9-461e-9dff-075e03d03269" />
+
+Two buffers ping-pong across all 8 layers — zero extra allocations.
+
+## Numbers
+
+| Metric | FallbackKernel | ExternKernelOut | Change |
+|---|---|---|---|
+| Intermediate buffers | 9 (1 P2P + 8 regular) | 2 (1 P2P + 1 regular) | **-78%** |
+| Buffer reuses | 7 | 14 | **2×** |
+| Total buffer names | 24 | 16 | **-33%** |
+| `out=` calls | 8 (mm only) | 16 (mm + allreduce) | **2×** |
+
+## Test Plan
+
+A test is included
+
+
+
+cc @voznesenskym @penguinwu @EikanWang @jgong5 @Guobing-Chen @XiaobingSuper @zhuhaozhe @blzheng @wenzhe-nrv @jiayisunx @ipiszy @kadeng @muchulee8 @amjames @chauhang @aakhundov @coconutruben @jataylo @mlazos
+
+--- PR #174856 Review Comments ---
+author:	pytorch-bot
+association:	none
+edited:	true
+status:	none
+--
+<!-- drci-comment-start -->
+
+## :link: Helpful Links
+### :test_tube: See artifacts and rendered test results at [hud.pytorch.org/pr/174856](https://hud.pytorch.org/pr/174856)
+* :page_facing_up: Preview [Python docs built from this PR](https://docs-preview.pytorch.org/pytorch/pytorch/174856/index.html)
+* :page_facing_up: Preview [C++ docs built from this PR](https://docs-preview.pytorch.org/pytorch/pytorch/174856/cppdocs/index.html)
+* :question: Need help or want to give feedback on the CI? Visit the [bot commands wiki](https://github.com/pytorch/pytorch/wiki/Bot-commands)
+
+Note: Links to docs will display an error until the docs builds have been completed.
+
+
+## :x: 1 New Failure
+As of commit bd1c8b80346bb6554e1d1e088e8951b481df6772 with merge base c5dcefde3fe9bd88f25e626aa8201c54b4143f87 (<sub><sub><img alt="image" width=70 src="https://img.shields.io/date/1773714974?label=&color=FFFFFF&style=flat-square"></sub></sub>):
+<details open><summary><b>NEW FAILURE</b> - The following job has failed:</summary><p>
+
+* [trunk / linux-jammy-cuda13.0-py3.10-gcc11 / test (default, 3, 5, lf.linux.g6.4xlarge.experimental.nvidia.gpu)](https://hud.pytorch.org/pr/pytorch/pytorch/174856#67370010659) ([gh](https://github.com/pytorch/pytorch/actions/runs/23179509225/job/67370010659))
+    `test/inductor/test_compiled_autograd.py::TestAutogradWithCompiledAutograd::test_layer_norm_errors_on_third_order_grad`
+</p></details>
+
+
+This comment was automatically generated by Dr. CI and updates every 15 minutes.
+<!-- drci-comment-end -->
+--
+author:	pytorch-bot
+association:	none
+edited:	false
+status:	none
+--
+<!-- check-labels-comment-start -->
+# This PR needs a `release notes:` label
+If your changes are user facing and intended to be a part of release notes, please use a label starting with `release notes:`.
+
+If not, please add the `topic: not user facing` label.
+
+To add a label, you can comment to pytorchbot, for example
+`@pytorchbot label "topic: not user facing"`
+
+For more information, see
+https://github.com/pytorch/pytorch/wiki/PyTorch-AutoLabel-Bot#why-categorize-for-release-notes-and-how-does-it-work.
+
+<!-- check-labels-comment-end -->
+--
+author:	tianrengao
+association:	member
+edited:	false
+status:	none
+--
+@claude review this please
+--
+author:	xmfan
+association:	member
+edited:	false
+status:	none
+--
+Wondering what's the thinking around the mem pool API (https://fburl.com/a6h571pb), where symm mem allocations are cached? It moves the buffer reuse responsibility to the caching allocator
+--
+author:	tianrengao
+association:	member
+edited:	true
+status:	none
+--
+> Wondering what's the thinking around the mem pool API (https://fburl.com/a6h571pb), where symm mem allocations are cached? It moves the buffer reuse responsibility to the caching allocator
+
+The mempool caching allocator and ExternKernelOut work at different levels and are complementary. 
+
+- MemPool allocator reduces allocation overhead at runtime (avoids repeated P2P malloc/free across iterations). 
+- ExternKernelOut is for compile-time symm mem buffer planning. It enables P2P output buffer pre-allocation and buffer reuse in a fx graph. The mempool allocator still helps underneath. 
+
+Without ExternKernelOut, Inductor can't do buffer management for output buffers because it doesn't know where the allreduce output lands(what this PR fix). This is especially important under piecewise cudagraph(#175476). With ExternKernelOut, Inductor controls the output buffer allocation and can hoist it into the prior CUDAGraph partition. So the P2P buffer is pre-allocated before the allreduce partition begins. It persists across CG replays, and doesn't need to be re-allocated on each replay. This also helps with buffer reuse on CPU.
+
+
+--
+author:	tianrengao
+association:	member
+edited:	false
+status:	none
+--
+@claude review this please
+--
+author:	claude
+association:	none
+edited:	true
+status:	none
+--
+**Claude finished @tianrengao's task in 4m 18s** —— [View job](https://github.com/pytorch/pytorch/actions/runs/22887803664)
+
+---
+### PR Review: #174856 — [inductor] Lower functional symm_mem ops to ExternKernelOut for output buffer reuse
+
+- [x] Gather PR diff and context
+- [x] Read changed files in detail
+- [x] Analyze code quality and design
+- [x] Check testing adequacy
+- [x] Formulate review
+
+---
+
+### Summary
+
+This PR introduces a manual out-variant registry so that symm_mem ops (whose `_out` naming convention doesn't match PyTorch's standard `.out` overload convention) can be lowered from `FallbackKernel` to `ExternKernelOut`. The approach is sound and the code is clean. The changes are well-scoped as a foundation for the rest of the ghstack. A few issues worth addressing below.
+
+### Code Quality
+
+**1. Missing `multimem_one_shot_all_reduce` registration** — `torch/_inductor/comm_lowering.py:421-431`
+
+`one_shot_all_reduce` and `one_shot_all_reduce_copy` are registered in the manual out-variant registry, but `multimem_one_shot_all_reduce` (which has a corresponding `multimem_one_shot_all_reduce_out` — see `SymmetricMemory.cpp:487-489`) is not. Its lowering at line 575 still goes through `FallbackKernel.create`, so it won't benefit from `ExternKernelOut`. This seems like an oversight — unless there's a reason to exclude it, it should also be registered. [Fix this →](https://claude.ai/code?q=In%20torch%2F_inductor%2Fcomm_lowering.py%20around%20line%20431%2C%20add%20a%20register_out_variant%20call%20for%20multimem_one_shot_all_reduce%20similar%20to%20the%20existing%20ones%3A%20register_out_variant(symm_mem.multimem_one_shot_all_reduce.default%2C%20symm_mem.multimem_one_shot_all_reduce_out.default)&repo=pytorch/pytorch)
+
+**2. `lookup_manual_out_variant` bypasses `_is_functional` check** — `torch/_inductor/ir.py:8616-8620`
+
+The original code only attempted `to_out_variant` for ops where `_is_functional(kernel._schema)` is `True`. The new code falls through to `lookup_manual_out_variant` even when `_is_functional` returns `False`:
+
+```python
+out_op = None
+if _is_functional(kernel._schema):
+    out_op = to_out_variant(kernel)
+if out_op is None:
+    out_op = lookup_manual_out_variant(kernel)  # called even for non-functional ops
+```
+
+This is fine today because only functional symm_mem ops are registered in the manual registry, and `_is_functional` returns `True` for them anyway. But it's a subtle invariant — a future registration of a non-functional op would silently get the ExternKernelOut treatment. Consider gating the manual lookup behind the `_is_functional` check as well, or adding a validation in `register_out_variant` that asserts the functional op is actually functional.
+
+**3. CI lint failure** — `torch/_library/_out_variant.py:13-15`
+
+The PYFMT linter wants the multi-line `dict[...]` type annotation on a single line:
+```python
+# Current (fails lint):
+_manual_out_variant_registry: dict[
+    torch._ops.OpOverload, torch._ops.OpOverload
+] = {}
+
+# Expected:
+_manual_out_variant_registry: dict[torch._ops.OpOverload, torch._ops.OpOverload] = {}
+```
+
+### Testing
+
+- [x] Tests exist for new functionality (`test_output_buffer_reuse`, `test_output_buffer_reuse_copy_variant`)
+- [x] Tests verify codegen output (FileCheck for `_out` variant, `out=` parameter count, buffer reuse comments)
+- [ ] No test for `multimem_one_shot_all_reduce` — if it gets registered, it should have a corresponding test
+
+The tests are well-structured: they exercise the multi-layer mm→allreduce pattern and verify codegen properties rather than exact string matches, which makes them resilient to unrelated codegen changes.
+
+One minor observation: `test_output_buffer_reuse` checks `code.count("# reuse") >= 2` which depends on Inductor's comment format for buffer reuse annotations. This is a reasonable tradeoff for test clarity, but worth noting it could break if the reuse comment format changes.
+
+### Security
+
+No security concerns identified.
+
+### Thread Safety
+
+The `_manual_out_variant_registry` module-level dict is mutated by `register_out_variant` at module load time (`register_symm_mem_lowerings` is called during lowering registration). This is safe because Python module initialization is single-threaded under the GIL, and the dict is only read after that point. No concerns.
+
+### Backward Compatibility
+
+No BC-breaking changes. The lowering change is internal to Inductor codegen. The generated code calls the same underlying ops (just via their `.out` variants), and the manual registry is additive.
+
+### Performance
+
+This is a performance improvement. The PR description shows buffer count dropping from 9 to 2 in the 8-layer benchmark, which is the expected benefit of making output buffers visible to Inductor's memory planner.
+
+### Recommendation
+
+**Approve with minor changes**
+
+The approach is solid and well-motivated. The main actionable items:
+1. Register `multimem_one_shot_all_reduce` in the manual registry (or explain why it's excluded)
+2. Fix the PYFMT lint failure
+3. Consider whether `lookup_manual_out_variant` should also require `_is_functional`
+
+---
+--
+author:	tianrengao
+association:	member
+edited:	false
+status:	none
+--
+> **Claude finished @tianrengao's task in 4m 18s** —— [View job](https://github.com/pytorch/pytorch/actions/runs/22887803664)
+> 
+> ### PR Review: #174856 — [inductor] Lower functional symm_mem ops to ExternKernelOut for output buffer reuse
+> * [x]  Gather PR diff and context
+> * [x]  Read changed files in detail
+> * [x]  Analyze code quality and design
+> * [x]  Check testing adequacy
+> * [x]  Formulate review
+> 
+> ### Summary
+> This PR introduces a manual out-variant registry so that symm_mem ops (whose `_out` naming convention doesn't match PyTorch's standard `.out` overload convention) can be lowered from `FallbackKernel` to `ExternKernelOut`. The approach is sound and the code is clean. The changes are well-scoped as a foundation for the rest of the ghstack. A few issues worth addressing below.
+> 
+> ### Code Quality
+> **1. Missing `multimem_one_shot_all_reduce` registration** — `torch/_inductor/comm_lowering.py:421-431`
+> 
+> `one_shot_all_reduce` and `one_shot_all_reduce_copy` are registered in the manual out-variant registry, but `multimem_one_shot_all_reduce` (which has a corresponding `multimem_one_shot_all_reduce_out` — see `SymmetricMemory.cpp:487-489`) is not. Its lowering at line 575 still goes through `FallbackKernel.create`, so it won't benefit from `ExternKernelOut`. This seems like an oversight — unless there's a reason to exclude it, it should also be registered. [Fix this →](https://claude.ai/code?q=In%20torch%2F_inductor%2Fcomm_lowering.py%20around%20line%20431%2C%20add%20a%20register_out_variant%20call%20for%20multimem_one_shot_all_reduce%20similar%20to%20the%20existing%20ones%3A%20register_out_variant(symm_mem.multimem_one_shot_all_reduce.default%2C%20symm_mem.multimem_one_shot_all_reduce_out.default)&repo=pytorch/pytorch)
+> 
+> **2. `lookup_manual_out_variant` bypasses `_is_functional` check** — `torch/_inductor/ir.py:8616-8620`
+> 
+> The original code only attempted `to_out_variant` for ops where `_is_functional(kernel._schema)` is `True`. The new code falls through to `lookup_manual_out_variant` even when `_is_functional` returns `False`:
+> 
+> ```python
+> out_op = None
+> if _is_functional(kernel._schema):
+>     out_op = to_out_variant(kernel)
+> if out_op is None:
+>     out_op = lookup_manual_out_variant(kernel)  # called even for non-functional ops
+> ```
+> 
+> This is fine today because only functional symm_mem ops are registered in the manual registry, and `_is_functional` returns `True` for them anyway. But it's a subtle invariant — a future registration of a non-functional op would silently get the ExternKernelOut treatment. Consider gating the manual lookup behind the `_is_functional` check as well, or adding a validation in `register_out_variant` that asserts the functional op is actually functional.
+> 
+> **3. CI lint failure** — `torch/_library/_out_variant.py:13-15`
+> 
+> The PYFMT linter wants the multi-line `dict[...]` type annotation on a single line:
+> 
+> ```python
+> # Current (fails lint):
+> _manual_out_variant_registry: dict[
+>     torch._ops.OpOverload, torch._ops.OpOverload
+> ] = {}
+> 
+> # Expected:
+> _manual_out_variant_registry: dict[torch._ops.OpOverload, torch._ops.OpOverload] = {}
+> ```
+> 
+> ### Testing
+> * [x]  Tests exist for new functionality (`test_output_buffer_reuse`, `test_output_buffer_reuse_copy_variant`)
+> * [x]  Tests verify codegen output (FileCheck for `_out` variant, `out=` parameter count, buffer reuse comments)
+> * [ ]  No test for `multimem_one_shot_all_reduce` — if it gets registered, it should have a corresponding test
+> 
+> The tests are well-structured: they exercise the multi-layer mm→allreduce pattern and verify codegen properties rather than exact string matches, which makes them resilient to unrelated codegen changes.
+> 
+> One minor observation: `test_output_buffer_reuse` checks `code.count("# reuse") >= 2` which depends on Inductor's comment format for buffer reuse annotations. This is a reasonable tradeoff for test clarity, but worth noting it could break if the reuse comment format changes.
+> 
+> ### Security
+> No security concerns identified.
+> 
+> ### Thread Safety
+> The `_manual_out_variant_registry` module-level dict is mutated by `register_out_variant` at module load time (`register_symm_mem_lowerings` is called during lowering registration). This is safe because Python module initialization is single-threaded under the GIL, and the dict is only read after that point. No concerns.
+> 
+> ### Backward Compatibility
+> No BC-breaking changes. The lowering change is internal to Inductor codegen. The generated code calls the same underlying ops (just via their `.out` variants), and the manual registry is additive.
+> 
+> ### Performance
+> This is a performance improvement. The PR description shows buffer count dropping from 9 to 2 in the 8-layer benchmark, which is the expected benefit of making output buffers visible to Inductor's memory planner.
+> 
+> ### Recommendation
+> **Approve with minor changes**
+> 
+> The approach is solid and well-motivated. The main actionable items:
+> 
+> 1. Register `multimem_one_shot_all_reduce` in the manual registry (or explain why it's excluded)
+> 2. Fix the PYFMT lint failure
+> 3. Consider whether `lookup_manual_out_variant` should also require `_is_functional`
+
+`multimem_one_shot_all_reduce` is intentionally excluded. It has no Meta kernel so it can't be traced by torch.compile. Will add when Meta kernel is registered
+
+--
+author:	eellison
+association:	member
+edited:	false
+status:	approved
+--
+
+--
+author:	tianrengao
+association:	member
+edited:	false
+status:	none
+--
+@pytorchbot merge 
+--
+author:	pytorchmergebot
+association:	member
+edited:	false
+status:	none
+--
+### Merge started
+Your change will be merged once all checks pass (ETA 0-4 Hours).
+
+Learn more about merging in the [wiki](https://github.com/pytorch/pytorch/wiki/Bot-commands).
+
+Questions? Feedback? Please reach out to the [PyTorch DevX Team](https://github.com/pytorch/pytorch/wiki/Dev-Infra-Office-Hours)<details><summary>Advanced Debugging</summary>
+Check the merge workflow status 
+<a href="https://github.com/pytorch/pytorch/actions/runs/23179507441">here</a>
+</details>
+--
+author:	pytorchmergebot
+association:	member
+edited:	false
+status:	none
+--
+## Merge failed
+**Reason**: 1 jobs have failed, first few of them are: [trunk / linux-jammy-cuda13.0-py3.10-gcc11 / test (default, 3, 5, lf.linux.g6.4xlarge.experimental.nvidia.gpu)](https://github.com/pytorch/pytorch/actions/runs/23179509225/job/67350198856)
+
+<details><summary>Details for Dev Infra team</summary>
+Raised by <a href="https://github.com/pytorch/pytorch/actions/runs/23179507441">workflow job</a>
+
+</details>
+--
+author:	tianrengao
+association:	member
+edited:	false
+status:	none
+--
+@pytorchbot merge -i
+
+--
+author:	pytorchmergebot
+association:	member
+edited:	false
+status:	none
+--
+### Merge started
+Your change will be merged while ignoring the following 1 checks: [trunk / linux-jammy-cuda13.0-py3.10-gcc11 / test (default, 3, 5, lf.linux.g6.4xlarge.experimental.nvidia.gpu)](https://github.com/pytorch/pytorch/actions/runs/23179509225/job/67370010659)
+
+Learn more about merging in the [wiki](https://github.com/pytorch/pytorch/wiki/Bot-commands).
+
+Questions? Feedback? Please reach out to the [PyTorch DevX Team](https://github.com/pytorch/pytorch/wiki/Dev-Infra-Office-Hours)<details><summary>Advanced Debugging</summary>
+Check the merge workflow status 
+<a href="https://github.com/pytorch/pytorch/actions/runs/23204996935">here</a>
+</details>
+--

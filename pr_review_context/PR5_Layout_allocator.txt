@@ -1,0 +1,133 @@
+--- PR #175797 Description ---
+title:	[inductor] Layout allocator approach for symm_mem graph inputs
+state:	OPEN
+author:	tianrengao
+labels:	ciflow/h100-symm-mem, ciflow/inductor, ciflow/torchtitan, module: inductor, release notes: distributed (c10d)
+assignees:	
+reviewers:	kwen2501 (Requested)
+projects:	
+milestone:	
+number:	175797
+url:	https://github.com/pytorch/pytorch/pull/175797
+additions:	293
+deletions:	17
+auto-merge:	disabled
+--
+Stack from [ghstack](https://github.com/ezyang/ghstack) (oldest at bottom):
+* __->__ #175797
+* #175476
+* #175450
+* #175449
+* #174856
+
+Summary:
+Replace the Triton identity-copy workaround for graph inputs (InputBuffer)
+that need P2P memory with a Layout-based allocator constraint approach.
+
+Three paths in _maybe_realize_symm_mem, in priority order:
+1. We control allocation (ComputedBuffer) → CommBufferLayout (zero-copy)
+2. Graph placeholder (InputBuffer, static shapes) → mark layout.allocator =
+   AllocatorType(kind="symm_mem"); wrapper generates persistent P2P buffer +
+   DMA .copy_() inside the CG partition. Runs on copy engine, not compute SMs.
+3. Fallback: insert Triton identity copy with CommBufferLayout (original).
+
+Under CUDAGraph partition mode, only the partition wrapper (CG-recorded)
+emits the P2P allocation and .copy_(). The outer wrapper skips entirely so
+that:
+- .copy_() is captured inside the CG recording → ~0µs dispatch on replay
+- No redundant copy in outer call() → eliminates the self-copy no-op bug
+- Single empty_strided_p2p in header → no duplicate P2P allocation
+
+CUDAGraph fix (CUDASymmetricMemory.cu): CUDAPeerAllocInfo's constructor
+previously used CUDACachingAllocator::raw_alloc for the device-side pointer
+arrays (buffers_dev_, signal_pads_dev_). During CG tree warmup the caching
+allocator is redirected to a private pool, so these small, long-lived
+infrastructure allocations landed in the CG pool and were flagged as
+untracked leaks by check_memory_pool. Replaced with cudaMalloc, which always
+allocates from the default CUDA pool regardless of the active pool context.
+Also added ~CUDAPeerAllocInfo destructor (the old code never freed these
+allocations — a pre-existing leak).
+
+Benchmark (devgpu088, 8×H100, one_shot_all_reduce, 200w+200i,
+each shape×mode in separate torchrun to avoid alloc_id collision):
+
+| Shape     | PR4 no-CG | PR5 no-CG | Δ no-CG   | PR4 CG | PR5 CG | Δ CG      |
+|-----------|-----------|-----------|-----------|--------|--------|-----------|
+| 8×8       | 92.9µs    | 86.8µs    | **−6.6%** | 89.6µs | 81.3µs | **−9.3%** |
+| 64×64     | 95.5µs    | 86.8µs    | **−9.1%** | 86.8µs | 89.9µs | +3.6%     |
+| 256×256   | 86.3µs    | 87.5µs    | +1.4%     | 91.3µs | 87.2µs | **−4.5%** |
+| 512×512   | —†        | 87.4µs    | —         | 89.0µs | 81.9µs | **−8.0%** |
+| 1024×1024 | 144.5µs   | 138.1µs   | **−4.4%** | 154.5µs| 154.3µs| −0.1%     |
+
+† 512×512 PR4 no-CG outlier excluded.
+
+Key results:
+- no-CG: PR5 wins 4-9% (DMA dispatch cheaper than Triton kernel launch)
+- CG: PR5 wins 4-9% at most shapes (.copy_() CG-captured, ~0µs dispatch;
+  DMA runs on copy engine instead of compute SMs)
+- CG regression from earlier PR5 versions is fully resolved by the
+  partition-only guard in codegen_p2p_input_copies()
+
+Key changes:
+- ir.py: AllocatorType frozen dataclass (kind="default"/"symm_mem",
+  group_name) + Layout.allocator field, propagated through as_fixed()/__eq__
+- comm_lowering.py: 3-path _maybe_realize_symm_mem with is_symbolic guard
+- wrapper.py: codegen_p2p_input_copies() — header-level P2P alloc (once)
+  + prefix-level DMA .copy_() (every call); CG partition guard ensures only
+  the partition wrapper emits (not the outer wrapper), so .copy_() is
+  CG-captured and replays with ~0µs dispatch
+- wrapper.py: fix f-string syntax error in empty_strided_p2p codegen
+- wrapper.py: move proton set_allocator / start() from self.header to
+  self.prefix — under CUDAGraph partition mode self.header is redirected
+  into call(), but proton must execute on every call() invocation
+- CUDASymmetricMemory.cu/hpp: raw_alloc → cudaMalloc + destructor
+- test: Path 2 + Path 3 fallback variant + AllocatorType propagation
+
+Test Plan:
+1. Unit tests:
+   torchrun --nproc_per_node=2 -m pytest test/distributed/test_symmetric_memory.py \
+     -k "LoweringTest" -xvs
+   → 9 passed, 1 skipped
+
+2. Codegen verification (torchrun --nproc_per_node=8):
+   - no-CG: single empty_strided_p2p in header, single .copy_() in prefix,
+     no Triton identity kernel. Correctness check passed (compiled vs eager).
+   - CG: single empty_strided_p2p in header (no duplicate), single .copy_()
+     inside partition_0 (CG-captured), NO .copy_() in outer call().
+     Correctness check passed.
+
+3. Benchmark: devgpu088, 8×H100, torchrun --nproc_per_node=8,
+   200 warmup + 200 timed iters per shape. Each (shape × mode) pair in
+   separate torchrun invocation. Results in table above.
+
+cc @voznesenskym @penguinwu @EikanWang @jgong5 @Guobing-Chen @XiaobingSuper @zhuhaozhe @blzheng @wenzhe-nrv @jiayisunx @ipiszy @kadeng @muchulee8 @amjames @chauhang @aakhundov @coconutruben @jataylo
+
+--- PR #175797 Review Comments ---
+author:	pytorch-bot
+association:	none
+edited:	true
+status:	none
+--
+<!-- drci-comment-start -->
+
+## :link: Helpful Links
+### :test_tube: See artifacts and rendered test results at [hud.pytorch.org/pr/175797](https://hud.pytorch.org/pr/175797)
+* :page_facing_up: Preview [Python docs built from this PR](https://docs-preview.pytorch.org/pytorch/pytorch/175797/index.html)
+* :page_facing_up: Preview [C++ docs built from this PR](https://docs-preview.pytorch.org/pytorch/pytorch/175797/cppdocs/index.html)
+* :question: Need help or want to give feedback on the CI? Visit the [bot commands wiki](https://github.com/pytorch/pytorch/wiki/Bot-commands)
+
+Note: Links to docs will display an error until the docs builds have been completed.
+
+
+## :x: 1 New Failure
+As of commit 05438e7337da8a69586d9d9a81744a865208f803 with merge base c5dcefde3fe9bd88f25e626aa8201c54b4143f87 (<sub><sub><img alt="image" width=70 src="https://img.shields.io/date/1773714974?label=&color=FFFFFF&style=flat-square"></sub></sub>):
+<details open><summary><b>NEW FAILURE</b> - The following job has failed:</summary><p>
+
+* [Limited CI for symmetric memory tests on H100 / linux-jammy-cuda12.8-py3.10-gcc11-sm90-symm / test (h100-symm-mem, 1, 1, linux.aws.h100.4)](https://hud.pytorch.org/pr/pytorch/pytorch/175797#67704788015) ([gh](https://github.com/pytorch/pytorch/actions/runs/23283631953/job/67704788015))
+    `test/distributed/test_symmetric_memory.py::SymmMemEmptySetDeviceTest::test_empty_strided_p2p_persistent_set_device_False`
+</p></details>
+
+
+This comment was automatically generated by Dr. CI and updates every 15 minutes.
+<!-- drci-comment-end -->
+--

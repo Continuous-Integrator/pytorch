@@ -952,20 +952,21 @@ class {module_name}(torch.nn.Module):
             self._out_spec = self._graph._codegen.pytree_info.out_spec
 
         # Auto-enable ProfilerCodeGen when TORCH_FX_PROFILER_CODEGEN=1
-        from torch.fx.profiler_codegen import ProfilerCodeGen
+        # Lazy import: only import when flag is on to avoid perf regression.
+        if fx_experimental_config.profiler_codegen:
+            from torch.fx.profiler_codegen import ProfilerCodeGen
 
-        if (
-            fx_experimental_config.profiler_codegen
-            and not isinstance(self._graph._codegen, ProfilerCodeGen)
-        ):
-            self._graph.set_codegen(ProfilerCodeGen())
+            if not isinstance(self._graph._codegen, ProfilerCodeGen):
+                self._graph.set_codegen(ProfilerCodeGen())
 
         # ProfilerCodeGen has its own dual-path profiler instrumentation,
         # skip the old record_func / enrich_profiler_metadata path.
-        use_record_func = (
-            fx_experimental_config.enrich_profiler_metadata
-            and not isinstance(self._graph._codegen, ProfilerCodeGen)
-        )
+        use_record_func = fx_experimental_config.enrich_profiler_metadata
+        if use_record_func:
+            from torch.fx.profiler_codegen import ProfilerCodeGen
+
+            if isinstance(self._graph._codegen, ProfilerCodeGen):
+                use_record_func = False
         python_code = self._graph.python_code(
             root_module="self",
             record_func=use_record_func,
@@ -979,12 +980,9 @@ class {module_name}(torch.nn.Module):
         # hot-reload: edit the file on disk and the next forward() picks up changes.
         dump_dir = fx_experimental_config.codegen_dump_dir
         if not dump_dir and fx_experimental_config.profiler_codegen:
-            import getpass
-            import re as _re
             import tempfile
 
-            sanitized_username = _re.sub(r'[\\/:*?"<>|]', "_", getpass.getuser())
-            dump_dir = os.path.join(tempfile.gettempdir(), f"torch_fx_codegen_{sanitized_username}")
+            dump_dir = os.path.join(tempfile.gettempdir(), "torch_fx_codegen")
         if dump_dir:
             code_hash = hashlib.sha256(self._code.encode("utf-8")).hexdigest()[:16]
             rank_suffix = ""
