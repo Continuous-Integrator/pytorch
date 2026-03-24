@@ -6,6 +6,7 @@ import torch
 import torch._dynamo.testing
 from torch.testing._internal.common_utils import run_tests, TestCase
 
+
 TEST_CUDA = torch.cuda.is_available()
 
 
@@ -234,7 +235,9 @@ class TestPhiloxNormal(TestCase):
 
     def test_dtype_and_device(self):
         key = torch.random.key(42, device="cuda")
-        result = torch.random.normal(key, (500,), mean=3.0, std=0.5, dtype=torch.float64)
+        result = torch.random.normal(
+            key, (500,), mean=3.0, std=0.5, dtype=torch.float64
+        )
         self.assertEqual(result.shape, (500,))
         self.assertEqual(result.dtype, torch.float64)
 
@@ -434,8 +437,9 @@ class TestPhiloxCompile(TestCase):
             keys = torch.random.split(key, 4)
             return torch.random.normal(keys, (4, 100))
 
-        self.assertEqual(f(key), torch.random.normal(
-            torch.random.split(key, 4), (4, 100)))
+        self.assertEqual(
+            f(key), torch.random.normal(torch.random.split(key, 4), (4, 100))
+        )
 
     def test_fold_in_then_uniform_aot_eager(self):
         key = torch.random.key(42, device="cuda")
