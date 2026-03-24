@@ -9,17 +9,17 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
-
 from cli.lib.pytorch.base import (
     BasePytorchTestPlan,
     CoreTestPlan,
-    TestStep,
     is_cpu_only,
     is_cuda,
     is_gpu,
     matches_env,
     resolve_env_vars,
+    TestStep,
 )
+
 
 MOD = "cli.lib.pytorch.runner"
 
@@ -33,6 +33,7 @@ def _step(name: str = "s1", calls: list | None = None) -> TestStep:
     def fn():
         if calls is not None:
             calls.append(name)
+
     return TestStep(test_id=name, fn=fn)
 
 
@@ -59,9 +60,18 @@ def patch_lib(monkeypatch):
 
     monkeypatch.setattr(module, "pip_install_packages", pip_mock, raising=True)
     monkeypatch.setattr(module, "run_command", run_mock, raising=True)
-    monkeypatch.setattr(module, "temp_environ", lambda m: (temp_calls.append(m), nullcontext())[1], raising=True)
-    monkeypatch.setattr(module, "working_directory", lambda p: nullcontext(), raising=True)
-    logger_mock = SimpleNamespace(info=MagicMock(), warning=MagicMock(), error=MagicMock())
+    monkeypatch.setattr(
+        module,
+        "temp_environ",
+        lambda m: (temp_calls.append(m), nullcontext())[1],
+        raising=True,
+    )
+    monkeypatch.setattr(
+        module, "working_directory", lambda p: nullcontext(), raising=True
+    )
+    logger_mock = SimpleNamespace(
+        info=MagicMock(), warning=MagicMock(), error=MagicMock()
+    )
     monkeypatch.setattr(module, "logger", logger_mock, raising=True)
 
     ns = SimpleNamespace(
@@ -99,7 +109,9 @@ class TestEnvHelpers:
         assert not matches_env("rocm", "pytorch-cuda12.1")
 
     def test_resolve_env_vars_callable(self):
-        fn = lambda env: {"D": "hip"} if "rocm" in env else {"D": "cuda"}
+        def fn(env):
+            return {"D": "hip"} if "rocm" in env else {"D": "cuda"}
+
         assert resolve_env_vars(fn, "rocm6.0") == {"D": "hip"}
         assert resolve_env_vars(fn, "cuda12.1") == {"D": "cuda"}
 
@@ -116,15 +128,20 @@ class TestIsEligible:
 
     def test_run_on_and_test_config_both_required(self):
         plan = BasePytorchTestPlan(
-            group_id="p", title="T", steps=[],
-            run_on=["cuda"], test_configs=["default"],
+            group_id="p",
+            title="T",
+            steps=[],
+            run_on=["cuda"],
+            test_configs=["default"],
         )
         assert plan.is_eligible("cuda12.1", "default")
         assert not plan.is_eligible("cpuonly", "default")
         assert not plan.is_eligible("cuda12.1", "other")
 
     def test_run_on_callable(self):
-        plan = BasePytorchTestPlan(group_id="p", title="T", steps=[], run_on=[is_cpu_only])
+        plan = BasePytorchTestPlan(
+            group_id="p", title="T", steps=[], run_on=[is_cpu_only]
+        )
         assert plan.is_eligible("cpuonly")
         assert not plan.is_eligible("cuda12.1")
 
@@ -151,22 +168,28 @@ class TestCoreTestPlanSteps:
     def test_both_raises(self):
         s = _step()
         with pytest.raises(ValueError, match="exactly one"):
-            CoreTestPlan(group_id="p", title="T", steps=[s], get_steps_fn=lambda e, si, ns: [s])
+            CoreTestPlan(
+                group_id="p", title="T", steps=[s], get_steps_fn=lambda e, si, ns: [s]
+            )
 
     def test_shard_args_passed_to_fn(self):
         received = {}
+
         def fn(build_env, shard_id, num_shards):
             received.update(shard_id=shard_id, num_shards=num_shards)
             return [_step()]
+
         plan = CoreTestPlan(group_id="p", title="T", get_steps_fn=fn)
         plan.get_steps("env", shard_id=2, num_shards=4)
         assert received == {"shard_id": 2, "num_shards": 4}
 
     def test_shard_passed_through_run_test_plan(self, patch_lib):
         received = {}
+
         def fn(build_env, shard_id, num_shards):
             received.update(shard_id=shard_id, num_shards=num_shards)
             return [_step()]
+
         lib = {"p": CoreTestPlan(group_id="p", title="T", get_steps_fn=fn)}
         patch_lib.run_test_plan("p", "env", shard_id=3, num_shards=8, library=lib)
         assert received == {"shard_id": 3, "num_shards": 8}
@@ -184,10 +207,14 @@ class TestResolvePlan:
 
     def test_single_match(self, patch_lib):
         lib = _lib(
-            _plan(_step(), group_id="cpu", run_on=[is_cpu_only], test_configs=["nogpu"]),
-            _plan(_step(), group_id="gpu", run_on=[is_gpu],      test_configs=["default"]),
+            _plan(
+                _step(), group_id="cpu", run_on=[is_cpu_only], test_configs=["nogpu"]
+            ),
+            _plan(_step(), group_id="gpu", run_on=[is_gpu], test_configs=["default"]),
         )
-        assert patch_lib.resolve_plans_for_test_config("nogpu", "cpuonly", lib) == ["cpu"]
+        assert patch_lib.resolve_plans_for_test_config("nogpu", "cpuonly", lib) == [
+            "cpu"
+        ]
 
     def test_multiple_match_runs_all(self, patch_lib):
         # Two plans with same test_config both match — returned in registry order.
@@ -195,7 +222,10 @@ class TestResolvePlan:
             _plan(_step(), group_id="a", test_configs=["default"]),
             _plan(_step(), group_id="b", test_configs=["default"]),
         )
-        assert patch_lib.resolve_plans_for_test_config("default", "cuda12.1", lib) == ["a", "b"]
+        assert patch_lib.resolve_plans_for_test_config("default", "cuda12.1", lib) == [
+            "a",
+            "b",
+        ]
 
     def test_no_match_raises(self, patch_lib):
         lib = _lib(_plan(_step(), group_id="p", test_configs=["nogpu"]))
@@ -232,20 +262,29 @@ class TestRunTestPlan:
     def test_cmd_replaces_fn(self, patch_lib):
         called = []
         lib = _lib(_plan(TestStep(test_id="s1", fn=lambda: called.append(True))))
-        patch_lib.run_test_plan("plan_a", "env", test_id="s1", cmd="pytest foo.py", library=lib)
+        patch_lib.run_test_plan(
+            "plan_a", "env", test_id="s1", cmd="pytest foo.py", library=lib
+        )
         assert not called
         patch_lib.run.assert_called_once_with("pytest foo.py", use_shell=True)
 
     def test_cmd_without_test_id_raises(self, patch_lib):
         with pytest.raises(RuntimeError, match="--cmd requires --test-id"):
-            patch_lib.run_test_plan("plan_a", "env", cmd="pytest", library=_lib(_plan(_step())))
+            patch_lib.run_test_plan(
+                "plan_a", "env", cmd="pytest", library=_lib(_plan(_step()))
+            )
 
     def test_continues_after_failure_and_raises(self, patch_lib):
         calls: list[str] = []
-        lib = _lib(_plan(
-            TestStep(test_id="bad", fn=lambda: (_ for _ in ()).throw(RuntimeError("boom"))),
-            _step("s2", calls),
-        ))
+        lib = _lib(
+            _plan(
+                TestStep(
+                    test_id="bad",
+                    fn=lambda: (_ for _ in ()).throw(RuntimeError("boom")),
+                ),
+                _step("s2", calls),
+            )
+        )
         with pytest.raises(RuntimeError, match="1 step"):
             patch_lib.run_test_plan("plan_a", "env", library=lib)
         assert "s2" in calls
@@ -257,10 +296,12 @@ class TestRunTestPlan:
 
     def test_setup_fn_runs_before_steps(self, patch_lib):
         order: list[str] = []
-        lib = _lib(_plan(
-            TestStep(test_id="s1", fn=lambda: order.append("step")),
-            setup_fn=lambda: order.append("setup"),
-        ))
+        lib = _lib(
+            _plan(
+                TestStep(test_id="s1", fn=lambda: order.append("step")),
+                setup_fn=lambda: order.append("setup"),
+            )
+        )
         patch_lib.run_test_plan("plan_a", "env", library=lib)
         assert order == ["setup", "step"]
 
