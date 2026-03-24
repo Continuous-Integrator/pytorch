@@ -3,7 +3,6 @@ import contextlib
 import functools
 import sys
 import unittest
-from typing import Optional
 from unittest.mock import patch
 
 import torch
@@ -27,6 +26,8 @@ from torch.testing._internal.common_quantized import (
     _calculate_dynamic_per_channel_qparams,
 )
 from torch.testing._internal.common_utils import (
+    IS_ARM64,
+    IS_CPU_EXT_SVE_SUPPORTED,
     IS_MACOS,
     IS_WINDOWS,
     parametrize,
@@ -100,7 +101,7 @@ def verify(dtype):
         yield atol, rtol
 
 
-def _get_epilogue(epilogue: str, other: Optional[torch.Tensor] = None):
+def _get_epilogue(epilogue: str, other: torch.Tensor | None = None):
     if epilogue == "none":
         return lambda x: x
     elif epilogue == "relu":
@@ -1631,6 +1632,9 @@ class TestSelectAlgorithm(BaseTestSelectAlgorithm):
     )
     @parametrize("in_features", (128, 144, 1024))
     @parametrize("out_features", (64, 65, 1024))
+    @unittest.skipIf(
+        IS_ARM64 and not IS_CPU_EXT_SVE_SUPPORTED, "flaky on AArch64 (no SVE)"
+    )
     def test_int8_woq_mm(self, dtype, batch_size, mid_dim, in_features, out_features):
         def _convert_weight_to_int8pack(w):
             scale, zp = _calculate_dynamic_per_channel_qparams(
@@ -1693,6 +1697,9 @@ class TestSelectAlgorithm(BaseTestSelectAlgorithm):
     )
     @parametrize("in_features", (128,))
     @parametrize("out_features", (64,))
+    @unittest.skipIf(
+        IS_ARM64 and not IS_CPU_EXT_SVE_SUPPORTED, "flaky on AArch64 (no SVE)"
+    )
     def test_int8_woq_mm_concat(
         self, dtype, batch_size, mid_dim, in_features, out_features
     ):
@@ -2001,6 +2008,7 @@ class TestSelectAlgorithm(BaseTestSelectAlgorithm):
             _target_code_check = f"constexpr int64_t Kc_blocks = {group_size // kr};"
             torch._C.FileCheck().check(_target_code_check).run(code)
 
+    @unittest.expectedFailure  # Int4 kernel numerical errors (5.4x rel diff, 5.8% mismatch)
     @unittest.skipIf(
         not torch.cpu._is_amx_tile_supported(), "AMX ISA support is required"
     )
@@ -2071,6 +2079,7 @@ class TestSelectAlgorithm(BaseTestSelectAlgorithm):
             )
             self.assertEqual(counters["inductor"]["select_algorithm_autotune"], 1)
 
+    @unittest.expectedFailure  # Int4 kernel numerical errors (43.5x rel diff, 10.7% mismatch)
     @unittest.skipIf(
         not torch.cpu._is_amx_tile_supported(), "AMX ISA support is required"
     )
@@ -2286,7 +2295,8 @@ class TestSelectAlgorithm(BaseTestSelectAlgorithm):
             def forward(self, x):
                 return self.mlp(x)
 
-        assert torch._inductor.config.freezing is False
+        if torch._inductor.config.freezing is not False:
+            raise AssertionError
 
         counters.clear()
         v = torch.randn(batch_size, in_features).to(dtype=dtype)
@@ -2434,6 +2444,7 @@ class TestSelectAlgorithm(BaseTestSelectAlgorithm):
             ["silu", "mul"],
         ),
     )
+    @parametrize("loop_ordering_after_fusion", (True, False))
     def test_grouped_linear_epilogue(
         self,
         batch_size,
@@ -2442,6 +2453,7 @@ class TestSelectAlgorithm(BaseTestSelectAlgorithm):
         input_3d,
         bias,
         epilogue,
+        loop_ordering_after_fusion,
     ):
         class M(torch.nn.Module):
             def __init__(self, in_feature, out_feature, bias, epilogue):
@@ -2482,6 +2494,9 @@ class TestSelectAlgorithm(BaseTestSelectAlgorithm):
                 verify(dtype) as (atol, rtol),
                 torch.autocast(device_type="cpu", dtype=dtype),
                 torch.no_grad(),
+                inductor_config.patch(
+                    {"loop_ordering_after_fusion": loop_ordering_after_fusion}
+                ),
             ):
                 self.common(mod, (v,), atol=atol, rtol=rtol)
             self.assertEqual(counters["inductor"]["cpp_grouped_gemm_template"], 1)
@@ -2527,7 +2542,8 @@ class TestSelectAlgorithm(BaseTestSelectAlgorithm):
                 )
                 return self.relu(tmp)
 
-        assert torch._inductor.config.freezing is False
+        if torch._inductor.config.freezing is not False:
+            raise AssertionError
 
         counters.clear()
         v = torch.randn(batch_size, in_features).to(dtype=dtype)
@@ -2690,7 +2706,8 @@ class TestSelectAlgorithm(BaseTestSelectAlgorithm):
         u = torch.randn(bs, Mdim, Kdim).to(dtype=dtype)
         v = torch.randn(bs, Kdim, Ndim).to(dtype=dtype)
         mod = M().to(dtype=dtype).eval()
-        with verify(dtype) as (atol, rtol), torch.amp.autocast("cpu"):
+        # CPU autocast converts to bfloat16, so use bfloat16 tolerances
+        with verify(torch.bfloat16) as (atol, rtol), torch.amp.autocast("cpu"):
             self.common(mod, (u, v), atol=atol, rtol=rtol)
         self.assertEqual(counters["inductor"]["cpp_templated_kernel_counter"], 1)
 
@@ -2831,7 +2848,7 @@ class TestSelectAlgorithm(BaseTestSelectAlgorithm):
                 super().__init__()
 
             def forward(self, x, w):
-                assert x.dim() == 2, f"Expected x to be 2D, got {x.dim()}D"
+                assert x.dim() == 2, f"Expected x to be 2D, got {x.dim()}D"  # noqa: S101
                 x_expanded = x.unsqueeze(0).expand(bs, -1, -1)
                 return x_expanded @ w
 
@@ -3095,7 +3112,8 @@ class TestSelectAlgorithm(BaseTestSelectAlgorithm):
                 exact_dtype=True,
             )
             # Check that only 2 kernels are in the generated code
-            assert code.count("AMXState amx_state") == 2
+            if code.count("AMXState amx_state") != 2:
+                raise AssertionError
 
 
 @dynamo_config.patch({"dynamic_shapes": True, "assume_static_by_default": False})

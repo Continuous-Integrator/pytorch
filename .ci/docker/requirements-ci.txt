@@ -169,7 +169,7 @@ optree==0.17.0 ; python_version >= "3.14"
 #test_pointwise_ops.py, test_dtensor_ops.py, test_torchinductor.py, test_fx.py,
 #test_fake_tensor.py, test_mps.py
 
-pillow==11.0.0
+pillow==12.1.1
 #Description:  Python Imaging Library fork
 #Pinned versions: 11.0.0
 #test that import:
@@ -290,6 +290,11 @@ unittest-xml-reporting<=3.2.0,>=2.0.0
 lintrunner==0.12.11
 #Description: all about linters!
 #Pinned versions: 0.12.11
+#test that import:
+
+spin==0.17
+#Description: developer CLI for common build/lint tasks
+#Pinned versions: 0.17
 #test that import:
 
 redis>=4.0.0
