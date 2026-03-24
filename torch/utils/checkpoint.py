@@ -1318,18 +1318,6 @@ def _always_prefer_recompute(ctx, op, *args, **kwargs):
     return CheckpointPolicy.PREFER_RECOMPUTE
 
 
-@contextlib.contextmanager
-def _vanilla_ac_tag_context():
-    """Stamp ac_graph_id and PREFER_RECOMPUTE on fx_traceback metadata for
-    vanilla AC regions during tracing."""
-    fx_traceback.current_meta["ac_graph_id"] = next(_ac_graph_id_counter)
-    fx_traceback.current_meta["recompute"] = CheckpointPolicy.PREFER_RECOMPUTE
-    try:
-        yield
-    finally:
-        fx_traceback.current_meta.pop("ac_graph_id", None)
-        fx_traceback.current_meta.pop("recompute", None)
-
 
 class _CachingTorchDispatchMode(TorchDispatchMode):
     @classmethod
@@ -1558,14 +1546,16 @@ def _checkpoint_without_reentrant_generator(
 
     device_type = _infer_device_type(*args)
     device_module = _get_device_module(device_type)
-    forward_context, recompute_context = context_fn()
     if _is_compiling(fn, args, kwargs) and context_fn is noop_context_fn:
-        # Vanilla AC under tracing: stamp ac_graph_id and recompute policy
-        # on fx_traceback metadata so cleanup_recompute_tags can detect
-        # cross-region boundaries.  We use a lightweight context manager
-        # instead of the full SAC machinery.
-        forward_context = _vanilla_ac_tag_context()
-    elif _is_compiling(fn, args, kwargs) and context_fn is not noop_context_fn:
+        # Vanilla AC under tracing: route through SAC with an always-recompute
+        # policy so the region gets ac_graph_id and recompute tags, same as
+        # the HOP path in tag_activation_checkpoint_impl.
+        forward_context, recompute_context = create_selective_checkpoint_contexts(
+            _always_prefer_recompute
+        )
+    else:
+        forward_context, recompute_context = context_fn()
+    if _is_compiling(fn, args, kwargs) and context_fn is not noop_context_fn:
         if (
             not isinstance(forward_context, TorchDispatchMode)
             or not isinstance(recompute_context, TorchDispatchMode)
