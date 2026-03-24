@@ -9,6 +9,7 @@ from cli.lib.common.pip_helper import pip_install_packages
 from cli.lib.common.utils import run_command, temp_environ, working_directory
 from cli.lib.pytorch.base import (
     BasePytorchTestPlan,
+    matches_env,
     resolve_env_vars,
     TestStep,
 )
@@ -150,7 +151,7 @@ def run_test_plan(
             f"group '{group_id}' not found. Available: {sorted(registry)}"
         )
     plan = registry[group_id]
-    if plan.run_on and not plan.is_eligible(build_env):
+    if plan.run_on and not any(matches_env(c, build_env) for c in plan.run_on):
         logger.warning(
             "[%s] run_on conditions %s do not match build_env=%r — running anyway",
             group_id, plan.run_on, build_env,
