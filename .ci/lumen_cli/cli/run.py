@@ -35,7 +35,7 @@ def main():
         try:
             args.func(args)
         except RuntimeError as e:
-            logger.error("%s", e)
+            logger.error("%s", e)  # noqa: G200
             sys.exit(1)
     else:
         parser.print_help()

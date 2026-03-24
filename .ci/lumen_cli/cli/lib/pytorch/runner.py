@@ -237,7 +237,7 @@ def run_test_plan(
                         step.fn()
                     logger.info("[%s/%s] passed", group_id, step.test_id)
                 except Exception as e:
-                    logger.error("[%s/%s] FAILED: %s", group_id, step.test_id, str(e))
+                    logger.error("[%s/%s] FAILED: %s", group_id, step.test_id, str(e))  # noqa: G200
                     _print_repro(group_id, step, build_env, ctx, cmd=cmd)
                     failures.append(step.test_id)
 
