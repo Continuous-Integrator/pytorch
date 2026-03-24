@@ -4037,9 +4037,7 @@ class TestInvokeSubgraphReuseHashFn(TestCase):
         class Model(torch.nn.Module):
             def __init__(self):
                 super().__init__()
-                self.layers = torch.nn.ModuleList(
-                    [Layer(i) for i in range(4)]
-                )
+                self.layers = torch.nn.ModuleList([Layer(i) for i in range(4)])
 
             def forward(self, x):
                 for layer in self.layers:
@@ -4075,9 +4073,7 @@ class TestInvokeSubgraphReuseHashFn(TestCase):
         class Model(torch.nn.Module):
             def __init__(self):
                 super().__init__()
-                self.layers = torch.nn.ModuleList(
-                    [Layer() for _ in range(4)]
-                )
+                self.layers = torch.nn.ModuleList([Layer() for _ in range(4)])
 
             def forward(self, x):
                 for layer in self.layers:
@@ -4118,9 +4114,7 @@ class TestInvokeSubgraphReuseHashFn(TestCase):
         ref = fn(x4, x8a, x8b)
 
         with self._count_speculate_calls() as count:
-            res = torch.compile(fn, backend="aot_eager", fullgraph=True)(
-                x4, x8a, x8b
-            )
+            res = torch.compile(fn, backend="aot_eager", fullgraph=True)(x4, x8a, x8b)
 
         # shape[0]=4 and shape[0]=8 → 2 traces, third call reuses shape=8
         self.assertEqual(count(), 2)
@@ -4130,7 +4124,7 @@ class TestInvokeSubgraphReuseHashFn(TestCase):
         """reuse_hash_fn with a graph break raises a clear error."""
 
         def bad_hash_fn(mod, x):
-            print("this causes a graph break")
+            torch._dynamo.graph_break()
             return 0
 
         @nested_compile_region(reuse_hash_fn=bad_hash_fn)
@@ -4180,9 +4174,7 @@ class TestInvokeSubgraphReuseHashFn(TestCase):
         class Model(torch.nn.Module):
             def __init__(self):
                 super().__init__()
-                self.layers = torch.nn.ModuleList(
-                    [Layer(True), Layer(False)]
-                )
+                self.layers = torch.nn.ModuleList([Layer(True), Layer(False)])
 
             def forward(self, x):
                 for layer in self.layers:

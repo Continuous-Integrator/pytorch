@@ -749,8 +749,9 @@ def save_reuse_entry(
     p_args: tuple[Any, ...],
     body_r: VariableTracker,
     example_value: Any,
-    condition: "InvokeSubgraphReuseCondition",
     max_reuse_entries: int = 8,
+    condition: "InvokeSubgraphReuseCondition | None" = None,
+    hash_key: int | None = None,
 ) -> None:
     """Save a traced subgraph into the reuse cache for future cache hits.
 
@@ -758,8 +759,16 @@ def save_reuse_entry(
     lifted arg maps back to user inputs or captured variables), output
     metadata, and arg sources. On a future cache hit, stamp_out_subgraph
     uses this entry to emit a new invoke_subgraph call without re-tracing.
+
+    Exactly one of ``condition`` or ``hash_key`` must be provided.
+    ``condition`` stores the entry in the guard-based cache (linear scan);
+    ``hash_key`` stores it in the hash-key cache (O(1) lookup).
     """
     from torch._guards import InvokeSubgraphCache
+
+    assert (condition is None) != (hash_key is None), (
+        "Exactly one of condition or hash_key must be provided"
+    )
 
     invoke_subgraph_cache = tx.output.tracing_context.hop_dispatch_set_cache.get_cache(
         torch._higher_order_ops.invoke_subgraph
@@ -813,7 +822,15 @@ def save_reuse_entry(
         arg_sources=fingerprint.arg_sources,
         num_user_outputs=num_user_outputs,
     )
-    invoke_subgraph_cache.add_reuse_entry(fn_id, condition, entry, max_reuse_entries)
+    if condition is not None:
+        invoke_subgraph_cache.add_reuse_entry(
+            fn_id, condition, entry, max_reuse_entries
+        )
+    else:
+        assert hash_key is not None
+        invoke_subgraph_cache.add_reuse_entry_by_key(
+            fn_id, hash_key, entry, max_reuse_entries
+        )
 
 
 def trace_reuse_hash_fn(
@@ -835,8 +852,7 @@ def trace_reuse_hash_fn(
             result = _make_inlined(tx, reuse_hash_fn)(*fn_args_vt, **kwargs)
         except Unsupported as e:
             raise RuntimeError(
-                f"reuse_hash_fn must be fully traceable without graph breaks. "
-                f"Got: {e}"
+                f"reuse_hash_fn must be fully traceable without graph breaks. Got: {e}"
             ) from e
 
     if not isinstance(result, ConstantVariable) or not isinstance(result.value, int):
@@ -845,67 +861,6 @@ def trace_reuse_hash_fn(
         )
 
     return result.value
-
-
-def save_reuse_entry_by_key(
-    tx: "InstructionTranslator",
-    fn_var: Any,
-    hash_key: int,
-    fingerprint: "InputFingerprint",
-    body_name: str,
-    body_gmod: torch.fx.GraphModule,
-    config: NestedCompileRegionOptions | None,
-    p_args: tuple[Any, ...],
-    body_r: VariableTracker,
-    example_value: Any,
-    max_reuse_entries: int = 8,
-) -> None:
-    """Save a traced subgraph into the hash-key-based reuse cache."""
-    from torch._guards import InvokeSubgraphCache
-
-    invoke_subgraph_cache = tx.output.tracing_context.hop_dispatch_set_cache.get_cache(
-        torch._higher_order_ops.invoke_subgraph
-    )
-    if not isinstance(invoke_subgraph_cache, InvokeSubgraphCache):
-        return
-
-    fn_id = get_fn_id(fn_var)
-    if fn_id is None:
-        return
-
-    subgraph_input_mapping = build_subgraph_input_mapping(
-        tx, p_args, fingerprint.flat_vts
-    )
-    single_tensor_output = isinstance(body_r, TensorVariable)
-
-    user_output_vts: list[VariableTracker] = []
-    VariableTracker.visit(
-        lambda vt: user_output_vts.append(vt)
-        if vt.is_tensor() or isinstance(vt, SymNodeVariable)
-        else None,
-        body_r,
-    )
-    num_user_outputs = len(user_output_vts)
-
-    output_metadata = [
-        (t.shape, t.stride(), t.dtype, t.device, t.requires_grad)
-        for t in example_value
-        if isinstance(t, torch.Tensor)
-    ]
-
-    entry = InvokeSubgraphReuseEntry(
-        body_name=body_name,
-        body_gmod=body_gmod,
-        config=config,
-        subgraph_input_mapping=subgraph_input_mapping,
-        single_tensor_output=single_tensor_output,
-        output_metadata=output_metadata,
-        arg_sources=fingerprint.arg_sources,
-        num_user_outputs=num_user_outputs,
-    )
-    invoke_subgraph_cache.add_reuse_entry_by_key(
-        fn_id, hash_key, entry, max_reuse_entries
-    )
 
 
 def find_reuse_entry_by_key(
@@ -1234,15 +1189,12 @@ class InvokeSubgraphHigherOrderVariable(WrapHigherOrderVariable):
         # User-provided reuse_hash_fn path: hash key determines cache lookup.
         if reuse and reuse_hash_fn is not None:
             with dynamo_timed("invoke_subgraph_reuse_hash_fn"):
-                hash_key = trace_reuse_hash_fn(
-                    tx, reuse_hash_fn, fn_args_vt, kwargs
-                )
+                hash_key = trace_reuse_hash_fn(tx, reuse_hash_fn, fn_args_vt, kwargs)
 
             cached = find_reuse_entry_by_key(tx, fn_var, hash_key)
             if cached is not None:
                 hc_log.debug(
-                    "subgraph_reuse: hash key %d hit for '%s', "
-                    "reusing subgraph '%s'",
+                    "subgraph_reuse: hash key %d hit for '%s', reusing subgraph '%s'",
                     hash_key,
                     fn_var,
                     cached.body_name,
@@ -1310,10 +1262,9 @@ class InvokeSubgraphHigherOrderVariable(WrapHigherOrderVariable):
             if reuse_hash_fn is not None:
                 # Hash-key path: save unconditionally (no guard eligibility
                 # check needed — the hash key is the reuse condition).
-                save_reuse_entry_by_key(
+                save_reuse_entry(
                     tx,
                     fn_var,
-                    hash_key,  # type: ignore[possibly-undefined]
                     fingerprint,
                     body_name,
                     body_gmod,
@@ -1322,6 +1273,7 @@ class InvokeSubgraphHigherOrderVariable(WrapHigherOrderVariable):
                     body_r,
                     example_value,
                     max_reuse_entries,
+                    hash_key=hash_key,  # type: ignore[possibly-undefined]
                 )
             else:
                 traced_sources = tracing_info.traced_sources
@@ -1344,8 +1296,8 @@ class InvokeSubgraphHigherOrderVariable(WrapHigherOrderVariable):
                             p_args,
                             body_r,
                             example_value,
-                            condition,
                             max_reuse_entries,
+                            condition=condition,
                         )
 
         return _call_function_with_auto_output_flattening(  # type: ignore[return-value]
