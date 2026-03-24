@@ -3233,6 +3233,25 @@ class GuardManager {
   GuardManager& operator=(const GuardManager&) = delete;
 
   virtual ~GuardManager() {
+    // During interpreter shutdown, weakrefs/callbacks/capsules may already
+    // have been torn down before the C++ GuardManager destructor runs. In
+    // that state we must not call Python C API from destructor cleanup.
+    if (!Py_IsInitialized() || _Py_IsFinalizing()) {
+      _tag_safe_entries.clear();
+      _dict_pointers.clear();
+      _disable_dict_tag_matching = true;
+      return;
+    }
+
+    // Outside of interpreter finalization we still need full cleanup, notably
+    // removing dict watcher registrations on Python 3.12+. Acquire the GIL if
+    // destruction happens on a thread that does not currently hold it.
+    if (!PyGILState_Check()) {
+      py::gil_scoped_acquire gil;
+      cleanup_tag_safe_entries();
+      disable_recursive_dict_tag_optimization();
+      return;
+    }
     cleanup_tag_safe_entries();
     disable_recursive_dict_tag_optimization();
   }
@@ -3246,6 +3265,7 @@ class GuardManager {
       }
       Py_DECREF(e.cap);
       Py_CLEAR(e.wr); // kills weakref (may remove callback)
+      Py_DECREF(e.cap);
     }
     _tag_safe_entries.clear();
   }
