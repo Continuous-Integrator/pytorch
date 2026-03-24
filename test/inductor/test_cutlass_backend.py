@@ -2365,6 +2365,7 @@ class TestCutlassBackend(TestCase):
         self._test_gemm_operation_serialization(arch, cuda_version)
 
     @skipXPUIf(not PLATFORM_SUPPORTS_SYCLTLA, "")
+    @unittest.skipIf(not HAS_XPU, "XPU not available")
     @mock.patch.dict(os.environ, {"PATH": _get_path_without_sccache()})
     @parametrize("arch", ("Xe12", "Xe20"))
     @parametrize("xpu_version", ("20250201", "20250301"))
