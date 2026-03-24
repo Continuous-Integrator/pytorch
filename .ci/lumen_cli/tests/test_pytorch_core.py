@@ -1,4 +1,5 @@
 """Unit tests for cli.lib.pytorch.runner and base."""
+# ruff: noqa: S101
 
 from __future__ import annotations
 
