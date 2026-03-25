@@ -1179,10 +1179,87 @@ class TestOptimRenewed(TestCase):
                 for p in params:
                     if "step" in optimizer.state[p]:
                         self.assertEqual(
-                            torch.zeros((), dtype=dtype, device=device),
+                            torch.zeros((), dtype=torch.float32),
                             optimizer.state[p]["step"],
                         )
                 self.assertEqual(params, params_c)
+
+    @onlyCUDA
+    @optims(
+        [optim for optim in optim_db if "fused" in optim.supported_impls],
+        dtypes=[torch.float32],
+    )
+    def test_fused_step_stays_on_cpu(self, device, dtype, optim_info):
+        if _get_device_type(device) not in optim_info.supports_fused_on:
+            self.skipTest(
+                f"{device} is not supported for fused on {optim_info.optim_cls.__name__}"
+            )
+        optim_cls = optim_info.optim_cls
+        optim_inputs = optim_info.optim_inputs_func(device=device)
+        for optim_input in optim_inputs:
+            if optim_input.kwargs.get("capturable", False):
+                continue
+            params = [torch.randn(10, device=device, dtype=dtype) for _ in range(3)]
+            for p in params:
+                p.grad = torch.randn_like(p)
+            optimizer = optim_cls(params, fused=True, **optim_input.kwargs)
+            optimizer.step()
+            for p in params:
+                if "step" in optimizer.state[p]:
+                    self.assertEqual(optimizer.state[p]["step"].device.type, "cpu")
+                    self.assertEqual(optimizer.state[p]["step"].item(), 1.0)
+
+    @onlyCUDA
+    @optims(
+        [
+            optim
+            for optim in optim_db
+            if "fused" in optim.supported_impls
+            and "capturable" in optim.supported_impls
+        ],
+        dtypes=[torch.float32],
+    )
+    def test_fused_capturable_step_on_device(self, device, dtype, optim_info):
+        if _get_device_type(device) not in optim_info.supports_fused_on:
+            self.skipTest(
+                f"{device} is not supported for fused on {optim_info.optim_cls.__name__}"
+            )
+        optim_cls = optim_info.optim_cls
+        param = torch.randn(10, device=device, dtype=dtype)
+        param.grad = torch.randn_like(param)
+        optimizer = optim_cls([param], fused=True, capturable=True, lr=0.01)
+        optimizer.step()
+        if "step" in optimizer.state[param]:
+            self.assertEqual(
+                optimizer.state[param]["step"].device.type,
+                _get_device_type(device),
+            )
+
+    @onlyCUDA
+    @optims(
+        [optim for optim in optim_db if "fused" in optim.supported_impls],
+        dtypes=[torch.float32],
+    )
+    def test_fused_found_inf_cpu_steps(self, device, dtype, optim_info):
+        if _get_device_type(device) not in optim_info.supports_fused_on:
+            self.skipTest(
+                f"{device} is not supported for fused on {optim_info.optim_cls.__name__}"
+            )
+        optim_cls = optim_info.optim_cls
+        optim_inputs = optim_info.optim_inputs_func(device=device)
+        for optim_input in optim_inputs:
+            params = [torch.ones(4, device=device, dtype=dtype) for _ in range(3)]
+            params_orig = [p.clone() for p in params]
+            for p in params:
+                p.grad = torch.ones_like(p)
+            optimizer = optim_cls(params, fused=True, **optim_input.kwargs)
+            optimizer.grad_scale = torch.ones(1, dtype=dtype, device=device)
+            optimizer.found_inf = torch.ones((), dtype=dtype, device=device)
+            optimizer.step()
+            for p in params:
+                if "step" in optimizer.state[p]:
+                    self.assertEqual(optimizer.state[p]["step"].item(), 0.0)
+            self.assertEqual(params, params_orig)
 
     @parametrize("impl", ["fused", "capturable"])
     @optims(
@@ -1833,7 +1910,6 @@ class TestOptimRenewed(TestCase):
 
             # Make sure that device of state['step'] is still CPU _unless_ torch.compile() added a capturable!
             capturable = state_dict_cpu["param_groups"][0].get("capturable", False)
-            fused = state_dict_cpu["param_groups"][0].get("fused", False)
             new_state_dict = optimizer_cuda.state_dict()
             for state_cpu, state_cuda in zip(
                 state_dict_cpu["state"].values(), new_state_dict["state"].values()
@@ -1841,7 +1917,7 @@ class TestOptimRenewed(TestCase):
                 if "step" in state_cpu and torch.is_tensor(state_cpu["step"]):
                     self.assertEqual(
                         state_cuda["step"].device.type,
-                        "cuda" if capturable or fused else "cpu",
+                        "cuda" if capturable else "cpu",
                     )
 
             for _ in range(5):
