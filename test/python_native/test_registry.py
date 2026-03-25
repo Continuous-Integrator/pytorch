@@ -2,11 +2,12 @@
 
 from unittest.mock import MagicMock, patch
 
-import torch.library
 import torch._native.registry as registry_module
-from torch.testing._internal.common_utils import run_tests, TestCase, parametrize
+import torch.library
+from torch.testing._internal.common_utils import run_tests, skipIfTorchDynamo, TestCase
 
 
+@skipIfTorchDynamo("Registry tests don't need dynamo compilation")
 class TestRegistry(TestCase):
     """Tests for the torch._native.registry module."""
 
@@ -17,15 +18,21 @@ class TestRegistry(TestCase):
         # Store original state for restoration
         self._original_libs = dict(self.registry._libs)
         self._original_graphs = dict(self.registry._graphs)
-        self._original_dsl_name_to_lib_graph = {k: list(v) for k, v in self.registry._dsl_name_to_lib_graph.items()}
-        self._original_dispatch_key_to_lib_graph = {k: list(v) for k, v in self.registry._dispatch_key_to_lib_graph.items()}
-        self._original_op_symbol_to_lib_graph = {k: list(v) for k, v in self.registry._op_symbol_to_lib_graph.items()}
+        self._original_dsl_name_to_lib_graph = {
+            k: list(v) for k, v in self.registry._dsl_name_to_lib_graph.items()
+        }
+        self._original_dispatch_key_to_lib_graph = {
+            k: list(v) for k, v in self.registry._dispatch_key_to_lib_graph.items()
+        }
+        self._original_op_symbol_to_lib_graph = {
+            k: list(v) for k, v in self.registry._op_symbol_to_lib_graph.items()
+        }
 
         # Store original filter state
         self._original_filter_state = (
             set(self.registry._filter_state._dsl_names),
             set(self.registry._filter_state._op_symbols),
-            set(self.registry._filter_state._dispatch_keys)
+            set(self.registry._filter_state._dispatch_keys),
         )
 
         # Clear global state
@@ -42,7 +49,7 @@ class TestRegistry(TestCase):
 
     def tearDown(self):
         """Restore original registry state after each test."""
-        if hasattr(self, 'registry'):
+        if hasattr(self, "registry"):
             # Restore original state
             self.registry._libs.clear()
             self.registry._libs.update(self._original_libs)
@@ -67,9 +74,15 @@ class TestRegistry(TestCase):
             self.registry._filter_state._dsl_names.clear()
             self.registry._filter_state._op_symbols.clear()
             self.registry._filter_state._dispatch_keys.clear()
-            self.registry._filter_state._dsl_names.update(self._original_filter_state[0])
-            self.registry._filter_state._op_symbols.update(self._original_filter_state[1])
-            self.registry._filter_state._dispatch_keys.update(self._original_filter_state[2])
+            self.registry._filter_state._dsl_names.update(
+                self._original_filter_state[0]
+            )
+            self.registry._filter_state._op_symbols.update(
+                self._original_filter_state[1]
+            )
+            self.registry._filter_state._dispatch_keys.update(
+                self._original_filter_state[2]
+            )
 
     def test_override_node_dataclass(self):
         """Test _OverrideNode dataclass creation and defaults."""
@@ -157,7 +170,9 @@ class TestRegistry(TestCase):
         ]
 
         for filter_type, dsl, op, key, filter_val, expected in filter_test_cases:
-            with self.subTest(filter_type=filter_type, filter_val=filter_val, expected=expected):
+            with self.subTest(
+                filter_type=filter_type, filter_val=filter_val, expected=expected
+            ):
                 kwargs = {f"filter_{filter_type}": filter_val}
                 result = self.registry._filter(dsl, op, key, **kwargs)
                 self.assertEqual(result, expected)
@@ -385,16 +400,20 @@ class TestRegistry(TestCase):
         self.assertFalse(dsl1_node.active)
         self.assertTrue(dsl2_node.active)
 
-    def _setup_override_chain(self, backends, op_symbol, dispatch_key, mock_library_cls):
+    def _setup_override_chain(
+        self, backends, op_symbol, dispatch_key, mock_library_cls
+    ):
         """Helper method to set up a chain of overrides for testing."""
         mock_lib = MagicMock()
         mock_library_cls.return_value = mock_lib
 
         impl_fns = []
         for backend in backends:
+
             def make_impl_fn(backend_name):
                 def impl_fn(dispatch_keys, x, y):
                     return (backend_name, x, y)
+
                 return impl_fn
 
             impl_fn = make_impl_fn(backend)
@@ -420,7 +439,9 @@ class TestRegistry(TestCase):
         dispatch_key = "CUDA"
         key = (op_symbol, dispatch_key)
 
-        mock_lib, impl_fns = self._setup_override_chain(backends, op_symbol, dispatch_key, mock_library_cls)
+        mock_lib, impl_fns = self._setup_override_chain(
+            backends, op_symbol, dispatch_key, mock_library_cls
+        )
 
         self.assertEqual(len(self.registry._graphs[key]), 3)
         nodes = self.registry._graphs[key]
@@ -444,9 +465,13 @@ class TestRegistry(TestCase):
         op_symbol_multi = "div.Tensor"
         key_multi = (op_symbol_multi, dispatch_key)
 
-        mock_lib2, impl_fns2 = self._setup_override_chain(backends_multi, op_symbol_multi, dispatch_key, mock_library_cls)
+        mock_lib2, impl_fns2 = self._setup_override_chain(
+            backends_multi, op_symbol_multi, dispatch_key, mock_library_cls
+        )
 
-        self.registry.deregister_op_overrides(disable_dsl_names=["backend2", "backend4"])
+        self.registry.deregister_op_overrides(
+            disable_dsl_names=["backend2", "backend4"]
+        )
         nodes_multi = self.registry._graphs[key_multi]
 
         expected_active = {"backend1", "backend3", "backend5"}
@@ -463,12 +488,13 @@ class TestRegistry(TestCase):
         key_all = (op_symbol_all, dispatch_key)
         backends_all = ["backend1", "backend2", "backend3"]
 
-        mock_lib3, impl_fns3 = self._setup_override_chain(backends_all, op_symbol_all, dispatch_key, mock_library_cls)
+        mock_lib3, impl_fns3 = self._setup_override_chain(
+            backends_all, op_symbol_all, dispatch_key, mock_library_cls
+        )
 
         self.registry.deregister_op_overrides(disable_dsl_names=backends_all)
         nodes_all = self.registry._graphs[key_all]
         self.assertTrue(all(not node.active for node in nodes_all))
-
 
     @patch("torch.library.Library")
     def test_deregister_by_op_symbol_affects_all_backends(self, mock_library_cls):
@@ -845,6 +871,7 @@ class TestRegistry(TestCase):
 
     def test_filter_state_initialization_and_check_enabled(self):
         """Test _FilterState initialization and check_enabled functionality."""
+
         def test_fn(x):
             return x
 
@@ -863,24 +890,36 @@ class TestRegistry(TestCase):
 
         # Test DSL filtering
         filter_state._dsl_names.add("filtered_dsl")
-        filtered_node = self.registry._OverrideNode("filtered_dsl", "add.Tensor", "CPU", test_fn)
-        enabled_node = self.registry._OverrideNode("allowed_dsl", "add.Tensor", "CPU", test_fn)
+        filtered_node = self.registry._OverrideNode(
+            "filtered_dsl", "add.Tensor", "CPU", test_fn
+        )
+        enabled_node = self.registry._OverrideNode(
+            "allowed_dsl", "add.Tensor", "CPU", test_fn
+        )
         self.assertFalse(filter_state.check_enabled(filtered_node))
         self.assertTrue(filter_state.check_enabled(enabled_node))
 
         # Test op symbol filtering
         filter_state._dsl_names.clear()
         filter_state._op_symbols.add("mul.Tensor")
-        filtered_node = self.registry._OverrideNode("test_dsl", "mul.Tensor", "CPU", test_fn)
-        enabled_node = self.registry._OverrideNode("test_dsl", "add.Tensor", "CPU", test_fn)
+        filtered_node = self.registry._OverrideNode(
+            "test_dsl", "mul.Tensor", "CPU", test_fn
+        )
+        enabled_node = self.registry._OverrideNode(
+            "test_dsl", "add.Tensor", "CPU", test_fn
+        )
         self.assertFalse(filter_state.check_enabled(filtered_node))
         self.assertTrue(filter_state.check_enabled(enabled_node))
 
         # Test dispatch key filtering
         filter_state._op_symbols.clear()
         filter_state._dispatch_keys.add("CUDA")
-        filtered_node = self.registry._OverrideNode("test_dsl", "add.Tensor", "CUDA", test_fn)
-        enabled_node = self.registry._OverrideNode("test_dsl", "add.Tensor", "CPU", test_fn)
+        filtered_node = self.registry._OverrideNode(
+            "test_dsl", "add.Tensor", "CUDA", test_fn
+        )
+        enabled_node = self.registry._OverrideNode(
+            "test_dsl", "add.Tensor", "CPU", test_fn
+        )
         self.assertFalse(filter_state.check_enabled(filtered_node))
         self.assertTrue(filter_state.check_enabled(enabled_node))
 
@@ -895,9 +934,7 @@ class TestRegistry(TestCase):
         self.assertIn("CPU", filter_state._dispatch_keys)
 
         # Test adding multiple values
-        filter_state.update(
-            ["dsl2", "dsl3"], ["mul.Tensor"], ["CUDA"]
-        )
+        filter_state.update(["dsl2", "dsl3"], ["mul.Tensor"], ["CUDA"])
         self.assertEqual(filter_state._dsl_names, {"dsl1", "dsl2", "dsl3"})
         self.assertEqual(filter_state._op_symbols, {"add.Tensor", "mul.Tensor"})
         self.assertEqual(filter_state._dispatch_keys, {"CPU", "CUDA"})
@@ -909,9 +946,17 @@ class TestRegistry(TestCase):
         self.assertEqual(filter_state._dispatch_keys, {"CPU"})
 
         # Test None values (should be no-op)
-        original_state = (set(filter_state._dsl_names), set(filter_state._op_symbols), set(filter_state._dispatch_keys))
+        original_state = (
+            set(filter_state._dsl_names),
+            set(filter_state._op_symbols),
+            set(filter_state._dispatch_keys),
+        )
         filter_state.update(None, None, None)
-        current_state = (set(filter_state._dsl_names), set(filter_state._op_symbols), set(filter_state._dispatch_keys))
+        current_state = (
+            set(filter_state._dsl_names),
+            set(filter_state._op_symbols),
+            set(filter_state._dispatch_keys),
+        )
         self.assertEqual(original_state, current_state)
 
     def test_key_set_building_functions(self):
@@ -955,8 +1000,12 @@ class TestRegistry(TestCase):
 
         # Test 1: Basic single re-enable
         key1 = ("add.Tensor", "CPU")
-        node1 = self.registry._OverrideNode("dsl1", "add.Tensor", "CPU", test_fn, active=False)
-        node2 = self.registry._OverrideNode("dsl2", "add.Tensor", "CPU", test_fn, active=True)
+        node1 = self.registry._OverrideNode(
+            "dsl1", "add.Tensor", "CPU", test_fn, active=False
+        )
+        node2 = self.registry._OverrideNode(
+            "dsl2", "add.Tensor", "CPU", test_fn, active=True
+        )
 
         self.registry._graphs[key1] = [node1, node2]
         self.registry._dsl_name_to_lib_graph["dsl1"] = [key1]
@@ -973,7 +1022,9 @@ class TestRegistry(TestCase):
         # Test 2: Multiple criteria re-enable
         mock_lib.reset_mock()
         key2 = ("mul.Tensor", "CUDA")
-        node3 = self.registry._OverrideNode("dsl3", "mul.Tensor", "CUDA", test_fn, active=False)
+        node3 = self.registry._OverrideNode(
+            "dsl3", "mul.Tensor", "CUDA", test_fn, active=False
+        )
 
         self.registry._graphs[key2] = [node3]
         self.registry._op_symbol_to_lib_graph["mul.Tensor"] = [key2]
@@ -986,8 +1037,12 @@ class TestRegistry(TestCase):
 
         # Test 3: Partial re-enable with remaining filters
         key3 = ("div.Tensor", "CPU")
-        node4 = self.registry._OverrideNode("filtered_dsl", "div.Tensor", "CPU", test_fn, active=False)
-        node5 = self.registry._OverrideNode("allowed_dsl", "div.Tensor", "CPU", test_fn, active=False)
+        node4 = self.registry._OverrideNode(
+            "filtered_dsl", "div.Tensor", "CPU", test_fn, active=False
+        )
+        node5 = self.registry._OverrideNode(
+            "allowed_dsl", "div.Tensor", "CPU", test_fn, active=False
+        )
 
         self.registry._graphs[key3] = [node4, node5]
         self.registry._dsl_name_to_lib_graph["allowed_dsl"] = [key3]
@@ -1002,7 +1057,7 @@ class TestRegistry(TestCase):
         self.assertIn("filtered_dsl", self.registry._filter_state._dsl_names)
         self.assertNotIn("allowed_dsl", self.registry._filter_state._dsl_names)
         self.assertFalse(node4.active)  # Still filtered
-        self.assertTrue(node5.active)   # Re-enabled
+        self.assertTrue(node5.active)  # Re-enabled
 
         mock_lib_new.impl.assert_called_once()
 
