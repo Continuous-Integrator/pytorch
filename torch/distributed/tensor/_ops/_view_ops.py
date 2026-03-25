@@ -631,7 +631,7 @@ class _ViewShardingPropagator:
         for dim in range(len(self.global_input_shape)):
             self.shard_allowed[dim] = [dim in input_dims_in_rule] * self.mesh_ndim
 
-        # Walk the rule to fill shard_allowed and build input_to_output_tensor_dims.
+        # Walk the rule to refine shard_allowed and build input_to_output_tensor_dims.
         #
         # Flatten example: view([2, 3, 4], [6, 4])
         #   rule = (Flatten(InputDim(0), InputDim(1)), InputDim(2))
