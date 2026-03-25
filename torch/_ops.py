@@ -1272,7 +1272,6 @@ class OpOverloadPacket(Generic[_P, _T]):
         if self._has_torchbind_op_overload and _must_dispatch_in_python(args, kwargs):
             # pyrefly: ignore [bad-argument-type]
             return _call_overload_packet_from_python(self, *args, **kwargs)
-
         return self._op(*args, **kwargs)
 
     # TODO: use this to make a __dir__
