@@ -1329,7 +1329,7 @@ class UserDefinedObjectVariable(UserDefinedVariable):
         method = getattr(type(self.value), op, None)
         base_method = getattr(base_type, op, None)
         if method is not base_method and hasattr(method, "__code__"):
-            return super().richcompare_impl(tx, other, op)
+            return UserDefinedObjectVariable.richcompare_impl(self, tx, other, op)
         return inner_vt.richcompare_impl(tx, other_inner_vt, op)
 
     def as_python_constant(self) -> object:
