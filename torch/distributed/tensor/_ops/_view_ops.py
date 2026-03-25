@@ -710,6 +710,8 @@ class _ViewShardingPropagator:
         local_tensor_shapes: list[int] = list(self.global_input_shape)
 
         output_placements: list[Placement] = []
+        # Process mesh dims in order; _rewrite_*_shard relies on this for
+        # truncating division safety in local_tensor_shapes.
         for mesh_dim, p in enumerate(input_tgt_placements):
             if isinstance(p, Shard):
                 output_placements.append(
@@ -814,8 +816,7 @@ class _ViewShardingPropagator:
                 raise AssertionError(f"Expected InputDim, got {type(dim)}")
             shard_mesh_dim, shard_placement = self._find_plain_shard(dim)
             if shard_mesh_dim is None or shard_placement is None:
-                self.shard_allowed[dim.input_dim] = [True] * self.mesh_ndim
-                continue
+                continue  # default from analyze() already covers this
             tensor_dim_size = self.global_input_shape[shard_placement.dim]
             mesh_dim_size = self.mesh_sizes[shard_mesh_dim]
             can_shard_dim = True
@@ -1022,13 +1023,14 @@ class _ViewShardingPropagator:
                 if isinstance(cmd.input_dim, Flatten):
                     found = False
                     for flat_dim in cmd.input_dim.input_dims:
-                        if isinstance(flat_dim, InputDim):
-                            if flat_dim.input_dim == p.dim:
-                                found = True
-                            elif found:
-                                trailing_size *= self.global_input_shape[
-                                    flat_dim.input_dim
-                                ]
+                        if not isinstance(flat_dim, InputDim):
+                            raise AssertionError(
+                                f"Expected InputDim, got {type(flat_dim)}"
+                            )
+                        if flat_dim.input_dim == p.dim:
+                            found = True
+                        elif found:
+                            trailing_size *= self.global_input_shape[flat_dim.input_dim]
                 flattened_shard_size = shard_size * trailing_size
                 if (
                     flattened_shard_size >= inner_size
