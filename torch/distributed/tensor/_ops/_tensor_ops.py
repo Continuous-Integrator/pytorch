@@ -1120,7 +1120,6 @@ def index_put_single_dim_strategy(
     indexed_dims = {i for i, idx in enumerate(indices_meta) if idx is not None}
     non_indexed_dims = [d for d in range(len(self_meta.shape)) if d not in indexed_dims]
     n_indexed = len(indexed_dims)
-    values_ndim = len(values_meta.shape)
 
     # Explicitly compute the broadcast shape of the index tensors.
     # We could probably derive it in a smarter way, but this is more explicit.
@@ -1138,8 +1137,7 @@ def index_put_single_dim_strategy(
     #     values shape = (*broadcast_shape, *non_indexed_dim_sizes)
     indexed_dims_sorted = sorted(indexed_dims)
     contiguous_indexed = len(indexed_dims_sorted) <= 1 or (
-        indexed_dims_sorted[-1] - indexed_dims_sorted[0] + 1
-        == len(indexed_dims_sorted)
+        indexed_dims_sorted[-1] - indexed_dims_sorted[0] + 1 == len(indexed_dims_sorted)
     )
 
     strategies: list[list[Placement | _ShardingPlaceholder]] = []

@@ -20,8 +20,8 @@ from torch.distributed.tensor._sharding_prop import ShardingPropagator
 from torch.distributed.tensor.debug import CommDebugMode
 from torch.testing._internal.common_distributed import skip_if_lt_x_gpu
 from torch.testing._internal.common_utils import (
-    MI200_ARCH,
     instantiate_parametrized_tests,
+    MI200_ARCH,
     parametrize,
     run_tests,
     serialTest,
