@@ -437,12 +437,16 @@ test_dynamo_core() {
 }
 
 test_dynamo_cpython() {
+  # Disable TD for cpython since it's pretty cheap to run the cpython tests (< 10 min)
+  # and if TD is enabled, only 25% of the tests will be executed
+  export NO_TD=1
   time python test/run_test.py \
     --include-cpython-tests \
     --dynamo \
     --verbose \
     --upload-artifacts-while-running
   assert_git_not_dirty
+  unset NO_TD
 }
 
 test_dynamo_wrapped_shard() {
@@ -525,6 +529,7 @@ test_inductor_core() {
               inductor/test_compile_subprocess \
               inductor/test_cpu_cpp_wrapper \
               inductor/test_cpu_repro \
+              inductor/test_cpu_select_algorithm \
               inductor/test_torchinductor_dynamic_shapes \
               inductor/test_torchinductor \
               inductor/test_mkldnn_pattern_matcher \
