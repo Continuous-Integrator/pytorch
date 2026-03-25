@@ -735,6 +735,8 @@ class GraphModule(torch.nn.Module):
         add: "f32[2, 2]" = torch.ops.aten.add.Tensor(getitem_4, getitem_2);  getitem_4 = None
 
         # No stacktrace found for following nodes
+        subgraph_record_event_default_1 = self.subgraph_record_event_default_1
+        control_deps_4 = torch.ops.higher_order.control_deps((add,), subgraph_record_event_default_1, add);  subgraph_record_event_default_1 = control_deps_4 = None
         sync_dealloc_default = torch.ops.streams.sync_dealloc.default(4, 1, getitem_2);  getitem_2 = sync_dealloc_default = None
         return (add,)
 
@@ -749,6 +751,12 @@ class GraphModule(torch.nn.Module):
             # No stacktrace found for following nodes
             wait_event_default = torch.ops.streams.wait_event.default(3, 2)
             return (wait_event_default, dep_0, dep_1)
+
+    class subgraph_record_event_default_1(torch.nn.Module):
+        def forward(self, dep_0: "f32[2, 2]"):
+            # No stacktrace found for following nodes
+            record_event_default = torch.ops.streams.record_event.default(4, 2)
+            return (record_event_default, dep_0)
 """,  # noqa: B950
         )
 
@@ -807,7 +815,11 @@ class GraphModule(torch.nn.Module):
         control_deps_8 = torch.ops.higher_order.control_deps((mul_7,), subgraph_record_event_default, mul_7);  mul_7 = subgraph_record_event_default = None
 
         # Annotation: {'stream': 4}
-        getitem_8: "f32[2, 2]" = control_deps_8[1];  control_deps_8 = None
+        getitem_8: "f32[2, 2]" = control_deps_8[1]
+
+        # No stacktrace found for following nodes
+        subgraph_wait_event_default = self.subgraph_wait_event_default
+        control_deps_9 = torch.ops.higher_order.control_deps((control_deps_8,), subgraph_wait_event_default);  control_deps_8 = subgraph_wait_event_default = control_deps_9 = None
 
         # Annotation: {'stream': 3}
         add: "f32[2, 2]" = torch.ops.aten.add.Tensor(tangents_2, getitem_8);  tangents_2 = None
@@ -830,9 +842,13 @@ class GraphModule(torch.nn.Module):
         control_deps_11 = torch.ops.higher_order.control_deps((mul_8,), subgraph_record_event_default_1, mul_8);  mul_8 = subgraph_record_event_default_1 = None
 
         # Annotation: {'stream': 3}
-        getitem_10: "f32[2, 2]" = control_deps_11[1];  control_deps_11 = None
+        getitem_10: "f32[2, 2]" = control_deps_11[1]
         mul_9: "f32[2, 2]" = torch.ops.aten.mul.Tensor(getitem_9, getitem_3);  getitem_9 = getitem_3 = None
         mul_10: "f32[2, 2]" = torch.ops.aten.mul.Tensor(mul_9, getitem)
+
+        # No stacktrace found for following nodes
+        subgraph_wait_event_default_1 = self.subgraph_wait_event_default_1
+        control_deps_12 = torch.ops.higher_order.control_deps((control_deps_11,), subgraph_wait_event_default_1);  control_deps_11 = subgraph_wait_event_default_1 = control_deps_12 = None
 
         # Annotation: {'stream': 2}
         mul_11: "f32[2, 2]" = torch.ops.aten.mul.Tensor(getitem_10, getitem_2);  getitem_2 = None
@@ -883,6 +899,8 @@ class GraphModule(torch.nn.Module):
         add_2: "f32[2, 2]" = torch.ops.aten.add.Tensor(getitem_14, getitem_13);  getitem_14 = None
 
         # No stacktrace found for following nodes
+        subgraph_record_event_default_7 = self.subgraph_record_event_default_7
+        control_deps_17 = torch.ops.higher_order.control_deps((add_2,), subgraph_record_event_default_7, add_2);  subgraph_record_event_default_7 = control_deps_17 = None
         sync_dealloc_default_3 = torch.ops.streams.sync_dealloc.default(13, 1, getitem_13);  getitem_13 = sync_dealloc_default_3 = None
         return (add_2,)
 
@@ -891,6 +909,12 @@ class GraphModule(torch.nn.Module):
             # No stacktrace found for following nodes
             record_event_default = torch.ops.streams.record_event.default(6, 4)
             return (record_event_default, dep_0)
+
+    class subgraph_wait_event_default(torch.nn.Module):
+        def forward(self):
+            # No stacktrace found for following nodes
+            wait_event_default = torch.ops.streams.wait_event.default(6, 3)
+            return wait_event_default
 
     class subgraph_record_event_default_4(torch.nn.Module):
         def forward(self, dep_0: "f32[2, 2]"):
@@ -903,6 +927,12 @@ class GraphModule(torch.nn.Module):
             # No stacktrace found for following nodes
             record_event_default = torch.ops.streams.record_event.default(7, 3)
             return (record_event_default, dep_0)
+
+    class subgraph_wait_event_default_1(torch.nn.Module):
+        def forward(self):
+            # No stacktrace found for following nodes
+            wait_event_default = torch.ops.streams.wait_event.default(7, 2)
+            return wait_event_default
 
     class subgraph_record_event_default_5(torch.nn.Module):
         def forward(self, dep_0: "f32[2, 2]"):
@@ -927,6 +957,12 @@ class GraphModule(torch.nn.Module):
             # No stacktrace found for following nodes
             wait_event_default = torch.ops.streams.wait_event.default(9, 3)
             return (wait_event_default, dep_0)
+
+    class subgraph_record_event_default_7(torch.nn.Module):
+        def forward(self, dep_0: "f32[2, 2]"):
+            # No stacktrace found for following nodes
+            record_event_default = torch.ops.streams.record_event.default(13, 3)
+            return (record_event_default, dep_0)
 """,  # noqa: B950
         )
 
@@ -1511,6 +1547,25 @@ class GraphModule(torch.nn.Module):
             torch.ops.streams.record_stream.default(t, 0)
 
     @requires_cuda
+    def test_record_stream(self):
+        backend = torch._dynamo.testing.EagerAndRecordGraphs()
+
+        def fn(x):
+            s = torch.Stream()
+            x.record_stream(s)
+            return x
+
+        compiled = torch.compile(fn, backend=backend, fullgraph=True)
+        compiled(torch.randn(4, device="cuda"))
+
+        self.assertEqual(len(backend.graphs), 1)
+        found = any(
+            node.target is torch.ops.streams.record_stream
+            for node in backend.graphs[0].graph.nodes
+        )
+        self.assertTrue(found, "record_stream op not found in graph")
+
+    @requires_cuda
     def test_event_record_after_input_mutation_errors(self):
         def fn(x):
             s = torch.Stream()
@@ -1938,6 +1993,131 @@ class <lambda>(torch.nn.Module):
             return y + 1
 
         f_compiled = torch.compile(f)
+        x = torch.randn(10, device="cuda")
+        eager_result = f(x)
+        compiled_result = f_compiled(x)
+        self.assertEqual(eager_result, compiled_result)
+
+    @requires_cuda
+    def test_record_stream_inductor_output_code(self) -> None:
+        """Verify record_stream is ordered between the producing kernel and the
+        consuming kernel in inductor-generated wrapper code."""
+        from torch._inductor.utils import run_and_get_code
+        from torch.testing import FileCheck
+
+        def fn(x):
+            s = torch.Stream(device="cuda")
+            y = x + 1
+            y.record_stream(s)
+            z = y * 2
+            return z
+
+        compiled = torch.compile(fn, backend="inductor", fullgraph=True)
+        x = torch.randn(1024, device="cuda")
+        result, (code,) = run_and_get_code(compiled, x)
+        self.assertEqual(result, (x + 1) * 2)
+
+        # record_stream must appear after the kernel that produces the tensor
+        # and before the return.
+        FileCheck().check(".run(").check(
+            "torch.ops.streams.record_stream.default("
+        ).check("return").run(code)
+
+    @requires_cuda
+    def test_device_synchronize_no_graph_break(self):
+        def f(x):
+            y = x + 1
+            torch.cuda.synchronize()
+            return y + 1
+
+        f_compiled = torch.compile(f, backend="eager", fullgraph=True)
+        x = torch.randn(10, device="cuda")
+        eager_result = f(x)
+        compiled_result = f_compiled(x)
+        self.assertEqual(eager_result, compiled_result)
+
+    @requires_cuda
+    def test_accelerator_synchronize_no_graph_break(self):
+        def f(x):
+            y = x + 1
+            torch.accelerator.synchronize()
+            return y + 1
+
+        f_compiled = torch.compile(f, backend="eager", fullgraph=True)
+        x = torch.randn(10, device="cuda")
+        eager_result = f(x)
+        compiled_result = f_compiled(x)
+        self.assertEqual(eager_result, compiled_result)
+
+    @requires_cuda
+    def test_device_synchronize_tracing(self):
+        def f(x):
+            y = x + 1
+            torch.cuda.synchronize()
+            return y + 1
+
+        backend = torch._dynamo.testing.EagerAndRecordGraphs()
+        f_compiled = torch.compile(f, backend=backend)
+        x = torch.randn(10, device="cuda")
+        f_compiled(x)
+
+        self.assertEqual(len(backend.graphs), 1)
+        graph = backend.graphs[0]
+        sync_nodes = [
+            n
+            for n in graph.graph.nodes
+            if n.op == "call_function"
+            and n.target is torch.ops.streams.synchronize_device
+        ]
+        self.assertEqual(len(sync_nodes), 1)
+        self.assertEqual(sync_nodes[0].args, ("cuda", 0))
+
+    @requires_cuda
+    def test_device_synchronize_with_device_arg(self):
+        def f(x):
+            y = x + 1
+            torch.cuda.synchronize(device=0)
+            return y + 1
+
+        backend = torch._dynamo.testing.EagerAndRecordGraphs()
+        f_compiled = torch.compile(f, backend=backend)
+        x = torch.randn(10, device="cuda")
+        f_compiled(x)
+
+        self.assertEqual(len(backend.graphs), 1)
+        graph = backend.graphs[0]
+        sync_nodes = [
+            n
+            for n in graph.graph.nodes
+            if n.op == "call_function"
+            and n.target is torch.ops.streams.synchronize_device
+        ]
+        self.assertEqual(len(sync_nodes), 1)
+
+    @requires_cuda
+    def test_device_synchronize_inductor_lowering(self):
+        def f(x):
+            y = x + 1
+            torch.cuda.synchronize()
+            return y + 1
+
+        f_compiled = torch.compile(f, fullgraph=True)
+        x = torch.randn(10, device="cuda")
+        eager_result = f(x)
+        compiled_result = f_compiled(x)
+        self.assertEqual(eager_result, compiled_result)
+
+    @requires_cuda
+    def test_control_deps_wrapping_synchronize_device(self):
+        def f(x):
+            s = torch.cuda.Stream()
+            with torch.cuda.stream(s):
+                y = x + 1
+            torch.cuda.synchronize()
+            return y + 2
+
+        backend = torch._dynamo.testing.EagerAndRecordGraphs()
+        f_compiled = torch.compile(f, backend=backend)
         x = torch.randn(10, device="cuda")
         eager_result = f(x)
         compiled_result = f_compiled(x)

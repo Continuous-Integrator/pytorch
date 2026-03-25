@@ -28,7 +28,7 @@ from torch.testing._internal.common_utils import \
      NoTest, skipIfSlowGradcheckEnv, suppress_warnings, serialTest, instantiate_parametrized_tests, xfailIf)
 from torch.testing._internal.common_mps import mps_ops_modifier, mps_ops_grad_modifier, mps_ops_error_inputs_modifier
 from torch.testing import make_tensor
-from torch.testing._internal.common_dtype import get_all_dtypes, integral_types
+from torch.testing._internal.common_dtype import get_all_dtypes, integral_types, all_mps_types
 import torch.backends.mps
 from torch.distributions import Uniform, Exponential
 from torch.utils._python_dispatch import TorchDispatchMode
@@ -8045,6 +8045,20 @@ class TestMPS(TestCaseMPS):
         self.assertTrue(event.query())
         self.assertEqual(c_acc.cpu(), c)
 
+    def test_mps_device_capability(self):
+        # Query device capability via accelerator API
+        cap = torch.accelerator.get_device_capability()
+        # The API returns a dict containing a `supported_dtypes` set
+        supported = set(cap["supported_dtypes"]) if isinstance(cap, dict) else set(cap)
+
+        # Expected dtypes for MPS testing helpers
+        expected = set(all_mps_types())
+        # Per Apple docs, bfloat16 support starts on macOS 14.0+
+        if not torch.backends.mps.is_macos_or_newer(14, 0):
+            expected.discard(torch.bfloat16)
+
+        self.assertTrue(all(dtype in supported for dtype in expected))
+
     def test_jit_save_load(self):
         m = torch.nn.Module()
         m.x = torch.rand(3, 3, device='mps')
@@ -9730,6 +9744,33 @@ class TestLinalgMPS(TestCaseMPS):
             mean_err = ((res - ref).abs() / ref).mean()
             self.assertLess(mean_err, 0.05)
 
+    def test_loradown_regression_original_case(self):
+        a = torch.rand(2, 1025, device='mps', dtype=torch.half)
+        b = torch.rand(2, 1041, device='mps', dtype=torch.half)[:, :1025].t()
+        result = a @ b
+        self.assertEqual(result.shape, (2, 2))
+
+        self.assertFalse(torch.isnan(result).any())
+        self.assertFalse(torch.isinf(result).any())
+
+    @parametrize("padding", [0, 3, 4, 7, 8, 15, 16])
+    @parametrize("vector_dim", [2, 15, 16, 24])
+    def test_loradown_correctness_vs_cpu(self, padding, vector_dim):
+        torch.manual_seed(13)
+
+        base_size = 64
+        physical_size = base_size + padding
+
+        a_mps = torch.rand(vector_dim, base_size, device='mps', dtype=torch.half)
+        b_mps = torch.rand(vector_dim, physical_size, device='mps', dtype=torch.half)[:, :base_size].t()
+
+        a_cpu = a_mps.cpu()
+        b_cpu = b_mps.cpu()
+
+        result_cpu = (a_cpu @ b_cpu)
+        result_mps = (a_mps @ b_mps).cpu()
+
+        torch.testing.assert_close(result_mps, result_cpu, rtol=1e-3, atol=1e-3)
 
 class TestSDPA(TestCaseMPS):
     def _compare_tensors(self, y, ref, tol=0.01):
