@@ -3968,12 +3968,8 @@ Tensor& linalg_solve_triangular_out(
       // TODO: optimize for less B copies when possible
       auto out_extern = at::empty({0}, A.options());
       solve_with_owned_out(*pA, B_, out_extern);
-      if (out.is_neg()) {
-        out_extern = out_extern._neg_view();
-      }
-      if (out.is_conj()) {
-        out_extern = out_extern.conj();
-      }
+      out_extern._set_neg(out.is_neg() ^ out_extern.is_neg());
+      out_extern._set_conj(out.is_conj() ^ out_extern.is_conj());
       strip_flags(out).copy_(out_extern);
     }
   }
