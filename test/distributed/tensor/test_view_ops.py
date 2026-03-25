@@ -41,14 +41,6 @@ from torch.testing._internal.distributed._tensor.common_dtensor import (
 from torch.utils import _pytree as pytree
 
 
-# (mesh_shape, placement_patterns) for flatten test consolidation.
-# Each pattern is a tuple of "S" (Shard) or "R" (Replicate) per mesh dim.
-_FLATTEN_CASES = [
-    ((6,), [("S",), ("R",)]),
-    ((3, 2), [("S", "R"), ("R", "S"), ("S", "S"), ("R", "R")]),
-]
-
-
 class TestViewOps(DTensorContinuousTestBase):
     world_size = 6
 
@@ -716,10 +708,14 @@ class TestViewOps(DTensorContinuousTestBase):
     def test_dtensor_flatten_multi_mesh(self):
         """Test flatten operations across 1D and 2D meshes with all placement patterns.
 
-        Iterates _FLATTEN_CASES to test single-shard (S, SR, RS), multi-shard (SS),
-        and replicate (R, RR) patterns with even/uneven tensor dim sizes.
+        Iterates over 1D and 2D mesh configurations to test single-shard (S, SR, RS),
+        multi-shard (SS), and replicate (R, RR) patterns with even/uneven tensor dim sizes.
         """
-        for mesh_shape, patterns in _FLATTEN_CASES:
+        cases = [
+            ((6,), [("S",), ("R",)]),
+            ((3, 2), [("S", "R"), ("R", "S"), ("S", "S"), ("R", "R")]),
+        ]
+        for mesh_shape, patterns in cases:
             if self.world_size < math.prod(mesh_shape):
                 continue
             mesh = init_device_mesh(self.device_type, mesh_shape)
@@ -732,12 +728,19 @@ class TestViewOps(DTensorContinuousTestBase):
                         for flatten_end in range(flatten_start + 2, tensor_ndim + 1):
                             if num_shard == 1:
                                 self._run_flatten_single_shard(
-                                    mesh, mesh_ndim, shard_mesh_dims[0],
-                                    tensor_ndim, flatten_start, flatten_end,
+                                    mesh,
+                                    mesh_ndim,
+                                    shard_mesh_dims[0],
+                                    tensor_ndim,
+                                    flatten_start,
+                                    flatten_end,
                                 )
                             elif num_shard == 2:
                                 self._run_flatten_ss(
-                                    mesh, tensor_ndim, flatten_start, flatten_end,
+                                    mesh,
+                                    tensor_ndim,
+                                    flatten_start,
+                                    flatten_end,
                                 )
                             else:
                                 even = 2 * mesh.size(0)
@@ -753,13 +756,21 @@ class TestViewOps(DTensorContinuousTestBase):
                                         mesh=mesh_shape,
                                     ):
                                         self._test_dtensor_flatten_replicate(
-                                            tensor_dims, flatten_start,
-                                            flatten_end, mesh, rep_placements,
+                                            tensor_dims,
+                                            flatten_start,
+                                            flatten_end,
+                                            mesh,
+                                            rep_placements,
                                         )
 
     def _run_flatten_single_shard(
-        self, mesh, mesh_ndim, shard_mesh_dim,
-        tensor_ndim, flatten_start, flatten_end,
+        self,
+        mesh,
+        mesh_ndim,
+        shard_mesh_dim,
+        tensor_ndim,
+        flatten_start,
+        flatten_end,
     ):
         even_val = 2 * mesh.size(shard_mesh_dim)
         dim_vals = [even_val - 1, even_val, even_val + 1]
@@ -767,34 +778,43 @@ class TestViewOps(DTensorContinuousTestBase):
         for shard_dim in range(flatten_start, flatten_end):
             for tensor_dims in all_dims:
                 ctx = contextlib.nullcontext()
-                if (
-                    tensor_dims[shard_dim] % mesh.size(shard_mesh_dim) != 0
-                    and shard_dim != (flatten_end - 1)
-                ):
+                if tensor_dims[shard_dim] % mesh.size(
+                    shard_mesh_dim
+                ) != 0 and shard_dim != (flatten_end - 1):
                     ctx = self.assertRaisesRegex(
-                        RuntimeError, "is not evenly divisible by mesh dimension",
+                        RuntimeError,
+                        "is not evenly divisible by mesh dimension",
                     )
                 with (
                     self.subTest(
-                        dims=tensor_dims, shard=shard_dim,
+                        dims=tensor_dims,
+                        shard=shard_dim,
                         mesh_dim=shard_mesh_dim,
                         flat=(flatten_start, flatten_end),
                     ),
                     ctx,
                 ):
                     self._test_dtensor_flatten_single_shard(
-                        tensor_dims, flatten_start, flatten_end,
-                        mesh, shard_dim, shard_mesh_dim,
+                        tensor_dims,
+                        flatten_start,
+                        flatten_end,
+                        mesh,
+                        shard_dim,
+                        shard_mesh_dim,
                     )
 
     def _run_flatten_ss(self, mesh, tensor_ndim, flatten_start, flatten_end):
         for shard_dim0 in range(flatten_start, flatten_end):
             for shard_dim1 in range(shard_dim0, flatten_end):
                 dim0_values = [
-                    2 * mesh.size(0) - 1, 2 * mesh.size(0), 2 * mesh.size(0) + 1,
+                    2 * mesh.size(0) - 1,
+                    2 * mesh.size(0),
+                    2 * mesh.size(0) + 1,
                 ]
                 dim1_values = [
-                    2 * mesh.size(1) - 1, 2 * mesh.size(1), 2 * mesh.size(1) + 1,
+                    2 * mesh.size(1) - 1,
+                    2 * mesh.size(1),
+                    2 * mesh.size(1) + 1,
                 ]
                 other_dim_value = 2 * mesh.size(0) * mesh.size(1)
                 for dim0_val in dim0_values:
@@ -812,13 +832,12 @@ class TestViewOps(DTensorContinuousTestBase):
                                 RuntimeError,
                                 "is not evenly divisible by mesh dimension",
                             )
-                        local_tensor_dims[shard_dim0] = (
-                            local_tensor_dims[shard_dim0] // mesh.size(0)
-                        )
-                        if (
-                            local_tensor_dims[shard_dim1] % mesh.size(1) != 0
-                            and shard_dim1 != (flatten_end - 1)
-                        ):
+                        local_tensor_dims[shard_dim0] = local_tensor_dims[
+                            shard_dim0
+                        ] // mesh.size(0)
+                        if local_tensor_dims[shard_dim1] % mesh.size(
+                            1
+                        ) != 0 and shard_dim1 != (flatten_end - 1):
                             ctx = self.assertRaisesRegex(
                                 RuntimeError,
                                 "is not evenly divisible by mesh dimension",
@@ -826,17 +845,27 @@ class TestViewOps(DTensorContinuousTestBase):
                         with (
                             self.subTest(
                                 dims=tensor_dims,
-                                shard0=shard_dim0, shard1=shard_dim1,
+                                shard0=shard_dim0,
+                                shard1=shard_dim1,
                             ),
                             ctx,
                         ):
                             self._test_dtensor_flatten_2d_ss(
-                                tensor_dims, flatten_start, flatten_end,
-                                mesh, placements,
+                                tensor_dims,
+                                flatten_start,
+                                flatten_end,
+                                mesh,
+                                placements,
                             )
 
     def _test_dtensor_flatten_single_shard(
-        self, tensor_dims, flatten_start, flatten_end, mesh, shard_dim, shard_mesh_dim,
+        self,
+        tensor_dims,
+        flatten_start,
+        flatten_end,
+        mesh,
+        shard_dim,
+        shard_mesh_dim,
     ):
         mesh_ndim = mesh.ndim
         placements = tuple(
