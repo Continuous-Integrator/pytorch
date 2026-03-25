@@ -3910,7 +3910,7 @@ Tensor& linalg_solve_triangular_out(
     : c10::MaybeOwned<Tensor>::owned(cloneMatrix(A_));
 
   // NOTE: modifes B in-place
-  const auto solve = [&left, &upper, &unitriangular](
+  const auto solve_kernel = [&left, &upper, &unitriangular](
     const Tensor& A,
     const Tensor& B,
     TransposeType trans = TransposeType::NoTranspose
@@ -3924,6 +3924,32 @@ Tensor& linalg_solve_triangular_out(
     );
   };
 
+  // Run solve_kernel on
+  // (op(A), B) if A is col-major, or
+  // (op(A)^T, B^T), otherwise.
+  // *^T is done on the strides before the kernel call,
+  // op(*) is done in the kernel.
+  // It is assumed that A and B have the same memory layout.
+  const auto solve = [&left, &upper, &unitriangular, &solve_kernel](
+    const Tensor& A,
+    const Tensor& B,
+    TransposeType trans = TransposeType::NoTranspose
+  ) {
+    auto pA = c10::MaybeOwned<Tensor>::borrowed(A);
+    auto pB = c10::MaybeOwned<Tensor>::borrowed(B);
+
+    const auto is_A_col_major = A.stride(-2) == 1;
+    if (!is_A_col_major) {
+      // Transpose the problem
+      left = !left;
+      upper = !upper;
+      pA = c10::MaybeOwned<Tensor>::owned(pA->mH());
+      pB = c10::MaybeOwned<Tensor>::owned(pB->mH());
+    }
+
+    solve_kernel(*pA, *pB, trans);
+  };
+
   // Owned out implies we are safe to alter strides and neg/conj flags.
   // B is copied into the resized out such that mem_layout(A) == mem_layout(out).
   // Copying of B also resolves neg/conj flags in B.
@@ -3935,9 +3961,6 @@ Tensor& linalg_solve_triangular_out(
     const Tensor& B,
     Tensor& out
   ) {
-    auto pA = c10::MaybeOwned<Tensor>::borrowed(A);
-    auto pout = c10::MaybeOwned<Tensor>::borrowed(out);
-
     const auto is_A_col_major = A.stride(-2) == 1;
     if (is_A_col_major) {
       // A is col-major -> resize out to be col-major and solve the original problem
@@ -3946,24 +3969,18 @@ Tensor& linalg_solve_triangular_out(
     } else {
       // A is row-major -> risize out to be row-major and solve the transposed problem
       out.resize_(B.sizes(), MemoryFormat::Contiguous);
-
-      // Transpose the problem
-      left = !left;
-      upper = !upper;
-      pA = c10::MaybeOwned<Tensor>::owned(pA->mT());
-      pout = c10::MaybeOwned<Tensor>::owned(pout->mT());
     }
 
     // X = (A*, B) = (A, B*)*, so
     // A.is_conj() -> out.copy_(B.conj()) -> solve -> out._set_conj(true)
-    out.copy_(pA->is_conj() ? B.conj() : B);
+    out.copy_(A.is_conj() ? B.conj() : B);
 
     // Solve the problem
-    solve(*pA, *pout);
+    solve(A, out);
 
     // Set the flags
-    out._set_neg(pA->is_neg());
-    out._set_conj(pA->is_conj());
+    out._set_neg(A.is_neg());
+    out._set_conj(A.is_conj());
   };
 
   if (out_fully_owned) {
