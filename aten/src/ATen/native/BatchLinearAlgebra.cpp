@@ -3956,7 +3956,7 @@ Tensor& linalg_solve_triangular_out(
   // Then we solve the original problem if A is col-major, and a transposed one otherwise.
   // The result will inherit neg/conj flags from A.
   // NO COPY of A is done.
-  const auto solve_with_owned_out = [&left, &upper, &unitriangular, &solve](
+  const auto solve_with_owned_out = [&solve](
     const Tensor& A,
     const Tensor& B,
     Tensor& out
