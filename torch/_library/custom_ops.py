@@ -824,7 +824,8 @@ class CustomOpDef:
 
             if is_mutable:
                 for idx in mutated_idxs:
-                    increment_version(args[idx])
+                    if not args[idx].is_inference():
+                        increment_version(args[idx])
 
             if torch.is_grad_enabled() and _C._any_requires_grad(*args):
                 return Generated.apply(*args)
@@ -1073,11 +1074,10 @@ def _cast(value, device_type: str, dtype: _dtype):
 
 def increment_version(val: Any) -> None:
     if isinstance(val, Tensor):
-        if not val.is_inference():
-            torch.autograd.graph.increment_version(val)
+        torch.autograd.graph.increment_version(val)
     elif isinstance(val, (tuple, list)):
         for v in val:
-            if isinstance(v, Tensor) and not v.is_inference():
+            if isinstance(v, Tensor):
                 torch.autograd.graph.increment_version(v)
 
 
