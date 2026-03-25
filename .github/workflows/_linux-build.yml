@@ -529,7 +529,7 @@ jobs:
           checkout-mode: treeless
 
       - name: Setup Linux
-        uses: pytorch/pytorch/.github/actions/setup-linux@main
+        uses: pytorch/pytorch/.github/actions/setup-linux@huydhn/update-setup-linux-pt2
         with:
           use-arc: true
           python-version: ${{ inputs.python-version }}
