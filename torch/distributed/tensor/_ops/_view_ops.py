@@ -709,7 +709,8 @@ class _ViewShardingPropagator:
         input_to_output_tensor_dims: dict[int, list[int]],
     ) -> list[Placement]:
         """Phase 2: consume analyze() outputs, return final output placements."""
-        # Output dims already assigned to a mesh dim by _StridedShard rewriting.
+        # Output dims claimed by earlier mesh dims in the loop below
+        # (via _rewrite_strided_shard), to avoid double-assignment.
         claimed_output_dims: set[tuple[int, int]] = set()
         # Starts as global_input_shape; each mesh dim divides its sharded dim.
         local_tensor_shapes: list[int] = list(self.global_input_shape)
