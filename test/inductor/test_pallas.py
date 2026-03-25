@@ -5,6 +5,8 @@ import re
 import sys
 import unittest
 
+import numpy as np
+
 import torch
 import torch._dynamo
 import torch._inductor.async_compile  # noqa: F401 required to warm up AsyncCompile pools
@@ -628,7 +630,7 @@ class PallasTestsMixin:
         x = base_2d[::2, ::2].unsqueeze(0)
         self.assertEqual(compiled(x), x * 2.0 + 1.0)
 
-    @skip_if_tpu
+    @skip_if_tpu(reason="TPU doesn't support float 64")
     def test_stride_non_contiguous_dtypes(self):
         """Test non-contiguous patterns with various dtypes."""
         compiled = self._compile(lambda x: x * 2.0 + 1.0)
@@ -793,7 +795,7 @@ class PallasTestsMixin:
         expected = fn(x, y)
         self.assertEqual(result, expected)
 
-    @skip_if_tpu
+    @skip_if_tpu(reason="Cannot do int indexing on TPU")
     @skip_if_cuda(reason="gather not supported in Pallas GPU (Mosaic) backend")
     def test_complex_indexing_gather(self):
         """Test complex indexing with gather-like operations."""
@@ -813,7 +815,7 @@ class PallasTestsMixin:
         expected = fn(x, indices)
         self.assertEqual(result, expected)
 
-    @skip_if_tpu
+    @skip_if_tpu(reason="Cannot do int indexing on TPU")
     # Pallas Mosaic backend doesn't support gather operations with array indices
     # This limitation is in the Pallas/Mosaic lowering, not our implementation
     @skip_if_cuda(
@@ -1027,7 +1029,6 @@ class PallasTestsMixin:
                 expected = fn(a, b)
                 self.assertEqual(result, expected)
 
-    @skip_if_tpu
     def test_sign(self):
         """Test sign operation."""
 
@@ -1068,7 +1069,9 @@ class PallasTestsMixin:
         expected = fn(x)
         self.assertEqual(result, expected)
 
-    @skip_if_tpu
+    @skip_if_tpu(
+        reason="Pallas loweing crash: https://github.com/jax-ml/jax/issues/36149"
+    )
     def test_erf(self):
         """Test erf operation."""
 
@@ -1082,7 +1085,9 @@ class PallasTestsMixin:
         expected = fn(x)
         self.assertEqual(result, expected)
 
-    @skip_if_tpu
+    @skip_if_tpu(
+        reason="Pallas loweing crash: https://github.com/jax-ml/jax/issues/36149"
+    )
     def test_atan2(self):
         """Test atan2 operation."""
 
@@ -1148,7 +1153,7 @@ class PallasTestsMixin:
                 expected = fn(x)
                 self.assertEqual(result, expected)
 
-    @skip_if_tpu
+    @skip_if_tpu(reason="reduce_prod primitive not implemented in Pallas TPU lowering")
     @skip_if_cuda(reason="reduce_prod primitive not implemented in Pallas Mosaic GPU")
     def test_prod_reduction(self):
         """Test prod reduction."""
@@ -1227,7 +1232,6 @@ class PallasTestsMixin:
                 self.assertEqual(result, expected)
 
     @skip_if_cuda
-    @skip_if_tpu
     def test_welford(self):
         """Test Welford variance/mean computation (two-pass fallback)."""
 
@@ -1241,9 +1245,11 @@ class PallasTestsMixin:
                 compiled = self._compile(fn)
                 x = torch.randn(shape, device=self.DEVICE)
                 var_result, mean_result = compiled(x)
-                var_expected, mean_expected = fn(x)
-                self.assertEqual(mean_result, mean_expected)
-                self.assertEqual(var_result, var_expected)
+                # Eager mode torch_tpu doesn't support lowering var_mean, so comparing with numpy
+                var_expected = np.var(x.cpu().numpy(), axis=-1, keepdims=True, ddof=1)
+                mean_expected = np.mean(x.cpu().numpy(), axis=-1, keepdims=True)
+                self.assertEqual(mean_result.cpu().numpy(), mean_expected)
+                self.assertEqual(var_result.cpu().numpy(), var_expected)
 
     @skip_if_cuda
     def test_layer_norm(self):
