@@ -306,11 +306,9 @@ def nonstrict_trace(
         fn_id = id(traceable_fn)
         trace_rules._disallowed_callable_ids.remove(fn_id)
         trace_rules._allowed_callable_ids.add(fn_id)
-        trace_rules._nonstrict_trace_callable_ids.add(fn_id)
 
         def deregister() -> None:
             trace_rules._allowed_callable_ids.remove(fn_id)
-            trace_rules._nonstrict_trace_callable_ids.remove(fn_id)
 
         weakref.finalize(traceable_fn, deregister)
         return traceable_fn

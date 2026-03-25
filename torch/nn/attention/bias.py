@@ -28,7 +28,9 @@ torch._dynamo.nonstrict_trace(is_flash_attention_available, in_place=True)
 torch._dynamo.nonstrict_trace(can_use_flash_attention, in_place=True)
 torch._dynamo.nonstrict_trace(can_use_efficient_attention, in_place=True)
 torch._dynamo.nonstrict_trace(SDPAParams, in_place=True)
-from torch._higher_order_ops.flat_apply import register_graphable_type
+
+from torch._higher_order_ops.flat_apply import register_graphable_type  # noqa: E402
+
 
 register_graphable_type(SDPAParams)
 
