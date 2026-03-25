@@ -2400,41 +2400,55 @@ torch.cuda.synchronize()
     @unittest.skipIf(
         not TEST_CUDA_GRAPH, "CUDA >= 11.0 or ROCM >= 5.3 required for graphs"
     )
-    def test_graph_rng_shared_pool_replay_matches_eager(self):
-        """Test that graph replay with shared pool produces same results as eager."""
+    def test_graph_rng_concurrent_replay_on_different_streams(self):
+        """Concurrent replay of two graphs sharing a generator on different streams.
+
+        With per-generator state (old code), this would race on the shared
+        rng_state_offset_extragraph_ tensor. With per-(generator, capture_id)
+        state, each graph has its own tensors.
+        """
         seed = 1234
-        shape = (8,)
+        shape = (64,)
 
         torch.manual_seed(seed)
         ref0 = torch.randn(shape, device="cuda")
         ref1 = torch.randn(shape, device="cuda")
 
         torch.manual_seed(seed)
-        pool = torch.cuda.graph_pool_handle()
         g0 = torch.cuda.CUDAGraph()
         g1 = torch.cuda.CUDAGraph()
-        s0 = torch.cuda.Stream()
-        s1 = torch.cuda.Stream()
+        s_cap = torch.cuda.Stream()
         buf0 = torch.empty(shape, device="cuda")
         buf1 = torch.empty(shape, device="cuda")
 
-        with torch.cuda.stream(s0):
-            g0.capture_begin(pool=pool)
+        with torch.cuda.stream(s_cap):
+            g0.capture_begin()
             buf0.copy_(torch.randn_like(buf0))
             g0.capture_end()
 
-        with torch.cuda.stream(s1):
-            g1.capture_begin(pool=pool)
+        torch.cuda.current_stream().wait_stream(s_cap)
+
+        with torch.cuda.stream(s_cap):
+            g1.capture_begin()
             buf1.copy_(torch.randn_like(buf1))
             g1.capture_end()
 
-        torch.cuda.current_stream().wait_stream(s0)
-        torch.cuda.current_stream().wait_stream(s1)
+        torch.cuda.current_stream().wait_stream(s_cap)
+
+        s0 = torch.cuda.Stream()
+        s1 = torch.cuda.Stream()
 
         buf0.zero_()
         buf1.zero_()
-        g0.replay()
-        g1.replay()
+
+        s0.wait_stream(torch.cuda.current_stream())
+        s1.wait_stream(torch.cuda.current_stream())
+
+        with torch.cuda.stream(s0):
+            g0.replay()
+        with torch.cuda.stream(s1):
+            g1.replay()
+
         torch.cuda.synchronize()
 
         self.assertEqual(buf0, ref0)

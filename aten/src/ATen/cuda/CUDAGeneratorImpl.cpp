@@ -107,6 +107,11 @@ void CUDAGeneratorCaptureState::initialize(uint64_t seed) {
 
   rng_state_seed_extragraph_ = at::empty({1}, options);
   rng_state_offset_extragraph_ = at::empty({1}, options);
+
+  // Synchronize the default stream so that any prior work completes before
+  // a different stream writes to this memory.
+  c10::cuda::getDefaultCUDAStream().synchronize();
+
   offset_intragraph_ = 0;
 }
 
