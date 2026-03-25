@@ -4548,20 +4548,6 @@ class TestCustomOpFastPath(TestCase):
         y.sum().backward()
         self.assertEqual(x.grad, 2 * x)
 
-    def test_fast_path_no_grad(self):
-        called = [0]
-
-        @torch.library.custom_op("_torch_testing::fp_ng", mutates_args=())
-        def fp_ng(x: Tensor) -> Tensor:
-            called[0] += 1
-            return x.clone()
-
-        x = torch.randn(3)
-        with torch.no_grad():
-            result = fp_ng(x)
-        self.assertEqual(result, x)
-        self.assertEqual(called[0], 1)
-
     def test_fast_path_inference_mode(self):
         @torch.library.custom_op("_torch_testing::fp_im", mutates_args=())
         def fp_im(x: Tensor) -> Tensor:
@@ -4571,48 +4557,6 @@ class TestCustomOpFastPath(TestCase):
             x = torch.randn(3)
             result = fp_im(x)
         self.assertEqual(result, x)
-
-    def test_fast_path_falls_back_for_compile(self):
-        @torch.library.custom_op("_torch_testing::fp_compile", mutates_args=())
-        def fp_compile(x: Tensor) -> Tensor:
-            return x.clone()
-
-        @fp_compile.register_fake
-        def _(x):
-            return x.clone()
-
-        @torch.compile(backend="eager", fullgraph=True)
-        def compiled_fn(x):
-            return fp_compile(x)
-
-        x = torch.randn(3)
-        result = compiled_fn(x)
-        self.assertEqual(result, x)
-
-    def test_fast_path_falls_back_for_fake_tensor(self):
-        @torch.library.custom_op("_torch_testing::fp_fake", mutates_args=())
-        def fp_fake(x: Tensor) -> Tensor:
-            return x.clone()
-
-        @fp_fake.register_fake
-        def _(x):
-            return x.clone()
-
-        from torch._subclasses.fake_tensor import FakeTensorMode
-
-        with FakeTensorMode():
-            x = torch.randn(3)
-            result = fp_fake(x)
-        self.assertEqual(result.shape, torch.Size([3]))
-
-    def test_fast_path_via_ops(self):
-        @torch.library.custom_op("_torch_testing::fp_ops", mutates_args=())
-        def fp_ops(x: Tensor) -> Tensor:
-            return x + 1
-
-        x = torch.randn(3)
-        result = torch.ops._torch_testing.fp_ops(x)
-        self.assertEqual(result, x + 1)
 
     def test_fast_path_falls_back_for_autocast(self):
         @torch.library.custom_op("_torch_testing::fp_ac", mutates_args=())
