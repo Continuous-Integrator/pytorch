@@ -967,10 +967,10 @@ class _ViewShardingPropagator:
             )
         tensor_dim = p.dim
         return not any(
-            isinstance(p, (Shard, _StridedShard))
-            and flatten_start <= p.dim < flatten_end
-            and p.dim >= tensor_dim
-            for p in placements[mesh_dim + 1 :]
+            isinstance(other_p, (Shard, _StridedShard))
+            and flatten_start <= other_p.dim < flatten_end
+            and other_p.dim >= tensor_dim
+            for other_p in placements[mesh_dim + 1 :]
         )
 
     def _expected_split_factor(
