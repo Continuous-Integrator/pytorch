@@ -3268,15 +3268,6 @@ class FunctionalCallVariable(FunctorchHigherOrderVariable):
         args: Sequence[VariableTracker],
         kwargs: dict[str, VariableTracker],
     ) -> VariableTracker:
-        if not torch._dynamo.config.inline_inbuilt_nn_modules:
-            unimplemented(
-                gb_type="torch.func.functional_call capture is disabled",
-                context="",
-                explanation="torch.func.functional_call capture is disabled",
-                hints=[
-                    "Set `torch._dynamo.config.inline_inbuilt_nn_modules=True` to enable.",
-                ],
-            )
         return super().call_function(tx, args, kwargs)
 
 
@@ -3980,31 +3971,6 @@ class ExportTracepointHigherOrderVariable(TorchHigherOrderOperatorVariable):
 
 class RunWithRNGStateHigherOrderVariable(TorchHigherOrderOperatorVariable):
     _HOP_NAME = "torch.ops.higher_order.run_with_rng_state"
-
-    def _call_function(
-        self,
-        tx: "InstructionTranslator",
-        args: Sequence[VariableTracker],
-        kwargs: dict[str, VariableTracker],
-    ) -> VariableTracker:
-        from .builder import wrap_fx_proxy
-
-        p_args = tuple(arg.as_proxy() for arg in args)
-        p_kwargs = {key: arg.as_proxy() for key, arg in kwargs.items()}
-        return wrap_fx_proxy(
-            tx=tx,
-            proxy=tx.output.create_proxy(
-                "call_function",
-                self.value,
-                args=p_args,
-                kwargs=p_kwargs,
-            ),
-            example_value=None,
-        )
-
-
-class InlineAsmElementwiseHigherOrderVariable(TorchHigherOrderOperatorVariable):
-    _HOP_NAME = "inline_asm_elementwise"
 
     def _call_function(
         self,
@@ -5472,7 +5438,6 @@ _hop_name_to_variable_class = {
     "dynamo_bypassing_wrapper": DynamoBypassingWrapperHigherOrderVariable,
     "auto_functionalized": AutoFunctionalizeHigherOrderVariable,
     "auto_functionalized_v2": AutoFunctionalizeHigherOrderVariable,
-    "inline_asm_elementwise": InlineAsmElementwiseHigherOrderVariable,
     "invoke_subgraph": InvokeSubgraphHigherOrderVariable,
     "custom_function_call": CustomFunctionHigherOrderOperatorVariable,
     "local_map_hop": LocalMapWrappedHigherOrderVariable,

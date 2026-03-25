@@ -38,7 +38,7 @@ from torch._inductor.codegen.common import WorkspaceArg
 from torch._inductor.graph import GraphLowering
 from torch._inductor.ir import Buffer, ChoiceCaller, FixedLayout, FlexibleLayout
 from torch._inductor.kernel.mm_plus_mm import aten_mm_plus_mm
-from torch._inductor.runtime.triton_heuristics import CachingAutotuner
+from torch._inductor.runtime.triton_heuristics import CachingAutotuner, pointwise
 from torch._inductor.scheduler import Scheduler
 from torch._inductor.select_algorithm import (
     add_feedback_saver,
@@ -175,6 +175,42 @@ class TestMaxAutotune(TestCase):
             {"max_autotune": True, "max_autotune_gemm_search_space": search_space}
         ):
             torch.compile(mm_plus_mm, dynamic=dynamic)(a, b, c, d)
+
+    def test_max_autotune_includes_max_autotune_pointwise_configs(self):
+        """
+        Verify that `max_autotune` includes all pointwise configs from
+        `max_autotune_pointwise` for 1D, 2D, and 3D pointwise kernels.
+        """
+        triton_meta = {"device": object()}
+        inductor_meta_common = {"autotune_pointwise": False}
+
+        for size_hints in (
+            {"x": 2048},
+            {"x": 128, "y": 256},
+            {"x": 64, "y": 64, "z": 64},
+        ):
+            with self.subTest(size_hints=size_hints):
+                max_autotune_configs = pointwise(
+                    size_hints,
+                    triton_meta=triton_meta,
+                    inductor_meta={**inductor_meta_common, "max_autotune": True},
+                    return_configs=True,
+                )
+                max_autotune_pointwise_configs = pointwise(
+                    size_hints,
+                    triton_meta=triton_meta,
+                    inductor_meta={
+                        **inductor_meta_common,
+                        "max_autotune_pointwise": True,
+                    },
+                    return_configs=True,
+                )
+
+                self.assertEqual(
+                    len(max_autotune_configs),
+                    len(max_autotune_pointwise_configs),
+                    "max_autotune should include all pointwise configs from max_autotune_pointwise",
+                )
 
     @unittest.skipIf(
         not has_triton_tma_device(), "Need device-side TMA support in Triton"
@@ -539,6 +575,41 @@ class TestMaxAutotune(TestCase):
             c_expected = mm(a, b)
 
         torch.testing.assert_close(c_actual, c_expected, atol=1e-2, rtol=1e-2)
+
+    @unittest.skipIf(
+        not has_triton_tma_device(), "Need device-side TMA support in Triton"
+    )
+    def test_persistent_tma_epilogue_fusion_store_cache(self):
+        # Regression test: when epilogue fusion runs with TMA store, the
+        # store_cache must be updated so that a subsequent epilogue load from
+        # the same buffer hits the cache. Otherwise remove_kernel_local_buffers
+        # strips the buffer pointer from the kernel signature, causing a
+        # NameError at Triton compile time.
+        def f(a, b):
+            a = a.repeat(8, 8)
+            b = b.repeat(8, 8)
+            mm = torch.mm(a, b)
+            return mm.relu()
+
+        M, N, K = 21, 31, 11
+        a = torch.randn(M, K, dtype=torch.float16, device=GPU_TYPE)
+        b = torch.randn(K, N, dtype=torch.float16, device=GPU_TYPE)
+
+        with config.patch(
+            {
+                "max_autotune": True,
+                "epilogue_fusion": True,
+                "triton.enable_persistent_tma_matmul": "1",
+                "triton.native_matmul": False,
+                "triton.enable_template_tma_store": True,
+                "triton.disallow_failing_autotune_kernels_TESTING_ONLY": True,
+                "test_configs.autotune_choice_name_regex": "mm_persistent_tma",
+            }
+        ):
+            actual = torch.compile(f)(a, b)
+            expected = f(a, b)
+
+        torch.testing.assert_close(actual, expected, atol=1e-2, rtol=1e-2)
 
     @parametrize("dynamic", (False, True))
     def test_max_autotune_regular_mm_zero_size_input(self, dynamic: bool):
@@ -2233,7 +2304,6 @@ class TestMaxAutotune(TestCase):
             self.assertEqual(misses(), 4)
 
     @fresh_cache()
-    @skipIfXpu
     @unittest.skipIf(
         config.cpp_wrapper, "decompose_k not supported for cpp_wrapper yet"
     )
@@ -2455,6 +2525,72 @@ class TestMaxAutotune(TestCase):
                 _ = compiled_fn(bias, x, w)
         finally:
             clear_preprocessing_fns(clear_defaults=False)
+
+    @unittest.skipIf(not torch.version.hip, "ROCM only")
+    @config.patch(
+        {
+            "max_autotune": True,
+            "max_autotune_gemm_backends": "ATEN",
+            "triton.autotune_cublasLt": True,
+            "triton.native_matmul": False,
+        }
+    )
+    def test_rocm_addmm_aten_bias_input_is_1d(self):
+        """
+        ROCm regression test for addmm autotune input wiring.
+        A 1D bias is required for hipBLASLt bias-fused addmm kernels; expanded 2D
+        bias disables that fused path.
+        """
+        bias_input_ranks: dict[str, set[int]] = {"addmm": set(), "bias_addmm": set()}
+
+        def capture_bias_input_rank(choices):
+            for choice in choices:
+                if isinstance(choice, ExternKernelCaller) and choice.name in (
+                    "addmm",
+                    "bias_addmm",
+                ):
+                    bias_node = choice.input_nodes[0]
+                    bias_input_ranks[choice.name].add(len(bias_node.get_size()))
+            return choices
+
+        add_preprocessing_fn(capture_bias_input_rank)
+        try:
+            bias = torch.randn(64, device=GPU_TYPE)
+            mat1 = torch.randn(32, 128, device=GPU_TYPE)
+            mat2 = torch.randn(128, 64, device=GPU_TYPE)
+
+            from torch._inductor.template_heuristics.aten import (
+                ATenAddMMConfigHeuristics,
+            )
+
+            def allow_bias_addmm_configs(self, kernel_inputs, op_name):
+                yield from ATenAddMMConfigHeuristics._get_template_configs_impl(
+                    self, kernel_inputs, op_name
+                )
+
+            # Relax bias_addmm heuristics here so this test can assert 1D vs 2D bias wiring.
+            with mock.patch(
+                "torch._inductor.template_heuristics.aten.ATenBiasAddMMConfigHeuristics._get_template_configs_impl",
+                autospec=True,
+                side_effect=allow_bias_addmm_configs,
+            ):
+                compiled_fn = torch.compile(
+                    lambda b, x, w: torch.addmm(b, x, w),
+                    dynamic=False,
+                )
+                _ = compiled_fn(bias, mat1, mat2)
+
+            self.assertTrue(
+                bias_input_ranks["addmm"], "Expected ATen addmm choice to be generated"
+            )
+            self.assertTrue(
+                bias_input_ranks["bias_addmm"],
+                "Expected ATen bias_addmm choice to be generated",
+            )
+            self.assertEqual(bias_input_ranks["addmm"], {1})
+            self.assertEqual(bias_input_ranks["bias_addmm"], {1})
+        finally:
+            clear_preprocessing_fns()
 
     @config.patch(
         {"test_configs.max_mm_configs": 4, "max_autotune_gemm_backends": "TRITON"}
@@ -4661,6 +4797,7 @@ class TestMaxAutotuneAsyncPipelined(TestMaxAutotune, TestEpilogueFusionStaticAna
         "test_non_contiguous_input_mm_plus_mm": "Flaky on trunk",
         "test_autotune_device_guard": "Flaky on trunk",
         "test_template_bad_epilogue_fusion": "Benchmarking path is different",
+        "test_persistent_tma_epilogue_fusion_store_cache": "Epilogue fusion disabled in async pipelining",
         # Contiguous transform tests - SubgraphChoiceCaller not supported with async pipelining
         "test_max_autotune_contiguous_transform_mm": "Subgraphs not supported with async pipelining",
         "test_max_autotune_contiguous_transform_addmm": "Subgraphs not supported with async pipelining",

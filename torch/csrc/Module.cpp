@@ -2367,7 +2367,7 @@ PyObject* initModule() {
 #endif
   ASSERT_TRUE(set_module_attr("_has_cudnn", has_cudnn));
 
-#if defined(USE_CUSPARSELT)
+#if defined(USE_CUSPARSELT) || defined(USE_ROCM)
   PyObject* has_cusparselt = Py_True;
 #else
   PyObject* has_cusparselt = Py_False;
@@ -2778,6 +2778,7 @@ Call this whenever a new thread is created in order to propagate values from
 
   py_module.def(
       "_stash_obj_in_tls", [](const std::string& key, py::handle arg) {
+        Py_INCREF(arg.ptr());
         at::impl::ThreadLocalPythonObjects::get_state().set(
             key,
             std::make_shared<c10::SafePyObject>(arg.ptr(), getPyInterpreter()));

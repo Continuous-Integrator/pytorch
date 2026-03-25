@@ -2882,16 +2882,22 @@ def bucketize(
     return result
 
 
+def _is_tensor_irnode(x):
+    return isinstance(x, ir.IRNode) and not isinstance(x, ir.NonTensorObj)
+
+
 def require_dense(_, *args, **kwargs):
     args, kwargs = pytree.tree_map_only(
-        ir.IRNode, ir.ExternKernel.require_stride1, (args, kwargs)
+        _is_tensor_irnode, ir.ExternKernel.require_stride1, (args, kwargs)
     )
     return args, kwargs
 
 
 def require_contiguous(_, *args, **kwargs):
     args, kwargs = pytree.tree_map_only(
-        ir.IRNode, ir.ExternKernel.require_contiguous, (args, kwargs)
+        _is_tensor_irnode,
+        ir.ExternKernel.require_contiguous,
+        (args, kwargs),
     )
     return args, kwargs
 
@@ -2900,14 +2906,18 @@ def require_contiguous_strides(_, *args, **kwargs):
     # TODO: combine this with require_contiguous after
     # https://github.com/pytorch/pytorch/pull/148235 lands.
     args, kwargs = pytree.tree_map_only(
-        ir.IRNode, ir.ExternKernel.require_contiguous_strides, (args, kwargs)
+        _is_tensor_irnode,
+        ir.ExternKernel.require_contiguous_strides,
+        (args, kwargs),
     )
     return args, kwargs
 
 
 def require_channels_last(_, *args, **kwargs):
     args, kwargs = pytree.tree_map_only(
-        ir.IRNode, ir.ExternKernel.require_channels_last, (args, kwargs)
+        _is_tensor_irnode,
+        ir.ExternKernel.require_channels_last,
+        (args, kwargs),
     )
     return args, kwargs
 
@@ -2939,7 +2949,7 @@ def constrain_to_fake_tensors(args, kwargs, fake_args, fake_kwargs):
 
 def constrain_to_fx_strides(fx_node, *args, **kwargs):
     def apply_constraint(arg, fx_arg):
-        if isinstance(arg, ir.IRNode):
+        if _is_tensor_irnode(arg):
             stride_order = ir.get_stride_order(
                 fx_arg.meta["val"].stride(), V.graph.sizevars.shape_env
             )
@@ -2965,7 +2975,7 @@ def sdpa_constraint(fx_node, *args, **kwargs):
     """Apply stride constraints to SDPA inputs, ensuring dense last dimension."""
 
     def apply_constraint(idx, arg, fx_arg):
-        if not isinstance(arg, ir.IRNode):
+        if not _is_tensor_irnode(arg):
             return arg
 
         meta_val = fx_arg.meta["val"]
@@ -8135,43 +8145,6 @@ def cvt_e8m0_rceil_lowering(inp):
     )
     result = make_pointwise(fn)(inp)
     return to_dtype(result, torch.uint8)
-
-
-@register_lowering(
-    torch._higher_order_ops.inline_asm_elementwise, type_promotion_kind=None
-)
-def lower_inline_asm_elementwise(
-    *inputs, asm_str, constraints, dtype, is_pure=True, pack=1
-):
-    inputs = broadcast_tensors(*inputs)
-
-    input_dtypes = tuple(inp.get_dtype() for inp in inputs)
-    loaders = [inp.make_loader() for inp in inputs]
-
-    def inner_fn(idx):
-        vals = tuple(loader(idx) for loader in loaders)
-        result = ops.inline_asm_elementwise(
-            *vals,
-            asm=asm_str,
-            constraints=constraints,
-            dtype=dtype,
-            is_pure=is_pure,
-            pack=pack,
-            input_dtypes=input_dtypes,
-        )
-        # Inductor computes in fp32 for bf16/fp16. Upcast so fused downstream
-        # ops (reductions, etc.) see fp32 values. The Pointwise's storage dtype
-        # handles the final downcast on store.
-        if dtype in (torch.float16, torch.bfloat16):
-            result = ops.to_dtype(result, torch.float32)
-        return result
-
-    return ir.Pointwise.create(
-        device=inputs[0].get_device(),
-        dtype=dtype,
-        inner_fn=inner_fn,
-        ranges=list(inputs[0].get_size()),
-    )
 
 
 # populate lowerings defined in kernel/*

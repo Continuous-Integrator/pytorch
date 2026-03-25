@@ -310,7 +310,7 @@ def backward(
         create_graph (bool, optional): If ``True``, graph of the derivative will
             be constructed, allowing to compute higher order derivative products.
             Defaults to ``False``.
-        inputs (Sequence[Tensor] or Tensor or Sequence[GradientEdge] or dict[str, Tensor], optional):
+        inputs (Sequence[Tensor] or Tensor or Sequence[GradientEdge] or Mapping[str, Tensor], optional):
             Inputs w.r.t. which the gradient will be accumulated into ``.grad``.
             All other Tensors will be ignored. If not provided, the gradient is
             accumulated into all the leaf Tensors that were used to compute the

@@ -5,6 +5,8 @@ import re
 import sys
 import unittest
 
+import numpy as np
+
 import torch
 import torch._dynamo
 import torch._inductor.async_compile  # noqa: F401 required to warm up AsyncCompile pools
@@ -628,7 +630,7 @@ class PallasTestsMixin:
         x = base_2d[::2, ::2].unsqueeze(0)
         self.assertEqual(compiled(x), x * 2.0 + 1.0)
 
-    @skip_if_tpu
+    @skip_if_tpu(reason="TPU doesn't support float 64")
     def test_stride_non_contiguous_dtypes(self):
         """Test non-contiguous patterns with various dtypes."""
         compiled = self._compile(lambda x: x * 2.0 + 1.0)
@@ -660,7 +662,6 @@ class PallasTestsMixin:
         x = torch.randn(1, 1, 16, device=self.DEVICE).expand(4, 8, 16)
         self.assertEqual(compiled(x, x), x + x)
 
-    @skip_if_tpu
     def test_stride_multiple_inputs(self):
         """Test multiple strided inputs and broadcasting."""
         compiled = self._compile(lambda a, b, c: a * b + c)
@@ -685,6 +686,80 @@ class PallasTestsMixin:
         s = torch.tensor(2.0, device=self.DEVICE)  # scalar
         compiled_bcast = self._compile(lambda x, y, s: x + y * s)
         self.assertEqual(compiled_bcast(x, y, s), x + y * s)
+
+    @skip_if_cuda
+    def test_scalar_scalar_ops(self):
+        """Test scalar-scalar operations."""
+
+        def test_add(a, b):
+            return a + b
+
+        def test_mul(a, b):
+            return a * b
+
+        def test_sub(a, b):
+            return a - b
+
+        def test_div(a, b):
+            return a / b
+
+        for fn in [test_add, test_mul, test_sub, test_div]:
+            with self.subTest(op=fn.__name__):
+                compiled = self._compile(fn)
+
+                # Test with 0-D tensors (scalars)
+                a = torch.tensor(3.5, dtype=torch.float32, device=self.DEVICE)
+                b = torch.tensor(2.0, dtype=torch.float32, device=self.DEVICE)
+
+                result = compiled(a, b)
+                expected = fn(a, b)
+                self.assertEqual(result, expected)
+
+                # Ensure result is also scalar
+                self.assertEqual(result.dim(), 0)
+                self.assertEqual(result.dtype, torch.float32)
+
+    def test_scalar_tensor_ops(self):
+        """Test scalar-tensor operations."""
+
+        def test_scalar_add_tensor(s, t):
+            return s + t
+
+        def test_tensor_add_scalar(t, s):
+            return t + s
+
+        def test_scalar_mul_tensor(s, t):
+            return s * t
+
+        def test_tensor_mul_scalar(t, s):
+            return t * s
+
+        shapes = [(16,), (8, 8), (4, 4, 4)]
+
+        for shape in shapes:
+            for fn in [
+                test_scalar_add_tensor,
+                test_tensor_add_scalar,
+                test_scalar_mul_tensor,
+                test_tensor_mul_scalar,
+            ]:
+                with self.subTest(op=fn.__name__, shape=shape):
+                    compiled = self._compile(fn)
+
+                    # Create 0-D scalar tensor
+                    scalar = torch.tensor(2.5, dtype=torch.float32, device=self.DEVICE)
+                    tensor = torch.randn(shape, dtype=torch.float32, device=self.DEVICE)
+
+                    if "scalar" in fn.__name__.split("_")[0]:
+                        result = compiled(scalar, tensor)
+                        expected = fn(scalar, tensor)
+                    else:
+                        result = compiled(tensor, scalar)
+                        expected = fn(tensor, scalar)
+
+                    self.assertEqual(result, expected)
+                    self.assertEqual(result.shape, shape)
+                    self.assertEqual(result.dtype, torch.float32)
 
     def test_non_power_of_2_sizes(self):
         """Test that non-power-of-2 tensor sizes work correctly.
@@ -720,7 +795,7 @@ class PallasTestsMixin:
         expected = fn(x, y)
         self.assertEqual(result, expected)
 
-    @skip_if_tpu
+    @skip_if_tpu(reason="Cannot do int indexing on TPU")
     @skip_if_cuda(reason="gather not supported in Pallas GPU (Mosaic) backend")
     def test_complex_indexing_gather(self):
         """Test complex indexing with gather-like operations."""
@@ -740,7 +815,7 @@ class PallasTestsMixin:
         expected = fn(x, indices)
         self.assertEqual(result, expected)
 
-    @skip_if_tpu
+    @skip_if_tpu(reason="Cannot do int indexing on TPU")
     # Pallas Mosaic backend doesn't support gather operations with array indices
     # This limitation is in the Pallas/Mosaic lowering, not our implementation
     @skip_if_cuda(
@@ -954,7 +1029,6 @@ class PallasTestsMixin:
                 expected = fn(a, b)
                 self.assertEqual(result, expected)
 
-    @skip_if_tpu
     def test_sign(self):
         """Test sign operation."""
 
@@ -995,7 +1069,9 @@ class PallasTestsMixin:
         expected = fn(x)
         self.assertEqual(result, expected)
 
-    @skip_if_tpu
+    @skip_if_tpu(
+        reason="Pallas loweing crash: https://github.com/jax-ml/jax/issues/36149"
+    )
     def test_erf(self):
         """Test erf operation."""
 
@@ -1009,7 +1085,9 @@ class PallasTestsMixin:
         expected = fn(x)
         self.assertEqual(result, expected)
 
-    @skip_if_tpu
+    @skip_if_tpu(
+        reason="Pallas loweing crash: https://github.com/jax-ml/jax/issues/36149"
+    )
     def test_atan2(self):
         """Test atan2 operation."""
 
@@ -1075,7 +1153,7 @@ class PallasTestsMixin:
                 expected = fn(x)
                 self.assertEqual(result, expected)
 
-    @skip_if_tpu
+    @skip_if_tpu(reason="reduce_prod primitive not implemented in Pallas TPU lowering")
     @skip_if_cuda(reason="reduce_prod primitive not implemented in Pallas Mosaic GPU")
     def test_prod_reduction(self):
         """Test prod reduction."""
@@ -1154,7 +1232,6 @@ class PallasTestsMixin:
                 self.assertEqual(result, expected)
 
     @skip_if_cuda
-    @skip_if_tpu
     def test_welford(self):
         """Test Welford variance/mean computation (two-pass fallback)."""
 
@@ -1168,9 +1245,11 @@ class PallasTestsMixin:
                 compiled = self._compile(fn)
                 x = torch.randn(shape, device=self.DEVICE)
                 var_result, mean_result = compiled(x)
-                var_expected, mean_expected = fn(x)
-                self.assertEqual(mean_result, mean_expected)
-                self.assertEqual(var_result, var_expected)
+                # Eager mode torch_tpu doesn't support lowering var_mean, so comparing with numpy
+                var_expected = np.var(x.cpu().numpy(), axis=-1, keepdims=True, ddof=1)
+                mean_expected = np.mean(x.cpu().numpy(), axis=-1, keepdims=True)
+                self.assertEqual(mean_result.cpu().numpy(), mean_expected)
+                self.assertEqual(var_result.cpu().numpy(), var_expected)
 
     @skip_if_cuda
     def test_layer_norm(self):
