@@ -737,9 +737,7 @@ class TestViewOps(DTensorContinuousTestBase):
                                 )
 
                     # Replicate
-                    all_dims = list(
-                        itertools.product(dim_values, repeat=tensor_ndim)
-                    )
+                    all_dims = list(itertools.product(dim_values, repeat=tensor_ndim))
                     for tensor_dims in all_dims:
                         placements = (Replicate(),)
                         with self.subTest(
@@ -941,9 +939,7 @@ class TestViewOps(DTensorContinuousTestBase):
                     # Replicate, Replicate
                     rr_even = 2 * mesh.size(0)
                     rr_vals = [rr_even - 1, rr_even, rr_even + 1]
-                    all_rr_dims = list(
-                        itertools.product(rr_vals, repeat=tensor_ndim)
-                    )
+                    all_rr_dims = list(itertools.product(rr_vals, repeat=tensor_ndim))
                     for tensor_dims in all_rr_dims:
                         placements = (Replicate(), Replicate())
                         with self.subTest(
