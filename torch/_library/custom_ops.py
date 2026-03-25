@@ -21,7 +21,6 @@ device_types_t = str | Sequence[str] | None
 log = logging.getLogger(__name__)
 
 
-
 @overload
 def custom_op(
     name: str,
