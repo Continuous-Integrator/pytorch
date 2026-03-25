@@ -1005,8 +1005,8 @@ class ConstDictVariable(VariableTracker):
         other: VariableTracker,
         op: str,
     ) -> VariableTracker:
-        # CPython: dict_richcompare in Objects/dictobject.c
-        # https://github.com/python/cpython/blob/main/Objects/dictobject.c
+        # CPython: dict_richcompare
+        # https://github.com/python/cpython/blob/v3.13.0/Objects/dictobject.c (dict_richcompare)
         from .builder import SourcelessBuilder
 
         if op in ("__eq__", "__ne__"):
@@ -1114,7 +1114,7 @@ class MappingProxyVariable(VariableTracker):
         op: str,
     ) -> "VariableTracker":
         # CPython: mappingproxy_richcompare delegates to the underlying mapping, EQ/NE only
-        # https://github.com/python/cpython/blob/main/Objects/descrobject.c
+        # https://github.com/python/cpython/blob/v3.13.0/Objects/descrobject.c (mappingproxy_richcompare)
         if op not in ("__eq__", "__ne__"):
             return ConstantVariable.create(NotImplemented)
         if not isinstance(other, MappingProxyVariable):
@@ -1966,8 +1966,8 @@ class DictKeysVariable(DictViewVariable):
         other: VariableTracker,
         op: str,
     ) -> VariableTracker:
-        # CPython: dictview_richcompare in Objects/dictobject.c
-        # https://github.com/python/cpython/blob/main/Objects/dictobject.c
+        # CPython: dictview_richcompare
+        # https://github.com/python/cpython/blob/v3.13.0/Objects/dictobject.c (dictview_richcompare)
         #
         # Belongs on DictKeysVariable (not DictViewVariable) because:
         # - DictValuesVariable is explicitly not comparable
@@ -2061,8 +2061,8 @@ class DictItemsVariable(DictViewVariable):
         other: VariableTracker,
         op: str,
     ) -> VariableTracker:
-        # CPython: dictview_richcompare in Objects/dictobject.c
-        # https://github.com/python/cpython/blob/main/Objects/dictobject.c
+        # CPython: dictview_richcompare
+        # https://github.com/python/cpython/blob/v3.13.0/Objects/dictobject.c (dictview_richcompare)
         #
         # dict_items supports all 6 comparison ops with set/subset semantics,
         # accepting any PyAnySet_Check (set/frozenset) or PyDictViewSet_Check

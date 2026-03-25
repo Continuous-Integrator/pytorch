@@ -209,8 +209,23 @@ trace_call_log = torch._logging.getArtifactLogger(__name__, "trace_call")
 trace_source_log = torch._logging.getArtifactLogger(__name__, "trace_source")
 trace_bytecode_log = torch._logging.getArtifactLogger(__name__, "trace_bytecode")
 tls = threading.local()
+# Mapping from COMPARE_OP argval to dunder name for the 6 richcompare ops.
+# These are dispatched directly to generic_richcompare in COMPARE_OP,
+# bypassing the BuiltinVariable machinery.
+richcompare_argval_to_dunder: dict[str, str] = {
+    "==": "__eq__",
+    "!=": "__ne__",
+    "<": "__lt__",
+    "<=": "__le__",
+    ">": "__gt__",
+    ">=": "__ge__",
+}
+
+# is/is not still go through BuiltinVariable (identity, not richcompare)
 compare_op_handlers: dict[str, Any] = {
-    k: BuiltinVariable(v).call_function for k, v in supported_comparison_ops.items()
+    k: BuiltinVariable(v).call_function
+    for k, v in supported_comparison_ops.items()
+    if k not in richcompare_argval_to_dunder
 }
 handle_contains = BuiltinVariable(operator.contains).call_function
 handle_not = BuiltinVariable(operator.not_).call_function
@@ -2607,6 +2622,15 @@ class InstructionTranslatorBase(
     def COMPARE_OP(self, inst: Instruction) -> None:
         if inst.argval == "exception match":
             self.CHECK_EXC_MATCH(inst)
+        elif dunder := richcompare_argval_to_dunder.get(inst.argval):
+            from .variables.object_protocol import generic_richcompare
+
+            lhs, rhs = self.popn(2)
+            self.push(
+                generic_richcompare(
+                    cast("InstructionTranslator", self), lhs, rhs, dunder
+                )
+            )
         else:
             self.push(compare_op_handlers[inst.argval](self, self.popn(2), {}))
 

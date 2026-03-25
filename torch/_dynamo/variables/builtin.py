@@ -725,9 +725,15 @@ class BuiltinVariable(VariableTracker):
         ]
         op_handlers[operator.mul].extend(list_like_expansion_handlers)
 
+        # NOTE: COMPARE_OP dispatches the 6 richcompare ops (==, !=, <, <=, >,
+        # >=) directly to generic_richcompare, bypassing BuiltinVariable. These
+        # handlers are still used when operator.eq etc. are called as functions
+        # (e.g. operator.eq(a, b)).
         def create_cmp_op_handlers(
             op: Callable[..., Any],
         ) -> list[tuple[tuple[_TrackersType, _TrackersType], _HandlerCallback]]:
+            # For constant-vs-constant we can compare values directly without
+            # going through the full richcompare protocol.
             def compare_by_value(
                 tx: "InstructionTranslator", a: VariableTracker, b: VariableTracker
             ) -> VariableTracker:

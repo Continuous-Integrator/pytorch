@@ -69,6 +69,7 @@ from ..utils import (
     product,
     proxy_args_kwargs,
     raise_args_mismatch,
+    richcmp_op,
     set_example_value,
     tensortype_to_dtype,
 )
@@ -2065,6 +2066,31 @@ class SymNodeVariable(VariableTracker):
                 *proxy_args_kwargs([self, *args], kwargs),
             ),
         )
+
+    def richcompare_impl(
+        self,
+        tx: "InstructionTranslator",
+        other: VariableTracker,
+        op: str,
+    ) -> VariableTracker:
+        op_fn = richcmp_op.get(op)
+        if op_fn is None:
+            return ConstantVariable.create(NotImplemented)
+
+        if op_fn not in supported_tensor_comparison_op_values:
+            return ConstantVariable.create(NotImplemented)
+
+        # Seen in inspect signature where we check if the value is a default value
+        if isinstance(other, UserDefinedClassVariable):
+            return VariableTracker.build(tx, op_fn(object(), None))  # type: ignore[arg-type]
+
+        if not other.is_symnode_like() and not isinstance(other, ConstantVariable):
+            return ConstantVariable.create(NotImplemented)
+
+        proxy = tx.output.create_proxy(
+            "call_function", op_fn, (self.as_proxy(), other.as_proxy()), {}
+        )
+        return SymNodeVariable.create(tx, proxy, sym_num=None)
 
     def is_python_hashable(self) -> bool:
         return True
