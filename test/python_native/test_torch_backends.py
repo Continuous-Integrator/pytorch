@@ -37,26 +37,31 @@ class TestTorchBackends(TestCase):
                 del sys.modules[module_name]
 
     @contextmanager
-    def _mock_native_utils(self, backend_names=None, runtime_available=True, runtime_version=None):
+    def _mock_native_utils(
+        self, backend_names=None, runtime_available=True, runtime_version=None
+    ):
         """Context manager to mock the native utility functions."""
         if backend_names is None:
             backend_names = self._backends_to_test
 
         patches = []
         for backend in backend_names:
-            patches.extend([
-                patch(
-                    f"torch._native.{backend}_utils.runtime_available",
-                    return_value=runtime_available,
-                ),
-                patch(
-                    f"torch._native.{backend}_utils.runtime_version",
-                    return_value=runtime_version,
-                ),
-            ])
+            patches.extend(
+                [
+                    patch(
+                        f"torch._native.{backend}_utils.runtime_available",
+                        return_value=runtime_available,
+                    ),
+                    patch(
+                        f"torch._native.{backend}_utils.runtime_version",
+                        return_value=runtime_version,
+                    ),
+                ]
+            )
 
         # Apply all patches using contextlib.ExitStack for proper cleanup
         from contextlib import ExitStack
+
         with ExitStack() as stack:
             for patch_obj in patches:
                 stack.enter_context(patch_obj)
@@ -68,7 +73,9 @@ class TestTorchBackends(TestCase):
 
         for backend_name in self._backends_to_test:
             with self.subTest(backend=backend_name):
-                backend = __import__(f"torch.backends.{backend_name}", fromlist=[backend_name])
+                backend = __import__(
+                    f"torch.backends.{backend_name}", fromlist=[backend_name]
+                )
 
                 for attr in required_attrs:
                     with self.subTest(backend=backend_name, attribute=attr):
@@ -87,8 +94,12 @@ class TestTorchBackends(TestCase):
                     # Clear modules for clean import
                     self._clear_backend_modules(backend_name)
 
-                    with self._mock_native_utils([backend_name], runtime_available=runtime_available):
-                        backend = __import__(f"torch.backends.{backend_name}", fromlist=[backend_name])
+                    with self._mock_native_utils(
+                        [backend_name], runtime_available=runtime_available
+                    ):
+                        backend = __import__(
+                            f"torch.backends.{backend_name}", fromlist=[backend_name]
+                        )
 
                         result = backend.is_available()
                         self.assertIsInstance(result, bool)
@@ -109,8 +120,12 @@ class TestTorchBackends(TestCase):
                     # Clear modules for clean import
                     self._clear_backend_modules(backend_name)
 
-                    with self._mock_native_utils([backend_name], runtime_version=test_version):
-                        backend = __import__(f"torch.backends.{backend_name}", fromlist=[backend_name])
+                    with self._mock_native_utils(
+                        [backend_name], runtime_version=test_version
+                    ):
+                        backend = __import__(
+                            f"torch.backends.{backend_name}", fromlist=[backend_name]
+                        )
 
                         result = backend.version()
                         self.assertEqual(result, test_version)
@@ -119,10 +134,14 @@ class TestTorchBackends(TestCase):
         """Test that torch.backends.* enabled property defaults to True and can be set."""
         for backend_name in self._backends_to_test:
             with self.subTest(backend=backend_name):
-                backend = __import__(f"torch.backends.{backend_name}", fromlist=[backend_name])
+                backend = __import__(
+                    f"torch.backends.{backend_name}", fromlist=[backend_name]
+                )
 
                 # Test default value
-                self.assertTrue(backend.enabled, f"{backend_name} should be enabled by default")
+                self.assertTrue(
+                    backend.enabled, f"{backend_name} should be enabled by default"
+                )
 
                 # Get initial state for restoration
                 initial_state = backend.enabled
@@ -130,12 +149,16 @@ class TestTorchBackends(TestCase):
                 # Test disabling
                 with allow_nonbracketed_mutation():
                     backend.enabled = False
-                self.assertFalse(backend.enabled, f"Should be able to disable {backend_name}")
+                self.assertFalse(
+                    backend.enabled, f"Should be able to disable {backend_name}"
+                )
 
                 # Test re-enabling
                 with allow_nonbracketed_mutation():
                     backend.enabled = True
-                self.assertTrue(backend.enabled, f"Should be able to re-enable {backend_name}")
+                self.assertTrue(
+                    backend.enabled, f"Should be able to re-enable {backend_name}"
+                )
 
                 # Restore initial state
                 with allow_nonbracketed_mutation():
@@ -153,7 +176,9 @@ class TestTorchBackends(TestCase):
 
         for backend_name in self._backends_to_test:
             with self.subTest(backend=backend_name):
-                backend = __import__(f"torch.backends.{backend_name}", fromlist=[backend_name])
+                backend = __import__(
+                    f"torch.backends.{backend_name}", fromlist=[backend_name]
+                )
 
                 for enabled_value, description in set_flags_scenarios:
                     with self.subTest(backend=backend_name, scenario=description):
@@ -169,11 +194,15 @@ class TestTorchBackends(TestCase):
 
                         if enabled_value is False:
                             self.assertFalse(backend.enabled)
-                            mock_disable.assert_called_with(disable_dsl_names=backend_name)
+                            mock_disable.assert_called_with(
+                                disable_dsl_names=backend_name
+                            )
                             mock_reenable.assert_not_called()
                         elif enabled_value is True:
                             self.assertTrue(backend.enabled)
-                            mock_reenable.assert_called_with(enable_dsl_names=backend_name)
+                            mock_reenable.assert_called_with(
+                                enable_dsl_names=backend_name
+                            )
                         else:  # None case
                             self.assertTrue(backend.enabled)  # Should remain unchanged
                             mock_disable.assert_not_called()
@@ -188,7 +217,9 @@ class TestTorchBackends(TestCase):
 
         for backend_name in self._backends_to_test:
             with self.subTest(backend=backend_name):
-                backend = __import__(f"torch.backends.{backend_name}", fromlist=[backend_name])
+                backend = __import__(
+                    f"torch.backends.{backend_name}", fromlist=[backend_name]
+                )
 
                 for flags_kwargs, description in context_scenarios:
                     with self.subTest(backend=backend_name, scenario=description):
@@ -211,7 +242,9 @@ class TestTorchBackends(TestCase):
         """Test torch.backends.*.flags context manager restores state on exception."""
         for backend_name in self._backends_to_test:
             with self.subTest(backend=backend_name):
-                backend = __import__(f"torch.backends.{backend_name}", fromlist=[backend_name])
+                backend = __import__(
+                    f"torch.backends.{backend_name}", fromlist=[backend_name]
+                )
 
                 # Ensure starting state is enabled
                 with allow_nonbracketed_mutation():
@@ -231,7 +264,9 @@ class TestTorchBackends(TestCase):
         """Test that torch.backends.* modules are properly replaced with PropModule."""
         for backend_name in self._backends_to_test:
             with self.subTest(backend=backend_name):
-                backend = __import__(f"torch.backends.{backend_name}", fromlist=[backend_name])
+                backend = __import__(
+                    f"torch.backends.{backend_name}", fromlist=[backend_name]
+                )
 
                 # Check that the module is the custom PropModule instance
                 from torch.backends import PropModule
