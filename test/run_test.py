@@ -333,7 +333,6 @@ CI_SERIAL_LIST = [
     "inductor/test_max_autotune",
     "inductor/test_cutlass_backend",  # slow due to many nvcc compilation steps,
     "inductor/test_flex_attention",  # OOM
-    "test_optim",  # OOM on k8s runner when all 3 shards run at the same time on the same node
 ]
 # A subset of onnx tests that cannot run in parallel due to high memory usage.
 ONNX_SERIAL_LIST = [
