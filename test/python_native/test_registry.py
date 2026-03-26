@@ -247,8 +247,15 @@ class TestRegistry(TestCase):
         self.assertFalse(node.unconditional_override)
         self.assertTrue(node.active)
 
-        mock_lib.impl.assert_called_with(
-            "add.Tensor", impl_fn, "CPU", with_keyset=True, allow_override=False
+        # In the lazy model, library.impl should not be called immediately
+        mock_lib.impl.assert_not_called()
+
+        # But when we trigger registration, it should be called
+        self.registry._register_overrides_from_graph(
+            "add.Tensor", "CPU", self.registry._graphs[key]
+        )
+        mock_lib.impl.assert_called_once_with(
+            "add.Tensor", impl_fn, "CPU", with_keyset=True, allow_override=True
         )
 
         # Test 2: Unconditional override
@@ -266,8 +273,13 @@ class TestRegistry(TestCase):
         node2 = self.registry._graphs[key2][0]
         self.assertTrue(node2.unconditional_override)
 
+        # Test lazy registration for unconditional override
+        mock_lib.impl.assert_not_called()
+        self.registry._register_overrides_from_graph(
+            "mul.Tensor", "CPU", self.registry._graphs[key2]
+        )
         mock_lib.impl.assert_called_with(
-            "mul.Tensor", impl_fn, "CPU", with_keyset=False, allow_override=False
+            "mul.Tensor", impl_fn, "CPU", with_keyset=False, allow_override=True
         )
 
         # Test 3: Allow multiple overrides
@@ -281,9 +293,71 @@ class TestRegistry(TestCase):
             allow_multiple_override=True,
         )
 
+        key3 = ("div.Tensor", "CPU")
+        # In lazy model, no immediate registration
+        mock_lib.impl.assert_not_called()
+
+        # Test lazy registration for multiple overrides
+        self.registry._register_overrides_from_graph(
+            "div.Tensor", "CPU", self.registry._graphs[key3]
+        )
         mock_lib.impl.assert_called_with(
             "div.Tensor", impl_fn, "CPU", with_keyset=True, allow_override=True
         )
+
+    @patch("torch.library.Library")
+    def test_lazy_registration_model(self, mock_library_cls):
+        """Test that registration is lazy and only happens when explicitly triggered."""
+        mock_lib = MagicMock()
+        mock_library_cls.return_value = mock_lib
+
+        def impl_fn1(x):
+            return x + 1
+
+        def impl_fn2(x):
+            return x + 2
+
+        # Register multiple overrides
+        self.registry.register_op_override(
+            backend="backend1",
+            lib_symbol="aten",
+            op_symbol="lazy_test.Tensor",
+            dispatch_key="CPU",
+            impl=impl_fn1,
+        )
+
+        self.registry.register_op_override(
+            backend="backend2",
+            lib_symbol="aten",
+            op_symbol="lazy_test.Tensor",
+            dispatch_key="CUDA",
+            impl=impl_fn2,
+        )
+
+        # At this point, no lib.impl calls should have been made
+        mock_lib.impl.assert_not_called()
+
+        # But graphs should be populated
+        key1 = ("lazy_test.Tensor", "CPU")
+        key2 = ("lazy_test.Tensor", "CUDA")
+        self.assertIn(key1, self.registry._graphs)
+        self.assertIn(key2, self.registry._graphs)
+        self.assertEqual(len(self.registry._graphs[key1]), 1)
+        self.assertEqual(len(self.registry._graphs[key2]), 1)
+
+        # No libraries should be created yet
+        self.assertNotIn(key1, self.registry._libs)
+        self.assertNotIn(key2, self.registry._libs)
+
+        # Now trigger all registrations
+        self.registry._register_all_overrides()
+
+        # Now lib.impl should have been called for both registrations
+        self.assertEqual(mock_lib.impl.call_count, 2)
+
+        # And libraries should exist
+        self.assertIn(key1, self.registry._libs)
+        self.assertIn(key2, self.registry._libs)
 
     @patch("torch.library.Library")
     def testderegister_op_overrides(self, mock_library_cls):
@@ -384,6 +458,9 @@ class TestRegistry(TestCase):
             "dsl2", "aten", "add.Tensor", "CPU", impl_fn2
         )
 
+        # In the lazy model, we need to trigger actual registration to create libraries
+        self.registry._register_all_overrides()
+
         # Check both are registered
         key = ("add.Tensor", "CPU")
         self.assertEqual(len(self.registry._graphs[key]), 2)
@@ -450,6 +527,8 @@ class TestRegistry(TestCase):
         self.assertTrue(all(node.active for node in nodes))
 
         # Test 2: Remove middle override
+        # In the lazy model, we need to trigger actual registration first
+        self.registry._register_all_overrides()
         self.registry.deregister_op_overrides(disable_dsl_names="backend2")
         nodes = self.registry._graphs[key]
         backend1_node = next(n for n in nodes if n.dsl_name == "backend1")
@@ -492,6 +571,8 @@ class TestRegistry(TestCase):
             backends_all, op_symbol_all, dispatch_key, mock_library_cls
         )
 
+        # Trigger registration before deregistration
+        self.registry._register_all_overrides()
         self.registry.deregister_op_overrides(disable_dsl_names=backends_all)
         nodes_all = self.registry._graphs[key_all]
         self.assertTrue(all(not node.active for node in nodes_all))
@@ -549,6 +630,9 @@ class TestRegistry(TestCase):
             add_impl_fn2,
             allow_multiple_override=True,
         )
+
+        # In the lazy model, we need to trigger actual registration to create libraries
+        self.registry._register_all_overrides()
 
         # Remove by op_symbol should affect all backends for that op only
         self.registry.deregister_op_overrides(disable_op_symbols="mul.Tensor")
@@ -612,6 +696,9 @@ class TestRegistry(TestCase):
             allow_multiple_override=True,
         )
 
+        # In the lazy model, we need to trigger actual registration to create libraries
+        self.registry._register_all_overrides()
+
         # Remove by dispatch_key should affect all operations for CUDA only
         self.registry.deregister_op_overrides(disable_dispatch_keys="CUDA")
 
@@ -666,6 +753,9 @@ class TestRegistry(TestCase):
                         impl_fn,
                         allow_multiple_override=True,
                     )
+
+        # In the lazy model, we need to trigger actual registration to create libraries
+        self.registry._register_all_overrides()
 
         # Complex deregistration:
         # - Disable triton backend (affects all ops/dispatch_keys for triton)
@@ -732,6 +822,9 @@ class TestRegistry(TestCase):
                 impl2,
                 allow_multiple_override=True,
             )
+
+            # In the lazy model, we need to trigger actual registration to create libraries
+            self.registry._register_all_overrides()
 
             # Verify registry state
             key = (test_op, "CPU")
@@ -806,6 +899,9 @@ class TestRegistry(TestCase):
                     impl_fn,
                     allow_multiple_override=True,
                 )
+
+            # In the lazy model, we need to trigger actual registration to create libraries
+            self.registry._register_all_overrides()
 
             # Partial deregistration
             # Note: PyTorch may warn about kernel override (but only shows warning once per session)
@@ -1084,6 +1180,448 @@ class TestRegistry(TestCase):
 
         self.assertIs(filter_state_ref1, filter_state_ref2)
         self.assertIn("test_dsl", filter_state_ref2._dsl_names)
+
+    def test_reorder_graphs_basic_reordering(self):
+        """Test that user ordering function correctly reorders graphs."""
+
+        # Set up test nodes
+        def impl_fn1(x):
+            return x + 1
+
+        def impl_fn2(x):
+            return x + 2
+
+        def impl_fn3(x):
+            return x + 3
+
+        # Register multiple overrides for the same operation
+        key = ("test_reorder.Tensor", "CPU")
+        node1 = self.registry._OverrideNode(
+            "backend1", "test_reorder.Tensor", "CPU", impl_fn1
+        )
+        node2 = self.registry._OverrideNode(
+            "backend2", "test_reorder.Tensor", "CPU", impl_fn2
+        )
+        node3 = self.registry._OverrideNode(
+            "backend3", "test_reorder.Tensor", "CPU", impl_fn3
+        )
+
+        self.registry._graphs[key] = [node1, node2, node3]
+
+        # Define a reverse ordering function
+        def reverse_order(op_symbol, dispatch_key, graph):
+            return list(reversed(graph))
+
+        # Apply reordering (without reregistration)
+        self.registry.reorder_graphs_from_user_fn(reverse_order)
+
+        # Verify the graph was reordered
+        reordered_graph = self.registry._graphs[key]
+        self.assertEqual(len(reordered_graph), 3)
+        self.assertEqual(reordered_graph[0].dsl_name, "backend3")
+        self.assertEqual(reordered_graph[1].dsl_name, "backend2")
+        self.assertEqual(reordered_graph[2].dsl_name, "backend1")
+
+        # Clean up
+        self._cleanup_test_registration(key)
+
+    def test_reorder_graphs_no_reregistration_by_default(self):
+        """Test that reregister_overrides=False doesn't trigger lib.impl calls."""
+        # Set up test nodes with a mock library
+        with patch("torch.library.Library") as mock_library_cls:
+            mock_lib = MagicMock()
+            mock_library_cls.return_value = mock_lib
+
+            def impl_fn1(x):
+                return x + 1
+
+            def impl_fn2(x):
+                return x + 2
+
+            key = ("test_no_reregister.Tensor", "CPU")
+            node1 = self.registry._OverrideNode(
+                "backend1", "test_no_reregister.Tensor", "CPU", impl_fn1
+            )
+            node2 = self.registry._OverrideNode(
+                "backend2", "test_no_reregister.Tensor", "CPU", impl_fn2
+            )
+
+            # Set up initial state with existing library
+            self.registry._graphs[key] = [node1, node2]
+            self.registry._libs[key] = mock_lib
+
+            # Define ordering function that changes order
+            def reverse_order(op_symbol, dispatch_key, graph):
+                return list(reversed(graph))
+
+            # Apply reordering with default reregister_overrides=False
+            self.registry.reorder_graphs_from_user_fn(reverse_order)
+
+            # Verify no lib.impl calls were made (no re-registration)
+            mock_lib.impl.assert_not_called()
+
+            # Verify the graph was still reordered
+            reordered_graph = self.registry._graphs[key]
+            self.assertEqual(reordered_graph[0].dsl_name, "backend2")
+            self.assertEqual(reordered_graph[1].dsl_name, "backend1")
+
+            # Clean up
+            self._cleanup_test_registration(key)
+
+    @patch("torch.library.Library")
+    def test_reorder_graphs_with_reregistration(self, mock_library_cls):
+        """Test that reregister_overrides=True triggers re-registration for changed graphs."""
+        mock_old_lib = MagicMock()
+        mock_new_lib = MagicMock()
+        mock_library_cls.return_value = mock_new_lib
+
+        def impl_fn1(x):
+            return x + 1
+
+        def impl_fn2(x):
+            return x + 2
+
+        key = ("test_reregister.Tensor", "CPU")
+        node1 = self.registry._OverrideNode(
+            "backend1", "test_reregister.Tensor", "CPU", impl_fn1
+        )
+        node2 = self.registry._OverrideNode(
+            "backend2", "test_reregister.Tensor", "CPU", impl_fn2
+        )
+
+        # Set up initial state with existing library
+        self.registry._graphs[key] = [node1, node2]
+        self.registry._libs[key] = mock_old_lib
+
+        # Define ordering function that changes order
+        def reverse_order(op_symbol, dispatch_key, graph):
+            return list(reversed(graph))
+
+        # Apply reordering with reregister_overrides=True
+        self.registry.reorder_graphs_from_user_fn(
+            reverse_order, reregister_overrides=True
+        )
+
+        # Verify the old library was removed
+        self.assertNotEqual(self.registry._libs[key], mock_old_lib)
+        self.assertEqual(self.registry._libs[key], mock_new_lib)
+
+        # Verify re-registration occurred in new order
+        self.assertEqual(mock_new_lib.impl.call_count, 2)
+        # First call should be for backend2 (now first), second for backend1 (now second)
+        calls = mock_new_lib.impl.call_args_list
+        self.assertEqual(calls[0][0][1], impl_fn2)  # backend2's function
+        self.assertEqual(calls[1][0][1], impl_fn1)  # backend1's function
+
+        # Verify the graph was reordered
+        reordered_graph = self.registry._graphs[key]
+        self.assertEqual(reordered_graph[0].dsl_name, "backend2")
+        self.assertEqual(reordered_graph[1].dsl_name, "backend1")
+
+        # Clean up
+        self._cleanup_test_registration(key)
+
+    @patch("torch.library.Library")
+    def test_reorder_graphs_unchanged_graphs_no_reregistration(self, mock_library_cls):
+        """Test that unchanged graphs don't trigger unnecessary re-registration."""
+        mock_lib = MagicMock()
+        mock_library_cls.return_value = mock_lib
+
+        def impl_fn1(x):
+            return x + 1
+
+        def impl_fn2(x):
+            return x + 2
+
+        key = ("test_unchanged.Tensor", "CPU")
+        node1 = self.registry._OverrideNode(
+            "backend1", "test_unchanged.Tensor", "CPU", impl_fn1
+        )
+        node2 = self.registry._OverrideNode(
+            "backend2", "test_unchanged.Tensor", "CPU", impl_fn2
+        )
+
+        # Set up initial state
+        original_graph = [node1, node2]
+        self.registry._graphs[key] = original_graph
+        self.registry._libs[key] = mock_lib
+
+        # Define ordering function that doesn't change order
+        def no_change_order(op_symbol, dispatch_key, graph):
+            return graph  # Return same order
+
+        # Apply reordering with reregister_overrides=True
+        self.registry.reorder_graphs_from_user_fn(
+            no_change_order, reregister_overrides=True
+        )
+
+        # Verify the library wasn't replaced (no re-registration needed)
+        self.assertEqual(self.registry._libs[key], mock_lib)
+
+        # Verify no lib.impl calls were made
+        mock_lib.impl.assert_not_called()
+
+        # Clean up
+        self._cleanup_test_registration(key)
+
+    def test_reorder_graphs_by_dsl_name_alphabetical(self):
+        """Test ordering overrides by DSL name instead of registration order."""
+
+        # Set up test nodes with DSL names NOT in alphabetical order
+        def impl_fn_zebra(x):
+            return x + 100
+
+        def impl_fn_alpha(x):
+            return x + 200
+
+        def impl_fn_charlie(x):
+            return x + 300
+
+        key = ("test_alphabetical.Tensor", "CPU")
+        # Register in non-alphabetical order: zebra -> alpha -> charlie
+        node_zebra = self.registry._OverrideNode(
+            "zebra_backend", "test_alphabetical.Tensor", "CPU", impl_fn_zebra
+        )
+        node_alpha = self.registry._OverrideNode(
+            "alpha_backend", "test_alphabetical.Tensor", "CPU", impl_fn_alpha
+        )
+        node_charlie = self.registry._OverrideNode(
+            "charlie_backend", "test_alphabetical.Tensor", "CPU", impl_fn_charlie
+        )
+
+        self.registry._graphs[key] = [node_zebra, node_alpha, node_charlie]
+
+        # Define alphabetical ordering function by DSL name
+        def alphabetical_by_dsl(op_symbol, dispatch_key, graph):
+            return sorted(graph, key=lambda node: node.dsl_name)
+
+        # Apply alphabetical reordering
+        self.registry.reorder_graphs_from_user_fn(alphabetical_by_dsl)
+
+        # Verify the graph was reordered alphabetically
+        reordered_graph = self.registry._graphs[key]
+        self.assertEqual(len(reordered_graph), 3)
+        self.assertEqual(reordered_graph[0].dsl_name, "alpha_backend")
+        self.assertEqual(reordered_graph[1].dsl_name, "charlie_backend")
+        self.assertEqual(reordered_graph[2].dsl_name, "zebra_backend")
+
+        # Clean up
+        self._cleanup_test_registration(key)
+
+    @patch("torch.library.Library")
+    def test_reorder_graphs_by_dsl_name_with_reregistration(self, mock_library_cls):
+        """Test that alphabetical reordering with reregistration preserves the new order."""
+        mock_lib = MagicMock()
+        mock_library_cls.return_value = mock_lib
+
+        def impl_fn_zebra(x):
+            return x + 100
+
+        def impl_fn_alpha(x):
+            return x + 200
+
+        key = ("test_alpha_reregister.Tensor", "CPU")
+        # Register in reverse alphabetical order
+        node_zebra = self.registry._OverrideNode(
+            "zebra_backend", "test_alpha_reregister.Tensor", "CPU", impl_fn_zebra
+        )
+        node_alpha = self.registry._OverrideNode(
+            "alpha_backend", "test_alpha_reregister.Tensor", "CPU", impl_fn_alpha
+        )
+
+        self.registry._graphs[key] = [node_zebra, node_alpha]
+        self.registry._libs[key] = MagicMock()  # Existing library to be replaced
+
+        # Define alphabetical ordering function
+        def alphabetical_by_dsl(op_symbol, dispatch_key, graph):
+            return sorted(graph, key=lambda node: node.dsl_name)
+
+        # Apply reordering with reregistration
+        self.registry.reorder_graphs_from_user_fn(
+            alphabetical_by_dsl, reregister_overrides=True
+        )
+
+        # Verify re-registration occurred in alphabetical order
+        self.assertEqual(mock_lib.impl.call_count, 2)
+        calls = mock_lib.impl.call_args_list
+        # First call should be for alpha_backend (alphabetically first)
+        self.assertEqual(calls[0][0][1], impl_fn_alpha)
+        # Second call should be for zebra_backend (alphabetically second)
+        self.assertEqual(calls[1][0][1], impl_fn_zebra)
+
+        # Verify graph order is preserved
+        reordered_graph = self.registry._graphs[key]
+        self.assertEqual(reordered_graph[0].dsl_name, "alpha_backend")
+        self.assertEqual(reordered_graph[1].dsl_name, "zebra_backend")
+
+        # Clean up
+        self._cleanup_test_registration(key)
+
+    def test_reorder_graphs_selective_disabling_by_empty_list(self):
+        """Test selective disabling of op_symbol overrides by returning [] as the transformed graph."""
+
+        # Set up test nodes for multiple operations
+        def impl_fn_keep(x):
+            return x + 100
+
+        def impl_fn_disable1(x):
+            return x + 200
+
+        def impl_fn_disable2(x):
+            return x + 300
+
+        key_keep = ("keep_operation.Tensor", "CPU")
+        key_disable = ("disable_operation.Tensor", "CPU")
+
+        # Register overrides for operations we want to keep and disable
+        node_keep = self.registry._OverrideNode(
+            "test_backend", "keep_operation.Tensor", "CPU", impl_fn_keep
+        )
+        node_disable1 = self.registry._OverrideNode(
+            "backend1", "disable_operation.Tensor", "CPU", impl_fn_disable1
+        )
+        node_disable2 = self.registry._OverrideNode(
+            "backend2", "disable_operation.Tensor", "CPU", impl_fn_disable2
+        )
+
+        self.registry._graphs[key_keep] = [node_keep]
+        self.registry._graphs[key_disable] = [node_disable1, node_disable2]
+
+        # Define selective disabling function - return [] for "disable_operation"
+        def selective_disable(op_symbol, dispatch_key, graph):
+            if op_symbol == "disable_operation.Tensor":
+                return []  # Disable this operation entirely
+            return graph  # Keep other operations as-is
+
+        # Apply selective disabling
+        self.registry.reorder_graphs_from_user_fn(selective_disable)
+
+        # Verify the disable operation has empty graph
+        disabled_graph = self.registry._graphs[key_disable]
+        self.assertEqual(len(disabled_graph), 0)
+        self.assertEqual(disabled_graph, [])
+
+        # Verify the keep operation is unchanged
+        kept_graph = self.registry._graphs[key_keep]
+        self.assertEqual(len(kept_graph), 1)
+        self.assertEqual(kept_graph[0].dsl_name, "test_backend")
+
+        # Clean up
+        self._cleanup_test_registration(key_keep)
+        self._cleanup_test_registration(key_disable)
+
+    @patch("torch.library.Library")
+    def test_reorder_graphs_selective_disabling_with_reregistration(
+        self, mock_library_cls
+    ):
+        """Test that selective disabling with reregistration handles empty graphs correctly."""
+        mock_lib_disable = MagicMock()
+        mock_library_cls.return_value = mock_lib_disable
+
+        def impl_fn_keep(x):
+            return x + 100
+
+        def impl_fn_disable(x):
+            return x + 200
+
+        key_keep = ("keep_reregister.Tensor", "CPU")
+        key_disable = ("disable_reregister.Tensor", "CPU")
+
+        # Set up initial state with existing libraries
+        node_keep = self.registry._OverrideNode(
+            "test_backend", "keep_reregister.Tensor", "CPU", impl_fn_keep
+        )
+        node_disable = self.registry._OverrideNode(
+            "test_backend", "disable_reregister.Tensor", "CPU", impl_fn_disable
+        )
+
+        self.registry._graphs[key_keep] = [node_keep]
+        self.registry._graphs[key_disable] = [node_disable]
+        self.registry._libs[key_keep] = MagicMock()
+        self.registry._libs[key_disable] = MagicMock()
+
+        # Define selective disabling function
+        def selective_disable(op_symbol, dispatch_key, graph):
+            if op_symbol == "disable_reregister.Tensor":
+                return []  # Disable this operation (graph changes)
+            return graph  # Keep others unchanged (no graph change)
+
+        # Apply selective disabling with reregistration
+        self.registry.reorder_graphs_from_user_fn(
+            selective_disable, reregister_overrides=True
+        )
+
+        # Verify the disabled operation: library should be completely removed (no library for empty graphs)
+        self.assertNotIn(
+            key_disable, self.registry._libs
+        )  # No library should exist for disabled operations
+        mock_lib_disable.impl.assert_not_called()  # And no implementations registered
+
+        # Verify the kept operation: since graph didn't change, library wasn't replaced
+        # The original mock library should still be there (not the new mock)
+        self.assertIn(key_keep, self.registry._libs)
+        self.assertNotEqual(
+            self.registry._libs[key_keep], mock_lib_disable
+        )  # Should be the original library
+
+        # Verify graph states
+        self.assertEqual(len(self.registry._graphs[key_disable]), 0)  # Empty (disabled)
+        self.assertEqual(len(self.registry._graphs[key_keep]), 1)  # Unchanged (kept)
+
+        # Clean up
+        self._cleanup_test_registration(key_keep)
+        self._cleanup_test_registration(key_disable)
+
+    def test_reorder_graphs_priority_based_ordering(self):
+        """Test priority-based ordering where certain DSLs have higher priority."""
+
+        # Set up test nodes with mixed priority backends
+        def impl_fn_triton(x):
+            return x + 100
+
+        def impl_fn_cutedsl(x):
+            return x + 200
+
+        def impl_fn_fallback(x):
+            return x + 300
+
+        key = ("test_priority.Tensor", "CPU")
+        # Register in random order
+        node_fallback = self.registry._OverrideNode(
+            "fallback_backend", "test_priority.Tensor", "CPU", impl_fn_fallback
+        )
+        node_triton = self.registry._OverrideNode(
+            "triton", "test_priority.Tensor", "CPU", impl_fn_triton
+        )
+        node_cutedsl = self.registry._OverrideNode(
+            "cutedsl", "test_priority.Tensor", "CPU", impl_fn_cutedsl
+        )
+
+        self.registry._graphs[key] = [node_fallback, node_triton, node_cutedsl]
+
+        # Define priority ordering: triton > cutedsl > others (alphabetical)
+        def priority_order(op_symbol, dispatch_key, graph):
+            priority_map = {"triton": 0, "cutedsl": 1}
+
+            def get_priority(node):
+                return (priority_map.get(node.dsl_name, 999), node.dsl_name)
+
+            return sorted(graph, key=get_priority)
+
+        # Apply priority-based reordering
+        self.registry.reorder_graphs_from_user_fn(priority_order)
+
+        # Verify the graph was reordered by priority
+        reordered_graph = self.registry._graphs[key]
+        self.assertEqual(len(reordered_graph), 3)
+        self.assertEqual(reordered_graph[0].dsl_name, "triton")  # Highest priority
+        self.assertEqual(reordered_graph[1].dsl_name, "cutedsl")  # Second priority
+        self.assertEqual(
+            reordered_graph[2].dsl_name, "fallback_backend"
+        )  # Lowest priority (fallback)
+
+        # Clean up
+        self._cleanup_test_registration(key)
 
     def _cleanup_test_registration(self, key):
         """Helper method to clean up test registrations."""
