@@ -94,6 +94,13 @@ class DistTensorRandomInitTest(DTensorTestBase):
         self._run_init_op(torch.Tensor.log_normal_)
 
     @with_comms
+    def test_init_ops_dtypes(self):
+        for dtype in (torch.float32, torch.float16):
+            self._run_init_op(torch.rand_like, dtype=dtype)
+            self._run_init_op(torch.randn_like, dtype=dtype)
+            self._run_init_op(torch.randint_like, low=0, high=100, dtype=dtype)
+
+    @with_comms
     def test_multinomial_sharded(self):
         """Test multinomial with sharded batch dimension."""
         device_mesh = self.build_device_mesh()
@@ -109,12 +116,18 @@ class DistTensorRandomInitTest(DTensorTestBase):
         # Output should also be sharded on dim 0
         self.assertEqual(result.placements, (Shard(0),))
 
-    @with_comms
-    def test_init_ops_dtypes(self):
-        for dtype in (torch.float32, torch.float16):
-            self._run_init_op(torch.rand_like, dtype=dtype)
-            self._run_init_op(torch.randn_like, dtype=dtype)
-            self._run_init_op(torch.randint_like, low=0, high=100, dtype=dtype)
+        # Shard on last dim (categories) — not supported, should redistribute
+        # to Replicate before sampling since the strategy excludes this dim.
+        dt_probs_last = distribute_tensor(probs, device_mesh, [Shard(1)])
+        with CommDebugMode() as comm_mode:
+            result_last = torch.multinomial(
+                dt_probs_last, num_samples=2, replacement=True
+            )
+        # Should have triggered a redistribute (all_gather) to unshard the categories dim
+        self.assertGreater(comm_mode.get_total_counts(), 0)
+        self.assertEqual(result_last.shape, torch.Size([8, 2]))
+        # Output should be Replicate since input was redistributed to Replicate
+        self.assertEqual(result_last.placements, (Replicate(),))
 
     @with_comms
     @skip_if_lt_x_gpu(4)
