@@ -13,7 +13,7 @@ Tests cover:
 """
 
 import collections
-import unittest
+
 import torch
 import torch._dynamo.test_case
 from torch.testing._internal.common_utils import make_dynamo_test
@@ -55,7 +55,7 @@ class _BaseSequenceLen:
 
     @make_dynamo_test
     def test_len_nested(self):
-        inner = self.thetype([1, 2]) if self.thetype == tuple else [1, 2]
+        inner = self.thetype([1, 2])
         seq = self.thetype([inner, inner, inner])
         self.assertEqual(len(seq), 3)
         self.assertEqual(seq.__len__(), 3)
@@ -154,8 +154,6 @@ class _BaseMappingLen:
 
 class TestDictLen(_BaseMappingLen, torch._dynamo.test_case.TestCase):
     """Tests for len() on dict objects"""
-
-    pass
 
 
 class TestOrderedDictLen(_BaseMappingLen, torch._dynamo.test_case.TestCase):
