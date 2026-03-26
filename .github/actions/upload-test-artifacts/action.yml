@@ -226,22 +226,20 @@ runs:
           usage_log.txt
           test/**/*.log
 
-    - name: Store Profiler Traces on Github (fallback)
+    - name: Store Profiler Traces on Github
       uses: actions/upload-artifact@v4
-      if: steps.check-s3.outputs.s3-failed == 'true'
       continue-on-error: true
       with:
-        name: profiler-traces-runattempt${{ github.run_attempt }}-${{ inputs.file-suffix }}.zip
+        name: profiler-traces-runattempt${{ github.run_attempt }}-${{ inputs.file-suffix }}
         retention-days: 14
         if-no-files-found: ignore
         path: test/test-reports/profiler_traces/**/*
 
-    - name: Store TLParse Output on Github (fallback)
+    - name: Store TLParse Output on Github
       uses: actions/upload-artifact@v4
-      if: steps.check-s3.outputs.s3-failed == 'true'
       continue-on-error: true
       with:
-        name: tlparse-runattempt${{ github.run_attempt }}-${{ inputs.file-suffix }}.zip
+        name: tlparse-runattempt${{ github.run_attempt }}-${{ inputs.file-suffix }}
         retention-days: 14
         if-no-files-found: ignore
         path: test/test-reports/tlparse_output/**/*
