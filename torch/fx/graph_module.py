@@ -866,6 +866,48 @@ class {module_name}(torch.nn.Module):
             )
         return self._code
 
+    def _dump_codegen_to_disk(self, python_code_globals: dict[str, Any] | None = None) -> None:
+        """Write generated source to content-addressed file for debugging.
+
+        When ``codegen_dump_dir`` is set or ``profiler_codegen`` is enabled,
+        dump ``self._code`` to disk with a SHA-256-based filename.
+        If ``python_code_globals`` is provided, also exec from disk and
+        install a hot-reload forward wrapper.
+        """
+        dump_dir = fx_experimental_config.codegen_dump_dir
+        if not dump_dir and fx_experimental_config.profiler_codegen:
+            import tempfile
+
+            dump_dir = os.path.join(tempfile.gettempdir(), "torch_fx_codegen")
+        if not dump_dir:
+            return
+        code_hash = hashlib.sha256(self._code.encode("utf-8")).hexdigest()[:16]
+        dump_filename = f"fx_{code_hash}.py"
+        dump_path = os.path.join(dump_dir, dump_filename)
+        os.makedirs(dump_dir, exist_ok=True)
+        if not os.path.exists(dump_path):
+            with open(dump_path, "w") as f:
+                f.write(self._code)
+        self._codegen_dump_path = dump_path
+        self._codegen_dump_hash = code_hash
+        self._codegen_dump_mtime = os.path.getmtime(dump_path)
+
+        trace_structured(
+            "fx_codegen_dump",
+            lambda: {
+                "filename": dump_filename,
+                "file_path": os.path.abspath(dump_path),
+            },
+            payload_fn=lambda: self._code,
+            expect_trace_id=False,
+        )
+
+        # Hot-reload: exec from disk file and install a forward wrapper
+        # that checks for file modifications on each call.
+        if python_code_globals is not None:
+            self._codegen_reload_from_disk(python_code_globals)
+            self._codegen_python_code_globals = python_code_globals
+
     def _codegen_check_modified(self) -> bool:
         """Check if the dumped codegen file was modified since last load.
 
@@ -941,12 +983,10 @@ class {module_name}(torch.nn.Module):
 
         # ProfilerCodeGen has its own dual-path profiler instrumentation,
         # skip the old record_func / enrich_profiler_metadata path.
-        use_record_func = fx_experimental_config.enrich_profiler_metadata
-        if use_record_func:
-            from torch.fx.profiler_codegen import ProfilerCodeGen
-
-            if isinstance(self._graph._codegen, ProfilerCodeGen):
-                use_record_func = False
+        use_record_func = (
+            fx_experimental_config.enrich_profiler_metadata
+            and not fx_experimental_config.profiler_codegen
+        )
         python_code = self._graph.python_code(
             root_module="self",
             record_func=use_record_func,
@@ -955,40 +995,10 @@ class {module_name}(torch.nn.Module):
         self._lineno_map = python_code._lineno_map
         self._prologue_start = python_code._prologue_start
 
-        # Disk dump: write generated source to content-addressed file.
+        # Disk dump + hot-reload: write generated source to content-addressed file.
         # When codegen_dump_dir is set, the file is executable and supports
         # hot-reload: edit the file on disk and the next forward() picks up changes.
-        dump_dir = fx_experimental_config.codegen_dump_dir
-        if not dump_dir and fx_experimental_config.profiler_codegen:
-            import tempfile
-
-            dump_dir = os.path.join(tempfile.gettempdir(), "torch_fx_codegen")
-        if dump_dir:
-            code_hash = hashlib.sha256(self._code.encode("utf-8")).hexdigest()[:16]
-            dump_filename = f"fx_{code_hash}.py"
-            dump_path = os.path.join(dump_dir, dump_filename)
-            os.makedirs(dump_dir, exist_ok=True)
-            if not os.path.exists(dump_path):
-                with open(dump_path, "w") as f:
-                    f.write(self._code)
-            self._codegen_dump_path = dump_path
-            self._codegen_dump_hash = code_hash
-            self._codegen_dump_mtime = os.path.getmtime(dump_path)
-
-            trace_structured(
-                "fx_codegen_dump",
-                lambda: {
-                    "filename": dump_filename,
-                    "file_path": os.path.abspath(dump_path),
-                },
-                payload_fn=lambda: self._code,
-              expect_trace_id=False,
-            )
-
-            # Hot-reload: exec from disk file and install a forward wrapper
-            # that checks for file modifications on each call.
-            self._codegen_reload_from_disk(python_code.globals)
-            self._codegen_python_code_globals = python_code.globals
+        self._dump_codegen_to_disk(python_code.globals)
 
         cls = type(self)
         co_fields = self._graph._co_fields if hasattr(self._graph, "_co_fields") else {}
