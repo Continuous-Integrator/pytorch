@@ -2433,8 +2433,15 @@ def fallback_node_due_to_unsupported_type(node: torch.fx.Node, allow_cpu_inputs=
     return check_skip_condition(node, is_output=True)
 
 
-def make_fallback(op, layout_constraint=None, warn=True, override_decomp=False):
-    assert op not in decompositions or override_decomp, (
+def make_fallback(
+    op,
+    layout_constraint=None,
+    warn=True,
+    override_decomp=False,
+    get_decomp_fn=None,
+):
+    check_decomps = get_decomp_fn() if get_decomp_fn is not None else decompositions
+    assert op not in check_decomps or override_decomp, (
         f"both a fallback and a decomp for same op: {op}"
     )
     if (
@@ -2594,6 +2601,7 @@ make_fallback(aten.randint)
 make_fallback(torch.ops.streams.record_event.default)
 make_fallback(torch.ops.streams.wait_event.default)
 make_fallback(torch.ops.streams.synchronize_event.default)
+make_fallback(torch.ops.streams.synchronize_device.default)
 
 
 @register_lowering(aten.rand)
@@ -7477,6 +7485,7 @@ register_foreach_pointwise(aten._foreach_clamp_max.List, minimum)
 register_foreach_pointwise(aten._foreach_clamp_max.Scalar, minimum)
 register_foreach_pointwise(aten._foreach_reciprocal, reciprocal)
 register_foreach_pointwise(aten._foreach_sign, sign)
+register_foreach_pointwise(aten._foreach_clone, clone)
 foreach_copy = register_foreach_pointwise(aten._foreach_copy, copy)
 
 
@@ -7787,6 +7796,9 @@ def invoke_subgraph(subgraph_fn: ir.Subgraph, identifier: str, *operands):
     return list(map(TensorBox.create, result))  # type: ignore[call-overload]
 
 
+_MISSING = object()
+
+
 def process_subgraph_nodes(graph_module: torch.fx.GraphModule, args: list[Any]):
     """Process nodes from a FX graph by executing them through V.graph.
 
@@ -7796,7 +7808,7 @@ def process_subgraph_nodes(graph_module: torch.fx.GraphModule, args: list[Any]):
     - Other nodes are executed via V.graph.run_node
 
     """
-    output = None
+    output = _MISSING
 
     for i, node in enumerate(graph_module.graph.nodes):
         if node.op == "placeholder":
@@ -7816,7 +7828,7 @@ def process_subgraph_nodes(graph_module: torch.fx.GraphModule, args: list[Any]):
             finally:
                 V.graph.current_node = saved_current_node
 
-    if output is None:
+    if output is _MISSING:
         raise RuntimeError("No output node found in graph")
 
     return output
@@ -7855,7 +7867,7 @@ def control_deps_op_lowering(additional_deps, subgraph_fn, *args):
     # Process subgraph nodes using the shared helper
     output = process_subgraph_nodes(subgraph_fn.graph_module, list(args))
 
-    assert output is not None and additional_deps
+    assert additional_deps
 
     # some operators, like wait_tensor, just return their input,
     # so its more robust to add dep to the operation itself,
