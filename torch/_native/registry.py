@@ -293,8 +293,9 @@ def deregister_op_overrides(
 
     for key in key_set:
         op_symbol, dispatch_key = key
-        # Remove the old graph
-        del _libs[key]
+        # Remove the old library if it exists (lazy registration may not have created it yet)
+        if key in _libs:
+            del _libs[key]
 
         _register_overrides_from_graph(
             op_symbol,
