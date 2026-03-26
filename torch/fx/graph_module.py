@@ -6,6 +6,7 @@ import hashlib
 import itertools
 import linecache
 import os
+import weakref
 import sys
 import traceback
 import warnings
@@ -949,13 +950,16 @@ class {module_name}(torch.nn.Module):
         if loaded_forward is None:
             return
 
-        gm_ref = self
+        gm_weak = weakref.ref(self)
         saved_globals = python_code_globals
 
         def _hot_reload_forward(self, *args, **kwargs):
-            if gm_ref._codegen_check_modified():
-                gm_ref._codegen_reload_from_disk(saved_globals)
-                return gm_ref.forward(*args, **kwargs)
+            gm = gm_weak()
+            if gm is None:
+                return loaded_forward(self, *args, **kwargs)
+            if gm._codegen_check_modified():
+                gm._codegen_reload_from_disk(saved_globals)
+                return gm.forward(*args, **kwargs)
             return loaded_forward(self, *args, **kwargs)
 
         self.forward = _hot_reload_forward.__get__(self, type(self))
