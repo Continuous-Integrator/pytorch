@@ -9,6 +9,7 @@ from .common_utils import (
     check_native_jit_disabled,
     check_native_version_skip,
 )
+from .dsl_registry import dsl_registry
 from .registry import (
     _OpFn,
     deregister_op_overrides as _deregister_op_overrides_impl,
@@ -117,3 +118,11 @@ def register_op_override(
         allow_multiple_override=allow_multiple_override,
         unconditional_override=unconditional_override,
     )
+
+
+# Register this DSL module with the registry
+# Note: Import-time registration ensures DSL is available when module is loaded
+import sys
+
+
+dsl_registry.register_dsl("triton", sys.modules[__name__])
