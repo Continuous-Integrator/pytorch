@@ -921,19 +921,15 @@ class CUDAGraphNode:
             if isinstance(t, torch.Tensor) and self._is_cuda_graph_recorded_tensor(t)
         ]
 
-        # P2P symmetric memory inputs (allocated via empty_strided_p2p with
-        # alloc_id).  These have stable addresses and are passed through
-        # without copying into the cudagraph pool.
-        #
-        # Detection: P2P buffers are allocated via cuMemCreate/cuMemMap (not
-        # the CUDA caching allocator), so they lack a standard deleter.
-        # TODO: Replace with a positive is_p2p check on StorageImpl (requires C++ change).
+        # P2P symmetric memory inputs are not from the caching allocator.
+        # They are allocated via empty_strided_p2p and have stable addresses.
+        # Add them to static_input_idxs to prevent re-allocation from the cudagraph pool.
         self.p2p_input_idxs: list[int] = [
             idx
             for idx, t in enumerate(inputs)
             if isinstance(t, torch.Tensor)
             and t.is_cuda
-            and not torch._C._has_Standard_Deleter(t.untyped_storage()._cdata)
+            and _is_external_storage(t.untyped_storage()._cdata)
         ]
 
         # (depth, offset) of live tensors which are alias of previous graph outputs
@@ -1872,6 +1868,17 @@ def format_tb(frames: list[Any]) -> str:
     return "".join(traceback.format_list(formatted_traceback))
 
 
+def _is_external_storage(storage_cdata: int) -> bool:
+    """Check if a storage is not allocated by the CUDA caching allocator.
+    In the cudagraph tree, all standard CUDA tensors use the caching
+    allocator's deleter (raw_deleter).  External allocations such as P2P
+    symmetric memory (via cuMemCreate) use a different deleter, so we
+    can distinguish them with _has_Standard_Deleter.
+    TODO: add a positive is_p2p / is_external flag on StorageImpl so we
+    don't rely on deleter identity."""
+    return not torch._C._has_Standard_Deleter(storage_cdata)
+
+
 def check_memory_pool(
     device: int,
     pool_id: tuple[int, int],
@@ -1884,10 +1891,10 @@ def check_memory_pool(
         storage_ptr = stor()
         if storage_ptr is None:
             continue
-        # Skip non-pool allocations (e.g., P2P symmetric memory buffers allocated
-        # via cuMemCreate/cuMemMap). These are not managed by the CUDA caching
-        # allocator and should not be validated against the cudagraph pool.
-        if not torch._C._has_Standard_Deleter(storage_ptr):
+        # Skip non-pool allocations, for example, P2P symmetric memory buffers allocated via cuMemCreate.
+        # They are not managed by the CUDA caching allocator and should not be validated
+        # against the cudagraph pool.
+        if _is_external_storage(storage_ptr):
             continue
         unique_storages.add(stor.data_ptr())
 
@@ -2731,8 +2738,9 @@ class CUDAGraphTreeManager:
             for wrapper in live_storages_wrappers:
                 storage_ptr = wrapper()
                 assert storage_ptr is not None
-                # Skip non-pool allocations (e.g., P2P symmetric memory buffers)
-                if torch._C._has_Standard_Deleter(storage_ptr):
+                # P2P storages are not in the cudagraph pool, so
+                # skip the deallocation check for them.
+                if not _is_external_storage(storage_ptr):
                     assert wrapper.data_ptr() not in ptrs_to_deallocate
 
     def live_cudagraph_pool_storages_in_curr_execution(
