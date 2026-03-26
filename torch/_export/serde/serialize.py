@@ -183,6 +183,9 @@ _TORCH_TO_SERIALIZE_MEMORY_FORMAT = {
 
 _SERIALIZE_TO_TORCH_MEMORY_FORMAT = _reverse_map(_TORCH_TO_SERIALIZE_MEMORY_FORMAT)  # type: ignore[arg-type]
 
+from torch.fx.experimental.symbolic_shapes import cast_symbool_to_symint_guardless
+
+
 _SYM_OPS = {
     operator.eq,
     operator.ne,
@@ -211,6 +214,7 @@ _SYM_OPS = {
     operator.or_,
     operator.lshift,
     operator.rshift,
+    cast_symbool_to_symint_guardless,
 }
 
 

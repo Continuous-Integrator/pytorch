@@ -9,7 +9,6 @@ import logging
 import math
 import operator
 import os
-import sys
 import warnings
 from collections import defaultdict
 from collections.abc import Callable, Collection, Iterable, Sequence
@@ -27,6 +26,7 @@ from torch._dynamo.utils import counters
 from torch._higher_order_ops.associative_scan import associative_scan_op
 from torch._higher_order_ops.triton_kernel_wrap import triton_kernel_wrapper_mutation
 from torch._library.fake_class_registry import FakeScriptObject
+from torch._library.opaque_object import is_opaque_value
 from torch._library.utils import get_layout_constraint_tag
 from torch._prims_common import (
     canonicalize_dim,
@@ -1383,10 +1383,8 @@ def permute(x, dims):
     return TensorBox(PermuteView.create(x.data, tuple(dims)))
 
 
-# Note: logic in this function need to be always synchronized with
-# slice_forward in fake implementation.
 @register_lowering(aten.slice, type_promotion_kind=None)
-def slice_(x, dim=0, start=0, end=sys.maxsize, step=1, clamp=True):
+def slice_(x, dim=0, start=0, end=2**63, step=1, clamp=True):
     """
     Lowers a slice call, creating ExternKernels for the output size & storage offset symbols,
     if the indices are unbacked and appropriate semantics aren't known.
@@ -1423,9 +1421,9 @@ def slice_(x, dim=0, start=0, end=sys.maxsize, step=1, clamp=True):
         fn = lambda x: V.graph.sizevars.guard_or_false(x)  # noqa: E731
         index = sympy.expand(index)
         size = sympy.expand(size)
-        if fn(sympy.And(sympy.Ge(index, 0), sympy.Le(index, size))):
+        if fn(sympy.Ge(index, 0)) and fn(sympy.Le(index, size)):
             return index
-        elif fn(sympy.And(sympy.Lt(index, 0), sympy.Ge(index, -size))):
+        elif fn(sympy.Lt(index, 0)) and fn(sympy.Ge(index, -size)):
             return index + size
         elif fn(sympy.Gt(index, size)):
             return size
@@ -1434,25 +1432,18 @@ def slice_(x, dim=0, start=0, end=sys.maxsize, step=1, clamp=True):
         return None
 
     start_index, end_index = None, None
-    # ambiguous_slice=False means we know what semantics this slice call follows,
-    # and don't need to generate an extern kernel to represent the output size.
-    # This is assumed True for clamp=False
-    # (meant to follow standard indexing semantics: 0 <= index < size)
     ambiguous_slice = clamp
     if ambiguous_slice:
         start_index = compute_slice_index(start, size, 0)
-        # Special case: if end is maxsize (unbounded), use size directly
-        # This matches the logic in fake_impls.py
-        if end is not None and V.graph.sizevars.statically_known_equals(
-            end, sys.maxsize
-        ):
-            end_index = size
-        else:
-            end_index = compute_slice_index(end, size, size)
+        end_index = compute_slice_index(end, size, size)
         if start_index is not None and end_index is not None:
             start, end = start_index, end_index
             ambiguous_slice = False
 
+    # ambiguous_slice=False means we know what semantics this slice call follows,
+    # and don't need to generate an extern kernel to represent the output size.
+    # This is assumed True for clamp=False
+    # (meant to follow standard indexing semantics: 0 <= index < size)
     if not ambiguous_slice:
         return TensorBox(
             ir.SliceView.create(x.data, dim, start, end, step, clamp=clamp)
@@ -1939,6 +1930,7 @@ def quantized_decomposed_dequantize_per_tensor_tensor(
 
 @register_lowering(aten.cat)
 def cat(inputs, dim=0):
+    """Lower aten.cat, choosing between pointwise_cat and ConcatKernel."""
     cpu_device = inputs[0].get_device().type == "cpu"
     if cpu_device and all(
         input.get_dtype() in [torch.int8, torch.uint8] for input in inputs
@@ -2053,10 +2045,34 @@ def cat(inputs, dim=0):
 
         # horizontal fuse in case all inputs will require a copy kernel anyway.
         # only horizontally fuse pointwise kernels
+
+        # Skip pointwise_cat when any cat input has a fusible (pointwise)
+        # multi-consumer — ConcatKernel + NonOwningLayout avoids redundant
+        # reads.  Non-fusible users (e.g. matmul) don't benefit, so they
+        # should not prevent pointwise_cat.
+        def any_input_has_multi_consumers() -> bool:
+            cat_node = V.current_node
+            if cat_node is None:
+                return False
+            fx_args = cat_node.args[0]  # aten.cat format: cat(input_list, dim)
+            if not isinstance(fx_args, (list, tuple)):
+                return False
+
+            def has_fusible_multi_consumer(arg):
+                if not hasattr(arg, "users") or len(arg.users) <= 1:
+                    return False
+                return any(is_pointwise_use(u) for u in arg.users if u is not cat_node)
+
+            return any(has_fusible_multi_consumer(arg) for arg in fx_args)
+
+        has_multi_consumers = any_input_has_multi_consumers()
+
         horizontal_fuse_cat = all(
             should_lower_cat_input(inp) for inp in inputs
         ) and not any(can_fuse_reduction(t) for t in inputs)
-        if fuse_pointwise_use or (horizontal_fuse_cat and not fusable_reduction):
+        if not has_multi_consumers and (
+            fuse_pointwise_use or (horizontal_fuse_cat and not fusable_reduction)
+        ):
             return pointwise_cat(inputs, dim)
 
     return TensorBox(ir.ConcatKernel.create(inputs, dim))
@@ -2309,7 +2325,7 @@ def fallback_handler(kernel, add_to_fallback_set=True):
 
     def handler(*args, **kwargs):
         def wrap_tensors(x):
-            return TensorBox.create(x) if isinstance(x, ir.IRNode) else x
+            return x.wrap_for_lowering() if isinstance(x, ir.IRNode) else x
 
         return pytree.tree_map(
             wrap_tensors, ir.FallbackKernel.create(kernel, *args, **kwargs)
@@ -2898,7 +2914,7 @@ def require_channels_last(_, *args, **kwargs):
 def constrain_to_fake_tensor(arg, fake_arg):
     if fake_arg is None:
         return arg
-    if isinstance(fake_arg, FakeScriptObject):
+    if isinstance(fake_arg, FakeScriptObject) or is_opaque_value(fake_arg):
         return arg
     if isinstance(arg, ir.IRNode):
         return ir.ExternKernel.require_exact_strides(arg, fake_arg.stride())
@@ -4255,7 +4271,6 @@ def index_put_impl_(self, indices, values, accumulate, check, may_realize=False)
         None,
         check=check,
     )
-
     values = expand(values, expected_vals_size)
     # all guards are set above during broadcast_tensors and expand
 
@@ -5189,6 +5204,11 @@ def max_pool2d_with_indices_backward(
     is_channels_last = (x_stride is not None and x_stride[1] == 1) or (
         gO_stride is not None and gO_stride[1] == 1
     )
+    if any(d != 1 for d in dilation):
+        # dilation NYI
+        return fallback_max_pool2d_with_indices_backward(
+            grad_output, x, kernel_size, stride, padding, dilation, ceil_mode, indices
+        )
 
     *_batch, _height, width = x.get_size()
     *_, pooled_height, pooled_width = grad_output.get_size()
@@ -5197,17 +5217,13 @@ def max_pool2d_with_indices_backward(
     grad_loader = grad_output.make_loader()
     new_size = list(x.get_size())
 
-    # Effective kernel size accounts for dilation
-    effective_kh = (kernel_size[0] - 1) * dilation[0] + 1
-    effective_kw = (kernel_size[1] - 1) * dilation[1] + 1
-
     h_window_size = max(
-        max(FloorDiv(h, stride[0]) - max(0, FloorDiv(h - effective_kh, stride[0])), 1)
-        for h in range(effective_kh * 2)
+        max(FloorDiv(h, stride[0]) - max(0, FloorDiv(h - kernel_size[0], stride[0])), 1)
+        for h in range(kernel_size[0] * 2)
     )
     w_window_size = max(
-        max(FloorDiv(w, stride[1]) - max(0, FloorDiv(w - effective_kw, stride[1])), 1)
-        for w in range(effective_kw * 2)
+        max(FloorDiv(w, stride[1]) - max(0, FloorDiv(w - kernel_size[1], stride[1])), 1)
+        for w in range(kernel_size[1] * 2)
     )
 
     window_size = h_window_size * w_window_size
@@ -5226,10 +5242,10 @@ def max_pool2d_with_indices_backward(
         h = h + padding[0]
         w = w + padding[1]
         phstart = ops.index_expr(
-            FloorDiv(h - effective_kh + stride[0], stride[0]), torch.int32
+            FloorDiv(h - kernel_size[0] + stride[0], stride[0]), torch.int32
         )
         pwstart = ops.index_expr(
-            FloorDiv(w - effective_kw + stride[1], stride[1]), torch.int32
+            FloorDiv(w - kernel_size[1] + stride[1], stride[1]), torch.int32
         )
         phend = ops.index_expr(FloorDiv(h, stride[0]) + 1, torch.int32)
         pwend = ops.index_expr(FloorDiv(w, stride[1]) + 1, torch.int32)
@@ -7947,7 +7963,7 @@ def with_effects(token, op, *args, **kwargs):
     else:
 
         def wrap_tensors(x):
-            return TensorBox.create(x) if isinstance(x, ir.IRNode) else x
+            return x.wrap_for_lowering() if isinstance(x, ir.IRNode) else x
 
         result = pytree.tree_map(
             wrap_tensors, ir.FallbackKernel.create(op, *args, **kwargs)
