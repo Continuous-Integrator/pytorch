@@ -45,7 +45,6 @@ Work::Work(
         }
       }
       if (use_tls_name) {
-        // std::string overload — RecordFunction takes ownership of the copy
         recordingFunction->before(
             std::string(comm_profiling_name),
             c10::ArrayRef<const c10::IValue>(inputs.data(), inputs.size()));
