@@ -2601,6 +2601,7 @@ make_fallback(aten.randint)
 make_fallback(torch.ops.streams.record_event.default)
 make_fallback(torch.ops.streams.wait_event.default)
 make_fallback(torch.ops.streams.synchronize_event.default)
+make_fallback(torch.ops.streams.synchronize_device.default)
 
 
 @register_lowering(aten.rand)
@@ -7675,9 +7676,6 @@ def resize(x, size, *, memory_format=None):
     dtype = x.get_dtype()
     device = x.get_device_or_error()
 
-    if isinstance(x.data, ir.BaseView):
-        x.data = x.data.unwrap_view()
-
     if (
         torch.are_deterministic_algorithms_enabled()
         and torch.utils.deterministic.fill_uninitialized_memory  # type: ignore[attr-defined]
@@ -7695,15 +7693,18 @@ def resize(x, size, *, memory_format=None):
     if V.graph.sizevars.statically_known_equals(old_numel, 0):  # type: ignore[arg-type]
         return full(size, uninitialized_val, dtype=dtype, device=device)
 
-    x_flat = as_strided(
-        x,
-        [
-            old_numel,
-        ],
-        [
-            1,
-        ],
+    strides = x.maybe_get_stride()
+    has_overlapping = strides is not None and any(
+        V.graph.sizevars.statically_known_equals(s, 0) for s in strides
     )
+    if has_overlapping:
+        # overlapping: provide a contiguous logical view
+        x_flat = view(x, [old_numel])
+    else:
+        # non-overlapping: keep storage order
+        if isinstance(x.data, ir.BaseView):
+            x.data = x.data.unwrap_view()
+        x_flat = as_strided(x, [old_numel], [1])
     flat_loader = x_flat.make_loader()
     out_stride = ir.FlexibleLayout.stride_ordered_for_memory_format(size, memory_format)
     out_indexer = ir.FixedLayout(device, dtype, size, out_stride).make_indexer()
