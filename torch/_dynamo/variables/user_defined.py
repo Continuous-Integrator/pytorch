@@ -96,7 +96,13 @@ from ..utils import (
     tuple_methods,
     unpatched_nn_module_getattr,
 )
-from .base import MutationType, raise_type_error_exc, ValueMutationNew, VariableTracker
+from .base import (
+    MutationType,
+    NO_SUCH_SUBOBJ,
+    raise_type_error_exc,
+    ValueMutationNew,
+    VariableTracker,
+)
 from .dicts import ConstDictVariable, DefaultDictVariable, SetVariable
 
 
@@ -353,7 +359,7 @@ class UserDefinedClassVariable(UserDefinedVariable):
                 return VariableTracker.build(tx, obj.__get__(self.value), source)
 
         if ConstantVariable.is_literal(obj):
-            return VariableTracker.build(tx, obj)
+            return VariableTracker.build(tx, obj, source)
         elif isinstance(obj, enum.Enum):
             return VariableTracker.build(tx, obj, source)
         elif self.value is collections.OrderedDict:
@@ -547,7 +553,6 @@ class UserDefinedClassVariable(UserDefinedVariable):
                         "Set TORCHDYNAMO_ENABLE_P2P_COMPILATION=1 to enable.",
                     ],
                 )
-
             var = tx.output.side_effects.track_new_user_defined_object(
                 SourcelessBuilder.create(tx, object),
                 self,
@@ -887,7 +892,6 @@ class UserDefinedClassVariable(UserDefinedVariable):
 
                     default_kwargs[field.name] = var_tracker
             kwargs.update(default_kwargs)
-
             var = tx.output.side_effects.track_new_user_defined_object(
                 SourcelessBuilder.create(tx, object),
                 self,
@@ -1048,11 +1052,34 @@ class UserDefinedClassVariable(UserDefinedVariable):
             and self.value is other.value
         )
 
+    def get_real_python_backed_value(self) -> object:
+        return self.value
+
 
 class UserDefinedExceptionClassVariable(UserDefinedClassVariable):
     @property
     def fn(self) -> type[object]:
         return self.value
+
+    def call_function(
+        self,
+        tx: "InstructionTranslator",
+        args: Sequence[VariableTracker],
+        kwargs: dict[str, VariableTracker],
+    ) -> VariableTracker:
+        from .builder import SourcelessBuilder
+
+        if self.source is None:
+            # NB: If source is added via side effects, create the exception
+            # object through side_effects as well. See FrozenDataClass creation
+            var = tx.output.side_effects.track_new_user_defined_object(
+                SourcelessBuilder.create(tx, BaseException),
+                self,
+                list(args),
+            )
+            var.call_method(tx, "__init__", list(args), dict(kwargs))
+            return var
+        return super().call_function(tx, args, kwargs)
 
 
 class UserDefinedEnumClassVariable(UserDefinedClassVariable):
@@ -1109,10 +1136,6 @@ class UserDefinedEnumClassVariable(UserDefinedClassVariable):
                 source = self.source and AttrSource(self.source, name)
                 return variables.UserMethodVariable(method, self, source=source)
         return super().var_getattr(tx, name)
-
-
-class NO_SUCH_SUBOBJ:
-    pass
 
 
 class RemovableHandleClass:
@@ -1234,6 +1257,9 @@ class UserDefinedObjectVariable(UserDefinedVariable):
 
     def python_type(self) -> type:
         return self.value_type  # type: ignore[return-value]
+
+    def get_real_python_backed_value(self) -> object:
+        return self.value
 
     def as_python_constant(self) -> object:
         if self.is_pytree_constant_class and self.source:

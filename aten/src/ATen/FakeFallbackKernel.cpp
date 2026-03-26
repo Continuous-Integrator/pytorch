@@ -185,15 +185,11 @@ void fakeFallback(
   }
 
   {
-    c10::impl::ForceDispatchKeyGuard restore_guard;
-    auto local_keyset = c10::impl::tls_local_dispatch_key_set();
-    local_keyset.included_ =
-        local_keyset.included_ | c10::DispatchKeySet(c10::DispatchKey::Meta);
-    local_keyset.excluded_ = local_keyset.excluded_ |
+    c10::impl::ExcludeDispatchKeyGuard guard(
         c10::DispatchKeySet(c10::DispatchKey::Fake) |
         c10::DispatchKeySet(c10::DispatchKey::Python) |
-        c10::DispatchKeySet(c10::DispatchKey::PythonTLSSnapshot);
-    c10::impl::_force_tls_local_dispatch_key_set(local_keyset);
+        c10::DispatchKeySet(c10::DispatchKey::PythonTLSSnapshot));
+    c10::impl::IncludeDispatchKeyGuard meta_guard(c10::DispatchKey::Meta);
     auto ks = dispatchKeySet.remove(c10::DispatchKey::Fake) |
         c10::DispatchKeySet(c10::DispatchKey::Meta);
     op.redispatchBoxed(ks, stack);
