@@ -70,6 +70,11 @@ from torch.testing._internal.common_device_type import (
     skipXPUIf,
 )
 from torch.testing._internal.common_quantized import _snr
+from torch.testing._internal.common_utils import (  # noqa: F401
+    MI200_ARCH,
+    skipIfRocm,
+    skipIfRocmArch,
+)
 from torch.testing._internal.inductor_utils import HAS_GPU
 from torch.utils._triton import has_triton, has_triton_tma_device
 
@@ -2163,6 +2168,109 @@ def forward(self, arg0_1, arg1_1, arg2_1, arg3_1, arg4_1):
         head_counts = [4, 8, 4, 16, 4]
         for head_count in head_counts:
             run_with_head_count(compiled_fa, head_count)
+
+    @supported_platform
+    @skip_on_cpu
+    @dtypes(torch.bfloat16)
+    @dtypesIfCUDA(torch.bfloat16)
+    def test_compacted_block_mask_matches_reference_after_recompile(
+        self, device, dtype
+    ):
+        block_size = 128
+        seq_len = 512
+        head_dim = 64
+        batch_size = 1
+
+        def mask_fn(b, h, q_idx, kv_idx, document_id):
+            causal = q_idx >= kv_idx
+            same_document = document_id[b, q_idx] == document_id[b, kv_idx]
+            return causal | same_document
+
+        def make_block_mask(document_id, compact):
+            ref = create_block_mask(
+                functools.partial(mask_fn, document_id=document_id),
+                B=batch_size,
+                H=None,
+                Q_LEN=seq_len,
+                KV_LEN=seq_len,
+                device=device,
+                BLOCK_SIZE=block_size,
+            )
+            if not compact:
+                return ref
+
+            nums = [
+                ref.kv_num_blocks,
+                ref.full_kv_num_blocks,
+                ref.q_num_blocks,
+                ref.full_q_num_blocks,
+            ]
+            indices = [
+                ref.kv_indices,
+                ref.full_kv_indices,
+                ref.q_indices,
+                ref.full_q_indices,
+            ]
+            compact_indices = [
+                index[..., : max(int(num.max()), 1)].contiguous()
+                for num, index in zip(nums, indices, strict=True)
+            ]
+            return BlockMask(
+                seq_lengths=ref.seq_lengths,
+                kv_num_blocks=ref.kv_num_blocks,
+                kv_indices=compact_indices[0],
+                full_kv_num_blocks=ref.full_kv_num_blocks,
+                full_kv_indices=compact_indices[1],
+                q_num_blocks=ref.q_num_blocks,
+                q_indices=compact_indices[2],
+                full_q_num_blocks=ref.full_q_num_blocks,
+                full_q_indices=compact_indices[3],
+                BLOCK_SIZE=ref.BLOCK_SIZE,
+                mask_mod=ref.mask_mod,
+            )
+
+        document_id_1 = torch.arange(seq_len, dtype=torch.int64, device=device).repeat(
+            batch_size, 1
+        )
+        document_id_1[:, :400] = 0
+        document_id_2 = torch.arange(seq_len, dtype=torch.int64, device=device).repeat(
+            batch_size, 1
+        )
+
+        query = torch.randn(
+            (batch_size, 1, seq_len, head_dim), device=device, dtype=dtype
+        )
+        key = torch.randn_like(query)
+        value = torch.randn_like(query)
+
+        def run(mask, attention):
+            q, k, v = [
+                x.detach().clone().requires_grad_(True) for x in (query, key, value)
+            ]
+            out = attention(q, k, v, block_mask=mask)
+            return out, torch.autograd.grad(out.sum(), (q, k, v))
+
+        ref_mask_1 = make_block_mask(document_id_1, compact=False)
+        ref_mask_2 = make_block_mask(document_id_2, compact=False)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            ref_out_1, ref_grads_1 = run(ref_mask_1, flex_attention)
+            ref_out_2, ref_grads_2 = run(ref_mask_2, flex_attention)
+
+        compact_mask_1 = make_block_mask(document_id_1, compact=True)
+        compact_mask_2 = make_block_mask(document_id_2, compact=True)
+
+        torch._dynamo.reset()
+        compiled_fa = torch.compile(flex_attention, fullgraph=True, dynamic=False)
+        out_1, grads_1 = run(compact_mask_1, compiled_fa)
+        out_2, grads_2 = run(compact_mask_2, compiled_fa)
+
+        torch.testing.assert_close(ref_out_1, out_1, atol=2e-2, rtol=2e-2)
+        torch.testing.assert_close(ref_out_2, out_2, atol=2e-2, rtol=2e-2)
+        for ref_grad, grad in zip(ref_grads_1, grads_1):
+            torch.testing.assert_close(ref_grad, grad, atol=3e-2, rtol=3e-2)
+        for ref_grad, grad in zip(ref_grads_2, grads_2):
+            torch.testing.assert_close(ref_grad, grad, atol=3e-2, rtol=3e-2)
 
     @supported_platform
     @dtypes(*device_configs["cpu"].dtypes_fast)
@@ -7850,6 +7958,8 @@ class TestLearnableBiases(InductorTestCase):
         )
 
     @skip_on_cpu
+    # Fails with triton 3.7
+    @skip_on_rocm
     def test_flex_attention_with_dynamic_max_autotune(self, device):
         self._test_flex_attention_with_dynamic_max_autotune(device)
 
@@ -7859,6 +7969,7 @@ class TestLearnableBiases(InductorTestCase):
         self._test_flex_attention_with_dynamic_max_autotune(device)
 
     @skip_on_cpu
+    @skipIfRocm(msg="Fails with Triton 3.7")
     def test_flex_attention_logging(self, device):
         with tempfile.TemporaryDirectory() as tmpdir:
             log_file = os.path.join(tmpdir, "flex_attention_configs")
