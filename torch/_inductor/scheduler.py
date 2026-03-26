@@ -361,6 +361,9 @@ class MixOrderReduction:
         if not V.graph.sizevars.statically_known_leq(ncol, 1024 * 16):
             return False
 
+        if MixOrderReduction.is_split_reduction(contiguous_node):
+            return False
+
         # Other reduction types like max/min is not supported yet.
         # There are no real use case as well.
         out = all(
@@ -3123,6 +3126,8 @@ class Scheduler:
         self.node_to_stream: dict[BaseSchedulerNode, int] = {}
         self.buff_to_stream: dict[str, int] = {}
         self._multi_stream_nodes: bool = False
+        # Maps stream_idx → user_object_index for retrieving user stream objects
+        self.stream_idx_to_user_obj_idx: dict[int, int] = {}
         self._populate_stream_assignments()
 
         self.nodes = self.fuse_nodes(self.nodes)
@@ -3300,6 +3305,9 @@ class Scheduler:
                         user_obj_idx = custom_meta["stream"]
                         if user_obj_idx not in user_obj_to_stream_idx:
                             user_obj_to_stream_idx[user_obj_idx] = next_stream_idx
+                            self.stream_idx_to_user_obj_idx[next_stream_idx] = (
+                                user_obj_idx
+                            )
                             next_stream_idx += 1
                         stream_idx = user_obj_to_stream_idx[user_obj_idx]
                         # Use the first stream found
@@ -5593,8 +5601,10 @@ class Scheduler:
         def low_prec_fp(dtype: torch.dtype) -> bool:
             return dtype.itemsize <= 2 and dtype.is_floating_point
 
+        template_buf = template_node.get_template_node_or_throw()
         if (
-            low_prec_fp(template_node.get_template_node_or_throw().dtype)
+            not template_buf.is_multi_outputs_template()
+            and low_prec_fp(template_buf.dtype)
             and not prologue_node.can_codegen_in_low_precision()
         ):
             why(
@@ -7467,7 +7477,9 @@ class Scheduler:
                                 max(unique_streams) + 1 if unique_streams else 1
                             )
                         V.graph.wrapper_code.codegen_device_guard_enter(
-                            device.index, num_streams
+                            device.index,
+                            num_streams,
+                            self.stream_idx_to_user_obj_idx,
                         )
 
                 # Handle stream context switching for multi-stream scheduling
