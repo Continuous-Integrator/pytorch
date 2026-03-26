@@ -586,6 +586,7 @@ def _find_input_dim(cmd) -> int | None:
 
 def _symbolic_rewrite_output_placements(
     input_tgt_placements: Sequence[Placement],
+    global_input_shape: tuple[int, ...],
     rule: DimMap,
     mesh_sizes: tuple[int, ...],
 ) -> list[Placement]:
@@ -625,7 +626,21 @@ def _symbolic_rewrite_output_placements(
                             else:
                                 output[mesh_dim] = Shard(out_idx)
                         else:
-                            output[mesh_dim] = Replicate()
+                            preceding = [
+                                d
+                                for d in cmd.input_dims[:i]
+                                if isinstance(d, InputDim)
+                            ]
+                            new_sf = sf  # 1 for Shard, existing sf for _StridedShard
+                            for d in preceding:
+                                new_sf *= global_input_shape[d.input_dim]
+                            try:
+                                new_sf = int(new_sf)
+                                output[mesh_dim] = _StridedShard(
+                                    out_idx, split_factor=new_sf
+                                )
+                            except (TypeError, RuntimeError):
+                                pass  # stays Replicate
                         break
 
             if isinstance(cmd, Split):
@@ -927,7 +942,7 @@ def cute_rewrite_output_placements(
     """
     if any(not isinstance(s, int) for s in global_input_shape):
         return _symbolic_rewrite_output_placements(
-            input_tgt_placements, rule, mesh_sizes
+            input_tgt_placements, global_input_shape, rule, mesh_sizes
         )
 
     _validate_flatten_uneven_sharding(
