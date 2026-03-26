@@ -2962,6 +2962,17 @@ class UserDefinedListVariable(UserDefinedObjectVariable):
         else:
             self._list_vt = list_vt
 
+    def getitem_impl(
+        self,
+        tx: "InstructionTranslator",
+        key: VariableTracker,
+    ) -> VariableTracker:
+        assert self._list_vt is not None
+        method = self._maybe_get_baseclass_method("__getitem__")
+        if method in list_methods:
+            return self._list_vt.getitem_impl(tx, key)
+        return super().getitem_impl(tx, key)
+
     def call_method(
         self,
         tx: "InstructionTranslator",
@@ -3037,6 +3048,17 @@ class UserDefinedTupleVariable(UserDefinedObjectVariable):
             _, (idx, _) = type_attr.__reduce__()
             return self._tuple_vt.items[idx]  # type: ignore[union-attr]
         return super().resolve_data_descriptor(tx, name, type_attr, source)
+
+    def getitem_impl(
+        self,
+        tx: "InstructionTranslator",
+        key: VariableTracker,
+    ) -> VariableTracker:
+        assert self._tuple_vt is not None
+        method = self._maybe_get_baseclass_method("__getitem__")
+        if method in tuple_methods:
+            return self._tuple_vt.getitem_impl(tx, key)
+        return super().getitem_impl(tx, key)
 
     def call_method(
         self,
