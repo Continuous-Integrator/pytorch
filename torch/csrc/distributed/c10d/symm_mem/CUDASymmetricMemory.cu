@@ -111,7 +111,6 @@ CUDAPeerAllocInfo::~CUDAPeerAllocInfo() {
   if (is_finalizing()) {
     return;
   }
-  // Best-effort free -- ignore errors during process teardown.
   c10::cuda::CUDAGuard guard(local_device_idx_);
   (void)cudaFree(buffers_dev_);
   (void)cudaFree(signal_pads_dev_);

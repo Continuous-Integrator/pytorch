@@ -1593,14 +1593,10 @@ class LoweringTest(MultiProcContinuousTest):
     @skip_if_rocm_multiprocess  # requires registered-buffer support
     @skip_if_lt_x_gpu(2)
     @fresh_inductor_cache()
-    def test_cudagraph_p2p_input_passthrough(self):
+    def test_one_shot_all_reduce_with_cudagraph(self):
         """
-        Verify that when a symm_mem collective's input is a cudagraph-managed
-        tensor from a prior compiled graph, the P2P tensor is correctly passed
-        through the cudagraph tree without being copied to the regular pool.
-
-        This tests the p2p_input_idxs mechanism in CUDAGraphNode that adds P2P
-        inputs to static_input_idxs so they are not re-allocated.
+        Verify one_shot_all_reduce correctness under CUDAGraph
+        record + replay (mode="reduce-overhead").
         """
         self._init_process()
 
