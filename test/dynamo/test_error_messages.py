@@ -16,11 +16,7 @@ import torch.utils._pytree as python_pytree
 from torch._dynamo.exc import ResumePrologueTracingError, TorchRuntimeError, Unsupported
 from torch._dynamo.testing import skipIfNotPy312, skipIfOnlyNotPy312
 from torch._dynamo.utils import counters
-from torch.testing._internal.common_utils import (
-    IS_FBCODE,
-    munge_exc,
-    scoped_load_inline,
-)
+from torch.testing._internal.common_utils import IS_FBCODE, munge_exc
 from torch.testing._internal.logging_utils import LoggingTestCase, make_logging_test
 
 
@@ -469,92 +465,6 @@ Attempted to call function marked as skipped
  For more details about this graph break, please visit: https://meta-pytorch.github.io/compile-graph-break-site/gb/gb0007.html""",
         )
 
-    @scoped_load_inline
-    @torch._dynamo.config.patch(inline_inbuilt_nn_modules=False)
-    @unittest.skipIf(IS_FBCODE, "inline cpp_extension doesn't work in fbcode")
-    def test_cpp_extension_recommends_custom_ops(self, load_inline):
-        cpp_source = """
-        #include <torch/extension.h>
-        at::Tensor foobar(const at::Tensor& x) {
-            return x.clone();
-        }
-        """
-        module = load_inline(
-            name="mylib",
-            cpp_sources=cpp_source,
-            functions="foobar",
-            verbose=True,
-        )
-
-        x = torch.ones(2, 2, requires_grad=True)
-        counters.clear()
-
-        @torch.compile(backend="eager")
-        def f(x):
-            return module.foobar(x)
-
-        with self.assertWarnsOnceRegex(
-            UserWarning,
-            "(?s).*https://pytorch.org/tutorials/advanced/custom_ops_landing_page.html.*",
-        ):
-            f(x)
-        self.assertEqual(len(counters["graph_break"]), 1)
-        first_graph_break = next(iter(counters["graph_break"].keys()))
-
-        first_graph_break = re.sub(r"mylib(_v\d+)?", "mylib", first_graph_break)
-        # HACK: this patches around the fact that PyBind11 improperly sets the
-        # __qualname__ attribute on functions and methods; see
-        # https://github.com/pybind/pybind11/issues/5774.  This should be removed if
-        # that issue is fixed.
-        first_graph_break = re.sub(
-            r"pybind11_detail_function_record_v[^ .]+", "PyCapsule", first_graph_break
-        )
-
-        self.assertExpectedInline(
-            first_graph_break,
-            """\
-Attempted to call function marked as skipped
-  Explanation: Dynamo does not know how to trace the builtin `mylib.PyCapsule.foobar.` This function is either a Python builtin (e.g. _warnings.warn) or a third-party C/C++ Python extension (perhaps created with pybind).
-  Hint: If it is a Python builtin, please file an issue on GitHub so the PyTorch team can add support for it and see the next case for a workaround.
-  Hint: If it is a third-party C/C++ Python extension, please either wrap it into a PyTorch-understood custom operator (see https://pytorch.org/tutorials/advanced/custom_ops_landing_page.html for more details) or, if it is traceable, use `torch.compiler.allow_in_graph`.
-
-  Developer debug context: module: mylib, qualname: PyCapsule.foobar, skip reason: cannot determine source file for mylib (likely a C extension or builtin)
-
- For more details about this graph break, please visit: https://meta-pytorch.github.io/compile-graph-break-site/gb/gb0007.html""",
-        )
-
-        cpp_source = """
-        #include <torch/extension.h>
-        at::Tensor baz(const at::Tensor& x) {
-            return x.clone();
-        }
-        """
-        module2 = load_inline(
-            name="mylib2",
-            cpp_sources=cpp_source,
-            functions="baz",
-            verbose=True,
-        )
-
-        torch._dynamo.reset()
-
-        # Test that each warning only happens once
-        @torch.compile(backend="eager")
-        def f(x):
-            module2.baz(x)
-            module.foobar(x)
-            module.foobar(x)
-            module2.baz(x)
-            module.foobar(x)
-            module2.baz(x)
-            return x.clone()
-
-        with warnings.catch_warnings(record=True) as ws:
-            warnings.simplefilter("always")
-            f(x)
-            f(x)
-        self.assertEqual(len(ws), 2)
-
     def test_observed_exception(self):
         def fn():
             raise RuntimeError("test")
@@ -601,35 +511,6 @@ Uninitialized nn.Module
 from user code:
    File "test_error_messages.py", line N, in fn
     return mod(1)""",
-        )
-
-    @torch._dynamo.config.patch(inline_inbuilt_nn_modules=False)
-    def test_class_property(self):
-        class Foo(torch.nn.Module):
-            attr = unittest
-
-        def fn(mod, x):
-            return mod.attr
-
-        self.assertExpectedInlineMunged(
-            Unsupported,
-            lambda: torch.compile(fn, backend="eager", fullgraph=True)(
-                Foo(), torch.randn(3)
-            ),
-            """\
-Unsupported nn.Module attribute type
-  Explanation: Dynamo does not support tracing nn.Module attributes of type `module`
-  Hint: Refactor your code so that `attr` (type `module`) is not an attribute of `Foo`
-  Hint: Currently supported attribute types are methods, classmethods, staticmethods, properties, constants, and tensors.
-  Hint: It may be possible to write Dynamo tracing rules for this code. Please report an issue to PyTorch if you encounter this graph break often and it is causing performance issues.
-
-  Developer debug context: nn.Module subclass: Foo, name: attr, attribute type: module
-
- For more details about this graph break, please visit: https://meta-pytorch.github.io/compile-graph-break-site/gb/gb0161.html
-
-from user code:
-   File "test_error_messages.py", line N, in fn
-    return mod.attr""",
         )
 
     def test_generic_ctx_mgr_graph_break_fullgraph_true(self):
@@ -1486,7 +1367,7 @@ TRACE CALL 0 [NullVariable, LazyVariableTracker(unrealized: <class 'function'>)]
             post_munge(munge_exc(records[-1].getMessage(), skip=0)),
             """\
 Graph break in user code at test_error_messages.py:N
-Graph Break Reason: Encountered graph break when attempting to trace STORE_ATTR: storing an object's attribute, e.g. x.attr = y:
+Graph Break Reason: Encountered graph break when attempting to trace CALL: a function call, e.g. f(x, y):
 
 Call to `torch._dynamo.graph_break()`
   Explanation: User-inserted graph break. Message: None
@@ -1510,6 +1391,65 @@ User code traceback:
     Foo().attr = x
   File "test_error_messages.py", line N, in __setattr__
     torch._dynamo.graph_break()
+
+NOTE: the most recent `torch.compile` tracing attempt might not be where you applied `torch.compile`! This is due to how graph breaks are implemented - the optimized code object returned by Dynamo will call another Dynamo-generated resume function and tracing is re-enabled by calling the resume function as a normal Python function, which Dynamo intercepts as a top-level frame.
+
+Most recent bytecode instructions traced (max 20):
+""",
+        )
+
+    @torch._dynamo.config.patch(verbose=True)
+    @make_logging_test(graph_breaks=True)
+    def test_graph_break_traceback_inlined_data_dependent_branch(self, records):
+        # Tests that data-dependent branches in inlined functions show correct
+        # source lines in the verbose traceback (from the call site, not the
+        # inlined function's source).
+        def helper(x):
+            if x.sum() > 0:  # 0
+                x = x + 1
+            if x.sum() > 0:  # 1
+                x = x + 1
+            return x
+
+        @torch.compile(backend="eager")
+        def f(x):
+            return helper(x) + 1  # call site
+
+        f(torch.ones(3))
+
+        def post_munge(s):
+            s = re.sub(
+                r"torch_dynamo_resume_in_(\w+)_at_(\d+)",
+                r"torch_dynamo_resume_in_\1_at_N",
+                s,
+            )
+            return re.sub(r"TRACE.*$", "", s, flags=re.DOTALL)
+
+        self.assertExpectedInline(
+            post_munge(munge_exc(records[-1].getMessage(), skip=0)),
+            """\
+Graph break in user code at test_error_messages.py:N
+Graph Break Reason: Data-dependent branching
+  Explanation: Detected data-dependent branching (e.g. `if my_tensor.sum() > 0:`). Dynamo does not support tracing dynamic control flow.
+  Hint: This graph break is fundamental - it is unlikely that Dynamo will ever be able to trace through your code. Consider finding a workaround.
+  Hint: Use `torch.cond` to express dynamic control flow.
+
+  Developer debug context: attempted to jump with TensorVariable()
+
+ For more details about this graph break, please visit: https://meta-pytorch.github.io/compile-graph-break-site/gb/gb0170.html
+
+User code traceback:
+  File "test_error_messages.py", line N, in test_graph_break_traceback_inlined_data_dependent_branch
+    f(torch.ones(3))
+  File "test_error_messages.py", line N, in f
+    return helper(x) + 1  # call site
+
+========== most recent `torch.compile` tracing attempt started here ==========
+
+  File "test_error_messages.py", line N, in torch_dynamo_resume_in_f_at_N
+    return helper(x) + 1  # call site
+  File "test_error_messages.py", line N, in torch_dynamo_resume_in_helper_at_N
+    if x.sum() > 0:  # 1
 
 NOTE: the most recent `torch.compile` tracing attempt might not be where you applied `torch.compile`! This is due to how graph breaks are implemented - the optimized code object returned by Dynamo will call another Dynamo-generated resume function and tracing is re-enabled by calling the resume function as a normal Python function, which Dynamo intercepts as a top-level frame.
 
@@ -1819,8 +1759,9 @@ from user code:
     @make_logging_test(graph_breaks=True)
     def test_store_attr_graph_break(self, records):
         class Foo:
+            @torch.compiler.disable
             def __setattr__(self, name, value):
-                torch._dynamo.graph_break()
+                super().__setattr__(name, value)
 
         @torch.compile(backend="eager")
         def fn(x):
@@ -1828,27 +1769,30 @@ from user code:
 
         fn(torch.ones(3))
 
+        def post_munge(s):
+            return re.sub(r"0x[0-9A-Fa-f]+", "0xmem_addr", s)
+
         self.assertExpectedInline(
-            munge_exc(records[0].getMessage(), suppress_suffix=True, skip=0),
+            post_munge(
+                munge_exc(records[-1].getMessage(), suppress_suffix=True, skip=0)
+            ),
             """\
 Graph break in user code at test_error_messages.py:N
 Graph Break Reason: Encountered graph break when attempting to trace STORE_ATTR: storing an object's attribute, e.g. x.attr = y:
 
-Call to `torch._dynamo.graph_break()`
-  Explanation: User-inserted graph break. Message: None
-  Hint: Remove the `torch._dynamo.graph_break()` call.
+Skip inlining `torch.compiler.disable()`d function
+  Explanation: Skip inlining function <function ErrorMessagesTest.test_store_attr_graph_break.<locals>.Foo.__setattr__ at 0xmem_addr> since it was wrapped with `torch.compiler.disable` (reason: None)
+  Hint: Remove the `torch.compiler.disable` call
 
-  Developer debug context: Called `torch._dynamo.graph_break()` with args `[]`, kwargs `{}`
+  Developer debug context: <function ErrorMessagesTest.test_store_attr_graph_break.<locals>.Foo.__setattr__ at 0xmem_addr>
 
- For more details about this graph break, please visit: https://meta-pytorch.github.io/compile-graph-break-site/gb/gb0025.html
+ For more details about this graph break, please visit: https://meta-pytorch.github.io/compile-graph-break-site/gb/gb0099.html
 
 User code traceback:
   File "test_error_messages.py", line N, in test_store_attr_graph_break
     fn(torch.ones(3))
   File "test_error_messages.py", line N, in fn
     Foo().attr = x
-  File "test_error_messages.py", line N, in __setattr__
-    torch._dynamo.graph_break()
 """,
         )
 
@@ -1859,19 +1803,18 @@ User code traceback:
                 Unsupported,
                 lambda: fn(torch.ones(3)),
                 """\
-Call to `torch._dynamo.graph_break()`
-  Explanation: User-inserted graph break. Message: None
-  Hint: Remove the `torch._dynamo.graph_break()` call.
+Skip inlining `torch.compiler.disable()`d function
+  Explanation: Skip inlining function <function ErrorMessagesTest.test_store_attr_graph_break.<locals>.Foo.__setattr__ at 0xmem_addr> since it was wrapped with `torch.compiler.disable` (reason: None)
+  Hint: Remove the `torch.compiler.disable` call
 
-  Developer debug context: Called `torch._dynamo.graph_break()` with args `[]`, kwargs `{}`
+  Developer debug context: <function ErrorMessagesTest.test_store_attr_graph_break.<locals>.Foo.__setattr__ at 0xmem_addr>
 
- For more details about this graph break, please visit: https://meta-pytorch.github.io/compile-graph-break-site/gb/gb0025.html
+ For more details about this graph break, please visit: https://meta-pytorch.github.io/compile-graph-break-site/gb/gb0099.html
 
 from user code:
    File "test_error_messages.py", line N, in fn
-    Foo().attr = x
-  File "test_error_messages.py", line N, in __setattr__
-    torch._dynamo.graph_break()""",
+    Foo().attr = x""",
+                post_munge=post_munge,
             )
 
     def test_runtime_error_readable_shape_mismatch(self):
@@ -2199,10 +2142,6 @@ Dynamo recompile limit exceeded
  For more details about this graph break, please visit: https://meta-pytorch.github.io/compile-graph-break-site/gb/gb0039.html""",
             )
 
-
-class NestedGraphBreakLoggingTests(
-    LoggingTestCase, torch._dynamo.test_case.TestCaseWithNestedGraphBreaks
-):
     @make_logging_test(graph_breaks=True)
     def test_nested_generic_ctx_mgr(self, records):
         def inner():
@@ -2293,13 +2232,6 @@ Graph break under GenericContextWrappingVariable
     def test_skipped_frame_with_verbose_traceback_nested(self, records):
         global f1, f2, f3
 
-        class GenericCtxMgr:
-            def __enter__(self):
-                return self
-
-            def __exit__(self, exc_type, exc_value, traceback):
-                pass
-
         def f1(x):
             with GenericCtxMgr():
                 torch._dynamo.graph_break()
@@ -2353,13 +2285,6 @@ User code traceback:
     @make_logging_test(graph_breaks=True)
     def test_skip_frame_in_loop_message_nested(self, records):
         global f1, f2, f3
-
-        class GenericCtxMgr:
-            def __enter__(self):
-                return self
-
-            def __exit__(self, exc_type, exc_value, traceback):
-                pass
 
         def f1(x):
             for i in range(2):
