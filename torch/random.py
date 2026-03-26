@@ -8,12 +8,12 @@ import torch
 
 
 __all__ = [
-    "fork_rng",
+    "set_rng_state",
     "get_rng_state",
-    "initial_seed",
     "manual_seed",
     "seed",
-    "set_rng_state",
+    "initial_seed",
+    "fork_rng",
     "thread_safe_generator",
 ]
 
