@@ -458,6 +458,8 @@ class _SingleLevelFunction(
     """
     clear_saved_tensors_on_access = False
 
+    boxed_grads_call = False
+
     @staticmethod
     def jvp(ctx: Any, *grad_inputs: Any) -> Any:
         r"""Define a formula for differentiating the operation with forward mode automatic differentiation.

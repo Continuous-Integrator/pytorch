@@ -38,6 +38,7 @@ from torch.testing._internal.common_utils import (
     IS_X86,
     skipCUDAMemoryLeakCheckIf,
     skipIfCrossRef,
+    skipIfRocm,
     skipIfTorchDynamo,
     suppress_warnings,
     TEST_MKL,
@@ -233,6 +234,10 @@ if TEST_WITH_ROCM:
 
 inductor_skips["xpu"] = {}
 
+# torch-xpu-ops: #2956
+inductor_skips["xpu"]["lu"] = {f32}
+inductor_skips["xpu"]["nn.functional.linear"] = {f16}
+
 inductor_expected_failures_single_sample = defaultdict(dict)
 
 inductor_expected_failures_single_sample["cpu"] = {
@@ -296,7 +301,6 @@ inductor_expected_failures_single_sample["xpu"] = {
         i32,
         i64,
     },  # align with cuda.
-    ("linalg.pinv", "singular"): {f64},
     # could not create a primitive
     "fft.fft": {f16},
     "fft.fft2": {f16},
@@ -1239,6 +1243,7 @@ class TestInductorOpInfo(TestCase):
     @unittest.skipIf(TEST_WITH_ASAN, "Skipped under ASAN")
     @skipIfTorchDynamo("Test uses dynamo already")
     @skipIfCrossRef
+    @skipIfRocm(msg="Fails with Triton 3.7 on MI200")
     @_ops(op_db[START:END])
     @skipOps("TestInductorOpInfo", "test_comprehensive", test_skips_or_fails)
     @patch("torch._dynamo.config.raise_on_unsafe_aot_autograd", True)

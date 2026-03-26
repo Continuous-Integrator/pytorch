@@ -1,6 +1,7 @@
 # Owner(s): ["module: dynamo"]
 
 import dataclasses
+import itertools
 import pickle
 import sys
 import tempfile
@@ -929,6 +930,35 @@ class TestGuardSerialization(TestGuardSerializationBase):
             ref, loaded, {"x": torch.randn(4), "r": iter(range(2, 15, 4))}, False
         )
 
+    def test_count_iterator_match(self):
+        def fn(x, counter):
+            return x + next(counter)
+
+        x = torch.randn(3)
+
+        def _gen_kwargs(x=x):
+            return {"x": x, "counter": itertools.count(2, 3)}
+
+        ref, loaded = self._test_serialization(
+            "COUNT_ITERATOR_MATCH", fn, _gen_fn=_gen_kwargs
+        )
+
+        self._test_check_fn(
+            ref, loaded, {"x": x, "counter": itertools.count(2, 3)}, True
+        )
+        self._test_check_fn(
+            ref,
+            loaded,
+            {"x": torch.randn(4), "counter": itertools.count(2, 3)},
+            True,
+        )
+        self._test_check_fn(
+            ref, loaded, {"x": x, "counter": itertools.count(5, 3)}, False
+        )
+        self._test_check_fn(
+            ref, loaded, {"x": x, "counter": itertools.count(2, 4)}, False
+        )
+
     def test_dict_version(self):
         def fn(x):
             return pytree.tree_leaves(x)[0] + 1
@@ -1507,13 +1537,15 @@ class TestGuardSerialization(TestGuardSerializationBase):
             def foo(ddp, x):
                 return ddp(x)
 
+            unsupported = frozenset(
+                torch._dynamo.guards.CheckFunctionManager.UNSUPPORTED_SERIALIZATION_GUARD_TYPES
+            )
             x = torch.randn(10)
             package = CompilePackage(foo)
             torch._dynamo.optimize(
                 package=package,
                 guard_filter_fn=lambda gs: [
-                    x.guard_type not in ("CLOSURE_MATCH", "ID_MATCH", "CLASS_MATCH")
-                    for x in gs
+                    x.guard_type not in unsupported for x in gs
                 ],
             )(foo)(ddp_model, x)
             self.assertEqual(len(package._codes[foo.__code__].guarded_codes), 1)

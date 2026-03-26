@@ -164,8 +164,8 @@ auto PyNode::apply(variable_list&& inputs) -> variable_list {
 
   if (py_fn->boxed_grads_call) {
     // Move grad tensors from the immutable args tuple into a mutable Python
-    // list on the function object. Replace tuple items with None so pyInputs
-    // doesn't keep tensors alive during the blocking PyObject_CallObject.
+    // list and pass it as a single argument. This lets backward pop/clear
+    // individual grads to free memory mid-execution.
     Py_ssize_t n = PyTuple_GET_SIZE(pyInputs.get());
     THPObjectPtr gradsList(PyList_New(n));
     if (!gradsList)
@@ -174,12 +174,13 @@ auto PyNode::apply(variable_list&& inputs) -> variable_list {
       PyObject* item = PyTuple_GET_ITEM(pyInputs.get(), i);
       Py_INCREF(item);
       PyList_SET_ITEM(gradsList.get(), i, item);
-      Py_INCREF(Py_None);
-      Py_DECREF(PyTuple_GET_ITEM(pyInputs.get(), i));
-      PyTuple_SET_ITEM(pyInputs.get(), i, Py_None);
     }
-    if (PyObject_SetAttrString(obj, "_boxed_grads", gradsList.get()) < 0)
+    // Replace pyInputs with a single-element tuple containing the grads list
+    THPObjectPtr boxedArgs(PyTuple_New(1));
+    if (!boxedArgs)
       throw_python_error();
+    PyTuple_SET_ITEM(boxedArgs.get(), 0, gradsList.release());
+    pyInputs = std::move(boxedArgs);
   }
 
   THPObjectPtr apply_fn(PyObject_GetAttrString(obj, "apply"));
@@ -187,10 +188,6 @@ auto PyNode::apply(variable_list&& inputs) -> variable_list {
     throw_python_error();
   THPObjectPtr r(PyObject_CallObject(apply_fn, pyInputs.get()));
   pyInputs = nullptr;
-  if (py_fn->boxed_grads_call) {
-    if (PyObject_SetAttrString(obj, "_boxed_grads", Py_None) < 0)
-      PyErr_Clear(); // best-effort cleanup, don't mask the real result
-  }
   if (!r)
     throw_python_error();
   ensure_tuple(r);
@@ -603,7 +600,6 @@ static PyObject* THPFunction_new(
   self->materialize_grads = true;
   self->pure_view = false;
   self->materialize_non_diff_grads = true;
-  self->boxed_grads_call = false;
   self->clear_saved_tensors_on_access = false;
   self->saved_tensors_accessed_and_cleared = false;
   return obj;
@@ -1416,6 +1412,16 @@ PyObject* THPFunction_apply(PyObject* cls, PyObject* inputs) {
       Py_TYPE(clear_attr.get())->tp_name);
   ctx->clear_saved_tensors_on_access = clear_attr.get() == Py_True;
 
+  // Get boxed_grads_call from the Function class
+  THPObjectPtr boxed_attr(PyObject_GetAttrString(cls, "boxed_grads_call"));
+  TORCH_CHECK(
+      boxed_attr, "autograd.Function is missing boxed_grads_call attribute");
+  TORCH_CHECK(
+      PyBool_Check(boxed_attr.get()),
+      "boxed_grads_call must be a bool, got ",
+      Py_TYPE(boxed_attr.get())->tp_name);
+  ctx->boxed_grads_call = boxed_attr.get() == Py_True;
+
   // autograd.Function may optionally override a setup_context staticmethod.
   // In this case, autograd.Function.forward does NOT accept a ctx object.
   // Determine if this is the case.
@@ -1533,31 +1539,6 @@ int THPFunction_set_materialize_grads(
     return -1;
   }
   self->materialize_grads = (value == Py_True);
-  return 0;
-  END_HANDLE_TH_ERRORS_RET(-1)
-}
-
-PyObject* THPFunction_get_boxed_grads_call(THPFunction* self, void* _unused) {
-  HANDLE_TH_ERRORS
-  if (self->boxed_grads_call) {
-    Py_RETURN_TRUE;
-  } else {
-    Py_RETURN_FALSE;
-  }
-  END_HANDLE_TH_ERRORS
-}
-
-int THPFunction_set_boxed_grads_call(
-    THPFunction* self,
-    PyObject* value,
-    void* unused) {
-  HANDLE_TH_ERRORS
-  if (!PyBool_Check(value)) {
-    THPUtils_invalidArguments(
-        value, nullptr, "set_boxed_grads_call", 1, "(bool)");
-    return -1;
-  }
-  self->boxed_grads_call = (value == Py_True);
   return 0;
   END_HANDLE_TH_ERRORS_RET(-1)
 }
@@ -1895,11 +1876,6 @@ static struct PyGetSetDef THPFunction_properties[] = {
     {"_compiled_autograd_backward_state",
      (getter)THPFunction_get_compiled_autograd_backward_state,
      (setter)THPFunction_set_compiled_autograd_backward_state,
-     nullptr,
-     nullptr},
-    {"_boxed_grads_call",
-     (getter)THPFunction_get_boxed_grads_call,
-     (setter)THPFunction_set_boxed_grads_call,
      nullptr,
      nullptr},
     {nullptr}};
