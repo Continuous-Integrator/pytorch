@@ -480,6 +480,10 @@ class UserDefinedClassVariable(UserDefinedVariable):
             )
         elif self.value is collections.OrderedDict and name == "move_to_end":
             return args[0].call_method(tx, name, [*args[1:]], kwargs)
+        elif name == "__len__" and len(args) == 1 and not kwargs:
+            from .object_protocol import generic_len
+
+            return generic_len(tx, args[0])
         elif name == "__eq__" and len(args) == 1 and hasattr(args[0], "value"):
             return VariableTracker.build(tx, self.value == args[0].value)
         elif name == "__ne__" and len(args) == 1 and hasattr(args[0], "value"):
@@ -1385,6 +1389,17 @@ class UserDefinedObjectVariable(UserDefinedVariable):
                 return VariableTracker.build(tx, len(self.value))  # type: ignore[arg-type]
 
         return super().call_method(tx, name, args, kwargs)
+
+    def len_impl(self, tx: "InstructionTranslator") -> VariableTracker:
+        from . import UserMethodVariable
+
+        method = self._maybe_get_baseclass_method("__len__")
+        if method is None:
+            return super().len_impl(tx)
+        if method is list.__len__ and self.source:
+            install_guard(self.source.make_guard(GuardBuilder.SEQUENCE_LENGTH))
+            return VariableTracker.build(tx, len(self.value))  # type: ignore[arg-type]
+        return UserMethodVariable(method, self).call_function(tx, [], {})
 
     def method_setattr_standard(
         self,
