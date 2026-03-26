@@ -40,9 +40,26 @@ class TestNativeDSLOps(TestCase):
     def setUp(self):
         """Clear all caches before each test to ensure test isolation."""
         self._cache_functions_to_clear = [
-            ("torch._native.common_utils", ["check_native_jit_disabled", "check_native_version_skip"]),
-            ("torch._native.triton_utils", ["_version_is_sufficient", "check_native_jit_disabled", "check_native_version_skip"]),
-            ("torch._native.cutedsl_utils", ["_version_is_ok", "check_native_jit_disabled", "check_native_version_skip"]),
+            (
+                "torch._native.common_utils",
+                ["check_native_jit_disabled", "check_native_version_skip"],
+            ),
+            (
+                "torch._native.triton_utils",
+                [
+                    "_version_is_sufficient",
+                    "check_native_jit_disabled",
+                    "check_native_version_skip",
+                ],
+            ),
+            (
+                "torch._native.cutedsl_utils",
+                [
+                    "_version_is_ok",
+                    "check_native_jit_disabled",
+                    "check_native_version_skip",
+                ],
+            ),
         ]
         self._clear_function_caches()
 
@@ -95,7 +112,9 @@ class TestNativeDSLOps(TestCase):
 
         # Test modules expose identical public APIs
         api_sets = list(public_apis.values())
-        self.assertEqual(api_sets[0], api_sets[1], "Modules should have identical public APIs")
+        self.assertEqual(
+            api_sets[0], api_sets[1], "Modules should have identical public APIs"
+        )
 
         # Test runtime functions return expected types
         for module_name, mod in modules.items():
@@ -107,6 +126,7 @@ class TestNativeDSLOps(TestCase):
                 ver = mod.runtime_version()
                 if ver is not None:
                     from packaging.version import Version
+
                     self.assertIsInstance(ver, Version)
 
     def test_no_dsl_imports_after_import_torch(self):
@@ -187,8 +207,11 @@ class TestNativeDSLOps(TestCase):
                         self.assertIsNone(result)
                     else:
                         # Valid versions should parse correctly
-                        self.assertEqual(result, Version(version_str),
-                                       f"_available_version({version_str!r}) = {result}")
+                        self.assertEqual(
+                            result,
+                            Version(version_str),
+                            f"_available_version({version_str!r}) = {result}",
+                        )
 
     def test_registry_mechanics(self):
         """_get_or_create_library caches Library instances per (lib, dispatch_key)."""
@@ -233,7 +256,9 @@ class TestNativeDSLOps(TestCase):
                 try:
                     mod.deregister_op_overrides()
                 except Exception as e:
-                    self.fail(f"deregister_op_overrides on {module_name} raised exception: {e}")
+                    self.fail(
+                        f"deregister_op_overrides on {module_name} raised exception: {e}"
+                    )
 
     def test_register_op_skips_when_jit_disabled(self):
         """register_op_override does not call through when TORCH_DISABLE_NATIVE_JIT=1."""
@@ -283,8 +308,24 @@ class TestNativeDSLOps(TestCase):
             check_native_version_skip.cache_clear()
 
             # Clear module-specific caches with error handling
-            for module, cache_names in [(triton_utils, ["_version_is_sufficient", "check_native_jit_disabled", "check_native_version_skip"]),
-                                        (cutedsl_utils, ["_version_is_ok", "check_native_jit_disabled", "check_native_version_skip"])]:
+            for module, cache_names in [
+                (
+                    triton_utils,
+                    [
+                        "_version_is_sufficient",
+                        "check_native_jit_disabled",
+                        "check_native_version_skip",
+                    ],
+                ),
+                (
+                    cutedsl_utils,
+                    [
+                        "_version_is_ok",
+                        "check_native_jit_disabled",
+                        "check_native_version_skip",
+                    ],
+                ),
+            ]:
                 for cache_name in cache_names:
                     if hasattr(module, cache_name):
                         getattr(module, cache_name).cache_clear()
@@ -311,8 +352,11 @@ class TestNativeDSLOps(TestCase):
                 cutedsl_utils.register_op_override("aten", op_name, "CPU", lambda: None)
 
                 # Verify both implementation functions were called
-                self.assertEqual(triton_mock.call_count + cute_mock.call_count, 2,
-                               f"Expected 2 calls but got triton: {triton_mock.call_count}, cutedsl: {cute_mock.call_count}")
+                self.assertEqual(
+                    triton_mock.call_count + cute_mock.call_count,
+                    2,
+                    f"Expected 2 calls but got triton: {triton_mock.call_count}, cutedsl: {cute_mock.call_count}",
+                )
 
     def test_check_native_version_skip_environment_variable(self):
         """Test TORCH_NATIVE_SKIP_VERSION_CHECK environment variable behavior."""
@@ -332,7 +376,6 @@ class TestNativeDSLOps(TestCase):
                     # Clear cache so function re-reads environment variable
                     check_native_version_skip.cache_clear()
                     self.assertEqual(check_native_version_skip(), expected_result)
-
 
 
 if __name__ == "__main__":
