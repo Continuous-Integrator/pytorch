@@ -122,11 +122,24 @@ __global__ void philox_uniform_kernel(
     int64_t base = single_key ? 0 : key_idx * event_numel;
 
     curandStatePhilox4_32_10_t state;
-    curand_init(seed, /*subsequence=*/0,
-        /*offset=*/key_offset + static_cast<unsigned long long>(elem_start) * outputs_per_value,
-        &state);
+    auto philox_offset = key_offset +
+        static_cast<unsigned long long>(elem_start) * outputs_per_value;
+    curand_init(seed, /*subsequence=*/0, /*offset=*/philox_offset, &state);
 
-    int64_t full_end = elem_start + ((elem_end - elem_start) / elems_per_call) * elems_per_call;
+    // Detect if the 64-bit offset wraps within this thread's range. If so,
+    // re-init at offset 0 to stay in subsequence 0, matching grid_split's
+    // modular offset arithmetic.
+    auto outputs_in_chunk =
+        static_cast<unsigned long long>(elem_end - elem_start) * outputs_per_value;
+    bool chunk_wraps = philox_offset != 0 &&
+        (philox_offset + outputs_in_chunk < philox_offset);
+    int64_t wrap_elem = chunk_wraps
+        ? elem_start + static_cast<int64_t>(
+              (0ULL - philox_offset) / outputs_per_value)
+        : elem_end;
+
+    int64_t gen_end = min(wrap_elem, elem_end);
+    int64_t full_end = elem_start + ((gen_end - elem_start) / elems_per_call) * elems_per_call;
     if (single_key || (base % elems_per_call) == 0) {
       for (int64_t elem = elem_start; elem < full_end; elem += elems_per_call) {
         uniform_generate_vec<scalar_t>(output, base + elem, &state, low, high);
@@ -136,8 +149,20 @@ __global__ void philox_uniform_kernel(
         uniform_generate<scalar_t>(output, base, elem, full_end, &state, low, high);
       }
     }
-    if (full_end < elem_end) {
-      uniform_generate<scalar_t>(output, base, full_end, elem_end, &state, low, high);
+    if (full_end < gen_end) {
+      uniform_generate<scalar_t>(output, base, full_end, gen_end, &state, low, high);
+    }
+
+    if (chunk_wraps) {
+      curand_init(seed, /*subsequence=*/0, /*offset=*/0ULL, &state);
+      int64_t post_start = wrap_elem;
+      full_end = post_start + ((elem_end - post_start) / elems_per_call) * elems_per_call;
+      for (int64_t elem = post_start; elem < full_end; elem += elems_per_call) {
+        uniform_generate<scalar_t>(output, base, elem, full_end, &state, low, high);
+      }
+      if (full_end < elem_end) {
+        uniform_generate<scalar_t>(output, base, full_end, elem_end, &state, low, high);
+      }
     }
   }
 }

@@ -162,38 +162,66 @@ __global__ void philox_normal_kernel(
     // when key_offset is even).
     int misalign = static_cast<int>(key_offset & 3);
     int skip = 0;
-    unsigned long long philox_offset = key_offset +
-        static_cast<unsigned long long>(elem_start) * outputs_per_normal;
+    unsigned long long aligned_base = key_offset;
     if (misalign > 0 && (misalign % outputs_per_normal) == 0) {
       skip = misalign / outputs_per_normal;
-      philox_offset -= misalign;
+      aligned_base -= misalign;
     }
+
+    unsigned long long philox_offset = aligned_base +
+        static_cast<unsigned long long>(elem_start) * outputs_per_normal;
+
+    // Detect if the 64-bit offset wraps within this thread's range.
+    // Use the raw (non-aligned) offset for wrap detection so the split
+    // point matches grid_split's element-level offset arithmetic.
+    unsigned long long raw_offset = key_offset +
+        static_cast<unsigned long long>(elem_start) * outputs_per_normal;
+    auto outputs_in_range =
+        static_cast<unsigned long long>(elem_end - elem_start) * outputs_per_normal;
+    bool range_wraps = raw_offset != 0 &&
+        (raw_offset + outputs_in_range < raw_offset);
+    int64_t wrap_elem = range_wraps
+        ? elem_start + static_cast<int64_t>(
+              (0ULL - raw_offset) / outputs_per_normal)
+        : elem_end;
 
     curandStatePhilox4_32_10_t state;
     curand_init(seed, /*subsequence=*/0, /*offset=*/philox_offset, &state);
 
+    int64_t gen_end = min(wrap_elem, elem_end);
     int64_t elem = elem_start;
 
-    if (skip > 0 && elem < elem_end) {
+    if (skip > 0 && elem < gen_end) {
       normal_generate_skip<scalar_t>(
-          output, base, elem, elem_end, &state, mean, stddev, skip);
+          output, base, elem, gen_end, &state, mean, stddev, skip);
       elem += min(static_cast<int64_t>(elems_per_call - skip),
-                  elem_end - elem);
+                  gen_end - elem);
     }
 
-    int64_t full_end = elem + ((elem_end - elem) / elems_per_call) * elems_per_call;
-    // Vec stores need aligned positions; only possible without prefix skip.
+    int64_t full_end = elem + ((gen_end - elem) / elems_per_call) * elems_per_call;
     if (skip == 0 && (single_key || (base % elems_per_call) == 0)) {
       for (; elem < full_end; elem += elems_per_call) {
         normal_generate_vec<scalar_t>(output, base + elem, &state, mean, stddev);
       }
     } else {
       for (; elem < full_end; elem += elems_per_call) {
-        normal_generate<scalar_t>(output, base, elem, elem_end, &state, mean, stddev);
+        normal_generate<scalar_t>(output, base, elem, gen_end, &state, mean, stddev);
       }
     }
-    if (elem < elem_end) {
-      normal_generate<scalar_t>(output, base, elem, elem_end, &state, mean, stddev);
+    if (elem < gen_end) {
+      normal_generate<scalar_t>(output, base, elem, gen_end, &state, mean, stddev);
+    }
+
+    if (range_wraps) {
+      curand_init(seed, /*subsequence=*/0, /*offset=*/0ULL, &state);
+      elem = wrap_elem;
+      full_end = elem + ((elem_end - elem) / elems_per_call) * elems_per_call;
+      for (; elem < full_end; elem += elems_per_call) {
+        normal_generate<scalar_t>(output, base, elem, elem_end, &state, mean, stddev);
+      }
+      if (elem < elem_end) {
+        normal_generate<scalar_t>(output, base, elem, elem_end, &state, mean, stddev);
+      }
     }
   }
 }
