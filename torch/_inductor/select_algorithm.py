@@ -2896,6 +2896,7 @@ class TritonTemplate(KernelTemplate):
                 "matrix_instr_nonkdim": kwargs.get("matrix_instr_nonkdim", 0),
                 "waves_per_eu": kwargs.get("waves_per_eu", 0),
                 "kpack": kwargs.get("kpack", 2),
+                "epilogue_subtile": kwargs.get("EPILOGUE_SUBTILE", 0),
                 **{
                     k: kwargs[k]
                     for k in AlgorithmSelectorCache.FLEX_ATTENTION_TUNABLE_KEYS
@@ -3938,6 +3939,8 @@ class AlgorithmSelectorCache(PersistentCache):
                         min_speedup_threshold,
                     )
                     best_choice = min(fallback_choices, key=lambda c: timings[c])
+
+        best_choice = V.choices.override_best_choice(best_choice, timings)
 
         # Test-only: force choosing decomposition (non-fallback) if available
         if config.test_configs.force_custom_op_decomposition:
@@ -5444,6 +5447,9 @@ class AlgorithmSelectorCache(PersistentCache):
         if isinstance(node, ir.Layout):
             node = ir.Buffer(name="fake", layout=node)
         # triton templates want the base tensor.
+        # Preserve the original dtype before unwrapping, since dtype views
+        # (e.g. uint8 -> float4_e2m1fn_x2) would be lost by unwrap_view.
+        original_dtype = node.get_dtype()
         if isinstance(node, ir.BaseView):
             node = node.unwrap_view()
 
@@ -5451,7 +5457,7 @@ class AlgorithmSelectorCache(PersistentCache):
         # stride is large enough. The V.graph.get_allocation_size takes this into account.
         # So we need call as_strided in the end to 'view' the tensor with the correct
         # sizes/strides
-        return AlgorithmSelectorCache.generate_example_value(
+        result = AlgorithmSelectorCache.generate_example_value(
             V.graph.sizevars.optimization_hints_with_override(
                 node.get_size(),
                 hint_override=hint_override,
@@ -5471,6 +5477,10 @@ class AlgorithmSelectorCache(PersistentCache):
                 hint_override=hint_override,
             ),
         )
+        # Restore dtype if it was lost by unwrapping a dtype view
+        if result.dtype != original_dtype:
+            result = result.view(original_dtype)
+        return result
 
     @staticmethod
     def generate_example_value(
