@@ -21,7 +21,7 @@ from contextlib import ExitStack
 from datetime import datetime
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
-from typing import Any, cast, NamedTuple, Optional, Union
+from typing import Any, cast, NamedTuple
 
 import torch
 import torch.distributed as dist
@@ -104,6 +104,7 @@ HAVE_TEST_SELECTION_TOOLS = True
 TEST_CONFIG = os.getenv("TEST_CONFIG", "")
 BUILD_ENVIRONMENT = os.getenv("BUILD_ENVIRONMENT", "")
 RERUN_DISABLED_TESTS = os.getenv("PYTORCH_TEST_RERUN_DISABLED_TESTS", "0") == "1"
+NUM_PYTEST_RERUNS = int(os.getenv("PYTORCH_NUM_PYTEST_RERUNS", "2"))
 DISTRIBUTED_TEST_PREFIX = "distributed"
 INDUCTOR_TEST_PREFIX = "inductor"
 IS_SLOW = "slow" in TEST_CONFIG or "slow" in BUILD_ENVIRONMENT
@@ -200,8 +201,10 @@ ROCM_BLOCKLIST = [
 
 # Add architecture-specific blocklist entries
 if TEST_WITH_ROCM and isRocmArchAnyOf(("gfx1100",)):
-    # Some autotune tests on gfx1100 are hanging, disable for now
-    ROCM_BLOCKLIST.append("inductor/test_max_autotune")
+    # Skip all inductor tests on Navi arch
+    ROCM_BLOCKLIST.extend(
+        test for test in TESTS if test.startswith(INDUCTOR_TEST_PREFIX)
+    )
 
 S390X_BLOCKLIST = [
     # these tests fail due to various reasons
@@ -299,6 +302,7 @@ RUN_PARALLEL_BLOCKLIST = [
     "test_autograd_fallback",
     "inductor/test_compiler_bisector",
     "test_privateuseone_python_backend",
+    "functorch/test_control_flow_cuda_initialization",
 ] + FSDP_TEST
 
 # Test files that should always be run serially with other test files,
@@ -415,6 +419,7 @@ AOT_DISPATCH_TESTS = [
 ]
 FUNCTORCH_TESTS = [test for test in TESTS if test.startswith("functorch")]
 DYNAMO_CORE_TESTS = [test for test in TESTS if test.startswith("dynamo")]
+CPYTHON_TESTS = [test for test in TESTS if "cpython" in test]
 ONNX_TESTS = [test for test in TESTS if test.startswith("onnx")]
 QUANTIZATION_TESTS = [test for test in TESTS if test.startswith("test_quantization")]
 
@@ -528,7 +533,10 @@ def run_test(
         ]
 
     if extra_unittest_args:
-        assert isinstance(extra_unittest_args, list)
+        if not isinstance(extra_unittest_args, list):
+            raise AssertionError(
+                f"extra_unittest_args must be a list, got {type(extra_unittest_args)}"
+            )
         unittest_args.extend(extra_unittest_args)
 
     # If using pytest, replace -f with equivalent -x
@@ -699,7 +707,8 @@ def install_cpp_extensions(extensions_dir, env=os.environ):
     )
     install_directory = os.path.join(extensions_dir, "install", platlib_rel)
 
-    assert install_directory, "install_directory must not be empty"
+    if not install_directory:
+        raise AssertionError("install_directory must not be empty")
     return install_directory, 0
 
 
@@ -978,6 +987,15 @@ def test_openreg(test_module, test_directory, options):
     if return_code != 0:
         return return_code
 
+    # Run the openreg C++ unit tests (gtest) built by cmake.
+    ortests_bin = os.path.join(
+        openreg_dir, "build", "third_party", "openreg", "ortests"
+    )
+    if os.path.isfile(ortests_bin):
+        return_code = shell([ortests_bin], cwd=openreg_dir)
+        if return_code != 0:
+            return return_code
+
     with extend_python_path([install_dir]):
         cmd = [
             sys.executable,
@@ -1247,9 +1265,9 @@ def get_pytest_args(options, is_cpp_test=False, is_distributed_test=False):
         # flakiness status. Default to 50 re-runs
         rerun_options = ["--flake-finder", f"--flake-runs={count}"]
     else:
-        # When under the normal mode, retry a failed test 2 more times. -x means stop at the first
-        # failure
-        rerun_options = ["-x", "--reruns=2"]
+        # When under the normal mode, retry a failed test NUM_PYTEST_RERUNS more times.
+        # -x means stop at the first failure. Set PYTORCH_NUM_PYTEST_RERUNS=0 to disable.
+        rerun_options = ["-x", f"--reruns={NUM_PYTEST_RERUNS}"]
 
     pytest_args = [
         "-vv",
@@ -1278,9 +1296,10 @@ def get_pytest_args(options, is_cpp_test=False, is_distributed_test=False):
 
 
 def run_ci_sanity_check(test: ShardedTest, test_directory, options):
-    assert test.name == "test_ci_sanity_check_fail", (
-        f"This handler only works for test_ci_sanity_check_fail, got {test.name}"
-    )
+    if test.name != "test_ci_sanity_check_fail":
+        raise AssertionError(
+            f"This handler only works for test_ci_sanity_check_fail, got {test.name}"
+        )
     ret_code = run_test(test, test_directory, options, print_log=False)
     # This test should fail
     if ret_code != 1:
@@ -1315,6 +1334,7 @@ CUSTOM_HANDLERS = {
     "distributed/rpc/test_tensorpipe_agent": run_test_with_subprocess,
     "distributed/rpc/test_share_memory": run_test_with_subprocess,
     "distributed/rpc/cuda/test_tensorpipe_agent": run_test_with_subprocess,
+    "functorch/test_control_flow_cuda_initialization": run_test_with_subprocess,
     "doctests": run_doctests,
     "test_ci_sanity_check_fail": run_ci_sanity_check,
     "test_autoload_enable": test_autoload_enable,
@@ -1351,6 +1371,12 @@ def parse_args():
         "--distributed-tests",
         action="store_true",
         help="Run all distributed tests",
+    )
+    parser.add_argument(
+        "--include-cpython-tests",
+        "--include-cpython-tests",
+        action="store_true",
+        help="If this flag is present, we will only run cpython tests.",
     )
     parser.add_argument(
         "--include-dynamo-core-tests",
@@ -1609,7 +1635,7 @@ def exclude_tests(
     return selected_tests
 
 
-def must_serial(file: Union[str, ShardedTest]) -> bool:
+def must_serial(file: str | ShardedTest) -> bool:
     if isinstance(file, ShardedTest):
         file = file.name
     return (
@@ -1649,6 +1675,11 @@ def get_selected_tests(options) -> list[str]:
             filter(lambda test_name: test_name in CORE_TEST_LIST, selected_tests)
         )
 
+    if options.include_cpython_tests:
+        selected_tests = list(
+            filter(lambda test_name: test_name in CPYTHON_TESTS, selected_tests)
+        )
+
     # Filter to only run dynamo tests when --include-dynamo-core-tests option is specified
     if options.include_dynamo_core_tests:
         selected_tests = list(
@@ -1686,7 +1717,7 @@ def get_selected_tests(options) -> list[str]:
         options.exclude.extend(CPP_TESTS)
 
     if options.mps:
-        os.environ["PYTORCH_TEST_OPS_ONLY_MPS"] = "1"
+        os.environ["PYTORCH_TESTING_DEVICE_ONLY_FOR"] = "mps"
         selected_tests = [
             "test_ops",
             "test_mps",
@@ -1703,7 +1734,7 @@ def get_selected_tests(options) -> list[str]:
             "inductor/test_torchinductor_dynamic_shapes",
         ]
     else:
-        # Exclude all mps tests otherwise
+        # Exclude mps-only tests otherwise
         options.exclude.extend(["test_mps", "test_metal"])
 
     if options.xpu:
@@ -1869,12 +1900,15 @@ def load_test_class_times(
 def get_sharding_opts(options) -> tuple[int, int]:
     which_shard, num_shards = 1, 1
     if options.shard:
-        assert len(options.shard) == 2, "Unexpected shard format"
-        assert min(options.shard) > 0, "Shards must be positive numbers"
+        if len(options.shard) != 2:
+            raise AssertionError("Unexpected shard format")
+        if min(options.shard) <= 0:
+            raise AssertionError("Shards must be positive numbers")
         which_shard, num_shards = options.shard
-        assert which_shard <= num_shards, (
-            "Selected shard must be less than or equal to total number of shards"
-        )
+        if which_shard > num_shards:
+            raise AssertionError(
+                "Selected shard must be less than or equal to total number of shards"
+            )
 
     return (which_shard, num_shards)
 
@@ -1907,7 +1941,7 @@ class TestFailure(NamedTuple):
 
 def run_test_module(
     test: ShardedTest, test_directory: str, options
-) -> Optional[TestFailure]:
+) -> TestFailure | None:
     try:
         maybe_set_hip_visible_devies()
 
@@ -1922,9 +1956,10 @@ def run_test_module(
         print_to_stderr(
             f"Finished {str(test)} ... [{datetime.now()}][{end}], took {(end - start) / 60:.2f}min"
         )
-        assert isinstance(return_code, int) and not isinstance(return_code, bool), (
-            f"While running {str(test)} got non integer return code {return_code}"
-        )
+        if not isinstance(return_code, int) or isinstance(return_code, bool):
+            raise AssertionError(
+                f"While running {str(test)} got non integer return code {return_code}"
+            )
         if return_code == 0:
             return None
 
@@ -1972,7 +2007,7 @@ def run_tests(
         ):
             shutil.copy(os.path.join(test_directory, conftest_file), cpp_file)
 
-    def handle_complete(failure: Optional[TestFailure]):
+    def handle_complete(failure: TestFailure | None):
         failed = failure is not None
         if IS_CI and options.upload_artifacts_while_running:
             parse_xml_and_upload_json()

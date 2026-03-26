@@ -1,9 +1,10 @@
 # mypy: allow-untyped-defs
+import functools
 import math
 import traceback
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import auto, Enum
-from typing import Any, Optional
+from typing import Any
 
 import torch
 import torch.distributed as dist
@@ -12,28 +13,19 @@ from torch.distributed._composable.contract import _get_registry
 from torch.distributed.tensor import DeviceMesh, DTensor, Shard
 from torch.distributed.tensor._dtensor_spec import DTensorSpec
 
-
-_compiled_autograd_enabled: bool = False
-
-
-def detect_compiled_autograd():
-    if torch.compiler.is_compiling():
-        raise AssertionError(
-            "`detect_compiled_autograd()` is designed to be called in eager mode"
-        )
-    global _compiled_autograd_enabled
-    import torch._dynamo.compiled_autograd as ca
-
-    _compiled_autograd_enabled = (
-        ca.compiled_autograd_enabled
-        or ca.compiled_autograd_enabled_force_eager
-        or ca.in_compiled_autograd_region
-    )
+from ._fsdp_api import DataParallelMeshDims
 
 
-def compiled_autograd_enabled():
-    global _compiled_autograd_enabled
-    return _compiled_autograd_enabled
+def _dynamo_disable(func):
+    """Disable dynamo tracing for FSDP hooks."""
+
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        return torch._dynamo.disable(
+            func, recursive=True, reason="skipping FSDP hooks"
+        )(*args, **kwargs)
+
+    return wrapper
 
 
 @dataclass
@@ -41,12 +33,19 @@ class DataParallelMeshInfo:
     mesh: DeviceMesh
     shard_mesh_dim: int | None = None
     replicate_mesh_dim: int | None = None
+    dp_mesh_dims: DataParallelMeshDims | None = None
+    # The full SPMD mesh (excluding PP dims) that params are distributed on.
+    # Must include all non-PP SPMD dims (e.g. DP + TP); passing a submesh
+    # that omits dims like TP will lead to incorrect behavior.
+    spmd_mesh: DeviceMesh | None = field(default=None, repr=False)
+    is_spmd_mesh: bool = field(default=False, init=False, repr=False)
 
     def __post_init__(self):
         if self.shard_mesh_dim is None and self.replicate_mesh_dim is None:
             raise AssertionError(
                 "At least one of shard_mesh_dim and replicate_mesh_dim must not be None"
             )
+        self.is_spmd_mesh = self.dp_mesh_dims is not None
 
 
 @dataclass
@@ -138,26 +137,16 @@ def _from_local_no_grad(
     This method is similar to ``DTensor.from_local()`` except that in eager mode
     it avoids some CPU overhead by avoiding default args and not being differentiable.
     """
-
-    if not compiled_autograd_enabled():
-        # pyrefly: ignore [bad-argument-type]
-        return DTensor(
-            # Use the local tensor directly instead of constructing a new tensor
-            # variable, e.g. with `view_as()`, since this is not differentiable
-            # pyrefly: ignore [bad-argument-count]
-            local_tensor,
-            sharding_spec,
-            # pyrefly: ignore [unexpected-keyword]
-            requires_grad=local_tensor.requires_grad,
-        )
-    else:
-        return DTensor.from_local(
-            local_tensor,
-            sharding_spec.mesh,
-            sharding_spec.placements,
-            shape=sharding_spec.shape,
-            stride=sharding_spec.stride,
-        )
+    # pyrefly: ignore [bad-argument-type]
+    return DTensor(
+        # Use the local tensor directly instead of constructing a new tensor
+        # variable, e.g. with `view_as()`, since this is not differentiable
+        # pyrefly: ignore [bad-argument-count]
+        local_tensor,
+        sharding_spec,
+        # pyrefly: ignore [unexpected-keyword]
+        requires_grad=local_tensor.requires_grad,
+    )
 
 
 def _to_dtype_if_needed(
@@ -182,31 +171,18 @@ def is_bw() -> bool:
     return torch._C._current_graph_task_id() != -1
 
 
-# Type alias for shard_placement_fn return values.
-# Returns placement and mesh_info for each parameter.
 @dataclass
 class ShardPlacementResult:
-    """Result from shard_placement_fn for a parameter.
-
-    Attributes:
-        placement: The sharding placement (None means Shard(0)).
-        mesh_info: The FSDPMeshInfo to use for this parameter.
-    """
-
-    placement: Optional[Shard]
-    mesh_info: "FSDPMeshInfo"
+    placement: Shard | None
+    mesh_info: FSDPMeshInfo
 
 
-# Type alias for shard_placement_fn return type.
-# - Shard: Simple API, just specify shard dimension (uses default mesh)
-# - ShardPlacementResult: Advanced API, specify both shard dimension and custom mesh
-# - None: Use default sharding (Shard(0)) on default mesh
 ShardPlacementFnResult = Shard | ShardPlacementResult | None
 
 
 def resolve_shard_placement(
     result: ShardPlacementFnResult,
-    default_mesh_info: "FSDPMeshInfo",
+    default_mesh_info: FSDPMeshInfo,
 ) -> ShardPlacementResult:
     """Resolve the shard_placement_fn result to a ShardPlacementResult.
 
@@ -224,10 +200,8 @@ def resolve_shard_placement(
     """
     if result is None:
         return ShardPlacementResult(placement=None, mesh_info=default_mesh_info)
-    # For backward compatibility with old shard_placement_fn that returns just Shard
     if isinstance(result, Shard):
         return ShardPlacementResult(placement=result, mesh_info=default_mesh_info)
     if isinstance(result, ShardPlacementResult):
         return result
-    # Should not reach here with properly typed code
     raise ValueError(f"Invalid shard_placement_fn result: {result}")

@@ -299,6 +299,30 @@ static py::object maybe_get_registered_torch_dispatch_rule(
   return result;
 }
 
+static bool is_dtensor(PyObject* obj) {
+#ifdef USE_DISTRIBUTED
+  const py::handle dtensor = get_dtensor_class();
+  if ((PyObject*)Py_TYPE(obj) == dtensor.ptr()) {
+    return true;
+  }
+  if (!py::isinstance(py::handle(obj), dtensor)) {
+    return false;
+  }
+  // DTensor subclass: only use the C++ fast path if it does not override
+  // __torch_dispatch__. Subclasses with a custom override should fall
+  // through to the normal Python dispatch path.
+  // Compare via __func__ because @classmethod descriptors create new bound
+  // method objects on each attr access, making direct identity checks fail.
+  static py::object base_td =
+      dtensor.attr("__torch_dispatch__").attr("__func__");
+  py::object sub_td =
+      py::type::handle_of(obj).attr("__torch_dispatch__").attr("__func__");
+  return sub_td.is(base_td);
+#else
+  return false;
+#endif
+}
+
 // NB: Invariant: if you run this function, you MUST test if the returned
 // py::object is nullptr, as this will occur WITHOUT error condition being set.
 // And if an error happens, this function is responsible for throwing a C++
