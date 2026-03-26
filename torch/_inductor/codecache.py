@@ -500,14 +500,19 @@ class FxGraphCachePickler(pickle.Pickler):
         self,
         gm: torch.fx.GraphModule,
         has_user_defined_triton_kernels: bool = False,
+        device_id_agnostic: bool = False,
     ) -> None:
         """
         Create an FX graph pickler. If include_non_inlined=True, then pickling will
         include the _values_ for all Tensors. (Note that any tensors are constants
         attached as attributes to the GraphModule). Otherwise, pickling will include
         only the metadata for these tensors.
+
+        If device_id_agnostic=True, device indices in TensorMetadata are normalized
+        to 0, so that the same graph on different GPUs produces identical bytes.
         """
         self._stream = io.BytesIO()
+        self._device_id_agnostic = device_id_agnostic
         super().__init__(self._stream)
 
         self.dispatch_table = copyreg.dispatch_table.copy()
@@ -540,6 +545,10 @@ class FxGraphCachePickler(pickle.Pickler):
         Custom reducer to pickle FakeTensors.
         """
         metadata = extract_tensor_metadata_for_cache_key(t)
+        if self._device_id_agnostic:
+            metadata = dataclasses.replace(
+                metadata, device=torch.device(metadata.device.type, 0)
+            )
         return (_ident, (metadata,))
 
     def _reduce_tensor(
@@ -558,6 +567,10 @@ class FxGraphCachePickler(pickle.Pickler):
             raise BypassFxGraphCache("mkldnn tensors unpickleable")
 
         metadata = extract_tensor_metadata_for_cache_key(t)
+        if self._device_id_agnostic:
+            metadata = dataclasses.replace(
+                metadata, device=torch.device(metadata.device.type, 0)
+            )
 
         # If this is a non-inlined frozen parameter, we consider the metadata only.
         if is_frozen_param(t) and not GraphLowering.can_inline_constant(t):
@@ -3167,7 +3180,15 @@ def _worker_compile_cpp(
 @clear_on_fresh_cache
 class CppPythonBindingsCodeCache(CppCodeCache):
     cache: dict[str, Callable[[], CDLL | ModuleType]] = {}
-    cache_clear = staticmethod(cache.clear)
+    _loaded_module_names: OrderedSet[str] = OrderedSet()
+
+    @staticmethod
+    def cache_clear() -> None:
+        CppPythonBindingsCodeCache.cache.clear()
+        for name in CppPythonBindingsCodeCache._loaded_module_names:
+            sys.modules.pop(name, None)
+        CppPythonBindingsCodeCache._loaded_module_names.clear()
+
     cpp_compile_command_flags = {
         # kernels have no dependency on libtorch
         "include_pytorch": False,
@@ -3280,6 +3301,7 @@ class CppPythonBindingsCodeCache(CppCodeCache):
         assert spec is not None
         module = importlib.util.module_from_spec(spec)
         sys.modules[module_name] = module
+        CppPythonBindingsCodeCache._loaded_module_names.add(module_name)
         assert spec.loader is not None
         spec.loader.exec_module(module)
         return module
@@ -3349,7 +3371,11 @@ class CppPythonBindingsCodeCache(CppCodeCache):
 @clear_on_fresh_cache
 class CppWrapperCodeCache(CppPythonBindingsCodeCache):
     cache: dict[str, Callable[[], CDLL | ModuleType]] = {}
-    cache_clear = staticmethod(cache.clear)
+
+    @staticmethod
+    def cache_clear() -> None:
+        CppWrapperCodeCache.cache.clear()
+
     cpp_compile_command_flags = {
         "include_pytorch": True,
         "shared": True,
