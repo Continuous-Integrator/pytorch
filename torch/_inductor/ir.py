@@ -465,13 +465,9 @@ def significant_strides_equal(
     shape: Sequence[_IntLike],
 ) -> bool:
     """
-    Returns true if the strides are equal, ignoring dimensions of size 0 or 1.
-    If any dimension is size 0, all strides are insignificant since the tensor
-    is empty.
+    Returns true if the strides are equal, ignoring dimensions of size 1 .
     """
     assert len(shape) == len(strides1) and len(strides1) == len(strides2)
-    if any(V.graph.sizevars.statically_known_equals(dim, 0) for dim in shape):
-        return True
     for dim, s1, s2 in zip(shape, strides1, strides2):
         if V.graph.sizevars.statically_known_leq(dim, 1):
             continue
@@ -5986,18 +5982,24 @@ class ConcatKernel(NopKernel):
                     break
         any_input_is_storage_and_layout = any(is_storage_and_layout(x) for x in inputs)
         fx_node_args = V.graph.current_node.args[0]
-        assert isinstance(fx_node_args, list), type(fx_node_args)
         # If any of the inputs has meta tensor and the meta tensor is in CL format, use CL format for the output
-        if any_input_is_storage_and_layout is False and any(
-            # pyrefly: ignore [missing-attribute]
-            "val" in arg.meta
-            and (
+        # Skip this check when fx_node_args is not a list (e.g., called from _pad_as_cat).
+        if (
+            any_input_is_storage_and_layout is False
+            and isinstance(fx_node_args, list)
+            and any(
                 # pyrefly: ignore [missing-attribute]
-                arg.meta["val"].is_contiguous(memory_format=torch.channels_last)
-                # pyrefly: ignore [missing-attribute]
-                or arg.meta["val"].is_contiguous(memory_format=torch.channels_last_3d)
+                "val" in arg.meta
+                and (
+                    # pyrefly: ignore [missing-attribute]
+                    arg.meta["val"].is_contiguous(memory_format=torch.channels_last)
+                    # pyrefly: ignore [missing-attribute]
+                    or arg.meta["val"].is_contiguous(
+                        memory_format=torch.channels_last_3d
+                    )
+                )
+                for arg in fx_node_args
             )
-            for arg in fx_node_args
         ):
             output_stride = make_channels_last_strides_for(new_size)
 
@@ -7662,8 +7664,12 @@ class UserDefinedTritonKernel(ExternKernel):
             tma_descriptor_metadata,
         )
 
+        # Filter to only tensor args: with Triton 3.7+, ordered_arg_names
+        # includes scalars, so writes may reference non-tensor args like SymInts.
         self.mutable_args = [
-            kernel_args[key.name] for key in self.arg_accesses.read_writes.writes
+            kernel_args[key.name]
+            for key in self.arg_accesses.read_writes.writes
+            if isinstance(kernel_args.get(key.name), TensorBox)
         ]
 
         self.mutation_outputs = [
