@@ -1,23 +1,19 @@
 # mypy: allow-untyped-defs
 import contextlib
 import warnings
-from collections.abc import Generator, Sequence
+from collections.abc import Generator
 from typing import TYPE_CHECKING
 
 import torch
 
 
 __all__ = [
-    "fold_in",
     "fork_rng",
     "get_rng_state",
     "initial_seed",
-    "key",
     "manual_seed",
-    "normal",
     "seed",
     "set_rng_state",
-    "split",
     "thread_safe_generator",
 ]
 
@@ -26,123 +22,6 @@ if TYPE_CHECKING:
     from torch.utils.data._utils.worker import WorkerInfo
 
 from torch._C import default_generator
-
-
-def key(
-    seed: int, impl: str = "philox4x32-10", device: torch.device | None = None
-) -> torch.Tensor:
-    r"""Create a stateless PRNG key from a seed.
-
-    A key is an opaque uint64 tensor of shape ``(2,)`` encoding a ``(seed, offset)``
-    pair. Keys are consumed by generation functions like :func:`torch.random.normal`
-    and :func:`torch.random.uniform` to produce deterministic, reproducible random
-    tensors without any global state.
-
-    Args:
-        seed (int): The seed value for the PRNG.
-        impl (str): PRNG algorithm. Currently only ``"philox4x32-10"`` is
-            supported.
-        device (:class:`torch.device`, optional): The desired device for the
-            returned key. Default: ``cpu``.
-
-    Returns:
-        Tensor: A uint64 tensor of shape ``(2,)`` representing the PRNG key.
-
-    Example::
-
-        >>> key = torch.random.key(42)
-        >>> key
-        tensor([42,  0], dtype=torch.uint64)
-        >>> torch.random.normal(key, (3,))
-        tensor([-0.4621, -0.0131, -1.1013])
-        >>> # Same key always produces the same output
-        >>> torch.random.normal(key, (3,))
-        tensor([-0.4621, -0.0131, -1.1013])
-    """
-    if impl != "philox4x32-10":
-        raise NotImplementedError(
-            f"torch.random.key() does not support PRNG impl '{impl}'"
-        )
-
-    # (seed, offset)
-    return torch.tensor([seed, 0], dtype=torch.uint64, device=device)
-
-
-def split(key: torch.Tensor, num: int = 2) -> torch.Tensor:
-    r"""Split a PRNG key into ``num`` new independent keys.
-
-    Each returned key produces a different, deterministic random sequence.
-    This is the primary mechanism for deriving multiple independent keys from
-    a single parent key without mutating any state.
-
-    Supports batched keys: if ``key`` has shape ``(*batch, 2)``, each key in the
-    batch is split independently and the result has shape ``(num, *batch, 2)``.
-
-    Args:
-        key (Tensor): A PRNG key of shape ``(..., 2)`` with dtype ``torch.uint64``.
-        num (int): Number of keys to produce. Default: ``2``.
-
-    Returns:
-        Tensor: A uint64 tensor of shape ``(num, *key.shape[:-1], 2)``.
-
-    Example::
-
-        >>> key = torch.random.key(42)
-        >>> k1, k2 = torch.random.split(key)
-        >>> torch.random.normal(k1, (3,))
-        tensor([-0.7751, -0.5688,  0.0387])
-        >>> torch.random.normal(k2, (3,))
-        tensor([ 0.5343,  0.8035, -0.7812])
-    """
-    return torch.ops.aten._philox_key_split(key, num)
-
-
-def fold_in(key: torch.Tensor, data: int) -> torch.Tensor:
-    r"""Deterministically derive a new key by folding in an integer.
-
-    Equivalent to ``split(key, data + 1)[data]``, but more efficient when
-    only a single derived key is needed. Useful for associating a key with
-    a loop iteration, layer index, or other integer identifier.
-
-    Supports batched keys: if ``key`` has shape ``(*batch, 2)``, each key in
-    the batch is folded independently.
-
-    Args:
-        key (Tensor): A PRNG key of shape ``(..., 2)`` with dtype ``torch.uint64``.
-        data (int): A non-negative integer to fold into the key.
-
-    Returns:
-        Tensor: A new uint64 key tensor with the same shape as ``key``.
-
-    Example::
-
-        >>> key = torch.random.key(42)
-        >>> k0 = torch.random.fold_in(key, 0)
-        >>> k1 = torch.random.fold_in(key, 1)
-        >>> # Equivalent to split:
-        >>> keys = torch.random.split(key, 2)
-        >>> assert torch.equal(k0, keys[0])
-        >>> assert torch.equal(k1, keys[1])
-    """
-    return torch.ops.aten._philox_key_fold_in(key, data)
-
-
-def normal(
-    key: torch.Tensor,
-    *shape: tuple[int, ...],
-    mean: float = 0.0,
-    std: float = 1.0,
-    dtype: torch.dtype | None = None,
-    device: torch.device | str | None = None,
-) -> torch.Tensor:
-    if len(shape) == 1 and isinstance(shape[0], Sequence):
-        shape = tuple(shape[0])
-    if dtype is None:
-        dtype = torch.float32
-    if device is None:
-        device = key.device
-    result = torch.empty(shape, dtype=dtype, device=device)
-    return torch.ops.aten._philox_normal_(result, key, mean, std)
 
 
 def set_rng_state(new_state: torch.Tensor) -> None:
