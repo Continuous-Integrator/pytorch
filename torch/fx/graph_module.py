@@ -6,6 +6,7 @@ import hashlib
 import itertools
 import linecache
 import os
+import weakref
 import sys
 import traceback
 import warnings
@@ -964,6 +965,8 @@ class {module_name}(torch.nn.Module):
         dump_path = getattr(self, "_codegen_dump_path", None)
         if dump_path is None or not os.path.exists(dump_path):
             return False
+        # Capture mtime before reading to avoid TOCTOU: if the file is modified
+        # between getmtime and read, worst case is a harmless extra check next call.
         current_mtime = os.path.getmtime(dump_path)
         if current_mtime == getattr(self, "_codegen_dump_mtime", None):
             return False
@@ -1027,13 +1030,16 @@ class {module_name}(torch.nn.Module):
             if fn_name in globals_ns:
                 child.forward = globals_ns[fn_name].__get__(child, type(child))
 
-        gm_ref = self
+        gm_weak = weakref.ref(self)
         saved_globals = python_code_globals
 
         def _hot_reload_forward(self, *args, **kwargs):
-            if gm_ref._codegen_check_modified():
-                gm_ref._codegen_reload_from_disk(saved_globals)
-                return gm_ref.forward(*args, **kwargs)
+            gm = gm_weak()
+            if gm is None:
+                return loaded_forward(self, *args, **kwargs)
+            if gm._codegen_check_modified():
+                gm._codegen_reload_from_disk(saved_globals)
+                return gm.forward(*args, **kwargs)
             return loaded_forward(self, *args, **kwargs)
 
         self.forward = _hot_reload_forward.__get__(self, type(self))
