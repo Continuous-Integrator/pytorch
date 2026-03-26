@@ -62,17 +62,14 @@ class _FilterState:
               the element wasn't in the set to begin with, and we
               don't need a try..except block
         """
-        update_fn = "discard" if remove_keys else "add"
-
-        # Need to catch key errors only when removing
-        for dsl in _resolve_iterable(dsl_names):
-            getattr(self._dsl_names, update_fn)(dsl)
-
-        for op in _resolve_iterable(op_symbols):
-            getattr(self._op_symbols, update_fn)(op)
-
-        for key in _resolve_iterable(dispatch_keys):
-            getattr(self._dispatch_keys, update_fn)(key)
+        if remove_keys:
+            self._dsl_names -= set(_resolve_iterable(dsl_names))
+            self._op_symbols -= set(_resolve_iterable(op_symbols))
+            self._dispatch_keys -= set(_resolve_iterable(dispatch_keys))
+        else:
+            self._dsl_names |= set(_resolve_iterable(dsl_names))
+            self._op_symbols |= set(_resolve_iterable(op_symbols))
+            self._dispatch_keys |= set(_resolve_iterable(dispatch_keys))
 
     def build_disable_key_set(self) -> set:
         """
