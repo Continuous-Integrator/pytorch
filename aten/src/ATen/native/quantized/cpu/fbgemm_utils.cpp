@@ -431,7 +431,7 @@ int register_linear_params() {
               [](SerializationType state)
                   -> c10::intrusive_ptr<
                       LinearPackedParamsBase> { // __setstate__
-#ifdef USE_FBGEMM
+#if defined(USE_FBGEMM) && !defined(__aarch64__)
                 if (at::globalContext().qEngine() == at::QEngine::FBGEMM ||
                     at::globalContext().qEngine() == at::QEngine::X86) {
                   const auto& weight = std::get<0>(state);
@@ -474,7 +474,7 @@ int register_linear_params() {
               .def("bias", [](const c10::intrusive_ptr<LinearPackedParamsBase>& self) {
                   return std::get<1>(self->unpack());
                  })
-#if defined(USE_FBGEMM) && defined(FBCODE_CAFFE2)
+#if defined(USE_FBGEMM) && !defined(__aarch64__) && defined(FBCODE_CAFFE2)
               .def("__obj_flatten__", [](const c10::intrusive_ptr<LinearPackedParamsBase>& self) -> std::tuple<std::tuple<std::string, at::Tensor>, std::tuple<std::string, std::optional<at::Tensor>>> {
                 auto [weight, bias] = self->unpack();
                 return std::tuple(
