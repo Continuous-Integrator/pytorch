@@ -160,6 +160,7 @@ class AllreduceOptions:
     timeout: timedelta
     asyncOp: bool
     sparseIndices: Tensor | None
+    profilingName: str
 
 class AllreduceCoalescedOptions(AllreduceOptions): ...
 
@@ -189,6 +190,7 @@ class ReduceScatterOptions:
     reduceOp: ReduceOp
     timeout: timedelta
     asyncOp: bool
+    profilingName: str
 
 class BarrierOptions:
     device_ids: list[int]

@@ -23,7 +23,7 @@ TORCH_LIBRARY(c10d, m) {
   m.def(
       "broadcast_(Tensor[] tensors, __torch__.torch.classes.c10d.ProcessGroup process_group, int root_rank, int root_tensor, bool async_op=True, int timeout=-1) -> (Tensor[], __torch__.torch.classes.c10d.Work)");
   m.def(
-      "allreduce_(Tensor[] tensors, __torch__.torch.classes.c10d.ProcessGroup process_group, __torch__.torch.classes.c10d.ReduceOp reduce_op, Tensor? sparse_indices, bool async_op=True, int timeout=-1) -> (Tensor[], __torch__.torch.classes.c10d.Work)");
+      "allreduce_(Tensor[] tensors, __torch__.torch.classes.c10d.ProcessGroup process_group, __torch__.torch.classes.c10d.ReduceOp reduce_op, Tensor? sparse_indices, bool async_op=True, int timeout=-1, str profiling_name=\"\") -> (Tensor[], __torch__.torch.classes.c10d.Work)");
   m.def(
       "allreduce_coalesced_(Tensor[] tensors, __torch__.torch.classes.c10d.ProcessGroup process_group, __torch__.torch.classes.c10d.ReduceOp reduce_op, bool async_op=True, int timeout=-1) -> __torch__.torch.classes.c10d.Work");
   m.def(
@@ -37,7 +37,7 @@ TORCH_LIBRARY(c10d, m) {
   m.def(
       "reduce_scatter_(Tensor[] output_tensors, Tensor[][] input_tensors, __torch__.torch.classes.c10d.ProcessGroup process_group, __torch__.torch.classes.c10d.ReduceOp reduce_op, bool async_op=True, int timeout=-1) -> (Tensor[], __torch__.torch.classes.c10d.Work)");
   m.def(
-      "_reduce_scatter_base_(Tensor output_tensor, Tensor input_tensor, __torch__.torch.classes.c10d.ProcessGroup process_group, __torch__.torch.classes.c10d.ReduceOp reduce_op, bool async_op=True, int timeout=-1) -> (Tensor, __torch__.torch.classes.c10d.Work)");
+      "_reduce_scatter_base_(Tensor output_tensor, Tensor input_tensor, __torch__.torch.classes.c10d.ProcessGroup process_group, __torch__.torch.classes.c10d.ReduceOp reduce_op, bool async_op=True, int timeout=-1, str profiling_name=\"\") -> (Tensor, __torch__.torch.classes.c10d.Work)");
   m.def(
       "reduce_scatter_tensor_coalesced_(Tensor[] outputs, Tensor[] inputs, __torch__.torch.classes.c10d.ProcessGroup process_group, __torch__.torch.classes.c10d.ReduceOp reduce_op, bool async_op=True, int timeout=-1) -> __torch__.torch.classes.c10d.Work");
   m.def(
@@ -178,15 +178,16 @@ IMPL_BROADCAST(PrivateUse1)
           const c10::intrusive_ptr<ReduceOp>& reduce_op,                  \
           const std::optional<at::Tensor>& sparse_indices,                \
           bool asyncOp,                                                   \
-          int64_t timeout) {                                              \
+          int64_t timeout,                                                \
+          std::string_view profilingName) {                               \
     auto tensor_vec = tensors.vec();                                      \
+    AllreduceOptions opts;                                                \
+    opts.reduceOp = *reduce_op.get();                                     \
+    opts.timeout = std::chrono::milliseconds(timeout);                    \
+    opts.asyncOp = asyncOp;                                               \
+    opts.profilingName = std::string(profilingName);                      \
     auto work = process_group->getBackend(c10::DeviceType::DEV)           \
-                    ->allreduce(                                          \
-                        tensor_vec,                                       \
-                        AllreduceOptions{                                 \
-                            *reduce_op.get(),                             \
-                            std::chrono::milliseconds(timeout),           \
-                            asyncOp});                                    \
+                    ->allreduce(tensor_vec, opts);                        \
     return std::tuple<std::vector<at::Tensor>, c10::intrusive_ptr<Work>>( \
         std::move(tensor_vec), work);                                     \
   }
@@ -337,15 +338,15 @@ IMPL_REDUCE_SCATTER(PrivateUse1)
       const c10::intrusive_ptr<ProcessGroup>& process_group,                   \
       const c10::intrusive_ptr<ReduceOp>& reduce_op,                           \
       bool asyncOp,                                                            \
-      int64_t timeout) {                                                       \
+      int64_t timeout,                                                         \
+      std::string_view profilingName) {                                        \
+    ReduceScatterOptions opts;                                                 \
+    opts.reduceOp = *reduce_op.get();                                          \
+    opts.timeout = std::chrono::milliseconds(timeout);                         \
+    opts.asyncOp = asyncOp;                                                    \
+    opts.profilingName = std::string(profilingName);                           \
     auto work = process_group->getBackend(c10::DeviceType::DEV)                \
-                    ->_reduce_scatter_base(                                    \
-                        output_tensor,                                         \
-                        input_tensor,                                          \
-                        ReduceScatterOptions{                                  \
-                            *reduce_op.get(),                                  \
-                            std::chrono::milliseconds(timeout),                \
-                            asyncOp});                                         \
+                    ->_reduce_scatter_base(output_tensor, input_tensor, opts); \
     return std::tuple<at::Tensor, c10::intrusive_ptr<Work>>(                   \
         output_tensor, work);                                                  \
   }
@@ -511,7 +512,8 @@ allreduce_sparse_cuda_(
     const c10::intrusive_ptr<ReduceOp>& reduce_op,
     const std::optional<at::Tensor>& sparse_indices,
     bool asyncOp,
-    int64_t timeout) {
+    int64_t timeout,
+    std::string_view /*profilingName*/) {
   auto tensor_vec = tensors.vec();
   auto work = process_group->getBackend(c10::DeviceType::CUDA)
                   ->allreduce_sparse(

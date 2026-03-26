@@ -250,7 +250,8 @@ class TORCH_API ProcessGroup : public torch::CustomClassHolder {
                     const c10::intrusive_ptr<::c10d::ReduceOp>&,
                     const std::optional<at::Tensor>& sparse_indices,
                     bool,
-                    int64_t)>();
+                    int64_t,
+                    std::string_view)>();
 
     auto work = std::get<1>(op.call(
         tensors,
@@ -258,7 +259,8 @@ class TORCH_API ProcessGroup : public torch::CustomClassHolder {
         c10::make_intrusive<ReduceOp>(opts.reduceOp),
         opts.sparseIndices,
         opts.asyncOp,
-        opts.timeout.count()));
+        opts.timeout.count(),
+        opts.profilingName));
 
     if (c10d::allow_inflight_collective_as_graph_input()) {
       for (const auto& tensor : tensors) {
@@ -558,14 +560,16 @@ class TORCH_API ProcessGroup : public torch::CustomClassHolder {
                 const c10::intrusive_ptr<::c10d::ProcessGroup>&,
                 const c10::intrusive_ptr<::c10d::ReduceOp>&,
                 bool,
-                int64_t)>();
+                int64_t,
+                std::string_view)>();
     auto work = std::get<1>(op.call(
         outputBuffer,
         inputBuffer,
         c10::intrusive_ptr<ProcessGroup>::unsafe_reclaim_from_nonowning(this),
         c10::make_intrusive<::c10d::ReduceOp>(opts.reduceOp),
         opts.asyncOp,
-        opts.timeout.count()));
+        opts.timeout.count(),
+        opts.profilingName));
 
     if (c10d::allow_inflight_collective_as_graph_input()) {
       c10d::register_work(outputBuffer, work);

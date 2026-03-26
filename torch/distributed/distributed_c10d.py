@@ -3077,7 +3077,9 @@ def broadcast(
 
 
 @_exception_logger
-def all_reduce(tensor, op=ReduceOp.SUM, group=None, async_op: bool = False):
+def all_reduce(
+    tensor, op=ReduceOp.SUM, group=None, async_op: bool = False, profiling_name=""
+):
     """
     Reduces the tensor data across all machines in a way that all get the final result.
 
@@ -3154,6 +3156,8 @@ def all_reduce(tensor, op=ReduceOp.SUM, group=None, async_op: bool = False):
     opts = AllreduceOptions()
     opts.reduceOp = op
     opts.asyncOp = async_op
+    if profiling_name:
+        opts.profilingName = profiling_name
     if group is None:
         group = _get_default_group()
 
@@ -4744,7 +4748,9 @@ def reduce_scatter(
 
 
 @_exception_logger
-def reduce_scatter_tensor(output, input, op=ReduceOp.SUM, group=None, async_op=False):
+def reduce_scatter_tensor(
+    output, input, op=ReduceOp.SUM, group=None, async_op=False, profiling_name=""
+):
     """
     Reduces, then scatters a tensor to all ranks in a group.
 
@@ -4820,6 +4826,8 @@ def reduce_scatter_tensor(output, input, op=ReduceOp.SUM, group=None, async_op=F
     opts = ReduceScatterOptions()
     opts.reduceOp = op
     opts.asyncOp = async_op
+    if profiling_name:
+        opts.profilingName = profiling_name
 
     group = group or _get_default_group()
 
