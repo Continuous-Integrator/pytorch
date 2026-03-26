@@ -1596,6 +1596,16 @@ class MethodWrapperVariable(VariableTracker):
     def as_python_constant(self) -> types.MethodWrapperType:
         return self.method_wrapper
 
+    def richcompare_impl(
+        self,
+        tx: "InstructionTranslator",
+        other: "VariableTracker",
+        op: str,
+    ) -> "VariableTracker":
+        from .object_protocol import python_constant_richcompare_impl
+
+        return python_constant_richcompare_impl(self, tx, other, op)
+
     def is_python_hashable(self) -> Literal[True]:
         return True
 
@@ -1632,6 +1642,16 @@ class GetSetDescriptorVariable(VariableTracker):
 
     def as_python_constant(self) -> types.GetSetDescriptorType:
         return self.desc
+
+    def richcompare_impl(
+        self,
+        tx: "InstructionTranslator",
+        other: "VariableTracker",
+        op: str,
+    ) -> "VariableTracker":
+        from .object_protocol import python_constant_richcompare_impl
+
+        return python_constant_richcompare_impl(self, tx, other, op)
 
 
 class PythonModuleVariable(VariableTracker):
