@@ -7962,6 +7962,31 @@ SavedForBackwardsAOTOutput(idx=5)""",
         expected = torch.nn.functional.one_hot(a, 3)
         self.assertEqual(one_hot(a, 3), expected)
 
+    def test_fullgraph_errors_on_frame_skip_with_dispatch_mode(self):
+        # https://github.com/pytorch/pytorch/issues/161790
+        from torch.utils._python_dispatch import TorchDispatchMode
+
+        class MyMode(TorchDispatchMode):
+            def __torch_dispatch__(self, func, types, args, kwargs=None):
+                return func(*args, **(kwargs or {}))
+
+        @torch.compile(fullgraph=True, backend="eager")
+        def f(x):
+            return x.sin()
+
+        with MyMode():
+            with self.assertRaisesRegex(RuntimeError, "fullgraph=True"):
+                f(torch.randn(3))
+
+    def test_fullgraph_errors_on_frame_skip_dynamo_disabled(self):
+        @torch.compile(fullgraph=True, backend="eager")
+        def f(x):
+            return x.sin()
+
+        with torch._dynamo.config.patch(disable=True):
+            with self.assertRaisesRegex(RuntimeError, "fullgraph=True"):
+                f(torch.randn(3))
+
 
 class ReproTestsDevice(torch._dynamo.test_case.TestCase):
     def test_sub_alpha_scalar_repro(self, device):
