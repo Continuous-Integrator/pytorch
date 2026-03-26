@@ -160,15 +160,108 @@ def _locate_submode(
 # ---------------------------------------------------------------------------
 
 
+def _add_shard_to_dim(
+    dim_modes: dict[int, tuple[list[int], list[int], list[tuple[int, int]]]],
+    dim: int,
+    mesh_dim: int,
+    M: int,
+) -> None:
+    """Add a Shard for *mesh_dim* to a dim that already has sub-modes.
+
+    DTensor processes placements left-to-right: this Shard operates on the
+    local data after all earlier mesh dims.  The local data may include
+    group structure from earlier _StridedShards — Shard splits the groups
+    evenly (outermost local sub-mode).
+    """
+    shapes, strides, gpu_info = dim_modes[dim]
+    # Find the outermost non-GPU sub-mode (largest stride, not a GPU sub)
+    gpu_sub_set = {si for _, si in gpu_info}
+    outer_idx = -1
+    outer_stride = -1
+    for j, st in enumerate(strides):
+        if j not in gpu_sub_set and st > outer_stride:
+            outer_idx = j
+            outer_stride = st
+    if outer_idx == -1:
+        raise _UnsupportedCase("no local sub-mode to divide for multi-mesh Shard")
+    outer_shape = shapes[outer_idx]
+    if outer_shape % M != 0:
+        raise _UnsupportedCase(
+            f"local sub-mode shape {outer_shape} not divisible by mesh {M}"
+        )
+    inner = outer_shape // M
+    if inner == 1:
+        # Degenerate: GPU encompasses this sub-mode entirely — replace in place
+        shapes[outer_idx] = M
+        gpu_info.append((mesh_dim, outer_idx))
+    else:
+        # Split: (inner, M) replaces the outer sub-mode
+        shapes[outer_idx] = inner
+        shapes.insert(outer_idx + 1, M)
+        strides.insert(outer_idx + 1, outer_stride * inner)
+        # Adjust gpu_info sub-indices for sub-modes shifted by the insertion
+        for k, (md, si) in enumerate(gpu_info):
+            if si > outer_idx:
+                gpu_info[k] = (md, si + 1)
+        gpu_info.append((mesh_dim, outer_idx + 1))
+
+
+def _add_strided_shard_to_dim(
+    dim_modes: dict[int, tuple[list[int], list[int], list[tuple[int, int]]]],
+    dim: int,
+    mesh_dim: int,
+    M: int,
+    sf: int,
+) -> None:
+    """Add a _StridedShard for *mesh_dim* to a dim with existing sub-modes."""
+    shapes, strides, gpu_info = dim_modes[dim]
+    gpu_sub_set = {si for _, si in gpu_info}
+    # Find the outermost non-GPU sub-mode
+    outer_idx = -1
+    outer_stride = -1
+    for j, st in enumerate(strides):
+        if j not in gpu_sub_set and st > outer_stride:
+            outer_idx = j
+            outer_stride = st
+    if outer_idx == -1:
+        raise _UnsupportedCase("no local sub-mode for multi-mesh _StridedShard")
+    outer_shape = shapes[outer_idx]
+    group_size = outer_shape // sf
+    lpg = group_size // M
+    if lpg == 0:
+        raise _UnsupportedCase(f"local {outer_shape} not divisible by sf*M={sf * M}")
+    if lpg == 1:
+        # (M, sf) replaces the outer sub-mode
+        shapes[outer_idx] = M
+        shapes.insert(outer_idx + 1, sf)
+        strides.insert(outer_idx + 1, outer_stride * group_size)
+        for k, (md, si) in enumerate(gpu_info):
+            if si > outer_idx:
+                gpu_info[k] = (md, si + 1)
+        gpu_info.append((mesh_dim, outer_idx))
+    else:
+        # (lpg, M, sf) replaces the outer sub-mode
+        shapes[outer_idx] = lpg
+        shapes.insert(outer_idx + 1, M)
+        shapes.insert(outer_idx + 2, sf)
+        strides.insert(outer_idx + 1, outer_stride * lpg)
+        strides.insert(outer_idx + 2, outer_stride * group_size)
+        for k, (md, si) in enumerate(gpu_info):
+            if si > outer_idx:
+                gpu_info[k] = (md, si + 2)
+        gpu_info.append((mesh_dim, outer_idx + 1))
+
+
 def from_placements(
     shape: tuple[int, ...],
     placements: Sequence[Placement],
     mesh_sizes: tuple[int, ...],
 ) -> DistLayout:
-    """Build a ``DistLayout`` from placements (single-mesh-per-dim only).
+    """Build a ``DistLayout`` from placements.
 
-    Each tensor dim may be sharded by at most one mesh dim.  Callers must
-    check this precondition before calling.
+    Handles single-mesh-per-dim and multi-mesh-same-dim cases.  Placements
+    are processed left-to-right (matching DTensor semantics): each mesh dim's
+    placement operates on the local result of all earlier mesh dims.
     """
     bstrides: tuple[int, ...] = suffix_product(shape)  # type: ignore[assignment]
 
@@ -178,43 +271,52 @@ def from_placements(
     for mesh_dim, p in enumerate(placements):
         if isinstance(p, Shard):
             dim = p.dim
-            S, b, M = shape[dim], bstrides[dim], mesh_sizes[mesh_dim]
-            local = S // M
-            if local == 0:
-                raise _UnsupportedCase(f"dim {dim} size {S} not divisible by mesh {M}")
-            if local == 1:
-                # Degenerate: GPU encompasses entire dim
-                dim_modes[dim] = ([M], [b], [(mesh_dim, 0)])
+            M = mesh_sizes[mesh_dim]
+            if dim in dim_modes:
+                _add_shard_to_dim(dim_modes, dim, mesh_dim, M)
             else:
-                dim_modes[dim] = ([local, M], [b, b * local], [(mesh_dim, 1)])
+                S, b = shape[dim], bstrides[dim]
+                local = S // M
+                if local == 0:
+                    raise _UnsupportedCase(
+                        f"dim {dim} size {S} not divisible by mesh {M}"
+                    )
+                if local == 1:
+                    dim_modes[dim] = ([M], [b], [(mesh_dim, 0)])
+                else:
+                    dim_modes[dim] = ([local, M], [b, b * local], [(mesh_dim, 1)])
 
         elif isinstance(p, _StridedShard):
             dim = p.dim
-            S, b, M, sf = (
-                shape[dim],
-                bstrides[dim],
-                mesh_sizes[mesh_dim],
-                p.split_factor,
-            )
-            group_size = S // sf
-            lpg = group_size // M
-            if lpg == 0:
-                raise _UnsupportedCase(
-                    f"dim {dim} size {S} not divisible by sf*M={sf * M}"
-                )
-            if lpg == 1:
-                # Degenerate: no local chunk within groups
-                dim_modes[dim] = (
-                    [M, sf],
-                    [b, b * group_size],
-                    [(mesh_dim, 0)],
+            if dim in dim_modes:
+                _add_strided_shard_to_dim(
+                    dim_modes, dim, mesh_dim, mesh_sizes[mesh_dim], p.split_factor
                 )
             else:
-                dim_modes[dim] = (
-                    [lpg, M, sf],
-                    [b, b * lpg, b * group_size],
-                    [(mesh_dim, 1)],
+                S, b, M, sf = (
+                    shape[dim],
+                    bstrides[dim],
+                    mesh_sizes[mesh_dim],
+                    p.split_factor,
                 )
+                group_size = S // sf
+                lpg = group_size // M
+                if lpg == 0:
+                    raise _UnsupportedCase(
+                        f"dim {dim} size {S} not divisible by sf*M={sf * M}"
+                    )
+                if lpg == 1:
+                    dim_modes[dim] = (
+                        [M, sf],
+                        [b, b * group_size],
+                        [(mesh_dim, 0)],
+                    )
+                else:
+                    dim_modes[dim] = (
+                        [lpg, M, sf],
+                        [b, b * lpg, b * group_size],
+                        [(mesh_dim, 1)],
+                    )
 
     # Assemble layout
     modes: list[Layout] = []
@@ -331,6 +433,13 @@ def _collect_submodes(
         if not out_shapes:
             out_shapes = [piece_size]
             out_strides = [piece_stride]
+        elif math.prod(out_shapes) != piece_size:
+            # Sub-modes straddle the split boundary — the input sharding is
+            # incompatible with this view.  Drop GPU modes so this mesh dim
+            # becomes Replicate in the output.
+            out_shapes = [piece_size]
+            out_strides = [piece_stride]
+            out_gpu = []
         return out_shapes, out_strides, out_gpu
 
     elif isinstance(cmd, Singleton):
@@ -383,20 +492,25 @@ def to_placements(dist: DistLayout, mesh_sizes: tuple[int, ...]) -> list[Placeme
         )
         gpu_stride = strides[sub_idx]
 
-        # GPU sub-indices in this dim (from all mesh dims)
-        gpu_subs: set[int] = set()
+        # GPU sub-indices for earlier mesh dims (j < mesh_dim) on this dim.
+        # Later mesh dims' GPU modes are treated as "local" from mesh_dim's
+        # perspective because DTensor processes placements left-to-right:
+        # mesh_dim sees the global tensor before later mesh dims partition it.
+        earlier_gpu_subs: set[int] = set()
         for other_gm in dist.gpu_modes:
-            other_dim, other_sub, _ = _locate_submode(
-                dist.layout, dist.num_dims, other_gm.flat_index
-            )
-            if other_dim == dim_idx:
-                gpu_subs.add(other_sub)
+            if other_gm.mesh_dim < mesh_dim:
+                other_dim, other_sub, _ = _locate_submode(
+                    dist.layout, dist.num_dims, other_gm.flat_index
+                )
+                if other_dim == dim_idx:
+                    earlier_gpu_subs.add(other_sub)
 
-        # split_factor = product of non-GPU shapes with stride > GPU stride
+        # split_factor = product of shapes above GPU stride, excluding
+        # earlier GPU modes and this mesh dim's own GPU sub-mode
         sf = math.prod(
             shapes[j]
             for j, st in enumerate(strides)
-            if st > gpu_stride and j not in gpu_subs
+            if st > gpu_stride and j != sub_idx and j not in earlier_gpu_subs
         )
 
         if sf <= 1:
@@ -422,18 +536,10 @@ def cute_rewrite_output_placements(
 ) -> list[Placement] | None:
     """Compute output placements via CuTe layout composition.
 
-    Returns ``None`` if the case is not supported (multi-mesh-same-dim or
-    symbolic shapes), signaling the caller to fall back to Phase 2.
+    Returns ``None`` if the case is not supported (symbolic shapes or
+    unsupported sub-mode structures), signaling the caller to fall back
+    to Phase 2.
     """
-    # Reject multi-mesh-same-dim
-    sharded_dims: dict[int, int] = {}
-    for mesh_dim, p in enumerate(input_tgt_placements):
-        if isinstance(p, (Shard, _StridedShard)):
-            dim = p.dim
-            if dim in sharded_dims:
-                return None
-            sharded_dims[dim] = mesh_dim
-
     # Reject symbolic shapes
     for s in global_input_shape:
         if not isinstance(s, int):
