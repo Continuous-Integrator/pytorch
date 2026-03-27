@@ -239,6 +239,16 @@ static std::tuple<Tensor, std::optional<int64_t>> philox_key_fold_in_batch_rule(
   return {result, 0};
 }
 
+// Unsqueeze key so key.dim() == output.dim() + 1, satisfying the
+// trailing-suffix broadcasting rule that the kernel enforces.
+static Tensor unsqueeze_key_for_broadcast(const Tensor& key, const Tensor& output) {
+  auto key_ = key;
+  while (key_.dim() < output.dim() + 1) {
+    key_ = key_.unsqueeze(-2);
+  }
+  return key_;
+}
+
 static std::tuple<Tensor, std::optional<int64_t>> philox_normal_batch_rule(
     const Tensor& self, std::optional<int64_t> self_bdim,
     const Tensor& key, std::optional<int64_t> key_bdim,
@@ -249,6 +259,7 @@ static std::tuple<Tensor, std::optional<int64_t>> philox_normal_batch_rule(
   self_ = ensure_has_bdim(self_, self_bdim.has_value(), batch_size);
   key_ = ensure_has_bdim(key_, key_bdim.has_value(), batch_size);
   auto output = at::empty_like(self_);
+  key_ = unsqueeze_key_for_broadcast(key_, output);
   at::_philox_normal_(output, key_, mean, std, portable);
   return {output, 0};
 }
@@ -263,6 +274,7 @@ static std::tuple<Tensor, std::optional<int64_t>> philox_uniform_batch_rule(
   self_ = ensure_has_bdim(self_, self_bdim.has_value(), batch_size);
   key_ = ensure_has_bdim(key_, key_bdim.has_value(), batch_size);
   auto output = at::empty_like(self_);
+  key_ = unsqueeze_key_for_broadcast(key_, output);
   at::_philox_uniform_(output, key_, low, high, portable);
   return {output, 0};
 }
@@ -291,6 +303,7 @@ static Tensor& philox_normal_inplace_batched(
     out_sizes.push_back(batch_size);
     out_sizes.insert(out_sizes.end(), event_sizes.begin(), event_sizes.end());
     auto output = at::empty(out_sizes, self.options());
+    key_ = unsqueeze_key_for_broadcast(key_, output);
     at::_philox_normal_(output, key_, mean, std, portable);
     self = makeBatched(output, 0, cur_level);
     return self;
@@ -299,6 +312,7 @@ static Tensor& philox_normal_inplace_batched(
   auto key_ = moveBatchDimToFront(key_value, key_bdim);
   auto batch_size = self_.size(0);
   key_ = ensure_has_bdim(key_, key_bdim.has_value(), batch_size);
+  key_ = unsqueeze_key_for_broadcast(key_, self_);
   at::_philox_normal_(self_, key_, mean, std, portable);
   return self;
 }
@@ -323,6 +337,7 @@ static Tensor& philox_uniform_inplace_batched(
     out_sizes.push_back(batch_size);
     out_sizes.insert(out_sizes.end(), event_sizes.begin(), event_sizes.end());
     auto output = at::empty(out_sizes, self.options());
+    key_ = unsqueeze_key_for_broadcast(key_, output);
     at::_philox_uniform_(output, key_, low, high, portable);
     self = makeBatched(output, 0, cur_level);
     return self;
@@ -331,6 +346,7 @@ static Tensor& philox_uniform_inplace_batched(
   auto key_ = moveBatchDimToFront(key_value, key_bdim);
   auto batch_size = self_.size(0);
   key_ = ensure_has_bdim(key_, key_bdim.has_value(), batch_size);
+  key_ = unsqueeze_key_for_broadcast(key_, self_);
   at::_philox_uniform_(self_, key_, low, high, portable);
   return self;
 }

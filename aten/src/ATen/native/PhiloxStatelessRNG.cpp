@@ -157,41 +157,69 @@ Tensor& _philox_uniform_cpu_(Tensor& self, const Tensor& key, double low, double
     return self;
   }
 
-  int64_t key_batch_ndim = key.dim() - 1;
-  TORCH_CHECK(self.dim() >= key_batch_ndim,
-      "_philox_uniform: self must have at least ", key_batch_ndim,
-      " dimensions to match key batch dims, got ", self.dim());
+  int64_t ndim = self.dim();
+  int64_t elems_per_key = 1;
 
-  for (int64_t i = 0; i < key_batch_ndim; i++) {
-    TORCH_CHECK(key.size(i) == 1 || key.size(i) == self.size(i),
-        "_philox_uniform: key batch dim ", i, " has size ", key.size(i),
-        " which is incompatible with self dim size ", self.size(i));
+  if (key.dim() > 1) {
+    int64_t key_batch_ndim = key.dim() - 1;
+    TORCH_CHECK(key_batch_ndim == ndim,
+        "_philox_uniform: batched key must have ndim == output ndim + 1, "
+        "got key shape ", key.sizes(), " with output shape ", self.sizes());
+
+    for (int64_t i = 0; i < ndim; i++) {
+      TORCH_CHECK(key.size(i) == 1 || key.size(i) == self.size(i),
+          "_philox_uniform: key dim ", i, " (size ", key.size(i),
+          ") is not broadcastable with output dim ", i,
+          " (size ", self.size(i), ")");
+    }
+
+    // Trailing suffix of size-1 key dims forms the generation axis.
+    for (int64_t i = ndim - 1; i >= 0; i--) {
+      if (key.size(i) != 1) break;
+      elems_per_key *= self.size(i);
+    }
+  } else {
+    elems_per_key = self.numel();
   }
 
-  std::vector<int64_t> expanded_key_sizes;
-  expanded_key_sizes.reserve(key_batch_ndim + 1);
-  for (int64_t i = 0; i < key_batch_ndim; i++) {
-    expanded_key_sizes.push_back(self.size(i));
+  int64_t num_keys = self.numel() / elems_per_key;
+  int64_t key_dims = key.dim() > 1 ? ndim : 0;
+  if (key.dim() > 1) {
+    for (int64_t i = ndim - 1; i >= 0; i--) {
+      if (key.size(i) != 1) break;
+      key_dims--;
+    }
   }
-  expanded_key_sizes.push_back(2);
-  auto key_expanded = key.expand(expanded_key_sizes).contiguous();
 
-  int64_t num_keys = key_expanded.numel() / 2;
-  int64_t event_numel = self.numel() / num_keys;
+  Tensor key_flat;
+  if (key.dim() > 1) {
+    std::vector<int64_t> expand_sizes;
+    expand_sizes.reserve(key.dim());
+    for (int64_t i = 0; i < key_dims; i++) {
+      expand_sizes.push_back(self.size(i));
+    }
+    for (int64_t i = key_dims; i < ndim; i++) {
+      expand_sizes.push_back(1);
+    }
+    expand_sizes.push_back(2);
+    key_flat = key.expand(expand_sizes).reshape({num_keys, 2}).contiguous();
+  } else {
+    key_flat = key.contiguous();
+  }
 
-  if (num_keys == 0 || event_numel == 0) {
+  if (num_keys == 0 || elems_per_key == 0) {
     return self;
   }
 
-  const uint64_t* keys_ptr = key_expanded.const_data_ptr<uint64_t>();
+  const uint64_t* keys_ptr = key_flat.const_data_ptr<uint64_t>();
   void* out_ptr = self.data_ptr();
   auto dtype = self.scalar_type();
 
   for (int64_t key_idx = 0; key_idx < num_keys; key_idx++) {
     uint64_t seed = keys_ptr[key_idx * 2];
     uint64_t key_offset = keys_ptr[key_idx * 2 + 1];
-    int64_t base = key_idx * event_numel;
-    philox_uniform_fill_stub(kCPU, out_ptr, base, event_numel,
+    int64_t base = key_idx * elems_per_key;
+    philox_uniform_fill_stub(kCPU, out_ptr, base, elems_per_key,
                              seed, key_offset, low, high, dtype);
   }
 
@@ -223,41 +251,71 @@ Tensor& _philox_normal_cpu_(Tensor& self, const Tensor& key, double mean, double
     return self;
   }
 
-  int64_t key_batch_ndim = key.dim() - 1;
-  TORCH_CHECK(self.dim() >= key_batch_ndim,
-      "_philox_normal: self must have at least ", key_batch_ndim,
-      " dimensions to match key batch dims, got ", self.dim());
+  int64_t ndim = self.dim();
+  int64_t elems_per_key = 1;
 
-  for (int64_t i = 0; i < key_batch_ndim; i++) {
-    TORCH_CHECK(key.size(i) == 1 || key.size(i) == self.size(i),
-        "_philox_normal: key batch dim ", i, " has size ", key.size(i),
-        " which is incompatible with self dim size ", self.size(i));
+  if (key.dim() > 1) {
+    int64_t key_batch_ndim = key.dim() - 1;
+    TORCH_CHECK(key_batch_ndim == ndim,
+        "_philox_normal: batched key must have ndim == output ndim + 1, "
+        "got key shape ", key.sizes(), " with output shape ", self.sizes());
+
+    for (int64_t i = 0; i < ndim; i++) {
+      TORCH_CHECK(key.size(i) == 1 || key.size(i) == self.size(i),
+          "_philox_normal: key dim ", i, " (size ", key.size(i),
+          ") is not broadcastable with output dim ", i,
+          " (size ", self.size(i), ")");
+    }
+
+    // Trailing suffix of size-1 key dims forms the generation axis.
+    for (int64_t i = ndim - 1; i >= 0; i--) {
+      if (key.size(i) != 1) break;
+      elems_per_key *= self.size(i);
+    }
+  } else {
+    elems_per_key = self.numel();
   }
 
-  std::vector<int64_t> expanded_key_sizes;
-  expanded_key_sizes.reserve(key_batch_ndim + 1);
-  for (int64_t i = 0; i < key_batch_ndim; i++) {
-    expanded_key_sizes.push_back(self.size(i));
+  int64_t num_keys = self.numel() / elems_per_key;
+  int64_t key_dims = key.dim() > 1 ? ndim : 0;
+  if (key.dim() > 1) {
+    for (int64_t i = ndim - 1; i >= 0; i--) {
+      if (key.size(i) != 1) break;
+      key_dims--;
+    }
   }
-  expanded_key_sizes.push_back(2);
-  auto key_expanded = key.expand(expanded_key_sizes).contiguous();
 
-  int64_t num_keys = key_expanded.numel() / 2;
-  int64_t event_numel = self.numel() / num_keys;
+  // Expand the key dims portion against self's sizes, collapse trailing
+  // generation dims, and make contiguous to get shape (num_keys, 2).
+  Tensor key_flat;
+  if (key.dim() > 1) {
+    std::vector<int64_t> expand_sizes;
+    expand_sizes.reserve(key.dim());
+    for (int64_t i = 0; i < key_dims; i++) {
+      expand_sizes.push_back(self.size(i));
+    }
+    for (int64_t i = key_dims; i < ndim; i++) {
+      expand_sizes.push_back(1);
+    }
+    expand_sizes.push_back(2);
+    key_flat = key.expand(expand_sizes).reshape({num_keys, 2}).contiguous();
+  } else {
+    key_flat = key.contiguous();
+  }
 
-  if (num_keys == 0 || event_numel == 0) {
+  if (num_keys == 0 || elems_per_key == 0) {
     return self;
   }
 
-  const uint64_t* keys_ptr = key_expanded.const_data_ptr<uint64_t>();
+  const uint64_t* keys_ptr = key_flat.const_data_ptr<uint64_t>();
   void* out_ptr = self.data_ptr();
   auto dtype = self.scalar_type();
 
   for (int64_t key_idx = 0; key_idx < num_keys; key_idx++) {
     uint64_t seed = keys_ptr[key_idx * 2];
     uint64_t key_offset = keys_ptr[key_idx * 2 + 1];
-    int64_t base = key_idx * event_numel;
-    philox_normal_fill_stub(kCPU, out_ptr, base, event_numel,
+    int64_t base = key_idx * elems_per_key;
+    philox_normal_fill_stub(kCPU, out_ptr, base, elems_per_key,
                             seed, key_offset, mean, stddev, dtype);
   }
 

@@ -204,8 +204,8 @@ def grid_split(
             for other types.
 
     Returns:
-        Tensor: Batched key tensor. For 1D: shape ``(*splits, 2)``.
-        For N-D: shape ``(*splits, *tile_shape[:-1], 2)``, where each tile key
+        Tensor: Batched key tensor. For 1D: shape ``(*splits, 1, 2)``.
+        For N-D: shape ``(*splits, *tile_shape[:-1], 1, 2)``, where each tile key
         carries one sub-key per row of the tile.
     """
     if len(shape) != len(splits):
@@ -234,7 +234,8 @@ def _philox_grid_split(
         flat_indices = torch.arange(splits[0], dtype=torch.int64, device=key.device)
         offsets = base_offset + flat_indices * (tile_shape[0] * outputs_per_elem)
         seeds = seed.expand_as(offsets)
-        return torch.stack([seeds, offsets], dim=-1).view(torch.uint64)
+        # Unsqueeze so key.dim() == output.dim() + 1 (generation axis is size-1).
+        return torch.stack([seeds, offsets], dim=-1).view(torch.uint64).unsqueeze(-2)
 
     # N-D: tiles are not contiguous in the flat stream. Each "row" (innermost
     # slice of size tile_shape[-1]) IS contiguous, so we emit one key per row
@@ -288,7 +289,8 @@ def _philox_grid_split(
     offset = offset.permute(tile_perm + inner_perm).contiguous()
 
     seeds = seed.expand_as(offset)
-    return torch.stack([seeds, offset], dim=-1).view(torch.uint64)
+    # Unsqueeze so key.dim() == output.dim() + 1 (generation axis is size-1).
+    return torch.stack([seeds, offset], dim=-1).view(torch.uint64).unsqueeze(-2)
 
 
 def fold_in(key: torch.Tensor, data: int) -> torch.Tensor:
@@ -411,7 +413,7 @@ def normal(
     if dtype is None:
         dtype = torch.float32
     result = torch.empty(shape, dtype=dtype, device=key.device)
-    return normal_(result, key, mean, std, portable)
+    return normal_(key, result, mean=mean, std=std, portable=portable)
 
 
 def uniform_(
@@ -499,4 +501,4 @@ def uniform(
     if dtype is None:
         dtype = torch.float32
     result = torch.empty(shape, dtype=dtype, device=key.device)
-    return uniform_(result, key, low, high, portable)
+    return uniform_(key, result, low=low, high=high, portable=portable)
