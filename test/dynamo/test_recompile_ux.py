@@ -545,9 +545,7 @@ class IsolatedRegionTests(torch._dynamo.test_case.TestCase):
         def f(x):
             return x.sin()
 
-        opt_f = torch.compile(
-            f, backend=cnt, fullgraph=True, isolated_region=True
-        )
+        opt_f = torch.compile(f, backend=cnt, fullgraph=True, isolated_region=True)
 
         opt_f(torch.randn(3))
         self.assertEqual(cnt.frame_count, 1)
@@ -856,6 +854,97 @@ class IsolatedRegionTests(torch._dynamo.test_case.TestCase):
         opt_isolated = torch.compile(f, backend=cnt, isolated_region=True)
         opt_isolated(torch.randn(3))
         self.assertEqual(cnt.frame_count, 1)  # cache hit from global fallback
+
+
+    def test_isolated_region_lru_independent(self):
+        """LRU reordering within one region doesn't affect another region's
+        ordering. Repeated hits in region A should not cause region B to
+        recompile."""
+        cnt_a = torch._dynamo.testing.CompileCounter()
+        cnt_b = torch._dynamo.testing.CompileCounter()
+
+        def f(x):
+            return x.sin()
+
+        opt_a = torch.compile(f, backend=cnt_a, isolated_region=True)
+        opt_b = torch.compile(f, backend=cnt_b, isolated_region=True)
+
+        # Populate both regions
+        opt_a(torch.randn(3))
+        opt_a(torch.randn(3, dtype=torch.float64))
+        opt_b(torch.randn(4))
+        opt_b(torch.randn(4, dtype=torch.float64))
+        self.assertEqual(cnt_a.frame_count, 2)
+        self.assertEqual(cnt_b.frame_count, 2)
+
+        # Repeatedly hit region A entries (triggers LRU move_to_front)
+        for _ in range(5):
+            opt_a(torch.randn(3))
+            opt_a(torch.randn(3, dtype=torch.float64))
+
+        # Region B should still get cache hits without recompilation
+        opt_b(torch.randn(4))
+        opt_b(torch.randn(4, dtype=torch.float64))
+        self.assertEqual(cnt_a.frame_count, 2)
+        self.assertEqual(cnt_b.frame_count, 2)
+
+    def test_isolated_region_reset(self):
+        """torch._dynamo.reset() clears all regions. After reset, both
+        regions must recompile."""
+        cnt_a = torch._dynamo.testing.CompileCounter()
+        cnt_b = torch._dynamo.testing.CompileCounter()
+
+        def f(x):
+            return x.cos()
+
+        opt_a = torch.compile(f, backend=cnt_a, isolated_region=True)
+        opt_b = torch.compile(f, backend=cnt_b, isolated_region=True)
+
+        opt_a(torch.randn(3))
+        opt_b(torch.randn(4))
+        self.assertEqual(cnt_a.frame_count, 1)
+        self.assertEqual(cnt_b.frame_count, 1)
+
+        torch._dynamo.reset()
+
+        # After reset, cache is cleared — both must recompile
+        opt_a(torch.randn(3))
+        opt_b(torch.randn(4))
+        self.assertEqual(cnt_a.frame_count, 2)
+        self.assertEqual(cnt_b.frame_count, 2)
+
+    @torch._dynamo.config.patch(recompile_limit=2)
+    def test_isolated_region_resume_function(self):
+        """Resume functions from a graph break inside an isolated region
+        inherit the region_id. Their cache entries land in the correct
+        region bucket and respect the per-region recompile limit."""
+        cnt = torch._dynamo.testing.CompileCounter()
+
+        mode = {"value": "a"}
+
+        def f(x):
+            a = x.sin()
+            print("graph break")
+            if mode["value"] == "a":
+                return a.cos()
+            else:
+                return a.tan()
+
+        opt_f = torch.compile(f, backend=cnt, isolated_region=True)
+
+        opt_f(torch.randn(4))
+        frame_count_after_1 = cnt.frame_count
+
+        mode["value"] = "b"
+        opt_f(torch.randn(4))
+        frame_count_after_2 = cnt.frame_count
+        self.assertGreater(frame_count_after_2, frame_count_after_1)
+
+        # Resume function has 2 entries now (= recompile_limit).
+        # A third mode should NOT cause further recompilation.
+        mode["value"] = "c"
+        opt_f(torch.randn(4))
+        self.assertEqual(cnt.frame_count, frame_count_after_2)
 
 
 if __name__ == "__main__":

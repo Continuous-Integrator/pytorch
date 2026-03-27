@@ -82,4 +82,3 @@ PyObject* get_backend(PyObject* callback) {
   }
   return handle.ptr();
 }
-
