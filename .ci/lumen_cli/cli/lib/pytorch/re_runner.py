@@ -69,8 +69,17 @@ def _detect_pr() -> int:
         check=True,
     ).stdout.strip()
     out = subprocess.run(
-        ["gh", "pr", "list", "--repo", "pytorch/pytorch",
-         "--head", branch, "--json", "number"],
+        [
+            "gh",
+            "pr",
+            "list",
+            "--repo",
+            "pytorch/pytorch",
+            "--head",
+            branch,
+            "--json",
+            "number",
+        ],
         capture_output=True,
         text=True,
     )
