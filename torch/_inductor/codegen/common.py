@@ -623,8 +623,8 @@ def register_device_op_overrides(
 def get_device_op_overrides(device: str) -> DeviceOpOverrides:
     assert isinstance(device, str), type(device)
 
-    if device in device_op_overrides_dict:
-        return device_op_overrides_dict.get(device)
+    if (result := device_op_overrides_dict.get(device)) is not None:
+        return result
 
     with device_op_overrides_lock:
         if device not in device_op_overrides_dict:
