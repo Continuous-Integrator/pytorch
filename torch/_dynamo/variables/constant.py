@@ -195,11 +195,11 @@ its type to `common_constant_types`.
     def iter_impl(self, tx: "InstructionTranslator") -> VariableTracker:
         from .lists import ListIteratorVariable
 
-        if not istype(self.value, str):
-            return super().iter_impl(tx)
-        return ListIteratorVariable(
-            self.unpack_var_sequence(tx), mutation_type=ValueMutationNew()
-        )
+        if istype(self.value, str):
+            return ListIteratorVariable(
+                self.unpack_var_sequence(tx), mutation_type=ValueMutationNew()
+            )
+        return super().iter_impl(tx)
 
     def call_method(
         self,

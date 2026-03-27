@@ -85,6 +85,7 @@ def vt_implements_method(obj: "VariableTracker", method_name: str) -> bool:
 
 def vt_implements_tp_iter(obj: "VariableTracker") -> bool:
     """Helper function to check if a VariableTracker implements the tp_iter slot."""
+    from .constant import ConstantVariable
     from .user_defined import UserDefinedObjectVariable
 
     # for user defined objects this check if a little bit more complicated
@@ -93,8 +94,12 @@ def vt_implements_tp_iter(obj: "VariableTracker") -> bool:
     if istype(obj, UserDefinedObjectVariable):
         iter_fn = obj._maybe_get_baseclass_method("__iter__")
         return iter_fn is not None
+    elif istype(obj, ConstantVariable):
+        if hasattr(obj.value, "__iter__"):
+            return True
     else:
         return vt_implements_method(obj, "iter_impl")
+    return False
 
 
 def vt_sequence_check(obj: "VariableTracker") -> bool:
@@ -163,5 +168,3 @@ def generic_getiter(
             tx,
             args=[msg],
         )
-
-    return obj.iter_impl(tx)

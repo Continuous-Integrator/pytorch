@@ -67,17 +67,22 @@ class _CallableIterator:
     def __init__(self, fn, sentinel):  # type: ignore[no-untyped-def]
         self.fn = fn
         self.sentinel = sentinel
+        self.exhausted = False
 
     def __iter__(self):  # type: ignore[no-untyped-def]
         return self
 
     def __next__(self):  # type: ignore[no-untyped-def]
+        if self.exhausted:
+            raise StopIteration
+
         # The iterator created in this case will call object with no arguments
         # for each call to its __next__() method;
         r = self.fn()
 
         # If the value returned is equal to sentinel, StopIteration will be raised
         if r == self.sentinel:
+            self.exhausted = True
             raise StopIteration
 
         # otherwise the value will be returned.

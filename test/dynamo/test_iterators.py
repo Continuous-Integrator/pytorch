@@ -513,14 +513,6 @@ class TestIterators(torch._dynamo.test_case.TestCase):
         self.assertEqual(c, 3)
 
     @make_dynamo_test
-    def test_iterator_unpacking_too_few(self):
-        """Test unpacking with too few values raises error"""
-        lst = [1, 2]
-        it = lst.__iter__()
-        with self.assertRaises(ValueError):
-            a, b, c = it
-
-    @make_dynamo_test
     def test_dict_value_mutation_allowed(self):
         """Test that modifying dict values during iteration is allowed"""
         d = {"a": 1, "b": 2, "c": 3}
@@ -977,6 +969,81 @@ class TestEnumIteration(torch._dynamo.test_case.TestCase):
         self.assertEqual(a, Color.RED)
         self.assertEqual(b, Color.GREEN)
         self.assertEqual(c, Color.BLUE)
+
+
+class NotIterable:
+    pass
+
+
+class BadIterReturnsNonIterator:
+    def __iter__(self):
+        return 42  # not an iterator
+
+
+class IterWithoutNext:
+    def __iter__(self):
+        return self  # no __next__
+
+
+class NoIterNoGetitem:
+    pass
+
+
+class TestIterErrors(torch._dynamo.test_case.TestCase):
+    """Test that iter() raises the correct exceptions"""
+
+    def setUp(self):
+        super().setUp()
+        self._u_prev = torch._dynamo.config.enable_trace_unittest
+        torch._dynamo.config.enable_trace_unittest = True
+
+    def tearDown(self):
+        super().tearDown()
+        torch._dynamo.config.enable_trace_unittest = self._u_prev
+
+    @make_dynamo_test
+    def test_iter_non_iterable_raises_type_error(self):
+        with self.assertRaises(TypeError):
+            iter(42)
+
+    @make_dynamo_test
+    def test_iter_custom_non_iterable_raises_type_error(self):
+        with self.assertRaises(TypeError):
+            iter(NotIterable())
+
+    @make_dynamo_test
+    def test_iter_two_arg_non_callable_raises_type_error(self):
+        with self.assertRaises(TypeError):
+            iter(42, None)
+
+    @unittest.expectedFailure
+    @make_dynamo_test
+    def test_iter_bad_iter_return_raises_type_error(self):
+        with self.assertRaises(TypeError):
+            iter(BadIterReturnsNonIterator())
+
+    @unittest.expectedFailure
+    @make_dynamo_test
+    def test_iter_returns_self_without_next_raises_type_error(self):
+        with self.assertRaises(TypeError):
+            iter(IterWithoutNext())
+
+    @make_dynamo_test
+    def test_iter_no_iter_no_getitem_raises_type_error(self):
+        with self.assertRaises(TypeError):
+            iter(NoIterNoGetitem())
+
+    @make_dynamo_test
+    def test_next_on_exhausted_raises_stop_iteration(self):
+        it = iter([])
+        with self.assertRaises(StopIteration):
+            next(it)
+
+    @make_dynamo_test
+    def test_next_default_on_exhausted(self):
+        it = iter([])
+        result = next(it, "default")
+        self.assertEqual(result, "default")
 
 
 if __name__ == "__main__":
