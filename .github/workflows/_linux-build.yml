@@ -129,10 +129,6 @@ on:
         required: false
         description: |
           HF Auth token to avoid rate limits when downloading models or datasets from hub
-      SCRIBE_GRAPHQL_ACCESS_TOKEN:
-        required: false
-        description: |
-          FB app token to write to scribe endpoint
 
     outputs:
       docker-image:
@@ -147,10 +143,9 @@ on:
 
 jobs:
   build:
-    environment: ${{ github.ref == 'refs/heads/main' && 'scribe-protected' || startsWith(github.ref, 'refs/heads/release/') && 'scribe-protected' || contains(github.event.pull_request.labels.*.name, 'ci-scribe') && 'scribe-pr' || '' }}
     # Don't run on forked repos
     if: github.repository_owner == 'pytorch' && !inputs.use-arc
-    runs-on: ${{ inputs.runner_prefix}}${{ inputs.runner }}
+    runs-on: ${{ inputs.runner_prefix }}${{ inputs.runner }}
     timeout-minutes: 480
     outputs:
       docker-image: ${{ steps.calculate-docker-image.outputs.docker-image }}
@@ -166,36 +161,21 @@ jobs:
             Build is done inside the container, to start an interactive session run:
               docker exec -it $(docker container ps --format '{{.ID}}') bash
 
-      # [pytorch repo ref]
-      # Use a pytorch/pytorch reference instead of a reference to the local
-      # checkout because when we run this action we don't *have* a local
-      # checkout. In other cases you should prefer a local checkout.
-      - name: Checkout PyTorch
-        uses: pytorch/pytorch/.github/actions/checkout-pytorch@main
-        with:
-          no-sudo: true
-          checkout-mode: treeless
-
       - name: Setup Linux
-        uses: ./.github/actions/setup-linux
+        id: setup-linux
+        uses: pytorch/pytorch/.github/actions/setup-linux@main
         if: inputs.build-environment != 'linux-s390x-binary-manywheel'
         with:
           python-version: ${{ inputs.python-version }}
           compiler: ${{ inputs.compiler }}
           cuda-version: ${{ inputs.cuda-version }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Login to ECR
         if: inputs.build-environment != 'linux-s390x-binary-manywheel'
         uses: ./.github/actions/ecr-login
         with:
           aws-role-to-assume: ${{ inputs.aws-role-to-assume }}
-
-      - name: Get workflow job id
-        id: get-job-id
-        uses: ./.github/actions/get-workflow-job-id
-        if: always()
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Check if can use old whl build
         id: use-old-whl
@@ -205,8 +185,8 @@ jobs:
           build-environment: ${{ inputs.build-environment }}
           run-id: ${{ github.run_id }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
-          job-id: ${{ steps.get-job-id.outputs.job-id }}
-          job-name: ${{ steps.get-job-id.outputs.job-name }}
+          job-id: ${{ steps.setup-linux.outputs.job-id }}
+          job-name: ${{ steps.setup-linux.outputs.job-name }}
 
       - name: Calculate docker image
         id: calculate-docker-image
@@ -231,10 +211,6 @@ jobs:
         with:
           docker-image: ${{ steps.calculate-docker-image.outputs.docker-image }}
 
-      - name: Parse ref
-        id: parse-ref
-        run: .github/scripts/parse_ref.py
-
       # Apply the filter logic to the build step too if the test-config label is already there
       - name: Select all requested test configurations (if the test matrix is available)
         id: filter
@@ -243,7 +219,7 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           test-matrix: ${{ inputs.test-matrix }}
           selected-test-configs: ${{ inputs.selected-test-configs }}
-          job-name: ${{ steps.get-job-id.outputs.job-name }}
+          job-name: ${{ steps.setup-linux.outputs.job-name }}
 
       - name: Start monitoring script
         id: monitor-script
@@ -251,8 +227,8 @@ jobs:
         shell: bash
         continue-on-error: true
         env:
-          JOB_ID: ${{ steps.get-job-id.outputs.job-id }}
-          JOB_NAME: ${{ steps.get-job-id.outputs.job-name }}
+          JOB_ID: ${{ steps.setup-linux.outputs.job-id }}
+          JOB_NAME: ${{ steps.setup-linux.outputs.job-name }}
           WORKFLOW_NAME: ${{ github.workflow }}
           WORKFLOW_RUN_ID: ${{github.run_id}}
           MONITOR_LOG_INTERVAL: ${{ inputs.monitor-log-interval }}
@@ -266,21 +242,12 @@ jobs:
           > "../../usage_logs/usage_log_build_${JOB_ID}.txt" 2>&1 &
           echo "monitor-script-pid=${!}" >> "${GITHUB_OUTPUT}"
 
-      - name: Download pytest cache
-        uses: ./.github/actions/pytest-cache-download
-        continue-on-error: true
-        if: inputs.build-environment != 'linux-s390x-binary-manywheel' && steps.use-old-whl.outputs.reuse != 'true'
-        with:
-          cache_dir: .pytest_cache
-          job_identifier: ${{ github.workflow }}_${{ inputs.build-environment }}
-          s3_bucket: ${{ inputs.s3-bucket }}
-
       - name: Build
         if: (steps.filter.outputs.is-test-matrix-empty == 'False' || inputs.test-matrix == '') && steps.use-old-whl.outputs.reuse != 'true'
         id: build
         env:
           BUILD_ENVIRONMENT: ${{ inputs.build-environment }}
-          BRANCH: ${{ steps.parse-ref.outputs.branch }}
+          BRANCH: ${{ steps.setup-linux.outputs.branch }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           SHA1: ${{ github.event.pull_request.head.sha || github.sha }}
           # Do not set SCCACHE_S3_KEY_PREFIX to share the cache between all build jobs
@@ -292,9 +259,8 @@ jobs:
           DOCKER_IMAGE: ${{ steps.calculate-docker-image.outputs.docker-image }}
           DOCKER_IMAGE_S390X: ${{ inputs.docker-image-name }}
           XLA_CUDA: ${{ contains(inputs.build-environment, 'xla') && '0' || '' }}
-          OUR_GITHUB_JOB_ID: ${{ steps.get-job-id.outputs.job-id }}
+          OUR_GITHUB_JOB_ID: ${{ steps.setup-linux.outputs.job-id }}
           HUGGING_FACE_HUB_TOKEN: ${{ secrets.HUGGING_FACE_HUB_TOKEN }}
-          SCRIBE_GRAPHQL_ACCESS_TOKEN: ${{ secrets.SCRIBE_GRAPHQL_ACCESS_TOKEN }}
           BUILD_ADDITIONAL_PACKAGES: ${{ inputs.build-additional-packages }}
           RUNNER: ${{ inputs.runner }}
         run: |
@@ -366,7 +332,6 @@ jobs:
             -e PR_LABELS \
             -e OUR_GITHUB_JOB_ID \
             -e HUGGING_FACE_HUB_TOKEN \
-            -e SCRIBE_GRAPHQL_ACCESS_TOKEN \
             -e BUILD_ADDITIONAL_PACKAGES \
             -e RUNNER \
             --memory="${TOTAL_AVAILABLE_MEMORY_IN_GB%.*}g" \
@@ -450,7 +415,7 @@ jobs:
           if-no-files-found: error
           path: artifacts.zip
 
-      - name: copy logs
+      - name: Copy logs
         shell: bash
         if: ${{ always() && steps.build.outcome != 'skipped' && !inputs.disable-monitor && inputs.build-environment != 'linux-s390x-binary-manywheel'}}
         continue-on-error: true
@@ -481,12 +446,12 @@ jobs:
         continue-on-error: true
         uses: ./.github/actions/upload-utilization-stats
         with:
-          job_id: ${{ steps.get-job-id.outputs.job-id }}
-          job_name: ${{ steps.get-job-id.outputs.job-name }}
+          job_id: ${{ steps.setup-linux.outputs.job-id }}
+          job_name: ${{ steps.setup-linux.outputs.job-name }}
           workflow_name: ${{ github.workflow }}
           workflow_run_id: ${{github.run_id}}
           workflow_attempt: ${{github.run_attempt}}
-          artifact_prefix: usage_log_build_${{ steps.get-job-id.outputs.job-id }}
+          artifact_prefix: usage_log_build_${{ steps.setup-linux.outputs.job-id }}
 
       - name: Teardown Linux
         uses: pytorch/test-infra/.github/actions/teardown-linux@main
@@ -505,10 +470,9 @@ jobs:
       id-token: write
       contents: read
       actions: read
-    environment: ${{ github.ref == 'refs/heads/main' && 'scribe-protected' || startsWith(github.ref, 'refs/heads/release/') && 'scribe-protected' || contains(github.event.pull_request.labels.*.name, 'ci-scribe') && 'scribe-pr' || '' }}
     # Don't run on forked repos
     if: github.repository_owner == 'pytorch' && inputs.use-arc
-    runs-on: ${{ inputs.runner_prefix}}${{ inputs.runner }}
+    runs-on: ${{ inputs.runner_prefix }}${{ inputs.runner }}
     container:
       image: ${{ inputs.docker-image-name }}
     timeout-minutes: 480
@@ -517,30 +481,14 @@ jobs:
       test-matrix: ${{ steps.filter.outputs.test-matrix }}
       build-environment: ${{ inputs.build-environment }}
     steps:
-      - name: Fix Git ownership
-        shell: bash
-        run: |
-          git config --global --add safe.directory "$GITHUB_WORKSPACE"
-
-      - name: Checkout PyTorch
-        uses: pytorch/pytorch/.github/actions/checkout-pytorch@main
-        with:
-          no-sudo: true
-          checkout-mode: treeless
-
       - name: Setup Linux
-        uses: pytorch/pytorch/.github/actions/setup-linux@huydhn/update-setup-linux-pt2
+        id: setup-linux
+        uses: pytorch/pytorch/.github/actions/setup-linux@huydhn/move-common-steps-to-setup-linux
         with:
           use-arc: true
           python-version: ${{ inputs.python-version }}
           compiler: ${{ inputs.compiler }}
           cuda-version: ${{ inputs.cuda-version }}
-
-      - name: Get workflow job id
-        id: get-job-id
-        uses: pytorch/pytorch/.github/actions/get-workflow-job-id@main
-        if: always()
-        with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Check if can use old whl build
@@ -551,12 +499,8 @@ jobs:
           build-environment: ${{ inputs.build-environment }}
           run-id: ${{ github.run_id }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
-          job-id: ${{ steps.get-job-id.outputs.job-id }}
-          job-name: ${{ steps.get-job-id.outputs.job-name }}
-
-      - name: Parse ref
-        id: parse-ref
-        run: .github/scripts/parse_ref.py
+          job-id: ${{ steps.setup-linux.outputs.job-id }}
+          job-name: ${{ steps.setup-linux.outputs.job-name }}
 
       # Apply the filter logic to the build step too if the test-config label is already there
       - name: Select all requested test configurations (if the test matrix is available)
@@ -566,28 +510,7 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           test-matrix: ${{ inputs.test-matrix }}
           selected-test-configs: ${{ inputs.selected-test-configs }}
-          job-name: ${{ steps.get-job-id.outputs.job-name }}
-
-      - name: Start monitoring script
-        id: monitor-script
-        if: ${{ !inputs.disable-monitor }}
-        shell: bash
-        continue-on-error: true
-        env:
-          JOB_ID: ${{ steps.get-job-id.outputs.job-id }}
-          JOB_NAME: ${{ steps.get-job-id.outputs.job-name }}
-          WORKFLOW_NAME: ${{ github.workflow }}
-          WORKFLOW_RUN_ID: ${{github.run_id}}
-          MONITOR_LOG_INTERVAL: ${{ inputs.monitor-log-interval }}
-          MONITOR_DATA_COLLECT_INTERVAL: ${{ inputs.monitor-data-collect-interval }}
-        run: |
-          mkdir -p ../../usage_logs
-          uv pip install psutil==5.9.8 dataclasses_json==0.6.7
-          python3 -m tools.stats.monitor \
-          --log-interval "$MONITOR_LOG_INTERVAL" \
-          --data-collect-interval "$MONITOR_DATA_COLLECT_INTERVAL" \
-          > "../../usage_logs/usage_log_build_${JOB_ID}.txt" 2>&1 &
-          echo "monitor-script-pid=${!}" >> "${GITHUB_OUTPUT}"
+          job-name: ${{ steps.setup-linux.outputs.job-name }}
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7
@@ -597,21 +520,12 @@ jobs:
           # The max duration enforced by the server side
           role-duration-seconds: 18000
 
-      - name: Download pytest cache
-        uses: pytorch/pytorch/.github/actions/pytest-cache-download@main
-        continue-on-error: true
-        if: steps.use-old-whl.outputs.reuse != 'true'
-        with:
-          cache_dir: .pytest_cache
-          job_identifier: ${{ github.workflow }}_${{ inputs.build-environment }}
-          s3_bucket: ${{ inputs.s3-bucket }}
-
       - name: Build
         if: (steps.filter.outputs.is-test-matrix-empty == 'False' || inputs.test-matrix == '') && steps.use-old-whl.outputs.reuse != 'true'
         id: build
         env:
           BUILD_ENVIRONMENT: ${{ inputs.build-environment }}
-          BRANCH: ${{ steps.parse-ref.outputs.branch }}
+          BRANCH: ${{ steps.setup-linux.outputs.branch }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           SHA1: ${{ github.event.pull_request.head.sha || github.sha }}
           SCCACHE_BUCKET: ossci-compiler-cache-circleci-v2
@@ -620,9 +534,8 @@ jobs:
           PR_LABELS: ${{ toJson(github.event.pull_request.labels.*.name) }}
           TORCH_CUDA_ARCH_LIST: ${{ inputs.cuda-arch-list }}
           XLA_CUDA: ${{ contains(inputs.build-environment, 'xla') && '0' || '' }}
-          OUR_GITHUB_JOB_ID: ${{ steps.get-job-id.outputs.job-id }}
+          OUR_GITHUB_JOB_ID: ${{ steps.setup-linux.outputs.job-id }}
           HUGGING_FACE_HUB_TOKEN: ${{ secrets.HUGGING_FACE_HUB_TOKEN }}
-          SCRIBE_GRAPHQL_ACCESS_TOKEN: ${{ secrets.SCRIBE_GRAPHQL_ACCESS_TOKEN }}
           BUILD_ADDITIONAL_PACKAGES: ${{ inputs.build-additional-packages }}
           RUNNER: ${{ inputs.runner }}
           SKIP_SCCACHE_INITIALIZATION: 1
@@ -653,21 +566,12 @@ jobs:
             mv "$src" "dist/$(dirname "$src")/"
           fi
 
-      - name: Stop monitoring script
-        if: ${{ always() && steps.monitor-script.outputs.monitor-script-pid }}
-        shell: bash
-        continue-on-error: true
-        env:
-          MONITOR_SCRIPT_PID: ${{ steps.monitor-script.outputs.monitor-script-pid }}
-        run: |
-          kill "$MONITOR_SCRIPT_PID"
-
       - name: Archive artifacts into zip
         if: inputs.build-generates-artifacts && steps.build.outcome != 'skipped' && steps.use-old-whl.outputs.reuse != 'true'
         run: |
           zip -1 -r artifacts.zip dist/ build/custom_test_artifacts build/lib build/bin .additional_ci_files
 
-      - name: Store PyTorch Build Artifacts on S3
+      - name: Store build artifacts on S3
         uses: seemethere/upload-artifact-s3@baba72d0712b404f646cebe0730933554ebce96a # v5.1.0
         if: inputs.build-generates-artifacts && (steps.build.outcome != 'skipped' || steps.use-old-whl.outputs.reuse == 'true')
         with:
@@ -677,40 +581,9 @@ jobs:
           path: artifacts.zip
           s3-bucket: ${{ inputs.s3-bucket }}
 
-      - name: copy logs
-        shell: bash
-        if: ${{ always() && steps.build.outcome != 'skipped' && !inputs.disable-monitor }}
-        continue-on-error: true
-        run: |
-          rm -f ./usage_logs
-          mkdir -p ./usage_logs
-          cp ../../usage_logs/usage_log_build_*.txt ./usage_logs/
-
-      - name: Upload raw usage log to s3
-        if: ${{ always() && steps.build.outcome != 'skipped' && !inputs.disable-monitor }}
-        uses: seemethere/upload-artifact-s3@v5
-        with:
-          s3-prefix: |
-            ${{ github.repository }}/${{ github.run_id }}/${{ github.run_attempt }}/artifact
-          retention-days: 14
-          if-no-files-found: warn
-          path: usage_logs/usage_log_build_*.txt
-
       - name: Upload sccache stats
         if: steps.build.outcome != 'skipped'
         uses: pytorch/pytorch/.github/actions/upload-sccache-stats@main
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           build-time: ${{ steps.build.outputs.build_time }}
-
-      - name: Upload utilization stats
-        if: ${{ always() && steps.build.outcome != 'skipped' && !inputs.disable-monitor }}
-        continue-on-error: true
-        uses: pytorch/pytorch/.github/actions/upload-utilization-stats@main
-        with:
-          job_id: ${{ steps.get-job-id.outputs.job-id }}
-          job_name: ${{ steps.get-job-id.outputs.job-name }}
-          workflow_name: ${{ github.workflow }}
-          workflow_run_id: ${{github.run_id}}
-          workflow_attempt: ${{github.run_attempt}}
-          artifact_prefix: usage_log_build_${{ steps.get-job-id.outputs.job-id }}
