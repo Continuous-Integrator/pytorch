@@ -5,11 +5,6 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from re_cli.core.core_types import StepConfig
-from re_cli.core.job_runner import JobRunner
-from re_cli.core.k8s_client import K8sClient, K8sConfig
-from re_cli.core.script_builder import RunnerScriptBuilder
-
 from cli.lib.pytorch.git_utils import CommitResolver
 
 
@@ -34,34 +29,40 @@ def _load_script_module(name: str) -> str:
     ).strip()
 
 
-class LumenScriptBuilder(RunnerScriptBuilder):
-    """RE script builder for lumen."""
-
-    def _add_script(self, module_name: str, script_name: str) -> LumenScriptBuilder:
-        body = _load_script_module(script_name)
-        self._modules.append(
-            f"\n# {'=' * 44}\n# MODULE: {module_name}\n# {'=' * 44}\n" + body
-        )
-        return self
-
-    def add_git_clone(self) -> LumenScriptBuilder:
-        return self._add_script("git_clone", "git_clone")
-
-    def add_setup_uv(self) -> LumenScriptBuilder:
-        return self._add_script("setup_uv", "setup_uv")
-
-    def add_check_python(self) -> LumenScriptBuilder:
-        return self._add_script("check_python", "check_python")
-
-    def add_install_lumen(self) -> LumenScriptBuilder:
-        self._modules.append(
-            f"\n# {'=' * 44}\n# MODULE: install_lumen\n# {'=' * 44}\n"
-            "uv pip install -e .ci/lumen_cli"
-        )
-        return self
-
-
 REPO = "https://github.com/pytorch/pytorch.git"
+
+
+def _make_script_builder_class():
+    """Lazy import re_cli and define LumenScriptBuilder."""
+    from re_cli.core.script_builder import RunnerScriptBuilder
+
+    class LumenScriptBuilder(RunnerScriptBuilder):
+        """RE script builder for lumen."""
+
+        def _add_script(self, module_name: str, script_name: str) -> LumenScriptBuilder:
+            body = _load_script_module(script_name)
+            self._modules.append(
+                f"\n# {'=' * 44}\n# MODULE: {module_name}\n# {'=' * 44}\n" + body
+            )
+            return self
+
+        def add_git_clone(self) -> LumenScriptBuilder:
+            return self._add_script("git_clone", "git_clone")
+
+        def add_setup_uv(self) -> LumenScriptBuilder:
+            return self._add_script("setup_uv", "setup_uv")
+
+        def add_check_python(self) -> LumenScriptBuilder:
+            return self._add_script("check_python", "check_python")
+
+        def add_install_lumen(self) -> LumenScriptBuilder:
+            self._modules.append(
+                f"\n# {'=' * 44}\n# MODULE: install_lumen\n# {'=' * 44}\n"
+                "uv pip install -e .ci/lumen_cli"
+            )
+            return self
+
+    return LumenScriptBuilder
 
 
 def submit_command(
@@ -75,6 +76,10 @@ def submit_command(
     bootstrap: list[str] | None = None,
 ) -> None:
     """Submit a command to Remote Execution."""
+    from re_cli.core.core_types import StepConfig
+    from re_cli.core.job_runner import JobRunner
+    from re_cli.core.k8s_client import K8sClient, K8sConfig
+
     if bootstrap is None:
         bootstrap = list(DEFAULT_BOOTSTRAP)
 
@@ -103,7 +108,7 @@ def submit_command(
         client=client,
         name=name,
         step_configs=[step],
-        script_builder_class=LumenScriptBuilder,
+        script_builder_class=_make_script_builder_class(),
     )
     runner.run(
         commit=resolved["sha"],
