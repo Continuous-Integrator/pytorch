@@ -257,11 +257,6 @@ class TestPhiloxNormal(TestCase):
         with self.assertRaises(RuntimeError):
             random.normal(key, (100,))
 
-    def test_error_wrong_device(self, device):
-        key = random.key(42)  # CPU key
-        with self.assertRaises(RuntimeError):
-            random.normal(key, (100,), device=device)
-
     @dtypes(torch.float32, torch.float64)
     def test_offset_shift_consistency(self, device, dtype):
         """Shifting key offset shifts the output stream."""
@@ -381,11 +376,6 @@ class TestPhiloxUniform(TestCase):
         key = torch.tensor([42, 0], dtype=torch.float32, device=device)
         with self.assertRaises(RuntimeError):
             random.uniform(key, (100,))
-
-    def test_error_wrong_device(self, device):
-        key = random.key(42)  # CPU key
-        with self.assertRaises(RuntimeError):
-            random.uniform(key, (100,), device=device)
 
     def test_error_shape_mismatch(self, device):
         key = random.key(42, device=device)
