@@ -157,6 +157,20 @@ def _(
 has_side_effect(torch.ops.streams.wait_event.default)
 
 
+@custom_op("streams::synchronize_event", mutates_args=())
+def synchronize_event(event_index: int) -> None:
+    event = _get_event_by_index(event_index)
+    event.synchronize()
+
+
+@synchronize_event.register_fake
+def _(event_index: int) -> None:
+    pass
+
+
+has_side_effect(torch.ops.streams.synchronize_event.default)
+
+
 @custom_op("streams::wait_stream", mutates_args=())
 def wait_stream(waiting_stream_index: int, waited_on_stream_index: int) -> None:
     waiting = _get_stream_by_index(waiting_stream_index)
@@ -247,6 +261,13 @@ class SymbolicStreamState:
 
     def in_stream_context(self) -> bool:
         return len(self.cur_stream_stack) > 0
+
+    def cur_stream_id(self) -> int:
+        """Get an identifier for the current stream without realizing lazy variables."""
+        stream = self.cur_stream_stack[-1]
+        if isinstance(stream, LazyVariableTracker) and not stream.is_realized():
+            return id(stream.peek_value())
+        return id(stream.value)
 
 
 class StreamContextVariable(FxTracebackAnnotateVariable):
@@ -346,6 +367,7 @@ class StreamVariable(StreamContextVariable):
                 ),
             )
         elif name == "record_event":
+            tx.output.check_event_record_after_input_mutation(id(self.value))
             return wrap_fx_proxy_cls(
                 target_cls=EventVariable,
                 tx=tx,
@@ -430,6 +452,26 @@ class StreamVariable(StreamContextVariable):
         return fn
 
 
+class CudaStreamVariable(StreamVariable):
+    """Represents torch.cuda.Stream, preserving device-specific type and attributes."""
+
+    def python_type(self) -> type:
+        return torch.cuda.Stream
+
+    def var_getattr(self, tx: "InstructionTranslator", name: str) -> VariableTracker:
+        if name == "cuda_stream":
+            from ..guards import GuardBuilder, install_guard
+
+            if self.source:
+                install_guard(self.source.make_guard(GuardBuilder.EQUALS_MATCH))
+            if isinstance(self.value, torch.cuda.Stream):
+                return ConstantVariable.create(self.value.cuda_stream)
+            # For torch.Stream values (e.g. from torch.accelerator.current_stream),
+            # the default stream has cuda_stream == stream_id == 0.
+            return ConstantVariable.create(self.value.stream_id)
+        return super().var_getattr(tx, name)
+
+
 class EventVariable(VariableTracker):
     def __init__(
         self,
@@ -467,19 +509,24 @@ class EventVariable(VariableTracker):
             )
             return CONSTANT_VARIABLE_NONE
         elif name == "record":
+            stream_arg = EventVariable._get_stream_arg(tx, args, kwargs)
+            tx.output.check_event_record_after_input_mutation(id(stream_arg.value))
             tx.output.create_proxy(
                 "call_function",
                 torch.ops.streams.record_event,
                 (
                     self.user_object_index,
-                    EventVariable._get_stream_arg(tx, args, kwargs).user_object_index,
+                    stream_arg.user_object_index,
                 ),
                 {},
             )
             return CONSTANT_VARIABLE_NONE
         elif name == "synchronize":
             tx.output.create_proxy(
-                "call_method", name, *proxy_args_kwargs([self] + args, kwargs)
+                "call_function",
+                torch.ops.streams.synchronize_event,
+                (self.user_object_index,),
+                {},
             )
             return CONSTANT_VARIABLE_NONE
         elif name == "query":
