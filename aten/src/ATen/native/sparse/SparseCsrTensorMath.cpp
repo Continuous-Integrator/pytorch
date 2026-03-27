@@ -731,8 +731,8 @@ Tensor& addmm_out_sparse_compressed_cpu(
       " without MKL. PyTorch built with MKL has better support for addmm with sparse CPU tensors.");
 #else
   sparse::impl::mkl::addmm_out_sparse_csr(mat1, mat2, beta, alpha, result);
-  return result;
 #endif
+  return result;
 }
 
 Tensor addmm_sparse_compressed_dense(

@@ -5425,13 +5425,6 @@ def pad(
         ):
             if mode == "replicate":
                 # Use slow decomp whose backward will be in terms of index_put.
-                if torch.compiler.is_compiling():
-                    # nonstrict_trace makes Dynamo skip the function body
-                    # (which contains Dynamo-untraceable code) while
-                    # AOTAutograd still traces into it for the backward.
-                    return torch._dynamo.decorators.nonstrict_trace(
-                        torch._decomp.decompositions._replication_pad
-                    )(input, pad)
                 # importlib is required because the import cannot be top level
                 # (cycle) and cannot be nested (TS doesn't support)
                 return importlib.import_module(
@@ -6078,7 +6071,7 @@ scaled_dot_product_attention = _add_docstr(
         key (Tensor): Key tensor; shape :math:`(N, ..., H, S, E)`.
         value (Tensor): Value tensor; shape :math:`(N, ..., H, S, Ev)`.
         attn_mask (optional Tensor): Attention mask; shape must be broadcastable to the shape of attention weights,
-            which is :math:`(N,..., Hq, L, S)`. Two types of masks are supported.
+            which is :math:`(N,..., L, S)`. Two types of masks are supported.
             A boolean mask where a value of True indicates that the element *should* take part in attention.
             A float mask of the same type as query, key, value that is added to the attention score.
         dropout_p (float): Dropout probability; if greater than 0.0, dropout is applied

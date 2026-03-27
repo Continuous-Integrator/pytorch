@@ -981,6 +981,7 @@ int calc_thread_work_size(
     } else {
         return 4;
     }
+    return io_size;
 #else
     auto io_size = at::cuda::jit::calc_io_size(nInputs, nOutputs, inputs_type, result_type);
     TORCH_INTERNAL_ASSERT(io_size > 0);
@@ -989,6 +990,7 @@ int calc_thread_work_size(
     } else {
         return 8;
     }
+    return io_size;
 #endif
 }
 

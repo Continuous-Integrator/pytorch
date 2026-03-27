@@ -30,7 +30,7 @@ import types
 import warnings
 from collections.abc import Callable, Iterable
 from functools import wraps
-from typing import Any, cast, TypeVar
+from typing import Any, TypeVar
 from typing_extensions import ParamSpec
 
 import torch
@@ -316,6 +316,9 @@ def get_ignored_functions() -> set[Callable]:
         torch.unify_type_list,
         torch.is_warn_always_enabled,
         torch.set_warn_always,
+        torch.vitals_enabled,
+        torch.set_vital,
+        torch.read_vitals,
         torch.vmap,
         torch.cond,
         torch.frombuffer,
@@ -1597,9 +1600,7 @@ def get_testing_overrides() -> dict[Callable, Callable]:
     return ret
 
 
-def wrap_torch_function(
-    dispatcher: Callable[_P, Iterable[Any]],
-) -> Callable[[Callable[_P, _R]], Callable[_P, _R]]:
+def wrap_torch_function(dispatcher: Callable):
     """Wraps a given function with ``__torch_function__`` -related functionality.
 
     Parameters
@@ -1623,18 +1624,16 @@ def wrap_torch_function(
     ...     return a + 0
     """
 
-    def inner(func: Callable[_P, _R]) -> Callable[_P, _R]:
+    def inner(func):
         @functools.wraps(func)
-        def wrapped(*args: _P.args, **kwargs: _P.kwargs) -> _R:
+        def wrapped(*args, **kwargs):
             relevant_args = dispatcher(*args, **kwargs)
             if has_torch_function(relevant_args):
-                return handle_torch_function(
-                    cast(Callable[_P, _R], wrapped), relevant_args, *args, **kwargs
-                )
+                return handle_torch_function(wrapped, relevant_args, *args, **kwargs)
 
             return func(*args, **kwargs)
 
-        return cast(Callable[_P, _R], wrapped)
+        return wrapped
 
     return inner
 
@@ -1719,11 +1718,11 @@ def _get_overloaded_args(
 
 
 def handle_torch_function(
-    public_api: Callable[_P, _R],
+    public_api: Callable,
     relevant_args: Iterable[Any],
-    *args: _P.args,
-    **kwargs: _P.kwargs,
-) -> _R:
+    *args,
+    **kwargs,
+) -> Any:
     """Implement a function with checks for ``__torch_function__`` overrides.
 
     See torch::autograd::handle_torch_function for the equivalent of this

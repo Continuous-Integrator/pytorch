@@ -7,7 +7,6 @@ from tabulate import tabulate
 from torch.distributed.debug._frontend import (
     DebugHandler,
     fetch_all,
-    format_fetch_summary,
     format_json,
     NavLink,
     Response,
@@ -75,7 +74,6 @@ FR_TRACE_TEMPLATE = """
     <h1>{% block title %}{{ title }}{% endblock %}</h1>
 {% endblock %}
 {% block content %}
-    {% if fetch_summary %}<pre>{{ fetch_summary }}</pre>{% endif %}
     <h2>Groups</h2>
     {{ groups | safe }}
     <h2>Memberships</h2>
@@ -194,18 +192,14 @@ class StacksHandler(DebugHandler):
         return [NavLink("/stacks", "Python Stack Traces")]
 
     def _handle(self, req: HTTPRequestHandler) -> bytes:
-        addrs, resps = fetch_all("dump_traceback", timeout=self.fetch_timeout)
+        addrs, resps = fetch_all("dump_traceback")
         return req.frontend.render_template(
             "raw_resp.html", title="Stacks", addrs=addrs, resps=resps
         )
 
     def dump(self) -> str | None:
-        addrs, resps = fetch_all("dump_traceback", timeout=self.fetch_timeout)
+        addrs, resps = fetch_all("dump_traceback")
         parts: list[str] = []
-        summary = format_fetch_summary(addrs, resps)
-        if summary:
-            parts.append(summary)
-            parts.append("")
         for i, (addr, resp) in enumerate(zip(addrs, resps)):
             parts.append(f"=== Rank {i}: {addr} ===")
             parts.append(
@@ -228,9 +222,7 @@ class PySpyHandler(DebugHandler):
         return {"pyspy_dump.html": PYSPY_DUMP_TEMPLATE}
 
     def _handle(self, req: HTTPRequestHandler) -> bytes:
-        addrs, resps = fetch_all(
-            "pyspy_dump", req.get_raw_query(), timeout=self.fetch_timeout
-        )
+        addrs, resps = fetch_all("pyspy_dump", req.get_raw_query())
         return req.frontend.render_template(
             "pyspy_dump.html",
             addrs=addrs,
@@ -238,12 +230,8 @@ class PySpyHandler(DebugHandler):
         )
 
     def dump(self) -> str | None:
-        addrs, resps = fetch_all("pyspy_dump", timeout=self.fetch_timeout)
+        addrs, resps = fetch_all("pyspy_dump")
         parts: list[str] = []
-        summary = format_fetch_summary(addrs, resps)
-        if summary:
-            parts.append(summary)
-            parts.append("")
         for i, (addr, resp) in enumerate(zip(addrs, resps)):
             parts.append(f"=== Rank {i}: {addr} ===")
             parts.append(
@@ -284,8 +272,7 @@ class FlightRecorderHandler(DebugHandler):
 
         details = {}
         for rank, resp in enumerate(resps):
-            if resp.status_code != 200:
-                continue
+            resp.raise_for_status()
             dump = {
                 "rank": rank,
                 "host_name": addrs[rank],
@@ -294,9 +281,6 @@ class FlightRecorderHandler(DebugHandler):
             if "entries" not in dump:
                 dump["entries"] = []
             details[f"rank{rank}.json"] = dump
-
-        if not details:
-            raise RuntimeError("All workers failed to respond")
 
         version = next(iter(details.values()))["version"]
         # pyrefly: ignore [bad-argument-type]
@@ -309,7 +293,6 @@ class FlightRecorderHandler(DebugHandler):
         return server.render_template(
             "fr_trace.html",
             title="FlightRecorder",
-            fetch_summary=format_fetch_summary(addrs, resps),
             groups=tabulate(db.groups, headers=Group._fields, tablefmt="html"),
             memberships=tabulate(
                 db.memberships, headers=Membership._fields, tablefmt="html"
@@ -321,11 +304,11 @@ class FlightRecorderHandler(DebugHandler):
         )
 
     def _handle_fr_trace(self, req: HTTPRequestHandler) -> bytes:
-        addrs, resps = fetch_all("fr_trace_json", timeout=self.fetch_timeout)
+        addrs, resps = fetch_all("fr_trace_json")
         return self._render_tables(req.frontend, addrs, list(resps))
 
     def _handle_fr_trace_json(self, req: HTTPRequestHandler) -> bytes:
-        addrs, resps = fetch_all("fr_trace_json", timeout=self.fetch_timeout)
+        addrs, resps = fetch_all("fr_trace_json")
         return req.frontend.render_template(
             "json_resp.html",
             title="FlightRecorder",
@@ -334,15 +317,11 @@ class FlightRecorderHandler(DebugHandler):
         )
 
     def _handle_fr_trace_nccl(self, req: HTTPRequestHandler) -> bytes:
-        addrs, resps = fetch_all(
-            "dump_nccl_trace_json", "onlyactive=true", timeout=self.fetch_timeout
-        )
+        addrs, resps = fetch_all("dump_nccl_trace_json", "onlyactive=true")
         return self._render_tables(req.frontend, addrs, list(resps))
 
     def _handle_fr_trace_nccl_json(self, req: HTTPRequestHandler) -> bytes:
-        addrs, resps = fetch_all(
-            "dump_nccl_trace_json", "onlyactive=true", timeout=self.fetch_timeout
-        )
+        addrs, resps = fetch_all("dump_nccl_trace_json", "onlyactive=true")
         return req.frontend.render_template(
             "json_resp.html",
             title="FlightRecorder NCCL",
@@ -353,12 +332,8 @@ class FlightRecorderHandler(DebugHandler):
     def dump(self) -> str | None:
         parts = []
 
-        addrs, resps = fetch_all("fr_trace_json", timeout=self.fetch_timeout)
-        summary = format_fetch_summary(addrs, resps)
-        if summary:
-            parts.append(summary)
-            parts.append("")
-        db = self._build_db(addrs, resps)
+        addrs, resps = fetch_all("fr_trace_json")
+        db = self._build_db(addrs, list(resps))
         parts.extend(
             [
                 "=== FR Trace ===",
@@ -375,9 +350,9 @@ class FlightRecorderHandler(DebugHandler):
 
         try:
             nccl_addrs, nccl_resps = fetch_all(
-                "dump_nccl_trace_json", "onlyactive=true", timeout=self.fetch_timeout
+                "dump_nccl_trace_json", "onlyactive=true"
             )
-            nccl_db = self._build_db(nccl_addrs, nccl_resps)
+            nccl_db = self._build_db(nccl_addrs, list(nccl_resps))
             parts.extend(
                 [
                     "",
@@ -425,9 +400,7 @@ class ProfilerHandler(DebugHandler):
 
     def _handle(self, req: HTTPRequestHandler) -> bytes:
         duration = req.get_query_arg("duration", default=1.0, type=float)
-        addrs, resps = fetch_all(
-            "torch_profile", f"duration={duration}", timeout=self.fetch_timeout
-        )
+        addrs, resps = fetch_all("torch_profile", f"duration={duration}")
         return req.frontend.render_template("profile.html", addrs=addrs, resps=resps)
 
 
@@ -439,18 +412,14 @@ class WaitCountersHandler(DebugHandler):
         return [NavLink("/wait_counters", "Wait Counters")]
 
     def _handle(self, req: HTTPRequestHandler) -> bytes:
-        addrs, resps = fetch_all("wait_counter_values", timeout=self.fetch_timeout)
+        addrs, resps = fetch_all("wait_counter_values")
         return req.frontend.render_template(
             "json_resp.html", title="Wait Counters", addrs=addrs, resps=resps
         )
 
     def dump(self) -> str | None:
-        addrs, resps = fetch_all("wait_counter_values", timeout=self.fetch_timeout)
+        addrs, resps = fetch_all("wait_counter_values")
         parts: list[str] = []
-        summary = format_fetch_summary(addrs, resps)
-        if summary:
-            parts.append(summary)
-            parts.append("")
         for i, (addr, resp) in enumerate(zip(addrs, resps)):
             parts.append(f"=== Rank {i}: {addr} ===")
             if resp.status_code == 200:
@@ -511,15 +480,11 @@ class TorchCommsFlightRecorderHandler(DebugHandler):
         return {"fr_trace.html": FR_TRACE_TEMPLATE}
 
     def _handle_torchcomms_fr_trace(self, req: HTTPRequestHandler) -> bytes:
-        addrs, resps = fetch_all(
-            "torchcomms_fr_trace_json", "onlyactive=true", timeout=self.fetch_timeout
-        )
+        addrs, resps = fetch_all("torchcomms_fr_trace_json", "onlyactive=true")
         return self._render_tables(req.frontend, addrs, list(resps))
 
     def _handle_torchcomms_fr_trace_json(self, req: HTTPRequestHandler) -> bytes:
-        addrs, resps = fetch_all(
-            "torchcomms_fr_trace_json", "onlyactive=true", timeout=self.fetch_timeout
-        )
+        addrs, resps = fetch_all("torchcomms_fr_trace_json", "onlyactive=true")
         return req.frontend.render_template(
             "json_resp.html",
             title="TorchComms FlightRecorder",
@@ -534,7 +499,6 @@ class TorchCommsFlightRecorderHandler(DebugHandler):
         return server.render_template(
             "fr_trace.html",
             title="TorchComms FlightRecorder",
-            fetch_summary=format_fetch_summary(addrs, resps),
             groups=tabulate(db.groups, headers=Group._fields, tablefmt="html"),
             memberships=tabulate(
                 db.memberships, headers=Membership._fields, tablefmt="html"
@@ -546,26 +510,19 @@ class TorchCommsFlightRecorderHandler(DebugHandler):
         )
 
     def dump(self) -> str | None:
-        addrs, resps = fetch_all("torchcomms_fr_trace_json", timeout=self.fetch_timeout)
-        parts: list[str] = []
-        summary = format_fetch_summary(addrs, resps)
-        if summary:
-            parts.append(summary)
-            parts.append("")
-        db = FlightRecorderHandler._build_db(addrs, resps)
-        parts.extend(
-            [
-                "=== TorchComms FR Trace ===",
-                "--- Groups ---",
-                tabulate(db.groups, headers=Group._fields, tablefmt="plain"),
-                "--- Memberships ---",
-                tabulate(db.memberships, headers=Membership._fields, tablefmt="plain"),
-                "--- Collectives ---",
-                tabulate(db.collectives, headers=Collective._fields, tablefmt="plain"),
-                "--- NCCL Calls ---",
-                tabulate(db.ncclcalls, headers=NCCLCall._fields, tablefmt="plain"),
-            ]
-        )
+        addrs, resps = fetch_all("torchcomms_fr_trace_json")
+        db = FlightRecorderHandler._build_db(addrs, list(resps))
+        parts = [
+            "=== TorchComms FR Trace ===",
+            "--- Groups ---",
+            tabulate(db.groups, headers=Group._fields, tablefmt="plain"),
+            "--- Memberships ---",
+            tabulate(db.memberships, headers=Membership._fields, tablefmt="plain"),
+            "--- Collectives ---",
+            tabulate(db.collectives, headers=Collective._fields, tablefmt="plain"),
+            "--- NCCL Calls ---",
+            tabulate(db.ncclcalls, headers=NCCLCall._fields, tablefmt="plain"),
+        ]
         return "\n".join(parts)
 
     def dump_filename(self) -> str:

@@ -58,10 +58,6 @@ struct TORCH_API KinetoEvent {
   bool isAsync() const;
   uint64_t correlationId() const;
   uint64_t linkedCorrelationId() const;
-  uint32_t flowId() const;
-  uint32_t flowType() const;
-  bool flowStart() const;
-  int64_t externalId() const;
   int64_t deviceResourceId() const;
   std::string backend() const;
   bool isPythonFunction() const;
@@ -183,13 +179,9 @@ TORCH_API void enableProfilerWithEventPostProcess(
 
 TORCH_API std::unique_ptr<ProfilerResult> disableProfiler();
 
-using ActivityFilter = std::unordered_map<
-    torch::profiler::impl::ActivityType,
-    std::unordered_set<std::string>>;
 TORCH_API void prepareProfiler(
     const torch::profiler::impl::ProfilerConfig& config,
-    const std::set<torch::profiler::impl::ActivityType>& activities,
-    const ActivityFilter& activity_filter = {});
+    const std::set<torch::profiler::impl::ActivityType>& activities);
 
 TORCH_API void toggleCollectionDynamic(
     const bool enable,

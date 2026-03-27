@@ -262,6 +262,15 @@ pip install mkl-static mkl-include
 make triton
 ```
 
+**On MacOS**
+
+```bash
+# Add this package on intel x86 processor machines only
+pip install mkl-static mkl-include
+# Add these packages if torch.distributed is needed
+conda install pkg-config libuv
+```
+
 **On Windows**
 
 ```bash

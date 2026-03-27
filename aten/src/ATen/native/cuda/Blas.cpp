@@ -108,7 +108,8 @@ cuda::blas::GEMMAndBiasActivationEpilogue activation_to_gemm_and_blas_arg(Activa
     case Activation::GELU:
       return cuda::blas::GEMMAndBiasActivationEpilogue::GELU;
     default:
-      TORCH_CHECK(false, "Unknown activation epologue type");
+      TORCH_CHECK(false);
+      return cuda::blas::GEMMAndBiasActivationEpilogue::None;
   }
 }
 
@@ -227,6 +228,9 @@ static bool isInputCompliesAddmmCudaLt(
       mat2_sizes[0] > 1 && mat2_sizes[1] > 1
     )
   );
+
+  // no compliance by default
+  return false;
 }
 
 template <typename scalar_t>

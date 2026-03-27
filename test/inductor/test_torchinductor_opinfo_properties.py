@@ -57,6 +57,7 @@ from torch.testing._internal.common_utils import (
     parametrize,
     skipIfTorchDynamo,
     TEST_WITH_ASAN,
+    TEST_WITH_ROCM,
 )
 from torch.testing._internal.inductor_utils import HAS_GPU
 
@@ -241,7 +242,6 @@ INDUCTOR_NUMERICS_OPTIONS = {
     "emulate_precision_casts": True,
     "eager_numerics.division_rounding": True,
     "eager_numerics.disable_ftz": True,
-    "eager_numerics.use_pytorch_libdevice": True,
 }
 
 
@@ -476,6 +476,7 @@ def compile_fn(fn, backend):
 
 @unittest.skipIf(IS_WINDOWS, "Skipped on Windows")
 @unittest.skipIf(TEST_WITH_ASAN, "Skipped under ASAN")
+@unittest.skipIf(TEST_WITH_ROCM, "Skipped on ROCm")
 @unittest.skipIf(not HAS_GPU, "Requires GPU")
 class TestOpInfoProperties(TestCase):
     """Test op properties under various inductor modes using OpInfo on CUDA."""

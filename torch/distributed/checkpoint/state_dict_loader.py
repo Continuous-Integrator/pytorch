@@ -228,15 +228,11 @@ def _load_state_dict(
         nonlocal metadata
 
         # Use global metadata if available, otherwise fallback to rank local metadata
-        global_metadata_exc: Exception | None = None
-        rank_metadata_exc: Exception | None = None
         try:
             metadata = storage_reader.read_metadata()
-        except Exception as e:
-            global_metadata_exc = e
-            logger.warning(
-                "Global metadata is not found. Falling back to rank local metadata.",
-                exc_info=True,
+        except Exception:
+            logger.info(
+                "Global metadata is not found. Falling back to rank local metadata."
             )
 
         if (
@@ -246,23 +242,13 @@ def _load_state_dict(
             try:
                 metadata = storage_reader.read_metadata(rank=distW.rank)  # noqa: F841
                 use_collectives = False
-            except Exception as e:
-                rank_metadata_exc = e
-                logger.warning("Rank local metadata is not found.", exc_info=True)
+            except Exception:
+                logger.info("Rank local metadata is not found.")
 
         if planner is None:
             raise AssertionError("planner is None")
         if metadata is None:
-            error_parts = ["metadata is None"]
-            if global_metadata_exc is not None:
-                error_parts.append(
-                    f"global metadata read failed: {global_metadata_exc}"
-                )
-            if rank_metadata_exc is not None:
-                error_parts.append(
-                    f"rank local metadata read failed: {rank_metadata_exc}"
-                )
-            raise AssertionError("; ".join(error_parts))
+            raise AssertionError("metadata is None")
         planner.set_up_planner(state_dict, metadata, distW.is_coordinator)
 
         if (

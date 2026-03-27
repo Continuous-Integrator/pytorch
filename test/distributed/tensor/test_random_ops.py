@@ -442,7 +442,7 @@ class DistTensorRandomOpTest(DTensorTestBase):
         )
         torch.nn.init.normal_(spmd_dtensor)
 
-        # verify the weights are initialized differently on all ranks
+        # gather all the shards to compare initialization results
         WORLD = torch.distributed.group.WORLD
         if WORLD is None:
             raise AssertionError("Expected WORLD to not be None")
@@ -450,11 +450,13 @@ class DistTensorRandomOpTest(DTensorTestBase):
             spmd_dtensor.to_local(),
             gather_dim=0,
             group=WORLD,
-        ).wait()
+        )
+
+        # verify the weights are initialized differently on all ranks
         for other_rank in range(self.world_size):
             if self.rank != other_rank:
                 self.assertNotEqual(
-                    spmd_dtensor.to_local(),
+                    spmd_dtensor,
                     tensor_gather[2 * other_rank : 2 * (other_rank + 1), :],
                 )
 
@@ -1005,10 +1007,6 @@ DistTensorRandomInitTestWithLocalTensor = create_local_tensor_test_class(
 
 DistTensorRandomOpTestWithLocalTensor = create_local_tensor_test_class(
     DistTensorRandomOpTest,
-    skipped_tests=[
-        # cross-pp-stage seeding is not simulated in local tensor mode
-        "test_pipeline_parallel_manual_seed",
-    ],
 )
 
 DistTensorRandomOpsTest3DWithLocalTensor = create_local_tensor_test_class(

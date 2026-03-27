@@ -293,10 +293,6 @@ PyObject* THPAutograd_initExtension(PyObject* _unused, PyObject* unused) {
       .def(
           "linked_correlation_id",
           [](const KinetoEvent& e) { return e.linkedCorrelationId(); })
-      .def("flow_id", [](const KinetoEvent& e) { return e.flowId(); })
-      .def("flow_type", [](const KinetoEvent& e) { return e.flowType(); })
-      .def("flow_start", [](const KinetoEvent& e) { return e.flowStart(); })
-      .def("external_id", [](const KinetoEvent& e) { return e.externalId(); })
       // compute flops
       .def("flops", [](const KinetoEvent& e) { return e.flops(); })
       // Whether this is async event or not
@@ -343,9 +339,6 @@ PyObject* THPAutograd_initExtension(PyObject* _unused, PyObject* unused) {
   m.def(
       "_prepare_profiler",
       prepareProfiler,
-      py::arg("config"),
-      py::arg("activities"),
-      py::arg("activity_filter") = torch::autograd::profiler::ActivityFilter{},
       py::call_guard<py::gil_scoped_release>());
   m.def(
       "_toggle_collection_dynamic",

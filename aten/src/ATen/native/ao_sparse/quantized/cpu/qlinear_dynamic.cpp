@@ -29,6 +29,7 @@ at::Tensor PackedLinearWeightQnnp::apply_dynamic_impl<true>(
       false,
       "Sparse quantized dynamic linear with fused relu is not yet "
       "supported on qnnpack backend.");
+  return at::Tensor();
 }
 
 template <>

@@ -3,7 +3,6 @@
 # flake8: noqa: F821
 from collections.abc import Callable, Collection, Mapping, MutableMapping
 from typing import cast, TypeVar
-from typing_extensions import TypeIs
 
 import torch
 from torch.distributed._shard.sharded_tensor.api import ShardedTensor
@@ -21,7 +20,7 @@ CONTAINER_TYPE = MutableMapping[PATH_ITEM, STATE_DICT_ITEM]
 __all__ = ["traverse_state_dict", "set_element", "get_element", "print_tensor"]
 
 
-def _keep_visiting_tensors(value: STATE_DICT_ITEM) -> TypeIs[torch.Tensor]:
+def _keep_visiting_tensors(value: STATE_DICT_ITEM) -> bool:
     return isinstance(value, torch.Tensor)
 
 

@@ -436,9 +436,6 @@ class OpSchema:
                 return item.tensor_meta
             elif isinstance(item, TupleStrategy):
                 return tuple(convert_to_meta(child) for child in item.children)
-            elif isinstance(item, (list, tuple)):
-                converted = [convert_to_meta(child) for child in item]
-                return type(item)(converted)
             else:
                 return item
 
@@ -453,9 +450,6 @@ class OpSchema:
                 return item.tensor_meta
             elif isinstance(item, TupleStrategy):
                 return tuple(convert_to_meta(child) for child in item.children)
-            elif isinstance(item, (list, tuple)):
-                converted = [convert_to_meta(child) for child in item]
-                return type(item)(converted)
             else:
                 return item
 

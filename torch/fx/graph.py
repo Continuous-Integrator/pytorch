@@ -363,20 +363,15 @@ class CodeGen:
         """Helper to get opening and closing delimiters for containers."""
         return ("(", ")") if isinstance(container, tuple) else ("[", "]")
 
-    def _format_multiline_container(
-        self, items, descs=None, prefix="", repr_fn=None
-    ) -> str:
+    def _format_multiline_container(self, items, descs=None, prefix="") -> str:
         """Helper to format containers (lists/tuples) in multiline format."""
         ldelim, rdelim = self._get_delimiters(items)
         desc_trailers = self._get_desc_trailers(items, descs)
-        if repr_fn is None:
-            repr_fn = repr
 
         return (
             f"{prefix}{ldelim}\n"
             + "".join(
-                f"    {repr_fn(item)},{trailer}\n"
-                for item, trailer in zip(items, desc_trailers)
+                f"    {item},{trailer}\n" for item, trailer in zip(items, desc_trailers)
             )
             + f"{rdelim}"
         )
@@ -419,24 +414,16 @@ class CodeGen:
             return f"def {self._func_name}({', '.join(free_vars)}){maybe_return_annotation}:"
 
     def generate_output(
-        self,
-        output_args: Argument,
-        *,
-        descs: Any | None = None,
-        repr_fn: Any | None = None,
+        self, output_args: Argument, *, descs: Any | None = None
     ) -> str:
         """
         Given the output arguments, generates the return statement of the FX function.
         Note: The returned statement should not be indented.
         """
-        if repr_fn is None:
-            repr_fn = repr
         if descs is not None and isinstance(output_args, (list, tuple)):
-            return self._format_multiline_container(
-                output_args, descs, "return ", repr_fn=repr_fn
-            )
+            return self._format_multiline_container(output_args, descs, "return ")
         else:
-            return f"return {repr_fn(output_args)}"
+            return f"return {repr(output_args)}"
 
     def process_inputs(self, *args: Any) -> Any:
         """
@@ -913,7 +900,6 @@ class CodeGen:
                         self.generate_output,
                         node.args[0],
                         descs=desc if expanded_def else None,
-                        repr_fn=_get_repr,
                     )
                 )
                 return
@@ -1153,26 +1139,21 @@ class _PyTreeCodeGen(CodeGen):
             fn_definition += self.gen_var_bindings(fn_args, free_vars, expanded_def)
         return fn_definition
 
-    def generate_output(
-        self, output_args, *, descs: Any | None = None, repr_fn: Any | None = None
-    ):
-        if repr_fn is None:
-            repr_fn = repr
+    def generate_output(self, output_args, *, descs: Any | None = None):
         if self.pytree_info and self.pytree_info.out_spec:
             if descs is not None and isinstance(output_args, (list, tuple)):
                 return (
                     self._format_multiline_container(
-                        output_args,
-                        descs,
-                        "return pytree.tree_unflatten(",
-                        repr_fn=repr_fn,
+                        output_args, descs, "return pytree.tree_unflatten("
                     )
                     + ", self._out_spec)"
                 )
             else:
-                return f"return pytree.tree_unflatten({repr_fn(output_args)}, self._out_spec)"
+                return (
+                    f"return pytree.tree_unflatten({repr(output_args)}, self._out_spec)"
+                )
         else:
-            return super().generate_output(output_args, descs=descs, repr_fn=repr_fn)
+            return super().generate_output(output_args, descs=descs)
 
 
 class _ExportCodeGen(_PyTreeCodeGen):

@@ -226,7 +226,6 @@ class profile:
         acc_events=False,
         custom_trace_id_callback=None,
         post_processing_timeout_s: float | None = None,
-        activity_filters: dict[ProfilerActivity, set[str]] | None = None,
     ):
         self.enabled: bool = enabled
         if not self.enabled:
@@ -265,7 +264,6 @@ class profile:
         self._stats = _ProfilerStats()
         self.custom_trace_id_callback = custom_trace_id_callback
         self.post_processing_timeout_s = post_processing_timeout_s
-        self.activity_filters = activity_filters or {}
         self.trace_id = ""
         if not self.use_cpu:
             if not use_kineto:
@@ -390,11 +388,7 @@ class profile:
     def _prepare_trace(self):
         self.entered = True
         t0 = perf_counter_ns()
-        _prepare_profiler(
-            self.config(create_trace_id=True),
-            self.kineto_activities,
-            activity_filter=self.activity_filters,
-        )
+        _prepare_profiler(self.config(create_trace_id=True), self.kineto_activities)
         t1 = perf_counter_ns()
         self._stats.profiler_prepare_call_duration_us = int((t1 - t0) / 1000)
 
@@ -484,6 +478,9 @@ class profile:
             for evt in self._old_function_events:
                 self._function_events.append(evt)
             self._old_function_events = None
+
+        if self._function_events is None:
+            raise RuntimeError("Profiler didn't finish running")
 
     @property
     def function_events(self):
@@ -585,7 +582,6 @@ class profile:
         # result.events() has most of the events - PyTorch op-level and device-level events
 
         timeout_ns = int(timeout_s * 1e9) if timeout_s is not None else None
-        result_events = result.events()
         if timeout_ns is not None and timeout_ns < 0:
             raise ValueError("timeout_s must be non-negative")
         start_time_ns = perf_counter_ns()
@@ -602,10 +598,10 @@ class profile:
 
         trace_start_ns = result.trace_start_ns()
         mem_records = [
-            [evt, False] for evt in result_events if evt.name() == MEMORY_EVENT_NAME
+            [evt, False] for evt in result.events() if evt.name() == MEMORY_EVENT_NAME
         ]
         oom_records = [
-            evt for evt in result_events if evt.name() == OUT_OF_MEMORY_EVENT_NAME
+            evt for evt in result.events() if evt.name() == OUT_OF_MEMORY_EVENT_NAME
         ]
         mem_records_acc = MemRecordsAcc(mem_records)
 
@@ -639,7 +635,7 @@ class profile:
         frontend_function_events = []
         device_corr_map: dict[int, list[FunctionEvent]] = {}
         max_evt_id = 0
-        for kineto_event in result_events:
+        for kineto_event in result.events():
             if _check_timeout():
                 break
 
@@ -650,13 +646,14 @@ class profile:
                 continue
             rel_start_ns = kineto_event.start_ns() - trace_start_ns
             rel_end_ns = kineto_event.end_ns() - trace_start_ns
+            abs_end_ns = kineto_event.end_ns()
 
             cpu_memory_usage = 0
             device_memory_usage = 0
             if kineto_event.device_type() == DeviceType.CPU:
                 # find the corresponding memory allocation events
                 for mem_record in mem_records_acc.in_interval(
-                    kineto_event.start_ns(), kineto_event.end_ns()
+                    kineto_event.start_ns(), abs_end_ns
                 ):
                     cpu_memory_usage += _cpu_memory_usage(mem_record[0])
                     device_memory_usage += _device_memory_usage(mem_record[0])
@@ -695,11 +692,6 @@ class profile:
                 flops=kineto_event.flops(),
                 is_user_annotation=kineto_event.is_user_annotation(),
                 metadata_json=kineto_event.metadata_json(),
-                flow_id=kineto_event.flow_id(),
-                flow_type=kineto_event.flow_type(),
-                flow_start=kineto_event.flow_start(),
-                external_id=kineto_event.external_id(),
-                linked_correlation_id=kineto_event.linked_correlation_id(),
             )
             max_evt_id = max(max_evt_id, fe.id)
             if fe.device_type == DeviceType.CPU and not fe.is_async:
@@ -751,7 +743,7 @@ class profile:
                         # parents and children
                         f_evt.thread = fe.thread
 
-        def _create_function_event_for_memory_events(evt):
+        def createFunctionEventForMemoryEvents(evt):
             rel_start_ns = evt.start_ns() - trace_start_ns
             fe = FunctionEvent(
                 id=max_evt_id,
@@ -782,7 +774,7 @@ class profile:
 
             if not mem_record[1]:
                 max_evt_id += 1
-                fe = _create_function_event_for_memory_events(mem_record[0])
+                fe = createFunctionEventForMemoryEvents(mem_record[0])
                 all_function_events.append(fe)
 
         for oom_record in oom_records:
@@ -790,7 +782,7 @@ class profile:
                 break
 
             max_evt_id += 1
-            fe = _create_function_event_for_memory_events(oom_record)
+            fe = createFunctionEventForMemoryEvents(oom_record)
             all_function_events.append(fe)
 
         if timed_out:

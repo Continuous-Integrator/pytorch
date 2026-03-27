@@ -1366,10 +1366,7 @@ except RuntimeError as e:
         )
 
         if show_cpp_stacktraces:
-            self.assertRegex(
-                error_message,
-                r"C\+\+ CapturedTraceback:|Exception raised from[\s\S]*frame #",
-            )
+            self.assertIn("C++ CapturedTraceback:", error_message)
             self.assertRegex(
                 error_message,
                 r"Exception raised from test_std_.*_check_error at .*test_std_.*check\..*:\d+",
@@ -1538,10 +1535,7 @@ except RuntimeError as e:
         )
 
         if show_cpp_stacktraces:
-            self.assertRegex(
-                error_message,
-                r"C\+\+ CapturedTraceback:|Exception raised from[\s\S]*frame #",
-            )
+            self.assertIn("C++ CapturedTraceback:", error_message)
             self.assertRegex(
                 error_message,
                 r"Exception raised from test_std_.*_kernel_launch_check_error at .*test_std_.*_check\..*:\d+",

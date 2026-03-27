@@ -7,6 +7,7 @@ from typing import cast
 
 import torch
 import torch.distributed as dist
+import torch.distributed.config as dist_config
 import torch.distributed.tensor._api as dtensor
 import torch.distributed.tensor._random as random
 from torch._library.utils import fill_defaults
@@ -88,15 +89,6 @@ def is_same_size_handler(
     return lhs.shape == rhs.shape
 
 
-def is_pinned_handler(
-    op_call: torch._ops.OpOverload,
-    args: tuple[object, ...],
-    kwargs: dict[str, object],
-) -> bool:
-    tensor = cast(dtensor.DTensor, args[0])
-    return tensor._local_tensor.is_pinned()
-
-
 def found_inf_reduce_handler(
     op_call: torch._ops.OpOverload,
     args: tuple[object, ...],
@@ -173,14 +165,8 @@ class OpDispatcher:
             aten.bernoulli.default,
             aten.bernoulli_.float,
         }
-        self._squeeze_inplace_ops = {
-            aten.squeeze_.dim,
-            aten.squeeze_.default,
-            aten.squeeze_.dims,
-        }
         self._custom_op_handlers = {
             aten.is_same_size.default: is_same_size_handler,
-            aten.is_pinned.default: is_pinned_handler,
             aten.convolution.default: convolution_handler,
             aten.convolution_backward.default: convolution_backward_handler,
             aten._amp_foreach_non_finite_check_and_unscale_.default: found_inf_reduce_handler,
@@ -376,6 +362,10 @@ class OpDispatcher:
                             )
                     else:
                         # CUDA device without user generator, use HOP for traceability
+                        if dist_config.compile_on_one_rank:
+                            raise NotImplementedError(
+                                "run_dtensor_rng_op is not yet compatible with compile_on_one_rank"
+                            )
                         if not isinstance(
                             random._rng_tracker, random.OffsetBasedRNGTracker
                         ):
@@ -395,17 +385,7 @@ class OpDispatcher:
                     local_results = op_call(*local_tensor_args, **op_info.local_kwargs)
             else:
                 # normal case, run local sharded op computation
-                if (
-                    output_sharding.needs_redistribute
-                    and output_sharding.redistribute_schema is not None
-                    and output_sharding.redistribute_schema.op != op_call
-                ):
-                    # Op was rewritten (e.g., squeeze.default → squeeze.dims)
-                    local_results = output_sharding.redistribute_schema.op(
-                        *local_tensor_args, **op_info.local_kwargs
-                    )
-                else:
-                    local_results = op_call(*local_tensor_args, **op_info.local_kwargs)
+                local_results = op_call(*local_tensor_args, **op_info.local_kwargs)
 
         else:
             # For a non-participating device (happens on rank that does not belong to
@@ -496,9 +476,11 @@ class OpDispatcher:
                 if not isinstance(args[0], dtensor.DTensor):
                     raise AssertionError
 
-                # NOTE: squeeze_ inplace ops may change the tensor's metadata
-                # (shape/strides). We special-case them to update the spec.
-                if op_call in self._squeeze_inplace_ops:
+                # NOTE: aten.squeeze_.dim is an inplace op but it also may change
+                # the inplace argument's tensor meta. Here we choose to special case
+                # this op because as far as I know this is the only inplace op that
+                # has such as behavior. We can extend this special case if necessary.
+                if op_call == aten.squeeze_.dim:
                     # update the spec to handle tensor meta changes
                     args[0]._spec = output_spec
                     # use return_and_correct_aliasing to match the outer and the inner
@@ -605,13 +587,6 @@ class OpDispatcher:
                     new_local_args.append(reshard_arg_spec)
                 else:
                     new_local_args.append(arg_spec)
-
-        # Append extra non-tensor args from rewritten schema (e.g., dims tuple).
-        if use_val_from_redistribute_schema:
-            for i in range(
-                len(op_info.flat_args_schema), len(flatten_args_schema_to_reshard)
-            ):
-                new_local_args.append(flatten_args_schema_to_reshard[i])
 
         op_info.local_args = tuple(new_local_args)
 

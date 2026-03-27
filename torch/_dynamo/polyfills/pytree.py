@@ -1,5 +1,3 @@
-# Owner(s): ["module: pytree"]
-
 """
 Python polyfills for torch.utils.pytree
 """

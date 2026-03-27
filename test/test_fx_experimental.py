@@ -45,7 +45,6 @@ from torch.fx.operator_schemas import (
 from torch.fx.passes import graph_manipulation
 from torch.fx.passes.param_fetch import lift_lowering_attrs_to_nodes
 from torch.fx.passes.shape_prop import ShapeProp
-from torch.fx._lazy_graph_module import _use_lazy_graph_module
 from torch.fx.passes.split_module import split_module
 from torch.fx.passes.annotate_getitem_nodes import annotate_getitem_nodes
 from torch.testing._internal.common_device_type import (
@@ -55,14 +54,7 @@ from torch.testing._internal.common_device_type import (
 )
 from torch.testing._internal.common_methods_invocations import op_db
 from torch.testing._internal.common_nn import module_tests, get_new_module_tests
-from torch.testing._internal.common_utils import (
-    instantiate_parametrized_tests,
-    parametrize,
-    TEST_Z3,
-    run_tests,
-    TestCase,
-    TEST_WITH_CROSSREF,
-)
+from torch.testing._internal.common_utils import TEST_Z3, run_tests, TestCase, TEST_WITH_CROSSREF
 from torch.testing._internal.jit_utils import JitTestCase
 import torch.utils._pytree as pytree
 
@@ -762,8 +754,7 @@ terrible spacing
         # Confirm that the output is correct
         self.assertEqual(traced(3, 3), m(3, 3))
 
-    @parametrize("use_lazy", [True, False])
-    def test_subgraph_creation(self, use_lazy):
+    def test_subgraph_creation(self):
         class MyModule(torch.nn.Module):
             def __init__(self) -> None:
                 super().__init__()
@@ -795,10 +786,9 @@ terrible spacing
             return partition
 
         # split module in module with submodules
-        with _use_lazy_graph_module(use_lazy):
-            module_with_submodules = split_module(
-                my_module_traced, my_module, mod_partition
-            )
+        module_with_submodules = split_module(
+            my_module_traced, my_module, mod_partition
+        )
 
         # Check that test_meta_info was still on all nodes.
         submodules = dict(module_with_submodules.named_modules())
@@ -2162,7 +2152,6 @@ if TEST_Z3:
                 self.assertEqual(z3str(expr), expected)
 
 
-instantiate_parametrized_tests(TestFXExperimental)
 instantiate_device_type_tests(TestNormalizeOperators, globals())
 
 if __name__ == "__main__":

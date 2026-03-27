@@ -9,7 +9,7 @@ import sys
 from collections import defaultdict
 from collections.abc import Callable, Sequence
 from contextlib import contextmanager
-from typing import Any, TYPE_CHECKING, TypeGuard
+from typing import Any, TYPE_CHECKING
 
 import torch
 import torch.utils._pytree as pytree
@@ -623,7 +623,7 @@ def produce_guards_and_solve_constraints(
         raise constraint_violation_error
 
 
-def is_int(x: object) -> TypeGuard[int | torch.SymInt]:
+def is_int(x: object) -> bool:
     return isinstance(x, int) or (isinstance(x, torch.SymInt) and x.node.expr.is_number)
 
 

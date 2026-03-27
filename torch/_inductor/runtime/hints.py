@@ -47,7 +47,6 @@ if has_triton_package():
         def AttrsDescriptorWrapper(
             divisible_by_16=None,
             equal_to_1=None,
-            pointer_range_32=None,
         ):
             # Prepare the arguments for AttrsDescriptor
             kwargs = {
@@ -70,7 +69,6 @@ if has_triton_package():
         def AttrsDescriptorWrapper(
             divisible_by_16=None,
             equal_to_1=None,
-            pointer_range_32=None,
         ):
             # Prepare the arguments for AttrsDescriptor
             kwargs = {
@@ -90,27 +88,17 @@ if has_triton_package():
         def AttrsDescriptorWrapper(
             divisible_by_16=None,
             equal_to_1=None,
-            pointer_range_32=None,
         ):
             # pyrefly: ignore [not-iterable]
-            # Build attr dict merging divisibility and pointer_range per arg index,
-            # since a single arg can carry both attributes.
-            result = {(x,): [["tt.divisibility", 16]] for x in (divisible_by_16 or ())}
-            for x in pointer_range_32 or ():
-                key = (x,)
-                if key in result:
-                    result[key].append(["tt.pointer_range", 32])
-                else:
-                    result[key] = [["tt.pointer_range", 32]]
-            return result
+            return {(x,): [["tt.divisibility", 16]] for x in divisible_by_16}
 
 else:
     # Define a namedtuple as a fallback when AttrsDescriptor is not available
     AttrsDescriptorWrapper = collections.namedtuple(  # type: ignore[no-redef, name-match]
         # pyrefly: ignore [invalid-argument]
         "AttrsDescriptor",
-        ["divisible_by_16", "equal_to_1", "pointer_range_32"],
-        defaults=[(), (), ()],
+        ["divisible_by_16", "equal_to_1"],
+        defaults=[(), ()],
     )
 
 

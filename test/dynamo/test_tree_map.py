@@ -1,18 +1,28 @@
 # Owner(s): ["module: dynamo"]
 
+try:
+    import optree
+except ImportError:  # pragma: no cover
+    optree = None
+
 from collections import namedtuple
 from typing import NamedTuple
 
 import torch
 import torch._dynamo
-import torch.utils._pytree as python_pytree
 from torch.testing._internal.common_utils import (
     instantiate_parametrized_tests,
     parametrize,
     run_tests,
-    subtest,
     TestCase,
 )
+from torch.utils import _pytree as pytree
+
+
+try:
+    import torch.utils._cxx_pytree as cxx_pytree
+except ImportError:  # pragma: no cover
+    cxx_pytree = None
 
 
 def _tensor_leaf(*values):
@@ -42,56 +52,38 @@ def _tuple_is_leaf(node):
     return isinstance(node, tuple)
 
 
-pytree_modules = {
-    "python": python_pytree,
-}
-if python_pytree._cxx_pytree_dynamo_traceable:
-    import torch.utils._cxx_pytree as cxx_pytree
-
-    pytree_modules["cxx"] = cxx_pytree
-    pytree_modules["native_optree"] = cxx_pytree.optree
-else:
-    cxx_pytree = None
-
-optree = cxx_pytree.optree if cxx_pytree is not None else None
-
-
 def _require_optree(test_case):
     if optree is None:
         test_case.skipTest("optree is unavailable")
 
 
-parametrize_pytree_module = parametrize(
-    "pytree_name,pytree",
-    [subtest((name, module), name=name) for name, module in pytree_modules.items()],
-)
+TREE_MAP_IMPLEMENTATIONS = []
+if optree is not None:
+    TREE_MAP_IMPLEMENTATIONS.append(("optree", optree.tree_map))
+TREE_MAP_IMPLEMENTATIONS.append(("pytree_python", pytree.tree_map))
+if cxx_pytree is not None:
+    TREE_MAP_IMPLEMENTATIONS.append(("pytree_cxx", cxx_pytree.tree_map))
 
-_PYTREE_MODULES_WITH_PATH = {"python"}
 
-parametrize_pytree_module_with_path = parametrize(
-    "pytree_name,pytree",
-    [
-        subtest((name, module), name=name)
-        for name, module in pytree_modules.items()
-        if name in _PYTREE_MODULES_WITH_PATH
-    ],
-)
+TREE_MAP_WITH_PATH_IMPLEMENTATIONS = [
+    ("pytree_python", pytree.tree_map_with_path),
+]
 
 
 KWARG_CASES = [
     ("default", {}, None),
-    ("none_is_leaf", {"none_is_leaf": True}, {"native_optree"}),
+    ("none_is_leaf", {"none_is_leaf": True}, {"optree"}),
     ("is_leaf", {"is_leaf": _tuple_is_leaf}, None),
-    ("namespace", {"namespace": "torch"}, {"native_optree"}),
+    ("namespace", {"namespace": "torch"}, {"optree"}),
     (
         "namespace_and_none_is_leaf",
         {"namespace": "torch", "none_is_leaf": True},
-        {"native_optree"},
+        {"optree"},
     ),
     (
         "namespace_none_is_leaf_predicate",
         {"namespace": "torch", "none_is_leaf": True, "is_leaf": _tuple_is_leaf},
-        {"native_optree"},
+        {"optree"},
     ),
 ]
 
@@ -117,8 +109,8 @@ def _build_tree(offset: int) -> dict[str, object]:
 
 
 def _assert_trees_allclose(test_case: TestCase, ref, res) -> None:
-    ref_flat, ref_spec = python_pytree.tree_flatten(ref)
-    res_flat, res_spec = python_pytree.tree_flatten(res)
+    ref_flat, ref_spec = pytree.tree_flatten(ref)
+    res_flat, res_spec = pytree.tree_flatten(res)
     test_case.assertEqual(ref_spec, res_spec)
     for expected, actual in zip(ref_flat, res_flat):
         if isinstance(expected, torch.Tensor):
@@ -133,35 +125,37 @@ class TreeMapCompileTests(TestCase):
         super().setUp()
         torch._dynamo.reset()
 
-    def _run_tree_map(self, pytree, kwargs):
+    def _run_tree_map(self, tree_map_impl, kwargs):
         lhs = _build_tree(0)
         rhs = _build_tree(7)
 
         def fn(a, b):
-            return pytree.tree_map(_combine_leaves, a, b, **kwargs)
+            return tree_map_impl(_combine_leaves, a, b, **kwargs)
 
         compiled = torch.compile(fn, backend="eager", fullgraph=True)
         expected = fn(lhs, rhs)
         result = compiled(lhs, rhs)
         _assert_trees_allclose(self, expected, result)
 
-    @parametrize_pytree_module
+    @parametrize("tree_map_name,tree_map_impl", TREE_MAP_IMPLEMENTATIONS)
     @parametrize("kwargs_name,kwargs,allowed_impls", KWARG_CASES)
     def test_tree_map_variants(
         self,
-        pytree_name: str,
-        pytree,
+        tree_map_name: str,
+        tree_map_impl,
         kwargs_name: str,
         kwargs: dict,
         allowed_impls,
     ) -> None:
-        if allowed_impls is not None and pytree_name not in allowed_impls:
+        if tree_map_name == "pytree_cxx" and cxx_pytree is None:
+            self.skipTest("torch.utils._cxx_pytree is unavailable")
+        if allowed_impls is not None and tree_map_name not in allowed_impls:
             self.skipTest("kwargs unsupported for implementation")
-        self._run_tree_map(pytree, kwargs)
+        self._run_tree_map(tree_map_impl, kwargs)
 
     def test_tree_map_rejects_mismatched_container_types(self) -> None:
         def fn(a, b):
-            return python_pytree.tree_map(lambda u, v: u + v, a, b)
+            return pytree.tree_map(lambda u, v: u + v, a, b)
 
         lhs = [torch.ones(2), torch.ones(2)]
         rhs = (torch.ones(2), torch.ones(2))
@@ -178,7 +172,7 @@ class TreeMapCompileTests(TestCase):
 
     def test_tree_map_is_leaf_handles_tensor_nodes(self) -> None:
         def fn(tree):
-            return python_pytree.tree_map(
+            return pytree.tree_map(
                 lambda pair: torch.stack(pair).sum(dim=0),
                 tree,
                 is_leaf=lambda node: isinstance(node, tuple),
@@ -199,7 +193,7 @@ class TreeMapCompileTests(TestCase):
             return node + 2
 
         def fn(arg):
-            return python_pytree.tree_map_only(torch.Tensor, mapper, arg)
+            return pytree.tree_map_only(torch.Tensor, mapper, arg)
 
         compiled = torch.compile(fn, backend="eager", fullgraph=True)
         expected = fn(tree)
@@ -211,7 +205,7 @@ class TreeMapCompileTests(TestCase):
         rhs = {"a": torch.ones(2) * 3, "b": torch.ones(2) * 4}
 
         def fn(a, b):
-            return python_pytree.tree_map_only(torch.Tensor, lambda x, y: x + y, a, b)
+            return pytree.tree_map_only(torch.Tensor, lambda x, y: x + y, a, b)
 
         with self.assertRaisesRegex(TypeError, "callable"):
             fn(lhs, rhs)
@@ -234,7 +228,7 @@ class TreeMapCompileTests(TestCase):
             raise AssertionError("unexpected node passed to mapper")
 
         def fn(arg):
-            return python_pytree.tree_map_only((int, tuple), mapper, arg)
+            return pytree.tree_map_only((int, tuple), mapper, arg)
 
         compiled = torch.compile(fn, backend="eager", fullgraph=True)
         expected = fn(tree)
@@ -254,7 +248,7 @@ class TreeMapCompileTests(TestCase):
             return node * 2 if isinstance(node, torch.Tensor) else node
 
         def fn(arg):
-            return python_pytree.tree_map(mapper, arg, is_leaf=is_leaf)
+            return pytree.tree_map(mapper, arg, is_leaf=is_leaf)
 
         compiled = torch.compile(fn, backend="eager", fullgraph=True)
         expected = fn(tree)
@@ -271,7 +265,7 @@ class TreeMapCompileTests(TestCase):
             return node + 5 if isinstance(node, torch.Tensor) else node
 
         def fn(arg):
-            return python_pytree.tree_map_only(selector, mapper, arg)
+            return pytree.tree_map_only(selector, mapper, arg)
 
         compiled = torch.compile(fn, backend="eager", fullgraph=True)
         expected = fn(tree)
@@ -297,15 +291,15 @@ class TreeMapCompileTests(TestCase):
         ):
             compiled(lhs, rhs)
 
-    @parametrize_pytree_module
+    @parametrize("tree_map_name,tree_map_impl", TREE_MAP_IMPLEMENTATIONS)
     def test_tree_map_none_nodes_default_behavior(
-        self, pytree_name: str, pytree
+        self, tree_map_name: str, tree_map_impl
     ) -> None:
-        if pytree_name == "native_optree":
+        if tree_map_name == "optree":
             self.skipTest("optree treats None as an internal node by default")
 
         def fn(a, b):
-            return pytree.tree_map(lambda u, v: (u, v), a, b)
+            return tree_map_impl(lambda u, v: (u, v), a, b)
 
         tree = {"k": None}
         compiled = torch.compile(fn, backend="eager", fullgraph=True)
@@ -370,9 +364,9 @@ class TreeMapCompileTests(TestCase):
         self.assertIs(result["nested"]["dtype"], torch.float64)
         self.assertEqual(result, expected)
 
-    @parametrize_pytree_module
+    @parametrize("tree_map_name,tree_map_impl", TREE_MAP_IMPLEMENTATIONS)
     def test_user_defined_object_treated_as_leaf(
-        self, pytree_name: str, pytree
+        self, tree_map_name: str, tree_map_impl
     ) -> None:
         """User-defined objects (not registered in pytree) should be treated as leaves."""
 
@@ -394,7 +388,7 @@ class TreeMapCompileTests(TestCase):
             return node
 
         def fn(arg):
-            return pytree.tree_map(mapper, arg)
+            return tree_map_impl(mapper, arg)
 
         compiled = torch.compile(fn, backend="eager", fullgraph=True)
 
@@ -415,8 +409,10 @@ class TreeMapCompileTests(TestCase):
         self.assertTrue(torch.allclose(result["custom"].value, obj1.value * 3))
         self.assertTrue(torch.allclose(result["tensor"], torch.ones(2)))
 
-    @parametrize_pytree_module
-    def test_user_defined_object_multiple_trees(self, pytree_name: str, pytree) -> None:
+    @parametrize("tree_map_name,tree_map_impl", TREE_MAP_IMPLEMENTATIONS)
+    def test_user_defined_object_multiple_trees(
+        self, tree_map_name: str, tree_map_impl
+    ) -> None:
         """User-defined objects should work correctly with multiple input trees."""
 
         class Point:
@@ -433,7 +429,7 @@ class TreeMapCompileTests(TestCase):
             return a + b
 
         def fn(t1, t2):
-            return pytree.tree_map(mapper, t1, t2)
+            return tree_map_impl(mapper, t1, t2)
 
         compiled = torch.compile(fn, backend="eager", fullgraph=True)
         result = compiled(tree1, tree2)
@@ -443,8 +439,10 @@ class TreeMapCompileTests(TestCase):
         self.assertEqual(result["point"].y, 6)
         self.assertEqual(result["val"], 30)
 
-    @parametrize_pytree_module
-    def test_dict_subclass_treated_as_leaf(self, pytree_name: str, pytree) -> None:
+    @parametrize("tree_map_name,tree_map_impl", TREE_MAP_IMPLEMENTATIONS)
+    def test_dict_subclass_treated_as_leaf(
+        self, tree_map_name: str, tree_map_impl
+    ) -> None:
         """Dict subclasses (not registered in pytree) should be treated as leaves."""
 
         class MyDict(dict):
@@ -463,7 +461,7 @@ class TreeMapCompileTests(TestCase):
             return node
 
         def fn(arg):
-            return pytree.tree_map(mapper, arg)
+            return tree_map_impl(mapper, arg)
 
         compiled = torch.compile(fn, backend="eager", fullgraph=True)
         result = compiled(tree)
@@ -475,8 +473,10 @@ class TreeMapCompileTests(TestCase):
         # Regular dict should still be traversed
         self.assertEqual(result["regular"]["x"], 3)
 
-    @parametrize_pytree_module
-    def test_list_subclass_treated_as_leaf(self, pytree_name: str, pytree) -> None:
+    @parametrize("tree_map_name,tree_map_impl", TREE_MAP_IMPLEMENTATIONS)
+    def test_list_subclass_treated_as_leaf(
+        self, tree_map_name: str, tree_map_impl
+    ) -> None:
         """List subclasses (not registered in pytree) should be treated as leaves."""
 
         class MyList(list):
@@ -494,7 +494,7 @@ class TreeMapCompileTests(TestCase):
             return node
 
         def fn(arg):
-            return pytree.tree_map(mapper, arg)
+            return tree_map_impl(mapper, arg)
 
         compiled = torch.compile(fn, backend="eager", fullgraph=True)
         result = compiled(tree)
@@ -505,8 +505,10 @@ class TreeMapCompileTests(TestCase):
         # Regular list should be traversed
         self.assertEqual(result["regular"], [14, 15, 16])
 
-    @parametrize_pytree_module
-    def test_tuple_subclass_treated_as_leaf(self, pytree_name: str, pytree) -> None:
+    @parametrize("tree_map_name,tree_map_impl", TREE_MAP_IMPLEMENTATIONS)
+    def test_tuple_subclass_treated_as_leaf(
+        self, tree_map_name: str, tree_map_impl
+    ) -> None:
         """Tuple subclasses (not registered in pytree) should be treated as leaves."""
 
         class MyTuple(tuple):  # noqa: SLOT001
@@ -523,7 +525,7 @@ class TreeMapCompileTests(TestCase):
             return node
 
         def fn(arg):
-            return pytree.tree_map(mapper, arg)
+            return tree_map_impl(mapper, arg)
 
         compiled = torch.compile(fn, backend="eager", fullgraph=True)
         result = compiled(tree)
@@ -534,9 +536,9 @@ class TreeMapCompileTests(TestCase):
         # Regular tuple should be traversed
         self.assertEqual(result["regular"], (14, 15, 16))
 
-    @parametrize_pytree_module
+    @parametrize("tree_map_name,tree_map_impl", TREE_MAP_IMPLEMENTATIONS)
     def test_user_defined_object_nested_in_containers(
-        self, pytree_name: str, pytree
+        self, tree_map_name: str, tree_map_impl
     ) -> None:
         """User-defined objects nested inside containers should be leaves."""
 
@@ -555,7 +557,7 @@ class TreeMapCompileTests(TestCase):
             return node
 
         def fn(arg):
-            return pytree.tree_map(mapper, arg)
+            return tree_map_impl(mapper, arg)
 
         compiled = torch.compile(fn, backend="eager", fullgraph=True)
         result = compiled(tree)
@@ -564,9 +566,9 @@ class TreeMapCompileTests(TestCase):
         self.assertEqual(result["list_of_wrappers"][1].value, 20)
         self.assertEqual(result["nested"]["wrapper"].value, 30)
 
-    @parametrize_pytree_module
+    @parametrize("tree_map_name,tree_map_impl", TREE_MAP_IMPLEMENTATIONS)
     def test_user_defined_object_with_is_leaf_predicate(
-        self, pytree_name: str, pytree
+        self, tree_map_name: str, tree_map_impl
     ) -> None:
         """Test that is_leaf predicate interacts correctly with user-defined objects."""
 
@@ -589,7 +591,7 @@ class TreeMapCompileTests(TestCase):
             return node
 
         def fn(arg):
-            return pytree.tree_map(mapper, arg, is_leaf=is_leaf_fn)
+            return tree_map_impl(mapper, arg, is_leaf=is_leaf_fn)
 
         compiled = torch.compile(fn, backend="eager", fullgraph=True)
         result = compiled(tree)
@@ -605,7 +607,7 @@ class TreeMapCompileTests(TestCase):
                 self.items = list(items)
 
         # Register with pytree
-        python_pytree.register_pytree_node(
+        pytree.register_pytree_node(
             RegisteredContainer,
             lambda x: (x.items, None),
             lambda items, _: RegisteredContainer(items),
@@ -620,7 +622,7 @@ class TreeMapCompileTests(TestCase):
                 return node
 
             def fn(arg):
-                return python_pytree.tree_map(mapper, arg)
+                return pytree.tree_map(mapper, arg)
 
             compiled = torch.compile(fn, backend="eager", fullgraph=True)
             result = compiled(tree)
@@ -631,7 +633,7 @@ class TreeMapCompileTests(TestCase):
             self.assertTrue(torch.allclose(result.items[1], torch.zeros(2) + 1))
         finally:
             # Clean up registration
-            python_pytree._deregister_pytree_node(RegisteredContainer)
+            pytree._deregister_pytree_node(RegisteredContainer)
 
     def test_registered_custom_type_falls_back_optree(self) -> None:
         """Custom types registered with optree should fall back to tracing."""
@@ -827,8 +829,8 @@ class TreeMapCompileTests(TestCase):
         finally:
             optree.unregister_pytree_node(NamespacedContainer, namespace="namespace_a")
 
-    @parametrize_pytree_module
-    def test_dataclass_treated_as_leaf(self, pytree_name: str, pytree) -> None:
+    @parametrize("tree_map_name,tree_map_impl", TREE_MAP_IMPLEMENTATIONS)
+    def test_dataclass_treated_as_leaf(self, tree_map_name: str, tree_map_impl) -> None:
         """Dataclasses should be treated as leaves (not registered by default)."""
         import dataclasses
 
@@ -845,7 +847,7 @@ class TreeMapCompileTests(TestCase):
             return node + 10
 
         def fn(arg):
-            return pytree.tree_map(mapper, arg)
+            return tree_map_impl(mapper, arg)
 
         compiled = torch.compile(fn, backend="eager", fullgraph=True)
         result = compiled(tree)
@@ -855,9 +857,9 @@ class TreeMapCompileTests(TestCase):
         self.assertEqual(result["point"].y, 4)
         self.assertEqual(result["val"], 13)
 
-    @parametrize_pytree_module
+    @parametrize("tree_map_name,tree_map_impl", TREE_MAP_IMPLEMENTATIONS)
     def test_user_defined_object_with_tensor_attribute(
-        self, pytree_name: str, pytree
+        self, tree_map_name: str, tree_map_impl
     ) -> None:
         """User-defined objects containing tensors should be treated as leaves."""
 
@@ -876,7 +878,7 @@ class TreeMapCompileTests(TestCase):
             return node
 
         def fn(arg):
-            return pytree.tree_map(mapper, arg)
+            return tree_map_impl(mapper, arg)
 
         compiled = torch.compile(fn, backend="eager", fullgraph=True)
         result = compiled(tree)
@@ -885,8 +887,10 @@ class TreeMapCompileTests(TestCase):
         self.assertTrue(torch.allclose(result["wrapper"].tensor, torch.ones(2, 2) * 2))
         self.assertTrue(torch.allclose(result["direct_tensor"], torch.ones(2)))
 
-    @parametrize_pytree_module
-    def test_user_defined_object_no_fallback(self, pytree_name: str, pytree) -> None:
+    @parametrize("tree_map_name,tree_map_impl", TREE_MAP_IMPLEMENTATIONS)
+    def test_user_defined_object_no_fallback(
+        self, tree_map_name: str, tree_map_impl
+    ) -> None:
         """Verify user-defined objects use fastpath without triggering fallback."""
         import logging
 
@@ -902,7 +906,7 @@ class TreeMapCompileTests(TestCase):
             return node + 1
 
         def fn(arg):
-            return pytree.tree_map(mapper, arg)
+            return tree_map_impl(mapper, arg)
 
         # Capture debug logs to ensure no fallback is triggered
         log_records = []
@@ -938,8 +942,8 @@ class TreeMapCompileTests(TestCase):
             logger.removeHandler(handler)
             logger.setLevel(old_level)
 
-    @parametrize_pytree_module
-    def test_namedtuple_tree_map(self, pytree_name: str, pytree) -> None:
+    @parametrize("tree_map_name,tree_map_impl", TREE_MAP_IMPLEMENTATIONS)
+    def test_namedtuple_tree_map(self, tree_map_name: str, tree_map_impl) -> None:
         """Test tree_map with namedtuple uses fast path."""
         Point = namedtuple("Point", ["x", "y"])
 
@@ -954,7 +958,7 @@ class TreeMapCompileTests(TestCase):
             return node
 
         def fn(arg):
-            return pytree.tree_map(mapper, arg)
+            return tree_map_impl(mapper, arg)
 
         compiled = torch.compile(fn, backend="eager", fullgraph=True)
         expected = fn(tree)
@@ -968,8 +972,10 @@ class TreeMapCompileTests(TestCase):
         self.assertTrue(torch.allclose(result["nested"][0].y, torch.ones(3) * 2 + 1))
         _assert_trees_allclose(self, expected, result)
 
-    @parametrize_pytree_module
-    def test_namedtuple_tree_map_multiple_trees(self, pytree_name: str, pytree) -> None:
+    @parametrize("tree_map_name,tree_map_impl", TREE_MAP_IMPLEMENTATIONS)
+    def test_namedtuple_tree_map_multiple_trees(
+        self, tree_map_name: str, tree_map_impl
+    ) -> None:
         """Test tree_map with multiple namedtuple trees."""
         Point = namedtuple("Point", ["x", "y"])
 
@@ -982,7 +988,7 @@ class TreeMapCompileTests(TestCase):
             return a
 
         def fn(t1, t2):
-            return pytree.tree_map(mapper, t1, t2)
+            return tree_map_impl(mapper, t1, t2)
 
         compiled = torch.compile(fn, backend="eager", fullgraph=True)
         expected = fn(tree1, tree2)
@@ -993,8 +999,8 @@ class TreeMapCompileTests(TestCase):
         self.assertTrue(torch.allclose(result["point"].y, torch.ones(2) * 3))
         _assert_trees_allclose(self, expected, result)
 
-    @parametrize_pytree_module
-    def test_namedtuple_with_is_leaf(self, pytree_name: str, pytree) -> None:
+    @parametrize("tree_map_name,tree_map_impl", TREE_MAP_IMPLEMENTATIONS)
+    def test_namedtuple_with_is_leaf(self, tree_map_name: str, tree_map_impl) -> None:
         """Test tree_map with namedtuple and is_leaf predicate."""
 
         class Point(NamedTuple):
@@ -1015,7 +1021,7 @@ class TreeMapCompileTests(TestCase):
             return node
 
         def fn(arg):
-            return pytree.tree_map(mapper, arg, is_leaf=is_leaf_fn)
+            return tree_map_impl(mapper, arg, is_leaf=is_leaf_fn)
 
         compiled = torch.compile(fn, backend="eager", fullgraph=True)
         expected = fn(tree)
@@ -1034,8 +1040,12 @@ class TreeMapWithPathCompileTests(TestCase):
         super().setUp()
         torch._dynamo.reset()
 
-    @parametrize_pytree_module_with_path
-    def test_basic_nested_tree(self, pytree_name: str, pytree) -> None:
+    @parametrize(
+        "tree_map_name,tree_map_with_path_impl", TREE_MAP_WITH_PATH_IMPLEMENTATIONS
+    )
+    def test_basic_nested_tree(
+        self, tree_map_name: str, tree_map_with_path_impl
+    ) -> None:
         """Keypaths are correctly constructed for nested dicts, lists, and tuples."""
         tree = {
             "tensor": torch.ones(2),
@@ -1050,7 +1060,7 @@ class TreeMapWithPathCompileTests(TestCase):
             return x + 1 if isinstance(x, torch.Tensor) else x
 
         def fn(arg):
-            return pytree.tree_map_with_path(mapper, arg)
+            return tree_map_with_path_impl(mapper, arg)
 
         compiled = torch.compile(fn, backend="eager", fullgraph=True)
 
@@ -1067,8 +1077,10 @@ class TreeMapWithPathCompileTests(TestCase):
         _assert_trees_allclose(self, expected, result)
         self.assertEqual(eager_keypaths, compiled_keypaths)
 
-    @parametrize_pytree_module_with_path
-    def test_multiple_trees(self, pytree_name: str, pytree) -> None:
+    @parametrize(
+        "tree_map_name,tree_map_with_path_impl", TREE_MAP_WITH_PATH_IMPLEMENTATIONS
+    )
+    def test_multiple_trees(self, tree_map_name: str, tree_map_with_path_impl) -> None:
         """tree_map_with_path with multiple input trees."""
         tree1 = {"a": torch.ones(2), "b": [torch.zeros(3)]}
         tree2 = {"a": torch.ones(2) * 2, "b": [torch.ones(3) * 3]}
@@ -1077,15 +1089,19 @@ class TreeMapWithPathCompileTests(TestCase):
             return x + y
 
         def fn(t1, t2):
-            return pytree.tree_map_with_path(mapper, t1, t2)
+            return tree_map_with_path_impl(mapper, t1, t2)
 
         compiled = torch.compile(fn, backend="eager", fullgraph=True)
         expected = fn(tree1, tree2)
         result = compiled(tree1, tree2)
         _assert_trees_allclose(self, expected, result)
 
-    @parametrize_pytree_module_with_path
-    def test_is_leaf_predicate(self, pytree_name: str, pytree) -> None:
+    @parametrize(
+        "tree_map_name,tree_map_with_path_impl", TREE_MAP_WITH_PATH_IMPLEMENTATIONS
+    )
+    def test_is_leaf_predicate(
+        self, tree_map_name: str, tree_map_with_path_impl
+    ) -> None:
         """is_leaf stops traversal and passes the subtree as a leaf."""
         tree = {"a": [torch.ones(2), torch.zeros(2)]}
 
@@ -1101,7 +1117,7 @@ class TreeMapWithPathCompileTests(TestCase):
             return x
 
         def fn(arg):
-            return pytree.tree_map_with_path(mapper, arg, is_leaf=is_leaf_fn)
+            return tree_map_with_path_impl(mapper, arg, is_leaf=is_leaf_fn)
 
         compiled = torch.compile(fn, backend="eager", fullgraph=True)
 
@@ -1117,8 +1133,12 @@ class TreeMapWithPathCompileTests(TestCase):
         self.assertEqual(len(eager_keypaths), 1)
         self.assertEqual(eager_keypaths, compiled_keypaths)
 
-    @parametrize_pytree_module_with_path
-    def test_namedtuple_uses_getattr_key(self, pytree_name: str, pytree) -> None:
+    @parametrize(
+        "tree_map_name,tree_map_with_path_impl", TREE_MAP_WITH_PATH_IMPLEMENTATIONS
+    )
+    def test_namedtuple_uses_getattr_key(
+        self, tree_map_name: str, tree_map_with_path_impl
+    ) -> None:
         """Namedtuple fields produce GetAttrKey in keypaths."""
         Point = namedtuple("Point", ["x", "y"])
         tree = {"point": Point(torch.ones(2), torch.zeros(2))}
@@ -1132,7 +1152,7 @@ class TreeMapWithPathCompileTests(TestCase):
             return x
 
         def fn(arg):
-            return pytree.tree_map_with_path(mapper, arg)
+            return tree_map_with_path_impl(mapper, arg)
 
         compiled = torch.compile(fn, backend="eager", fullgraph=True)
 
@@ -1147,8 +1167,12 @@ class TreeMapWithPathCompileTests(TestCase):
         _assert_trees_allclose(self, expected, result)
         self.assertEqual(eager_keypaths, compiled_keypaths)
 
-    @parametrize_pytree_module_with_path
-    def test_deeply_nested_keypaths(self, pytree_name: str, pytree) -> None:
+    @parametrize(
+        "tree_map_name,tree_map_with_path_impl", TREE_MAP_WITH_PATH_IMPLEMENTATIONS
+    )
+    def test_deeply_nested_keypaths(
+        self, tree_map_name: str, tree_map_with_path_impl
+    ) -> None:
         """Deeply nested structures produce correct multi-level keypaths."""
         tree = {"outer": {"inner": [torch.ones(2)]}}
 
@@ -1159,7 +1183,7 @@ class TreeMapWithPathCompileTests(TestCase):
             return x * 2 if isinstance(x, torch.Tensor) else x
 
         def fn(arg):
-            return pytree.tree_map_with_path(mapper, arg)
+            return tree_map_with_path_impl(mapper, arg)
 
         compiled = torch.compile(fn, backend="eager", fullgraph=True)
 
@@ -1176,8 +1200,12 @@ class TreeMapWithPathCompileTests(TestCase):
         self.assertEqual(eager_keypaths, compiled_keypaths)
         _assert_trees_allclose(self, expected, result)
 
-    @parametrize_pytree_module_with_path
-    def test_keypath_values_used_in_computation(self, pytree_name: str, pytree) -> None:
+    @parametrize(
+        "tree_map_name,tree_map_with_path_impl", TREE_MAP_WITH_PATH_IMPLEMENTATIONS
+    )
+    def test_keypath_values_used_in_computation(
+        self, tree_map_name: str, tree_map_with_path_impl
+    ) -> None:
         """The map function can use keypath values to influence the result."""
         from torch.utils._pytree import MappingKey
 
@@ -1191,16 +1219,18 @@ class TreeMapWithPathCompileTests(TestCase):
             return x * 2
 
         def fn(arg):
-            return pytree.tree_map_with_path(mapper, arg)
+            return tree_map_with_path_impl(mapper, arg)
 
         compiled = torch.compile(fn, backend="eager", fullgraph=True)
         expected = fn(tree)
         result = compiled(tree)
         _assert_trees_allclose(self, expected, result)
 
-    @parametrize_pytree_module_with_path
+    @parametrize(
+        "tree_map_name,tree_map_with_path_impl", TREE_MAP_WITH_PATH_IMPLEMENTATIONS
+    )
     def test_user_defined_object_treated_as_leaf(
-        self, pytree_name: str, pytree
+        self, tree_map_name: str, tree_map_with_path_impl
     ) -> None:
         """Unregistered user-defined objects are leaves in tree_map_with_path."""
 
@@ -1216,7 +1246,7 @@ class TreeMapWithPathCompileTests(TestCase):
             return x + 1
 
         def fn(arg):
-            return pytree.tree_map_with_path(mapper, arg)
+            return tree_map_with_path_impl(mapper, arg)
 
         compiled = torch.compile(fn, backend="eager", fullgraph=True)
         result = compiled(tree)

@@ -214,6 +214,7 @@ DispatchResult DispatchStubImpl::try_get_call_ptr(
 
     default:
       TORCH_INTERNAL_ASSERT(false, "An unexpected device type was provided ", device_type);
+      return ErrorType::DeviceNotSupported;
   }
 }
 
@@ -267,6 +268,7 @@ void* DispatchStubImpl::get_call_ptr(
       case ErrorType::MissingDeviceKernel:
         TORCH_INTERNAL_ASSERT(
             false, "DispatchStub: missing kernel for ", device_type);
+        return nullptr;
       case ErrorType::DeviceNotSupported:
         TORCH_CHECK(false, "DispatchStub: unsupported device type", device_type);
     }

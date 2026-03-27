@@ -186,18 +186,14 @@ class MemoryFormatMeta:
     memory_format: torch.memory_format | None = None
 
     @staticmethod
-    def from_tensor(
-        t: torch.Tensor, force_use_memory_format: bool = False
-    ) -> MemoryFormatMeta | None:
+    def from_tensor(t: torch.Tensor) -> MemoryFormatMeta | None:
         # We only memorize expected memory format for
         # 1. Traceable wrapper subclasses
         # We can not create restrided subclass tensor, as torch.empty_strided works only with dense tensors.
         # 2. Dynamic shape tensors
         # Support for symbolic shapes is not implemented yet.
-        # 3. force_use_memory_format=True (e.g., local_map where shapes change)
         use_memory_format: bool = (
-            force_use_memory_format
-            or not torch._functorch.config.guess_tangent_strides_as_outputs
+            not torch._functorch.config.guess_tangent_strides_as_outputs
             or is_traceable_wrapper_subclass(t)
         )
         if not use_memory_format:
@@ -459,6 +455,9 @@ class ViewAndMutationMeta:
     subclass_fw_graph_out_meta: list[PlainTensorMeta | SubclassCreationMeta]
     # length = # backward graph inputs
     subclass_tangent_meta: list[PlainTensorMeta | SubclassCreationMeta]
+    # TODO: we should kill this
+    # (need to default it to not break internal)
+    is_train: bool = False
 
     # length = (# inputs w data mutations) + (# user outputs that are non_aliasing tensors)
     #        + (# intermediate bases)

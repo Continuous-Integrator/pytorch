@@ -7,7 +7,7 @@ and this includes tensor subclasses that implement __torch_dispatch__.
 import collections
 import typing
 from collections.abc import Callable, Iterable, Sequence
-from typing import Any, TypeGuard, TypeVar
+from typing import Any, TYPE_CHECKING, TypeGuard, TypeVar
 
 import torch
 import torch.utils._pytree as pytree
@@ -40,6 +40,10 @@ from .schemas import (
     ViewAndMutationMeta,
 )
 from .utils import strict_zip
+
+
+if TYPE_CHECKING:
+    from torch._library.opaque_object import OpaqueType
 
 
 zip = strict_zip
@@ -253,7 +257,7 @@ AOTDescriptor = TypeVar("AOTDescriptor", AOTInput, AOTOutput)
 # this function below.
 def unwrap_tensor_subclasses(
     wrapped_args: list[FxValue],
-    wrapped_args_descs: Sequence[AOTDescriptor],
+    wrapped_args_descs: list[AOTDescriptor],
     *,
     append_symints: bool,
 ) -> tuple[list[FxValue], list[AOTDescriptor]]:
@@ -285,21 +289,14 @@ def unwrap_tensor_subclasses(
 
         attrs, _ = t.__tensor_flatten__()
 
-        SubclassGetAttr: Callable[[AOTInput | AOTOutput, str], AOTDescriptor]
-        SubclassSize: Callable[[AOTInput | AOTOutput, int], AOTDescriptor]
-        SubclassStride: Callable[[AOTInput | AOTOutput, int], AOTDescriptor]
-        if isinstance(desc, AOTInput):
-            SubclassGetAttr = SubclassGetAttrAOTInput  # type: ignore[bad-assignment]
-            SubclassSize = SubclassSizeAOTInput  # type: ignore[bad-assignment]
-            SubclassStride = SubclassStrideAOTInput  # type: ignore[bad-assignment]
-        else:
-            SubclassGetAttr = SubclassGetAttrAOTOutput  # type: ignore[bad-assignment]
-            SubclassSize = SubclassSizeAOTOutput  # type: ignore[bad-assignment]
-            SubclassStride = SubclassStrideAOTOutput  # type: ignore[bad-assignment]
-
         for attr in attrs:
             inner_value = getattr(t, attr)
-            n_desc: Any = SubclassGetAttr(desc, attr)
+            n_desc: Any = (
+                SubclassGetAttrAOTInput(desc, attr)
+                if isinstance(desc, AOTInput)
+                # pyrefly: ignore [bad-argument-type]
+                else SubclassGetAttrAOTOutput(desc, attr)
+            )
             flatten_subclass(inner_value, n_desc, out=out)
 
         if append_symints:
@@ -307,14 +304,19 @@ def unwrap_tensor_subclasses(
             strides = enumerate_filter_symints(t.stride())
             out[0].extend(s for _, s in sizes)
             out[0].extend(s for _, s in strides)
-            out[1].extend(SubclassSize(desc, i) for i, _ in sizes)
-            out[1].extend(SubclassStride(desc, i) for i, _ in strides)
+            if isinstance(desc, AOTInput):
+                out[1].extend(SubclassSizeAOTInput(desc, i) for i, _ in sizes)  # type: ignore[misc]
+                out[1].extend(SubclassStrideAOTInput(desc, i) for i, _ in strides)  # type: ignore[misc]
+            else:
+                out[1].extend(SubclassSizeAOTOutput(desc, i) for i, _ in sizes)  # type: ignore[misc]
+                out[1].extend(SubclassStrideAOTOutput(desc, i) for i, _ in strides)  # type: ignore[misc]
 
     xs_inner: list[FxValue] = []
     descs_inner: list[AOTDescriptor] = []
 
     for x, desc in zip(wrapped_args, wrapped_args_descs):
-        flatten_subclass(x, desc, out=(xs_inner, descs_inner))
+        # pyrefly: ignore [bad-argument-type]
+        flatten_subclass(typing.cast(Tensor, x), desc, out=(xs_inner, descs_inner))
 
     return xs_inner, descs_inner
 
@@ -326,21 +328,16 @@ def runtime_unwrap_tensor_subclasses(
     *,
     append_symints: bool,
     subclass_metas: list[PlainTensorMeta | SubclassCreationMeta] | None = None,
-) -> list[int | Tensor | SymInt | OpaqueBase]:
+) -> list[Any]:
     def flatten_subclass(
-        x: Tensor,
-        subclass_meta: PlainTensorMeta | SubclassCreationMeta | OpaqueMeta | None,
-        *,
-        out: list[OpaqueBase | SymInt | Tensor | int],
-    ) -> list[OpaqueBase | SymInt | Tensor | int]:
+        x: Tensor, meta: SubclassCreationMeta | None, *, out: list[Any]
+    ) -> list[Any]:
         if not is_traceable_wrapper_subclass(x):
             out.append(x)
             return out
 
         if not isinstance(x, Tensor):
             raise AssertionError(f"expected Tensor, got {type(x)}")
-        if not isinstance(subclass_meta, SubclassCreationMeta):
-            raise AssertionError("subclass_meta should be a SubclassCreationMeta")
 
         attrs, _ = x.__tensor_flatten__()
 
@@ -350,7 +347,8 @@ def runtime_unwrap_tensor_subclasses(
                 case OpaqueBase():
                     out.append(inner_value)
                 case Tensor():
-                    inner_meta = subclass_meta.attrs.get(attr)
+                    # pyrefly: ignore [missing-attribute]
+                    inner_meta = meta.attrs.get(attr)
                     flatten_subclass(inner_value, inner_meta, out=out)
                 case _:
                     raise AssertionError(
@@ -358,9 +356,11 @@ def runtime_unwrap_tensor_subclasses(
                     )
 
         if append_symints:
+            if not isinstance(meta, SubclassCreationMeta):
+                raise AssertionError(f"expected SubclassCreationMeta, got {type(meta)}")
             # outer_size
             size = x.size()
-            symint_placeholders = compute_symint_placeholders(subclass_meta.outer_size)
+            symint_placeholders = compute_symint_placeholders(meta.outer_size)
             if len(size) != len(symint_placeholders):
                 raise AssertionError(
                     f"size length mismatch: {len(size)} != {len(symint_placeholders)}"
@@ -371,9 +371,7 @@ def runtime_unwrap_tensor_subclasses(
 
             # outer_stride
             stride = x.stride()
-            symint_placeholders = compute_symint_placeholders(
-                subclass_meta.outer_stride
-            )
+            symint_placeholders = compute_symint_placeholders(meta.outer_stride)
             if len(stride) != len(symint_placeholders):
                 raise AssertionError(
                     f"stride length mismatch: {len(stride)} != {len(symint_placeholders)}"
@@ -383,7 +381,7 @@ def runtime_unwrap_tensor_subclasses(
             )
         return out
 
-    xs_inner: list[int | Tensor | SymInt | OpaqueBase] = []
+    xs_inner: list[int | Tensor | SymInt | OpaqueType] = []
 
     if append_symints:
         if subclass_metas is None:
@@ -399,12 +397,10 @@ def runtime_unwrap_tensor_subclasses(
         if subclass_metas is None:
             get_plain_tensors(typing.cast(Tensor, x), out=xs_inner)
         else:
-            subclass_meta = subclass_metas[idx]
-            if not isinstance(subclass_meta, SubclassCreationMeta):
-                raise AssertionError(
-                    f"expected SubclassCreationMeta, got {type(subclass_meta)}"
-                )
-            flatten_subclass(typing.cast(Tensor, x), subclass_meta, out=xs_inner)
+            meta = subclass_metas[idx]
+            if not isinstance(meta, SubclassCreationMeta):
+                raise AssertionError(f"expected SubclassCreationMeta, got {type(meta)}")
+            flatten_subclass(typing.cast(Tensor, x), meta, out=xs_inner)
 
     return xs_inner
 

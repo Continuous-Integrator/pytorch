@@ -7,7 +7,6 @@ import tempfile
 import zipfile
 from dataclasses import dataclass
 from typing import Any, IO, TYPE_CHECKING, TypeAlias
-from typing_extensions import TypeIs
 
 import torch
 import torch.utils._pytree as pytree
@@ -332,7 +331,7 @@ def _package_aoti_files(
             logger.debug(weights_config)
 
 
-def _is_fake_tensor(t: torch.Tensor) -> TypeIs[FakeTensor]:
+def _is_fake_tensor(t: torch.Tensor) -> bool:
     return isinstance(t, FakeTensor)
 
 

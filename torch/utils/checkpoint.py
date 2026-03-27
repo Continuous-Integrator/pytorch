@@ -81,7 +81,8 @@ def detach_variable(inputs: Tuple[Any, ...]) -> Tuple[torch.Tensor, ...]:
         return tuple(out)
     else:
         raise RuntimeError(
-            f"Only tuple of tensors is supported. Got Unsupported input type: {type(inputs).__name__}"
+            "Only tuple of tensors is supported. Got Unsupported input type: ",
+            type(inputs).__name__,
         )
 
 
@@ -916,11 +917,9 @@ forward pass (e.g., a dynamic graph instead of the original static graph).
 To fix this, either:
   - Use torch._dynamo.mark_dynamic() to explicitly mark varying dimensions as
     dynamic upfront, avoiding the static-to-dynamic transition.
-  - Call torch._C._dynamo.eval_frame._set_lru_cache(False) to disable LRU cache
+  - Set torch._dynamo.config.cache_entry_use_lru = False to disable LRU cache
     reordering, which can change which graph is checked first between forward
     and recompute.
-See https://github.com/pytorch/pytorch/issues/166926 for more details and
-workaround examples.
 """
 
 
@@ -1069,10 +1068,6 @@ class _StopRecomputationError(Exception):
 
 class _recomputation_hook(torch.autograd.graph.saved_tensors_hooks):
     def __init__(self, target_frame_ref: ReferenceType, gid: GraphExecGroup | int) -> None:
-        # Dynamo guards on WeakKeyDictionary internals are unstable here
-        # (dict length/keys change every call), causing recompilation storms.
-        # with `.compile()` so we disable
-        @torch._dynamo.disable
         def pack_hook(x):
             x = x.detach() if x.requires_grad else x
             target_frame = target_frame_ref()
@@ -1320,10 +1315,9 @@ class _CachingTorchDispatchMode(TorchDispatchMode):
         return True
 
     # Used together with _CachedTorchDispatchMode to implement SAC.
-    def __init__(self, policy_fn, storage, ac_graph_id=None) -> None:
+    def __init__(self, policy_fn, storage) -> None:
         self.policy_fn = policy_fn
         self.storage = storage
-        self.ac_graph_id = ac_graph_id
 
     def __torch_dispatch__(self, func, types, args=(), kwargs=None):
         if func in SAC_IGNORED_OPS:
@@ -1340,7 +1334,6 @@ class _CachingTorchDispatchMode(TorchDispatchMode):
         if is_compiling:
             # Overwrite each node's "recompute" tag to add in the user annotation.
             fx_traceback.current_meta["recompute"] = policy
-            fx_traceback.current_meta["ac_graph_id"] = self.ac_graph_id
 
         out = func(*args, **kwargs)
 

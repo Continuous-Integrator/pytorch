@@ -11,8 +11,7 @@ from collections import OrderedDict
 from collections.abc import Callable, Hashable, Iterable, Iterator, Mapping, Sequence
 from itertools import repeat as _repeat
 from operator import eq, ne
-from typing import Any, TYPE_CHECKING, TypeGuard, TypeVar
-from typing_extensions import TypeIs
+from typing import Any, TYPE_CHECKING, TypeVar
 
 import torch
 
@@ -63,16 +62,6 @@ class NoEnterTorchFunctionMode(BaseTorchFunctionMode):
         pass
 
 
-# Used by WrappedUserFunctionVariable and similar to inline decorated function
-# calls with bytecode backing. Without this, the context enter/exit happens in
-# Python-level VT code, so a nested graph break inside `fn` would skip applying
-# the context in the compiled fn/resume. By inlining through this polyfill, the
-# `with` statement has real bytecode that the resume function can continue from.
-def _fn_with_ctx(ctx: Any, fn: Callable[..., T], *args: Any, **kwargs: Any) -> T:
-    with ctx:
-        return fn(*args, **kwargs)
-
-
 def index(
     iterator: Iterator[T], item: T, start: int = 0, end: int | None = None
 ) -> int:
@@ -96,11 +85,11 @@ def radians(x: float) -> float:
     return math.pi / 180.0 * x
 
 
-def impl_IS_MAPPING(a: object) -> TypeIs[Mapping[Any, Any]]:
+def impl_IS_MAPPING(a: object) -> bool:
     return isinstance(a, Mapping)
 
 
-def impl_MATCH_SEQUENCE(a: object) -> TypeGuard[Sequence[Any]]:
+def impl_MATCH_SEQUENCE(a: object) -> bool:
     return isinstance(a, Sequence) and not isinstance(a, (str, bytes, bytearray))
 
 
@@ -415,12 +404,9 @@ def instantiate_user_defined_class_object(
 ) -> T:
     obj = cls.__new__(cls, *args, **kwargs)
 
-    # Only call __init__ if the object's type is a subclass of cls.
-    # CPython uses PyType_IsSubtype(Py_TYPE(obj), type) at the C level, which does NOT
-    # go through metaclass __instancecheck__. Using isinstance() here would be wrong
-    # for classes with custom __instancecheck__ (e.g. torch.ByteStorage).
+    # Only call __init__ if the object is an instance of the class
     # Reference: https://github.com/python/cpython/blob/3.12/Objects/typeobject.c#L1670-L1673
-    if issubclass(type(obj), cls):
+    if isinstance(obj, cls):
         obj.__init__(*args, **kwargs)
     return obj
 

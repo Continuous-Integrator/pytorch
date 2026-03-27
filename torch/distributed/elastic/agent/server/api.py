@@ -471,7 +471,6 @@ class SimpleElasticAgent(ElasticAgent):
         self._exit_barrier_timeout = exit_barrier_timeout
         self._shutdown_timeout = shutdown_timeout
         self._total_execution_time = 0
-        self._in_exit_barrier: bool = False
 
     def get_worker_group(self, role: str = DEFAULT_ROLE) -> WorkerGroup:
         return self._worker_group
@@ -999,7 +998,6 @@ class SimpleElasticAgent(ElasticAgent):
             self._exit_barrier_timeout,
         )
         start = time.time()
-        self._in_exit_barrier = True
         try:
             store_util.barrier(
                 store=self._store,
@@ -1019,5 +1017,3 @@ class SimpleElasticAgent(ElasticAgent):
                 "Error waiting on exit barrier. Elapsed: %s seconds",
                 time.time() - start,
             )
-        finally:
-            self._in_exit_barrier = False

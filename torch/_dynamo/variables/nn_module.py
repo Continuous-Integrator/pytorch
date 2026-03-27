@@ -215,9 +215,6 @@ class NNModuleVariable(VariableTracker):
     def python_type(self) -> type:
         return self.module_type
 
-    def get_real_python_backed_value(self) -> object:
-        return self.value
-
     def _wrap_submodule(
         self,
         tx: "InstructionTranslator",
@@ -1095,9 +1092,7 @@ class UnspecializedNNModuleVariable(UserDefinedObjectVariable):
             and istype(mod._call_impl, types.MethodType)  # type: ignore[attr-defined]
             and mod.__call__.__func__ is unpatched_nn_module_call  # type: ignore[operator]
             and mod._call_impl.__func__ is unpatched_nn_module_call_impl  # type: ignore[attr-defined]
-            # Consult pending STORE_ATTR side effects too. During tracing the
-            # patched forward may not be visible in mod.__dict__ yet.
-            and not self.has_key_in_generic_dict(tx, "forward")
+            and "forward" not in mod.__dict__
         ):
             forward_method = inspect.getattr_static(mod, "forward")
             if isinstance(forward_method, types.FunctionType):
@@ -1172,7 +1167,7 @@ class UnspecializedNNModuleVariable(UserDefinedObjectVariable):
             fn_vt = VariableTracker.build(tx, fn, source=source, realize=True)
             return fn_vt.call_function(tx, [self] + list(args), kwargs)
 
-        if not self.has_key_in_generic_dict(tx, name):
+        if name not in getattr(self.value, "__dict__", {}):
             try:
                 method = inspect.getattr_static(type(self.value), name)
             except AttributeError:
