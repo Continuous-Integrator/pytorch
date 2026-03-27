@@ -488,6 +488,10 @@ class UserDefinedClassVariable(UserDefinedVariable):
             )
         elif self.value is collections.OrderedDict and name == "move_to_end":
             return args[0].call_method(tx, name, [*args[1:]], kwargs)
+        elif name == "__len__" and len(args) == 1 and not kwargs:
+            from .object_protocol import generic_len
+
+            return generic_len(tx, args[0])
         elif name == "__eq__" and len(args) == 1 and hasattr(args[0], "value"):
             return VariableTracker.build(tx, self.value == args[0].value)
         elif name == "__ne__" and len(args) == 1 and hasattr(args[0], "value"):
@@ -1149,11 +1153,23 @@ class UserDefinedEnumClassVariable(UserDefinedClassVariable):
     def var_getattr(self, tx: "InstructionTranslator", name: str) -> "VariableTracker":
         method = self._maybe_get_baseclass_method(name)
         if method in enum_type_methods:
-            # __iter__ is a bound method which is not correctly handled by the parent var_getattr, so need to handle it here
+            # __iter__ is a bound method which is not correctly handled by the
+            # parent var_getattr, so need to handle it here
             if name == "__iter__":
                 source = self.source and AttrSource(self.source, name)
-                return variables.UserMethodVariable(method, self, source=source)
+                return variables.GetAttrVariable(self, name, source=source)
         return super().var_getattr(tx, name)
+
+    def iter_impl(self, tx: "InstructionTranslator") -> "VariableTracker":
+        from .lists import ListIteratorVariable
+
+        method = self._maybe_get_baseclass_method("__iter__")
+        if method in enum_type_methods:
+            return ListIteratorVariable(
+                self.unpack_var_sequence(tx),
+                mutation_type=ValueMutationNew(),
+            )
+        return super().iter_impl(tx)
 
 
 class RemovableHandleClass:
@@ -1344,6 +1360,16 @@ class UserDefinedObjectVariable(UserDefinedVariable):
             kwargs,
         )
 
+    def iter_impl(self, tx: "InstructionTranslator") -> VariableTracker:
+        iter_fn = self._maybe_get_baseclass_method("__iter__")
+        if iter_fn:
+            return variables.UserMethodVariable(
+                iter_fn,
+                self,
+                source=self.source and AttrSource(self.source, "__iter__"),
+            ).call_function(tx, [], {})
+        return super().iter_impl(tx)
+
     @staticmethod
     @functools.cache
     def _supported_random_functions() -> set[Any]:
@@ -1421,6 +1447,15 @@ class UserDefinedObjectVariable(UserDefinedVariable):
                 return VariableTracker.build(tx, len(self.value))  # type: ignore[arg-type]
 
         return super().call_method(tx, name, args, kwargs)
+
+    def len_impl(self, tx: "InstructionTranslator") -> VariableTracker:
+        method = self._maybe_get_baseclass_method("__len__")
+        if method is not None:
+            source = self.source and AttrSource(self.source, "__len__")
+            return variables.UserMethodVariable(
+                method, self, source=source
+            ).call_function(tx, [], {})
+        return super().len_impl(tx)
 
     def method_setattr_standard(
         self,
@@ -1557,14 +1592,14 @@ class UserDefinedObjectVariable(UserDefinedVariable):
 
         while True:
             try:
-                r = iter_.next_variable(tx)
+                r = iter_.iternext_impl(tx)
                 result.append(r)
             except ObservedUserStopIteration:
                 handle_observed_exception(tx)
                 break
         return result
 
-    def next_variable(self, tx: "InstructionTranslator") -> VariableTracker:
+    def iternext_impl(self, tx: "InstructionTranslator") -> VariableTracker:
         return self.call_method(tx, "__next__", [], {})
 
     def is_supported_random(self) -> bool:
@@ -2791,6 +2826,9 @@ class UserDefinedDictVariable(UserDefinedObjectVariable):
                     raise
         return super().call_method(tx, name, args, kwargs)
 
+    def iter_impl(self, tx: "InstructionTranslator") -> VariableTracker:
+        return self._dict_vt.iter_impl(tx)
+
     def unpack_var_sequence(self, tx: "InstructionTranslator") -> list[VariableTracker]:
         if type(self.value).__iter__ in (  # type: ignore[attr-defined]
             dict.__iter__,
@@ -2878,6 +2916,9 @@ class UserDefinedSetVariable(UserDefinedObjectVariable):
     def as_python_constant(self) -> object:
         return self._set_vt.as_python_constant()
 
+    def iter_impl(self, tx: "InstructionTranslator") -> VariableTracker:
+        return self._set_vt.iter_impl(tx)
+
     def unpack_var_sequence(self, tx: "InstructionTranslator") -> list[VariableTracker]:
         if inspect.getattr_static(self.value, "__iter__") in (
             set.__iter__,
@@ -2954,11 +2995,16 @@ class UserDefinedListVariable(UserDefinedObjectVariable):
             return self._list_vt.call_method(tx, name, args, kwargs)
         return super().call_method(tx, name, args, kwargs)
 
+    def iter_impl(self, tx: "InstructionTranslator") -> VariableTracker:
+        assert self._list_vt is not None
+        return self._list_vt.iter_impl(tx)
+
     def unpack_var_sequence(self, tx: "InstructionTranslator") -> list[VariableTracker]:
         assert self._list_vt is not None
         if type(self.value).__iter__ is list.__iter__:  # type: ignore[attr-defined]
             return self._list_vt.unpack_var_sequence(tx)
         raise NotImplementedError
+        # return super().unpack_var_sequence(tx)
 
     def is_underlying_vt_modified(self, side_effects: "SideEffects") -> bool:
         return side_effects.is_modified(self._list_vt)
@@ -3037,6 +3083,10 @@ class UserDefinedTupleVariable(UserDefinedObjectVariable):
         if method in tuple_methods:
             return self._tuple_vt.call_method(tx, name, args, kwargs)
         return super().call_method(tx, name, args, kwargs)
+
+    def iter_impl(self, tx: "InstructionTranslator") -> VariableTracker:
+        assert self._tuple_vt is not None
+        return self._tuple_vt.iter_impl(tx)
 
     def unpack_var_sequence(self, tx: "InstructionTranslator") -> list[VariableTracker]:
         assert self._tuple_vt is not None

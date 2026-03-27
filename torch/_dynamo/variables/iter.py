@@ -15,7 +15,7 @@ handling of iterator operations during code transformation and optimization.
 
 import itertools
 import sys
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, KeysView, Sequence
 from typing import Any, TYPE_CHECKING
 
 from .. import graph_break_hints, polyfills, variables
@@ -34,6 +34,7 @@ from ..exc import (
 )
 from .base import ValueMutationNew, VariableTracker
 from .constant import ConstantVariable
+from .dicts import ConstDictVariable
 
 
 if TYPE_CHECKING:
@@ -239,7 +240,7 @@ class IteratorVariable(VariableTracker):
     def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)
 
-    def next_variable(self, tx: "InstructionTranslator") -> VariableTracker:
+    def iternext_impl(self, tx: "InstructionTranslator") -> VariableTracker:
         unimplemented(
             gb_type="Unimplemented next() call",
             context=f"next({self})",
@@ -263,7 +264,7 @@ class IteratorVariable(VariableTracker):
     ) -> None:
         while True:
             try:
-                fn(self.next_variable(tx))
+                fn(self.iternext_impl(tx))
             except ObservedUserStopIteration:
                 handle_observed_exception(tx)
                 break
@@ -280,6 +281,10 @@ class IteratorVariable(VariableTracker):
             return variables.CONSTANT_VARIABLE_TRUE
         return super().call_obj_hasattr(tx, name)
 
+    def iter_impl(self, tx: "InstructionTranslator") -> "VariableTracker":
+        """Iterators are their own iterator."""
+        return self
+
     def call_method(
         self,
         tx: "InstructionTranslator",
@@ -287,43 +292,9 @@ class IteratorVariable(VariableTracker):
         args: list[VariableTracker],
         kwargs: dict[str, VariableTracker],
     ) -> VariableTracker:
-        if name == "__iter__":
-            return self
-        elif name == "__next__":
-            return self.next_variable(tx)
+        if name == "__next__":
+            return self.iternext_impl(tx)
         return super().call_method(tx, name, args, kwargs)
-
-
-class ObjectIteratorVariable(IteratorVariable):
-    """
-    VariableTracker for iter(obj) that implements the iterator protocol (i.e.,
-    has a `__next__` method).
-
-    We use this class to track the state of the iterator and handle the case
-    when the iterator is exhausted:
-
-    Example usage:
-        > b = iter(obj)
-        > list(b)  # exhaust the iterator
-        > list(b)  # empty list
-    """
-
-    def __init__(self, obj: VariableTracker, **kwargs: Any) -> None:
-        super().__init__(**kwargs)
-        self.obj = obj
-        self.generator_exhausted = False
-
-    def next_variable(self, tx: "InstructionTranslator") -> VariableTracker:
-        if self.generator_exhausted:
-            raise_observed_exception(StopIteration, tx)
-
-        try:
-            return self.obj.next_variable(tx)
-        except ObservedUserStopIteration:
-            # Do not rely on the object to always return StopIteration once it
-            # is exhausted.
-            self.generator_exhausted = True
-            raise
 
 
 class RepeatIteratorVariable(IteratorVariable):
@@ -332,7 +303,7 @@ class RepeatIteratorVariable(IteratorVariable):
         self.item = item
 
     # Repeat needs no mutation, clone self
-    def next_variable(self, tx: "InstructionTranslator") -> VariableTracker:
+    def iternext_impl(self, tx: "InstructionTranslator") -> VariableTracker:
         return self.item
 
     def reconstruct(self, codegen: "PyCodegen") -> None:
@@ -372,7 +343,7 @@ class CountIteratorVariable(IteratorVariable):
         self.step = step
         self.advance_count = advance_count
 
-    def next_variable(self, tx: "InstructionTranslator") -> VariableTracker:
+    def iternext_impl(self, tx: "InstructionTranslator") -> VariableTracker:
         assert self.is_mutable()
         old_item = self.item
         tx.output.side_effects.mutation(self)
@@ -441,7 +412,7 @@ class ZipVariable(IteratorVariable):
         zipped = zip(*iterables, **kwargs)
         return [variables.TupleVariable(list(var)) for var in zipped]
 
-    def next_variable(self, tx: "InstructionTranslator") -> VariableTracker:
+    def iternext_impl(self, tx: "InstructionTranslator") -> VariableTracker:
         assert self.is_mutable()
 
         if len(self.iterables) == 0:
@@ -458,7 +429,7 @@ class ZipVariable(IteratorVariable):
                     raise_observed_exception(StopIteration, tx)
                 return it[old_index]
             else:
-                return it.next_variable(tx)
+                return it.iternext_impl(tx)
 
         idx: int | None = None
         try:
@@ -535,8 +506,8 @@ class MapVariable(ZipVariable):
     def has_unpack_var_sequence(self, tx: "InstructionTranslator") -> bool:
         return False
 
-    def next_variable(self, tx: "InstructionTranslator") -> VariableTracker:
-        args = super().next_variable(tx)
+    def iternext_impl(self, tx: "InstructionTranslator") -> VariableTracker:
+        args = super().iternext_impl(tx)
         return self.fn.call_function(tx, args.items, {})  # type: ignore[attr-defined]
 
     def reconstruct(self, codegen: "PyCodegen") -> None:
@@ -603,7 +574,7 @@ class FilterVariable(IteratorVariable):
         filtered = self.fn.call_function(tx, it, {})
         return [variables.TupleVariable([filtered])]
 
-    def next_variable(self, tx: "InstructionTranslator") -> VariableTracker:
+    def iternext_impl(self, tx: "InstructionTranslator") -> VariableTracker:
         def _next() -> VariableTracker:
             old_index = self.index
             if isinstance(self.iterable, list):
@@ -611,7 +582,7 @@ class FilterVariable(IteratorVariable):
                     raise_observed_exception(StopIteration, tx)
                 return self.iterable[old_index]
             else:
-                return self.iterable.next_variable(tx)
+                return self.iterable.iternext_impl(tx)
 
         # A do-while loop to find elements that make fn return true
         while True:
@@ -640,3 +611,22 @@ class FilterVariable(IteratorVariable):
         codegen(self.fn)
         self.reconstruct_items(codegen)
         codegen.extend_output(create_call_function(2, False))
+
+
+class DictIterator(IteratorVariable):
+    def __init__(
+        self, items: KeysView[ConstDictVariable._HashableTracker], **kwargs: Any
+    ) -> None:
+        super().__init__(**kwargs)
+        self.iter_items = iter(items)
+
+    def iternext_impl(self, tx: "InstructionTranslator") -> VariableTracker:
+        try:
+            return next(self.iter_items).vt
+        except (RuntimeError, StopIteration) as e:
+            # RuntimeError can be raised if the dict is mutated during iteration
+            raise_observed_exception(
+                type(e),
+                tx,
+                args=[VariableTracker.build(tx, a) for a in e.args],
+            )

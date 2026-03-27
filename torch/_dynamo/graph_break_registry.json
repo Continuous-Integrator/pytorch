@@ -1953,6 +1953,16 @@
       ]
     }
   ],
+  "GB5115": [
+    {
+      "Gb_type": "Missing getitem_impl",
+      "Context": "getitem({self.python_type_name()}, {item.python_type_name()})",
+      "Explanation": "Dynamo does not support getitem() on {self.python_type_name()}. Add getitem_impl to this VariableTracker subclass.",
+      "Hints": [
+        "It may be possible to write Dynamo tracing rules for this code. Please report an issue to PyTorch if you encounter this graph break often and it is causing performance issues."
+      ]
+    }
+  ],
   "GB2549": [
     {
       "Gb_type": "infinite generator detected",
@@ -2432,6 +2442,17 @@
       "Hints": [
         "Use a mapping proxy constructed in the same `torch.compile` region.",
         "It may be possible to write Dynamo tracing rules for this code. Please report an issue to PyTorch if you encounter this graph break often and it is causing performance issues."
+      ]
+    }
+  ],
+  "GB9389": [
+    {
+      "Gb_type": "iter_impl not implemented",
+      "Context": "iter({self})",
+      "Explanation": "Dynamo does not know how to iterate over {self.python_type_name()}",
+      "Hints": [
+        "Avoid calling `iter({self.python_type_name()})` in your code.",
+        "Please report an issue to PyTorch."
       ]
     }
   ],
@@ -3607,6 +3628,16 @@
       ]
     }
   ],
+  "GB7906": [
+    {
+      "Gb_type": "Missing len_impl",
+      "Context": "len({type(self).__name__})",
+      "Explanation": "Dynamo does not support len() on {type(self).__name__}. Add len_impl to this VariableTracker subclass.",
+      "Hints": [
+        "It may be possible to write Dynamo tracing rules for this code. Please report an issue to PyTorch if you encounter this graph break often and it is causing performance issues."
+      ]
+    }
+  ],
   "GB0291": [
     {
       "Gb_type": "logging.Logger method not supported for non-export cases",
@@ -4385,6 +4416,16 @@
       "Gb_type": "rewrite_signature: cannot trace optional function input",
       "Context": "",
       "Explanation": "Parameter {name} is optional with a default value of {param.default}. This is not supported yet.",
+      "Hints": [
+        "It may be possible to write Dynamo tracing rules for this code. Please report an issue to PyTorch if you encounter this graph break often and it is causing performance issues."
+      ]
+    }
+  ],
+  "GB4347": [
+    {
+      "Gb_type": "Missing iternext_impl",
+      "Context": "next({self.python_type_name()})",
+      "Explanation": "Dynamo does not support next() on {self.python_type_name()}. Add iternext_impl to this VariableTracker subclass.",
       "Hints": [
         "It may be possible to write Dynamo tracing rules for this code. Please report an issue to PyTorch if you encounter this graph break often and it is causing performance issues."
       ]

@@ -141,6 +141,9 @@ class BaseListVariable(VariableTracker):
     def unpack_var_sequence(self, tx: "InstructionTranslator") -> list[VariableTracker]:
         return list(self.items)
 
+    def len_impl(self, tx: "InstructionTranslator") -> VariableTracker:
+        return VariableTracker.build(tx, len(self.items))
+
     def call_tree_map_branch(
         self,
         tx: "InstructionTranslator",
@@ -415,8 +418,6 @@ class BaseListVariable(VariableTracker):
                 ],
                 {},
             )
-        elif name == "__iter__":
-            return ListIteratorVariable(self.items, mutation_type=ValueMutationNew())
 
         return super().call_method(tx, name, args, kwargs)
 
@@ -599,6 +600,12 @@ class RangeVariable(BaseListVariable):
     ) -> list[VariableTracker]:
         return [variables.ConstantVariable.create(x) for x in self.as_python_constant()]
 
+    def len_impl(self, tx: "InstructionTranslator") -> VariableTracker:
+        length = self.range_length()
+        if length > sys.maxsize:
+            raise_observed_exception(OverflowError, tx)
+        return VariableTracker.build(tx, length)
+
     def reconstruct(self, codegen: "PyCodegen") -> None:
         assert "range" not in codegen.tx.f_globals
         codegen.add_push_null(
@@ -646,6 +653,16 @@ class RangeVariable(BaseListVariable):
             re = ((x - start) % step) == 0
             return int(re)
         return 0
+
+    def iter_impl(self, tx: "InstructionTranslator") -> VariableTracker:
+        if not all(var.is_python_constant() for var in self.items):
+            # Can't represent a `range_iterator` without well defined bounds
+            return variables.misc.DelayGraphBreakVariable(
+                msg="Cannot create range_iterator: bounds (start, stop, step) must be fully defined as concrete constants.",
+            )
+        return RangeIteratorVariable(
+            self.start(), self.stop(), self.step(), self.range_length()
+        )
 
     def call_method(
         self,
@@ -975,6 +992,9 @@ class ListVariable(CommonListMethodsVariable):
             # Non-self-referential: use simple codegen
             codegen.foreach(self.items)
             codegen.append_output(create_instruction("BUILD_LIST", arg=len(self.items)))
+
+    def iter_impl(self, tx: "InstructionTranslator") -> VariableTracker:
+        return ListIteratorVariable(self.items, mutation_type=ValueMutationNew())
 
     def call_method(
         self,
@@ -1312,6 +1332,9 @@ class TupleVariable(BaseListVariable):
     def debug_repr(self) -> str:
         return self.debug_repr_helper("(", ")")
 
+    def iter_impl(self, tx: "InstructionTranslator") -> VariableTracker:
+        return TupleIteratorVariable(self.items, mutation_type=ValueMutationNew())
+
     def reconstruct(self, codegen: "PyCodegen") -> None:
         codegen.foreach(self.items)
         codegen.append_output(create_build_tuple(len(self.items)))
@@ -1559,6 +1582,10 @@ class NamedTupleVariable(UserDefinedTupleVariable):
     @property
     def items(self) -> list[VariableTracker]:
         return self._tuple_vt.items
+
+    def iter_impl(self, tx: "InstructionTranslator") -> VariableTracker:
+        """NamedTuples are iterable like regular tuples"""
+        return TupleIteratorVariable(self.items, mutation_type=ValueMutationNew())
 
     def is_namedtuple(self) -> bool:
         return isinstance(getattr(self.tuple_cls, "_fields", None), tuple) and callable(
@@ -1927,7 +1954,7 @@ class ListIteratorVariable(IteratorVariable):
     def __repr__(self) -> str:
         return f"{self.__class__.__name__}(length={len(self.items)}, index={repr(self.index)})"
 
-    def next_variable(self, tx: "InstructionTranslator") -> VariableTracker:
+    def iternext_impl(self, tx: "InstructionTranslator") -> VariableTracker:
         assert self.is_mutable()
         old_index = self.index
         if old_index >= len(self.items) or self.is_exhausted:
@@ -1999,6 +2026,10 @@ class RangeIteratorVariable(IteratorVariable):
         self.step = step
         self.len = len_
 
+    def iter_impl(self, tx: "InstructionTranslator") -> VariableTracker:
+        """Range iterators are their own iterator."""
+        return self
+
     def call_method(
         self,
         tx: "InstructionTranslator",
@@ -2007,9 +2038,7 @@ class RangeIteratorVariable(IteratorVariable):
         kwargs: dict[str, VariableTracker],
     ) -> VariableTracker:
         if name == "__next__":
-            return self.next_variable(tx)
-        elif name == "__iter__":
-            return self
+            return self.iternext_impl(tx)
         return super().call_method(tx, name, args, kwargs)
 
     def call_obj_hasattr(
@@ -2020,7 +2049,7 @@ class RangeIteratorVariable(IteratorVariable):
             return VariableTracker.build(tx, hasattr(ri, name))
         return super().call_obj_hasattr(tx, name)
 
-    def next_variable(self, tx: "InstructionTranslator") -> VariableTracker:
+    def iternext_impl(self, tx: "InstructionTranslator") -> VariableTracker:
         if self.len <= 0:
             raise_observed_exception(StopIteration, tx)
 

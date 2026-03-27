@@ -1497,6 +1497,13 @@ class BuiltinVariable(VariableTracker):
             # object.__init__ is a no-op
             return variables.CONSTANT_VARIABLE_NONE
 
+        if name == "__iter__" and len(args) == 1 and not kwargs:
+            # type.__iter__(instance) → iter(instance)
+            # e.g., tuple.__iter__(my_tuple) → iter(my_tuple)
+            from .object_protocol import generic_getiter
+
+            return generic_getiter(tx, args[0])
+
         if self.fn is dict and name == "fromkeys":
             return BuiltinVariable.call_custom_dict_fromkeys(tx, dict, *args, **kwargs)
 
@@ -1535,6 +1542,13 @@ class BuiltinVariable(VariableTracker):
                 return VariableTracker.build(
                     tx, getattr(float, name)(args[0].as_python_constant())
                 )
+
+        if name == "__len__" and len(args) == 1 and not kwargs:
+            # type.__len__(instance) → len(instance)
+            # e.g. list.__len__(my_list) → len(my_list)
+            from .object_protocol import generic_len
+
+            return generic_len(tx, args[0])
 
         return super().call_method(tx, name, args, kwargs)
 
@@ -2014,38 +2028,56 @@ class BuiltinVariable(VariableTracker):
         *args: VariableTracker,
         **kwargs: VariableTracker,
     ) -> VariableTracker:
-        # avoid the overhead of tracing the polyfill if we already know the class implemented __iter__
-        if isinstance(
-            obj,
-            (
-                variables.ListVariable,
-                variables.RangeVariable,
-                variables.IteratorVariable,
-                variables.ConstDictVariable,
-                variables.NNModuleVariable,
-                variables.TensorVariable,
-                variables.TupleVariable,
-                DictViewVariable,
-            ),
-        ):
-            return obj.call_method(tx, "__iter__", [], {})
-        else:
-            # If the object doesn't implement a __iter__ method, it will be an error in eager mode when calling iter on it anyway.
-            # If the object implements a __iter__ method, inlining effectively forwards the call to another iter call
-            # (e.g. when __iter__ just returns iter(self.list)) or return a user-defined iterator.
-            # If the object implements a __getitem__ method, iter(...) will call obj.__getitem__()
-            # with an integer argument starting at 0, until __getitem__ raises IndexError
-            ret = variables.UserFunctionVariable(
-                polyfills.builtins.iter_  # type: ignore[arg-type]
-            ).call_function(tx, [obj, *args], {})
+        from .object_protocol import generic_getiter
 
-            if args:
-                # iter(obj, sentinel) returns an object that implements
-                # __iter__ and __next__ methods (UserDefinedObjectVariable)
-                # Wrap the return value in a IteratorVariable subclass (LazyObjectIteratorVariable)
-                # that forwards the next_variable call to the object.
-                ret = variables.ObjectIteratorVariable(ret)
-            return ret
+        # # avoid the overhead of tracing the polyfill if we already know the class implemented __iter__
+        # if isinstance(
+        #     obj,
+        #     (
+        #         variables.ListVariable,
+        #         variables.RangeVariable,
+        #         variables.IteratorVariable,
+        #         variables.ConstDictVariable,
+        #         variables.NNModuleVariable,
+        #         variables.TensorVariable,
+        #         variables.TupleVariable,
+        #         DictViewVariable,
+        #     ),
+        # ):
+        #
+        # TODO(guilhermeleobas): make sure we avoid the overhead of tracing the
+        # polyfill if we already know the class implements __iter__
+
+        if len(args) == 0:
+            return generic_getiter(tx, obj)
+        else:
+            return variables.UserFunctionVariable(
+                polyfills.builtins.callable_iterator
+            ).call_function(tx, [obj, *args], kwargs)
+
+        # iter_obj = generic_getiter(tx, obj)
+        # return variables.UserFunctionVariable(polyfills.builtins.iter_).call_function(
+        #     tx, [iter_obj, *args], kwargs
+        # )
+
+        #     return obj.call_method(tx, "__iter__", [], {})
+        # else:
+        #     # If the object doesn't implement a __iter__ method, it will be an error in eager mode when calling iter on it anyway.
+        #     # If the object implements a __iter__ method, inlining effectively forwards the call to another iter call
+        #     # (e.g. when __iter__ just returns iter(self.list)) or return a user-defined iterator.
+        #     # If the object implements a __getitem__ method, iter(...) will call obj.__getitem__()
+        #     # with an integer argument starting at 0, until __getitem__ raises IndexError
+        #     ret = variables.UserFunctionVariable(
+        #         polyfills.builtins.iter_  # type: ignore[arg-type]
+        #     ).call_function(tx, [obj, *args], {})
+
+        #     if args:
+        #         # iter(obj, sentinel) returns an object that implements
+        #         # __iter__ and __next__ methods (UserDefinedObjectVariable)
+        #         # Wrap the return value in a IteratorVariable subclass (ObjectIteratorVariable)
+        #         # that forwards the next_variable call to the object.
+        #         ret = variables.ObjectIteratorVariable(ret)
+        #     return ret
 
     call_tuple = _call_tuple_list
     call_list = _call_tuple_list
@@ -2939,6 +2971,7 @@ class BuiltinVariable(VariableTracker):
     def call_reversed(
         self, tx: "InstructionTranslator", obj: VariableTracker
     ) -> VariableTracker | None:
+        # TODO(guilhermeleobas): Reverse is broken because of generic_getiter
         if obj.has_unpack_var_sequence(tx):
             items = list(reversed(obj.unpack_var_sequence(tx)))
             return variables.TupleVariable(items)
