@@ -40,8 +40,10 @@
 #endif
 
 #include <chrono>
+#include <mutex>
 #include <sstream>
 #include <tuple>
+#include <unordered_set>
 #include <utility>
 
 // Uncomment next line to count instructions for guard eval.
@@ -1659,6 +1661,14 @@ class GuardManager;
 class RootGuardManager;
 class DictGuardManager;
 
+void cleanup_live_guard_managers_at_exit();
+void register_guard_manager_for_atexit(GuardManager* guard_manager);
+void unregister_guard_manager_for_atexit(GuardManager* guard_manager);
+
+static std::once_flag guard_manager_atexit_once;
+static std::mutex live_guard_managers_mutex;
+static std::unordered_set<GuardManager*> live_guard_managers;
+
 // Global registry used by the *recursive-dict-tag* optimisation.
 //
 // Key   : `PyObject*` pointing to a watched `dict`
@@ -3233,6 +3243,8 @@ class GuardManager {
   GuardManager& operator=(const GuardManager&) = delete;
 
   virtual ~GuardManager() {
+    unregister_guard_manager_for_atexit(this);
+
     // During interpreter shutdown, weakrefs/callbacks/capsules may already
     // have been torn down before the C++ GuardManager destructor runs. In
     // that state we must not call Python C API from destructor cleanup.
@@ -3248,12 +3260,19 @@ class GuardManager {
     // destruction happens on a thread that does not currently hold it.
     if (!PyGILState_Check()) {
       py::gil_scoped_acquire gil;
-      cleanup_tag_safe_entries();
-      disable_recursive_dict_tag_optimization();
+      cleanup_python_state();
+      return;
+    }
+    cleanup_python_state();
+  }
+
+  void cleanup_python_state() {
+    if (_python_cleanup_done) {
       return;
     }
     cleanup_tag_safe_entries();
     disable_recursive_dict_tag_optimization();
+    _python_cleanup_done = true;
   }
 
   void cleanup_tag_safe_entries() {
@@ -3718,6 +3737,7 @@ class GuardManager {
       PyErr_Clear();
       return false;
     }
+    register_guard_manager_for_atexit(this);
     // These will be decrefed in destructor
     Py_INCREF(capsule);
     _tag_safe_entries.push_back({wr, capsule});
@@ -4033,12 +4053,52 @@ class GuardManager {
 
   // 3.12+ related helper
   bool _dict_callback_installed = false;
+  bool _python_cleanup_done = false;
 
  protected:
   // weakref to the type of guarded value
   // protected because it is used for cloning by DictGuardManager
   py::object _weak_type;
 };
+
+void cleanup_live_guard_managers_at_exit() {
+  // Python-level atexit runs while the interpreter is still alive, so it is
+  // the last safe point to release the extra capsule refs we hold for the
+  // weakref callback path.
+  std::vector<GuardManager*> guard_managers;
+  {
+    std::lock_guard<std::mutex> lock(live_guard_managers_mutex);
+    guard_managers.reserve(live_guard_managers.size());
+    guard_managers.insert(
+        guard_managers.end(),
+        live_guard_managers.begin(),
+        live_guard_managers.end());
+  }
+  for (GuardManager* guard_manager : guard_managers) {
+    guard_manager->cleanup_python_state();
+  }
+}
+
+void register_guard_manager_for_atexit(GuardManager* guard_manager) {
+  try {
+    std::call_once(guard_manager_atexit_once, []() {
+      py::module_::import("atexit").attr("register")(
+          py::cpp_function([]() { cleanup_live_guard_managers_at_exit(); }));
+    });
+  } catch (const py::error_already_set& e) {
+    e.restore();
+    PyErr_Clear();
+    return;
+  }
+
+  std::lock_guard<std::mutex> lock(live_guard_managers_mutex);
+  live_guard_managers.insert(guard_manager);
+}
+
+void unregister_guard_manager_for_atexit(GuardManager* guard_manager) {
+  std::lock_guard<std::mutex> lock(live_guard_managers_mutex);
+  live_guard_managers.erase(guard_manager);
+}
 
 GuardAccessor::GuardAccessor(
     RootGuardManager* root,
