@@ -1005,6 +1005,30 @@ class LazyConstantVariableTests(TestCase):
             self.assertEqual(compiled2[1], "Result: 14 and 25")
             self.assertEqual(counter.frame_count, 1)  # NO recompilation!
 
+    def test_fstring_with_lazy_constant_passed_to_in_graph_fn(self):
+        """Test that f-strings containing lazy constants can be passed to in-graph functions.
+
+        When an f-string contains lazy constants (e.g. from obj.__name__), the
+        result should be usable as an argument to allow_in_graph functions
+        without causing a graph break. This is the pattern used by torchvision's
+        _log_api_usage_once: torch._C._log_api_usage_once(f"{module}.{name}")
+        """
+
+        @torch._dynamo.allow_in_graph
+        def log_message(msg):
+            pass
+
+        def fn(t, tag):
+            log_message(f"module.{tag}")
+            return t + 1
+
+        counter = CompileCounter()
+        opt_fn = torch.compile(fn, backend=counter, fullgraph=True)
+        x = torch.randn(3)
+        result = opt_fn(x, "hello")
+        self.assertTrue(same(fn(x, "hello"), result))
+        self.assertEqual(counter.frame_count, 1)
+
     def test_computed_lazy_constant_division_by_zero(self):
         """Test that division by zero with lazy constants raises ZeroDivisionError.
 
