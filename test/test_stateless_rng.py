@@ -11,6 +11,7 @@ from torch.testing._internal.common_device_type import (
 from torch.testing._internal.common_dtype import floating_types_and
 from torch.testing._internal.common_utils import run_tests, TestCase
 
+
 all_floating_dtypes = floating_types_and(torch.half, torch.bfloat16)
 
 
@@ -99,9 +100,7 @@ class TestPhiloxKeySplit(TestCase):
             random.split(key, -1)
 
     def test_error_batched_last_dim_not_2(self, device):
-        key = torch.tensor(
-            [[42, 0, 1], [43, 0, 1]], dtype=torch.uint64, device=device
-        )
+        key = torch.tensor([[42, 0, 1], [43, 0, 1]], dtype=torch.uint64, device=device)
         with self.assertRaises(RuntimeError):
             random.split(key, 4)
 
@@ -182,9 +181,7 @@ class TestPhiloxKeyFoldIn(TestCase):
             random.fold_in(key, 0)
 
     def test_error_batched_last_dim_not_2(self, device):
-        key = torch.tensor(
-            [[42, 0, 1], [43, 0, 1]], dtype=torch.uint64, device=device
-        )
+        key = torch.tensor([[42, 0, 1], [43, 0, 1]], dtype=torch.uint64, device=device)
         with self.assertRaises(RuntimeError):
             random.fold_in(key, 0)
 
@@ -198,9 +195,7 @@ class TestPhiloxKeyFoldIn(TestCase):
         )
 
 
-instantiate_device_type_tests(
-    TestPhiloxKeyFoldIn, globals(), only_for=("cpu", "cuda")
-)
+instantiate_device_type_tests(TestPhiloxKeyFoldIn, globals(), only_for=("cpu", "cuda"))
 
 
 class TestPhiloxNormal(TestCase):
@@ -526,9 +521,7 @@ class TestPhiloxCompile(TestCase):
             keys = random.split(key, 4)
             return random.normal(keys, (4, 100))
 
-        self.assertEqual(
-            f(key), random.normal(random.split(key, 4), (4, 100))
-        )
+        self.assertEqual(f(key), random.normal(random.split(key, 4), (4, 100)))
 
     def test_fold_in_then_uniform_aot_eager(self, device):
         key = random.key(42, device=device)
@@ -538,9 +531,7 @@ class TestPhiloxCompile(TestCase):
             k = random.fold_in(key, 3)
             return random.uniform(k, (100,))
 
-        self.assertEqual(
-            f(key), random.uniform(random.fold_in(key, 3), (100,))
-        )
+        self.assertEqual(f(key), random.uniform(random.fold_in(key, 3), (100,)))
 
 
 instantiate_device_type_tests(TestPhiloxCompile, globals(), only_for=("cpu", "cuda"))
@@ -617,9 +608,7 @@ class TestGridSplit(TestCase):
         for r in range(splits[0]):
             row = []
             for c in range(splits[1]):
-                row.append(
-                    random.uniform(keys[r, c], tile_shape, device=device)
-                )
+                row.append(random.uniform(keys[r, c], tile_shape, device=device))
             tiles.append(torch.cat(row, dim=1))
         tiled = torch.cat(tiles, dim=0)
         self.assertEqual(full, tiled)
@@ -635,9 +624,7 @@ class TestGridSplit(TestCase):
         for r in range(splits[0]):
             row = []
             for c in range(splits[1]):
-                row.append(
-                    random.normal(keys[r, c], tile_shape, device=device)
-                )
+                row.append(random.normal(keys[r, c], tile_shape, device=device))
             tiles.append(torch.cat(row, dim=1))
         tiled = torch.cat(tiles, dim=0)
         self.assertEqual(full, tiled)
@@ -677,9 +664,7 @@ class TestGridSplit(TestCase):
         for t0 in range(splits[0]):
             for t1 in range(splits[1]):
                 for t2 in range(splits[2]):
-                    tile = random.uniform(
-                        keys[t0, t1, t2], tile_shape, device=device
-                    )
+                    tile = random.uniform(keys[t0, t1, t2], tile_shape, device=device)
                     reconstructed[
                         t0 * tile_shape[0] : (t0 + 1) * tile_shape[0],
                         t1 * tile_shape[1] : (t1 + 1) * tile_shape[1],
@@ -697,8 +682,7 @@ class TestGridSplit(TestCase):
         self.assertEqual(keys.shape, (10, 1, 10, 2))
         full = random.uniform(k, (100, 200), device=device)
         tiles = [
-            random.uniform(keys[i, 0], tile_shape, device=device)
-            for i in range(10)
+            random.uniform(keys[i, 0], tile_shape, device=device) for i in range(10)
         ]
         tiled = torch.cat(tiles, dim=0)
         self.assertEqual(full, tiled)
@@ -708,9 +692,7 @@ class TestGridSplit(TestCase):
         """grid_split reconstruction holds when tile offsets wrap past 2^64."""
         seed = 42
         near_max_offset = (1 << 64) - 48
-        k = torch.tensor(
-            [seed, near_max_offset], dtype=torch.uint64, device=device
-        )
+        k = torch.tensor([seed, near_max_offset], dtype=torch.uint64, device=device)
         shape = (100,)
         num_tiles = 10
         tile_size = shape[0] // num_tiles
@@ -762,9 +744,7 @@ class TestGridSplit(TestCase):
         keys_cpu = random.grid_split(k_cpu, shape, splits)
         keys_cuda = random.grid_split(k_cuda, shape, splits)
         tile_cpu = random.uniform(keys_cpu[2, 1], tile_shape)
-        tile_cuda = random.uniform(
-            keys_cuda[2, 1], tile_shape, device=device
-        )
+        tile_cuda = random.uniform(keys_cuda[2, 1], tile_shape, device=device)
         self.assertEqual(tile_cpu, tile_cuda.cpu())
 
 
