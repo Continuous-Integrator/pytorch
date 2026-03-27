@@ -836,6 +836,8 @@ class CachingAutotuner(KernelInterface):
                 options["waves_per_eu"] = compile_meta["waves_per_eu"]
             if "matrix_instr_nonkdim" in compile_meta:
                 options["matrix_instr_nonkdim"] = compile_meta["matrix_instr_nonkdim"]
+            if "kpack" in compile_meta:
+                options["kpack"] = compile_meta["kpack"]
 
         if self.device_props.type == "xpu" and XPU_KERNEL_FORMAT == "zebin":
             options["generate_native_code"] = True
@@ -2498,6 +2500,7 @@ def triton_config(
     num_warps=None,
     matrix_instr=None,
     waves_per_eu=None,
+    kpack=None,
 ) -> Config:
     """
     Construct a pointwise triton config with some adjustment heuristics
@@ -2595,6 +2598,8 @@ def triton_config(
             config.kwargs["matrix_instr_nonkdim"] = matrix_instr
         if waves_per_eu is not None:
             config.kwargs["waves_per_eu"] = waves_per_eu
+        if kpack is not None:
+            config.kwargs["kpack"] = kpack
 
     return config
 
@@ -3223,6 +3228,10 @@ def _reduction_configs(
     loads_and_red = inductor_meta.get("num_load", 0) + inductor_meta.get(
         "num_reduction", 0
     )
+
+    device_major = triton_meta["device"].major
+    # Prefer smaller MAX_R0_BLOCK for Blackwell
+    MAX_R0_BLOCK = 1024 if device_major is not None and device_major >= 10 else 2048
     if size_hints["x"] >= 1024 and loads_and_red >= 10:
         # A heuristics to reduce R0_BLOCK if a kernel potentially need many registers.
         # Consider load and reduction since load need move data into registers and
@@ -3955,7 +3964,8 @@ def persistent_reduction(
                 # more warps for larger rows
                 new_configs.append(c)
 
-                if max_autotune_enabled and c.num_warps < 32:
+                max_warps_limit = 16 if torch.version.hip else 32
+                if max_autotune_enabled and c.num_warps < max_warps_limit:
                     newc = copy.deepcopy(c)
                     newc.num_warps *= 2
                     new_configs.append(newc)

@@ -19,7 +19,6 @@
 
 #include <ATen/Parallel.h>
 #include <ATen/Utils.h>
-#include <ATen/core/Vitals.h>
 #include <ATen/dlpack.h>
 #include <ATen/native/ConvUtils.h>
 #include <ATen/native/ForeachUtils.h>
@@ -2402,17 +2401,6 @@ PyObject* initModule() {
   py_module.def("_log_api_usage_once", &LogAPIUsageOnceFromPython);
   py_module.def("_log_api_usage_metadata", &LogAPIUsageMetadataFromPython);
 
-  py_module.def("vitals_enabled", &at::vitals::torchVitalEnabled);
-  py_module.def(
-      "set_vital",
-      [](const std::string& vital,
-         const std::string& attr,
-         const std::string& value) {
-        return at::vitals::VitalsAPI.setVital(vital, attr, value);
-      });
-  py_module.def(
-      "read_vitals", []() { return at::vitals::VitalsAPI.readVitals(); });
-
   py_module.def(
       "init_num_threads",
       torch::wrap_pybind_function(at::init_num_threads),
@@ -2778,7 +2766,6 @@ Call this whenever a new thread is created in order to propagate values from
 
   py_module.def(
       "_stash_obj_in_tls", [](const std::string& key, py::handle arg) {
-        Py_INCREF(arg.ptr());
         at::impl::ThreadLocalPythonObjects::get_state().set(
             key,
             std::make_shared<c10::SafePyObject>(arg.ptr(), getPyInterpreter()));

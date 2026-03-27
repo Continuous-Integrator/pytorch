@@ -1134,6 +1134,7 @@ class TestSparseSemiStructuredCUSPARSELT(TestCase):
         if "cusparselt" not in SEMI_STRUCTURED_SUPPORTED_BACKENDS:
             self.skipTest('cuSPARSELt not enabled')
 
+    @unittest.skipIf(TEST_WITH_ROCM, "Not supported on ROCm")
     @unittest.skipIf(
         not PLATFORM_SUPPORTS_FP8,
         "FP8 is only supported on H100+, SM 8.9 and MI300+ devices",
@@ -1156,6 +1157,7 @@ class TestSparseSemiStructuredCUSPARSELT(TestCase):
         ):
             dense_result = torch.mm(A_fp8_sparse, B_fp8)
 
+    @unittest.skipIf(TEST_WITH_ROCM, "Not supported on ROCm")
     @unittest.skipIf(
         not PLATFORM_SUPPORTS_FP8,
         "FP8 is only supported on H100+, SM 8.9 and MI300+ devices",
@@ -1176,6 +1178,7 @@ class TestSparseSemiStructuredCUSPARSELT(TestCase):
         out_fp32_sparse = out_fp8_sparse.to(torch.float32)
         torch.testing.assert_close(out_fp32, out_fp32_sparse, rtol=1e-1, atol=1e-1)
 
+    @unittest.skipIf(TEST_WITH_ROCM, "Not supported on ROCm")
     @unittest.skipIf(
         not PLATFORM_SUPPORTS_FP8,
         "FP8 is only supported on H100+, SM 8.9 and MI300+ devices",
@@ -1271,6 +1274,7 @@ class TestSparseSemiStructuredCUSPARSELT(TestCase):
 
         torch.testing.assert_close(sparse_result, dense_result, rtol=1e-3, atol=1e-3)
 
+    @unittest.skipIf(TEST_WITH_ROCM, "Not supported on ROCm")
     @inference_dtypes
     def test_cslt_sparse_mm_search(self, device, dtype):
         A = rand_sparse_semi_structured_mask(256, 128, dtype=dtype)
@@ -1284,6 +1288,7 @@ class TestSparseSemiStructuredCUSPARSELT(TestCase):
         dense_result = dense_result.to(dtype)
         torch.testing.assert_close(sparse_result, dense_result, rtol=1e-3, atol=1e-3)
 
+    @unittest.skipIf(TEST_WITH_ROCM, "Not supported on ROCm")
     @inference_dtypes
     def test_csrc_cslt_sparse_mm_search(self, device, dtype):
         A = rand_sparse_semi_structured_mask(256, 128, dtype=dtype)
@@ -1300,6 +1305,7 @@ class TestSparseSemiStructuredCUSPARSELT(TestCase):
         dense_result = dense_result.to(dtype)
         torch.testing.assert_close(sparse_result, dense_result, rtol=1e-3, atol=1e-3)
 
+    @unittest.skipIf(TEST_WITH_ROCM, "Not supported on ROCm")
     def test_cusparselt_backend(self):
         if not torch.backends.cusparselt.is_available():
             raise AssertionError("cusparselt backend should be available")
@@ -1315,6 +1321,75 @@ class TestSparseSemiStructuredCUSPARSELT(TestCase):
         A_clone = A_sparse.clone()
         self.assertNotEqual(A_sparse.packed.data_ptr, A_clone.packed.data_ptr)
         self.assertEqual(A_sparse.packed, A_clone.packed)
+
+    @inference_dtypes
+    def test_semi_sparse_to_device_cpu(self, dtype):
+        """Test .to('cpu') converts sparse semi-structured tensor to dense on CPU."""
+        A = rand_sparse_semi_structured_mask(128, 128, dtype=dtype).cuda()
+        A_sparse = to_sparse_semi_structured(A)
+        A_dense = A_sparse.to_dense()
+
+        result = A_sparse.to("cpu")
+        self.assertEqual(result.device.type, "cpu")
+        self.assertFalse(isinstance(result, SparseSemiStructuredTensor))
+        torch.testing.assert_close(result, A_dense.cpu(), rtol=1e-3, atol=1e-3)
+
+    @inference_dtypes
+    def test_semi_sparse_to_device_cuda(self, dtype):
+        """Test .to('cuda') / .to(device) raises NotImplementedError."""
+        A = rand_sparse_semi_structured_mask(128, 128, dtype=dtype).cuda()
+        A_sparse = to_sparse_semi_structured(A)
+
+        with self.assertRaises(NotImplementedError):
+            A_sparse.to(A_sparse.device)
+
+    @dtypes(torch.float16, torch.bfloat16)
+    def test_semi_sparse_to_dtype(self, dtype):
+        """Test .to(dtype) raises NotImplementedError (only to('cpu') is supported)."""
+        A = rand_sparse_semi_structured_mask(128, 128, dtype=dtype).cuda()
+        A_sparse = to_sparse_semi_structured(A)
+
+        with self.assertRaises(NotImplementedError):
+            A_sparse.to(torch.float32)
+
+    @dtypes(torch.float16, torch.bfloat16)
+    def test_semi_sparse_to_device_and_dtype(self, dtype):
+        """Test .to(device, dtype) converts both device and dtype."""
+        A = rand_sparse_semi_structured_mask(128, 128, dtype=dtype).cuda()
+        A_sparse = to_sparse_semi_structured(A)
+        A_dense = A_sparse.to_dense()
+
+        result = A_sparse.to("cpu", torch.float32)
+        self.assertEqual(result.device.type, "cpu")
+        self.assertEqual(result.dtype, torch.float32)
+        self.assertFalse(isinstance(result, SparseSemiStructuredTensor))
+        torch.testing.assert_close(
+            result, A_dense.to("cpu", torch.float32), rtol=1e-3, atol=1e-3
+        )
+
+    @dtypes(torch.float16, torch.bfloat16)
+    def test_semi_sparse_to_same_dtype_noop(self, dtype):
+        """Test .to(same_dtype) raises NotImplementedError (only to('cpu') is supported)."""
+        A = rand_sparse_semi_structured_mask(128, 128, dtype=dtype).cuda()
+        A_sparse = to_sparse_semi_structured(A)
+
+        with self.assertRaises(NotImplementedError):
+            A_sparse.to(dtype)
+
+    @dtypes(torch.float16, torch.bfloat16)
+    def test_semi_sparse_to_kwargs(self, dtype):
+        """Test .to() with keyword arguments (device=, dtype=)."""
+        A = rand_sparse_semi_structured_mask(128, 128, dtype=dtype).cuda()
+        A_sparse = to_sparse_semi_structured(A)
+        A_dense = A_sparse.to_dense()
+
+        result = A_sparse.to(device="cpu", dtype=torch.float32)
+        self.assertEqual(result.device.type, "cpu")
+        self.assertEqual(result.dtype, torch.float32)
+        self.assertFalse(isinstance(result, SparseSemiStructuredTensor))
+        torch.testing.assert_close(
+            result, A_dense.to(device="cpu", dtype=torch.float32), rtol=1e-3, atol=1e-3
+        )
 
 if len(SEMI_STRUCTURED_SUPPORTED_BACKENDS) > 0:
     instantiate_device_type_tests(TestSparseSemiStructured, globals(), only_for="cuda")
