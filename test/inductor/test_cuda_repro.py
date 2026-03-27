@@ -909,7 +909,10 @@ class CudaReproTests(TestCase):
             r = fn(x, w, b)
         finally:
             record_memory_history(False)
-        snapshot = str(torch.accelerator.memory._snapshot())
+        if torch.xpu.is_available():
+            snapshot = str(torch.xpu.memory._snapshot())
+        else:
+            snapshot = str(torch.cuda.memory._snapshot())
         self.assertTrue("called_inside_compile" in snapshot)
 
     def test_negative_arange_dynamic_shapes(self):
@@ -2114,6 +2117,7 @@ class CudaReproTests(TestCase):
         self.assertEqual(graph.device_types, {device_type})
         self.assertEqual(compiled_fn(*inp), fn(*inp))
 
+    @skipIfRocm(msg="Fails with Triton 3.7")
     def test_epilogue_fusion_with_view(self):
         class ToyModel(torch.nn.Module):
             def __init__(self) -> None:
