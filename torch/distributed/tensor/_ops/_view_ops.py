@@ -1124,10 +1124,12 @@ class _ViewShardingPropagator:
         # E.g. [3,4]→[12] Shard(0) mesh=2: device 0 has 2 groups of 4,
         # device 1 has 1 group of 4 — no consistent split_factor.
         # The last dim is exempt: only group *size* varies, not count.
+        from torch.fx.experimental.symbolic_shapes import guard_or_true
+
         flatten_end = last_dim.input_dim + 1
-        if local_tensor_shapes[p.dim] % self.mesh_sizes[
-            mesh_dim
-        ] != 0 and not self._is_last_shard_in_flatten_range(
+        if guard_or_true(
+            local_tensor_shapes[p.dim] % self.mesh_sizes[mesh_dim] != 0
+        ) and not self._is_last_shard_in_flatten_range(
             mesh_dim, placements, input_start_idx, flatten_end
         ):
             raise RuntimeError(

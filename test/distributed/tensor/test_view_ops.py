@@ -2297,7 +2297,7 @@ class TestViewOps(DTensorContinuousTestBase):
         self.assertEqual(out_plc, [Shard(0), Replicate()])
 
         # Flatten [16, u] -> [16*u] with Shard(1) on unbacked dim (non-leftmost):
-        # should force replicate since non-leftmost dims can't propagate through flatten
+        # dim 1 is last in the Flatten, so it propagates as _StridedShard
         u4 = fresh_sym()
         from_shape = (16, u4)
         to_shape = (16 * u4,)
@@ -2306,7 +2306,7 @@ class TestViewOps(DTensorContinuousTestBase):
         inp_tgt, out_plc = propagate_shape_and_sharding(
             input_placements, from_shape, rule, mesh_sizes
         )
-        self.assertEqual(out_plc, [Replicate(), Replicate()])
+        self.assertEqual(out_plc, [_StridedShard(dim=0, split_factor=16), Replicate()])
 
 
 TestViewOpsWithLocalTensor = create_local_tensor_test_class(
