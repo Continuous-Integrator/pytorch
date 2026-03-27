@@ -103,6 +103,41 @@ def fold_in(key: torch.Tensor, data: int) -> torch.Tensor:
     return torch.ops.aten._philox_key_fold_in(key, data)
 
 
+def normal_(
+    key: torch.Tensor,
+    result: torch.Tensor,
+    *,
+    mean: float = 0.0,
+    std: float = 1.0,
+) -> torch.Tensor:
+    r"""Fill ``result`` in-place with normal random values from a stateless PRNG key.
+
+    The values are drawn from a normal distribution with the specified ``mean``
+    and ``std``. The output is fully determined by the key, so calling with the
+    same key always produces the same result.
+
+    Supports batched keys: if ``key`` has shape ``(*batch, 2)``, the leading
+    dimensions of ``result`` must be broadcastable with ``*batch`` and each key
+    independently generates its slice of the output.
+
+    Args:
+        key (Tensor): A PRNG key of shape ``(..., 2)`` with dtype ``torch.uint64``.
+        result (Tensor): The output tensor to fill in-place.
+        mean (float): Mean of the normal distribution. Default: ``0.0``.
+        std (float): Standard deviation of the normal distribution. Default: ``1.0``.
+
+    Returns:
+        Tensor: ``result``, filled with normal random values.
+
+    Example::
+
+        >>> key = torch.func._random.key(42, device="cuda")
+        >>> result = torch.empty(1000, device="cuda")
+        >>> torch.func._random.normal_(key, result)
+    """
+    return torch.ops.aten._philox_normal_(result, key, mean, std)
+
+
 def normal(
     key: torch.Tensor,
     *shape: tuple[int, ...],
@@ -141,7 +176,42 @@ def normal(
     if dtype is None:
         dtype = torch.float32
     result = torch.empty(shape, dtype=dtype, device=key.device)
-    return torch.ops.aten._philox_normal_(result, key, mean, std)
+    return normal_(result, key, mean, std)
+
+
+def uniform_(
+    key: torch.Tensor,
+    result: torch.Tensor,
+    *,
+    low: float = 0.0,
+    high: float = 1.0,
+) -> torch.Tensor:
+    r"""Fill ``result`` in-place with uniform random values from a stateless PRNG key.
+
+    The values are drawn uniformly from the interval ``[low, high)``. The output
+    is fully determined by the key, so calling with the same key always produces
+    the same result.
+
+    Supports batched keys: if ``key`` has shape ``(*batch, 2)``, the leading
+    dimensions of ``result`` must be broadcastable with ``*batch`` and each key
+    independently generates its slice of the output.
+
+    Args:
+        key (Tensor): A PRNG key of shape ``(..., 2)`` with dtype ``torch.uint64``.
+        result (Tensor): The output tensor to fill in-place.
+        low (float): Lower bound (inclusive) of the uniform distribution. Default: ``0.0``.
+        high (float): Upper bound (exclusive) of the uniform distribution. Default: ``1.0``.
+
+    Returns:
+        Tensor: ``result``, filled with uniform random values.
+
+    Example::
+
+        >>> key = torch.func._random.key(42, device="cuda")
+        >>> result = torch.empty(1000, device="cuda")
+        >>> torch.func._random.uniform_(key, result)
+    """
+    return torch.ops.aten._philox_uniform_(result, key, low, high)
 
 
 def uniform(
@@ -182,4 +252,4 @@ def uniform(
     if dtype is None:
         dtype = torch.float32
     result = torch.empty(shape, dtype=dtype, device=key.device)
-    return torch.ops.aten._philox_uniform_(result, key, low, high)
+    return uniform_(result, key, low, high)
