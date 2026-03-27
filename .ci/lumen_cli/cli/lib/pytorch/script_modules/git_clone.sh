@@ -1,5 +1,5 @@
 #!/bin/bash
-# Simple git clone for RE runner
+# Git clone for RE runner
 set -eu
 
 : "${GIT_REPO:=}"

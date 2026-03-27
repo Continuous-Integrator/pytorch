@@ -1,6 +1,5 @@
 #!/bin/bash
 # RE equivalent of pytorch/test-infra/.github/actions/setup-uv
-# Set PYTHON_VERSION, ACTIVATE_ENVIRONMENT, UV_VERSION before sourcing.
 set -eu
 
 : "${PYTHON_VERSION:=3.12}"
