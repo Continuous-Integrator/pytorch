@@ -11,6 +11,6 @@ if ! command -v uv &>/dev/null; then
     export PATH="$HOME/.local/bin:$PATH"
 fi
 
-uv venv --seed
-source .venv/bin/activate
 uv python install "$PYTHON_VERSION"
+uv venv --seed --python "$PYTHON_VERSION"
+source .venv/bin/activate
