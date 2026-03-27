@@ -1,5 +1,6 @@
 import os
 from functools import cache
+from typing import cast
 
 # This handles collecting registration of all native ops
 from . import ops, registry
@@ -23,7 +24,8 @@ def get_user_ordering_fn() -> registry.UserOrderingFn | None:
         if not callable(fn):
             raise TypeError(f"{env_var} does not describe a callable function")
 
-        return fn
+        # Cast needed: getattr returns object, but we've verified fn is callable with correct signature
+        return cast(registry.UserOrderingFn, fn)
     except Exception as e:
         raise ValueError(
             f"Could not resolve {env_var} into an importable & callable function"

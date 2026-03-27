@@ -1,7 +1,7 @@
 # Owner(s): ["module: dsl-native-ops"]
 
 import logging
-from typing import Optional, Protocol
+from typing import Any, Optional, Protocol
 
 
 log = logging.getLogger(__name__)
@@ -18,9 +18,9 @@ class DSLRegistry:
     """Registry for DSL modules - calls their existing API functions dynamically"""
 
     def __init__(self):
-        self._dsl_modules: dict[str, DSLModuleProtocol] = {}
+        self._dsl_modules: dict[str, Any] = {}
 
-    def register_dsl(self, name: str, dsl_module: DSLModuleProtocol) -> None:
+    def register_dsl(self, name: str, dsl_module: Any) -> None:
         """Register a DSL module with required interface"""
         # Validate interface at registration time to fail fast
         if not hasattr(dsl_module, "runtime_available") or not callable(

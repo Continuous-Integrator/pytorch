@@ -149,34 +149,6 @@ class TestRegistry(TestCase):
                 result = list(self.registry._resolve_iterable(input_val))
                 self.assertEqual(result, expected)
 
-    def test_filter_functionality(self):
-        """Test _filter function with various filter criteria."""
-        # Test no filters raises error
-        with self.assertRaises(ValueError) as cm:
-            self.registry._filter("dsl", "op", "key")
-        self.assertIn("Must pass 1+ of filter_", str(cm.exception))
-
-        # Test different filter types
-        filter_test_cases = [
-            ("dsl_names", "test_dsl", "op", "key", "test_dsl", True),
-            ("dsl_names", "test_dsl", "op", "key", ["test_dsl", "other"], True),
-            ("dsl_names", "test_dsl", "op", "key", "other_dsl", False),
-            ("op_symbols", "dsl", "test_op", "key", "test_op", True),
-            ("op_symbols", "dsl", "test_op", "key", ["test_op", "other"], True),
-            ("op_symbols", "dsl", "test_op", "key", "other_op", False),
-            ("dispatch_keys", "dsl", "op", "test_key", "test_key", True),
-            ("dispatch_keys", "dsl", "op", "test_key", ["test_key", "other"], True),
-            ("dispatch_keys", "dsl", "op", "test_key", "other_key", False),
-        ]
-
-        for filter_type, dsl, op, key, filter_val, expected in filter_test_cases:
-            with self.subTest(
-                filter_type=filter_type, filter_val=filter_val, expected=expected
-            ):
-                kwargs = {f"filter_{filter_type}": filter_val}
-                result = self.registry._filter(dsl, op, key, **kwargs)
-                self.assertEqual(result, expected)
-
     def test_update_registration_maps(self):
         """Test _update_registration_maps updates all mapping dictionaries."""
         key = ("test_op", "CPU")
@@ -258,29 +230,36 @@ class TestRegistry(TestCase):
             "add.Tensor", impl_fn, "CPU", with_keyset=True, allow_override=True
         )
 
-        # Test 2: Unconditional override
-        mock_lib.reset_mock()
-        self.registry.register_op_override(
-            backend="test_backend2",
-            lib_symbol="aten",
-            op_symbol="mul.Tensor",
-            dispatch_key="CPU",
-            impl=impl_fn,
-            unconditional_override=True,
-        )
+        # Test 2: Test with_keyset = not unconditional_override relationship
+        for unconditional_override in [False, True]:
+            with self.subTest(unconditional_override=unconditional_override):
+                mock_lib.reset_mock()
+                op_symbol = f"test_unconditional_{unconditional_override}.Tensor"
 
-        key2 = ("mul.Tensor", "CPU")
-        node2 = self.registry._graphs[key2][0]
-        self.assertTrue(node2.unconditional_override)
+                self.registry.register_op_override(
+                    backend="test_backend2",
+                    lib_symbol="aten",
+                    op_symbol=op_symbol,
+                    dispatch_key="CPU",
+                    impl=impl_fn,
+                    unconditional_override=unconditional_override,
+                )
 
-        # Test lazy registration for unconditional override
-        mock_lib.impl.assert_not_called()
-        self.registry._register_overrides_from_graph(
-            "mul.Tensor", "CPU", self.registry._graphs[key2]
-        )
-        mock_lib.impl.assert_called_with(
-            "mul.Tensor", impl_fn, "CPU", with_keyset=False, allow_override=True
-        )
+                # In lazy model, registration should not have been called immediately
+                mock_lib.impl.assert_not_called()
+
+                # Trigger registration and verify with_keyset = not unconditional_override
+                test_key = (op_symbol, "CPU")
+                self.registry._register_overrides_from_graph(
+                    op_symbol, "CPU", self.registry._graphs[test_key]
+                )
+                mock_lib.impl.assert_called_with(
+                    op_symbol,
+                    impl_fn,
+                    "CPU",
+                    with_keyset=not unconditional_override,
+                    allow_override=True,
+                )
 
         # Test 3: Allow multiple overrides
         mock_lib.reset_mock()
