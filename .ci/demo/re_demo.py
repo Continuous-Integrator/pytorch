@@ -48,6 +48,7 @@ ACTION_MAP = {
     key: lambda inputs, s=script: inline_action(s, inputs)
     for key, script in ACTION_SCRIPTS.items()
 }
+ACTIONS_DIR = Path(__file__).resolve().parent / "actions"
 
 
 # ---------------------------------------------------------------------------
@@ -64,6 +65,7 @@ class PyTorchScriptBuilder(RunnerScriptBuilder):
     ]
 
     # just example to override the script builder from origincal cli tool
+    # the RunnerScriptBuilder automatically catch the module name with add_xxx() method
     def add_git_clone(self) -> "PyTorchScriptBuilder":
         self._modules.append(
             f"\n# {'=' * 44}\n# MODULE: git_clone\n# {'=' * 44}\n"
@@ -80,13 +82,9 @@ class PyTorchScriptBuilder(RunnerScriptBuilder):
         )
         return self
 
-
 # ---------------------------------------------------------------------------
 # Action → bash mapping
 # ---------------------------------------------------------------------------
-ACTIONS_DIR = Path(__file__).resolve().parent / "actions"
-
-
 def inline_action(script_name: str, inputs: dict) -> str:
     """Inline a bash script from actions/ with all with: inputs auto-exported."""
     template = (ACTIONS_DIR / script_name).read_text()
@@ -101,32 +99,18 @@ def inline_action(script_name: str, inputs: dict) -> str:
     )
     return f"{exports}\n{body}" if exports else body
 
-
-# ---------------------------------------------------------------------------
-# Workflow parsing
-# ---------------------------------------------------------------------------
-def _find_repo_root(from_path: str) -> Path:
-    p = Path(from_path).resolve().parent
-    while p != p.parent:
-        if (p / ".git").exists() or (p / ".github").exists():
-            return p
-        p = p.parent
-    return Path(from_path).resolve().parent
-
-
-def extract_setup_steps(uses: str, caller_path: str) -> list[dict]:
+# pass the workflow yaml to get the job info
+# for this demo, we only care about the job with `uses:` and `with.script`
+def extract_setup_steps(uses: str) -> list[dict]:
     """Extract setup steps from a reusable workflow.
-
     - run: steps with `# re:add` → include bash directly
     - uses: steps in ACTION_MAP → convert to bash
     """
     if not uses.startswith("./"):
         return []
-    root = _find_repo_root(caller_path)
-    resolved = root / uses.split("@")[0].removeprefix("./")
+    resolved = Path.cwd() / uses.split("@")[0].removeprefix("./")
     if not resolved.exists():
         return []
-
     wf = yaml.safe_load(resolved.read_text())
     substeps = []
     for _job_name, job_def in wf.get("jobs", {}).items():
@@ -146,9 +130,7 @@ def extract_setup_steps(uses: str, caller_path: str) -> list[dict]:
                 print(
                     f"  Warning: skipping unmapped action '{action_key}' (step: {name})"
                 )
-
     return substeps
-
 
 def parse_workflow_jobs(path: str) -> dict[str, dict]:
     """Parse jobs with `uses:` + `with.script` from a workflow file."""
@@ -260,7 +242,7 @@ def cmd_run(args):
 
         job = jobs[args.job]
         image = args.image or job["image"] or IMAGE
-        setup_steps = extract_setup_steps(job["uses"], args.workflow)
+        setup_steps = extract_setup_steps(job["uses"])
 
         if not cmd:
             if job["has_gha_expr"]:
