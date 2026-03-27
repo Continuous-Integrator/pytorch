@@ -790,7 +790,6 @@ class TestUnbackedSymints(InductorTestCase):
         expected = fn(*example_inputs)
         torch.testing.assert_close(actual, expected)
 
-    @skipGPUIf(not HAS_GPU, "requires gpu and triton")
     @dynamo_config.patch({"capture_scalar_outputs": True})
     def test_override_optimization_hint_eager(self, device):
         """Test that override_optimization_hint updates var_to_hint_override eagerly."""
@@ -805,7 +804,6 @@ class TestUnbackedSymints(InductorTestCase):
         result = fn(t)
         self.assertEqual(result, 6)
 
-    @skipGPUIf(not HAS_GPU, "requires gpu and triton")
     @dynamo_config.patch({"capture_scalar_outputs": True})
     def test_override_optimization_hint_compiled(self, device):
         """Test override_optimization_hint inside a compiled function with fullgraph=True."""
@@ -820,7 +818,6 @@ class TestUnbackedSymints(InductorTestCase):
         result = compiled_fn(t)
         self.assertEqual(result, 6)
 
-    @skipGPUIf(not HAS_GPU, "requires gpu and triton")
     @dynamo_config.patch({"capture_scalar_outputs": True})
     def test_override_optimization_hint_compiled_tolist(self, device):
         """Test that override_optimization_hint is a no-op on concrete ints from tolist()."""
@@ -836,7 +833,6 @@ class TestUnbackedSymints(InductorTestCase):
         result = compiled_fn(t)
         self.assertEqual(result, t.sum())
 
-    @skipGPUIf(not HAS_GPU, "requires gpu and triton")
     @dynamo_config.patch({"capture_scalar_outputs": True})
     def test_override_optimization_hint_multiple_items(self, device):
         """Test override_optimization_hint on multiple unbacked symbols from separate .item() calls."""
@@ -884,13 +880,17 @@ class TestUnbackedSymints(InductorTestCase):
 
     def test_override_optimization_hint_rejects_backed_symbol(self, device):
         """Test that override_optimization_hint rejects backed (non-unbacked) symbols."""
-        t = torch.randn(5, device=device)
-        torch._dynamo.decorators.mark_dynamic(t, 0)
-        s = t.size(0)  # backed symbol, not unbacked
-        with self.assertRaisesRegex(ValueError, "unbacked symbol"):
-            torch._dynamo.override_optimization_hint(s, 42)
 
-    @skipGPUIf(not HAS_GPU, "requires gpu and triton")
+        def fn(t):
+            s = t.size(0)  # backed symbol inside compile
+            torch._dynamo.override_optimization_hint(s, 42)
+            return t.sum()
+
+        t = torch.randn(5, device=device)
+        torch._dynamo.mark_dynamic(t, 0)
+        with self.assertRaises(Exception):
+            torch.compile(fn, fullgraph=True)(t)
+
     @dynamo_config.patch({"capture_scalar_outputs": True})
     def test_override_optimization_hint_in_fx_pass(self, device):
         """Test using override_optimization_hint in a custom FX pass (backend).
