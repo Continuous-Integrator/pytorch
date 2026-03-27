@@ -14078,6 +14078,8 @@ op_db: list[OpInfo] = [
            ],
            dtypes=floating_and_complex_types(),
            dtypesIfMPS=floating_and_complex_types_and(torch.float16),
+           dtypesIfXPU=floating_and_complex_types_and(torch.float16),
+           backward_dtypesIfXPU=floating_and_complex_types_and(torch.float16),
            sample_inputs_func=sample_inputs_stft,
            # Runs very slowly on slow gradcheck - alternatively reduce input sizes
            gradcheck_fast_mode=True,
@@ -14659,8 +14661,6 @@ op_db: list[OpInfo] = [
                     dtypes=floating_and_complex_types_and(torch.bfloat16, torch.float16),
                     dtypesIfCUDA=floating_and_complex_types_and(torch.bfloat16, torch.float16, torch.complex32),
                     dtypesIfHpu=custom_types(torch.float32, torch.bfloat16),
-                    dtypesIfXPU=floating_types_and(torch.bfloat16, torch.float16),
-                    backward_dtypesIfXPU=floating_types_and(torch.float16, torch.complex32, torch.bfloat16),
                     supports_forward_ad=True,
                     supports_fwgrad_bwgrad=True,
                     supports_rhs_python_scalar=False,
