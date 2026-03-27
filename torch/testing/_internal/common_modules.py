@@ -1780,6 +1780,9 @@ def module_inputs_torch_nn_LinearCrossEntropyLoss(module_info, device, dtype, re
     # make_input = partial(make_tensor, device=device, dtype=dtype, requires_grad=requires_grad)
     # make_loss_weight = partial(make_tensor, device=device, dtype=dtype, requires_grad=False)
 
+    def make_input(batch_dims, in_features):
+        return torch.randn((*batch_dims, in_features), device=device, dtype=dtype, requires_grad=requires_grad)
+
     def reference_fn(m, p, i, t):
         linear_weight = p[0].reshape(*m.out_features, m.num_classes, i.shape[-1])
         return linear_cross_entropy_loss_reference(
@@ -1857,32 +1860,39 @@ def module_inputs_torch_nn_LinearCrossEntropyLoss(module_info, device, dtype, re
                             continue
                     else:
                         target_shape = (*batch_dims, *of)
-                    input = torch.randn(
-                        (*batch_dims, in_features),
-                        device=device,
-                        dtype=dtype,
-                        requires_grad=requires_grad,
-                    )
+                    input = make_input(batch_dims, in_features)
                     target = make_target(num_classes, target_shape, ii, target_dtype)
                     if (
                             target.device.type != "meta"
                             and not target_dtype.is_floating_point and reduction == "mean"
                             and ii >= 0 and ii < num_classes and torch.all(target == ii)
                     ):
+                        # ensures valid normalization:
                         target[0 if target.shape else ()] = random.sample(sorted(set(range(num_classes)) - {ii}), 1)[0]
 
                     yield module_args, module_kwargs, (input, target)
 
                     if (
-                            not target_dtype.is_floating_point and reduction != "mean"
-                            and ii >= 0 and ii < num_classes
+                            not target_dtype.is_floating_point
+                            and target_shape
+                            and num_batches > 1
                     ):
-                        input = torch.randn(
-                            (*batch_dims, in_features),
-                            device=device,
-                            dtype=dtype,
-                            requires_grad=requires_grad,
-                        )
+                        # target may contain out-of-range ii values
+                        input = make_input(batch_dims, in_features)
+                        target = make_target(num_classes, target_shape, ii, target_dtype)
+                        target[num_batches // 2] = ii
+                        if ii < 0 or ii >= num_classes:
+                            # tests the correctness of out-of-range ii
+                            # mapping to 0 (see
+                            # linear_cross_entropy_batch_chunking_cls)
+                            target[0] = 0
+                        yield module_args, module_kwargs, (input, target)
+
+                    if (
+                            not target_dtype.is_floating_point and reduction != "mean"
+                    ):
+                        # target is completely filled with ii
+                        input = make_input(batch_dims, in_features)
                         target = torch.full_like(target, ii)
                         yield module_args, module_kwargs, (input, target)
 

@@ -3834,31 +3834,29 @@ def linear_cross_entropy(
         else:
             num_batches = 1
             has_batches = False
+            input = input.unsqueeze(0)
+            target = target.unsqueeze(0)
+
         if weight is None:
-            # optimization todo: support unspecified weight in LinearCrossEntropyFunction
             weight = torch.ones(
                 (num_classes,),
                 device=input.device,
                 dtype=input.dtype,
                 requires_grad=False,
             )
-        if ignore_index >= 0 and ignore_index < weight.shape[0]:
-            weight = weight.clone()
-            weight.narrow(0, ignore_index, 1).zero_()
-        if not has_batches:
-            input = input.unsqueeze(0)
-            target = target.unsqueeze(0)
+
         options = options.adjust(num_batches, in_features, num_classes)
 
         # global import results a likely circular import
         import torch.nn._linear_cross_entropy as m
 
-        result = m.linear_cross_entropy_chunking(
+        result = m.linear_cross_entropy_batch_chunking_cls(
             input,
             linear_weight,
             target,
             weight,
             reduction,
+            ignore_index,
             label_smoothing,
             options.batch_chunk_size,
             options.grad_inplace,

@@ -15,7 +15,7 @@ def chunk_iter(total_size, chunk_size):
             yield start, chunk_size
 
 
-def linear_cross_entropy_chunking_setup_context(ctx, inputs, output):
+def linear_cross_entropy_batch_chunking_cls_setup_context(ctx, inputs, output):
     ctx.grad_inplace, ctx.compute_input_grad, ctx.compute_linear_weight_grad = inputs[
         -3:
     ]
@@ -33,13 +33,16 @@ def linear_cross_entropy_chunking_setup_context(ctx, inputs, output):
         ctx.save_for_backward(*saved)
 
 
-@torch.library.custom_op("torch_nn::linear_cross_entropy_chunking", mutates_args=())
-def linear_cross_entropy_chunking(
+@torch.library.custom_op(
+    "torch_nn::linear_cross_entropy_batch_chunking_cls", mutates_args=()
+)
+def linear_cross_entropy_batch_chunking_cls(
     input: torch.Tensor,
     linear_weight: torch.Tensor,
     target: torch.Tensor,
     weight: torch.Tensor,
     reduction: str,
+    ignore_index: int,
     label_smoothing: float,
     batch_chunk_size: int,
     grad_inplace: bool,
@@ -51,27 +54,37 @@ def linear_cross_entropy_chunking(
     num_batches, in_features = input.shape
     num_classes, _ = linear_weight.shape
 
-    if target.dtype.is_floating_point:
-        raise NotImplementedError(
-            "LinearCrossEntropyFunction does not support probability targets"
+    if target.dtype != torch.int64:
+        raise TypeError(
+            "linear_cross_entropy_batch_chunking_cls: target dtype must be torch.int64, got {target.dtype}."
         )
-    else:
-        neg_weight = -weight
-        neg_weight_target = neg_weight.index_select(0, target)
-        if reduction == "mean":
-            d = -neg_weight_target.sum()
-            neg_weight.div_(d)
-            neg_weight_target.div_(d)
-        elif reduction == "sum":
-            pass
-        else:
-            raise NotImplementedError(
-                f"LinearCrossEntropyFunction does not support {reduction=}"
+
+    mask = target == ignore_index
+    if ignore_index < 0 or ignore_index >= num_classes:
+        # map out-of-range ignore_index to 0:
+        target = torch.where(mask, 0, target)
+        # The correctness of this mapping is subtle: mask contains the
+        # original target that ensures that selected weights are
+        # masked from out-of-range ignore_index mapping correctly.
+    neg_weight_target = torch.where(mask, 0, weight.index_select(0, target))
+
+    if reduction == "mean":
+        d = neg_weight_target.sum()
+        if d == 0:
+            raise RuntimeError(
+                "linear_cross_entropy_batch_chunking_cls failed to normalize: weights sum is zero"
             )
+        neg_weight_target.div_(-d)
+    elif reduction == "sum":
+        neg_weight_target.neg_()
+    else:
+        raise NotImplementedError(
+            f"linear_cross_entropy_batch_chunking_cls does not support {reduction=}"
+        )
 
     if label_smoothing > 0.0:
         raise NotImplementedError(
-            "LinearCrossEntropyFunction does not support label smoothing"
+            "linear_cross_entropy_batch_chunking_cls does not support label smoothing"
         )
 
     # A chunk buffer used to hold logits, softmax of logits:
@@ -117,10 +130,10 @@ def linear_cross_entropy_chunking(
         X_ = ensure_size(X, 0, bchunk_size)
 
         # Compute output.
+
         torch.mm(x, linear_weight.T, out=X_)  # projection
 
         Xmax = X_.max(dim=1, keepdim=True)[0]
-
         X_.sub_(Xmax)
 
         output.add_(neg_weight_t.dot(X_.gather(1, t.unsqueeze(1)).squeeze(1)))
@@ -130,12 +143,9 @@ def linear_cross_entropy_chunking(
         expXsum = X_.sum(dim=1)
 
         if compute_input_grad or compute_linear_weight_grad:
-            # X_ content will be reused in the classes
-            # chunking for-loop below
             X_.mul_((neg_weight_t / expXsum).unsqueeze(1))
 
         expXsum.log_()
-
         output.sub_(neg_weight_t.dot(expXsum))
 
         # Compute gradients.
@@ -145,32 +155,25 @@ def linear_cross_entropy_chunking(
                 grad_x = grad_input.narrow(0, bchunk_start, bchunk_size)
                 torch.index_select(linear_weight, 0, t, out=grad_x)
                 grad_x.mul_(neg_weight_t.unsqueeze(1))
-            else:
-                grad_x = None
-
-            X_ = ensure_size(X_, 1, num_classes)
-
-            if grad_x is not None:
                 grad_x.addmm_(X_, linear_weight, alpha=-1)
 
             if compute_linear_weight_grad:
-                grad_L_ = grad_linear_weight.narrow(0, 0, num_classes)
                 G.zero_()
-                G.index_add_(0, t, x)
-                G.mul_(neg_weight.unsqueeze(1))
+                G.index_add_(0, t, x * neg_weight_t.unsqueeze(1))
                 G.addmm_(X_.T, x, alpha=-1)
-                grad_L_.narrow(1, 0, in_features).add_(G)
+                grad_linear_weight.narrow(1, 0, in_features).add_(G)
 
     return output, grad_input, grad_linear_weight
 
 
-@linear_cross_entropy_chunking.register_fake
+@linear_cross_entropy_batch_chunking_cls.register_fake
 def _(
     input,
     linear_weight,
     target,
     weight,
     reduction,
+    ignore_index: int,
     label_smoothing,
     batch_chunk_size,
     grad_inplace,
@@ -181,7 +184,7 @@ def _(
         result = torch.empty((), dtype=input.dtype, device=input.device)
     else:
         raise NotImplementedError(
-            f"LinearCrossEntropyFunction does not support {reduction=}"
+            f"linear_cross_entropy_batch_chunking_cls does not support {reduction=}"
         )
     if compute_input_grad:
         grad_input = torch.empty_like(input)
@@ -201,9 +204,9 @@ def _(
     return result, grad_input, grad_linear_weight
 
 
-def linear_cross_entropy_chunking_backward(ctx, *grads):
+def linear_cross_entropy_batch_chunking_cls_backward(ctx, *grads):
     grad_output = grads[0]
-    result = [None] * 10
+    result = [None] * 11
 
     if ctx.compute_input_grad or ctx.compute_linear_weight_grad:
         saved = ctx.saved_tensors
@@ -234,7 +237,7 @@ def linear_cross_entropy_chunking_backward(ctx, *grads):
     return tuple(result)
 
 
-linear_cross_entropy_chunking.register_autograd(
-    linear_cross_entropy_chunking_backward,
-    setup_context=linear_cross_entropy_chunking_setup_context,
+linear_cross_entropy_batch_chunking_cls.register_autograd(
+    linear_cross_entropy_batch_chunking_cls_backward,
+    setup_context=linear_cross_entropy_batch_chunking_cls_setup_context,
 )
