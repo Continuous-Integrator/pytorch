@@ -42,9 +42,7 @@ def key(
         >>> key = torch.func._random.key(42)
     """
     if impl != "philox4x32-10":
-        raise NotImplementedError(
-            f"key() does not support PRNG impl '{impl}'"
-        )
+        raise NotImplementedError(f"key() does not support PRNG impl '{impl}'")
 
     # (seed, offset)
     return torch.tensor([seed, 0], dtype=torch.uint64, device=device)

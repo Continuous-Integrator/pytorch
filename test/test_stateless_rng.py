@@ -11,6 +11,7 @@ from torch.testing._internal.common_device_type import (
 from torch.testing._internal.common_dtype import floating_types_and
 from torch.testing._internal.common_utils import run_tests, TestCase
 
+
 all_floating_dtypes = floating_types_and(torch.half, torch.bfloat16)
 
 
@@ -99,9 +100,7 @@ class TestPhiloxKeySplit(TestCase):
             random.split(key, -1)
 
     def test_error_batched_last_dim_not_2(self, device):
-        key = torch.tensor(
-            [[42, 0, 1], [43, 0, 1]], dtype=torch.uint64, device=device
-        )
+        key = torch.tensor([[42, 0, 1], [43, 0, 1]], dtype=torch.uint64, device=device)
         with self.assertRaises(RuntimeError):
             random.split(key, 4)
 
@@ -182,9 +181,7 @@ class TestPhiloxKeyFoldIn(TestCase):
             random.fold_in(key, 0)
 
     def test_error_batched_last_dim_not_2(self, device):
-        key = torch.tensor(
-            [[42, 0, 1], [43, 0, 1]], dtype=torch.uint64, device=device
-        )
+        key = torch.tensor([[42, 0, 1], [43, 0, 1]], dtype=torch.uint64, device=device)
         with self.assertRaises(RuntimeError):
             random.fold_in(key, 0)
 
@@ -198,9 +195,7 @@ class TestPhiloxKeyFoldIn(TestCase):
         )
 
 
-instantiate_device_type_tests(
-    TestPhiloxKeyFoldIn, globals(), only_for=("cpu", "cuda")
-)
+instantiate_device_type_tests(TestPhiloxKeyFoldIn, globals(), only_for=("cpu", "cuda"))
 
 
 class TestPhiloxNormal(TestCase):
@@ -526,9 +521,7 @@ class TestPhiloxCompile(TestCase):
             keys = random.split(key, 4)
             return random.normal(keys, (4, 100))
 
-        self.assertEqual(
-            f(key), random.normal(random.split(key, 4), (4, 100))
-        )
+        self.assertEqual(f(key), random.normal(random.split(key, 4), (4, 100)))
 
     def test_fold_in_then_uniform_aot_eager(self, device):
         key = random.key(42, device=device)
@@ -538,9 +531,7 @@ class TestPhiloxCompile(TestCase):
             k = random.fold_in(key, 3)
             return random.uniform(k, (100,))
 
-        self.assertEqual(
-            f(key), random.uniform(random.fold_in(key, 3), (100,))
-        )
+        self.assertEqual(f(key), random.uniform(random.fold_in(key, 3), (100,)))
 
 
 instantiate_device_type_tests(TestPhiloxCompile, globals(), only_for=("cpu", "cuda"))
