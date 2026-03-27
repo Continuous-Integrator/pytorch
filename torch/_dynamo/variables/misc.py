@@ -1964,16 +1964,33 @@ class StringFormatVariable(VariableTracker):
     ) -> VariableTracker:
         from .lazy import ComputedLazyConstantVariable, LazyConstantVariable
 
-        # Keep lazy constants unrealized to avoid installing guards unnecessarily.
+        all_args = list(itertools.chain(sym_args, sym_kwargs.values()))
+
         has_lazy_constant = any(
             isinstance(x, (LazyConstantVariable, ComputedLazyConstantVariable))
-            for x in itertools.chain(sym_args, sym_kwargs.values())
+            for x in all_args
         )
 
-        if not has_lazy_constant and all(
-            x.is_python_constant()
-            for x in itertools.chain(sym_args, sym_kwargs.values())
-        ):
+        if has_lazy_constant and not sym_kwargs:
+            # All peekable lazy args with no kwargs: fold into a
+            # ComputedLazyConstantVariable that defers guard installation but
+            # avoids graph breaks when the formatted string is used as a
+            # function argument.
+            all_peekable = all(x.try_peek_constant()[0] for x in all_args)
+            if all_peekable:
+                # Use str.format as the op with format_string as the first arg.
+                # _make_binary_op_reconstruct_fn already has a str.format handler.
+                from .builtin import _make_binary_op_reconstruct_fn
+
+                reconstruct_fn = _make_binary_op_reconstruct_fn(str.format)
+                assert reconstruct_fn is not None
+                fmt_str_var = variables.ConstantVariable.create(format_string)
+                return ComputedLazyConstantVariable.create(
+                    str.format,
+                    [fmt_str_var] + list(sym_args),
+                    reconstruct_fn,
+                )
+        elif all(x.is_python_constant() for x in all_args):
             return variables.ConstantVariable.create(
                 format_string.format(
                     *[v.as_python_constant() for v in sym_args],
