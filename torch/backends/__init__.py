@@ -126,7 +126,6 @@ from torch.backends import (
     cuda as cuda,
     cudnn as cudnn,
     cusparselt as cusparselt,
-    cutedsl as cutedsl,
     kleidiai as kleidiai,
     mha as mha,
     miopen as miopen,
@@ -137,5 +136,4 @@ from torch.backends import (
     openmp as openmp,
     opt_einsum as opt_einsum,
     quantized as quantized,
-    triton as triton,
 )
