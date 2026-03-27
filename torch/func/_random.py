@@ -109,7 +109,6 @@ def normal(
     mean: float = 0.0,
     std: float = 1.0,
     dtype: torch.dtype | None = None,
-    device: torch.device | str | None = None,
     portable: bool = True,
 ) -> torch.Tensor:
     r"""Generate normally distributed random values from a stateless PRNG key.
@@ -117,7 +116,7 @@ def normal(
     Produces a tensor of the given shape filled with values drawn from a normal
     distribution with the specified ``mean`` and ``std``. The output is fully
     determined by the key, so calling with the same key always returns the same
-    result.
+    result. The output is placed on the same device as ``key``.
 
     Supports batched keys: if ``key`` has shape ``(*batch, 2)``, the leading
     dimensions of ``shape`` must be broadcastable with ``*batch`` and each key
@@ -129,8 +128,6 @@ def normal(
         mean (float): Mean of the normal distribution. Default: ``0.0``.
         std (float): Standard deviation of the normal distribution. Default: ``1.0``.
         dtype (:class:`torch.dtype`, optional): The desired dtype. Default: ``torch.float32``.
-        device (:class:`torch.device`, optional): The desired device. Default:
-            same device as ``key``.
         portable (bool): If ``True`` (default), the output is identical
             across GPU types for the same key. CPU and CUDA outputs are close
             but may not be bitwise identical due to different transcendental
@@ -151,9 +148,7 @@ def normal(
         shape = tuple(shape[0])
     if dtype is None:
         dtype = torch.float32
-    if device is None:
-        device = key.device
-    result = torch.empty(shape, dtype=dtype, device=device)
+    result = torch.empty(shape, dtype=dtype, device=key.device)
     return torch.ops.aten._philox_normal_(result, key, mean, std, portable)
 
 
@@ -163,14 +158,14 @@ def uniform(
     low: float = 0.0,
     high: float = 1.0,
     dtype: torch.dtype | None = None,
-    device: torch.device | str | None = None,
     portable: bool = True,
 ) -> torch.Tensor:
     r"""Generate uniformly distributed random values from a stateless PRNG key.
 
     Produces a tensor of the given shape filled with values drawn uniformly
     from the interval ``[low, high)``. The output is fully determined by the
-    key, so calling with the same key always returns the same result.
+    key, so calling with the same key always returns the same result. The output
+    is placed on the same device as ``key``.
 
     Supports batched keys: if ``key`` has shape ``(*batch, 2)``, the leading
     dimensions of ``shape`` must be broadcastable with ``*batch`` and each key
@@ -182,8 +177,6 @@ def uniform(
         low (float): Lower bound (inclusive) of the uniform distribution. Default: ``0.0``.
         high (float): Upper bound (exclusive) of the uniform distribution. Default: ``1.0``.
         dtype (:class:`torch.dtype`, optional): The desired dtype. Default: ``torch.float32``.
-        device (:class:`torch.device`, optional): The desired device. Default:
-            same device as ``key``.
         portable (bool): If ``True`` (default), the output is identical
             across CPU, CUDA, and different GPU types for the same key. If
             ``False``, device-specific optimizations may produce different
@@ -201,7 +194,5 @@ def uniform(
         shape = tuple(shape[0])
     if dtype is None:
         dtype = torch.float32
-    if device is None:
-        device = key.device
-    result = torch.empty(shape, dtype=dtype, device=device)
+    result = torch.empty(shape, dtype=dtype, device=key.device)
     return torch.ops.aten._philox_uniform_(result, key, low, high, portable)
