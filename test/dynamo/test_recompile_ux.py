@@ -545,9 +545,7 @@ class IsolatedRegionTests(torch._dynamo.test_case.TestCase):
         def f(x):
             return x.sin()
 
-        opt_f = torch.compile(
-            f, backend=cnt, fullgraph=True, isolated_region=True
-        )
+        opt_f = torch.compile(f, backend=cnt, fullgraph=True, isolated_region=True)
 
         opt_f(torch.randn(3))
         self.assertEqual(cnt.frame_count, 1)
