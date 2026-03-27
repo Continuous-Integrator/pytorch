@@ -71,11 +71,8 @@ def _resolve_commit(pr: int | None, commit: str | None) -> dict:
 
 
 def build_run_command(*commands: str) -> str:
-    """Wrap commands for RE execution using uv run."""
-    wrapped = []
-    for cmd in commands:
-        wrapped.append(f"uv run --project .ci/lumen_cli {cmd}")
-    return "\n".join(wrapped)
+    """Wrap commands for execution (venv already activated by setup_uv)."""
+    return "\n".join(commands)
 
 
 class LumenScriptBuilder(RunnerScriptBuilder):

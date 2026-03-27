@@ -12,4 +12,8 @@ if ! command -v uv &>/dev/null; then
 fi
 
 uv python install "$PYTHON_VERSION"
+cd .ci/lumen_cli
 uv venv --seed
+uv sync
+source .venv/bin/activate
+cd -
