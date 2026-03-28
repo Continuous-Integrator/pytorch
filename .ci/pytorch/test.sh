@@ -1001,36 +1001,42 @@ test_inductor_torchbench_smoketest_perf() {
 
 test_unbacked_parity_smoketest() {
   # Check that unbacked batch-only has performance parity with backed batch-only
-  # Fails if any model regresses >1% consistently across 3 retries
+  # Fails if any model regresses >THRESHOLD% consistently across 3 retries
   TEST_REPORTS_DIR=$(pwd)/test/test-reports
   mkdir -p "$TEST_REPORTS_DIR"
 
   local THRESHOLD=1.0
   local MAX_RETRIES=3
   local MODELS="MobileBertForMaskedLM|DistilBertForMaskedLM|DistillGPT2|T5Small"
-  local OUTPUT_FILE="$TEST_REPORTS_DIR/unbacked_parity_results.txt"
 
+  # Issue 6: Write per-run output files for post-failure debugging
   run_comparison() {
+    local run_num=$1
+    local output_file="$TEST_REPORTS_DIR/unbacked_parity_results_run${run_num}.txt"
     python benchmarks/dynamo/huggingface.py \
       --compare-backed-unbacked \
       --performance --inference --inductor --device cuda \
-      --filter "$MODELS" 2>&1 | tee "$OUTPUT_FILE"
+      --filter "$MODELS" 2>&1 | tee "$output_file"
   }
 
   check_regressions() {
+    local run_num=$1
+    local output_file="$TEST_REPORTS_DIR/unbacked_parity_results_run${run_num}.txt"
     # Parse the comparison table and check for regressions > threshold
     # Returns 0 if regressions found, 1 if no regressions
     local regressions=()
     while IFS= read -r line; do
+      # Issue 3: Broadened regex to match model names with hyphens, slashes, dots
       # Match lines like: "  ModelName                      10.000      10.500    +5.0%"
-      if [[ "$line" =~ ^[[:space:]]+([A-Za-z0-9_]+)[[:space:]]+([0-9.]+)[[:space:]]+([0-9.]+)[[:space:]]+\+([0-9.]+)% ]]; then
+      if [[ "$line" =~ ^[[:space:]]+([A-Za-z0-9_./-]+)[[:space:]]+([0-9.]+)[[:space:]]+([0-9.]+)[[:space:]]+\+([0-9.]+)% ]]; then
         local model="${BASH_REMATCH[1]}"
         local diff="${BASH_REMATCH[4]}"
-        if (( $(echo "$diff > $THRESHOLD" | bc -l) )); then
+        # Nit: Use awk instead of bc -l to avoid dependency on bc
+        if awk "BEGIN{exit !($diff > $THRESHOLD)}"; then
           regressions+=("$model:+${diff}%")
         fi
       fi
-    done < "$OUTPUT_FILE"
+    done < "$output_file"
 
     if [[ ${#regressions[@]} -gt 0 ]]; then
       echo "Regressions found: ${regressions[*]}"
@@ -1040,18 +1046,27 @@ test_unbacked_parity_smoketest() {
   }
 
   check_failures() {
-    # Check if any model had both backed and unbacked fail
+    local run_num=$1
+    local output_file="$TEST_REPORTS_DIR/unbacked_parity_results_run${run_num}.txt"
+    # Issue 2: Check for any model failure — not just paired failures.
+    # Specifically flags when unbacked fails but backed succeeds (regression signal).
     # Returns 0 if failures found, 1 if no failures
     local current_model=""
     local backed_failed=false
     local unbacked_failed=false
-    local failures=()
+    local both_failures=()
+    local unbacked_only_failures=()
 
     while IFS= read -r line; do
-      if [[ "$line" =~ ^---[[:space:]]+([A-Za-z0-9_]+)[[:space:]]+--- ]]; then
+      # Issue 3: Broadened regex to match model names with hyphens, slashes, dots
+      if [[ "$line" =~ ^---[[:space:]]+([A-Za-z0-9_./-]+)[[:space:]]+--- ]]; then
         # New model - check previous model
-        if [[ -n "$current_model" ]] && $backed_failed && $unbacked_failed; then
-          failures+=("$current_model")
+        if [[ -n "$current_model" ]]; then
+          if $backed_failed && $unbacked_failed; then
+            both_failures+=("$current_model")
+          elif $unbacked_failed && ! $backed_failed; then
+            unbacked_only_failures+=("$current_model")
+          fi
         fi
         current_model="${BASH_REMATCH[1]}"
         backed_failed=false
@@ -1061,15 +1076,28 @@ test_unbacked_parity_smoketest() {
       elif [[ "$line" =~ unbacked.*FAILED|unbacked.*TIMEOUT|unbacked.*ERROR ]]; then
         unbacked_failed=true
       fi
-    done < "$OUTPUT_FILE"
+    done < "$output_file"
 
     # Check last model
-    if [[ -n "$current_model" ]] && $backed_failed && $unbacked_failed; then
-      failures+=("$current_model")
+    if [[ -n "$current_model" ]]; then
+      if $backed_failed && $unbacked_failed; then
+        both_failures+=("$current_model")
+      elif $unbacked_failed && ! $backed_failed; then
+        unbacked_only_failures+=("$current_model")
+      fi
     fi
 
-    if [[ ${#failures[@]} -gt 0 ]]; then
-      echo "❌ FAILURES DETECTED: ${failures[*]}"
+    local has_failures=false
+    if [[ ${#both_failures[@]} -gt 0 ]]; then
+      echo "❌ FAILURES DETECTED: Both backed and unbacked failed for: ${both_failures[*]}"
+      has_failures=true
+    fi
+    if [[ ${#unbacked_only_failures[@]} -gt 0 ]]; then
+      echo "❌ FAILURES DETECTED: Unbacked failed (but backed succeeded) for: ${unbacked_only_failures[*]}"
+      has_failures=true
+    fi
+
+    if $has_failures; then
       return 0
     fi
     return 1
@@ -1077,16 +1105,16 @@ test_unbacked_parity_smoketest() {
 
   # Run initial comparison
   echo "=== Run 1/$MAX_RETRIES ==="
-  run_comparison
+  run_comparison 1
 
   # Check for failures first
-  if check_failures; then
-    echo "❌ Test failed: Models failed to run"
+  if check_failures 1; then
+    echo "❌ Test failed: Models failed to run (see above for details)"
     exit 1
   fi
 
   # Check for regressions
-  if ! check_regressions; then
+  if ! check_regressions 1; then
     echo "✅ PASSED: No regressions above ${THRESHOLD}% threshold"
     exit 0
   fi
@@ -1096,9 +1124,15 @@ test_unbacked_parity_smoketest() {
   for ((retry=2; retry<=MAX_RETRIES; retry++)); do
     echo ""
     echo "=== Retry $retry/$MAX_RETRIES (potential regression detected) ==="
-    run_comparison
+    run_comparison "$retry"
 
-    if check_regressions; then
+    # Issue 4: Also check for failures on retries (e.g., intermittent OOM)
+    if check_failures "$retry"; then
+      echo "❌ Test failed: Models failed on retry $retry (see above for details)"
+      exit 1
+    fi
+
+    if check_regressions "$retry"; then
       ((regression_count++))
     fi
   done
