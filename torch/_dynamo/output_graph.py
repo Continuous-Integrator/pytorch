@@ -1539,9 +1539,7 @@ class OutputGraph(OutputGraphCommon):
                 fake_script_obj = torch._library.fake_class_registry.maybe_to_fake_obj(
                     self.fake_mode, target
                 )
-                hoist_name = re.sub(
-                    r"[^a-zA-Z0-9]+", "_", "_".join(map(str, names))
-                )
+                hoist_name = re.sub(r"[^a-zA-Z0-9]+", "_", "_".join(map(str, names)))
 
                 from torch._dynamo.variables.builder import GraphArg
 
