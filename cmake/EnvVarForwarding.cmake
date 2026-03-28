@@ -135,7 +135,9 @@ if(Python_EXECUTABLE)
     # Must be done here (before add_subdirectory) so subdirectory scopes inherit
     # the flags. System lib dirs come first to prefer system-native libraries
     # over conda's sysroot versions (which trigger GLIBC_PRIVATE link failures).
+    # -Wl,-rpath-link is a GNU ld / ELF-only concept; skip on Windows and macOS.
     set(_rp_flags "")
+    if(NOT WIN32 AND NOT APPLE)
     # System multiarch lib dir (Debian/Ubuntu: /lib/x86_64-linux-gnu, etc.).
     if(CMAKE_LIBRARY_ARCHITECTURE)
       foreach(_d
@@ -210,6 +212,7 @@ if(Python_EXECUTABLE)
     # torch-xpu-ops sycltla libs (XPU): libtorch-xpu-ops-sycltla-mha_*.so are
     # built into the cmake binary dir's lib/ subdir during the build phase.
     string(APPEND _rp_flags " -Wl,-rpath-link,${CMAKE_BINARY_DIR}/lib")
+    endif() # NOT WIN32 AND NOT APPLE
     if(_rp_flags)
       string(APPEND CMAKE_EXE_LINKER_FLAGS "${_rp_flags}")
       string(APPEND CMAKE_SHARED_LINKER_FLAGS "${_rp_flags}")
@@ -256,25 +259,8 @@ if(DEFINED ENV{BUILD_LIBTORCH_WHL} AND DEFINED ENV{BUILD_PYTHON_ONLY})
   endif()
 endif()
 
-# Build type logic previously in tools/setup_helpers/env.py.
-# CMAKE_BUILD_TYPE always takes precedence. If not set, check DEBUG and
-# REL_WITH_DEB_INFO env vars.
-if(NOT CMAKE_BUILD_TYPE AND NOT DEFINED ENV{CMAKE_BUILD_TYPE})
-  if(DEFINED ENV{DEBUG})
-    string(TOUPPER "$ENV{DEBUG}" _debug_val)
-    if(_debug_val MATCHES "^(ON|1|YES|TRUE|Y)$")
-      set(CMAKE_BUILD_TYPE "Debug" CACHE STRING "Build type" FORCE)
-    endif()
-  endif()
-  if(NOT CMAKE_BUILD_TYPE AND DEFINED ENV{REL_WITH_DEB_INFO})
-    string(TOUPPER "$ENV{REL_WITH_DEB_INFO}" _rwdi_val)
-    if(_rwdi_val MATCHES "^(ON|1|YES|TRUE|Y)$")
-      set(CMAKE_BUILD_TYPE "RelWithDebInfo" CACHE STRING "Build type" FORCE)
-    endif()
-  endif()
-  if(NOT CMAKE_BUILD_TYPE)
-    set(CMAKE_BUILD_TYPE "Release" CACHE STRING "Build type" FORCE)
-  endif()
-elseif(DEFINED ENV{CMAKE_BUILD_TYPE} AND NOT CMAKE_BUILD_TYPE)
-  set(CMAKE_BUILD_TYPE "$ENV{CMAKE_BUILD_TYPE}" CACHE STRING "Build type" FORCE)
-endif()
+# Build type is now handled by scikit-build-core via pyproject.toml:
+#   build-type = "Release" (default)
+#   overrides for DEBUG -> Debug, REL_WITH_DEB_INFO -> RelWithDebInfo
+# scikit-build-core passes -DCMAKE_BUILD_TYPE on single-config generators
+# and --config on multi-config generators (Visual Studio).
