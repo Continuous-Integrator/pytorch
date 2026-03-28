@@ -3371,7 +3371,7 @@ def forward(self, p_linear_weight, p_linear_bias, obj_lifted_custom_0, x):
         graph = torch.fx.Graph()
         x_ph = graph.placeholder("x")
         ref_node = graph.get_attr("_ref")
-        out = graph.output((x_ph, ref_node))
+        graph.output((x_ph, ref_node))
 
         root = {"_ref": ref}
         gm = torch.fx.GraphModule(root, graph)

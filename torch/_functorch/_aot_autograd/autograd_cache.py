@@ -1183,9 +1183,9 @@ class AOTAutogradCache(GuardedCache[GenericAOTAutogradResult[Any, Any]]):
             error_str = str(e)
             log.warning(
                 "AOTAutograd cache unable to serialize compiled graph: %s (bad_field=%s)",
-                e,
+                error_str,
                 bad_field,
-            )  # noqa: G200
+            )
             torch._logging.trace_structured(
                 "artifact",
                 metadata_fn=lambda: {
