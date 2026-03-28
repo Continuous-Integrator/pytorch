@@ -250,6 +250,59 @@ def _codegen_subclass_wrapper_source(
     return source, state.globals
 
 
+def _codegen_subclass_wrap_source(
+    out_metas: list[PlainTensorMeta | SubclassCreationMeta],
+) -> tuple[str, dict[str, object]]:
+    """Generate source for wrapping flat outputs into subclasses.
+
+    This is a subset of _codegen_subclass_wrapper_source that only
+    generates the output wrapping part, used for the backward epilogue.
+    Returns (source, globals_dict).
+    """
+    state = _CodegenState()
+
+    state.emit("def wrap_fn(unwrapped_outs):", indent=0)
+    out_idx_ref = [0]
+    result_exprs: list[str] = []
+
+    for meta in out_metas:
+        if isinstance(meta, PlainTensorMeta):
+            result_exprs.append(f"unwrapped_outs[{meta.unwrapped_idx}]")
+            out_idx_ref[0] = max(out_idx_ref[0], meta.unwrapped_idx + 1)
+        else:
+            result_var = _codegen_wrap_subclass(state, meta, out_idx_ref)
+            result_exprs.append(result_var)
+
+    state.emit(f"return ({', '.join(result_exprs)},)")
+
+    source = "\n".join(state.lines)
+    return source, state.globals
+
+
+def codegen_backward_subclass_wrap(
+    out_metas: list[PlainTensorMeta | SubclassCreationMeta],
+) -> Callable[..., object]:
+    """Generate a specialized function for wrapping backward outputs into subclasses."""
+    source, globals_dict = _codegen_subclass_wrap_source(out_metas)
+
+    if log.isEnabledFor(logging.DEBUG):
+        log.debug("Generated backward subclass wrapper:\n%s", source)
+
+    torch._logging.trace_structured(
+        "artifact",
+        metadata_fn=lambda: {
+            "name": "backward_subclass_wrapper",
+            "encoding": "string",
+        },
+        payload_fn=lambda: source,
+    )
+
+    code = compile(source, "<backward_subclass_wrapper>", "exec")
+    local_dict: dict[str, object] = {}
+    exec(code, globals_dict, local_dict)  # noqa: S102
+    return local_dict["wrap_fn"]  # type: ignore[return-value]
+
+
 def codegen_subclass_wrapper(
     compiled_fn: Callable[..., object],
     inp_metas: list[PlainTensorMeta | SubclassCreationMeta],
