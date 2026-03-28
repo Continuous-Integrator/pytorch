@@ -4586,6 +4586,10 @@ def common_meta_baddbmm_bmm(batch1, batch2, is_bmm, self_baddbmm=None, out_dtype
 
     torch._check(batch1.dim() == 3, lambda: "batch1 must be a 3D tensor")
     torch._check(batch2.dim() == 3, lambda: "batch2 must be a 3D tensor")
+    torch._check(
+        batch1.dtype == batch2.dtype,
+        lambda: f"expected scalar type {batch1.dtype} but found {batch2.dtype}",
+    )
 
     batch1_sizes = batch1.size()
     batch2_sizes = batch2.size()
@@ -7855,11 +7859,7 @@ def meta_histc(input, bins=100, min=0, max=0):
 
 
 @register_meta(
-    [
-        aten._upsample_bilinear2d_aa.default,
-        aten._upsample_bicubic2d_aa.default,
-        aten._upsample_lanczos2d_aa.default,
-    ]
+    [aten._upsample_bilinear2d_aa.default, aten._upsample_bicubic2d_aa.default]
 )
 def meta_upsample_bimode2d_aa(
     input,
@@ -7880,12 +7880,7 @@ def meta_upsample_bimode2d_aa(
     )
 
 
-@register_meta(
-    [
-        aten._upsample_bilinear2d_aa_backward.default,
-        aten._upsample_lanczos2d_aa_backward.default,
-    ]
-)
+@register_meta([aten._upsample_bilinear2d_aa_backward.default])
 def meta_upsample_bimode2d_aa_backward(
     grad_output,
     output_size,
