@@ -3413,6 +3413,19 @@ class GuardBuilder(GuardBuilderBase):
             #   4. Compile with plain tensor, call with mark_dynamic(x, 0) → recompile (new marking added)
             #   5. Compile with mark_dynamic(x, 0), call with mark_dynamic(x, []) → recompile (explicit empty != {0})
             #
+            # _dynamo_weak_dynamic_indices vs _dynamo_propagated_dynamic_indices:
+            #   _dynamo_weak_dynamic_indices is the user-facing attribute, set via
+            #   maybe_mark_dynamic(), and guarded on like the other dimension marking
+            #   attributes above.
+            #   _dynamo_propagated_dynamic_indices is a compiler-internal attribute set by
+            #   AOTAutograd's maybe_mark_dynamic_helper() to propagate dynamism across
+            #   graph breaks. It is NOT guarded on. When AOTAutograd discovers that an
+            #   output dimension is symbolic, it stamps this attribute on the output tensor
+            #   so that Dynamo treats those dims as weakly dynamic when the tensor appears
+            #   as input to a subsequent graph. Using a separate unguarded attribute avoids
+            #   spurious guard failures when the compiler mutates an input tensor's
+            #   attributes through an input-aliased output.
+            #
             def add_dim_indices_guard(attr_name: str) -> None:
                 if hasattr(value, attr_name):
                     indices = getattr(value, attr_name)
