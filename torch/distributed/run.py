@@ -747,11 +747,7 @@ def determine_local_world_size(nproc_per_node: str):
         return int(nproc_per_node)
     except ValueError as e:
         if nproc_per_node == "cpu":
-            num_proc = (
-                len(os.sched_getaffinity(0))
-                if hasattr(os, "sched_getaffinity")
-                else os.cpu_count()
-            )
+            num_proc = torch._utils.cpu_count()
             device_type = "cpu"
         elif nproc_per_node == "gpu":
             if not torch.cuda.is_available():
@@ -773,11 +769,7 @@ def determine_local_world_size(nproc_per_node: str):
                 num_proc = torch.accelerator.device_count()
                 device_type = torch.accelerator.current_accelerator().type  # type: ignore[union-attr]
             else:
-                num_proc = (
-                    len(os.sched_getaffinity(0))
-                    if hasattr(os, "sched_getaffinity")
-                    else os.cpu_count()
-                )
+                num_proc = torch._utils.cpu_count()
                 device_type = "cpu"
         else:
             raise ValueError(

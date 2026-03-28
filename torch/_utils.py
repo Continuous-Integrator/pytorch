@@ -785,6 +785,22 @@ class ExceptionWrapper:
         raise exception
 
 
+def cpu_count() -> int:
+    """Return the number of CPUs available to the current process.
+
+    Prefers ``os.sched_getaffinity`` (respects cgroups / taskset) and
+    falls back to ``os.cpu_count``.
+    """
+    try:
+        return len(os.sched_getaffinity(0))
+    except (AttributeError, OSError):
+        pass
+    cpu_count = os.cpu_count()
+    if cpu_count is not None:
+        return cpu_count
+    raise RuntimeError("Could not determine the number of CPUs")
+
+
 def _get_available_device_type():
     if torch.cuda.is_available():
         return "cuda"
