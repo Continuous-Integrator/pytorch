@@ -3535,7 +3535,15 @@ class TritonKernel(SIMDKernel[TritonCSEVariable]):
         )
 
         # workaround https://github.com/triton-lang/triton/issues/2814
-        value = f"{value}.to({triton_store_type(V.graph.get_dtype(name))})"
+        # For inplace-mutated buffers, the block pointer element type comes from
+        # the actual tensor (input buffer), which may differ from the graph dtype
+        # (e.g., _to_copy produces fp32 values stored into a bf16 gradient buffer).
+        store_dtype = V.graph.get_dtype(name)
+        if name in self.args.inplace_buffers:
+            buf = self.args.inplace_buffers[name]
+            if not isinstance(buf, RemovedArg):
+                store_dtype = V.graph.get_dtype(buf.other_names[0])
+        value = f"{value}.to({triton_store_type(store_dtype)})"
         if isinstance(indexing, BlockPtrOptions):
             return f"tl.store({block_ptr}, {value}{other})"
         return f"{block_ptr}.store({V.kernel.index_to_str(indexing.offsets)}, {value})"
@@ -6478,6 +6486,8 @@ class TritonScheduling(SIMDScheduling):
                 if config.triton.descriptive_names
                 else ""
             )
+            if fused_name:
+                fused_name = V.choices.customize_fused_kernel_name(fused_name, src_code)
             kernel_category = get_kernel_category_by_source_code(src_code)[:3]
             kernel_name = "_".join(
                 ["triton", kernel_category, fused_name, wrapper.next_kernel_suffix()]
