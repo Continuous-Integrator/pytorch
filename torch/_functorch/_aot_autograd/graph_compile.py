@@ -138,7 +138,7 @@ def _hoist_opaque_ref_getattrs(
     Extends joint_inputs[0] with the hoisted values and returns picklable
     metadata about each hoisted value (e.g., mesh_dim_names for DeviceMesh).
     """
-    from torch._library.opaque_object import is_opaque_reference_type
+    from torch._library.opaque_object import should_hoist
 
     hoisted_info: list[dict[str, Any]] = []
     # Each entry: (get_attr_node, obj_id_of_real_val, val_or_None)
@@ -158,7 +158,7 @@ def _hoist_opaque_ref_getattrs(
         if isinstance(val, FakeScriptObject):
             real_val = getattr(val, "real_obj", None) or val
 
-        if not is_opaque_reference_type(type(real_val)):
+        if not should_hoist(type(real_val)):
             continue
 
         obj_id = id(real_val)
