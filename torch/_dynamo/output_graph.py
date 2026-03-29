@@ -60,11 +60,7 @@ from torch._guards import (
     TracingContext,
 )
 from torch._library.fake_class_registry import FakeScriptObject
-from torch._library.opaque_object import (
-    is_opaque_reference_type,
-    is_opaque_type,
-    should_hoist,
-)
+from torch._library.opaque_object import is_opaque_type
 from torch._subclasses.fake_tensor import FakeTensor
 from torch._utils_internal import signpost_event
 from torch.export.dynamic_shapes import _ConstraintTarget
@@ -803,13 +799,6 @@ class OutputGraph(OutputGraphCommon):
         # "backward through graph a second time" error in aot_autograd).
         self.autograd_grad_consumed_grad_fns: set[torch.autograd.graph.Node] = set()
 
-        # Hoisted opaque reference objects.  Keyed by id(obj) → (obj, VT).
-        # Used for cross-path dedup: the same opaque reference (e.g.
-        # DeviceMesh) may be encountered from DTensor flatten (builder.py)
-        # AND from register_attr_or_module (inlined method). Both paths
-        # should produce the same placeholder node.
-        self._hoisted_opaque_ref_vts: dict[int, tuple[Any, VariableTracker]] = {}
-
         # Tracks a list of called ops that were not tagged with "pt2_compliant_tag".
         # This information is useful for logging.
         self.non_compliant_ops: set[torch._ops.OpOverload] = set({})
@@ -1514,55 +1503,6 @@ class OutputGraph(OutputGraphCommon):
 
             # HACKY CODE REGION END
         elif is_opaque_type(type(target)):
-            if (
-                is_opaque_reference_type(type(target))
-                and should_hoist(type(target))
-                and source is not None
-            ):
-                # Hoisted opaque reference types (e.g. DeviceMesh) become
-                # graph inputs (placeholders) instead of graph attributes
-                # (get_attr).  This ensures the compiled graph receives
-                # the object as a function argument, making serialized
-                # artifacts independent of the concrete objects captured
-                # at trace time — required for distributed compilation
-                # where DeviceMesh differs across ranks.
-                obj_id = id(target)
-                if obj_id in self._hoisted_opaque_ref_vts:
-                    ref_obj, ref_vt = self._hoisted_opaque_ref_vts[obj_id]
-                    if ref_obj is target:
-                        return ref_vt
-
-                tracer = self.current_tracer
-                if not self.is_root_tracer():
-                    tracer = self.root_tracer
-
-                fake_script_obj = torch._library.fake_class_registry.maybe_to_fake_obj(
-                    self.fake_mode, target
-                )
-                hoist_name = re.sub(r"[^a-zA-Z0-9]+", "_", "_".join(map(str, names)))
-
-                from torch._dynamo.variables.builder import GraphArg
-
-                proxy = tracer.create_graph_input(
-                    hoist_name,
-                    type(target),
-                    fake_script_obj,
-                    source=source,
-                )
-                proxy.node.meta["grapharg"] = GraphArg(
-                    source,
-                    target,
-                    False,
-                    None,
-                    False,
-                )
-                vt = torch._dynamo.variables.script_object.TorchScriptObjectVariable.create(
-                    proxy, fake_script_obj, **options
-                )
-                self._hoisted_opaque_ref_vts[obj_id] = (target, vt)
-                return vt
-
-            # Non-hoisted opaque types: original get_attr path
             # HACKY CODE REGION BEGIN
             # Same as SymInt/SymFloat above: piggybacking on self.nn_modules
             # to store opaque objects as graph attributes.

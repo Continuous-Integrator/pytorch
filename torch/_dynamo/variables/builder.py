@@ -1618,14 +1618,6 @@ class VariableBuilder:
                 fake_script_obj = value
                 proxy = value
 
-            elif is_opaque_reference_type(type(value)) and should_hoist(type(value)):
-                # Hoisted opaque reference types (e.g. DeviceMesh) are
-                # routed through register_attr_or_module which creates
-                # a placeholder and handles cross-path dedup.
-                return self.tx.output.register_attr_or_module(
-                    value, self.name, source=self.source
-                )
-
             elif config.install_free_tensors and (
                 is_from_global_source(self.source)
                 or is_from_nonlocal_source(self.source)

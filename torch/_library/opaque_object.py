@@ -153,14 +153,13 @@ def register_opaque_type(
         cls (type): The class to register as an opaque type.
         typ (str): Either "reference" or "value". See Note [Opaque Objects] for
             more details.
-        hoist (bool): When True, the opaque object is lifted as an input to
-            the torch.compile'd graph instead of being a constant baked into
-            the graph. For value types, this improves compilation times in
-            hierarchical compilation. For reference types, this ensures the
-            compiled graph receives the object as an argument rather than
-            capturing a stale reference — useful when the object may differ
-            across ranks or processes (e.g. DeviceMesh in distributed
-            compilation).
+        hoist (bool): Only applies to value types. A hoist=True value type
+            object is lifted as an input to the torch.compile'd graph, instead
+            of being a constant baked into the graph. This is useful to
+            improve compilation times in hierarchical compilation
+            (e.g., change your custom ops to use hoisted strings to avoid
+            baking the string into the Dynamo/AOTAutograd/FX graphs).
+            This flag does nothing for reference types.
         guard_fn (callable | None): A function that takes an instance of the opaque
             object and returns a list of values to guard on. These values will be compared
             for equality on each function call, triggering recompilation if they change.
