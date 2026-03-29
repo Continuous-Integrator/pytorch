@@ -2048,22 +2048,38 @@ def cat(inputs, dim=0):
 
         # Skip pointwise_cat when any cat input has a fusible (pointwise)
         # multi-consumer — ConcatKernel + NonOwningLayout avoids redundant
-        # reads.  Non-fusible users (e.g. matmul) don't benefit, so they
-        # should not prevent pointwise_cat.
+        # reads. Also skip when input is an unrealized Pointwise with
+        # multiple consumers to avoid recomputation (e.g. pad-as-cat).
         def any_input_has_multi_consumers() -> bool:
-            cat_node = V.current_node
-            if cat_node is None:
+            current_node = V.current_node
+            if current_node is None:
                 return False
-            fx_args = cat_node.args[0]  # aten.cat format: cat(input_list, dim)
-            if not isinstance(fx_args, (list, tuple)):
+            fx_args = current_node.args[0]
+            if isinstance(fx_args, (list, tuple)):
+                input_nodes = fx_args
+            elif isinstance(fx_args, torch.fx.Node):
+                input_nodes = [fx_args]
+            else:
                 return False
 
-            def has_fusible_multi_consumer(arg):
+            def is_unrealized_pointwise(x):
+                if isinstance(x, (TensorBox, ir.StorageBox)):
+                    return is_unrealized_pointwise(unwrap_tensor(x))
+                return isinstance(x, ir.Pointwise)
+
+            for arg, ir_input in zip(input_nodes, inputs):
                 if not hasattr(arg, "users") or len(arg.users) <= 1:
-                    return False
-                return any(is_pointwise_use(u) for u in arg.users if u is not cat_node)
-
-            return any(has_fusible_multi_consumer(arg) for arg in fx_args)
+                    continue
+                # input will be computed multiple times because other consumers
+                # (eg. pointwise) will also inline it. So we should realize-in-place via ConcatKernel
+                if any(is_pointwise_use(u) for u in arg.users if u is not current_node):
+                    return True
+                # If input is an unrealized Pointwise with multiple consumers, pointwise_cat
+                # will inline input without realizing it to memory, causing separate
+                # realization cost for input. So we should realize-in-place via ConcatKernel
+                if is_unrealized_pointwise(ir_input):
+                    return True
+            return False
 
         has_multi_consumers = any_input_has_multi_consumers()
 
@@ -2601,6 +2617,7 @@ make_fallback(aten.randint)
 make_fallback(torch.ops.streams.record_event.default)
 make_fallback(torch.ops.streams.wait_event.default)
 make_fallback(torch.ops.streams.synchronize_event.default)
+make_fallback(torch.ops.streams.synchronize_device.default)
 
 
 @register_lowering(aten.rand)
@@ -2957,8 +2974,11 @@ def constrain_to_fake_tensors(args, kwargs, fake_args, fake_kwargs):
 def constrain_to_fx_strides(fx_node, *args, **kwargs):
     def apply_constraint(arg, fx_arg):
         if _is_tensor_irnode(arg):
+            fake_val = fx_arg.meta.get("val")
+            if not isinstance(fake_val, torch.Tensor):
+                return arg
             stride_order = ir.get_stride_order(
-                fx_arg.meta["val"].stride(), V.graph.sizevars.shape_env
+                fake_val.stride(), V.graph.sizevars.shape_env
             )
             return ir.ExternKernel.require_stride_order(arg, stride_order)
         if isinstance(arg, dict):
@@ -4780,6 +4800,59 @@ def inplace_constant_pad_nd(
     return resized_x
 
 
+def _pad_as_cat(
+    x: TensorBox, padding: Sequence[int], fill_value: float
+) -> TensorBox | None:
+    """Decompose right-pad into cat([x, fill], dim) and delegate to cat lowering.
+
+    The cat lowering already has heuristics for choosing between pointwise_cat
+    (fusion) and ConcatKernel (memory planning / zero-copy).  By routing through
+    cat() we reuse those heuristics rather than duplicating them here.
+    """
+    # Bail out for symbolic padding, dynamic shapes
+    if not all(isinstance(p, int) for p in padding):
+        return None
+
+    sizes = x.get_size()
+    ndim = len(sizes)
+    pad_pairs = list(zip(padding[::2], padding[1::2]))
+
+    # Only support single-dimension right-pad
+    pad_dim = None
+    pad_amount = None
+    for i, (left, right) in enumerate(pad_pairs):
+        if left != 0:
+            return None
+        if right > 0:
+            if pad_dim is not None:
+                return None  # multi-dim pad
+            pad_dim = ndim - 1 - i  # padding format is reversed dim order
+            pad_amount = right
+        elif right < 0:
+            return None  # trim, not pad
+
+    if pad_dim is None:
+        return None
+
+    # CPU cat always uses ConcatKernel (no pointwise_cat), which adds
+    # extra kernel launches for the fill.  Skip pad-as-cat on CPU.
+    device = x.get_device()
+    if device is not None and device.type == "cpu":
+        return None
+
+    # Build the fill tensor for the padding region
+    pad_shape = list(sizes)
+    pad_shape[pad_dim] = pad_amount
+    dtype = x.get_dtype()
+    fill_value_typed = dtype_to_type(dtype)(fill_value)
+    pad_tensor = tensor_constructor(fill_value_typed)(
+        pad_shape, dtype=dtype, device=device
+    )
+
+    counters["inductor"]["pad_rewritten_as_cat"] += 1
+    return cat([x, pad_tensor], pad_dim)
+
+
 @register_lowering(aten.constant_pad_nd, type_promotion_kind=None)
 def constant_pad_nd(x, padding, fill_value=0):
     assert (len(padding) % 2) == 0
@@ -4791,6 +4864,10 @@ def constant_pad_nd(x, padding, fill_value=0):
         if out:
             return out
             # fall through if can not inplace the padding
+
+    out = _pad_as_cat(x, padding, fill_value)
+    if out is not None:
+        return out
 
     sizes = x.get_size()
 
@@ -7675,9 +7752,6 @@ def resize(x, size, *, memory_format=None):
     dtype = x.get_dtype()
     device = x.get_device_or_error()
 
-    if isinstance(x.data, ir.BaseView):
-        x.data = x.data.unwrap_view()
-
     if (
         torch.are_deterministic_algorithms_enabled()
         and torch.utils.deterministic.fill_uninitialized_memory  # type: ignore[attr-defined]
@@ -7695,15 +7769,18 @@ def resize(x, size, *, memory_format=None):
     if V.graph.sizevars.statically_known_equals(old_numel, 0):  # type: ignore[arg-type]
         return full(size, uninitialized_val, dtype=dtype, device=device)
 
-    x_flat = as_strided(
-        x,
-        [
-            old_numel,
-        ],
-        [
-            1,
-        ],
+    strides = x.maybe_get_stride()
+    has_overlapping = strides is not None and any(
+        V.graph.sizevars.statically_known_equals(s, 0) for s in strides
     )
+    if has_overlapping:
+        # overlapping: provide a contiguous logical view
+        x_flat = view(x, [old_numel])
+    else:
+        # non-overlapping: keep storage order
+        if isinstance(x.data, ir.BaseView):
+            x.data = x.data.unwrap_view()
+        x_flat = as_strided(x, [old_numel], [1])
     flat_loader = x_flat.make_loader()
     out_stride = ir.FlexibleLayout.stride_ordered_for_memory_format(size, memory_format)
     out_indexer = ir.FixedLayout(device, dtype, size, out_stride).make_indexer()
