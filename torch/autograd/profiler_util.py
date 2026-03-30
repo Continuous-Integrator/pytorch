@@ -637,7 +637,11 @@ class FunctionEvent(FormattedTimesMixin):
         concrete_inputs=None,
         kwinputs=None,
         is_user_annotation=False,
+        is_python_function=False,
         metadata_json=None,
+        flow_id=None,
+        flow_type=None,
+        flow_start=None,
         external_id=0,
         linked_correlation_id=0,
     ):
@@ -678,10 +682,14 @@ class FunctionEvent(FormattedTimesMixin):
         self.is_legacy: bool = is_legacy
         self.flops: int | None = flops
         self.is_user_annotation: bool | None = is_user_annotation
+        self.is_python_function: bool = is_python_function
         self.self_cpu_percent = -1
         self.total_cpu_percent = -1
         self.total_device_percent = -1
         self.metadata_json = metadata_json
+        self.flow_id: int | None = flow_id
+        self.flow_type: int | None = flow_type
+        self.flow_start: bool | None = flow_start
         self.external_id: int = external_id
         self.linked_correlation_id: int = linked_correlation_id
 
