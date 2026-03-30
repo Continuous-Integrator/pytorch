@@ -61,6 +61,10 @@ from torch.testing._internal.common_device_type import (
     e5m2_type,
     skipCUDAIf,
 )
+from torch.testing._internal.common_dtype import (
+    highest_precision_complex,
+    highest_precision_float,
+)
 from torch.testing._internal.common_quantization import (
     _group_quantize_tensor,
     skip_if_no_torchvision,
@@ -306,6 +310,7 @@ class AOTInductorTestsTemplate:
         "toolchain doesn't support ptx to fatbin",
     )
     @skipIfMPS
+    @skipIfRocm(msg="Fails with Triton 3.7")
     # Skip embed_kernel_binary == True for now as it shows random
     # failure on CI
     @common_utils.parametrize("embed_kernel_binary", [False])
@@ -3558,6 +3563,7 @@ class AOTInductorTestsTemplate:
         example_inputs = (torch.randn(3, 10, device=self.device),)
         self.check_model(Model(), example_inputs)
 
+    @skipIfRocm(msg="Fails with Triton 3.7")
     @skipIfRocmArch(NAVI_ARCH)  # regression on ROCm 7.2
     def test_repeated_calling(self):
         if self.device != "cuda":
@@ -3632,7 +3638,7 @@ class AOTInductorTestsTemplate:
 
         # Call eval() here so that batch_norm won't update the running stats
         # Use float64 to avoid numeric difference failure
-        dtype = torch.float32 if self.device == "mps" else torch.float64
+        dtype = highest_precision_float(self.device)
         model = Model().to(device=self.device, dtype=dtype).eval()
         example_inputs = (torch.randn(4, 3, 64, 64, device=self.device, dtype=dtype),)
         self.check_model(model, example_inputs)
@@ -5135,7 +5141,7 @@ class AOTInductorTestsTemplate:
         )
         x2 = torch.tensor(
             128,
-            dtype=torch.complex128 if self.device != "mps" else torch.complex64,
+            dtype=highest_precision_complex(self.device),
             device=self.device,
         )
         inputs.append(x0)
@@ -7265,34 +7271,22 @@ class AOTInductorTestsTemplate:
         m = torch.tensor([4096], dtype=torch.int32, device=self.device)
 
         with config.patch("triton.autotune_with_sample_inputs", True):
-            if torch.version.hip:
-                # ROCm: Use dynamic grid checking (portable across different configs)
-                # Compile and get the generated code
-                _, src_code = run_and_get_cpp_code(
-                    torch._export.aot_compile, Model(), (x, y, m)
-                )
-                actual_grid, expected_grids = get_triton_grid_info(
-                    strange_config_matmul_kernel, 4096 * 2046, src_code
-                )
-                self.assertTrue(
-                    actual_grid is not None, "Could not find grid_0 in generated code"
-                )
-                self.assertIn(
-                    actual_grid,
-                    expected_grids,
-                    f"grid_0={actual_grid} not in expected {expected_grids} from kernel configs",
-                )
-
-            else:
-                # CUDA/XPU: Keep existing hardcoded values
-                # The tuned best config on XPU is different with CUDA.
-                if GPU_TYPE == "xpu":
-                    grid_0 = 32736
-                else:
-                    grid_0 = 1023
-                self.code_check_count(
-                    Model(), (x, y, m), f"uint32_t grid_0 = {grid_0}L;", 1
-                )
+            # Use dynamic grid checking (portable across different configs
+            # and Triton versions)
+            _, src_code = run_and_get_cpp_code(
+                torch._export.aot_compile, Model(), (x, y, m)
+            )
+            actual_grid, expected_grids = get_triton_grid_info(
+                strange_config_matmul_kernel, 4096 * 2046, src_code
+            )
+            self.assertTrue(
+                actual_grid is not None, "Could not find grid_0 in generated code"
+            )
+            self.assertIn(
+                actual_grid,
+                expected_grids,
+                f"grid_0={actual_grid} not in expected {expected_grids} from kernel configs",
+            )
 
     def test_triton_mutated_autotuning(self):
         if self.device != GPU_TYPE:
@@ -7335,34 +7329,22 @@ class AOTInductorTestsTemplate:
         m = torch.tensor([4095], dtype=torch.int32, device=self.device)
 
         with config.patch("triton.autotune_with_sample_inputs", True):
-            if torch.version.hip:
-                # ROCm: Use dynamic grid checking (portable across different configs)
-                # Compile and get the generated code
-                _, src_code = run_and_get_cpp_code(
-                    torch._export.aot_compile, Model(), (x, y, m)
-                )
-                actual_grid, expected_grids = get_triton_grid_info(
-                    strange_config_matmul_kernel, 4096 * 2046, src_code
-                )
-                self.assertTrue(
-                    actual_grid is not None, "Could not find grid_0 in generated code"
-                )
-                self.assertIn(
-                    actual_grid,
-                    expected_grids,
-                    f"grid_0={actual_grid} not in expected {expected_grids} from kernel configs",
-                )
-
-            else:
-                # CUDA/XPU: Keep existing hardcoded values
-                # The tuned best config on XPU is different with CUDA.
-                if GPU_TYPE == "xpu":
-                    grid_0 = 32736
-                else:
-                    grid_0 = 1023
-                self.code_check_count(
-                    Model(), (x, y, m), f"uint32_t grid_0 = {grid_0}L;", 1
-                )
+            # Use dynamic grid checking (portable across different configs
+            # and Triton versions)
+            _, src_code = run_and_get_cpp_code(
+                torch._export.aot_compile, Model(), (x, y, m)
+            )
+            actual_grid, expected_grids = get_triton_grid_info(
+                strange_config_matmul_kernel, 4096 * 2046, src_code
+            )
+            self.assertTrue(
+                actual_grid is not None, "Could not find grid_0 in generated code"
+            )
+            self.assertIn(
+                actual_grid,
+                expected_grids,
+                f"grid_0={actual_grid} not in expected {expected_grids} from kernel configs",
+            )
 
     @patch.dict(os.environ, {"TRITON_DEBUG": "1"})
     def test_triton_dynamic_launcher_grid(self):
