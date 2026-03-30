@@ -1773,6 +1773,67 @@ class TestViewOps(DTensorContinuousTestBase):
             torch.nn.functional.layer_norm(flat_full, list(flat_full.shape)),
         )
 
+    def test_strided_shard_transpose(self):
+        """Verify _StridedShard correctness through transpose.
+
+        aten.transpose.int goes through view op propagation which handles
+        _StridedShard. aten.t uses transpose_strategy in _matrix_ops.py which
+        swaps the dim for both Shard and _StridedShard.
+        """
+        mesh = init_device_mesh(self.device_type, (self.world_size,))
+        shape = (4, self.world_size * 2, 6)
+        full = torch.randn(*shape, device=self.device_type)
+        dt = distribute_tensor(full, mesh, [Shard(1)])
+        dt_flat = dt.flatten(0, 1)
+        flat_full = full.flatten(0, 1)
+
+        self.assertIsInstance(dt_flat.placements[0], _StridedShard)
+
+        # transpose shard dim with another dim (aten.transpose.int)
+        result = dt_flat.transpose(0, 1)
+        self.assertEqual(result.full_tensor(), flat_full.transpose(0, 1))
+
+        # t() on 2D tensor (aten.t via transpose_strategy in _matrix_ops.py)
+        result = dt_flat.t()
+        self.assertEqual(result.full_tensor(), flat_full.t())
+
+    def test_strided_shard_nll_loss(self):
+        """Verify _StridedShard correctness through nll_loss.
+
+        nll_loss_forward_strategy uses replicate_reduction_dims on the channel
+        dim and _skip_dim to build target placements. _skip_dim only handles
+        isinstance(p, Shard), so _StridedShard on non-channel dims falls through
+        unchanged (correct via redistribution).
+        """
+        mesh = init_device_mesh(self.device_type, (self.world_size,))
+        num_classes = 10
+
+        # 2D input: (N, C) — shard on batch dim (dim 0), which is not the
+        # channel dim so _skip_dim and replicate_reduction_dims should
+        # preserve or replicate it correctly.
+        shape = (4, self.world_size * 2)
+        full_input = torch.randn(*shape, num_classes, device=self.device_type)
+        full_target = torch.randint(0, num_classes, shape, device=self.device_type)
+        dist.broadcast(full_target, src=0)
+
+        dt_input = distribute_tensor(full_input, mesh, [Shard(1)])
+        dt_input_flat = dt_input.flatten(0, 1)
+        dt_target = distribute_tensor(full_target, mesh, [Shard(1)])
+        dt_target_flat = dt_target.flatten(0, 1)
+
+        self.assertIsInstance(dt_input_flat.placements[0], _StridedShard)
+
+        input_full = full_input.flatten(0, 1)
+        target_full = full_target.flatten(0, 1)
+
+        result = torch.nn.functional.nll_loss(
+            torch.log_softmax(dt_input_flat, dim=-1), dt_target_flat
+        )
+        expected = torch.nn.functional.nll_loss(
+            torch.log_softmax(input_full, dim=-1), target_full
+        )
+        self.assertEqual(result.full_tensor(), expected)
+
     def test_view_redistribution(self):
         """
         This test is added to demonstrate "incorrect" view ops behavior if redistribution happens.
