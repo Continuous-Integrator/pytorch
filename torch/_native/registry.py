@@ -539,7 +539,7 @@ def _apply_graph_transformation(
         if (op_symbol, dispatch_key) not in _graphs:
             continue  # Skip if graph doesn't exist
 
-        original_graph = _graphs[(op_symbol, dispatch_key)]
+        original_graph = list(_graphs[(op_symbol, dispatch_key)])
 
         # Apply the transformation with error handling
         try:
