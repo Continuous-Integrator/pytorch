@@ -9,13 +9,13 @@ is distinct from the call_method("__getitem__") path.
 import collections
 import operator
 import types
-import typing
 import unittest
 
 import torch
 import torch._dynamo.testing
 from torch.testing._internal.common_utils import run_tests, TestCase
 from torch.testing._internal.inductor_utils import HAS_CUDA_AND_TRITON, HAS_GPU
+
 
 requires_gpu_and_triton = unittest.skipUnless(
     HAS_GPU and HAS_CUDA_AND_TRITON, "requires gpu and triton"
@@ -168,7 +168,7 @@ class GetItemTests(TestCase):
 
     def test_typing_subscript(self):
         def fn(x):
-            t = operator.getitem(typing.List, int)
+            operator.getitem(list, int)
             return x + 1
 
         x = torch.randn(4)
