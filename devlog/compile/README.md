@@ -26,8 +26,10 @@ performance analyses, directional proposals, and lessons learned.
 ## How to contribute
 
 1. Create a Markdown file: `devlog/compile/<topic>/YYYY-MM-DD-short-title.md`
-2. Use [`_template.md`](./_template.md) as a starting point.
-3. Open a PR.  Reviewers check technical accuracy and readability.
-4. Merge.  Done.
+2. **Name the file so the slug reflects the title.**  AI assistants use
+   filenames to decide which posts to read.
+3. Use [`_template.md`](./_template.md) as a starting point.
+4. Open a PR.  Reviewers check technical accuracy and readability.
+5. Merge.  Done.
 
 See [`proposal.md`](./proposal.md) for full rationale.
