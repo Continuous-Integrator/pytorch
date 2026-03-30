@@ -861,13 +861,14 @@ class CustomOpDef:
         # different devices) don't create nested fast_op wrappers.
         if not hasattr(packet, "_orig_op"):
             packet._orig_op = packet._op  # pyrefly: ignore[missing-attribute]
-        original_op = packet._orig_op  # pyrefly: ignore[missing-attribute]
 
         def fast_op(*args, **kwargs):
             result = fast_call(*args, **kwargs)
             if result is not NotImplemented:
                 return result
-            return original_op(*args, **kwargs)
+            return packet._orig_op(
+                *args, **kwargs
+            )  # pyrefly: ignore[missing-attribute]
 
         packet._op = fast_op
 

@@ -2,6 +2,7 @@
 # ruff: noqa: F841
 
 import collections
+import contextlib
 import io
 import itertools
 import os
@@ -4504,6 +4505,24 @@ Please use `add.register_fake` to add an fake impl.""",
 class TestCustomOpFastPath(TestCase):
     """Tests for the fast dispatch path in custom_op."""
 
+    @contextlib.contextmanager
+    def _assert_fast_path_taken(self, opdef):
+        """Replace the C++ dispatcher fallback with one that errors, so the
+        test fails if the fast path doesn't handle the call."""
+        packet = opdef._opoverload._overloadpacket
+        saved = packet._orig_op
+
+        def poison(*a, **kw):
+            raise AssertionError(
+                "slow path was called; fast path should have handled this"
+            )
+
+        packet._orig_op = poison
+        try:
+            yield
+        finally:
+            packet._orig_op = saved
+
     def test_fast_path_basic(self):
         @torch.library.custom_op("_torch_testing::fp_add", mutates_args=())
         def fp_add(x: Tensor, y: Tensor) -> Tensor:
@@ -4511,8 +4530,9 @@ class TestCustomOpFastPath(TestCase):
 
         x = torch.randn(3)
         y = torch.randn(3)
-        self.assertEqual(fp_add(x, y), x + y)
-        self.assertEqual(torch.ops._torch_testing.fp_add(x, y), x + y)
+        with self._assert_fast_path_taken(fp_add):
+            self.assertEqual(fp_add(x, y), x + y)
+            self.assertEqual(torch.ops._torch_testing.fp_add(x, y), x + y)
 
     def test_fast_path_mutable(self):
         @torch.library.custom_op("_torch_testing::fp_inplace", mutates_args={"x"})
@@ -4522,7 +4542,8 @@ class TestCustomOpFastPath(TestCase):
         x = torch.randn(3)
         x_orig = x.clone()
         v_before = x._version
-        fp_inplace(x)
+        with self._assert_fast_path_taken(fp_inplace):
+            fp_inplace(x)
         self.assertTrue(x._version > v_before)
         self.assertEqual(x, x_orig * 2)
 
@@ -4545,7 +4566,8 @@ class TestCustomOpFastPath(TestCase):
         fp_square.register_autograd(_backward, setup_context=_setup_context)
 
         x = torch.randn(3, requires_grad=True)
-        y = fp_square(x)
+        with self._assert_fast_path_taken(fp_square):
+            y = fp_square(x)
         y.sum().backward()
         self.assertEqual(x.grad, 2 * x)
 
@@ -4556,7 +4578,8 @@ class TestCustomOpFastPath(TestCase):
 
         with torch.inference_mode():
             x = torch.randn(3)
-            result = fp_im(x)
+            with self._assert_fast_path_taken(fp_im):
+                result = fp_im(x)
         self.assertEqual(result, x)
 
     def test_fast_path_falls_back_for_autocast(self):
