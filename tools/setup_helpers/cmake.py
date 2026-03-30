@@ -12,6 +12,7 @@ import sys
 import sysconfig
 from pathlib import Path
 from subprocess import CalledProcessError, check_call, check_output, DEVNULL
+
 from .cmake_utils import CMakeValue, get_cmake_cache_variables_from_file
 from .env import (
     BUILD_DIR,
