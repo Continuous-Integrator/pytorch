@@ -1834,6 +1834,67 @@ class TestViewOps(DTensorContinuousTestBase):
         )
         self.assertEqual(result.full_tensor(), expected)
 
+    def test_strided_shard_select(self):
+        """Verify _StridedShard correctness through select.
+
+        select removes a dim, so select_int_strategy must detect
+        _StridedShard (which is_sharded() misses) and call
+        shift_shard_dims_after_remove to adjust the shard dim.
+        """
+        mesh = init_device_mesh(self.device_type, (self.world_size,))
+        shape = (2, 3, 4, self.world_size * 2)
+        full = torch.randn(*shape, device=self.device_type)
+        dt = distribute_tensor(full, mesh, [Shard(3)])
+        dt_flat = dt.flatten(2, 3)  # (2, 3, 4*ws*2) with _StridedShard(dim=2)
+
+        self.assertIsInstance(dt_flat.placements[0], _StridedShard)
+
+        # select on dim 0 shifts _StridedShard dim from 2 to 1
+        result = dt_flat.select(0, 0)
+        expected = full.flatten(2, 3).select(0, 0)
+        self.assertIsInstance(result.placements[0], _StridedShard)
+        self.assertEqual(result.full_tensor(), expected)
+
+    def test_strided_shard_unbind(self):
+        """Verify _StridedShard correctness through unbind.
+
+        unbind removes a dim via shift_shard_dims_after_remove, which
+        must preserve split_factor when shifting _StridedShard dims.
+        """
+        mesh = init_device_mesh(self.device_type, (self.world_size,))
+        shape = (2, 3, 4, self.world_size * 2)
+        full = torch.randn(*shape, device=self.device_type)
+        dt = distribute_tensor(full, mesh, [Shard(3)])
+        dt_flat = dt.flatten(2, 3)  # (2, 3, 4*ws*2) with _StridedShard(dim=2)
+
+        self.assertIsInstance(dt_flat.placements[0], _StridedShard)
+
+        results = torch.unbind(dt_flat, dim=0)
+        expected = torch.unbind(full.flatten(2, 3), dim=0)
+        for r, e in zip(results, expected):
+            self.assertIsInstance(r.placements[0], _StridedShard)
+            self.assertEqual(r.full_tensor(), e)
+
+    def test_strided_shard_stack(self):
+        """Verify _StridedShard correctness through stack.
+
+        stack inserts a new dim via shift_shard_dims_after_insert, which
+        must preserve split_factor when shifting _StridedShard dims.
+        """
+        mesh = init_device_mesh(self.device_type, (self.world_size,))
+        shape = (4, self.world_size * 2, 6)
+        full = torch.randn(*shape, device=self.device_type)
+        dt = distribute_tensor(full, mesh, [Shard(1)])
+        dt_flat = dt.flatten(0, 1)
+
+        self.assertIsInstance(dt_flat.placements[0], _StridedShard)
+
+        # stack along dim=0 shifts _StridedShard dim by +1
+        result = torch.stack([dt_flat, dt_flat], dim=0)
+        expected = torch.stack([full.flatten(0, 1), full.flatten(0, 1)], dim=0)
+        self.assertIsInstance(result.placements[0], _StridedShard)
+        self.assertEqual(result.full_tensor(), expected)
+
     def test_view_redistribution(self):
         """
         This test is added to demonstrate "incorrect" view ops behavior if redistribution happens.
