@@ -28,7 +28,9 @@ class TestPlan:
     # Declarative inputs with defaults. CLI can override via --input key=value.
     inputs: dict[str, str] = field(default_factory=dict)
 
-    def resolve_env_vars(self, overrides: dict[str, str] | None = None) -> dict[str, str]:
+    def resolve_env_vars(
+        self, overrides: dict[str, str] | None = None
+    ) -> dict[str, str]:
         """Resolve env_vars by substituting {input_name} placeholders."""
         values = {**self.inputs, **(overrides or {})}
         return {k: v.format(**values) for k, v in self.env_vars.items()}
