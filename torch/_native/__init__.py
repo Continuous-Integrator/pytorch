@@ -8,6 +8,16 @@ from . import ops, registry
 
 @cache
 def get_user_ordering_fn() -> registry.UserOrderingFn | None:
+    """
+    Get a user-supplied graph-ordering function if specified.
+
+    Pass in a `package.submodule.fn` string to the env variable
+    `TORCH_PYTHON_NATIVE_USER_GRAPH_ORDER_FN` that implements the
+    calling API described in `torch/_native/README.md`. This function
+    must be part of an importable path.
+
+    Return either the imported function or `None`
+    """
     env_var = os.getenv("TORCH_PYTHON_NATIVE_USER_GRAPH_ORDER_FN")
 
     if not env_var:
@@ -16,7 +26,8 @@ def get_user_ordering_fn() -> registry.UserOrderingFn | None:
     try:
         import importlib
 
-        module_name, fn_name = env_var.split(".", 1)
+        # Split into "package.submodule.fn_name
+        module_name, fn_name = env_var.rsplit(".", 1)
 
         module = importlib.import_module(module_name)
         fn = getattr(module, fn_name)
@@ -34,7 +45,7 @@ def get_user_ordering_fn() -> registry.UserOrderingFn | None:
 
 user_order_fn = get_user_ordering_fn()
 if user_order_fn:
-    registry.reorder_graphs_from_user_fn(user_order_fn)
+    registry.reorder_graphs_from_user_function(user_order_fn)
 
 
 # Actually perform all registrations
