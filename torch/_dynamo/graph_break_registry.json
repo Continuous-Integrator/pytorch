@@ -396,6 +396,16 @@
       ]
     }
   ],
+  "GB6999": [
+    {
+      "Gb_type": "unsupported variable type for __dict__ access",
+      "Context": "VariableTracker type: {type(vt)}",
+      "Explanation": "Dynamo does not know how to get __dict__ from {type(vt)}",
+      "Hints": [
+        "This is likely to be a Dynamo bug. Please report an issue to PyTorch."
+      ]
+    }
+  ],
   "GB0037": [
     {
       "Gb_type": "Dynamic shape operator (no meta kernel)",
@@ -3189,16 +3199,6 @@
     }
   ],
   "GB4927": [
-    {
-      "Gb_type": "autograd.grad consumed returned tensor's grad_fn",
-      "Context": "Leaked output tensors: {leaked_str}",
-      "Explanation": "torch.autograd.grad() consumes grad_fns that are needed by tensors returned from this compiled function. This would cause 'backward through graph a second time' errors.\n  The following returned tensors have consumed grad_fns: {leaked_str}",
-      "Hints": [
-        "Detach the problematic tensor(s) before returning: e.g. `{leaked[0]}.detach()`",
-        "Call .detach() on the tensor before returning.",
-        "If you need to backward through the returned tensor, use retain_graph=True in autograd.grad()."
-      ]
-    },
     {
       "Gb_type": "autograd.grad consumed returned tensor's grad_fn",
       "Context": "",
