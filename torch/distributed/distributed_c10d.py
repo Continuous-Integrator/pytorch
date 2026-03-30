@@ -144,11 +144,15 @@ _UCC_AVAILABLE = True
 _XCCL_AVAILABLE = True
 
 try:
-    # pyrefly: ignore [missing-import]
-    from torchcomms._backend_wrapper import _BackendWrapper
+    try:
+        # pyrefly: ignore [missing-import]
+        from torchcomms._comms import _BackendWrapper
+    except ImportError:
+        # pyrefly: ignore [missing-import]
+        from torchcomms._backend_wrapper import _BackendWrapper
 
     # pyrefly: ignore [missing-import]
-    from torchcomms._comms import new_comm
+    from torchcomms import new_comm
 
     # pyrefly: ignore [missing-import]
     from torchcomms.hooks import FlightRecorderHook
@@ -6588,6 +6592,7 @@ def record_comm(name: str):
         name (str): The profiling name to associate with collectives.
 
     Example::
+        >>> # xdoctest: +SKIP("undefined vars")
         >>> with dist.record_comm("FSDP::all_gather (layer1)"):
         ...     dist.all_gather_into_tensor(output, input, group=pg)
     """
