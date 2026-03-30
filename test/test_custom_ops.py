@@ -4510,18 +4510,24 @@ class TestCustomOpFastPath(TestCase):
         """Replace the C++ dispatcher fallback with one that errors, so the
         test fails if the fast path doesn't handle the call."""
         packet = opdef._opoverload._overloadpacket
-        saved = packet._orig_op
+        saved_orig = packet._orig_op
+        saved_overload = opdef._opoverload
 
         def poison(*a, **kw):
             raise AssertionError(
                 "slow path was called; fast path should have handled this"
             )
 
+        # Poison both fallback paths:
+        # - packet._orig_op: read by fast_op for the torch.ops.* call path
+        # - opdef._opoverload: used by CustomOpDef.__call__ for the direct path
         packet._orig_op = poison
+        opdef._opoverload = poison
         try:
             yield
         finally:
-            packet._orig_op = saved
+            packet._orig_op = saved_orig
+            opdef._opoverload = saved_overload
 
     def test_fast_path_basic(self):
         @torch.library.custom_op("_torch_testing::fp_add", mutates_args=())
@@ -4717,6 +4723,10 @@ class TestCustomOpFastPath(TestCase):
         def fp_chain(x: Tensor) -> Tensor:
             return x.clone()
 
+        @fp_chain.register_fake
+        def _(x):
+            return torch.empty_like(x)
+
         packet = torch.ops._torch_testing.fp_chain.default._overloadpacket
         orig = packet._orig_op
 
@@ -4727,6 +4737,12 @@ class TestCustomOpFastPath(TestCase):
         # After a second register_kernel, the fallback should still be the
         # original C++ entry point, not a nested fast_op wrapper.
         self.assertIs(packet._orig_op, orig)
+
+        # Exercise the fallback path (meta tensor forces fast_call to bail)
+        # to verify it reaches the real C++ dispatcher, not a stale wrapper.
+        x_meta = torch.randn(3, device="meta")
+        result = torch.ops._torch_testing.fp_chain(x_meta)
+        self.assertEqual(result.shape, x_meta.shape)
 
         x = torch.randn(3)
         self.assertEqual(fp_chain(x), x)
