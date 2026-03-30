@@ -13,8 +13,10 @@ import os
 import shlex
 import subprocess
 import sys
-from collections.abc import Iterator
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 from cli.lib.pytorch.lint_test.lint_plans import LINT_PLANS, TestPlan
 from cli.lib.pytorch.re_runner import submit_command
