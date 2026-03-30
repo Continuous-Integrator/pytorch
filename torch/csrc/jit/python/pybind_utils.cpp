@@ -551,8 +551,7 @@ IValue toIValue(py::handle obj, const TypePtr& type, std::optional<int32_t> N) {
         if (py::hasattr(obj, "real_obj")) {
           target = obj.attr("real_obj");
         }
-        auto cpp_obj =
-            target.cast<c10::intrusive_ptr<c10d::ProcessGroup>>();
+        auto cpp_obj = target.cast<c10::intrusive_ptr<c10d::ProcessGroup>>();
         return IValue::make_capsule(cpp_obj);
       }
 #endif
