@@ -4500,6 +4500,7 @@ Please use `add.register_fake` to add an fake impl.""",
                 torch.library.get_kernel("test_invalid_kernel::cpu_only_op", "CUDA")
 
 
+@skipIfTorchDynamo("Fast path tests are eager-mode only")
 class TestCustomOpFastPath(TestCase):
     """Tests for the fast dispatch path in custom_op."""
 
