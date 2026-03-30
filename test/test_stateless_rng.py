@@ -9,7 +9,7 @@ from torch.testing._internal.common_device_type import (
     onlyCUDA,
 )
 from torch.testing._internal.common_dtype import floating_types_and
-from torch.testing._internal.common_utils import run_tests, TestCase
+from torch.testing._internal.common_utils import parametrize, run_tests, TestCase
 
 
 all_floating_dtypes = floating_types_and(torch.half, torch.bfloat16)
@@ -198,28 +198,145 @@ class TestPhiloxKeyFoldIn(TestCase):
 instantiate_device_type_tests(TestPhiloxKeyFoldIn, globals(), only_for=("cpu", "cuda"))
 
 
-class TestPhiloxNormal(TestCase):
+class TestPhiloxDistribution(TestCase):
+    def _gen(self, gen_fn_name, *args, **kwargs):
+        return getattr(random, gen_fn_name)(*args, **kwargs)
+
+    @parametrize("gen_fn_name", ["normal", "uniform"])
     @dtypes(*all_floating_dtypes)
-    def test_basic_shape(self, device, dtype):
+    def test_basic_shape(self, device, dtype, gen_fn_name):
         key = random.key(42, device=device)
-        result = random.normal(key, (100,), dtype=dtype)
+        result = self._gen(gen_fn_name, key, (100,), dtype=dtype)
         self.assertEqual(result.shape, (100,))
         self.assertEqual(result.dtype, dtype)
 
+    @parametrize("gen_fn_name", ["normal", "uniform"])
     @dtypes(*all_floating_dtypes)
-    def test_determinism(self, device, dtype):
+    def test_determinism(self, device, dtype, gen_fn_name):
         key = random.key(42, device=device)
-        a = random.normal(key, (1000,), dtype=dtype)
-        b = random.normal(key, (1000,), dtype=dtype)
+        a = self._gen(gen_fn_name, key, (1000,), dtype=dtype)
+        b = self._gen(gen_fn_name, key, (1000,), dtype=dtype)
         self.assertEqual(a, b)
 
+    @parametrize("gen_fn_name", ["normal", "uniform"])
     @dtypes(*all_floating_dtypes)
-    def test_different_keys(self, device, dtype):
+    def test_different_keys(self, device, dtype, gen_fn_name):
         key1 = random.key(42, device=device)
         key2 = random.key(43, device=device)
-        a = random.normal(key1, (1000,), dtype=dtype)
-        b = random.normal(key2, (1000,), dtype=dtype)
+        a = self._gen(gen_fn_name, key1, (1000,), dtype=dtype)
+        b = self._gen(gen_fn_name, key2, (1000,), dtype=dtype)
         self.assertNotEqual(a, b)
+
+    @parametrize("gen_fn_name", ["normal", "uniform"])
+    @dtypes(*all_floating_dtypes)
+    def test_batched_keys(self, device, dtype, gen_fn_name):
+        key = random.key(42, device=device)
+        keys = random.split(key, 4).unsqueeze(-2)  # (4, 1, 2)
+        result = self._gen(gen_fn_name, keys, (4, 100), dtype=dtype)
+        for i in range(4):
+            individual = self._gen(gen_fn_name, keys[i], (100,), dtype=dtype)
+            self.assertEqual(result[i], individual)
+
+    @parametrize("gen_fn_name", ["normal", "uniform"])
+    @dtypes(*all_floating_dtypes)
+    def test_multi_batch(self, device, dtype, gen_fn_name):
+        key = random.key(42, device=device)
+        keys = random.split(key, 6).reshape(2, 3, 1, 2)  # (2, 3, 1, 2)
+        result = self._gen(gen_fn_name, keys, (2, 3, 50), dtype=dtype)
+        for i in range(2):
+            for j in range(3):
+                individual = self._gen(gen_fn_name, keys[i][j], (50,), dtype=dtype)
+                self.assertEqual(result[i][j], individual)
+
+    @parametrize("gen_fn_name", ["normal", "uniform"])
+    @dtypes(*all_floating_dtypes)
+    def test_key_broadcasting_semantics(self, device, dtype, gen_fn_name):
+        key = random.key(42, device=device)
+
+        # Broadcast key dim: size-1 dims replicate, real dims index keys.
+        keys = random.split(key, 3).unsqueeze(0).unsqueeze(-2)  # (1, 3, 1, 2)
+        result = self._gen(gen_fn_name, keys, (4, 3, 100), dtype=dtype)
+        for i in range(1, 4):
+            self.assertEqual(result[0], result[i])
+        for j in range(1, 3):
+            self.assertNotEqual(result[0][0], result[0][j])
+
+        # All-broadcast key matches unbatched (all dims are generation).
+        batched = self._gen(gen_fn_name, key.reshape(1, 1, 2), (4, 100), dtype=dtype)
+        unbatched = self._gen(gen_fn_name, key, (400,), dtype=dtype)
+        self.assertEqual(batched.flatten(), unbatched)
+
+        # Multiple trailing size-1 dims form the generation axis.
+        keys = random.split(key, 4).reshape(4, 1, 1, 2)  # (4, 1, 1, 2)
+        result = self._gen(gen_fn_name, keys, (4, 10, 100), dtype=dtype)
+        for i in range(4):
+            individual = self._gen(gen_fn_name, keys[i], (10, 100), dtype=dtype)
+            self.assertEqual(result[i], individual)
+        keys_flat = random.split(key, 4).unsqueeze(-2)  # (4, 1, 2)
+        flat = self._gen(gen_fn_name, keys_flat, (4, 1000), dtype=dtype)
+        self.assertEqual(result.reshape(4, 1000), flat)
+
+        # No generation dims: every element gets its own key.
+        keys = random.split(key, 12).reshape(4, 3, 2)  # (4, 3, 2)
+        result = self._gen(gen_fn_name, keys, (4, 3), dtype=dtype)
+        for i in range(4):
+            for j in range(3):
+                individual = self._gen(gen_fn_name, keys[i][j], (1,), dtype=dtype)
+                self.assertEqual(result[i][j], individual.squeeze())
+
+    @parametrize("gen_fn_name", ["normal", "uniform"])
+    def test_error_wrong_key_dtype(self, device, gen_fn_name):
+        key = torch.tensor([42, 0], dtype=torch.float32, device=device)
+        with self.assertRaises(RuntimeError):
+            self._gen(gen_fn_name, key, (100,))
+
+    @parametrize("gen_fn_name", ["normal", "uniform"])
+    def test_error_shape_mismatch(self, device, gen_fn_name):
+        key = random.key(42, device=device)
+        keys = random.split(key, 3).unsqueeze(-2)  # (3, 1, 2)
+        with self.assertRaises(RuntimeError):
+            self._gen(gen_fn_name, keys, (2, 100))  # batch dim 2 != 3
+
+    @parametrize("gen_fn_name", ["normal", "uniform"])
+    def test_error_key_last_dim_not_2(self, device, gen_fn_name):
+        key = torch.tensor([42, 0, 1], dtype=torch.uint64, device=device)
+        with self.assertRaises(RuntimeError):
+            self._gen(gen_fn_name, key, (100,))
+
+    @parametrize("gen_fn_name", ["normal", "uniform"])
+    @dtypes(torch.float32, torch.float64)
+    def test_offset_shift_consistency(self, device, dtype, gen_fn_name):
+        seed = 42
+        n = 100
+        outputs_per_elem = 2 if dtype == torch.float64 else 1
+        key0 = torch.tensor([seed, 0], dtype=torch.uint64, device=device)
+        ref = self._gen(gen_fn_name, key0, (n,), dtype=dtype)
+        for elem_offset in range(1, 4):
+            offset = elem_offset * outputs_per_elem
+            key = torch.tensor([seed, offset], dtype=torch.uint64, device=device)
+            result = self._gen(gen_fn_name, key, (n - elem_offset,), dtype=dtype)
+            self.assertEqual(result, ref[elem_offset:])
+
+    @parametrize("gen_fn_name", ["normal", "uniform"])
+    @dtypes(torch.float32, torch.float64)
+    def test_offset_overflow(self, device, dtype, gen_fn_name):
+        seed = 42
+        outputs_per_elem = 2 if dtype == torch.float64 else 1
+        wrap_at = 5
+        near_max = (1 << 64) - wrap_at * outputs_per_elem
+        key = torch.tensor([seed, near_max], dtype=torch.uint64, device=device)
+        result = self._gen(gen_fn_name, key, (20,), dtype=dtype)
+        self.assertEqual(
+            result[:wrap_at],
+            self._gen(gen_fn_name, key, (wrap_at,), dtype=dtype),
+        )
+        key_zero = torch.tensor([seed, 0], dtype=torch.uint64, device=device)
+        self.assertEqual(
+            result[wrap_at:],
+            self._gen(gen_fn_name, key_zero, (20 - wrap_at,), dtype=dtype),
+        )
+
+    # Distribution-specific tests
 
     @dtypes(*all_floating_dtypes)
     def test_standard_normal_statistics(self, device, dtype):
@@ -234,138 +351,6 @@ class TestPhiloxNormal(TestCase):
         result = random.normal(key, (100000,), mean=5.0, std=2.0, dtype=dtype)
         self.assertTrue(abs(result.mean().item() - 5.0) < 0.1)
         self.assertTrue(abs(result.std().item() - 2.0) < 0.1)
-
-    @dtypes(*all_floating_dtypes)
-    def test_batched_keys(self, device, dtype):
-        key = random.key(42, device=device)
-        keys = random.split(key, 4).unsqueeze(-2)  # (4, 1, 2)
-        result = random.normal(keys, (4, 100), dtype=dtype)
-        for i in range(4):
-            individual = random.normal(keys[i], (100,), dtype=dtype)
-            self.assertEqual(result[i], individual)
-
-    @dtypes(*all_floating_dtypes)
-    def test_multi_batch(self, device, dtype):
-        key = random.key(42, device=device)
-        keys = random.split(key, 6).reshape(2, 3, 1, 2)  # (2, 3, 1, 2)
-        result = random.normal(keys, (2, 3, 50), dtype=dtype)
-        for i in range(2):
-            for j in range(3):
-                individual = random.normal(keys[i][j], (50,), dtype=dtype)
-                self.assertEqual(result[i][j], individual)
-
-    @dtypes(*all_floating_dtypes)
-    def test_key_broadcasting_semantics(self, device, dtype):
-        key = random.key(42, device=device)
-
-        # Broadcast key dim: size-1 dims replicate, real dims index keys.
-        keys = random.split(key, 3).unsqueeze(0).unsqueeze(-2)  # (1, 3, 1, 2)
-        result = random.normal(keys, (4, 3, 100), dtype=dtype)
-        for i in range(1, 4):
-            self.assertEqual(result[0], result[i])
-        for j in range(1, 3):
-            self.assertNotEqual(result[0][0], result[0][j])
-
-        # All-broadcast key matches unbatched (all dims are generation).
-        batched = random.normal(key.reshape(1, 1, 2), (4, 100), dtype=dtype)
-        unbatched = random.normal(key, (400,), dtype=dtype)
-        self.assertEqual(batched.flatten(), unbatched)
-
-        # Multiple trailing size-1 dims form the generation axis.
-        keys = random.split(key, 4).reshape(4, 1, 1, 2)  # (4, 1, 1, 2)
-        result = random.normal(keys, (4, 10, 100), dtype=dtype)
-        for i in range(4):
-            individual = random.normal(keys[i], (10, 100), dtype=dtype)
-            self.assertEqual(result[i], individual)
-        keys_flat = random.split(key, 4).unsqueeze(-2)  # (4, 1, 2)
-        flat = random.normal(keys_flat, (4, 1000), dtype=dtype)
-        self.assertEqual(result.reshape(4, 1000), flat)
-
-        # No generation dims: every element gets its own key.
-        keys = random.split(key, 12).reshape(4, 3, 2)  # (4, 3, 2)
-        result = random.normal(keys, (4, 3), dtype=dtype)
-        for i in range(4):
-            for j in range(3):
-                individual = random.normal(keys[i][j], (1,), dtype=dtype)
-                self.assertEqual(result[i][j], individual.squeeze())
-
-    def test_error_wrong_key_dtype(self, device):
-        key = torch.tensor([42, 0], dtype=torch.float32, device=device)
-        with self.assertRaises(RuntimeError):
-            random.normal(key, (100,))
-
-    @dtypes(torch.float32, torch.float64)
-    def test_offset_shift_consistency(self, device, dtype):
-        """Shifting key offset shifts the output stream."""
-        seed = 42
-        n = 100
-        outputs_per_elem = 2 if dtype == torch.float64 else 1
-        key0 = torch.tensor([seed, 0], dtype=torch.uint64, device=device)
-        ref = random.normal(key0, (n,), dtype=dtype)
-        for elem_offset in range(1, 4):
-            offset = elem_offset * outputs_per_elem
-            key = torch.tensor([seed, offset], dtype=torch.uint64, device=device)
-            result = random.normal(key, (n - elem_offset,), dtype=dtype)
-            self.assertEqual(result, ref[elem_offset:])
-
-    def test_error_shape_mismatch(self, device):
-        key = random.key(42, device=device)
-        keys = random.split(key, 3).unsqueeze(-2)  # (3, 1, 2)
-        with self.assertRaises(RuntimeError):
-            random.normal(keys, (2, 100))  # batch dim 2 != 3
-
-    @dtypes(torch.float32, torch.float64)
-    def test_offset_overflow(self, device, dtype):
-        """After wrapping past 2^64, generation continues from offset 0."""
-        seed = 42
-        outputs_per_elem = 2 if dtype == torch.float64 else 1
-        wrap_at = 5
-        near_max = (1 << 64) - wrap_at * outputs_per_elem
-        key = torch.tensor([seed, near_max], dtype=torch.uint64, device=device)
-        result = random.normal(key, (20,), dtype=dtype)
-        # First wrap_at elements come from the stream at near_max.
-        self.assertEqual(
-            result[:wrap_at],
-            random.normal(key, (wrap_at,), dtype=dtype),
-        )
-        # After the wrap, elements come from the stream at offset 0.
-        key_zero = torch.tensor([seed, 0], dtype=torch.uint64, device=device)
-        self.assertEqual(
-            result[wrap_at:],
-            random.normal(key_zero, (20 - wrap_at,), dtype=dtype),
-        )
-
-    def test_error_key_last_dim_not_2(self, device):
-        key = torch.tensor([42, 0, 1], dtype=torch.uint64, device=device)
-        with self.assertRaises(RuntimeError):
-            random.normal(key, (100,))
-
-
-instantiate_device_type_tests(TestPhiloxNormal, globals(), only_for=("cpu", "cuda"))
-
-
-class TestPhiloxUniform(TestCase):
-    @dtypes(*all_floating_dtypes)
-    def test_basic_shape(self, device, dtype):
-        key = random.key(42, device=device)
-        result = random.uniform(key, (100,), dtype=dtype)
-        self.assertEqual(result.shape, (100,))
-        self.assertEqual(result.dtype, dtype)
-
-    @dtypes(*all_floating_dtypes)
-    def test_determinism(self, device, dtype):
-        key = random.key(42, device=device)
-        a = random.uniform(key, (1000,), dtype=dtype)
-        b = random.uniform(key, (1000,), dtype=dtype)
-        self.assertEqual(a, b)
-
-    @dtypes(*all_floating_dtypes)
-    def test_different_keys(self, device, dtype):
-        key1 = random.key(42, device=device)
-        key2 = random.key(43, device=device)
-        a = random.uniform(key1, (1000,), dtype=dtype)
-        b = random.uniform(key2, (1000,), dtype=dtype)
-        self.assertNotEqual(a, b)
 
     @dtypes(*all_floating_dtypes)
     def test_standard_uniform_statistics(self, device, dtype):
@@ -383,121 +368,20 @@ class TestPhiloxUniform(TestCase):
         self.assertTrue(result.min().item() >= 2.0)
         self.assertTrue(result.max().item() <= 5.0)
 
-    @dtypes(*all_floating_dtypes)
-    def test_batched_keys(self, device, dtype):
-        key = random.key(42, device=device)
-        keys = random.split(key, 4).unsqueeze(-2)  # (4, 1, 2)
-        result = random.uniform(keys, (4, 100), dtype=dtype)
-        for i in range(4):
-            individual = random.uniform(keys[i], (100,), dtype=dtype)
-            self.assertEqual(result[i], individual)
 
-    @dtypes(*all_floating_dtypes)
-    def test_multi_batch(self, device, dtype):
-        key = random.key(42, device=device)
-        keys = random.split(key, 6).reshape(2, 3, 1, 2)  # (2, 3, 1, 2)
-        result = random.uniform(keys, (2, 3, 50), dtype=dtype)
-        for i in range(2):
-            for j in range(3):
-                individual = random.uniform(keys[i][j], (50,), dtype=dtype)
-                self.assertEqual(result[i][j], individual)
-
-    @dtypes(*all_floating_dtypes)
-    def test_key_broadcasting_semantics(self, device, dtype):
-        key = random.key(42, device=device)
-
-        # Broadcast key dim: size-1 dims replicate, real dims index keys.
-        keys = random.split(key, 3).unsqueeze(0).unsqueeze(-2)  # (1, 3, 1, 2)
-        result = random.uniform(keys, (4, 3, 100), dtype=dtype)
-        for i in range(1, 4):
-            self.assertEqual(result[0], result[i])
-        for j in range(1, 3):
-            self.assertNotEqual(result[0][0], result[0][j])
-
-        # All-broadcast key matches unbatched.
-        batched = random.uniform(key.reshape(1, 1, 2), (4, 100), dtype=dtype)
-        unbatched = random.uniform(key, (400,), dtype=dtype)
-        self.assertEqual(batched.flatten(), unbatched)
-
-        # No generation dims: every element gets its own key.
-        keys = random.split(key, 12).reshape(4, 3, 2)  # (4, 3, 2)
-        result = random.uniform(keys, (4, 3), dtype=dtype)
-        for i in range(4):
-            for j in range(3):
-                individual = random.uniform(keys[i][j], (1,), dtype=dtype)
-                self.assertEqual(result[i][j], individual.squeeze())
-
-    def test_error_wrong_key_dtype(self, device):
-        key = torch.tensor([42, 0], dtype=torch.float32, device=device)
-        with self.assertRaises(RuntimeError):
-            random.uniform(key, (100,))
-
-    def test_error_shape_mismatch(self, device):
-        key = random.key(42, device=device)
-        keys = random.split(key, 3).unsqueeze(-2)  # (3, 1, 2)
-        with self.assertRaises(RuntimeError):
-            random.uniform(keys, (2, 100))  # batch dim 2 != 3
-
-    def test_error_key_last_dim_not_2(self, device):
-        key = torch.tensor([42, 0, 1], dtype=torch.uint64, device=device)
-        with self.assertRaises(RuntimeError):
-            random.uniform(key, (100,))
-
+    @parametrize("gen_fn_name", ["normal", "uniform"])
     @dtypes(torch.float32, torch.float64)
-    def test_offset_shift_consistency(self, device, dtype):
-        """Shifting key offset shifts the output stream."""
-        seed = 42
-        n = 100
-        outputs_per_elem = 2 if dtype == torch.float64 else 1
-        key0 = torch.tensor([seed, 0], dtype=torch.uint64, device=device)
-        ref = random.uniform(key0, (n,), dtype=dtype)
-        for elem_offset in range(1, 4):
-            offset = elem_offset * outputs_per_elem
-            key = torch.tensor([seed, offset], dtype=torch.uint64, device=device)
-            result = random.uniform(key, (n - elem_offset,), dtype=dtype)
-            self.assertEqual(result, ref[elem_offset:])
-
-    @dtypes(torch.float32, torch.float64)
-    def test_offset_overflow(self, device, dtype):
-        """After wrapping past 2^64, generation continues from offset 0."""
-        seed = 42
-        outputs_per_elem = 2 if dtype == torch.float64 else 1
-        wrap_at = 5
-        near_max = (1 << 64) - wrap_at * outputs_per_elem
-        key = torch.tensor([seed, near_max], dtype=torch.uint64, device=device)
-        result = random.uniform(key, (20,), dtype=dtype)
-        # First wrap_at elements come from the stream at near_max.
-        self.assertEqual(
-            result[:wrap_at],
-            random.uniform(key, (wrap_at,), dtype=dtype),
-        )
-        # After the wrap, elements come from the stream at offset 0.
-        key_zero = torch.tensor([seed, 0], dtype=torch.uint64, device=device)
-        self.assertEqual(
-            result[wrap_at:],
-            random.uniform(key_zero, (20 - wrap_at,), dtype=dtype),
-        )
-
     @onlyCUDA
-    def test_cross_device_consistency(self, device):
+    def test_cross_device_consistency(self, device, dtype, gen_fn_name):
         key_cpu = random.key(42)
         key_cuda = random.key(42, device=device)
         self.assertEqual(
-            random.uniform(key_cpu, (1000,)),
-            random.uniform(key_cuda, (1000,)).cpu(),
-        )
-
-    @onlyCUDA
-    def test_cross_device_f64_consistency(self, device):
-        key_cpu = random.key(42)
-        key_cuda = random.key(42, device=device)
-        self.assertEqual(
-            random.uniform(key_cpu, (1000,), dtype=torch.float64),
-            random.uniform(key_cuda, (1000,), dtype=torch.float64).cpu(),
+            self._gen(gen_fn_name, key_cpu, (1000,), dtype=dtype),
+            self._gen(gen_fn_name, key_cuda, (1000,), dtype=dtype).cpu(),
         )
 
 
-instantiate_device_type_tests(TestPhiloxUniform, globals(), only_for=("cpu", "cuda"))
+instantiate_device_type_tests(TestPhiloxDistribution, globals(), only_for=("cpu", "cuda"))
 
 
 class TestPhiloxCompile(TestCase):
