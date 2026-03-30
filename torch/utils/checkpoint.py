@@ -1565,8 +1565,11 @@ def _checkpoint_without_reentrant_generator(
         else:
             forward_context, recompute_context = context_fn()
             _validate_sac_context(forward_context, recompute_context)
-        if getattr(forward_context, "ac_graph_id", None) is None:
-            forward_context.ac_graph_id = next(_ac_graph_id_counter)  # pyrefly: ignore[missing-attribute]
+        if getattr(forward_context, "ac_graph_id", None) is not None:
+            raise RuntimeError(
+                "Nested activation checkpointing is not supported during non-strict tracing."
+            )
+        forward_context.ac_graph_id = next(_ac_graph_id_counter)  # pyrefly: ignore[missing-attribute]
         with forward_context:
             yield
         return
