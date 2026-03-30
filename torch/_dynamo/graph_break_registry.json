@@ -396,6 +396,16 @@
       ]
     }
   ],
+  "GB6999": [
+    {
+      "Gb_type": "unsupported variable type for __dict__ access",
+      "Context": "VariableTracker type: {type(vt)}",
+      "Explanation": "Dynamo does not know how to get __dict__ from {type(vt)}",
+      "Hints": [
+        "This is likely to be a Dynamo bug. Please report an issue to PyTorch."
+      ]
+    }
+  ],
   "GB0037": [
     {
       "Gb_type": "Dynamic shape operator (no meta kernel)",
@@ -3467,6 +3477,14 @@
       "Hints": [
         "Use two-argument super(type, object_or_type)."
       ]
+    }
+  ],
+  "GB3383": [
+    {
+      "Gb_type": "Pydantic dataclass constructor",
+      "Context": "{self.value}",
+      "Explanation": "Dynamo graph breaks on pydantic dataclass constructors because validation mutates the instance outside traced bytecode.",
+      "Hints": []
     }
   ],
   "GB0281": [
