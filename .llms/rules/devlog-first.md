@@ -20,7 +20,8 @@ The devlog contains design rationale, migration history, and performance
 data written by the engineers who built these systems.
 
 When answering from devlog posts:
-- **Always cite the date** of the devlog entry used (e.g., "per the
-  2025-03-15 devlog entry").
-- **Prompt the user** at the end: ask whether the devlog answer is
+- **Always cite the date and title** of the devlog entry used (e.g., "per the
+  2025-03-15 *Guard-Free Dynamic Shapes* devlog entry").
+- **Always state** that the answer is based on devlog entries.
+- **Prompt the user** at the end: ask whether the devlog-based answer is
   sufficient or whether they'd like a code search to verify/supplement.
