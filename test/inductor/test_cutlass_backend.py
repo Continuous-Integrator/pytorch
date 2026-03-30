@@ -1833,11 +1833,7 @@ class TestCutlassBackend(TestCase):
 
         torch.testing.assert_close(actual, expected)
 
-        # Check render call count: render is called uniquely for each codegen
-        # and for each finalized codegen.
-        # XPU has only one choice for this case.
-        num_choice = 1 if GPU_TYPE == "xpu" else 2
-        self.assertEqual(render_call_count, NUM_ITERATIONS + num_choice)
+        self.assertEqual(render_call_count, NUM_ITERATIONS + 2)
 
     @skipXPUIf(not PLATFORM_SUPPORTS_SYCLTLA, "")
     @skipCUDAIf(not SM90OrLater, "need sm_90")
@@ -2677,8 +2673,10 @@ class TestCutlassBackend(TestCase):
 
         # Check that all config counts are equal
         all_counts = list(config_counts.values())
+        # XPU has more configs for bf16 than f16.
+        expected_count = 2 if GPU_TYPE == "xpu" else 1
         self.assertTrue(
-            len(set(all_counts)) == 1,
+            len(set(all_counts)) == expected_count,
             f"Config counts should be equal across all layout/dtype combinations. "
             f"Got counts: {config_counts}",
         )
