@@ -785,7 +785,7 @@ class ExceptionWrapper:
         raise exception
 
 
-def cpu_count() -> int | none:
+def cpu_count() -> int | None:
     """Return the number of CPUs available to the current process.
 
     Prefers ``os.sched_getaffinity`` (respects cgroups / taskset) and
