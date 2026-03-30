@@ -10,6 +10,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import os
+import shlex
 import subprocess
 from typing import TYPE_CHECKING, Any
 
@@ -37,7 +38,26 @@ def _env_vars(env: dict[str, str]) -> Iterator[None]:
                 os.environ[k] = orig
 
 
-def run_plan(group_id: str, plan: TestPlan, env_overrides: dict[str, str] | None = None) -> None:
+def _rerun_hint(
+    group_id: str,
+    env_overrides: dict[str, str] | None = None,
+    input_overrides: dict[str, str] | None = None,
+) -> str:
+    parts = [f"lumen test lint --group-id {group_id}"]
+    for k, v in (env_overrides or {}).items():
+        parts.append(f"--env {shlex.quote(f'{k}={v}')}")
+    for k, v in (input_overrides or {}).items():
+        parts.append(f"--input {shlex.quote(f'{k}={v}')}")
+    parts.append("--re")
+    return " ".join(parts)
+
+
+def run_plan(
+    group_id: str,
+    plan: TestPlan,
+    env_overrides: dict[str, str] | None = None,
+    input_overrides: dict[str, str] | None = None,
+) -> None:
     """Run a test plan locally."""
     logger.info("[%s] %s", group_id, plan.title)
 
@@ -49,9 +69,17 @@ def run_plan(group_id: str, plan: TestPlan, env_overrides: dict[str, str] | None
 
         for step in plan.steps:
             with _env_vars(step.env_vars):
-                for cmd in step.commands:
-                    logger.info("[%s/%s] %s", group_id, step.test_id, cmd)
-                    subprocess.check_call(cmd, shell=True)
+                try:
+                    for cmd in step.commands:
+                        logger.info("[%s/%s] %s", group_id, step.test_id, cmd)
+                        subprocess.check_call(cmd, shell=True)
+                except subprocess.CalledProcessError:
+                    hint = _rerun_hint(group_id, env_overrides, input_overrides)
+                    logger.error(
+                        "[%s/%s] failed. To rerun on RE:\n  %s",
+                        group_id, step.test_id, hint,
+                    )
+                    raise
             logger.info("[%s/%s] passed", group_id, step.test_id)
 
 
