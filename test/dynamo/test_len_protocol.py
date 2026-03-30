@@ -650,6 +650,126 @@ class TestSubclassOverloadedLen(torch._dynamo.test_case.TestCase):
         self.assertEqual(SetSubclassCustomLen.__len__(obj), 0)
 
 
+class DescriptorLenClass:
+    """Test class with __len__ as a regular instance method"""
+
+    def __len__(self):
+        """Regular instance method __len__ - should return 40"""
+        return 40
+
+
+class PartialLenClass:
+    """Class where __len__ is a lambda/callable object"""
+
+    def __init__(self):
+        self._items = [1, 2, 3, 4, 5]
+
+    def __len__(self):
+        return len(self._items)
+
+
+class StaticMethodLenClass:
+    """Test class where __len__ is a staticmethod (unusual, likely to fail)"""
+
+    @staticmethod
+    def __len__():
+        """Staticmethod __len__ - unusual pattern"""
+        return 10
+
+
+class ClassMethodLenClass:
+    """Test class where __len__ is a classmethod (unusual, likely to fail)"""
+
+    @classmethod
+    def __len__(cls):
+        """Classmethod __len__ - unusual pattern"""
+        return 20
+
+
+class CustomDescriptorLenClass:
+    """Test class where __len__ is a custom descriptor"""
+
+    class CustomDescriptorLen:
+        """Custom descriptor that implements __get__ method"""
+
+        def __get__(self, obj, objtype=None):
+            """Descriptor protocol: return a callable that returns len"""
+            if obj is None:
+                return self
+            return lambda: 50
+
+    __len__ = CustomDescriptorLen()
+
+
+class TestDescriptorLenImpl(torch._dynamo.test_case.TestCase):
+    """Test that len_impl handles descriptor-based __len__ correctly"""
+
+    def setUp(self):
+        self.old = torch._dynamo.config.enable_trace_unittest
+        torch._dynamo.config.enable_trace_unittest = True
+        super().setUp()
+
+    def tearDown(self):
+        torch._dynamo.config.enable_trace_unittest = self.old
+        return super().tearDown()
+
+    @make_dynamo_test
+    def test_regular_instance_len(self):
+        """Test regular instance method __len__"""
+        obj = DescriptorLenClass()
+
+        # Regular instance methods should work fine
+        self.assertEqual(len(obj), 40)
+        self.assertEqual(obj.__len__(), 40)
+
+    @make_dynamo_test
+    def test_partial_callable_len(self):
+        """Test lambda/callable as __len__"""
+        obj = PartialLenClass()
+
+        # Callable __len__ should work
+        self.assertEqual(len(obj), 5)
+        self.assertEqual(obj.__len__(), 5)
+
+    @make_dynamo_test
+    def test_staticmethod_len_works(self):
+        """Test that staticmethod as __len__ actually works (unusual but supported)
+
+        Staticmethods are descriptors that don't bind. CPython resolves the
+        descriptor and calls the underlying function without passing self.
+        """
+        obj = StaticMethodLenClass()
+
+        # Surprisingly, CPython's descriptor protocol makes this work
+        # staticmethod.__get__ returns the unwrapped function
+        self.assertEqual(len(obj), 10)
+
+    @make_dynamo_test
+    def test_classmethod_len_works(self):
+        """Test that classmethod as __len__ actually works (unusual but supported)
+
+        Classmethods are descriptors that bind to the class. CPython's
+        descriptor protocol handles this and passes the class instead of instance.
+        """
+        obj = ClassMethodLenClass()
+
+        # Surprisingly, CPython's descriptor protocol makes this work
+        # classmethod.__get__ returns a bound method with the class
+        self.assertEqual(len(obj), 20)
+
+    @make_dynamo_test
+    def test_custom_descriptor_len(self):
+        """Test custom descriptor with __get__ method as __len__
+
+        Custom descriptors implement the descriptor protocol via __get__.
+        The descriptor is resolved and the returned callable is used as __len__.
+        """
+        obj = CustomDescriptorLenClass()
+
+        # Custom descriptor's __get__ returns a callable that returns 50
+        self.assertEqual(len(obj), 50)
+
+
 if __name__ == "__main__":
     from torch._dynamo.test_case import run_tests
 
