@@ -1425,21 +1425,7 @@ def _gen_transform_infos_non_cached(
     # 1. Non-standard device order or _StridedShard → graph-based
     # 2. Global flag or explicit parameter True → use graph-based
     # 3. Otherwise → use greedy
-    #
-    # For _StridedShard, the graph-based planner requires decoding split_factor into a
-    # shard order via _maybe_convert_StridedShard_to_shard_order. This fails when
-    # split_factor doesn't correspond to any valid product of mesh dimension sizes
-    # (e.g. sf=2 on a 1D mesh, or sf=3 on a (4,2) mesh). In those cases, fall back
-    # to greedy which treats _StridedShard as an opaque placement and delegates
-    # directly to _StridedShard._to_replicate_tensor().
-    can_decode_strided_shard = not has_strided_shard or all(
-        DTensorSpec._maybe_convert_StridedShard_to_shard_order(
-            spec.placements, device_mesh
-        )
-        is not None
-        for spec in (src_spec, dst_spec)
-    )
-    if (has_non_default_order or has_strided_shard) and can_decode_strided_shard:
+    if has_non_default_order or has_strided_shard:
         use_graph_based_transform = True
     elif _FORCE_MIN_COST_REDISTRIBUTION_PLAN is not None:
         use_graph_based_transform = _FORCE_MIN_COST_REDISTRIBUTION_PLAN
@@ -1452,9 +1438,18 @@ def _gen_transform_infos_non_cached(
         src_spec.tensor_meta,
     )
     if use_graph_based_transform:
-        transform_infos = drp.generate_graph_based_transform_infos(
-            src_spec, dst_spec, src_spec.shape
-        )
+        # The graph-based planner requires decoding _StridedShard split_factor into a
+        # shard order via _maybe_convert_StridedShard_to_shard_order. This fails when
+        # split_factor doesn't correspond to any valid product of mesh dimension sizes
+        # (e.g. sf=2 on a 1D mesh, or sf=3 on a (4,2) mesh). In those cases, fall back
+        # to greedy which treats _StridedShard as an opaque placement and delegates
+        # directly to _StridedShard._to_replicate_tensor().
+        try:
+            transform_infos = drp.generate_graph_based_transform_infos(
+                src_spec, dst_spec, src_spec.shape
+            )
+        except ValueError:
+            transform_infos = drp.generate_greedy_transform_infos(src_spec, dst_spec)
     else:
         transform_infos = drp.generate_greedy_transform_infos(src_spec, dst_spec)
     return transform_infos
