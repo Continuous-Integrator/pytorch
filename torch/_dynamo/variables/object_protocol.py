@@ -74,4 +74,9 @@ def vt_identity_compare(
 def generic_len(
     tx: "InstructionTranslator", obj: "VariableTracker"
 ) -> "VariableTracker":
+    # ref: https://github.com/python/cpython/blob/v3.13.3/Objects/abstract.c#L53-L69
+    """
+    Implements PyObject_Size/PyObject_Length semantics for VariableTracker objects.
+    Routes to obj.len_impl(tx)
+    """
     return obj.len_impl(tx)
