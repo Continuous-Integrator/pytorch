@@ -1025,6 +1025,16 @@ class TestSingleDimStrategies(DTensorOpTestBase):
 
     @suppress_warnings
     @ops(op_db, allowed_dtypes=(torch.float,))
+    @skipOps(
+        op_db,
+        "TestSingleDimStrategies",
+        "test_single_dim_strategy",
+        {
+            # Stochastic: each shard gets independent RNG, so
+            # op(full) != cat(op(shard0), op(shard1)).
+            skip("exponential"),
+        },
+    )
     def test_single_dim_strategy(self, dtype, op):
         torch.manual_seed(42)
         mesh = init_device_mesh(DEVICE_TYPE, (self.world_size,))
