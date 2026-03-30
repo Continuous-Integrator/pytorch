@@ -530,43 +530,34 @@ class GraphModule(torch.nn.Module):
             loss_eager.backward()
 
         torch._dynamo.reset()
-        # With fullgraph=True, we get an Unsupported error at compile time
+        # With fullgraph=True, the consumed grad_fn tensor is auto-detached
         step_compiled_fullgraph = torch.compile(
             step, fullgraph=True, backend="aot_eager"
         )
 
-        with self.assertRaisesRegex(
-            torch._dynamo.exc.Unsupported,
-            re.escape(
-                """\
-autograd.grad consumed returned tensor's grad_fn
-  Explanation: torch.autograd.grad() consumes grad_fns that are needed by tensors returned from this compiled function. This would cause 'backward through graph a second time' errors.
-  Hint: If you don't need to backward through the returned tensor, call .detach() before returning: `return loss.detach()`
-  Hint: If you need to backward through the returned tensor, use retain_graph=True in autograd.grad()."""  # noqa: B950
-            ),
-        ):
-            step_compiled_fullgraph(torch.nn.Linear(4, 4), torch.randn(2, 4))
+        loss_fullgraph, grad_sum_fullgraph = step_compiled_fullgraph(
+            torch.nn.Linear(4, 4), torch.randn(2, 4)
+        )
+        # loss should be auto-detached (no grad_fn)
+        self.assertIsNone(loss_fullgraph.grad_fn)
 
         torch._dynamo.reset()
 
-        # With fullgraph=False, code before and after autograd.grad is compiled,
-        # but autograd.grad itself runs in eager.
+        # With fullgraph=False, auto-detach also applies — everything
+        # compiles in a single frame.
         cnt = torch._dynamo.testing.CompileCounter()
         step_compiled_graph_break = torch.compile(step, fullgraph=False, backend=cnt)
 
         loss_compiled, grad_sum_compiled = step_compiled_graph_break(
             torch.nn.Linear(4, 4), torch.randn(2, 4)
         )
-        self.assertEqual(cnt.frame_count, 2)
+        self.assertEqual(cnt.frame_count, 1)
 
-        # The returned loss still has the eager behavior issue
-        with self.assertRaisesRegex(
-            RuntimeError,
-            "Trying to backward through the graph a second time",
-        ):
-            loss_compiled.backward()
+        # The returned loss is auto-detached, so backward is not possible
+        self.assertIsNone(loss_compiled.grad_fn)
 
     def test_autograd_grad_consumed_intermediate_tensor(self):
+        """Test that returned tensors with consumed grad_fns are auto-detached."""
         torch._dynamo.reset()
 
         def fn(x):
@@ -577,7 +568,7 @@ autograd.grad consumed returned tensor's grad_fn
             )  # consumes AddBackward and MulBackward
             return y, grad  # y's grad_fn was consumed!
 
-        # Verify eager fails
+        # Verify eager fails if you try to backward through y
         x_eager = torch.randn(4, requires_grad=True)
         y_eager, grad_eager = fn(x_eager)
         with self.assertRaisesRegex(
@@ -586,23 +577,35 @@ autograd.grad consumed returned tensor's grad_fn
         ):
             y_eager.sum().backward()
 
-        # Compiled should detect this and raise Unsupported
+        # Compiled should auto-detach y since its grad_fn was consumed
         torch._dynamo.reset()
         compiled_fn = torch.compile(fn, fullgraph=True, backend="aot_eager")
 
-        msg = textwrap.dedent(
-            """\
-autograd.grad consumed returned tensor's grad_fn
-  Explanation: torch.autograd.grad() consumes grad_fns that are needed by tensors returned from this compiled function. This would cause 'backward through graph a second time' errors.
-  Hint: If you don't need to backward through the returned tensor, call .detach() before returning: `return loss.detach()`
-  Hint: If you need to backward through the returned tensor, use retain_graph=True in autograd.grad()."""  # noqa: B950
-        )
+        x_compiled = torch.randn(4, requires_grad=True)
+        y_compiled, grad_compiled = compiled_fn(x_compiled)
+        # y should be auto-detached (no grad_fn)
+        self.assertIsNone(y_compiled.grad_fn)
+        self.assertFalse(y_compiled.requires_grad)
 
-        with self.assertRaisesRegex(
-            torch._dynamo.exc.Unsupported,
-            re.escape(msg) + r"[\s\S]*",
-        ):
-            compiled_fn(torch.randn(4, requires_grad=True))
+    def test_autograd_grad_leaked_tensor_names_in_error(self):
+        """Test that returned tensors with consumed grad_fns are auto-detached."""
+        torch._dynamo.reset()
+
+        def fn(x):
+            a = x * 2
+            b = x * 3
+            z = (a + b).sum()
+            torch.autograd.grad(z, x)
+            # Both a and b have consumed grad_fns
+            return a, b
+
+        compiled_fn = torch.compile(fn, fullgraph=True, backend="aot_eager")
+
+        x = torch.randn(4, requires_grad=True)
+        a, b = compiled_fn(x)
+        # Both should be auto-detached
+        self.assertIsNone(a.grad_fn)
+        self.assertIsNone(b.grad_fn)
 
     @skipIfCrossRef
     def test_autograd_grad_external_grad_fn_detached(self):
