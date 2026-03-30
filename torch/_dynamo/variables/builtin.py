@@ -97,7 +97,6 @@ from .constant import (
 from .dicts import (
     ConstDictVariable,
     DefaultDictVariable,
-    DictItemsVariable,
     DictKeysVariable,
     DictViewVariable,
     FrozensetVariable,
@@ -217,13 +216,6 @@ un_ops = (
     operator.neg,
     operator.not_,  # Note: this has a local scalar dense call
     operator.length_hint,
-)
-
-_SET_LIKE_OP_SUPPORT: tuple[type[VariableTracker], ...] = (
-    DictItemsVariable,
-    DictKeysVariable,
-    SetVariable,
-    UserDefinedObjectVariable,
 )
 
 BUILTIN_TO_TENSOR_FN_MAP: dict[Callable[..., Any], Callable[..., Any]] = {}
@@ -717,7 +709,7 @@ class BuiltinVariable(VariableTracker):
                 raise_observed_exception(
                     type(exc),
                     tx,
-                    args=[VariableTracker.build(tx, a) for a in exc.args],
+                    args=list(exc.args),
                 )
 
         list_like_expansion_handlers: list[
@@ -745,7 +737,7 @@ class BuiltinVariable(VariableTracker):
                     raise_observed_exception(
                         type(exc),
                         tx,
-                        args=[VariableTracker.build(tx, a) for a in exc.args],
+                        args=list(exc.args),
                     )
 
             result: list[
@@ -1125,7 +1117,7 @@ class BuiltinVariable(VariableTracker):
                         raise_observed_exception(
                             type(exc),
                             tx,
-                            args=[VariableTracker.build(tx, a) for a in exc.args],
+                            args=list(exc.args),
                         )
                     except AsPythonConstantNotImplementedError as exc:
                         unimplemented(
@@ -1165,7 +1157,7 @@ class BuiltinVariable(VariableTracker):
                             raise_observed_exception(
                                 type(exc),
                                 tx,
-                                args=[VariableTracker.build(tx, a) for a in exc.args],
+                                args=list(exc.args),
                             )
                         return VariableTracker.build(tx, res)
                     return None
@@ -1498,7 +1490,7 @@ class BuiltinVariable(VariableTracker):
                     raise_observed_exception(
                         type(e),
                         tx,
-                        args=[VariableTracker.build(tx, a) for a in e.args],
+                        args=list(e.args),
                     )
 
         if self.fn is object and name == "__init__":
@@ -2246,12 +2238,7 @@ class BuiltinVariable(VariableTracker):
             raise_observed_exception(
                 TypeError,
                 tx,
-                args=[
-                    VariableTracker.build(
-                        tx,
-                        f"set() takes 1 positional argument but {len(args)} were given",
-                    )
-                ],
+                args=[f"set() takes 1 positional argument but {len(args)} were given"],
             )
         arg = args[0]
         if istype(arg, variables.SetVariable):
@@ -2271,7 +2258,7 @@ class BuiltinVariable(VariableTracker):
         raise_observed_exception(
             TypeError,
             tx,
-            args=[VariableTracker.build(tx, "failed to construct builtin set()")],
+            args=["failed to construct builtin set()"],
         )
 
     def call_frozenset(
@@ -2288,10 +2275,7 @@ class BuiltinVariable(VariableTracker):
                 TypeError,
                 tx,
                 args=[
-                    VariableTracker.build(
-                        tx,
-                        f"frozenset() takes 1 positional argument but {len(args)} were given",
-                    )
+                    f"frozenset() takes 1 positional argument but {len(args)} were given"
                 ],
             )
         arg = args[0]
@@ -2303,7 +2287,7 @@ class BuiltinVariable(VariableTracker):
         raise_observed_exception(
             TypeError,
             tx,
-            args=[VariableTracker.build(tx, "failed to construct builtin frozenset()")],
+            args=["failed to construct builtin frozenset()"],
         )
 
     def call_zip(
@@ -2437,13 +2421,12 @@ class BuiltinVariable(VariableTracker):
         ):
             isinstance_type_tuple = isinstance_type
         else:
-            msg = VariableTracker.build(
-                tx, "isinstance() arg 2 must be a type, a tuple of types, or a union"
-            )
             raise_observed_exception(
                 TypeError,
                 tx,
-                args=[msg],
+                args=[
+                    "isinstance() arg 2 must be a type, a tuple of types, or a union"
+                ],
             )
 
         try:
@@ -3154,28 +3137,31 @@ class BuiltinVariable(VariableTracker):
                 sym_num=None,
             )
 
-        if isinstance(a, _SET_LIKE_OP_SUPPORT):
+        if isinstance(
+            a,
+            (DictKeysVariable, SetVariable, UserDefinedObjectVariable),
+        ):
             return a.call_method(tx, "__xor__", [b], {})
         return None
 
     def call_ixor(
         self, tx: "InstructionTranslator", a: VariableTracker, b: VariableTracker
     ) -> VariableTracker | None:
-        if isinstance(a, _SET_LIKE_OP_SUPPORT):
+        if isinstance(a, (DictKeysVariable, SetVariable, UserDefinedObjectVariable)):
             return a.call_method(tx, "__ixor__", [b], {})
         return None
 
     def call_sub(
         self, tx: "InstructionTranslator", a: VariableTracker, b: VariableTracker
     ) -> VariableTracker | None:
-        if isinstance(a, _SET_LIKE_OP_SUPPORT):
+        if isinstance(a, (DictKeysVariable, SetVariable, UserDefinedObjectVariable)):
             return a.call_method(tx, "__sub__", [b], {})
         return None
 
     def call_isub(
         self, tx: "InstructionTranslator", a: VariableTracker, b: VariableTracker
     ) -> VariableTracker | None:
-        if isinstance(a, _SET_LIKE_OP_SUPPORT):
+        if isinstance(a, (DictKeysVariable, SetVariable, UserDefinedObjectVariable)):
             return a.call_method(tx, "__isub__", [b], {})
         return None
 
@@ -3193,7 +3179,7 @@ class BuiltinVariable(VariableTracker):
                 ),
                 sym_num=None,
             )
-        if isinstance(a, _SET_LIKE_OP_SUPPORT):
+        if isinstance(a, (DictKeysVariable, SetVariable, UserDefinedObjectVariable)):
             return a.call_method(tx, "__and__", [b], {})
         # None no-ops this handler and lets the driving function proceed
         return None
@@ -3212,7 +3198,7 @@ class BuiltinVariable(VariableTracker):
                 ),
                 sym_num=None,
             )
-        if isinstance(a, _SET_LIKE_OP_SUPPORT):
+        if isinstance(a, (DictKeysVariable, SetVariable, UserDefinedObjectVariable)):
             return a.call_method(tx, "__iand__", [b], {})
         return None
 
@@ -3248,10 +3234,12 @@ class BuiltinVariable(VariableTracker):
         if isinstance(
             a,
             (
-                *_SET_LIKE_OP_SUPPORT,
                 ConstDictVariable,
+                DictKeysVariable,
                 MutableMappingVariable,
+                SetVariable,
                 UserDefinedDictVariable,
+                UserDefinedObjectVariable,
             ),
         ):
             # TODO(guilhermeleobas): forward the call to b.__ror__(a) if
@@ -3280,9 +3268,11 @@ class BuiltinVariable(VariableTracker):
         if isinstance(
             a,
             (
-                *_SET_LIKE_OP_SUPPORT,
                 ConstDictVariable,
+                DictKeysVariable,
                 MutableMappingVariable,
+                SetVariable,
+                UserDefinedObjectVariable,
             ),
         ):
             return a.call_method(tx, "__ior__", [b], {})

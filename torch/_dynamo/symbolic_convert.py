@@ -284,6 +284,8 @@ class SpeculationLog:
     # If True, graph break at autograd.grad instead of tracing it.
     # Set when we detect that autograd.grad consumed grad_fns that are returned.
     graph_break_on_autograd_grad: bool = False
+    # Names of output tensors whose grad_fns were consumed by autograd.grad.
+    autograd_grad_leaked_tensors: list[str] = dataclasses.field(default_factory=list)
     # If True, graph break at requires_grad_() on source-less intermediates
     # instead of tracing it. Set when we detect that such an intermediate
     # leaks as a graph output with requires_grad=True.
@@ -778,11 +780,13 @@ def generic_jump(
                 if result.is_python_constant():
                     result_value = result.as_python_constant()
                     if method_name == "__bool__" and not isinstance(result_value, bool):
-                        msg = VariableTracker.build(
+                        exc.raise_observed_exception(
+                            TypeError,
                             self,
-                            f"__bool__ should return bool, returned {type(result_value).__name__}",
+                            args=[
+                                f"__bool__ should return bool, returned {type(result_value).__name__}"
+                            ],
                         )
-                        exc.raise_observed_exception(TypeError, self, args=[msg])
                     if isinstance(result_value, (bool, int)) and truth_fn(result_value):
                         if push:
                             self.push(value)
@@ -2209,18 +2213,16 @@ class InstructionTranslatorBase(
             TypeError,
             self,
             args=[
-                VariableTracker.build(
-                    self,
-                    f"exceptions must derive from BaseException, not {val.python_type_name()}",
-                )
+                f"exceptions must derive from BaseException, not {val.python_type_name()}",
             ],
         )
 
     def RAISE_VARARGS(self, inst: Instruction) -> None:
         if inst.arg == 0:
             if not len(self.exn_vt_stack):
-                msg = VariableTracker.build(self, "No active exception to reraise")
-                exc.raise_observed_exception(RuntimeError, self, args=[msg])
+                exc.raise_observed_exception(
+                    RuntimeError, self, args=["No active exception to reraise"]
+                )
 
             # re-raise the previous exception. Here CPython refers to the exception
             # on top of the exception stack
