@@ -4687,6 +4687,27 @@ class TestCustomOpFastPath(TestCase):
             torch.ops._torch_testing.fp_tl2(x, [tt])
             self.assertTrue(called)
 
+    def test_fast_path_no_wrapper_chain_on_multi_device_register(self):
+        @torch.library.custom_op(
+            "_torch_testing::fp_chain", mutates_args=(), device_types="cpu"
+        )
+        def fp_chain(x: Tensor) -> Tensor:
+            return x.clone()
+
+        packet = torch.ops._torch_testing.fp_chain.default._overloadpacket
+        orig = packet._orig_op
+
+        @fp_chain.register_kernel("cuda")
+        def _(x: Tensor) -> Tensor:
+            return x.clone()
+
+        # After a second register_kernel, the fallback should still be the
+        # original C++ entry point, not a nested fast_op wrapper.
+        self.assertIs(packet._orig_op, orig)
+
+        x = torch.randn(3)
+        self.assertEqual(fp_chain(x), x)
+
 
 class TestLibrarySourceLocation(TestCase):
     def test_library_source_location(self):

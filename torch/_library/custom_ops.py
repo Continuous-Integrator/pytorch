@@ -856,7 +856,12 @@ class CustomOpDef:
         self._fast_call = fast_call
 
         packet = self._opoverload._overloadpacket
-        original_op = packet._op
+        # Save the original C++ dispatcher entry point once, so repeated
+        # _install_fast_call invocations (e.g. registering kernels for
+        # different devices) don't create nested fast_op wrappers.
+        if not hasattr(packet, "_orig_op"):
+            packet._orig_op = packet._op  # pyrefly: ignore[missing-attribute]
+        original_op = packet._orig_op  # pyrefly: ignore[missing-attribute]
 
         def fast_op(*args, **kwargs):
             result = fast_call(*args, **kwargs)
