@@ -137,7 +137,8 @@ def from_fun(t):
     if not isinstance(t, FunctionalTensor):
         # quick sanity assert
         if isinstance(t, torch.Tensor):
-            assert not torch._is_functional_tensor(t)
+            if torch._is_functional_tensor(t):
+                raise AssertionError("Expected tensor to not be a functional tensor")
         return t
     torch._sync(t)
     return torch._from_functional_tensor(t.elem)
@@ -154,7 +155,8 @@ def to_fun_old(t):
 def from_fun_old(t):
     # quick sanity assert
     if isinstance(t, torch.Tensor):
-        assert torch._is_functional_tensor(t)
+        if not torch._is_functional_tensor(t):
+            raise AssertionError("Expected tensor to be a functional tensor")
         torch._sync(t)
         return torch._from_functional_tensor(t)
     return t
@@ -2386,6 +2388,44 @@ def forward(self, pred_1, x_1):
             )
             self.assertEqual(cnt.frame_count, 6)
 
+    def test_scan_operator_call_count(self):
+        from torch._higher_order_ops.scan import generic_scan, wrap_combine_fn_flat
+
+        counter = [0]
+
+        def counting_combine(carry, x):
+            counter[0] += 1
+            return carry + x, x
+
+        init = [torch.zeros(3)]
+        xs = [torch.ones(5, 3)]
+        combine_flat = functools.partial(
+            wrap_combine_fn_flat,
+            combine_fn=counting_combine,
+            spec_init=pytree.tree_flatten(init)[1],
+            spec_xs=pytree.tree_flatten(xs)[1],
+            num_init_leaves=len(init),
+            num_inp_leaves=len(xs),
+        )
+
+        counter[0] = 0
+        result = generic_scan(combine_flat, init, xs)  # noqa: F841
+        self.assertEqual(counter[0], 5)
+
+        # Single-element scan should call operator exactly once.
+        xs_one = [torch.ones(1, 3)]
+        combine_flat_one = functools.partial(
+            wrap_combine_fn_flat,
+            combine_fn=counting_combine,
+            spec_init=pytree.tree_flatten(init)[1],
+            spec_xs=pytree.tree_flatten(xs_one)[1],
+            num_init_leaves=len(init),
+            num_inp_leaves=len(xs_one),
+        )
+        counter[0] = 0
+        generic_scan(combine_flat_one, init, xs_one)
+        self.assertEqual(counter[0], 1)
+
     @skipIfTorchDynamo("don't test compile on compile")
     def test_scan_init_scanned_0(self):
         # Only init and no input
@@ -3793,9 +3833,10 @@ class AssociativeScanTests(TestCase):
         result_exp_flatten = [r for r in result_exp_flatten if r.requires_grad]
 
         # Check the result and parameter lists
-        assert len(result_flatten) == len(result_exp_flatten), (
-            "The number of elements requiring gradients is different for the results and the expected results"
-        )
+        if len(result_flatten) != len(result_exp_flatten):
+            raise AssertionError(
+                "The number of elements requiring gradients is different for the results and the expected results"
+            )
 
         grad_exp_init = [torch.ones_like(el) for el in result_exp_flatten]
         expected_grads = torch.autograd.grad(
@@ -4080,7 +4121,8 @@ class AssociativeScanTests(TestCase):
             .view(10, 3)
             .t()
         )
-        assert not x.is_contiguous()
+        if x.is_contiguous():
+            raise AssertionError("Expected x to not be contiguous")
 
         kwargs = {
             "dim": 0,
@@ -5730,7 +5772,10 @@ def forward(self, L_it_ : torch.Tensor, L_pytree_input_0_0_ : torch.Tensor, L_py
         elif func_type == "functorch":
             fn = torch.func.functionalize(fn)
         else:
-            assert func_type == "no"
+            if func_type != "no":
+                raise AssertionError(
+                    f"Expected func_type to be 'no', got {func_type!r}"
+                )
         return fn, mode
 
     @parametrize("func_type", ["no", "cpp", "python", "functorch"])
@@ -5903,10 +5948,9 @@ def forward(self, arg0_1):
         torch.compile(fn, backend=backend)(*inp)
         self.assertEqual(len(backend.graphs), 1)
         gm = backend.graphs[0]
-        if torch._dynamo.config.inline_inbuilt_nn_modules:
-            self.assertExpectedInline(
-                normalize_gm(gm.print_readable(print_output=False)),
-                """\
+        self.assertExpectedInline(
+            normalize_gm(gm.print_readable(print_output=False)),
+            """\
 class GraphModule(torch.nn.Module):
     def forward(self, L_iter_: "i64[]", L_x_: "f32[2, 2]", L_self_buffers_dec_: "i64[]", L_self_modules_linear_parameters_weight_: "f32[2, 2]", L_self_modules_linear_parameters_bias_: "f32[2]"):
         l_iter_ = L_iter_
@@ -5934,7 +5978,7 @@ class GraphModule(torch.nn.Module):
             child_4: "f32[2, 2]" = torch._C._nn.linear(child_3, l_self_modules_linear_parameters_weight__body_fn, l_self_modules_linear_parameters_bias__body_fn);  child_3 = l_self_modules_linear_parameters_weight__body_fn = l_self_modules_linear_parameters_bias__body_fn = None
             return (child, child_4)
 """,  # noqa: B950
-            )
+        )
 
     def test_while_loop_nested2_traced(self):
         fn, inp = WHILE_LOOP_TESTS["nested2"]
@@ -7446,7 +7490,8 @@ def forward(self, x_1):
         )
 
     def _check_closure_correctly_lifted(self, f, *, args, exp_res, exp_arg_num):
-        assert isinstance(args, (tuple, list))
+        if not isinstance(args, (tuple, list)):
+            raise AssertionError(f"Expected args to be tuple or list, got {type(args)}")
         self.assertEqual(f(*args), exp_res)
         gm = make_fx(f)(*args)
         self.assertEqual(gm(*args), exp_res)
