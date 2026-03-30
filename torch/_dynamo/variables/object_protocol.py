@@ -117,6 +117,7 @@ def vt_sequence_check(obj: "VariableTracker") -> bool:
 def generic_len(
     tx: "InstructionTranslator", obj: "VariableTracker"
 ) -> "VariableTracker":
+    # ref: https://github.com/python/cpython/blob/v3.13.3/Objects/abstract.c#L53-L69
     """
     Implements PyObject_Size/PyObject_Length semantics for VariableTracker objects.
     Routes to obj.len_impl(tx)

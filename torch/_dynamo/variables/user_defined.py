@@ -1450,9 +1450,10 @@ class UserDefinedObjectVariable(UserDefinedVariable):
     def len_impl(self, tx: "InstructionTranslator") -> VariableTracker:
         method = self._maybe_get_baseclass_method("__len__")
         if method is not None:
+            type_attr = self.lookup_class_mro_attr("__len__")
             source = self.source and AttrSource(self.source, "__len__")
-            return variables.UserMethodVariable(
-                method, self, source=source
+            return self.resolve_type_attr(
+                tx, "__len__", type_attr, source
             ).call_function(tx, [], {})
         return super().len_impl(tx)
 
