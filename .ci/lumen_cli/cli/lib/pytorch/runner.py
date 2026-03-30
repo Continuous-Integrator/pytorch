@@ -35,11 +35,11 @@ def _env_vars(env: dict[str, str]) -> Iterator[None]:
                 os.environ[k] = orig
 
 
-def run_plan(group_id: str, plan: TestPlan, input_overrides: dict[str, str] | None = None) -> None:
+def run_plan(group_id: str, plan: TestPlan, env_overrides: dict[str, str] | None = None) -> None:
     """Run a test plan locally."""
     logger.info("[%s] %s", group_id, plan.title)
 
-    resolved = plan.resolve_env_vars(input_overrides)
+    resolved = plan.resolve_env_vars(env_overrides)
     with _env_vars(resolved):
         for cmd in plan.setup_commands:
             logger.info("[%s] setup: %s", group_id, cmd)
@@ -57,7 +57,7 @@ class PytorchTestRunner:
     def __init__(self, args: Any) -> None:
         self.group_id: str = args.group_id
         raw_inputs = getattr(args, "input", []) or []
-        self.input_overrides = dict(i.split("=", 1) for i in raw_inputs)
+        self.env_overrides = dict(i.split("=", 1) for i in raw_inputs)
 
     def run(self) -> None:
         if self.group_id not in LINT_PLANS:
@@ -65,4 +65,4 @@ class PytorchTestRunner:
                 f"group '{self.group_id}' not found. Available: {sorted(LINT_PLANS)}"
             )
         plan = LINT_PLANS[self.group_id]
-        run_plan(self.group_id, plan, self.input_overrides)
+        run_plan(self.group_id, plan, self.env_overrides)
