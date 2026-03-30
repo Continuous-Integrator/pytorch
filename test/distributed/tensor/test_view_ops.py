@@ -1721,6 +1721,79 @@ class TestViewOps(DTensorContinuousTestBase):
         )._local_tensor
         self.assertEqual(unflattened._local_tensor, expected_local)
 
+    def test_strided_shard_propagates_through_pointwise(self):
+        """Single-dim strategy ops should propagate _StridedShard without redistribution."""
+        mesh = init_device_mesh(self.device_type, (self.world_size,))
+        for shard_dim in [1, 2]:
+            shape = (4, self.world_size * 2, 6)
+            full = torch.randn(*shape, device=self.device_type)
+            dt = distribute_tensor(full, mesh, [Shard(shard_dim)])
+            dt_flat = dt.flatten(0, 1)
+            flat_full = full.flatten(0, 1)
+
+            self.assertIsInstance(dt_flat.placements[0], _StridedShard)
+
+            comm_mode = CommDebugMode()
+
+            # Pointwise unary: _StridedShard preserved, zero comms
+            with comm_mode:
+                result = torch.relu(dt_flat)
+            self.assertEqual(result.full_tensor(), torch.relu(flat_full))
+            self.assertIsInstance(result.placements[0], _StridedShard)
+            self.assertEqual(comm_mode.get_total_counts(), 0)
+
+            # Pointwise binary: same
+            with comm_mode:
+                result = dt_flat + 1.0
+            self.assertEqual(result.full_tensor(), flat_full + 1.0)
+            self.assertIsInstance(result.placements[0], _StridedShard)
+            self.assertEqual(comm_mode.get_total_counts(), 0)
+
+            # Matmul (single-dim strategy takes priority for mm)
+            weight = torch.randn(shape[2], 5, device=self.device_type)
+            dt_w = distribute_tensor(weight, mesh, [Replicate()])
+            with comm_mode:
+                result = dt_flat @ dt_w
+            self.assertEqual(result.full_tensor(), flat_full @ weight)
+            self.assertIsInstance(result.placements[0], _StridedShard)
+            self.assertEqual(comm_mode.get_total_counts(), 0)
+
+    def test_strided_shard_redistributes_for_reduction(self):
+        """Verify _StridedShard redistribution behavior for reductions:
+        - Reduction on shard dim: redistribution happens, result correct
+        - Reduction on non-shard dim: _StridedShard preserved, no redistribution
+        """
+        mesh = init_device_mesh(self.device_type, (self.world_size,))
+        for shard_dim in [1, 2]:
+            shape = (4, self.world_size * 2, 6)
+            full = torch.randn(*shape, device=self.device_type)
+            dt = distribute_tensor(full, mesh, [Shard(shard_dim)])
+            dt_flat = dt.flatten(0, 1)
+            flat_full = full.flatten(0, 1)
+
+            self.assertIsInstance(dt_flat.placements[0], _StridedShard)
+
+            comm_mode = CommDebugMode()
+
+            # Reduction on shard dim (dim 0): redistribution must happen
+            with comm_mode:
+                result = dt_flat.sum(dim=0)
+            self.assertEqual(result.full_tensor(), flat_full.sum(dim=0))
+            self.assertGreater(comm_mode.get_total_counts(), 0)
+
+            # Full reduction: redistribution must happen
+            with comm_mode:
+                result = dt_flat.sum()
+            self.assertEqual(result.full_tensor(), flat_full.sum())
+            self.assertGreater(comm_mode.get_total_counts(), 0)
+
+            # Reduction on non-shard dim: _StridedShard preserved
+            with comm_mode:
+                result = dt_flat.sum(dim=-1)
+            self.assertEqual(result.full_tensor(), flat_full.sum(dim=-1))
+            self.assertIsInstance(result.placements[0], _StridedShard)
+            self.assertEqual(comm_mode.get_total_counts(), 0)
+
     def test_view_redistribution(self):
         """
         This test is added to demonstrate "incorrect" view ops behavior if redistribution happens.
