@@ -736,14 +736,12 @@ class CustomOpDef:
         def forward(ctx, *args):
             device_type = args[0].device.type
             fn = raw_fns.get(device_type) or raw_fns.get(None)
-            result = fn(*args)
+            result = fn(*args)  # pyrefly: ignore[not-callable]
 
             utils._c_check_aliasing_constraint(op_name, args, {}, result)
 
             if opdef._setup_context_fn:
-                filled_args, filled_kwargs = utils.fill_defaults(
-                    op._schema, args, {}
-                )
+                filled_args, filled_kwargs = utils.fill_defaults(op._schema, args, {})
                 if has_kwarg_only_args:
                     opdef._setup_context_fn(
                         ctx=ctx,
@@ -752,9 +750,7 @@ class CustomOpDef:
                         output=result,
                     )
                 else:
-                    opdef._setup_context_fn(
-                        ctx=ctx, inputs=filled_args, output=result
-                    )
+                    opdef._setup_context_fn(ctx=ctx, inputs=filled_args, output=result)
 
             return result
 
@@ -828,7 +824,7 @@ class CustomOpDef:
                         increment_version(args[idx])
 
             if torch.is_grad_enabled() and _C._any_requires_grad(*args):
-                return Generated.apply(*args)
+                return Generated.apply(*args)  # type: ignore[attr-defined]
 
             result = fn(*args)
 
