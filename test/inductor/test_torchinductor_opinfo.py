@@ -38,6 +38,7 @@ from torch.testing._internal.common_utils import (
     IS_X86,
     skipCUDAMemoryLeakCheckIf,
     skipIfCrossRef,
+    skipIfRocm,
     skipIfTorchDynamo,
     suppress_warnings,
     TEST_MKL,
@@ -233,6 +234,10 @@ if TEST_WITH_ROCM:
 
 inductor_skips["xpu"] = {}
 
+# torch-xpu-ops: #2956
+inductor_skips["xpu"]["lu"] = {f32}
+inductor_skips["xpu"]["nn.functional.linear"] = {f16}
+
 inductor_expected_failures_single_sample = defaultdict(dict)
 
 inductor_expected_failures_single_sample["cpu"] = {
@@ -296,26 +301,6 @@ inductor_expected_failures_single_sample["xpu"] = {
         i32,
         i64,
     },  # align with cuda.
-    ("linalg.pinv", "singular"): {f64},
-    # could not create a primitive
-    "fft.fft": {f16},
-    "fft.fft2": {f16},
-    "fft.fftn": {f16},
-    "fft.hfft": {f16},
-    "fft.hfft2": {f16},
-    "fft.hfftn": {f16},
-    "fft.rfft": {f16},
-    "fft.rfft2": {f16},
-    "fft.rfftn": {f16},
-    "fft.ifft": {f16},
-    "fft.ifft2": {f16},
-    "fft.ifftn": {f16},
-    "fft.ihfft": {f16},
-    "fft.ihfft2": {f16},
-    "fft.ihfftn": {f16},
-    "fft.irfft": {f16},
-    "fft.irfft2": {f16},
-    "fft.irfftn": {f16},
 }
 
 
@@ -1239,6 +1224,7 @@ class TestInductorOpInfo(TestCase):
     @unittest.skipIf(TEST_WITH_ASAN, "Skipped under ASAN")
     @skipIfTorchDynamo("Test uses dynamo already")
     @skipIfCrossRef
+    @skipIfRocm(msg="Fails with Triton 3.7 on MI200")
     @_ops(op_db[START:END])
     @skipOps("TestInductorOpInfo", "test_comprehensive", test_skips_or_fails)
     @patch("torch._dynamo.config.raise_on_unsafe_aot_autograd", True)
@@ -1319,7 +1305,7 @@ class TestInductorOpInfo(TestCase):
             # not exercised in test_ops_gradients atm.  The problem is not
             # complex32 per-se (which is supported by data movement only ops)
             # but that when we do backwards we expect other ops like add to work
-            and dtype not in (torch.complex32, torch.bcomplex32)
+            and dtype != torch.complex32
         )
         samples = op.sample_inputs(device, dtype, requires_grad=requires_grad)
         extra = _inductor_extra_samples(op_name, device, dtype, requires_grad)
