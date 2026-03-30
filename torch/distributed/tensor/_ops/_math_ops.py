@@ -159,7 +159,9 @@ def _replicate_dims_start_at(
 ) -> tuple[Placement, ...]:
     new_placements: list[Placement] = []
     for p in placements:
-        if p.is_partial() or (isinstance(p, Shard) and p.dim >= start_dim):
+        if p.is_partial() or (
+            isinstance(p, Shard | _StridedShard) and p.dim >= start_dim
+        ):
             new_placements.append(Replicate())  # make it replicate
         else:
             new_placements.append(p)  # keep the placement
@@ -188,7 +190,7 @@ def replicate_reduction_dims(
     for p in placements:
         if p.is_partial():
             new_placements.append(Replicate())
-        elif isinstance(p, Shard) and p.dim in reduction_dims:
+        elif isinstance(p, Shard | _StridedShard) and p.dim in reduction_dims:
             new_placements.append(Replicate())
         else:
             new_placements.append(p)
