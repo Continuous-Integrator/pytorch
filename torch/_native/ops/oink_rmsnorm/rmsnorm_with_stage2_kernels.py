@@ -25,20 +25,20 @@ from __future__ import annotations
 
 import importlib.metadata
 import re
-from typing import Optional, Tuple
-
-import torch
-from torch import Tensor
 
 import cuda.bindings.driver as cuda  # provided by NVIDIA cuda-python
 
 import cutlass
 import cutlass.cute as cute
-from cutlass import Float32, const_expr
+from cutlass import const_expr, Float32
 from cutlass.cute.runtime import from_dlpack
 
+import torch
+from torch import Tensor
+
 from .._oink_utils import lite_quack as qutils
-from .._oink_utils.lite_quack import TORCH2CUTE_DTYPE, row_reduce
+from .._oink_utils.lite_quack import row_reduce, TORCH2CUTE_DTYPE
+
 
 _COMPILE_CACHE: dict[tuple[object, ...], object] = {}
 
@@ -54,7 +54,7 @@ def _parse_version_tuple(version: str) -> tuple[int, int, int]:
     return nums[0], nums[1], nums[2]
 
 
-def _cutlass_dsl_version() -> Optional[tuple[int, int, int]]:
+def _cutlass_dsl_version() -> tuple[int, int, int] | None:
     try:
         return _parse_version_tuple(importlib.metadata.version("nvidia-cutlass-dsl"))
     except Exception:
@@ -92,7 +92,7 @@ def copy_tiled(
     src: cute.Tensor,
     dst: cute.Tensor,
     *,
-    pred: Optional[cute.Tensor] = None,
+    pred: cute.Tensor | None = None,
     num_copy_elems: int = 1,
     is_async: bool = False,
 ) -> None:
@@ -101,9 +101,7 @@ def copy_tiled(
 
 
 class RMSNormSM100WithStage2:
-    def __init__(
-        self, N: int, dtype: type[cutlass.Numeric], stage: Optional[int] = None
-    ):
+    def __init__(self, N: int, dtype: type[cutlass.Numeric], stage: int | None = None):
         self.N = N
         self.dtype = dtype
         self.stage = 1 if stage is None else stage
@@ -162,7 +160,7 @@ class RMSNormSM100WithStage2:
         except Exception:
             return 128 if self.N <= 16384 else 256
 
-    def _tv_layout(self, num_copy_bits: int = 256) -> Tuple[cute.Shape, cute.Layout]:
+    def _tv_layout(self, num_copy_bits: int = 256) -> tuple[cute.Shape, cute.Layout]:
         vecsize = num_copy_bits // self.dtype.width
         num_threads = self._num_threads()
         assert num_threads % cute.arch.WARP_SIZE == 0
@@ -185,12 +183,12 @@ class RMSNormSM100WithStage2:
     def __call__(
         self,
         mX: cute.Tensor,
-        mW: Optional[cute.Tensor],
-        mB: Optional[cute.Tensor],
-        mRes: Optional[cute.Tensor],
+        mW: cute.Tensor | None,
+        mB: cute.Tensor | None,
+        mRes: cute.Tensor | None,
         mO: cute.Tensor,
-        mResO: Optional[cute.Tensor],
-        mRstd: Optional[cute.Tensor],
+        mResO: cute.Tensor | None,
+        mRstd: cute.Tensor | None,
         stream: cuda.CUstream,
         eps: Float32 = 1e-6,
     ):
@@ -302,12 +300,12 @@ class RMSNormSM100WithStage2:
     def _kernel_impl(
         self,
         mX: cute.Tensor,
-        mW: Optional[cute.Tensor],
-        mB: Optional[cute.Tensor],
-        mRes: Optional[cute.Tensor],
+        mW: cute.Tensor | None,
+        mB: cute.Tensor | None,
+        mRes: cute.Tensor | None,
         mO: cute.Tensor,
-        mResO: Optional[cute.Tensor],
-        mRstd: Optional[cute.Tensor],
+        mResO: cute.Tensor | None,
+        mRstd: cute.Tensor | None,
         eps: Float32,
         tv_layout: cute.Layout,
         tiler_mn: cute.Shape,
@@ -827,12 +825,12 @@ class RMSNormSM100WithStage2:
         def kernel(
             self,
             mX: cute.Tensor,
-            mW: Optional[cute.Tensor],
-            mB: Optional[cute.Tensor],
-            mRes: Optional[cute.Tensor],
+            mW: cute.Tensor | None,
+            mB: cute.Tensor | None,
+            mRes: cute.Tensor | None,
             mO: cute.Tensor,
-            mResO: Optional[cute.Tensor],
-            mRstd: Optional[cute.Tensor],
+            mResO: cute.Tensor | None,
+            mRstd: cute.Tensor | None,
             eps: Float32,
             tv_layout: cute.Layout,
             tiler_mn: cute.Shape,
@@ -861,12 +859,12 @@ class RMSNormSM100WithStage2:
         def kernel(
             self,
             mX: cute.Tensor,
-            mW: Optional[cute.Tensor],
-            mB: Optional[cute.Tensor],
-            mRes: Optional[cute.Tensor],
+            mW: cute.Tensor | None,
+            mB: cute.Tensor | None,
+            mRes: cute.Tensor | None,
             mO: cute.Tensor,
-            mResO: Optional[cute.Tensor],
-            mRstd: Optional[cute.Tensor],
+            mResO: cute.Tensor | None,
+            mRstd: cute.Tensor | None,
             eps: Float32,
         ):
             copy_bits = const_expr(128)
@@ -897,7 +895,7 @@ class RMSNormSM100WithStage2:
         smem: cutlass.utils.SmemAllocator,
         num_warps: cutlass.Constexpr[int],
         warps_per_row: cutlass.Constexpr[int],
-    ) -> Tuple[cute.Tensor, Optional[cute.Pointer]]:
+    ) -> tuple[cute.Tensor, cute.Pointer | None]:
         cluster_n = self._cluster_n()
         red_layout = cute.make_ordered_layout(
             (num_warps // warps_per_row, (warps_per_row, cluster_n), self.stage),
@@ -913,7 +911,7 @@ class RMSNormSM100WithStage2:
         return reduction_buffer, mbar_ptr
 
     @cute.jit
-    def _init_cluster(self, tidx: cutlass.Int32, mbar_ptr: Optional[cute.Pointer]):
+    def _init_cluster(self, tidx: cutlass.Int32, mbar_ptr: cute.Pointer | None):
         if const_expr(mbar_ptr is not None):
             if tidx < self.stage:
                 cute.arch.mbarrier_init(mbar_ptr + tidx, 1)
@@ -923,12 +921,12 @@ class RMSNormSM100WithStage2:
 
 def rmsnorm_forward_with_stage2(
     x: Tensor,
-    weight: Optional[Tensor] = None,
-    bias: Optional[Tensor] = None,
-    residual: Optional[Tensor] = None,
+    weight: Tensor | None = None,
+    bias: Tensor | None = None,
+    residual: Tensor | None = None,
     eps: float = 1e-6,
     store_rstd: bool = False,
-) -> Tuple[Tensor, Optional[Tensor], Optional[Tensor]]:
+) -> tuple[Tensor, Tensor | None, Tensor | None]:
     assert x.is_cuda
     assert x.dim() == 2
     M, N = x.shape

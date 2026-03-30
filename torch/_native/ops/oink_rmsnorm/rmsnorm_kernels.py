@@ -36,6 +36,7 @@ import subprocess
 import sys
 import threading
 
+
 _HERE = os.path.dirname(__file__)
 
 # NOTE: This module is a heavily adapted / vendored variant of Quack's SM100
@@ -77,28 +78,28 @@ except Exception as e:
         "(`cutlass`, typically provided by `nvidia-cutlass-dsl`)."
     ) from e
 
-import torch  # noqa: E402
-from torch import Tensor  # noqa: E402
-
 import cuda.bindings.driver as cuda  # provided by NVIDIA cuda-python  # noqa: E402
-
 import cutlass  # noqa: E402
 import cutlass.cute as cute  # noqa: E402
-from cutlass import Float32, Int32, const_expr  # noqa: E402
+from cutlass import const_expr, Float32, Int32  # noqa: E402
 from cutlass.cute import runtime as rt  # noqa: E402
 from cutlass.cute.runtime import from_dlpack  # noqa: E402
+
+import torch  # noqa: E402
+from torch import Tensor  # noqa: E402
 
 # Shared fast-launch utilities (env-flag parsing, stable ctypes args, pointer
 # helpers, and the global fast-launch enable/disable state).
 from .._oink_utils.fast_launch import (  # noqa: E402
-    StableF32Arg as _StableF32Arg,
-    StableI32Arg as _StableI32Arg,
     _env_flag,
     disable_fast_launch as _disable_fast_launch,
     fast_launch_enabled as _fast_launch_enabled,
     set_runtime_ptr as _set_runtime_ptr,
+    StableF32Arg as _StableF32Arg,
+    StableI32Arg as _StableI32Arg,
     tls_cache as _tls_fast_launch_cache,
 )
+
 
 # Simple compile cache declared early so direct execution works
 _PTR_COMPILE_CACHE = {}
@@ -1246,11 +1247,11 @@ def _get_fast_ptr_fused_add_rmsnorm_launcher(
 # mishandle that form (module=None in the AST). Use fully-qualified imports.
 from .._oink_utils import lite_quack as qutils  # noqa: E402
 from .._oink_utils.lite_quack import (  # noqa: E402
-    TORCH2CUTE_DTYPE,
-    RMSNormBackward as BaseRMSNormBackward,
     convert_from_dlpack as convert_from_dlpack_cute,
     get_sm_count,
+    RMSNormBackward as BaseRMSNormBackward,
     row_reduce,
+    TORCH2CUTE_DTYPE,
 )
 
 

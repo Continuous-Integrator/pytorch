@@ -32,18 +32,18 @@ import operator
 import re
 from collections.abc import Callable
 from functools import partial
-from typing import Type
 
 import cuda.bindings.driver as cuda  # type: ignore
-import torch
-from torch import Tensor
 
 import cutlass
 import cutlass.cute as cute
-from cutlass import Float32, Int32, const_expr
-from cutlass.cute.runtime import from_dlpack
-from cutlass.cutlass_dsl import T, dsl_user_op
+from cutlass import const_expr, Float32, Int32
 from cutlass._mlir.dialects import llvm, nvvm, vector
+from cutlass.cute.runtime import from_dlpack
+from cutlass.cutlass_dsl import dsl_user_op, T
+
+import torch
+from torch import Tensor
 
 
 def _parse_version_tuple(version: str) -> tuple[int, int, int]:
@@ -683,7 +683,7 @@ def online_softmax_reduce(
 
 @dsl_user_op
 def get_copy_atom(
-    dtype: Type[cutlass.Numeric],
+    dtype: type[cutlass.Numeric],
     num_copy_elems: int,
     is_async: bool = False,
     *,
@@ -728,10 +728,10 @@ def copy(
 class ReductionBase:
     def __init__(
         self,
-        dtype: Type[cutlass.Numeric],
+        dtype: type[cutlass.Numeric],
         N: int,
         stage: int,
-        reduction_dtype: Type[cutlass.Numeric] = cutlass.Float32,
+        reduction_dtype: type[cutlass.Numeric] = cutlass.Float32,
     ):
         self.dtype = dtype
         self.N = N
@@ -739,7 +739,7 @@ class ReductionBase:
         self.reduction_dtype = reduction_dtype
 
     def _calculate_threads_per_row(self) -> int:
-        raise NotImplementedError()
+        raise NotImplementedError
 
     def _set_cluster_n(self) -> None:
         self.cluster_n = 1
