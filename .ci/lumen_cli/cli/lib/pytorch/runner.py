@@ -62,8 +62,7 @@ class PytorchTestRunner:
     def run(self) -> None:
         if self.group_id not in LINT_PLANS:
             raise RuntimeError(
-                f"group '{self.group_id}' not found. "
-                f"Available: {sorted(LINT_PLANS)}"
+                f"group '{self.group_id}' not found. Available: {sorted(LINT_PLANS)}"
             )
         plan = LINT_PLANS[self.group_id]
         run_plan(self.group_id, plan, self.input_overrides)
