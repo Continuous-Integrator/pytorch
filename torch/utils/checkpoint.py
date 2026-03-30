@@ -1555,7 +1555,7 @@ def _checkpoint_without_reentrant_generator(
             f"but got {determinism_check}"
         )
 
-    if torch.compiler.is_non_strict_tracing() and torch.is_grad_enabled():
+    if torch.compiler._is_non_strict_tracing() and torch.is_grad_enabled():
         # Under tracing, skip the checkpoint machinery (saved_tensor_hooks,
         # rng state, CheckpointFrame) and just tag nodes via the dispatch mode.
         if context_fn is noop_context_fn:

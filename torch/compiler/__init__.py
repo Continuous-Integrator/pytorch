@@ -459,7 +459,7 @@ def is_compiling() -> bool:
         return _is_compiling_flag
 
 
-def is_non_strict_tracing() -> bool:
+def _is_non_strict_tracing() -> bool:
     """
     Indicates whether we are inside a non-strict make_fx-based tracing session.
 
