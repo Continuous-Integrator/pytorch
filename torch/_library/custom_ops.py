@@ -708,10 +708,21 @@ class CustomOpDef:
                 )
 
     def _install_fast_call(self):
+        """Install a Python fast path that bypasses the C++ dispatcher for
+        common eager-mode calls. The fast path requires all of the following:
+        - All args are plain ``torch.Tensor`` (no subclasses).
+        - No ``TorchFunctionMode`` is active.
+        - No autocast is active.
+        - Device is not ``"meta"`` and the kernel is not disabled.
+        - The TLS dispatch include set is a subset of the normal eager set
+          (covers ``inference_mode``; excludes Functionalize, Vmap, etc.).
+        - The schema has no tensor-list args and is not a view op.
+        When any condition fails, ``fast_call`` returns ``NotImplemented``
+        and the call falls through to the C++ dispatcher."""
         schema = self._opoverload._schema
 
         # View ops have special ADInplaceOrView handling that the fast path
-        # can't replicate
+        # can't replicate.
         if schema._is_view_op():
             return
 
@@ -721,7 +732,7 @@ class CustomOpDef:
         )
 
         # Tensor-list args can hide subclasses that the top-level arg check
-        # in fast_call wouldn't catch
+        # in fast_call wouldn't catch.
         if has_tensorlist:
             return
 
@@ -782,32 +793,43 @@ class CustomOpDef:
         ).raw_repr()
 
         def fast_call(*args, **kwargs):
+            # Dynamo needs the fake impl and dispatcher
             if torch.compiler.is_compiling():
                 return NotImplemented
 
+            # Schema-level fast path only handles positional tensor args.
             if not args or kwargs:
                 return NotImplemented
 
+            # Reject tensor subclasses — they need __torch_function__ /
+            # __torch_dispatch__ handling from the dispatcher.
             first_tensor = args[0]
             if type(first_tensor) is not Tensor:
                 return NotImplemented
 
             if any(type(arg) is not Tensor for arg in args if isinstance(arg, Tensor)):
                 return NotImplemented
+            # Active TorchFunctionMode or autocast require dispatcher routing.
             if _C._is_torch_function_mode_enabled():
                 return NotImplemented
             if _C._is_any_autocast_enabled():
                 return NotImplemented
 
             device_type = first_tensor.device.type
+            # Meta tensors and disabled kernels need the dispatcher.
             if device_type == "meta" or device_type in disabled_kernel:
                 return NotImplemented
+            # Mixed-device args without a catch-all kernel need BackendSelect.
             if raw_fns.get(None) is None and len(raw_fns) > 1:
                 if any(
                     isinstance(arg, Tensor) and arg.device.type != device_type
                     for arg in args[1:]
                 ):
                     return NotImplemented
+            # Bail if TLS has extra dispatch keys beyond the normal eager set.
+            # (e.g. Functionalize, FuncTorchBatched, ProxyTorchDispatchMode)
+            # inference_mode only *removes* ADInplaceOrView, which is a
+            # subset, so it still passes this check.
             if (
                 _C._dispatch_tls_local_include_set().raw_repr() | default_included_raw
                 != default_included_raw
