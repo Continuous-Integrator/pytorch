@@ -1383,6 +1383,7 @@ PR and the `main` branch. But only the workflow files get taken from that merged
 checkpoint. Everything else (tests, code, etc) all get taken directly from your
 PR's commit (commit `B`). Please note, this scenario would never affect PRs authored by `ghstack` as they would not automatically ingest the updates from default branch.
 
+One consequence of this split: moving or renaming scripts referenced by workflow `run:` commands on `main` will break in-flight PRs that branched before the move, since the workflow YAML (from `C`) references the new paths but the checked-out code (from `B`) still has the old ones. PRs authored by `ghstack` are not affected. See the [Workflow/Checkout Version Mismatch](https://github.com/pytorch/test-infra/wiki/Workflow-Checkout-Version-Mismatch) wiki page for a full analysis.
 
 ## Dev Infra Office Hours
 [Dev Infra Office Hours](https://github.com/pytorch/pytorch/wiki/Dev-Infra-Office-Hours) are hosted every Friday to answer any questions regarding developer experience, Green HUD, and CI.
