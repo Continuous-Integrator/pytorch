@@ -1891,6 +1891,101 @@ class TestViewOps(DTensorContinuousTestBase):
         self.assertEqual(result._local_tensor, flat_full)
         self.assertGreater(comm_mode.get_total_counts(), 0)
 
+    def test_strided_shard_softmax(self):
+        """Verify _StridedShard correctness through softmax.
+
+        softmax uses replicate_reduction_dims which only checks isinstance(p, Shard).
+        _StridedShard on the softmax dim may not be replicated, producing wrong results.
+        """
+        mesh = init_device_mesh(self.device_type, (self.world_size,))
+        shape = (4, self.world_size * 2, 6)
+        full = torch.randn(*shape, device=self.device_type)
+        dt = distribute_tensor(full, mesh, [Shard(1)])
+        dt_flat = dt.flatten(0, 1)
+        flat_full = full.flatten(0, 1)
+
+        self.assertIsInstance(dt_flat.placements[0], _StridedShard)
+
+        # softmax on shard dim
+        result = torch.softmax(dt_flat, dim=0)
+        self.assertEqual(result.full_tensor(), torch.softmax(flat_full, dim=0))
+
+        # softmax on non-shard dim
+        result = torch.softmax(dt_flat, dim=-1)
+        self.assertEqual(result.full_tensor(), torch.softmax(flat_full, dim=-1))
+
+    def test_strided_shard_layer_norm(self):
+        """Verify _StridedShard correctness through layer_norm.
+
+        layer_norm uses _replicate_dims_start_at which only checks isinstance(p, Shard).
+        _StridedShard on normalized dims may not be replicated.
+        """
+        mesh = init_device_mesh(self.device_type, (self.world_size,))
+        shape = (4, self.world_size * 2, 6)
+        full = torch.randn(*shape, device=self.device_type)
+        dt = distribute_tensor(full, mesh, [Shard(1)])
+        dt_flat = dt.flatten(0, 1)
+        flat_full = full.flatten(0, 1)
+
+        self.assertIsInstance(dt_flat.placements[0], _StridedShard)
+
+        # layer_norm on last dim (non-shard): shard dim not in normalized dims
+        result = torch.nn.functional.layer_norm(dt_flat, [6])
+        self.assertEqual(
+            result.full_tensor(),
+            torch.nn.functional.layer_norm(flat_full, [6]),
+        )
+
+        # layer_norm covering shard dim
+        result = torch.nn.functional.layer_norm(dt_flat, list(dt_flat.shape))
+        self.assertEqual(
+            result.full_tensor(),
+            torch.nn.functional.layer_norm(flat_full, list(flat_full.shape)),
+        )
+
+    def test_strided_shard_transpose(self):
+        """Verify _StridedShard correctness through transpose.
+
+        transpose_strategy only swaps dim for isinstance(p, Shard), not _StridedShard.
+        """
+        mesh = init_device_mesh(self.device_type, (self.world_size,))
+        shape = (4, self.world_size * 2, 6)
+        full = torch.randn(*shape, device=self.device_type)
+        dt = distribute_tensor(full, mesh, [Shard(1)])
+        dt_flat = dt.flatten(0, 1)
+        flat_full = full.flatten(0, 1)
+
+        self.assertIsInstance(dt_flat.placements[0], _StridedShard)
+
+        # transpose shard dim with another dim
+        result = dt_flat.transpose(0, 1)
+        self.assertEqual(result.full_tensor(), flat_full.transpose(0, 1))
+
+    def test_strided_shard_embedding(self):
+        """Verify _StridedShard correctness through embedding.
+
+        embedding uses expand_to_full_mesh_op_strategy which should trigger
+        redistribution for _StridedShard inputs.
+        """
+        mesh = init_device_mesh(self.device_type, (self.world_size,))
+        vocab_size, embed_dim = 100, 16
+        emb = torch.nn.Embedding(vocab_size, embed_dim, device=self.device_type)
+        dt_emb = distribute_tensor(emb.weight, mesh, [Replicate()])
+
+        # Create _StridedShard indices via flatten
+        idx_shape = (4, self.world_size * 2)
+        full_idx = torch.randint(0, vocab_size, idx_shape, device=self.device_type)
+        # Broadcast same indices to all ranks
+        dist.broadcast(full_idx, src=0)
+        dt_idx = distribute_tensor(full_idx, mesh, [Shard(1)])
+        dt_idx_flat = dt_idx.flatten(0, 1)
+
+        self.assertIsInstance(dt_idx_flat.placements[0], _StridedShard)
+
+        result = torch.nn.functional.embedding(dt_idx_flat, dt_emb)
+        expected = torch.nn.functional.embedding(full_idx.flatten(0, 1), emb.weight)
+        self.assertEqual(result.full_tensor(), expected)
+
     def test_view_redistribution(self):
         """
         This test is added to demonstrate "incorrect" view ops behavior if redistribution happens.
