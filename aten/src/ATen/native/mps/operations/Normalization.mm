@@ -229,9 +229,10 @@ std::tuple<Tensor&, Tensor&, Tensor&> batch_norm_mps_out(const Tensor& self,
           MPSGraphTensor* besselConstantTensor = [mpsGraph constantWithScalar:(double)besselCorrectionTerm
                                                                         shape:@[ @1 ]
                                                                      dataType:running_mean_dtype];
-          MPSGraphTensor* unbiasedVarianceTensor = [mpsGraph multiplicationWithPrimaryTensor:castMPSTensor(mpsGraph, batchVarianceTensor, running_mean_dtype)
-                                                                             secondaryTensor:besselConstantTensor
-                                                                                        name:nil];
+          MPSGraphTensor* unbiasedVarianceTensor =
+              [mpsGraph multiplicationWithPrimaryTensor:castMPSTensor(mpsGraph, batchVarianceTensor, running_mean_dtype)
+                                        secondaryTensor:besselConstantTensor
+                                                   name:nil];
           MPSGraphTensor* momentumTensor = [mpsGraph constantWithScalar:(double)momentum
                                                                   shape:@[ @1 ]
                                                                dataType:running_mean_dtype];
@@ -239,9 +240,10 @@ std::tuple<Tensor&, Tensor&, Tensor&> batch_norm_mps_out(const Tensor& self,
                                                                     shape:@[ @1 ]
                                                                  dataType:running_mean_dtype];
           // Compute updated running mean
-          MPSGraphTensor* scaledBatchMean = [mpsGraph multiplicationWithPrimaryTensor:castMPSTensor(mpsGraph, batchMeanTensor, running_mean_dtype)
-                                                                      secondaryTensor:momentumTensor
-                                                                                 name:nil];
+          MPSGraphTensor* scaledBatchMean =
+              [mpsGraph multiplicationWithPrimaryTensor:castMPSTensor(mpsGraph, batchMeanTensor, running_mean_dtype)
+                                        secondaryTensor:momentumTensor
+                                                   name:nil];
           MPSGraphTensor* scaledRunningMean = [mpsGraph multiplicationWithPrimaryTensor:runningMeanTensor
                                                                         secondaryTensor:oneMinusMomentum
                                                                                    name:nil];
