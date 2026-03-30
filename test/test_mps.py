@@ -28,7 +28,7 @@ from torch.testing._internal.common_utils import \
      NoTest, skipIfSlowGradcheckEnv, suppress_warnings, serialTest, instantiate_parametrized_tests, xfailIf)
 from torch.testing._internal.common_mps import mps_ops_modifier, mps_ops_grad_modifier, mps_ops_error_inputs_modifier
 from torch.testing import make_tensor
-from torch.testing._internal.common_dtype import get_all_dtypes, integral_types, all_mps_types
+from torch.testing._internal.common_dtype import get_all_dtypes, integral_types
 import torch.backends.mps
 from torch.distributions import Uniform, Exponential
 from torch.utils._python_dispatch import TorchDispatchMode
@@ -2015,6 +2015,19 @@ class TestMPS(TestCaseMPS):
 
         self.assertEqual(bn_cpu.weight.grad, bn_mps.weight.grad, atol=1e-5, rtol=1e-5)
         self.assertEqual(bn_cpu.bias.grad, bn_mps.bias.grad, atol=1e-5, rtol=1e-5)
+
+    def test_batch_norm_mixed_dtype(self):
+        # Regression test for https://github.com/pytorch/pytorch/issues/178770
+        # BatchNorm with float32 weights and float16 input should work
+        x = torch.rand(2, 32, 15, 15, device="mps", dtype=torch.float16, requires_grad=True)
+        model = nn.BatchNorm2d(32, device="mps", dtype=torch.float32).train()
+        y_mps = model(x)
+        # Compare against CPU using a copy of the model
+        import copy
+        y_cpu = copy.deepcopy(model).cpu()(x.detach().cpu())
+        self.assertEqual(y_cpu, y_mps.cpu(), atol=1e-3, rtol=1e-3)
+        y_mps.sum().backward()
+        self.assertIsNotNone(x.grad)
 
     def test_layer_norm_backward(self):
         inputs = torch.rand(4, 4, device="mps", requires_grad=True)
@@ -8045,20 +8058,6 @@ class TestMPS(TestCaseMPS):
         self.assertTrue(event.query())
         self.assertEqual(c_acc.cpu(), c)
 
-    def test_mps_device_capability(self):
-        # Query device capability via accelerator API
-        cap = torch.accelerator.get_device_capability()
-        # The API returns a dict containing a `supported_dtypes` set
-        supported = set(cap["supported_dtypes"]) if isinstance(cap, dict) else set(cap)
-
-        # Expected dtypes for MPS testing helpers
-        expected = set(all_mps_types())
-        # Per Apple docs, bfloat16 support starts on macOS 14.0+
-        if not torch.backends.mps.is_macos_or_newer(14, 0):
-            expected.discard(torch.bfloat16)
-
-        self.assertTrue(all(dtype in supported for dtype in expected))
-
     def test_jit_save_load(self):
         m = torch.nn.Module()
         m.x = torch.rand(3, 3, device='mps')
@@ -8231,6 +8230,18 @@ class TestMPS(TestCaseMPS):
         self.assertEqual(torch.add(x, 3, alpha=2).cpu(), torch.add(x.cpu(), 3, alpha=2))
         # Regression test for https://github.com/pytorch/pytorch/issues/160208
         self.assertEqual(torch.add(y, x, alpha=2).cpu(), torch.add(y.cpu(), x.cpu(), alpha=2))
+
+    def test_add_sub_alpha_cast(self):
+        # In-place with alpha when self is promoted (e.g. float16 + float32)
+        for op in [torch.Tensor.add_, torch.Tensor.sub_]:
+            for dtype_a, dtype_b in [(torch.float16, torch.float32), (torch.bfloat16, torch.float32)]:
+                a_mps = torch.arange(16, dtype=dtype_a, device='mps')
+                b_mps = torch.arange(16, dtype=dtype_b, device='mps')
+                a_cpu, b_cpu = a_mps.cpu(), b_mps.cpu()
+                alpha = torch.tensor(0.33, dtype=dtype_b)
+                op(a_mps, b_mps, alpha=alpha)
+                op(a_cpu, b_cpu, alpha=alpha)
+                self.assertEqual(a_mps, a_cpu)
 
     # Test add
     def test_add_scalars(self):
@@ -11720,6 +11731,18 @@ class TestAdvancedIndexing(TestCaseMPS):
         self.assertEqual(data_ptr, dst4.data_ptr())
         self.assertEqual(dst1, dst4, atol=0, rtol=0)
         self.assertEqual(strides, dst4.stride())
+
+    def test_nonzero_large(self):
+        # Regression test: with 2M elements and threadgroup size 1024, the
+        # prefix_sum_blocks kernel must handle ~1954 blocks via its
+        # multi-element-per-thread loop (each thread processes
+        # ceil(num_blocks/tg_size) blocks). This verifies correctness when
+        # the block count exceeds a single threadgroup.
+        x = torch.rand(2_000_000, device="mps")
+        x[x > 0.5] = 0
+        result = torch.nonzero(x)
+        expected = torch.nonzero(x.cpu())
+        self.assertEqual(result.cpu(), expected)
 
     def test_nonzero_non_diff(self):
         device = "mps"

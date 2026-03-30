@@ -1500,7 +1500,12 @@ class CPUReproTests(TestCase):
     def test_decomposed_dequant_relu_quant_int8(self):
         self._test_decomposed_dequant_relu_quant_helper(torch.int8)
 
-    def _test_dequant_quant_lowering_helper(self, dtype, dequant_out_dtype=None):
+    def _test_dequant_quant_lowering_helper(
+        self,
+        dtype,
+        input_dtype=torch.float32,
+        dequant_out_dtype=None,
+    ):
         def fn(
             x,
             scale,
@@ -1561,7 +1566,7 @@ class CPUReproTests(TestCase):
             use_tensor_overload_list,
         ):
             x = torch.clamp(
-                torch.randn((1, 7, 7, 9), dtype=torch.float32) * 100,
+                torch.randn((1, 7, 7, 9), dtype=input_dtype) * 100,
                 quant_min,
                 quant_max,
             )
@@ -1599,12 +1604,16 @@ class CPUReproTests(TestCase):
     def test_dequant_quant_lowering_uint8(self):
         self._test_dequant_quant_lowering_helper(torch.uint8)
         self._test_dequant_quant_lowering_helper(
+            torch.uint8, input_dtype=torch.bfloat16
+        )
+        self._test_dequant_quant_lowering_helper(
             torch.uint8, dequant_out_dtype=torch.bfloat16
         )
 
     @requires_vectorization
     def test_dequant_quant_lowering_int8(self):
         self._test_dequant_quant_lowering_helper(torch.int8)
+        self._test_dequant_quant_lowering_helper(torch.int8, input_dtype=torch.bfloat16)
         self._test_dequant_quant_lowering_helper(
             torch.int8, dequant_out_dtype=torch.bfloat16
         )
@@ -6030,13 +6039,13 @@ class CPUReproTests(TestCase):
         Original PR: https://github.com/pytorch/pytorch/pull/141766
         """
         from torch.testing._internal.common_quantization import (
-            _static_quantized_linear_module,
+            _static_reference_quantized_linear_module,
         )
 
         class Model(torch.nn.Module):
             def __init__(self, example_input):
                 super().__init__()
-                self.dense = _static_quantized_linear_module(
+                self.dense = _static_reference_quantized_linear_module(
                     N=768, K=768, bias=True, example_input=example_input
                 )
                 self.layernorm = torch.nn.LayerNorm(768, eps=1e-12)
