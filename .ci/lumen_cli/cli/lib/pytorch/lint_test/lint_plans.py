@@ -55,7 +55,10 @@ LINT_PLANS: dict[str, TestPlan] = {
         steps=[
             TestStep(
                 test_id="noclang",
-                commands=["bash .github/scripts/lintrunner.sh"],
+                commands=[
+                    "echo \"ADDITIONAL_LINTRUNNER_ARGS=$ADDITIONAL_LINTRUNNER_ARGS\"",
+                    "bash .github/scripts/lintrunner.sh",
+                ],
             ),
         ],
     ),
