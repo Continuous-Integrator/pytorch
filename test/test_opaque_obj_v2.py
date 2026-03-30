@@ -3443,12 +3443,12 @@ def forward(self, p_linear_weight, p_linear_bias, obj_lifted_custom_0, x):
 
     def test_hoist_device_mesh_getattrs_skips_non_mesh(self):
         """_hoist_device_mesh_getattrs only hoists DeviceMesh get_attr nodes,
-        leaving other opaque reference types (like HoistedRef) untouched."""
+        leaving other opaque reference types untouched."""
         from torch._functorch._aot_autograd.graph_compile import (
             _hoist_device_mesh_getattrs,
         )
 
-        ref = HoistedRef(2.0)
+        ref = object()
 
         graph = torch.fx.Graph()
         x_ph = graph.placeholder("x")
