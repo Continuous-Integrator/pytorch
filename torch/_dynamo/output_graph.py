@@ -2434,8 +2434,9 @@ class OutputGraph(OutputGraphCommon):
     ) -> None:
         """
         Validate that if torch.autograd.grad is used in the graph and outputs
-        require grad, we trigger AutogradGradRestartAnalysis only if the output is connected
-        to the autograd.grad computation.
+        require grad, auto-detach the output if the grad_fn was already consumed
+        by backward/autograd.grad within the same graph. This is safe because
+        the grad_fn is already consumed and can't be backward'd again.
 
         rv here refers to list of variables that are being returned from dynamo graph.
 
@@ -2446,7 +2447,7 @@ class OutputGraph(OutputGraphCommon):
 
         from .variables.tensor import TensorVariable
 
-        for var in rv:
+        for i, var in enumerate(rv):
             if not isinstance(var, TensorVariable) or not var.requires_grad:
                 continue
 
@@ -2459,11 +2460,12 @@ class OutputGraph(OutputGraphCommon):
             # if any node was consumed by autograd.grad
             reachable_grad_fns = collect_reachable_grad_fns([(fake_tensor, None)])
             if reachable_grad_fns & self.autograd_grad_consumed_grad_fns:
-                # Set the flag to graph break at autograd.grad on retry
-                tx.speculation_log.graph_break_on_autograd_grad = True
-                raise exc.AutogradGradRestartAnalysis(
-                    restart_reason="autograd.grad consumed grad_fns of returned tensors"
-                )
+                # The grad_fn was already consumed by backward/autograd.grad
+                # within this graph. Auto-detach instead of graph breaking since
+                # the tensor can't be backward'd again anyway.
+                rv[i] = var.call_method(
+                    tx, "detach", [], {}
+                )  # pyrefly: ignore[bad-argument-type]
 
     def _check_requires_grad_intermediate_outputs(
         self, rv: list["VariableTracker"], tx: "InstructionTranslatorBase"
