@@ -114,15 +114,12 @@ def initialize_lazy_module(
         fake_kwargs = {k: convert_to_fake(v) for k, v in proxy_kwargs.items()}
         try:
             mod._infer_parameters(mod, fake_args, fake_kwargs)  # type: ignore[operator]
-        except AttributeError as e:
+        except AttributeError:
             # Re-raise with the original error message from the AttributeError
-            error_message = VariableTracker.build(
-                tx, str(e) or "AttributeError during lazy module initialization"
-            )
             raise_observed_exception(
                 AttributeError,
                 tx,
-                args=[error_message],
+                args=["AttributeError during lazy module initialization"],
             )
 
 
@@ -214,6 +211,9 @@ class NNModuleVariable(VariableTracker):
 
     def python_type(self) -> type:
         return self.module_type
+
+    def get_real_python_backed_value(self) -> object:
+        return self.value
 
     def _wrap_submodule(
         self,
@@ -405,13 +405,10 @@ class NNModuleVariable(VariableTracker):
                 if result is not None:
                     return result
                 # if we can't find a __getattr__, we can't parse this, raise attribute error
-                error_message = VariableTracker.build(
-                    tx, f"'{type(base).__name__}' object has no attribute '{name}'"
-                )
                 raise_observed_exception(
                     AttributeError,
                     tx,
-                    args=[error_message],
+                    args=[f"'{type(base).__name__}' object has no attribute '{name}'"],
                 )
 
         if name == "forward":
@@ -1092,7 +1089,9 @@ class UnspecializedNNModuleVariable(UserDefinedObjectVariable):
             and istype(mod._call_impl, types.MethodType)  # type: ignore[attr-defined]
             and mod.__call__.__func__ is unpatched_nn_module_call  # type: ignore[operator]
             and mod._call_impl.__func__ is unpatched_nn_module_call_impl  # type: ignore[attr-defined]
-            and "forward" not in mod.__dict__
+            # Consult pending STORE_ATTR side effects too. During tracing the
+            # patched forward may not be visible in mod.__dict__ yet.
+            and not self.has_key_in_generic_dict(tx, "forward")
         ):
             forward_method = inspect.getattr_static(mod, "forward")
             if isinstance(forward_method, types.FunctionType):
@@ -1167,7 +1166,7 @@ class UnspecializedNNModuleVariable(UserDefinedObjectVariable):
             fn_vt = VariableTracker.build(tx, fn, source=source, realize=True)
             return fn_vt.call_function(tx, [self] + list(args), kwargs)
 
-        if name not in getattr(self.value, "__dict__", {}):
+        if not self.has_key_in_generic_dict(tx, name):
             try:
                 method = inspect.getattr_static(type(self.value), name)
             except AttributeError:
@@ -1337,14 +1336,12 @@ class UnspecializedNNModuleVariable(UserDefinedObjectVariable):
         if out is None:
             out = self.getattr_helper(tx, "_buffers", name_vt)
         if out is None:
-            error_message = VariableTracker.build(
-                tx,
-                f"'{type(self.value).__name__}' object has no attribute '{name}'",
-            )
             raise_observed_exception(
                 AttributeError,
                 tx,
-                args=[error_message],
+                args=[
+                    f"'{type(self.value).__name__}' object has no attribute '{name}'"
+                ],
             )
         assert out is not None
         return out

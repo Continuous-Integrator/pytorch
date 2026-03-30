@@ -71,6 +71,7 @@ from ..utils import (
 )
 from .base import (
     AsPythonConstantNotImplementedError,
+    NO_SUCH_SUBOBJ,
     raise_type_error_exc,
     VariableTracker,
 )
@@ -82,10 +83,6 @@ from .user_defined import call_random_fn, is_standard_setattr, UserDefinedObject
 if TYPE_CHECKING:
     from torch._dynamo.codegen import PyCodegen
     from torch._dynamo.symbolic_convert import InstructionTranslator
-
-
-class NO_SUCH_SUBOBJ:
-    pass
 
 
 class SuperVariable(VariableTracker):
@@ -623,9 +620,7 @@ class ExceptionVariable(VariableTracker):
         val: VariableTracker,
     ) -> VariableTracker:
         def raise_error(msg: str) -> NoReturn:
-            raise_observed_exception(
-                TypeError, tx, args=[VariableTracker.build(tx, msg)]
-            )
+            raise_observed_exception(TypeError, tx, args=[msg])
 
         name = name_var.as_python_constant()
         if name == "__context__":
@@ -656,11 +651,7 @@ class ExceptionVariable(VariableTracker):
                 raise_observed_exception(
                     TypeError,
                     tx,
-                    args=[
-                        VariableTracker.build(
-                            tx, "__traceback__ must be a traceback object or None"
-                        )
-                    ],
+                    args=["__traceback__ must be a traceback object or None"],
                 )
             self.__traceback__ = val
         else:
@@ -1430,6 +1421,9 @@ class MethodWrapperVariable(VariableTracker):
         super().__init__(**kwargs)
         self.method_wrapper = method_wrapper
 
+    def get_real_python_backed_value(self) -> types.MethodWrapperType:
+        return self.method_wrapper
+
     def call_function(
         self,
         tx: "InstructionTranslator",
@@ -1567,6 +1561,9 @@ class GetSetDescriptorVariable(VariableTracker):
         super().__init__(**kwargs)
         self.desc = desc
 
+    def get_real_python_backed_value(self) -> types.GetSetDescriptorType:
+        return self.desc
+
     def var_getattr(self, tx: "InstructionTranslator", name: str) -> VariableTracker:
         if name == "__get__" and self.source:
             source = AttrSource(self.source, "__get__")
@@ -1600,6 +1597,9 @@ class PythonModuleVariable(VariableTracker):
         return types.ModuleType
 
     def as_python_constant(self) -> types.ModuleType:
+        return self.value
+
+    def get_real_python_backed_value(self) -> types.ModuleType:
         return self.value
 
     def __repr__(self) -> str:
@@ -1675,6 +1675,9 @@ class TypingVariable(VariableTracker):
             return SourcelessBuilder.create(tx, value)
 
     def as_python_constant(self) -> Any:
+        return self.value
+
+    def get_real_python_backed_value(self) -> Any:
         return self.value
 
     def reconstruct(self, codegen: "PyCodegen") -> None:
@@ -1759,6 +1762,9 @@ class NumpyVariable(VariableTracker):
     def __init__(self, value: Any, **kwargs: Any) -> None:
         super().__init__(**kwargs)
         self.value = value
+
+    def get_real_python_backed_value(self) -> Any:
+        return self.value
 
     @classmethod
     def can_constant_fold_through(cls, fn: types.FunctionType) -> bool:
@@ -2002,6 +2008,9 @@ class ObjectVariable(VariableTracker):
         super().__init__(**kwargs)
         self.value = value
 
+    def get_real_python_backed_value(self) -> object:
+        return self.value
+
     def python_type(self) -> type[object]:
         return object
 
@@ -2084,6 +2093,9 @@ class IgnoredFunctionVariable(VariableTracker):
         super().__init__(**kwargs)
         self.value = value
 
+    def get_real_python_backed_value(self) -> Any:
+        return self.value
+
     def call_function(
         self,
         tx: "InstructionTranslator",
@@ -2101,6 +2113,9 @@ class LoggingLoggerVariable(VariableTracker):
     def __init__(self, value: logging.Logger, **kwargs: Any) -> None:
         super().__init__(**kwargs)
         self.value = value
+
+    def get_real_python_backed_value(self) -> logging.Logger:
+        return self.value
 
     def call_method(
         self,
