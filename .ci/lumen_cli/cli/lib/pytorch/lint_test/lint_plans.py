@@ -29,11 +29,10 @@ class TestPlan:
     inputs: dict[str, str] = field(default_factory=dict)
 
     def resolve_env_vars(
-        self, overrides: dict[str, str] | None = None
+        self, env_overrides: dict[str, str] | None = None
     ) -> dict[str, str]:
-        """Resolve env_vars by substituting {input_name} placeholders."""
-        values = {**self.inputs, **(overrides or {})}
-        return {k: v.format(**values) for k, v in self.env_vars.items()}
+        """Return env_vars merged with CLI --env overrides."""
+        return {**self.env_vars, **(env_overrides or {})}
 
 
 # Common setup shared by all _lint.yml based jobs
@@ -50,9 +49,8 @@ LINT_PLANS: dict[str, TestPlan] = {
         title="Lintrunner (no clang)",
         image="ghcr.io/pytorch/test-infra:cpu-x86_64-67eb930",
         setup_commands=_LINT_SETUP,
-        inputs={"changed_files": "--all-files"},
         env_vars={
-            "ADDITIONAL_LINTRUNNER_ARGS": "--skip CLANGTIDY,CLANGTIDY_EXECUTORCH_COMPATIBILITY,CLANGFORMAT,PYREFLY {changed_files}",
+            "ADDITIONAL_LINTRUNNER_ARGS": "--skip CLANGTIDY,CLANGTIDY_EXECUTORCH_COMPATIBILITY,CLANGFORMAT,PYREFLY --all-files",
         },
         steps=[
             TestStep(
