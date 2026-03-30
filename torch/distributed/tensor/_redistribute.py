@@ -1422,10 +1422,13 @@ def _gen_transform_infos_non_cached(
     )
 
     # Determine which transform strategy to use:
-    # 1. Non-standard device order or contains _StridedShard → always use graph-based
+    # 1. Non-standard device order or _StridedShard → graph-based (except 1D mesh
+    #    _StridedShard, which is handled by the greedy path's 1D shortcut)
     # 2. Global flag or explicit parameter True → use graph-based
     # 3. Otherwise → use greedy
-    if has_non_default_order or has_strided_shard:
+    if (has_non_default_order or has_strided_shard) and not (
+        device_mesh.ndim == 1 and has_strided_shard
+    ):
         use_graph_based_transform = True
     elif _FORCE_MIN_COST_REDISTRIBUTION_PLAN is not None:
         use_graph_based_transform = _FORCE_MIN_COST_REDISTRIBUTION_PLAN
