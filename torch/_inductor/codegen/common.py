@@ -888,7 +888,9 @@ class OpDecompositions:
 
     @staticmethod
     def reciprocal(x: OpVarT) -> OpVarT:
-        return ops.truediv(ops.constant(1, torch.int32), x)
+        # Use float32 constant so that div_rn can be applied when
+        # eager_numerics.division_rounding is enabled
+        return ops.truediv(ops.constant(1.0, torch.float32), x)
 
     @staticmethod
     def square(x: OpVarT) -> OpVarT:
@@ -940,6 +942,11 @@ class OpDecompositions:
     def mul_rn(x: OpVarT, y: OpVarT) -> OpVarT:
         # for backends that don't override this, just use regular mul
         return ops.mul(x, y)
+
+    @staticmethod
+    def div_rn(x: OpVarT, y: OpVarT) -> OpVarT:
+        # for backends that don't override this, just use regular div
+        return ops.truediv(x, y)
 
     @staticmethod
     def floor_to_int(a: OpVarT, dtype: torch.dtype) -> OpVarT:
@@ -1147,6 +1154,7 @@ class OpOverrides(BasicMathOpsMixin, OpDecompositions, OpsHandler[Any]):
         dtype: torch.dtype = torch.float32,
         is_pure: bool = True,
         pack: int = 1,
+        input_dtypes: tuple[torch.dtype, ...] | None = None,
     ) -> OpVarT:
         raise NotImplementedError(
             f"{type(self).__name__}: inline_asm_elementwise only implemented for Triton backend"
@@ -2843,7 +2851,8 @@ class CSEProxy(DefaultHandler):
         self, name: str, index: sympy.Expr, value: CSEVariable, mode: StoreMode = None
     ) -> None:
         self.kernel.store_buffer_names.add(name)
-        if mode is None:
+        # Update store cache when mode is None or "tma"
+        if mode != "atomic_add":
             self._update_store_cache(name, value)
         if name not in V.graph.removed_buffers:
             self.kernel.store(name, index, value, mode=mode)

@@ -49,6 +49,7 @@ size_t CUDAAllocatorConfig::parseAllocatorConfig(
       " != ",
       get()->name());
   if (used_cudaMallocAsync) {
+#if CUDA_VERSION >= 11040
     int version = 0;
     C10_CUDA_CHECK(cudaDriverGetVersion(&version));
     TORCH_CHECK(
@@ -56,6 +57,13 @@ size_t CUDAAllocatorConfig::parseAllocatorConfig(
         "backend:cudaMallocAsync requires CUDA runtime "
         "11.4 or newer, but cudaDriverGetVersion returned ",
         version);
+#else // CUDA_VERSION >= 11040
+    TORCH_CHECK(
+        false,
+        "backend:cudaMallocAsync requires PyTorch to be built with "
+        "CUDA 11.4 or newer, but CUDA_VERSION is ",
+        CUDA_VERSION);
+#endif // CUDA_VERSION >= 11040
   }
 #endif // USE_ROCM
   return i;
@@ -100,6 +108,9 @@ void CUDAAllocatorConfig::parseArgs(const std::string& env) {
       used_native_specific_option = true;
     } else if (key == "per_process_memory_fraction") {
       i = parsePerProcessMemoryFraction(tokenizer, i);
+      used_native_specific_option = true;
+    } else if (key == "pinned_free_catch_all") {
+      i = parsePinnedFreeCatchAll(tokenizer, i);
       used_native_specific_option = true;
     } else {
       const auto& keys =
@@ -181,6 +192,14 @@ size_t CUDAAllocatorConfig::parsePinnedReserveSegmentSize(
   TORCH_CHECK_VALUE(
       val2 > 0, "Pinned reserve segment size has to be greater than 0");
   m_pinned_reserve_segment_size_mb = val2;
+  return i;
+}
+
+size_t CUDAAllocatorConfig::parsePinnedFreeCatchAll(
+    const c10::CachingAllocator::ConfigTokenizer& tokenizer,
+    size_t i) {
+  tokenizer.checkToken(++i, ":");
+  m_pinned_free_catch_all = tokenizer.toBool(++i);
   return i;
 }
 
