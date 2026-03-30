@@ -8,4 +8,3 @@ cd pytorch
 git fetch --depth=1 origin "$COMMIT_SHA"
 git checkout "$COMMIT_SHA"
 git submodule update --init --depth=1 --jobs=8
-
