@@ -1972,12 +1972,21 @@ class StringFormatVariable(VariableTracker):
         )
 
         if has_lazy_constant and not sym_kwargs:
-            # All peekable lazy args with no kwargs: fold into a
-            # ComputedLazyConstantVariable that defers guard installation but
-            # avoids graph breaks when the formatted string is used as a
-            # function argument.
-            all_peekable = all(x.try_peek_constant()[0] for x in all_args)
-            if all_peekable:
+            # All args must be simple constants or lazy constants (not
+            # containers like TupleVariable which may hold SymNodeVariables
+            # under dynamic shapes).
+            all_simple_constants = all(
+                isinstance(
+                    x,
+                    (
+                        variables.ConstantVariable,
+                        LazyConstantVariable,
+                        ComputedLazyConstantVariable,
+                    ),
+                )
+                for x in all_args
+            )
+            if all_simple_constants:
                 # Use str.format as the op with format_string as the first arg.
                 # _make_binary_op_reconstruct_fn already has a str.format handler.
                 from .builtin import _make_binary_op_reconstruct_fn

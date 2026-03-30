@@ -1029,6 +1029,36 @@ class LazyConstantVariableTests(TestCase):
         self.assertTrue(same(fn(x, "hello"), result))
         self.assertEqual(counter.frame_count, 1)
 
+    def test_fstring_with_tuple_containing_auto_dynamic_int(self):
+        """Test that f-strings with tuples containing auto-dynamic ints don't crash.
+
+        When automatic_dynamic_shapes promotes an int to SymNodeVariable (after
+        seeing different values across compilations), and that int is inside a
+        tuple used in an f-string alongside a direct lazy constant, the
+        StringFormatVariable.create path must not pass the TupleVariable to
+        ComputedLazyConstantVariable.create (which would call as_python_constant
+        on the tuple, realizing the SymNodeVariable and crashing).
+
+        This reproduces the test_norm_bfloat16_and_half CI failure.
+        """
+
+        def fn(x, sizes, tag):
+            _ = f"tag={tag}, sizes={sizes}"
+            return x + 1
+
+        counter = CompileCounter()
+        opt_fn = torch.compile(fn, backend=counter)
+        x = torch.randn(3)
+
+        # First call compiles with sizes=(10,), guards specialize the int
+        result1 = opt_fn(x, (10,), "hello")
+        self.assertTrue(same(fn(x, (10,), "hello"), result1))
+
+        # Second call with different tuple element triggers recompilation.
+        # automatic_dynamic_shapes marks the int as dynamic (SymNodeVariable).
+        result2 = opt_fn(x, (20,), "hello")
+        self.assertTrue(same(fn(x, (20,), "hello"), result2))
+
     def test_computed_lazy_constant_division_by_zero(self):
         """Test that division by zero with lazy constants raises ZeroDivisionError.
 
