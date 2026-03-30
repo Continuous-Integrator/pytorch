@@ -11,8 +11,10 @@ import contextlib
 import logging
 import os
 import subprocess
-from collections.abc import Iterator
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 from cli.lib.pytorch.lint_test.lint_plans import LINT_PLANS, TestPlan
 
