@@ -33,7 +33,7 @@ import re
 from collections.abc import Callable
 from functools import partial
 
-import cuda.bindings.driver as cuda  # type: ignore
+import cuda.bindings.driver as cuda  # type: ignore[import-untyped]
 
 import cutlass
 import cutlass.cute as cute
@@ -184,7 +184,7 @@ def store_shared_remote(
     ).ir_value()
     if const_expr(isinstance(val, float)):
         val = Float32(val)
-    assert isinstance(val, (Float32, Int32, cutlass.Int64)), (
+    assert isinstance(val, (Float32, Int32, cutlass.Int64)), (  # noqa: S101
         "val must be Float32, Int32, or Int64"
     )
     suffix = {Float32: "f32", Int32: "s32", cutlass.Int64: "s64"}[type(val)]
@@ -277,11 +277,11 @@ def domain_offset_i64(
 ) -> cute.Tensor:
     flat_coord_i64 = tuple(cutlass.Int64(c) for c in cute.flatten(coord))
     flat_stride = cute.flatten_to_tuple(tensor.stride)
-    assert len(flat_coord_i64) == len(flat_stride), (
+    assert len(flat_coord_i64) == len(flat_stride), (  # noqa: S101
         "Coordinate and stride must have the same length"
     )
     offset = sum(c * s for c, s in zip(flat_coord_i64, flat_stride))
-    assert isinstance(tensor.iterator, cute.Pointer)
+    assert isinstance(tensor.iterator, cute.Pointer)  # noqa: S101
     new_ptr = cute.make_ptr(
         tensor.element_type,
         tensor.iterator.toint() + offset * tensor.element_type.width // 8,
@@ -301,7 +301,7 @@ def coord_offset_i64(
     ip=None,
 ) -> cute.Tensor:
     offset = cutlass.Int64(idx) * cute.size(tensor.stride[dim])
-    assert isinstance(tensor.iterator, cute.Pointer)
+    assert isinstance(tensor.iterator, cute.Pointer)  # noqa: S101
     new_ptr = cute.make_ptr(
         tensor.element_type,
         tensor.iterator.toint() + offset * tensor.element_type.width // 8,
@@ -500,7 +500,7 @@ def row_reduce(
         hook_fn()
     if cutlass.const_expr(reduction_buffer is not None):
         warps_per_row, cluster_n = reduction_buffer.shape[1]
-        assert cluster_n == 1 or mbar_ptr is not None, (
+        assert cluster_n == 1 or mbar_ptr is not None, (  # noqa: S101
             "mbar_ptr must be provided for cluster reduction"
         )
         if cutlass.const_expr(warps_per_row > 1 or cluster_n > 1):
@@ -545,7 +545,7 @@ def row_reduce_add(
         hook_fn()
     if cutlass.const_expr(reduction_buffer is not None):
         warps_per_row, cluster_n = reduction_buffer.shape[1]
-        assert cluster_n == 1 or mbar_ptr is not None, (
+        assert cluster_n == 1 or mbar_ptr is not None, (  # noqa: S101
             "mbar_ptr must be provided for cluster reduction"
         )
         if cutlass.const_expr(warps_per_row > 1 or cluster_n > 1):
@@ -577,7 +577,7 @@ def online_softmax_reduce(
       - sum_exp_x: row-wise sum of exp(x - max_x)
       - exp_x (optional): per-element exp(x - max_x_final) if return_exp_x is True
     """
-    assert x.dtype == Float32, "x must be of type Float32"
+    assert x.dtype == Float32, "x must be of type Float32"  # noqa: S101
     # reduction_buffer must have shape (num_warps / warps_per_row, (warps_per_row, cluster_n), 2)
     max_x = warp_reduce(
         x.reduce(cute.ReductionOp.MAX, init_val=-Float32.inf, reduction_profile=0),
@@ -595,11 +595,11 @@ def online_softmax_reduce(
         hook_fn()
     if cutlass.const_expr(reduction_buffer is not None):
         rows_per_block, (warps_per_row, cluster_n) = reduction_buffer.shape
-        assert cluster_n == 1 or mbar_ptr is not None, (
+        assert cluster_n == 1 or mbar_ptr is not None, (  # noqa: S101
             "mbar_ptr must be provided for cluster reduction"
         )
         if cutlass.const_expr(warps_per_row > 1 or cluster_n > 1):
-            assert reduction_buffer.element_type == cutlass.Int64, (
+            assert reduction_buffer.element_type == cutlass.Int64, (  # noqa: S101
                 "reduction_buffer must be of type Int64"
             )
             lane_idx, warp_idx = cute.arch.lane_idx(), cute.arch.warp_idx()
@@ -765,11 +765,11 @@ class ReductionBase:
                 "tiling assumes <=128b vectorization (cp.async and common CopyAtoms)."
             )
         vecsize = num_copy_bits // self.dtype.width
-        assert self.N % vecsize == 0, (
+        assert self.N % vecsize == 0, (  # noqa: S101
             f"Input N {self.N} is not divisible by vector size {vecsize}"
         )
         num_threads = self._get_num_threads()
-        assert num_threads % cute.arch.WARP_SIZE == 0
+        assert num_threads % cute.arch.WARP_SIZE == 0  # noqa: S101
 
         threads_per_row = self._calculate_threads_per_row()
         self._set_cluster_n()
