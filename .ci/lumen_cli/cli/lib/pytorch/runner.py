@@ -86,7 +86,7 @@ def run_plan(
 
 
 # Flags consumed by RE submission, not passed to the remote command.
-_RE_FLAGS = {"--re", "--pr", "--commit", "--dry-run", "--no-follow"}
+_RE_FLAGS = {"--re", "--pr", "--commit", "--dry-run", "--no-follow", "--interactive"}
 
 
 def _build_remote_command() -> str:
@@ -100,7 +100,7 @@ def _build_remote_command() -> str:
             continue
         if arg in _RE_FLAGS:
             # --pr and --commit take a value; the rest are boolean
-            if arg in ("--pr", "--commit") and i + 1 < len(args):
+            if arg in ("--pr", "--commit", "--interactive") and i + 1 < len(args):
                 skip_next = True
             continue
         filtered.append(arg)
@@ -120,6 +120,7 @@ class PytorchTestRunner:
         self.dry_run = getattr(args, "dry_run", False)
         self.no_follow = getattr(args, "no_follow", False)
         self.show_hint = getattr(args, "show_hint", False)
+        self.interactive = getattr(args, "interactive", None)
 
     def run(self) -> None:
         if self.group_id not in LINT_PLANS:
@@ -137,6 +138,7 @@ class PytorchTestRunner:
                 dry_run=self.dry_run,
                 no_follow=self.no_follow,
                 image=plan.image,
+                idle_timeout=self.interactive,
             )
         else:
             run_plan(self.group_id, plan, self.env_overrides, self.input_overrides)

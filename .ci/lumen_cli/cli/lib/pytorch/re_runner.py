@@ -74,6 +74,7 @@ def submit_command(
     no_follow: bool = False,
     image: str = DEFAULT_IMAGE,
     bootstrap: list[str] | None = None,
+    idle_timeout: int | None = None,
 ) -> None:
     """Submit a command to Remote Execution."""
     from re_cli.core.core_types import StepConfig
@@ -93,6 +94,12 @@ def submit_command(
     )
     seen: set[str] = set()
     modules = [m for m in modules_list if not (m in seen or seen.add(m))]
+
+    if idle_timeout:
+        command = (
+            f"{command}; echo '\\n=== Job finished. Container idle for"
+            f" {idle_timeout}m. ==='; sleep {idle_timeout * 60}"
+        )
 
     step = StepConfig(
         name=name,
