@@ -56,7 +56,7 @@ class DSLRegistry:
             existing_module = self._dsl_modules[name]
             if existing_module is dsl_module:
                 # Same module re-registering - this is OK (import-time registration)
-                log.debug("DSL '%s' re-registered with same module", name)
+                log.debug("DSL '%s' re-registered with same module", name, exc_info=True)
                 return
             else:
                 # Different module object but same name - warn and allow (for testing)
@@ -81,7 +81,7 @@ class DSLRegistry:
         try:
             return dsl_module.runtime_available()
         except ImportError:
-            log.debug("DSL %s import error", dsl_name)
+            log.debug("DSL %s import error", dsl_name, exc_info=True)
             return False
         except Exception:
             log.exception("Error checking availability for DSL %s", dsl_name)
@@ -96,7 +96,7 @@ class DSLRegistry:
         try:
             return dsl_module.runtime_version()
         except Exception:
-            log.debug("Error getting version for DSL %s", dsl_name)
+            log.debug("Error getting version for DSL %s", dsl_name, exc_info=True)
             return None
 
     @functools.cache  # noqa: B019
