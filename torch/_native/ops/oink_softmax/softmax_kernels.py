@@ -53,7 +53,7 @@ if "CUTE_DSL_CACHE_DIR" not in os.environ:
     )
 
 try:
-    import cutlass  # type: ignore  # noqa: F401
+    import cutlass  # type: ignore[import-untyped]  # noqa: F401
 except Exception as e:
     raise ImportError(
         "kernelagent_oink.blackwell.softmax requires CuTeDSL's Python package "
@@ -419,8 +419,8 @@ class SoftmaxFwdSM100(ReductionBase):
 
     @cute.jit
     def __call__(self, mX: cute.Tensor, mO: cute.Tensor, stream: cuda.CUstream) -> None:
-        assert mX.element_type == self.dtype
-        assert mO.element_type == self.dtype
+        assert mX.element_type == self.dtype  # noqa: S101
+        assert mO.element_type == self.dtype  # noqa: S101
         # Use the generic ReductionBase tiling with 128-bit vectorization.
         tiler_mn, tv_layout = self._get_tv_layout()
         num_threads = (
@@ -677,9 +677,9 @@ class SoftmaxBwdSM100(ReductionBase):
         mdX: cute.Tensor,
         stream: cuda.CUstream,
     ) -> None:
-        assert mdY.element_type == self.dtype
-        assert mY.element_type == self.dtype
-        assert mdX.element_type == self.dtype
+        assert mdY.element_type == self.dtype  # noqa: S101
+        assert mY.element_type == self.dtype  # noqa: S101
+        assert mdX.element_type == self.dtype  # noqa: S101
         # Use the generic ReductionBase tiling with 128-bit vectorization.
         tiler_mn, tv_layout = self._get_tv_layout()
         num_threads = (
@@ -968,9 +968,9 @@ class SoftmaxFwdBwdSM100(ReductionBase):
         mdX: cute.Tensor,
         stream: cuda.CUstream,
     ) -> None:
-        assert mX.element_type == self.dtype
-        assert mdY.element_type == self.dtype
-        assert mdX.element_type == self.dtype
+        assert mX.element_type == self.dtype  # noqa: S101
+        assert mdY.element_type == self.dtype  # noqa: S101
+        assert mdX.element_type == self.dtype  # noqa: S101
         tiler_mn, tv_layout = self._get_tv_layout()
         num_threads = (
             cute.size(tv_layout, mode=[0])
@@ -1146,7 +1146,7 @@ class SoftmaxFwdBwdSM100(ReductionBase):
             phase=None,
             return_exp_x=True,
         )
-        assert exp_x is not None
+        assert exp_x is not None  # noqa: S101
         y = exp_x * cute.arch.rcp_approx(denom)
 
         dot = row_reduce(
@@ -1231,9 +1231,9 @@ def _can_use_ptr_path_2d(x: Tensor) -> bool:
 
 def _softmax_forward_ptr_into(*, x: Tensor, out: Tensor) -> None:
     """Launch the pointer-based Softmax forward kernel into preallocated `out`."""
-    assert x.is_cuda and x.dim() == 2
-    assert out.is_cuda and out.shape == x.shape and out.dtype == x.dtype
-    assert out.stride() == x.stride(), "Pointer path expects out to match x strides"
+    assert x.is_cuda and x.dim() == 2  # noqa: S101
+    assert out.is_cuda and out.shape == x.shape and out.dtype == x.dtype  # noqa: S101
+    assert out.stride() == x.stride(), "Pointer path expects out to match x strides"  # noqa: S101
 
     M, N = x.shape
     device_index = x.get_device()
@@ -1296,10 +1296,10 @@ def _softmax_forward_ptr_into(*, x: Tensor, out: Tensor) -> None:
 
 def _softmax_backward_ptr_into(*, dy: Tensor, y: Tensor, dx: Tensor) -> None:
     """Launch the pointer-based Softmax backward kernel into preallocated `dx`."""
-    assert dy.is_cuda and dy.dim() == 2
-    assert y.is_cuda and y.shape == dy.shape and y.dtype == dy.dtype
-    assert dx.is_cuda and dx.shape == dy.shape and dx.dtype == dy.dtype
-    assert dy.stride() == y.stride() == dx.stride(), (
+    assert dy.is_cuda and dy.dim() == 2  # noqa: S101
+    assert y.is_cuda and y.shape == dy.shape and y.dtype == dy.dtype  # noqa: S101
+    assert dx.is_cuda and dx.shape == dy.shape and dx.dtype == dy.dtype  # noqa: S101
+    assert dy.stride() == y.stride() == dx.stride(), (  # noqa: S101
         "Pointer path expects matching strides"
     )
 
@@ -1371,10 +1371,10 @@ def _softmax_backward_ptr_into(*, dy: Tensor, y: Tensor, dx: Tensor) -> None:
 
 def _softmax_fwd_bwd_ptr_into(*, x: Tensor, dy: Tensor, dx: Tensor) -> None:
     """Launch the fused pointer-based Softmax fwd+bwd kernel into preallocated `dx`."""
-    assert x.is_cuda and x.dim() == 2
-    assert dy.is_cuda and dy.shape == x.shape and dy.dtype == x.dtype
-    assert dx.is_cuda and dx.shape == x.shape and dx.dtype == x.dtype
-    assert x.stride() == dy.stride() == dx.stride(), (
+    assert x.is_cuda and x.dim() == 2  # noqa: S101
+    assert dy.is_cuda and dy.shape == x.shape and dy.dtype == x.dtype  # noqa: S101
+    assert dx.is_cuda and dx.shape == x.shape and dx.dtype == x.dtype  # noqa: S101
+    assert x.stride() == dy.stride() == dx.stride(), (  # noqa: S101
         "Pointer path expects matching strides"
     )
 
@@ -1446,9 +1446,9 @@ def _softmax_fwd_bwd_ptr_into(*, x: Tensor, dy: Tensor, dx: Tensor) -> None:
 
 def softmax_forward(x: Tensor) -> Tensor:
     """SM100 CuteDSL softmax forward pass: y = softmax(x, dim=-1)."""
-    assert x.dim() == 2, "Input must be 2D (M, N)"
-    assert x.is_cuda, "Input must be on CUDA device"
-    assert x.dtype in TORCH2CUTE_DTYPE, "Unsupported dtype"
+    assert x.dim() == 2, "Input must be 2D (M, N)"  # noqa: S101
+    assert x.is_cuda, "Input must be on CUDA device"  # noqa: S101
+    assert x.dtype in TORCH2CUTE_DTYPE, "Unsupported dtype"  # noqa: S101
 
     N = x.size(1)
     dtype = TORCH2CUTE_DTYPE[x.dtype]
@@ -1475,11 +1475,11 @@ def softmax_forward(x: Tensor) -> Tensor:
 
 def softmax_backward(dy: Tensor, y: Tensor) -> Tensor:
     """SM100 CuteDSL softmax backward pass."""
-    assert dy.dim() == 2 and y.dim() == 2, "dy and y must be 2D (M, N)"
-    assert dy.shape == y.shape, "dy and y must have the same shape"
-    assert dy.is_cuda and y.is_cuda, "dy and y must be on CUDA device"
-    assert dy.dtype in TORCH2CUTE_DTYPE, "Unsupported dtype"
-    assert y.dtype == dy.dtype, "dy and y must have the same dtype"
+    assert dy.dim() == 2 and y.dim() == 2, "dy and y must be 2D (M, N)"  # noqa: S101
+    assert dy.shape == y.shape, "dy and y must have the same shape"  # noqa: S101
+    assert dy.is_cuda and y.is_cuda, "dy and y must be on CUDA device"  # noqa: S101
+    assert dy.dtype in TORCH2CUTE_DTYPE, "Unsupported dtype"  # noqa: S101
+    assert y.dtype == dy.dtype, "dy and y must have the same dtype"  # noqa: S101
 
     N = dy.size(1)
     dtype = TORCH2CUTE_DTYPE[dy.dtype]
@@ -1517,11 +1517,11 @@ def softmax_fwd_bwd(dy: Tensor, x: Tensor) -> Tensor:
     This is intended for benchmarks and training-like use-cases where the
     intermediate ``y = softmax(x)`` is not needed outside the backward pass.
     """
-    assert x.dim() == 2 and dy.dim() == 2, "x and dy must be 2D (M, N)"
-    assert x.shape == dy.shape, "x and dy must have the same shape"
-    assert x.is_cuda and dy.is_cuda, "x and dy must be on CUDA device"
-    assert x.dtype in TORCH2CUTE_DTYPE, "Unsupported dtype"
-    assert dy.dtype == x.dtype, "x and dy must have the same dtype"
+    assert x.dim() == 2 and dy.dim() == 2, "x and dy must be 2D (M, N)"  # noqa: S101
+    assert x.shape == dy.shape, "x and dy must have the same shape"  # noqa: S101
+    assert x.is_cuda and dy.is_cuda, "x and dy must be on CUDA device"  # noqa: S101
+    assert x.dtype in TORCH2CUTE_DTYPE, "Unsupported dtype"  # noqa: S101
+    assert dy.dtype == x.dtype, "x and dy must have the same dtype"  # noqa: S101
 
     if (
         _can_use_ptr_path_2d(x)

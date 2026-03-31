@@ -59,7 +59,7 @@ if "CUTE_DSL_CACHE_DIR" not in os.environ:
     )
 
 try:
-    import cutlass  # type: ignore  # noqa: F401
+    import cutlass  # type: ignore[import-untyped]  # noqa: F401
 except Exception as e:
     raise ImportError(
         "kernelagent_oink.blackwell.layernorm requires CuTeDSL's Python package "
@@ -638,8 +638,8 @@ class LayerNormSM100(_ReductionBase):
         stream: cuda.CUstream,
         eps: Float32 = 1e-6,
     ):
-        assert mX.element_type == self.dtype
-        assert mO.element_type == self.dtype
+        assert mX.element_type == self.dtype  # noqa: S101
+        assert mO.element_type == self.dtype  # noqa: S101
 
         # Tiling and cluster policy (mirrors Quack LayerNorm).
         self._set_cluster_n()
@@ -1130,13 +1130,13 @@ def layernorm(
         return_rstd: Whether to return per-row reciprocal std (shape (M,)).
         return_mean: Whether to return per-row mean (shape (M,)).
     """
-    assert x.is_cuda and weight.is_cuda, "x and weight must be CUDA tensors"
-    assert x.dim() == 2, "Use (M, N) tensor; flatten batch/seq beforehand."
-    assert weight.dim() == 1, "weight must be 1D"
-    assert x.shape[1] == weight.shape[0], "Last dim of x must match weight.size(0)"
+    assert x.is_cuda and weight.is_cuda, "x and weight must be CUDA tensors"  # noqa: S101
+    assert x.dim() == 2, "Use (M, N) tensor; flatten batch/seq beforehand."  # noqa: S101
+    assert weight.dim() == 1, "weight must be 1D"  # noqa: S101
+    assert x.shape[1] == weight.shape[0], "Last dim of x must match weight.size(0)"  # noqa: S101
     if bias is not None:
-        assert bias.is_cuda, "bias must be on CUDA"
-        assert bias.dim() == 1 and bias.shape[0] == weight.shape[0], (
+        assert bias.is_cuda, "bias must be on CUDA"  # noqa: S101
+        assert bias.dim() == 1 and bias.shape[0] == weight.shape[0], (  # noqa: S101
             "bias must be 1D and match weight"
         )
 
@@ -1288,17 +1288,17 @@ def _layernorm_forward_ptr_into(
     eps: float,
 ) -> None:
     """Launch the pointer-based LayerNorm kernel into preallocated outputs."""
-    assert x.is_cuda and x.dim() == 2
+    assert x.is_cuda and x.dim() == 2  # noqa: S101
     M, N = x.shape
-    assert weight.is_cuda and weight.dim() == 1 and weight.shape[0] == N
+    assert weight.is_cuda and weight.dim() == 1 and weight.shape[0] == N  # noqa: S101
     if bias is not None:
-        assert bias.is_cuda and bias.dim() == 1 and bias.shape[0] == N
-    assert out.is_cuda and out.shape == x.shape and out.dtype == x.dtype
-    assert out.stride() == x.stride(), "Pointer path expects out to match x strides"
+        assert bias.is_cuda and bias.dim() == 1 and bias.shape[0] == N  # noqa: S101
+    assert out.is_cuda and out.shape == x.shape and out.dtype == x.dtype  # noqa: S101
+    assert out.stride() == x.stride(), "Pointer path expects out to match x strides"  # noqa: S101
     if rstd is not None:
-        assert rstd.is_cuda and rstd.shape == (M,) and rstd.dtype == torch.float32
+        assert rstd.is_cuda and rstd.shape == (M,) and rstd.dtype == torch.float32  # noqa: S101
     if mean is not None:
-        assert mean.is_cuda and mean.shape == (M,) and mean.dtype == torch.float32
+        assert mean.is_cuda and mean.shape == (M,) and mean.dtype == torch.float32  # noqa: S101
 
     device_index = x.get_device()
     if torch.cuda.current_device() != device_index:
@@ -1767,9 +1767,9 @@ def _layernorm_backward_dx_sm100(
     Host-side helper to run the dx-only LayerNorm backward kernel.
     """
     M, N = x_2d.shape
-    assert dout_2d.shape == (M, N)
-    assert rstd_1d.numel() == M
-    assert mean_1d.numel() == M
+    assert dout_2d.shape == (M, N)  # noqa: S101
+    assert rstd_1d.numel() == M  # noqa: S101
+    assert mean_1d.numel() == M  # noqa: S101
 
     dtype = TORCH2CUTE_DTYPE[x_2d.dtype]
 
@@ -1831,9 +1831,9 @@ def _layernorm_backward_params_sm100(
     dw_partial / db_partial of shape (sm_count, N).
     """
     M, N = x_2d.shape
-    assert dout_2d.shape == (M, N)
-    assert rstd_1d.numel() == M
-    assert mean_1d.numel() == M
+    assert dout_2d.shape == (M, N)  # noqa: S101
+    assert rstd_1d.numel() == M  # noqa: S101
+    assert mean_1d.numel() == M  # noqa: S101
     if dw_partial is None and db_partial is None:
         return
 
@@ -1906,11 +1906,11 @@ def layernorm_backward(
       - A parameter-gradient kernel that accumulates dw/db over a
         persistent grid of CTAs across the M dimension.
     """
-    assert x.shape == dout.shape, "x and dout must have the same shape"
-    assert x.is_cuda and dout.is_cuda, "x and dout must be CUDA tensors"
-    assert weight.dim() == 1, "weight must be 1D"
+    assert x.shape == dout.shape, "x and dout must have the same shape"  # noqa: S101
+    assert x.is_cuda and dout.is_cuda, "x and dout must be CUDA tensors"  # noqa: S101
+    assert weight.dim() == 1, "weight must be 1D"  # noqa: S101
     if bias is not None:
-        assert bias.dim() == 1, "bias must be 1D"
+        assert bias.dim() == 1, "bias must be 1D"  # noqa: S101
 
     x_2d, orig_shape = _as_2d(x)
     dout_2d, _ = _as_2d(dout)

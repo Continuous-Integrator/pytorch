@@ -163,7 +163,7 @@ class RMSNormSM100WithStage2:
     def _tv_layout(self, num_copy_bits: int = 256) -> tuple[cute.Shape, cute.Layout]:
         vecsize = num_copy_bits // self.dtype.width
         num_threads = self._num_threads()
-        assert num_threads % cute.arch.WARP_SIZE == 0
+        assert num_threads % cute.arch.WARP_SIZE == 0  # noqa: S101
         tpr = self._threads_per_row()
         cluster_n = self._cluster_n()
         num_cols_vec = cute.ceil_div(self.N, vecsize)
@@ -208,8 +208,8 @@ class RMSNormSM100WithStage2:
             else None
             for t in (mX, mRes, mO, mResO)
         ]
-        assert mX.element_type == self.dtype
-        assert mO.element_type == self.dtype
+        assert mX.element_type == self.dtype  # noqa: S101
+        assert mO.element_type == self.dtype  # noqa: S101
 
         copy_bits = const_expr(128)
         tiler_mn, tv_layout = self._tv_layout(num_copy_bits=copy_bits)
@@ -927,8 +927,8 @@ def rmsnorm_forward_with_stage2(
     eps: float = 1e-6,
     store_rstd: bool = False,
 ) -> tuple[Tensor, Tensor | None, Tensor | None]:
-    assert x.is_cuda
-    assert x.dim() == 2
+    assert x.is_cuda  # noqa: S101
+    assert x.dim() == 2  # noqa: S101
     M, N = x.shape
     dtype = TORCH2CUTE_DTYPE[x.dtype]
 

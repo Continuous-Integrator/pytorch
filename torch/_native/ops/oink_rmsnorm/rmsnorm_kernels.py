@@ -71,7 +71,7 @@ if "CUTE_DSL_CACHE_DIR" not in os.environ:
     )
 
 try:
-    import cutlass  # type: ignore  # noqa: F401
+    import cutlass  # type: ignore[import-untyped]  # noqa: F401
 except Exception as e:
     raise ImportError(
         "oink_rmsnorm requires CuTeDSL's Python package "
@@ -128,8 +128,8 @@ def _get_dw_reduce_ones(device_index: int, sm_count: int) -> Tensor:
 
 def _reduce_partial_sum_fp32(partial: Tensor, *, device_index: int) -> Tensor:
     """Reduce a (sm_count, N) fp32 partial buffer into an (N,) fp32 result."""
-    assert partial.dtype is torch.float32
-    assert partial.dim() == 2
+    assert partial.dtype is torch.float32  # noqa: S101
+    assert partial.dim() == 2  # noqa: S101
     ones = _get_dw_reduce_ones(device_index, int(partial.shape[0]))
     return torch.mm(ones, partial).squeeze(0)
 
@@ -1588,7 +1588,7 @@ class RMSNormSM100:
     def _tv_layout(self, num_copy_bits: int = 256) -> tuple[cute.Shape, cute.Layout]:
         vecsize = num_copy_bits // self.dtype.width
         num_threads = self._num_threads()
-        assert num_threads % cute.arch.WARP_SIZE == 0
+        assert num_threads % cute.arch.WARP_SIZE == 0  # noqa: S101
         tpr = self._threads_per_row()
         cluster_n = self._cluster_n()
         # Allow tails: compute number of vector columns with ceil
@@ -1646,8 +1646,8 @@ class RMSNormSM100:
             else None
             for t in (mX, mRes, mO, mResO)
         ]
-        assert mX.element_type == self.dtype
-        assert mO.element_type == self.dtype
+        assert mX.element_type == self.dtype  # noqa: S101
+        assert mO.element_type == self.dtype  # noqa: S101
 
         copy_bits = int(self.copy_bits)
         tiler_mn, tv_layout = self._tv_layout(num_copy_bits=copy_bits)
@@ -2766,8 +2766,8 @@ def _rmsnorm_forward_ptr(
     and explicit layouts inside the JIT graph, avoiding any runtime
     DLPack conversions while reusing the tuned RMSNormSM100 schedule.
     """
-    assert x.is_cuda
-    assert x.dim() == 2, "Use (M, N) tensor; flatten batch/seq beforehand."
+    assert x.is_cuda  # noqa: S101
+    assert x.dim() == 2, "Use (M, N) tensor; flatten batch/seq beforehand."  # noqa: S101
     M, N = x.shape
 
     # Preserve the input's 2D stride so downstream users that rely on
@@ -2814,8 +2814,8 @@ def _rmsnorm_forward_ptr_into(
     This enables integration into frameworks like vLLM that manage their
     own buffers and prefer in-place or out-parameter semantics.
     """
-    assert x.is_cuda
-    assert x.dim() == 2, "Use (M, N) tensor; flatten batch/seq beforehand."
+    assert x.is_cuda  # noqa: S101
+    assert x.dim() == 2, "Use (M, N) tensor; flatten batch/seq beforehand."  # noqa: S101
     M, N = x.shape
     device_index = x.get_device()
     dtype = TORCH2CUTE_DTYPE[x.dtype]
@@ -3230,11 +3230,11 @@ def _fused_add_rmsnorm_forward_ptr_inplace(
     eps: float,
 ) -> None:
     """Pointer-based fused_add_rmsnorm that updates `x` and `residual` in-place."""
-    assert x.is_cuda
-    assert x.dim() == 2
-    assert residual.is_cuda
-    assert residual.dim() == 2
-    assert x.shape == residual.shape
+    assert x.is_cuda  # noqa: S101
+    assert x.dim() == 2  # noqa: S101
+    assert residual.is_cuda  # noqa: S101
+    assert residual.dim() == 2  # noqa: S101
+    assert x.shape == residual.shape  # noqa: S101
 
     M, N = x.shape
     device_index = x.get_device()
@@ -3449,8 +3449,8 @@ def rmsnorm_forward(
     eps: float = 1e-6,
     store_rstd: bool = False,
 ) -> tuple[Tensor, Tensor | None, Tensor | None]:
-    assert x.is_cuda
-    assert x.dim() == 2, "Use (M, N) tensor; flatten batch/seq beforehand."
+    assert x.is_cuda  # noqa: S101
+    assert x.dim() == 2, "Use (M, N) tensor; flatten batch/seq beforehand."  # noqa: S101
     M, N = x.shape
 
     # Fast path: use the pointer-based entry whenever we can represent the
@@ -3575,9 +3575,9 @@ def fused_add_rmsnorm_forward(
 
     It returns ``(y, z)`` where ``z`` has the same dtype/shape as the inputs.
     """
-    assert x.is_cuda and residual.is_cuda
-    assert x.shape == residual.shape
-    assert x.dtype == residual.dtype
+    assert x.is_cuda and residual.is_cuda  # noqa: S101
+    assert x.shape == residual.shape  # noqa: S101
+    assert x.dtype == residual.dtype  # noqa: S101
 
     orig_shape = x.shape
     N = orig_shape[-1]
@@ -3630,9 +3630,9 @@ def fused_add_rmsnorm_inplace_(
     This is the lowest-overhead Python entrypoint (returns `None`) intended
     for performance-critical call sites like `torch.ops.oink.fused_add_rms_norm`.
     """
-    assert x.is_cuda and residual.is_cuda
-    assert x.shape == residual.shape
-    assert x.dtype == residual.dtype
+    assert x.is_cuda and residual.is_cuda  # noqa: S101
+    assert x.shape == residual.shape  # noqa: S101
+    assert x.dtype == residual.dtype  # noqa: S101
 
     N = x.shape[-1]
     x_2d = x if x.dim() == 2 else x.view(-1, N)
@@ -3902,27 +3902,27 @@ def _rmsnorm_bwd_sm100(
     Mirrors Quack's `quack.rmsnorm._rmsnorm_bwd`, but instantiates
     `RMSNormBackwardSM100` (SM100-tuned heuristics).
     """
-    assert x.dim() == 2, "Input must be 2D"
-    assert x.is_cuda, "Input tensor must be on CUDA device"
-    assert x.dtype in (torch.float16, torch.bfloat16, torch.float32)
+    assert x.dim() == 2, "Input must be 2D"  # noqa: S101
+    assert x.is_cuda, "Input tensor must be on CUDA device"  # noqa: S101
+    assert x.dtype in (torch.float16, torch.bfloat16, torch.float32)  # noqa: S101
 
     if weight is not None:
-        assert weight.dim() == 1
-        assert x.shape[-1] == weight.shape[0]
-        assert weight.is_cuda
-        assert weight.dtype in (torch.float32, torch.bfloat16, torch.float16)
+        assert weight.dim() == 1  # noqa: S101
+        assert x.shape[-1] == weight.shape[0]  # noqa: S101
+        assert weight.is_cuda  # noqa: S101
+        assert weight.dtype in (torch.float32, torch.bfloat16, torch.float16)  # noqa: S101
     if dresidual_out is not None:
-        assert dresidual_out.shape == x.shape
-        assert dresidual_out.is_cuda
-        assert dresidual_out.dtype in (torch.float16, torch.bfloat16, torch.float32)
+        assert dresidual_out.shape == x.shape  # noqa: S101
+        assert dresidual_out.is_cuda  # noqa: S101
+        assert dresidual_out.dtype in (torch.float16, torch.bfloat16, torch.float32)  # noqa: S101
     if dresidual is not None:
-        assert dresidual.shape == x.shape
-        assert dresidual.is_cuda
-        assert dresidual.dtype in (torch.float16, torch.bfloat16, torch.float32)
+        assert dresidual.shape == x.shape  # noqa: S101
+        assert dresidual.is_cuda  # noqa: S101
+        assert dresidual.dtype in (torch.float16, torch.bfloat16, torch.float32)  # noqa: S101
 
     M, N = x.size(0), x.size(1)
     if dw_partial is None and db_partial is None:
-        assert sm_count is not None
+        assert sm_count is not None  # noqa: S101
     else:
         sm_count = (
             dw_partial.shape[0] if dw_partial is not None else db_partial.shape[0]
@@ -4036,24 +4036,24 @@ def _rmsnorm_bwd_sm100_ptr(
     and the kernel atomically accumulates weight gradients into it (avoids the
     extra `dw_partial.sum(dim=0)` reduction kernel).
     """
-    assert _can_use_ptr_path_bwd(x, weight, dout, rstd)
-    assert dx.shape == x.shape
-    assert dx.dtype == x.dtype
-    assert dw_partial.dtype == torch.float32
+    assert _can_use_ptr_path_bwd(x, weight, dout, rstd)  # noqa: S101
+    assert dx.shape == x.shape  # noqa: S101
+    assert dx.dtype == x.dtype  # noqa: S101
+    assert dw_partial.dtype == torch.float32  # noqa: S101
 
     M, N = x.size(0), x.size(1)
     if atomic_dw:
-        assert dw_partial.dim() == 1 and dw_partial.numel() == N
-        assert dw_partial.is_contiguous()
+        assert dw_partial.dim() == 1 and dw_partial.numel() == N  # noqa: S101
+        assert dw_partial.is_contiguous()  # noqa: S101
     else:
-        assert dw_partial.dim() == 2 and dw_partial.shape[1] == N
+        assert dw_partial.dim() == 2 and dw_partial.shape[1] == N  # noqa: S101
     device_index = x.get_device()
     dtype = TORCH2CUTE_DTYPE[x.dtype]
     weight_dtype = TORCH2CUTE_DTYPE[weight.dtype]
     assumed_align_x = 16
     assumed_align_w = 32 if weight.dtype is torch.float32 else 16
     assumed_align_dw = 32
-    assert (dw_partial.data_ptr() % assumed_align_dw) == 0
+    assert (dw_partial.data_ptr() % assumed_align_dw) == 0  # noqa: S101
 
     if torch.cuda.current_device() != device_index:
         torch.cuda.set_device(device_index)
