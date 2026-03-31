@@ -76,7 +76,9 @@ def _get_dsl_module(dsl_name: str):
     if dsl_name in registry._dsl_modules:
         return registry._dsl_modules[dsl_name]
     else:
-        raise ValueError(f"Unknown DSL: {dsl_name}. Available DSLs: {registry.list_all_dsls()}")
+        raise ValueError(
+            f"Unknown DSL: {dsl_name}. Available DSLs: {registry.list_all_dsls()}"
+        )
 
 
 class DSLController:
