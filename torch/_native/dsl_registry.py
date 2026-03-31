@@ -56,7 +56,9 @@ class DSLRegistry:
             existing_module = self._dsl_modules[name]
             if existing_module is dsl_module:
                 # Same module re-registering - this is OK (import-time registration)
-                log.debug("DSL '%s' re-registered with same module", name, exc_info=True)
+                log.debug(
+                    "DSL '%s' re-registered with same module", name, exc_info=True
+                )
                 return
             else:
                 # Different module object but same name - warn and allow (for testing)
