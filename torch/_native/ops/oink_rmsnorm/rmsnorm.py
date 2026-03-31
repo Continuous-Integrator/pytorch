@@ -48,6 +48,8 @@ def _fused_rms_norm_impl(
 
 
 def _register_oink_rmsnorm() -> None:
+    if not cu.runtime_available():
+        return
     fallback = torch.library.get_kernel("aten::_fused_rms_norm", "CUDA")
     cu.register_op_override(
         "aten",

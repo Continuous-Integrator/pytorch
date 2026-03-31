@@ -79,7 +79,7 @@ except Exception as e:
     ) from e
 
 import cuda.bindings.driver as cuda  # provided by NVIDIA cuda-python  # noqa: E402
-import cutlass  # noqa: E402
+import cutlass  # noqa: E402, F811
 import cutlass.cute as cute  # noqa: E402
 from cutlass import const_expr, Float32, Int32  # noqa: E402
 from cutlass.cute import runtime as rt  # noqa: E402
@@ -1403,8 +1403,7 @@ print(f"ok {copy_bits}")
             return subprocess.run(
                 [sys.executable, "-c", script_template],
                 env=probe_env,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
+                capture_output=True,
                 text=True,
                 timeout=120.0,
             )
@@ -3746,7 +3745,7 @@ class RMSNormBackwardSM100(BaseRMSNormBackward):
             stream,
         )
 
-    def _get_num_threads(self) -> int:
+    def _get_num_threads(self) -> int:  # noqa: F811
         # Keep 128 threads only up to N=4k; use 256 for larger rows to ensure
         # threads_per_row <= num_threads across buckets.
         nt = getattr(self, "_nt_override", None)
@@ -3754,7 +3753,7 @@ class RMSNormBackwardSM100(BaseRMSNormBackward):
             return int(nt)
         return 128 if self.N <= 4096 else 256
 
-    def _calculate_threads_per_row(self) -> int:
+    def _calculate_threads_per_row(self) -> int:  # noqa: F811
         tpr = getattr(self, "_tpr_override", None)
         if tpr is not None:
             return int(tpr)
