@@ -247,6 +247,65 @@ if __name__ == "__main__":
         rc = check_output(test_script).splitlines()[-1]
         self.assertEqual(rc, str(torch.xpu.device_count()))
 
+    def test_device_count_respects_affinity_mask(self):
+        try:
+            import pyzes  # noqa: F401
+        except ImportError:
+            self.skipTest("pyzes is required for this test")
+
+        def _run(mask: str) -> str:
+            script = f"""\
+import torch
+import os
+os.environ['ZE_AFFINITY_MASK'] = {mask!r}
+r1 = torch.xpu._device_count_zes()
+r2 = torch._C._xpu_getDeviceCount()
+print(f"{{r1}}, {{r2}}")
+"""
+            return (
+                subprocess.check_output([sys.executable, "-c", script])
+                .decode("ascii")
+                .strip()
+                .splitlines()[-1]
+            )
+
+        # Index 128 is out of range → both return 0
+        self.assertEqual(_run("128"), "0, 0")
+        # COMPOSITE-style mask → _device_count_zes returns -1
+        self.assertEqual(_run("0.0").split(",")[0].strip(), "-1")
+        # Valid mask selecting device 0 on a single-GPU system → both return 1
+        self.assertEqual(_run("0"), "1, 1")
+        if TEST_MULTIXPU:
+            # Valid mask selecting device 1 on a multi-GPU system → both return 1
+            self.assertEqual(_run("1"), "1, 1")
+
+    @unittest.skipIf(not TEST_MULTIXPU, "requires multiple devices")
+    def test_device_count_not_cached_pre_init(self):
+        try:
+            import pyzes  # noqa: F401
+        except ImportError:
+            self.skipTest("pyzes is required for this test")
+
+        test_script = """\
+import torch
+import os
+r1 = torch.xpu.device_count()
+os.environ['ZE_AFFINITY_MASK'] = '0'
+r2 = torch.xpu.device_count()
+torch.empty(10, device='xpu')
+print(f"{r1}, {r2}")
+"""
+
+        r = (
+            subprocess.check_output([sys.executable, "-c", test_script])
+            .decode("ascii")
+            .strip()
+            .splitlines()[-1]
+        )
+
+        x = torch.xpu.device_count()
+        self.assertEqual(f"{x}, 1", r)
+
     @unittest.skipIf(
         IS_WINDOWS, "Only for lazy initialization on Linux, not applicable on Windows."
     )
@@ -280,12 +339,12 @@ print(torch.xpu.is_initialized())
 """
         rc = check_output(test_script).splitlines()
         self.assertEqual(
-            rc[0],
+            rc[-2],
             "0",
             "Importing torch._inductor.lowering should not query XPU device count",
         )
         self.assertEqual(
-            rc[1],
+            rc[-1],
             "False",
             "Importing torch._inductor.lowering should not initialize XPU",
         )
