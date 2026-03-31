@@ -1,5 +1,6 @@
 import functools
 import logging
+from typing import cast
 
 from packaging.version import Version
 
@@ -9,7 +10,7 @@ from .common_utils import (
     check_native_jit_disabled,
     check_native_version_skip,
 )
-from .dsl_registry import dsl_registry
+from .dsl_registry import dsl_registry, DSLModuleProtocol
 from .registry import (
     _OpFn,
     deregister_op_overrides as _deregister_op_overrides_impl,
@@ -124,4 +125,4 @@ def register_op_override(
 import sys
 
 
-dsl_registry.register_dsl("cutedsl", sys.modules[__name__])
+dsl_registry.register_dsl("cutedsl", cast(DSLModuleProtocol, sys.modules[__name__]))
