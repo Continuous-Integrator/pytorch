@@ -1573,13 +1573,13 @@ skipIfNoDill = unittest.skipIf(not TEST_DILL, "no dill")
 skipIfNoTritonDSL = unittest.skipIf(not TEST_TRITON_DSL, "Triton DSL not available")
 skipIfNoCuteDSL = unittest.skipIf(not TEST_CUTEDSL, "CuTeDSL not available")
 
-def skipIfDSLUnavailable(dsl_name: str, reason: Optional[str] = None):
+def skipIfDSLUnavailable(dsl_name: str, reason: str | None = None):
     """Skip test if specific DSL is not available"""
     available = _dsl_checker.is_available(dsl_name)
     msg = reason or f"{dsl_name} DSL not available"
     return unittest.skipIf(not available, msg)
 
-def skipUnlessDSLAvailable(dsl_name: str, reason: Optional[str] = None):
+def skipUnlessDSLAvailable(dsl_name: str, reason: str | None = None):
     """Skip test unless specific DSL is available"""
     available = _dsl_checker.is_available(dsl_name)
     msg = reason or f"{dsl_name} DSL required"
