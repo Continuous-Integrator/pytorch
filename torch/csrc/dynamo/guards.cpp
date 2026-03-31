@@ -7,6 +7,7 @@
 #include <ATen/EmptyTensor.h>
 #include <ATen/SparseCsrTensorUtils.h>
 #include <c10/util/Synchronized.h>
+#include <c10/util/CallOnce.h>
 #include <c10/util/flat_hash_map.h>
 #include <fmt/format.h>
 #include <torch/csrc/autograd/grad_mode.h>
@@ -1662,10 +1663,10 @@ class RootGuardManager;
 class DictGuardManager;
 
 void cleanup_live_guard_managers_at_exit();
-void register_guard_manager_for_atexit(GuardManager* guard_manager);
+bool register_guard_manager_for_atexit(GuardManager* guard_manager);
 void unregister_guard_manager_for_atexit(GuardManager* guard_manager);
 
-static std::once_flag guard_manager_atexit_once;
+static c10::once_flag guard_manager_atexit_once;
 static std::mutex live_guard_managers_mutex;
 static std::unordered_set<GuardManager*> live_guard_managers;
 
@@ -3671,7 +3672,9 @@ class GuardManager {
 #if IS_PYTHON_3_12_PLUS
         // Ideally we don't need to even register a weakref callback for value.
         // But it does not hurt to be more cautious
-        _dict_callback_installed = watch_dict_pointers(value);
+        if (!_disable_dict_tag_matching) {
+          _dict_callback_installed = watch_dict_pointers(value);
+        }
 #endif
       }
     }
@@ -3737,7 +3740,13 @@ class GuardManager {
       PyErr_Clear();
       return false;
     }
-    register_guard_manager_for_atexit(this);
+
+    if (!register_guard_manager_for_atexit(this)) {
+      Py_DECREF(wr);
+      disable_recursive_dict_tag_optimization();
+      return true;
+    }
+
     // These will be decrefed in destructor
     Py_INCREF(capsule);
     _tag_safe_entries.push_back({wr, capsule});
@@ -3781,26 +3790,36 @@ class GuardManager {
   // Caller must hold dict_to_guard_managers lock.
   void unwatch_all_saved_dict_pointers(DictToGuardManagersMap& map) {
 #if IS_PYTHON_3_12_PLUS
-    if (!_disable_dict_tag_matching) {
-      for (auto& value_stashed_pointers : _dict_pointers) {
-        auto stashed_pointers = value_stashed_pointers.second;
+    if (!_dict_callback_installed) {
+      return;
+    }
 
-        for (auto& stashed_pointer : stashed_pointers) {
-          PyObject* dict_pointer = stashed_pointer.first;
+    for (auto& value_stashed_pointers : _dict_pointers) {
+      auto stashed_pointers = value_stashed_pointers.second;
 
-          auto it = std::find(
-              map[dict_pointer].begin(), map[dict_pointer].end(), this);
-          if (it != map[dict_pointer].end()) {
-            map[dict_pointer].erase(it);
-          }
+      for (auto& stashed_pointer : stashed_pointers) {
+        PyObject* dict_pointer = stashed_pointer.first;
+        auto dict_it = map.find(dict_pointer);
+        if (dict_it == map.end()) {
+          continue;
+        }
 
-          if (map[dict_pointer].empty()) {
-            PyDict_Unwatch(dict_recursive_tag_watcher_id, dict_pointer);
-            map.erase(dict_pointer);
-          }
+        // Delete the guard manager from the dict_to_guard_managers.
+        auto& guard_managers = dict_it->second;
+        auto it = std::find(guard_managers.begin(), guard_managers.end(), this);
+        if (it != guard_managers.end()) {
+          guard_managers.erase(it);
+        }
+
+        // Unwatch the dict pointer if this was the last guard manager
+        // watching it.
+        if (guard_managers.empty()) {
+          PyDict_Unwatch(dict_recursive_tag_watcher_id, dict_pointer);
+          map.erase(dict_it);
         }
       }
     }
+    _dict_callback_installed = false;
 #endif
   }
 
@@ -4065,34 +4084,27 @@ void cleanup_live_guard_managers_at_exit() {
   // Python-level atexit runs while the interpreter is still alive, so it is
   // the last safe point to release the extra capsule refs we hold for the
   // weakref callback path.
-  std::vector<GuardManager*> guard_managers;
-  {
-    std::lock_guard<std::mutex> lock(live_guard_managers_mutex);
-    guard_managers.reserve(live_guard_managers.size());
-    guard_managers.insert(
-        guard_managers.end(),
-        live_guard_managers.begin(),
-        live_guard_managers.end());
-  }
-  for (GuardManager* guard_manager : guard_managers) {
+  std::lock_guard<std::mutex> lock(live_guard_managers_mutex);
+  for (GuardManager* guard_manager : live_guard_managers) {
     guard_manager->cleanup_python_state();
   }
 }
 
-void register_guard_manager_for_atexit(GuardManager* guard_manager) {
+bool register_guard_manager_for_atexit(GuardManager* guard_manager) {
   try {
-    std::call_once(guard_manager_atexit_once, []() {
+    c10::call_once(guard_manager_atexit_once, []() {
       py::module_::import("atexit").attr("register")(
           py::cpp_function([]() { cleanup_live_guard_managers_at_exit(); }));
     });
-  } catch (const py::error_already_set& e) {
+  } catch (py::error_already_set& e) {
     e.restore();
     PyErr_Clear();
-    return;
+    return false;
   }
 
   std::lock_guard<std::mutex> lock(live_guard_managers_mutex);
   live_guard_managers.insert(guard_manager);
+  return true;
 }
 
 void unregister_guard_manager_for_atexit(GuardManager* guard_manager) {
