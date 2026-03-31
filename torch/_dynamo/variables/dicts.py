@@ -603,6 +603,7 @@ class ConstDictVariable(VariableTracker):
     def iter_impl(self, tx: "InstructionTranslator") -> VariableTracker:
         from .iter import DictIterator
 
+        self.install_dict_keys_match_guard()
         if self.source and not is_constant_source(self.source):
             tx.output.guard_on_key_order.add(self.source)
         return DictIterator(self.items.keys())
