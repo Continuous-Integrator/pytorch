@@ -2618,6 +2618,11 @@ def meta_conv(
     if guard_or_false(input_tensor.size(input_channels_dim) == 0):
         shape_out[output_channels_dim] = 0
 
+    # Memory format is left as contiguous: meta tensors have no device info,
+    # so _select_conv_backend returns Overrideable and the correct format
+    # cannot be determined here.  The FakeTensor path (torch.compile, export)
+    # intercepts via a register_op_impl in fake_impls.py before reaching this
+    # kernel and uses FakeTensor.fake_device for an accurate answer.
     out = input_tensor.new_empty(shape_out)
     return out
 
@@ -3676,18 +3681,13 @@ def meta_convolution_backward(
     backend_grad_weight = None
     backend_grad_bias = None
 
-    # Backend layout expectation: GPU backends (CUDA via cudnn_conv_suggest_memory_format,
-    # MPS via mps_conv_use_channels_last) return channels_last outputs when either input
-    # tensor is channels_last. This must be matched here to avoid stride assertion failures
-    # in inductor when the predicted strides don't match actual backend output strides.
+    # All GPU backends compute output memory format via
+    # determine_backend_memory_format(input, weight, backend) — which calls
+    # cudnn_conv_suggest_memory_format(input, weight), mps_conv_use_channels_last(input, weight),
+    # etc. The format depends only on input and weight, NOT on grad_output.
+    # Both grad_input and grad_weight use this same backend_memory_format.
     # See: https://github.com/pytorch/pytorch/issues/171622
-    #
-    # Memory format inference rules (matching backend behavior):
-    #   - grad_input format: derived from grad_output and weight
-    #   - grad_weight format: derived from input and grad_output
     def _conv_memory_format(t1, t2):
-        # Match the logic in cudnn_conv_suggest_memory_format and mps_conv_use_channels_last:
-        # Use channels_last if either tensor suggests it
         fmt1 = suggest_memory_format(t1)
         fmt2 = suggest_memory_format(t2)
         if fmt1 == torch.channels_last or fmt2 == torch.channels_last:
@@ -3696,13 +3696,12 @@ def meta_convolution_backward(
             return torch.channels_last_3d
         return torch.contiguous_format
 
+    memory_format = _conv_memory_format(input_, weight_)
     if output_mask[0]:
-        memory_format = _conv_memory_format(grad_output_, weight_)
         backend_grad_input = grad_output_.new_empty(input_.size()).to(
             memory_format=memory_format
         )
     if output_mask[1]:
-        memory_format = _conv_memory_format(input_, grad_output_)
         backend_grad_weight = grad_output_.new_empty(weight_.size()).to(
             memory_format=memory_format
         )
@@ -4587,6 +4586,10 @@ def common_meta_baddbmm_bmm(batch1, batch2, is_bmm, self_baddbmm=None, out_dtype
 
     torch._check(batch1.dim() == 3, lambda: "batch1 must be a 3D tensor")
     torch._check(batch2.dim() == 3, lambda: "batch2 must be a 3D tensor")
+    torch._check(
+        batch1.dtype == batch2.dtype,
+        lambda: f"expected scalar type {batch1.dtype} but found {batch2.dtype}",
+    )
 
     batch1_sizes = batch1.size()
     batch2_sizes = batch2.size()
@@ -5035,7 +5038,8 @@ def max_pool2d_checks_and_compute_shape(
     return nInputPlane, outputHeight, outputWidth
 
 
-@register_meta(aten.max_pool2d_with_indices_backward.default)
+@register_meta(aten.max_pool2d_with_indices_backward)
+@out_wrapper("grad_input")
 def meta_max_pool2d_with_indices_backward(
     grad_output,
     self,
@@ -7855,7 +7859,11 @@ def meta_histc(input, bins=100, min=0, max=0):
 
 
 @register_meta(
-    [aten._upsample_bilinear2d_aa.default, aten._upsample_bicubic2d_aa.default]
+    [
+        aten._upsample_bilinear2d_aa.default,
+        aten._upsample_bicubic2d_aa.default,
+        aten._upsample_lanczos2d_aa.default,
+    ]
 )
 def meta_upsample_bimode2d_aa(
     input,
@@ -7876,7 +7884,12 @@ def meta_upsample_bimode2d_aa(
     )
 
 
-@register_meta([aten._upsample_bilinear2d_aa_backward.default])
+@register_meta(
+    [
+        aten._upsample_bilinear2d_aa_backward.default,
+        aten._upsample_lanczos2d_aa_backward.default,
+    ]
+)
 def meta_upsample_bimode2d_aa_backward(
     grad_output,
     output_size,

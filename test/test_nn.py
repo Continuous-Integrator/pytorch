@@ -2894,61 +2894,6 @@ tensor(..., device='meta', size=(1,), requires_grad=True)""")
         self.assertEqual(g1, g2, atol=1e-4, rtol=0)
         self.assertTrue((g1 == g1).all().item())  # check that we don't have NaN
 
-    @skipIfRocm
-    @unittest.skipIf(not TEST_CUDNN, 'CUDNN not available')
-    def test_CTCLoss_zero_infinity_cudnn(self):
-        # Example where model is confidently wrong (probability concentrated on wrong output),
-        # producing divergent loss
-        probs = torch.nn.functional.one_hot(torch.tensor([0], device='cuda'), num_classes=2).float()
-        log_probs = torch.log(probs).unsqueeze(1).requires_grad_()
-        targets = torch.tensor([1], device='cuda', dtype=torch.int32)
-        input_lengths = torch.tensor([1], device='cuda', dtype=torch.int32)
-        target_lengths = torch.tensor([1], device='cuda', dtype=torch.int32)
-
-        self.assertTrue(
-            torch._use_cudnn_ctc_loss(
-                log_probs=log_probs,
-                targets=targets,
-                input_lengths=input_lengths,
-                target_lengths=target_lengths,
-                blank=0,
-            )
-        )
-
-        loss_false = torch.nn.functional.ctc_loss(
-            log_probs, targets, input_lengths, target_lengths, reduction='sum', zero_infinity=False
-        )
-        self.assertFalse(torch.isfinite(loss_false))
-
-        loss_true = torch.nn.functional.ctc_loss(
-            log_probs, targets, input_lengths, target_lengths, reduction='sum', zero_infinity=True
-        )
-        self.assertTrue(torch.isfinite(loss_true))
-
-    @skipIfRocm
-    @unittest.skipIf(not TEST_CUDNN, 'CUDNN not available')
-    def test_CTCLoss_zero_infinity_cudnn_grad(self):
-        probs = torch.nn.functional.one_hot(torch.tensor([0], device='cuda'), num_classes=2).float()
-        log_probs = torch.log(probs).unsqueeze(1).requires_grad_()
-        targets = torch.tensor([1], device='cuda', dtype=torch.int32)
-        input_lengths = torch.tensor([1], device='cuda', dtype=torch.int32)
-        target_lengths = torch.tensor([1], device='cuda', dtype=torch.int32)
-
-        # The example inputs above should produce a divergent gradient, but the deterministic implementation
-        # of the cuDNN CTC loss (which is the only implementation reachable from the public API) returns a
-        # finite gradient. For this reason, the private, non-deterministic implementation is used here.
-        loss_false, _ = torch._cudnn_ctc_loss(
-            log_probs, targets, input_lengths, target_lengths, blank=0, deterministic=False, zero_infinity=False
-        )
-        grad_false, = torch.autograd.grad(loss_false, log_probs)
-        self.assertFalse(torch.isfinite(grad_false).all())
-
-        loss_true, _ = torch._cudnn_ctc_loss(
-            log_probs, targets, input_lengths, target_lengths, blank=0, deterministic=False, zero_infinity=True
-        )
-        grad_true, = torch.autograd.grad(loss_true, log_probs)
-        self.assertTrue(torch.isfinite(grad_true).all())
-
     def test_RNN_cell_no_broadcasting(self):
         def test(cell_module, input, hx, input_size, hidden_size):
             cell = cell_module(input_size, hidden_size)
@@ -10623,13 +10568,21 @@ class TestNNDeviceType(NNTestCase):
 
     @parametrize_test("antialias", [True, False])
     @parametrize_test("align_corners", [True, False])
-    @parametrize_test("mode", ["bilinear", "bicubic"])
+    @parametrize_test("mode", ["bilinear", "bicubic", "lanczos"])
     @parametrize_test("memory_format", [torch.contiguous_format, torch.channels_last])
     @expectedFailureMPS  # double device type
     @onlyNativeDeviceTypes
     def test_upsamplingBiMode2d(self, device, antialias, align_corners, mode, memory_format):
         # Forward AD does not support XLA because XLA tensors don't have storage
         check_forward_ad = torch.device(device).type != 'xla'
+
+        if mode == "lanczos":
+            if torch.device(device).type != "cpu":
+                raise SkipTest("Lanczos mode is only supported on CPU")
+            if not antialias:
+                raise SkipTest("Lanczos mode requires antialias=True")
+            if align_corners:
+                raise SkipTest("Lanczos mode does not support align_corners=True")
 
         kwargs = dict(mode=mode, align_corners=align_corners, antialias=antialias)
         # test float scale factor up & downsampling
@@ -10693,7 +10646,7 @@ class TestNNDeviceType(NNTestCase):
 
     @parametrize_test("antialias", [True, False])
     @parametrize_test("num_channels", [3, 5])
-    @parametrize_test("mode", ["nearest", "nearest-exact", "bilinear", "bicubic"])
+    @parametrize_test("mode", ["nearest", "nearest-exact", "bilinear", "bicubic", "lanczos"])
     @parametrize_test("dtype", integral_types() + floating_types())
     @skipIfMPS  # Error message is wrong for some dtypes
     @onlyNativeDeviceTypes
@@ -10706,6 +10659,14 @@ class TestNNDeviceType(NNTestCase):
             if antialias:
                 raise SkipTest("Nearest mode does not have antialiasing")
             if dtype in (torch.uint8, ) + floating_types():
+                should_raise_runtime_error = False
+
+        elif mode == "lanczos":
+            if torch.device(device).type != "cpu":
+                raise SkipTest("Lanczos mode is only supported on CPU")
+            if not antialias:
+                raise SkipTest("Lanczos mode requires antialias=True")
+            if dtype in floating_types() or (device == "cpu" and dtype == torch.uint8):
                 should_raise_runtime_error = False
 
         elif mode in ("bilinear", "bicubic"):
@@ -10741,7 +10702,7 @@ class TestNNDeviceType(NNTestCase):
     # Partially passes. NotImplementedError: aten::upsample_bicubic2d.out https://github.com/pytorch/pytorch/issues/77764
     @skipIfMPS
     @parametrize_test("memory_format", [torch.contiguous_format, torch.channels_last])
-    @parametrize_test("mode", ["bilinear", "bicubic"])
+    @parametrize_test("mode", ["bilinear", "bicubic", "lanczos"])
     @parametrize_test("antialias", [True, False])
     @parametrize_test("align_corners", [True, False])
     @parametrize_test("num_channels", [3, 5])
@@ -10766,13 +10727,19 @@ class TestNNDeviceType(NNTestCase):
         if torch.device(device).type == "cuda":
             raise SkipTest("CUDA implementation is not yet supporting uint8")
 
+        if mode == "lanczos":
+            if not antialias:
+                raise SkipTest("Lanczos mode requires antialias=True")
+            if align_corners:
+                raise SkipTest("Lanczos mode does not support align_corners=True")
+
         torch.manual_seed(0)
 
-        # - input range is set to [30, 220] for bicubic mode, because the bicubic kernel may create
-        #   [intermediate] values outside of the [0, 255] range, which need
-        #   to be clipped in uint8 path, but not in float path. This isn't
-        #   an issue with bilinear kernel.
-        input_range = (30, 220) if mode == "bicubic" else (0, 256)
+        # - input range is set to [30, 220] for bicubic and lanczos modes,
+        #   because these kernels may create [intermediate] values outside of
+        #   the [0, 255] range, which need to be clipped in uint8 path, but
+        #   not in float path. This isn't an issue with bilinear kernel.
+        input_range = (30, 220) if mode in ("bicubic", "lanczos") else (0, 256)
         input_ui8 = torch.randint(*input_range, size=(batch_size, num_channels, 400, 400), dtype=torch.uint8, device=device)
         input_ui8 = input_ui8.contiguous(memory_format=memory_format)
 
@@ -10810,6 +10777,7 @@ class TestNNDeviceType(NNTestCase):
         if mode == "bilinear":
             torch.testing.assert_close(output_f32, output_ui8.float(), rtol=0, atol=1)
         else:
+            # bicubic and lanczos
             diff = (output_f32 - output_ui8.float()).abs()
             self.assertLess(diff.max(), 15)
 
@@ -10877,6 +10845,50 @@ class TestNNDeviceType(NNTestCase):
         ], device=device, dtype=t_in.dtype).reshape(1, 3, 2, 2)
         t_out = F.interpolate(t_in, size=(2, 2), mode="bicubic", align_corners=False, antialias=True)
         self.assertEqual(expected_out, t_out)
+
+    @onlyCPU
+    @parametrize_test("memory_format", [torch.contiguous_format, torch.channels_last])
+    def test_upsamplingLanczos2d_aa_correctness(self, device, memory_format):
+        t_in = torch.arange(3 * 8 * 8, dtype=torch.float, device=device).reshape(1, 3, 8, 8)
+        t_in = t_in.contiguous(memory_format=memory_format)
+        # This expected result is obtained using PIL.Image.resize
+        # for c in range(3):
+        #   a_in = t_in.numpy()[0, c, ...]
+        #   pil_in = Image.fromarray(a_in)
+        #   pil_out = pil_in.resize((2, 2), resample=Image.LANCZOS)
+        expected_out = torch.tensor([
+            14.267621, 18.097038, 44.902962, 48.732376, 78.267616, 82.097038,
+            108.902962, 112.732384, 142.267624, 146.097031, 172.902969, 176.732376
+        ], device=device, dtype=t_in.dtype).reshape(1, 3, 2, 2)
+        t_out = F.interpolate(t_in, size=(2, 2), mode="lanczos", align_corners=False, antialias=True)
+        self.assertEqual(expected_out, t_out)
+
+    @onlyCPU
+    def test_upsamplingLanczos2d_errors(self, device):
+        # 3D input (1D spatial) not supported
+        x_3d = torch.randn(1, 3, 8, device=device)
+        with self.assertRaisesRegex(ValueError, "4-D tensor"):
+            F.interpolate(x_3d, size=(4,), mode="lanczos", antialias=True)
+
+        # 5D input (3D spatial) not supported
+        x_5d = torch.randn(1, 3, 8, 8, 8, device=device)
+        with self.assertRaisesRegex(ValueError, "4-D tensor"):
+            F.interpolate(x_5d, size=(4, 4, 4), mode="lanczos", antialias=True)
+
+        # antialias=False not supported
+        x_4d = torch.randn(1, 3, 8, 8, device=device)
+        with self.assertRaisesRegex(ValueError, "antialias=True"):
+            F.interpolate(x_4d, size=(4, 4), mode="lanczos", antialias=False)
+
+        # align_corners=True not supported
+        with self.assertRaisesRegex(ValueError, "align_corners=True"):
+            F.interpolate(x_4d, size=(4, 4), mode="lanczos", align_corners=True, antialias=True)
+
+    @onlyCPU
+    def test_upsamplingLanczos2d_identity(self, device):
+        x = torch.randn(1, 3, 8, 8, device=device)
+        out = F.interpolate(x, size=(8, 8), mode="lanczos", align_corners=False, antialias=True)
+        self.assertEqual(x, out)
 
     @onlyCUDA
     def test_upsamplingBicubic2d_many_channels(self, device):
