@@ -251,10 +251,8 @@ if __name__ == "__main__":
 
     def test_parse_visible_devices(self):
         def _parse_visible_devices(val):
-            from torch.xpu import _parse_visible_devices as _pvd
-
             with patch.dict(os.environ, {"ZE_AFFINITY_MASK": val}, clear=True):
-                return _pvd()
+                return torch.xpu._parse_visible_devices()
 
         # Tokens with trailing non-numeric characters are invalid; entire list is rejected
         self.assertEqual(_parse_visible_devices("1a, 2b"), [])
