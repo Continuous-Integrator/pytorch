@@ -1285,6 +1285,93 @@ class CachingAutotuner(KernelInterface):
                 triton_cache_hash=launcher.cache_hash,
             )
 
+    def _combo_sequential_autotune(self, launcher, *args, **kwargs):
+        """
+        Chain block-size decisions for combo kernels: tune one group at a time,
+        each step building on the previous winner.
+
+        Phase 1: Tune block sizes with warps/stages fixed from the base config.
+        Phase 2: Re-tune warps/stages with finalized block sizes.
+        """
+        combo_tuning_groups = self.inductor_meta.get("combo_tuning_groups")
+        if not combo_tuning_groups:
+            return launcher
+
+        if self.fn.fn is None:
+            assert hasattr(self, "_reload_kernel")
+            self.fn = self._reload_kernel().fn
+
+        best_config = launcher.config
+        current_kwargs = dict(best_config.kwargs)
+        base_num_warps = best_config.num_warps
+        base_num_stages = best_config.num_stages
+
+        best_time = self.bench(launcher, *args, **kwargs)
+
+        # Phase 1: Tune block sizes per sub-kernel (largest first).
+        # warps/stages stay fixed at base config values.
+        for gi, group in enumerate(combo_tuning_groups):
+            member_indices = group["member_indices"]
+            cfgs = group["configs"]
+            skip_rblock = group["skip_rblock"]
+
+            if len(cfgs) <= 1:
+                continue
+
+            for ci, cfg in enumerate(cfgs):
+                trial_kwargs = dict(current_kwargs)
+                for idx in member_indices:
+                    for key, value in cfg.kwargs.items():
+                        if skip_rblock and key.startswith("R") and "BLOCK" in key:
+                            continue
+                        trial_kwargs[f"{key}_{idx}"] = value
+
+                trial_config = triton.Config(
+                    trial_kwargs,
+                    num_warps=base_num_warps,
+                    num_stages=base_num_stages,
+                )
+
+                with self.lock:
+                    trial_launcher = self._precompile_config(
+                        trial_config
+                    ).make_launcher()
+                trial_time = self.bench(trial_launcher, *args, **kwargs)
+
+                improved = trial_time < best_time
+                if improved:
+                    best_time = trial_time
+                    launcher = trial_launcher
+                    current_kwargs = trial_kwargs
+
+        # Phase 2: Re-tune num_warps/num_stages with finalized block sizes.
+        # Block sizes are now optimal — find the best warp/stage pair for them.
+        warp_stage_candidates = self.inductor_meta.get(
+            "combo_warp_stage_candidates", []
+        )
+        for num_warps, num_stages in warp_stage_candidates:
+            trial_config = triton.Config(
+                dict(current_kwargs),
+                num_warps=num_warps,
+                num_stages=num_stages,
+            )
+            with self.lock:
+                trial_launcher = self._precompile_config(trial_config).make_launcher()
+            trial_time = self.bench(trial_launcher, *args, **kwargs)
+
+            improved = trial_time < best_time
+            if improved:
+                best_time = trial_time
+                launcher = trial_launcher
+
+        log.debug(
+            "Combo sequential autotune for %s: best config %s, time %f",
+            self.fn.__name__,
+            launcher.config,
+            best_time,
+        )
+        return launcher
+
     def save_gpu_kernel(self, stream, launcher):
         key = self.inductor_meta.get("kernel_name", None)  # unique kernel name
         assert key is not None, "kernel_name can not be None"
@@ -1532,6 +1619,11 @@ class CachingAutotuner(KernelInterface):
                 self.precompile_time_taken_ns = time.time_ns() - start_time
             if len(self.launchers) > 1:
                 self.autotune_to_one_config(*args, **kwargs)
+
+        if self.inductor_meta.get("combo_tuning_groups"):
+            self.launchers = [
+                self._combo_sequential_autotune(self.launchers[0], *args, **kwargs)
+            ]
 
         if not getattr(
             self.launchers[0].config, "found_by_coordesc", False
@@ -2729,12 +2821,12 @@ def _handle_combo_kernel_per_subkernel_blocks(
     Handle per-subkernel config generation for combo kernels.
 
     Each sub-kernel gets its own block sizes (XBLOCK_0, XBLOCK_1, etc.) generated
-    using the same heuristics as standalone Triton kernels. The final config uses
-    the maximum num_warps and num_stages across all sub-kernels.
+    using the same heuristics as standalone Triton kernels.
 
-    When autotuning is enabled (i.e. the heuristic returns multiple configs),
-    generates O(N*K) phase configs that vary one sub-kernel's block sizes at a
-    time, feeding into the standard autotune_to_one_config path.
+    Returns base configs that vary (num_warps, num_stages) with all blocks at
+    heuristic defaults. Stores per-subkernel candidate configs in
+    inductor_meta["combo_tuning_groups"] for sequential chained autotuning
+    in CachingAutotuner._combo_sequential_autotune().
 
     Returns:
         List of configs if combo kernel with combo_grid_meta and per-subkernel
@@ -2754,8 +2846,7 @@ def _handle_combo_kernel_per_subkernel_blocks(
     all_num_stages: list[int] = []
     unique_warp_stage_pairs: OrderedSet[tuple[int, int]] = OrderedSet()
 
-    all_subkernel_cfgs: list[list[Config]] = []
-    all_skip_rblock: list[bool] = []
+    combo_tuning_groups: list[dict[str, Any]] = []
 
     for i in range(num_kernels):
         subkernel_heuristic = combo_meta[f"heuristic_{i}"]
@@ -2805,47 +2896,40 @@ def _handle_combo_kernel_per_subkernel_blocks(
 
         all_num_warps.append(cfg.num_warps)
         all_num_stages.append(cfg.num_stages)
-        unique_warp_stage_pairs.add((cfg.num_warps, cfg.num_stages))
-        all_subkernel_cfgs.append(cfgs)
-        all_skip_rblock.append(skip_rblock)
+        for c in cfgs:
+            unique_warp_stage_pairs.add((c.num_warps, c.num_stages))
+
+        combo_tuning_groups.append(
+            {
+                "member_indices": [i],
+                "configs": cfgs,
+                "skip_rblock": skip_rblock,
+                "size_hints": size_hints_i,
+            }
+        )
 
     unique_warp_stage_pairs.add((max(all_num_warps), max(all_num_stages)))
 
-    phase_configs: list[Config] = []
+    # Largest sub-kernels tuned first — they dominate runtime and get most freedom
+    combo_tuning_groups.sort(
+        key=lambda g: -functools.reduce(operator.mul, g["size_hints"].values())
+    )
+    inductor_meta["combo_tuning_groups"] = combo_tuning_groups
+    # Candidates for num_warps/num_stages re-tuning after block sizes are finalized
+    inductor_meta["combo_warp_stage_candidates"] = list(unique_warp_stage_pairs)
+
+    # Single base config: max warps/stages, all blocks at heuristic defaults.
+    # Block sizes are tuned in _combo_sequential_autotune, then num_warps/num_stages
+    # are re-tuned at the end with finalized block sizes.
     base_num_warps = max(all_num_warps)
     base_num_stages = max(all_num_stages)
-
-    for phase_idx in range(num_kernels):
-        phase_cfgs = all_subkernel_cfgs[phase_idx]
-        skip_rblock = all_skip_rblock[phase_idx]
-
-        if len(phase_cfgs) <= 1:
-            continue
-
-        for cfg in phase_cfgs[1:]:
-            phase_kwargs = dict(combined_kwargs)
-            for key, value in cfg.kwargs.items():
-                if skip_rblock and key.startswith("R") and "BLOCK" in key:
-                    continue
-                phase_kwargs[f"{key}_{phase_idx}"] = value
-
-            phase_configs.append(
-                triton.Config(
-                    phase_kwargs,
-                    num_warps=base_num_warps,
-                    num_stages=base_num_stages,
-                )
-            )
-
-    base_configs = [
+    return [
         triton.Config(
             combined_kwargs,
-            num_warps=num_warps,
-            num_stages=num_stages,
+            num_warps=base_num_warps,
+            num_stages=base_num_stages,
         )
-        for num_warps, num_stages in unique_warp_stage_pairs
     ]
-    return base_configs + phase_configs
 
 
 def triton_config_tiled_reduction(

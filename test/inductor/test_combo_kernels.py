@@ -1216,11 +1216,11 @@ class ComboKernelTestsMaxAutotune(TestCase):
         logger = logging.getLogger("torch._inductor.runtime.triton_heuristics")
         with self.assertLogs(logger, level=logging.DEBUG) as cm:
             out_compiled, code = run_and_get_code(fn_c, *inps)
-        best_config_logs = [msg for msg in cm.output if "Best config" in msg]
+        chained_logs = [msg for msg in cm.output if "Combo sequential autotune" in msg]
         self.assertGreater(
-            len(best_config_logs),
+            len(chained_logs),
             0,
-            "autotune_to_one_config was not invoked — no 'Best config' log found",
+            "_combo_sequential_autotune was not invoked",
         )
         self.assertEqual(out_eager, out_compiled)
         self.assertEqual(torch._inductor.metrics.generated_kernel_count, 1)
@@ -1241,12 +1241,86 @@ class ComboKernelTestsMaxAutotune(TestCase):
         logger = logging.getLogger("torch._inductor.runtime.triton_heuristics")
         with self.assertLogs(logger, level=logging.DEBUG) as cm:
             out_compiled, code = run_and_get_code(fn_c, *inps)
-        best_config_logs = [msg for msg in cm.output if "Best config" in msg]
+        chained_logs = [msg for msg in cm.output if "Combo sequential autotune" in msg]
         self.assertGreater(
-            len(best_config_logs),
+            len(chained_logs),
             0,
-            "autotune_to_one_config was not invoked — no 'Best config' log found",
+            "_combo_sequential_autotune was not invoked",
         )
+        self.assertEqual(out_eager, out_compiled)
+        self.assertEqual(torch._inductor.metrics.generated_kernel_count, 1)
+
+    @requires_gpu_and_triton
+    def test_combo_autotune_size_disparity(self):
+        import re
+
+        def fn_order_a(big, tiny, medium):
+            return big.cos(), tiny.relu(), medium.sigmoid()
+
+        def fn_order_b(big, tiny, medium):
+            return tiny.relu(), medium.sigmoid(), big.cos()
+
+        big = torch.rand(4, 32768, device=GPU_TYPE)  # numel=131072
+        tiny = torch.rand(4, 4, device=GPU_TYPE)  # numel=16
+        medium = torch.rand(32, 128, device=GPU_TYPE)  # numel=4096
+
+        def get_block_sizes(fn):
+            torch._dynamo.reset()
+            fn_c = torch.compile(fn)
+            out_eager = fn(big, tiny, medium)
+            logger = logging.getLogger("torch._inductor.runtime.triton_heuristics")
+            with self.assertLogs(logger, level=logging.DEBUG) as cm:
+                out_compiled, code = run_and_get_code(fn_c, big, tiny, medium)
+            chained_logs = [
+                msg for msg in cm.output if "Combo sequential autotune" in msg
+            ]
+            self.assertGreater(len(chained_logs), 0)
+            self.assertEqual(out_eager, out_compiled)
+            # Parse block sizes from "best config XBLOCK_0: V0, XBLOCK_1: V1, ..."
+            blocks = dict(re.findall(r"XBLOCK_(\d+): (\d+)", chained_logs[0]))
+            return {int(k): int(v) for k, v in blocks.items()}
+
+        blocks_a = get_block_sizes(fn_order_a)
+        blocks_b = get_block_sizes(fn_order_b)
+
+        # sorting groups by descending numel ensures the tuning order isdetermined by tensor size
+        # order_a: SK0=big, SK1=tiny, SK2=medium
+        # order_b: SK0=tiny, SK1=medium, SK2=big
+        # Big tensor should always get a larger block than tiny tensor,
+        # regardless of output order.
+        self.assertGreater(blocks_a[0], blocks_a[1])  # big > tiny in order_a
+        self.assertGreater(blocks_b[2], blocks_b[0])  # big > tiny in order_b
+
+    @requires_gpu_and_triton
+    def test_combo_autotune_many_subkernels(self):
+        def fn(a, b, c, d, e, f):
+            return (
+                a * 2.0,
+                b + 1.0,
+                c.sin(),
+                d.cos(),
+                e.exp(),
+                f.neg(),
+            )
+
+        inps = [
+            torch.rand(8, 8192, device=GPU_TYPE),
+            torch.rand(128, 64, device=GPU_TYPE),
+            torch.rand(16, 4096, device=GPU_TYPE),
+            torch.rand(512, 16, device=GPU_TYPE),
+            torch.rand(32, 2048, device=GPU_TYPE),
+            torch.rand(256, 32, device=GPU_TYPE),
+        ]
+
+        out_eager = fn(*inps)
+        fn_c = torch.compile(fn)
+
+        logger = logging.getLogger("torch._inductor.runtime.triton_heuristics")
+        with self.assertLogs(logger, level=logging.DEBUG) as cm:
+            out_compiled, code = run_and_get_code(fn_c, *inps)
+
+        chained_logs = [msg for msg in cm.output if "Combo sequential autotune" in msg]
+        self.assertGreater(len(chained_logs), 0)
         self.assertEqual(out_eager, out_compiled)
         self.assertEqual(torch._inductor.metrics.generated_kernel_count, 1)
 
