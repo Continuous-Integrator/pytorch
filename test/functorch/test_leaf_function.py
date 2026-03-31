@@ -2764,6 +2764,31 @@ class TestLeafFunctionRegisterHook(TestCase):
         out.sum().backward()
         self.assertEqual(hook_count[0], 1)
 
+    def test_register_multi_grad_hook_alias(self):
+        """register_multi_grad_hook is an alias for register_hook."""
+        hook_calls = []
+
+        @leaf_function
+        def my_fn(x, y):
+            return (x * 2 + y * 3,)
+
+        @my_fn.register_fake
+        def my_fn_fake(x, y):
+            return (torch.empty_like(x),)
+
+        @my_fn.register_multi_grad_hook
+        def my_fn_hook(x_grad, y_grad):
+            hook_calls.append((x_grad.clone(), y_grad.clone()))
+
+        x = torch.randn(3, requires_grad=True)
+        y = torch.randn(3, requires_grad=True)
+        out = my_fn(x, y)[0]
+        out.sum().backward()
+
+        self.assertEqual(len(hook_calls), 1)
+        self.assertEqual(hook_calls[0][0], torch.full((3,), 2.0))
+        self.assertEqual(hook_calls[0][1], torch.full((3,), 3.0))
+
 
 if __name__ == "__main__":
     run_tests()
