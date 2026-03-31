@@ -392,8 +392,6 @@ dtensor_fails_no_strategy = {
     xfail("grid_sampler_2d"),
     xfail("histogram"),
     xfail("histogramdd"),
-    xfail("index_add"),
-    xfail("index_copy"),
     xfail("index_fill"),
     xfail("index_reduce", "prod"),
     xfail("index_reduce", "mean"),
