@@ -1,7 +1,7 @@
 # Owner(s): ["module: dsl-native-ops"]
 
 import logging
-from typing import Any, Optional, Protocol
+from typing import Any, Protocol
 
 
 log = logging.getLogger(__name__)
@@ -11,7 +11,7 @@ class DSLModuleProtocol(Protocol):
     """Expected interface for DSL utility modules"""
 
     def runtime_available(self) -> bool: ...
-    def runtime_version(self) -> Optional[str]: ...
+    def runtime_version(self) -> str | None: ...
 
 
 class DSLRegistry:
@@ -47,7 +47,7 @@ class DSLRegistry:
             log.debug("Error checking availability for DSL %s", dsl_name, exc_info=True)
             return False
 
-    def get_dsl_version(self, dsl_name: str) -> Optional[str]:
+    def get_dsl_version(self, dsl_name: str) -> str | None:
         """Get DSL version by calling its runtime_version()"""
         dsl_module = self._dsl_modules.get(dsl_name)
         if dsl_module is None:
