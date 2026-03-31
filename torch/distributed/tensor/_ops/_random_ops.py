@@ -48,7 +48,9 @@ _inplace_random_ops = [
 ]
 
 for _op in _inplace_random_ops:
-    register_single_dim_strategy(_op)(_random_inplace_single_dim_strategy)
+    register_single_dim_strategy(_op, allow_uneven_sharding=True)(
+        _random_inplace_single_dim_strategy
+    )
 
 
 @register_single_dim_strategy(aten.multinomial.default)
