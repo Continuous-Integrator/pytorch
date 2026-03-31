@@ -1860,7 +1860,7 @@ class StaticTritonCompileResult(CompileResult[_T]):
             result = check_can_launch()
             return result
         except CannotStaticallyLaunchKernel as e:
-            log.info("Bypassing StaticallyLaunchedCudaKernel due to %s", str(e))  # noqa: G200
+            log.info("Bypassing StaticallyLaunchedCudaKernel due to %s", e)  # noqa: G200
             if torch._inductor.config.strict_static_triton_launcher:
                 raise e
             return None
@@ -3234,7 +3234,6 @@ def _reduction_configs(
     )
 
     register_intensive = False
-    MAX_R0_BLOCK = 2048
     loads_and_red = inductor_meta.get("num_load", 0) + inductor_meta.get(
         "num_reduction", 0
     )
