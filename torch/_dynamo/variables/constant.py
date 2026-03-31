@@ -178,10 +178,19 @@ its type to `common_constant_types`.
             raise NotImplementedError from e
 
     def len_impl(self, tx: "InstructionTranslator") -> "VariableTracker":
+        """Generic len for any constant value (sequence or mapping)."""
         try:
             return ConstantVariable.create(len(self.value))
         except TypeError as e:
             raise_observed_exception(type(e), tx, args=list(e.args))
+
+    def sq_length(self, tx: "InstructionTranslator") -> "VariableTracker":
+        """Sequence length - delegates to len_impl for constants."""
+        return self.len_impl(tx)
+
+    def mp_length(self, tx: "InstructionTranslator") -> "VariableTracker":
+        """Mapping length - delegates to len_impl for constants."""
+        return self.len_impl(tx)
 
     def const_getattr(self, tx: "InstructionTranslator", name: str) -> VariableTracker:
         if not hasattr(self.value, name):

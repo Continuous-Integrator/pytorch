@@ -163,6 +163,16 @@ class TestOrderedDictLen(_BaseMappingLen, torch._dynamo.test_case.TestCase):
         return collections.OrderedDict(items)
 
 
+class TestDefaultDictLen(_BaseMappingLen, torch._dynamo.test_case.TestCase):
+    """Tests for len() on defaultdict objects"""
+
+    def get_mapping(self, items):
+        d = collections.defaultdict(int)
+        for k, v in items:
+            d[k] = v
+        return d
+
+
 class _BaseSetLen:
     """Base class for testing len() on set types"""
 
@@ -768,6 +778,118 @@ class TestDescriptorLenImpl(torch._dynamo.test_case.TestCase):
 
         # Custom descriptor's __get__ returns a callable that returns 50
         self.assertEqual(len(obj), 50)
+
+
+class TestRaisesTypeError(torch._dynamo.test_case.TestCase):
+    """Tests for types that don't support len() - should raise TypeError like Python"""
+
+    def setUp(self):
+        self.old = torch._dynamo.config.enable_trace_unittest
+        torch._dynamo.config.enable_trace_unittest = True
+        super().setUp()
+
+    def tearDown(self):
+        torch._dynamo.config.enable_trace_unittest = self.old
+        return super().tearDown()
+
+    @make_dynamo_test
+    def test_len_slice_raises_type_error(self):
+        """slice objects do not support len() - should raise TypeError"""
+        s = slice(1, 5)
+        with self.assertRaises(TypeError):
+            len(s)
+
+    @make_dynamo_test
+    def test_len_slice_with_step_raises_type_error(self):
+        """slice with step also raises TypeError"""
+        s = slice(0, 10, 2)
+        with self.assertRaises(TypeError):
+            len(s)
+
+    @make_dynamo_test
+    def test_len_list_iterator_raises_type_error(self):
+        """list iterator does not support len() - should raise TypeError"""
+        it = iter([1, 2, 3])
+        with self.assertRaises(TypeError):
+            len(it)
+
+    @make_dynamo_test
+    def test_len_empty_list_iterator_raises_type_error(self):
+        """empty list iterator also raises TypeError"""
+        it = iter([])
+        with self.assertRaises(TypeError):
+            len(it)
+
+    @make_dynamo_test
+    def test_len_tuple_iterator_raises_type_error(self):
+        """tuple iterator does not support len() - should raise TypeError"""
+        it = iter((1, 2, 3))
+        with self.assertRaises(TypeError):
+            len(it)
+
+    @make_dynamo_test
+    def test_len_range_iterator_raises_type_error(self):
+        """range iterator does not support len() - should raise TypeError"""
+        it = iter(range(5))
+        with self.assertRaises(TypeError):
+            len(it)
+
+    @make_dynamo_test
+    def test_len_dict_iterator_raises_type_error(self):
+        """dict iterator (keys) does not support len() - should raise TypeError"""
+        d = {"a": 1, "b": 2}
+        it = iter(d)
+        with self.assertRaises(TypeError):
+            len(it)
+
+
+class TestDequeLen(torch._dynamo.test_case.TestCase):
+    """Tests for len() on collections.deque objects"""
+
+    def setUp(self):
+        self.old = torch._dynamo.config.enable_trace_unittest
+        torch._dynamo.config.enable_trace_unittest = True
+        super().setUp()
+
+    def tearDown(self):
+        torch._dynamo.config.enable_trace_unittest = self.old
+        return super().tearDown()
+
+    @make_dynamo_test
+    def test_len_basic(self):
+        d = collections.deque([1, 2, 3])
+        self.assertEqual(len(d), 3)
+        self.assertEqual(d.__len__(), 3)
+
+    @make_dynamo_test
+    def test_len_empty(self):
+        d = collections.deque([])
+        self.assertEqual(len(d), 0)
+        self.assertEqual(d.__len__(), 0)
+
+    @make_dynamo_test
+    def test_len_single_element(self):
+        d = collections.deque([42])
+        self.assertEqual(len(d), 1)
+        self.assertEqual(d.__len__(), 1)
+
+    @make_dynamo_test
+    def test_len_with_maxlen(self):
+        d = collections.deque([1, 2, 3, 4, 5], maxlen=3)
+        self.assertEqual(len(d), 3)
+        self.assertEqual(d.__len__(), 3)
+
+    @make_dynamo_test
+    def test_len_with_strings(self):
+        d = collections.deque(["a", "b", "c", "d"])
+        self.assertEqual(len(d), 4)
+        self.assertEqual(d.__len__(), 4)
+
+    @make_dynamo_test
+    def test_len_large(self):
+        d = collections.deque(range(50))
+        self.assertEqual(len(d), 50)
+        self.assertEqual(d.__len__(), 50)
 
 
 if __name__ == "__main__":

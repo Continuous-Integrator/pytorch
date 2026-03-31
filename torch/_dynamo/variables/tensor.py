@@ -1488,9 +1488,10 @@ class TensorVariable(VariableTracker):
         )
 
     def method___len__(self, tx: "InstructionTranslator") -> VariableTracker:
-        return self.len_impl(tx)
+        return self.sq_length(tx)
 
-    def len_impl(self, tx: "InstructionTranslator") -> VariableTracker:
+    def sq_length(self, tx: "InstructionTranslator") -> VariableTracker:
+        """Sequence length for tensors (size along first dimension)."""
         return self.call_method(tx, "size", [VariableTracker.build(tx, 0)], {})
 
     def iter_impl(self, tx: "InstructionTranslator") -> VariableTracker:

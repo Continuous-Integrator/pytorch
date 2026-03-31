@@ -967,7 +967,8 @@ class NNModuleVariable(VariableTracker):
         else:
             return super().call_method(tx, name, list(args), kwargs)
 
-    def len_impl(self, tx: "InstructionTranslator") -> "VariableTracker":
+    def sq_length(self, tx: "InstructionTranslator") -> "VariableTracker":
+        """Sequence length for container modules (e.g., nn.Sequential)."""
         module = tx.output.get_submodule(self.module_key)
         return VariableTracker.build(tx, len(module))  # type: ignore[arg-type]
 
