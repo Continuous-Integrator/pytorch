@@ -64,6 +64,7 @@ from .dicts import (
 )
 from .distributed import BackwardHookVariable, DistributedVariable
 from .functions import (
+    BaseUserFunctionVariable,
     BuiltinMethodVariable,
     CollectionsNamedTupleFunction,
     CreateTMADescriptorExperimentalVariable,
@@ -173,6 +174,7 @@ from .user_defined import (
     UserDefinedObjectVariable,
     UserDefinedSetVariable,
     UserDefinedTupleVariable,
+    UserDefinedVariable,
 )
 
 
