@@ -55,17 +55,28 @@ def _get_registry_functions():
 
 
 def _get_dsl_module(dsl_name: str):
-    """Get the actual DSL module for direct control."""
-    if dsl_name == "triton":
-        from torch._native import triton_utils
+    """Get the registered DSL module for direct control.
 
-        return triton_utils
-    elif dsl_name == "cutedsl":
-        from torch._native import cutedsl_utils
+    Uses the DSL registry to dynamically look up DSL modules instead of
+    hard-coding the mapping. This makes the function automatically extensible
+    for new DSLs without code changes.
 
-        return cutedsl_utils
+    Args:
+        dsl_name (str): Name of the DSL to retrieve.
+
+    Returns:
+        DSLModuleProtocol: The registered DSL module.
+
+    Raises:
+        ValueError: If the DSL is not registered.
+    """
+    registry = _get_dsl_registry()
+
+    # Access the registered DSL module from the registry
+    if dsl_name in registry._dsl_modules:
+        return registry._dsl_modules[dsl_name]
     else:
-        raise ValueError(f"Unknown DSL: {dsl_name}")
+        raise ValueError(f"Unknown DSL: {dsl_name}. Available DSLs: {registry.list_all_dsls()}")
 
 
 class DSLController:
