@@ -13,6 +13,7 @@ Tests cover:
 """
 
 import collections
+import types
 
 import torch
 import torch._dynamo.test_case
@@ -513,6 +514,78 @@ class TestDictViewLen(torch._dynamo.test_case.TestCase):
         self.assertEqual(len(items), 0)
         self.assertEqual(items.__len__(), 0)
 
+    @make_dynamo_test
+    def test_len_dict_keys_single_entry(self):
+        """Test len() on dict.keys() with single entry"""
+        d = {"key": "value"}
+        keys = d.keys()
+        self.assertEqual(len(keys), 1)
+        self.assertEqual(keys.__len__(), 1)
+
+    @make_dynamo_test
+    def test_len_dict_values_single_entry(self):
+        """Test len() on dict.values() with single entry"""
+        d = {"key": "value"}
+        values = d.values()
+        self.assertEqual(len(values), 1)
+        self.assertEqual(values.__len__(), 1)
+
+    @make_dynamo_test
+    def test_len_dict_items_single_entry(self):
+        """Test len() on dict.items() with single entry"""
+        d = {"key": "value"}
+        items = d.items()
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items.__len__(), 1)
+
+    @make_dynamo_test
+    def test_len_dict_keys_int_keys(self):
+        """Test len() on dict.keys() with integer keys"""
+        d = {1: "one", 2: "two", 3: "three", 4: "four"}
+        keys = d.keys()
+        self.assertEqual(len(keys), 4)
+        self.assertEqual(keys.__len__(), 4)
+
+    @make_dynamo_test
+    def test_len_dict_values_tensor_values(self):
+        """Test len() on dict.values() with tensor values"""
+        d = {"a": torch.tensor(1), "b": torch.tensor(2), "c": torch.tensor(3)}
+        values = d.values()
+        self.assertEqual(len(values), 3)
+        self.assertEqual(values.__len__(), 3)
+
+    @make_dynamo_test
+    def test_len_dict_items_mixed_types(self):
+        """Test len() on dict.items() with mixed key/value types"""
+        d = {"str": "value", 42: torch.tensor(1), (1, 2): "tuple_key"}
+        items = d.items()
+        self.assertEqual(len(items), 3)
+        self.assertEqual(items.__len__(), 3)
+
+    @make_dynamo_test
+    def test_len_dict_keys_large(self):
+        """Test len() on dict.keys() with large number of entries"""
+        d = {i: i * 2 for i in range(50)}
+        keys = d.keys()
+        self.assertEqual(len(keys), 50)
+        self.assertEqual(keys.__len__(), 50)
+
+    @make_dynamo_test
+    def test_len_dict_values_large(self):
+        """Test len() on dict.values() with large number of entries"""
+        d = {i: i * 2 for i in range(50)}
+        values = d.values()
+        self.assertEqual(len(values), 50)
+        self.assertEqual(values.__len__(), 50)
+
+    @make_dynamo_test
+    def test_len_dict_items_large(self):
+        """Test len() on dict.items() with large number of entries"""
+        d = {i: i * 2 for i in range(50)}
+        items = d.items()
+        self.assertEqual(len(items), 50)
+        self.assertEqual(items.__len__(), 50)
+
 
 # User-defined classes for TestUserDefinedLen
 class CustomList:
@@ -552,6 +625,46 @@ class ListWrapper:
 class ListSubclassCustomLen(list):
     def __len__(self):
         return super().__len__() * 2
+
+
+class CustomMapping:
+    """A user-defined mapping (dict-like) class"""
+
+    def __init__(self, data):
+        self._data = dict(data) if not isinstance(data, dict) else data
+
+    def __len__(self):
+        return len(self._data)
+
+    def __getitem__(self, key):
+        return self._data[key]
+
+    def keys(self):
+        return self._data.keys()
+
+    def values(self):
+        return self._data.values()
+
+    def items(self):
+        return self._data.items()
+
+
+class CustomMappingSubclass(CustomMapping):
+    """A subclass of CustomMapping"""
+
+    def __len__(self):
+        # Custom len implementation (e.g., filtered length)
+        return super().__len__() + 1
+
+
+class SimpleDictLike:
+    """Minimal dict-like class with just __len__"""
+
+    def __init__(self, size):
+        self.size = size
+
+    def __len__(self):
+        return self.size
 
 
 class TupleSubclassCustomLen(tuple):
@@ -709,6 +822,85 @@ class CustomDescriptorLenClass:
             return lambda: 50
 
     __len__ = CustomDescriptorLen()
+
+
+class TestUserDefinedMappingLen(torch._dynamo.test_case.TestCase):
+    """Tests for len() on user-defined mapping (dict-like) classes"""
+
+    def setUp(self):
+        self.old = torch._dynamo.config.enable_trace_unittest
+        torch._dynamo.config.enable_trace_unittest = True
+        super().setUp()
+
+    def tearDown(self):
+        torch._dynamo.config.enable_trace_unittest = self.old
+        return super().tearDown()
+
+    @make_dynamo_test
+    def test_len_custom_mapping_basic(self):
+        """Test len() on a basic custom mapping class"""
+        m = CustomMapping({"a": 1, "b": 2, "c": 3})
+        self.assertEqual(len(m), 3)
+        self.assertEqual(m.__len__(), 3)
+
+    @make_dynamo_test
+    def test_len_custom_mapping_empty(self):
+        """Test len() on an empty custom mapping"""
+        m = CustomMapping({})
+        self.assertEqual(len(m), 0)
+        self.assertEqual(m.__len__(), 0)
+
+    @make_dynamo_test
+    def test_len_custom_mapping_single_entry(self):
+        """Test len() on a custom mapping with single entry"""
+        m = CustomMapping({"key": "value"})
+        self.assertEqual(len(m), 1)
+        self.assertEqual(m.__len__(), 1)
+
+    @make_dynamo_test
+    def test_len_custom_mapping_string_keys(self):
+        """Test len() on a custom mapping with string keys"""
+        m = CustomMapping({"one": 1, "two": 2, "three": 3})
+        self.assertEqual(len(m), 3)
+        self.assertEqual(m.__len__(), 3)
+
+    @make_dynamo_test
+    def test_len_custom_mapping_int_keys(self):
+        """Test len() on a custom mapping with int keys"""
+        m = CustomMapping({1: "one", 2: "two", 3: "three", 4: "four"})
+        self.assertEqual(len(m), 4)
+        self.assertEqual(m.__len__(), 4)
+
+    @make_dynamo_test
+    def test_len_custom_mapping_with_tensor_values(self):
+        """Test len() on a custom mapping with tensor values"""
+        m = CustomMapping(
+            {"a": torch.tensor(1), "b": torch.tensor(2), "c": torch.tensor(3)}
+        )
+        self.assertEqual(len(m), 3)
+        self.assertEqual(m.__len__(), 3)
+
+    @make_dynamo_test
+    def test_len_custom_mapping_large(self):
+        """Test len() on a large custom mapping"""
+        m = CustomMapping({i: i * 2 for i in range(20)})
+        self.assertEqual(len(m), 20)
+        self.assertEqual(m.__len__(), 20)
+
+    @make_dynamo_test
+    def test_len_custom_mapping_subclass(self):
+        """Test len() on a subclass of CustomMapping"""
+        m = CustomMappingSubclass({"a": 1, "b": 2})
+        # CustomMappingSubclass.__len__ returns len + 1
+        self.assertEqual(len(m), 3)
+        self.assertEqual(m.__len__(), 3)
+
+    @make_dynamo_test
+    def test_len_simple_dict_like(self):
+        """Test len() on a minimal dict-like class"""
+        m = SimpleDictLike(42)
+        self.assertEqual(len(m), 42)
+        self.assertEqual(m.__len__(), 42)
 
 
 class TestDescriptorLenImpl(torch._dynamo.test_case.TestCase):
@@ -890,6 +1082,70 @@ class TestDequeLen(torch._dynamo.test_case.TestCase):
         d = collections.deque(range(50))
         self.assertEqual(len(d), 50)
         self.assertEqual(d.__len__(), 50)
+
+
+class TestMappingProxyLen(torch._dynamo.test_case.TestCase):
+    """Tests for len() on types.MappingProxyType objects"""
+
+    def setUp(self):
+        self.old = torch._dynamo.config.enable_trace_unittest
+        torch._dynamo.config.enable_trace_unittest = True
+        super().setUp()
+
+    def tearDown(self):
+        torch._dynamo.config.enable_trace_unittest = self.old
+        return super().tearDown()
+
+    @make_dynamo_test
+    def test_len_basic(self):
+        """Test len() on a basic MappingProxyType"""
+        d = types.MappingProxyType({"a": 1, "b": 2, "c": 3})
+        self.assertEqual(len(d), 3)
+        self.assertEqual(d.__len__(), 3)
+
+    @make_dynamo_test
+    def test_len_empty(self):
+        """Test len() on an empty MappingProxyType"""
+        d = types.MappingProxyType({})
+        self.assertEqual(len(d), 0)
+        self.assertEqual(d.__len__(), 0)
+
+    @make_dynamo_test
+    def test_len_single_entry(self):
+        """Test len() on a MappingProxyType with single entry"""
+        d = types.MappingProxyType({"key": "value"})
+        self.assertEqual(len(d), 1)
+        self.assertEqual(d.__len__(), 1)
+
+    @make_dynamo_test
+    def test_len_string_keys(self):
+        """Test len() on a MappingProxyType with string keys"""
+        d = types.MappingProxyType({"one": 1, "two": 2, "three": 3})
+        self.assertEqual(len(d), 3)
+        self.assertEqual(d.__len__(), 3)
+
+    @make_dynamo_test
+    def test_len_int_keys(self):
+        """Test len() on a MappingProxyType with int keys"""
+        d = types.MappingProxyType({1: "one", 2: "two", 3: "three", 4: "four"})
+        self.assertEqual(len(d), 4)
+        self.assertEqual(d.__len__(), 4)
+
+    @make_dynamo_test
+    def test_len_with_tensor_values(self):
+        """Test len() on a MappingProxyType with tensor values"""
+        d = types.MappingProxyType(
+            {"a": torch.tensor(1), "b": torch.tensor(2), "c": torch.tensor(3)}
+        )
+        self.assertEqual(len(d), 3)
+        self.assertEqual(d.__len__(), 3)
+
+    @make_dynamo_test
+    def test_len_large(self):
+        """Test len() on a large MappingProxyType"""
+        d = types.MappingProxyType({i: i * 2 for i in range(20)})
+        self.assertEqual(len(d), 20)
+        self.assertEqual(d.__len__(), 20)
 
 
 if __name__ == "__main__":
