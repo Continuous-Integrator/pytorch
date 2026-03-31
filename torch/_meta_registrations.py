@@ -499,7 +499,7 @@ def meta_philox_key_split(key, num_splits):
 
 @register_meta(aten._philox_key_fold_in.default)
 def meta_philox_key_fold_in(key, data):
-    return key.new_empty(key.shape)
+    return torch.empty_like(key)
 
 
 @register_meta(aten._philox_normal_.default)
