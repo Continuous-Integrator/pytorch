@@ -123,12 +123,10 @@ void ConstantFolder::unlinkConstants(
     }
   }
 
-  if (VLOG_IS_ON(1)) {
-    for (const auto& f : foldables_) {
-      VLOG(1) << "Const-folded node: " << *f.node;
-    }
-    VLOG(1) << "Const-folded " << foldables_.size() << " nodes";
+  for (const auto& f : foldables_) {
+    VLOG(1) << "Const-folded node: " << *f.node;
   }
+  LOG(INFO) << "Const-folded " << foldables_.size() << " nodes";
 
   // remove moved (i.e., associated w/ const-folded nodes) kernels
   // from the input kernel vector

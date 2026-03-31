@@ -52,7 +52,7 @@
 #include <torch/csrc/distributed/c10d/symm_mem/SymmetricMemory.hpp>
 
 #ifdef USE_NVSHMEM
-#include <torch/csrc/distributed/c10d/symm_mem/nvshmem_extension.hpp>
+#include <torch/csrc/distributed/c10d/symm_mem/nvshmem_extension.cuh>
 #endif
 
 #include <torch/csrc/distributed/c10d/comm.hpp>
@@ -574,8 +574,7 @@ An enum-like class for built-in communication hooks: ``ALLREDUCE`` and ``FP16_CO
                  int64_t first_bucket_bytes_cap,
                  bool skip_all_reduce_unused_params,
                  bool use_python_reducer,
-                 std::vector<int64_t> bucket_bytes_cap_list,
-                 bool batched_grad_copy) {
+                 std::vector<int64_t> bucket_bytes_cap_list) {
                 // gil_scoped_release is not safe as a call_guard in init.
                 // https://github.com/pybind/pybind11/issues/5473
                 py::gil_scoped_release nogil{};
@@ -592,8 +591,7 @@ An enum-like class for built-in communication hooks: ``ALLREDUCE`` and ``FP16_CO
                     first_bucket_bytes_cap,
                     skip_all_reduce_unused_params,
                     use_python_reducer,
-                    std::move(bucket_bytes_cap_list),
-                    batched_grad_copy);
+                    std::move(bucket_bytes_cap_list));
               }),
           py::arg("params"),
           py::arg("bucket_indices"),
@@ -608,8 +606,7 @@ An enum-like class for built-in communication hooks: ``ALLREDUCE`` and ``FP16_CO
           py::arg("first_bucket_bytes_cap") = ::c10d::kDefaultFirstBucketBytes,
           py::arg("skip_all_reduce_unused_params") = false,
           py::arg("use_python_reducer") = false,
-          py::arg("bucket_bytes_cap_list") = std::vector<int64_t>(),
-          py::arg("batched_grad_copy") = false)
+          py::arg("bucket_bytes_cap_list") = std::vector<int64_t>())
       .def(
           "prepare_for_forward",
           &::c10d::Reducer::prepare_for_forward,
@@ -1192,15 +1189,6 @@ This class does not support ``__members__`` property.)");
           })
       .def_property_readonly("buffer_size", &SymmetricMemory::get_buffer_size)
       .def_property_readonly("offset", &SymmetricMemory::get_offset)
-      .def_property_readonly("device", &SymmetricMemory::get_device)
-      // Convert the pybind `_SymmetricMemory` object into the TorchBind custom
-      // class object (`__torch__.torch.classes.c10d.SymmetricMemory`) so it can
-      // be passed to dispatcher ops that expect the TorchBind type.
-      .def(
-          "boxed",
-          [](c10::intrusive_ptr<SymmetricMemory> self) {
-            return torch::jit::toPyObject(c10::IValue(std::move(self)));
-          })
       .def(
           "get_buffer",
           &SymmetricMemory::get_buffer,
@@ -1688,41 +1676,7 @@ Returns a list of all keys in the store.
           .def(
               "has_extended_api",
               &::c10d::Store::hasExtendedApi,
-              R"(Returns true if the store supports extended operations.)")
-          .def(
-              "barrier",
-              [](::c10d::Store& store,
-                 const std::string& key,
-                 int64_t world_size,
-                 const std::optional<std::chrono::milliseconds>& timeout) {
-                if (timeout.has_value()) {
-                  store.barrier(key, world_size, *timeout);
-                } else {
-                  store.barrier(key, world_size);
-                }
-              },
-              py::call_guard<py::gil_scoped_release>(),
-              py::arg("key"),
-              py::arg("world_size"),
-              py::arg("timeout") = py::none(),
-              R"(
-Barrier operation that blocks until ``world_size`` workers have called it
-with the same ``key``. If ``timeout`` is not specified, the store's default
-timeout is used.
-
-Arguments:
-    key (str): The unique key for this barrier instance.
-    world_size (int): The number of workers that must call barrier before it unblocks.
-    timeout (timedelta, optional): Time to wait before throwing an exception. Defaults to store timeout.
-
-Example::
-    >>> import torch.distributed as dist
-    >>> from datetime import timedelta
-    >>> store = dist.TCPStore("127.0.0.1", 0, 1, True, timedelta(seconds=30))
-    >>> # This will return immediately since world_size=1
-    >>> store.barrier("my_barrier", 1)
-    >>> store.barrier("my_barrier2", 1, timedelta(seconds=10))
-)");
+              R"(Returns true if the store supports extended operations.)");
 
   intrusive_ptr_class_<::c10d::FileStore>(
       module,
@@ -3159,15 +3113,7 @@ Arguments:
               py::arg("device"),
               py::call_guard<py::gil_scoped_release>())
           .def_property_readonly(
-              "mem_allocator", &::c10d::Backend::getMemAllocator)
-          .def("suspend", &::c10d::Backend::suspend)
-          .def("resume", &::c10d::Backend::resume)
-          .def("memory_stats", &::c10d::Backend::getMemoryStats, R"(
-            Get the memory statistics of the backend.
-
-            Returns:
-              A dictionary containing the memory statistics.
-            )");
+              "mem_allocator", &::c10d::Backend::getMemAllocator);
 
   // base Backend::Options binding
   // TODO: Maybe we can consider how to merge this with
@@ -3316,13 +3262,7 @@ options :class:`~torch.distributed.ProcessGroupNCCL.Options`).
               py::arg("backend"),
               py::arg("gloo_backend"))
           .def_property_readonly(
-              "wrapped_pg", &::c10d::ProcessGroupWrapper::getWrappedPg)
-          .def_property_readonly(
-              "options", &::c10d::ProcessGroupWrapper::getBackendOptions)
-          .def(
-              "get_error",
-              &::c10d::ProcessGroupWrapper::getError,
-              py::call_guard<py::gil_scoped_release>());
+              "wrapped_pg", &::c10d::ProcessGroupWrapper::getWrappedPg);
 #endif
 
 #ifdef USE_C10D_NCCL
@@ -3726,9 +3666,6 @@ Returns:
       .value("_REDUCE_SCATTER_BASE", ::c10d::OpType::_REDUCE_SCATTER_BASE)
       .value("COALESCED", ::c10d::OpType::COALESCED)
       .value("_ALLREDUCE_SPARSE", ::c10d::OpType::_ALLREDUCE_SPARSE)
-      .value(
-          "REDUCE_SCATTER_TENSOR_COALESCED",
-          ::c10d::OpType::REDUCE_SCATTER_TENSOR_COALESCED)
       .value("UNKNOWN", ::c10d::OpType::UNKNOWN);
 
   py::enum_<::c10d::WorkResult>(module, "WorkResult")

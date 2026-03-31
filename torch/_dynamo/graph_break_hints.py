@@ -1,7 +1,6 @@
 USER_ERROR = [
-    "Your code may result in an error when running in eager. "
-    "Please double check that your code doesn't contain a similar error when actually running eager/uncompiled. "
-    'You can do this by removing the `torch.compile` call, or by using `torch.compiler.set_stance("force_eager")`. '
+    "Dynamo has detected that tracing the code will result in an error when running in eager. "
+    "Please double check that your code doesn't contain a similar error when actually running eager/uncompiled.",
 ]
 DYNAMO_BUG = [
     "This is likely to be a Dynamo bug. Please report an issue to PyTorch.",

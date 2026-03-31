@@ -1,6 +1,4 @@
-from __future__ import annotations
-
-
+# mypy: allow-untyped-defs
 """
 This module is one of the analysis modules - it takes as input a function or graph
 and some preexisting properties, and returns some data that is useful for deciding
@@ -13,7 +11,8 @@ a functionalized version of the graph under compilation.
 import collections
 import contextlib
 import logging
-from typing import Any, TYPE_CHECKING
+from collections.abc import Callable
+from typing import Optional
 
 import torch
 import torch.utils._pytree as pytree
@@ -62,9 +61,6 @@ from .subclass_utils import create_subclass_meta
 from .utils import _get_autocast_states, KNOWN_TYPES, simple_wraps, strict_zip
 
 
-if TYPE_CHECKING:
-    from collections.abc import Callable
-
 zip = strict_zip
 
 log = logging.getLogger(__name__)
@@ -80,9 +76,8 @@ static_input_logger = getArtifactLogger("torch._dynamo", "cudagraph_static_input
 
 
 # Coercing and collecting traced tangents memory format in one recursive traversal
-def coerce_tangent_and_suggest_memory_format(
-    x: Tensor,
-) -> tuple[Any, MemoryFormatMeta | list[Any] | None, bool]:
+# mypy: ignore-errors
+def coerce_tangent_and_suggest_memory_format(x: Tensor):
     updated = False
     if not isinstance(x, Tensor):
         return x, None, updated
@@ -164,21 +159,19 @@ def coerce_tangent_and_suggest_memory_format(
 #   Specifically, aliased outputs from the forward get regenerated, and don't participate
 #   in the compiled backward function.
 def run_functionalized_fw_and_collect_metadata(
-    f: Callable[..., Any],
+    f,
     *,
     flat_args_descs: list[AOTInput],
     keep_input_mutations: bool,
     # TODO: refactor to kill this flag
     is_train: bool = False,
     # Note: this is guaranteed to be set when running under dynamo
-    static_input_indices: list[int] | None = None,
+    static_input_indices: Optional[list[int]] = None,
     pre_dispatch: bool = False,
 ) -> Callable[..., ViewAndMutationMeta]:
     memo: dict[Tensor, Tensor] = {}
 
-    # TODO: see if we can rewrite this to be more accurate using
-    # overload
-    def _to_fun(t: object) -> object:
+    def _to_fun(t):
         if isinstance(t, Tensor):
             if t in memo:
                 return memo[t]
@@ -189,13 +182,12 @@ def run_functionalized_fw_and_collect_metadata(
             return t
 
     @simple_wraps(f)
-    def inner(*flat_args: Any) -> ViewAndMutationMeta:
+    def inner(*flat_args):
         # This function is meant to be run with the forward, which expects a flat list of tensor/symint/other args.
-        if not all(
+        assert all(
             isinstance(a, tuple(KNOWN_TYPES)) or is_opaque_type(type(a))
             for a in flat_args
-        ):
-            raise AssertionError("all flat_args must be KNOWN_TYPES or opaque types")
+        )
 
         input_info: list[InputAliasInfo] = []
         output_info: list[OutputAliasInfo] = []
@@ -224,11 +216,12 @@ def run_functionalized_fw_and_collect_metadata(
             # Assert that f does NOT have an AOTOutputs in it, easy mistake to
             # make!  You need to drop the second output before calling this
             # function
-            if pytree.tree_any(lambda x: isinstance(x, AOTOutput), flat_f_outs):
-                raise AssertionError(
-                    f"{f} returned AOTOutput when it shouldn't. Did you remember to wrap the "
-                    "function with without_output_descs before passing it here?"
-                )
+            assert not pytree.tree_any(
+                lambda x: isinstance(x, AOTOutput), flat_f_outs
+            ), (
+                f"{f} returned AOTOutput when it shouldn't. Did you remember to wrap the "
+                "function with without_output_descs before passing it here?"
+            )
 
             # NB: this is just to setup the input descriptors, we will
             # recreate these descriptors (with the same convention!) when we
@@ -315,17 +308,15 @@ def run_functionalized_fw_and_collect_metadata(
         out_tensor_ids = {id(o): i for i, o in enumerate(flat_f_outs)}
 
         # Keep track of which outputs alias other outputs
-        out_tensor_alias_counts: collections.defaultdict[StorageWeakRef | None, int] = (
-            collections.defaultdict(int)
-        )
+        out_tensor_alias_counts: collections.defaultdict = collections.defaultdict(int)
         # This tells us, for a given group of outputs that alias each other,
         # whether they e.g. all came from an unbind call
-        num_aliased_tensors_that_are_multi_output_views: collections.defaultdict[
-            StorageWeakRef | None, int
-        ] = collections.defaultdict(int)
+        num_aliased_tensors_that_are_multi_output_views: collections.defaultdict = (
+            collections.defaultdict(int)
+        )
 
         out_storage_to_metadata_key_to_tensors: collections.defaultdict[
-            StorageWeakRef | None,
+            Optional[StorageWeakRef],
             collections.defaultdict[MetadataKey, set[torch.Tensor]],
         ] = collections.defaultdict(lambda: collections.defaultdict(set))
 
@@ -463,7 +454,7 @@ def run_functionalized_fw_and_collect_metadata(
                 if not isinstance(o, torch.Tensor)
                 else StorageWeakRef(o.untyped_storage())
             )
-            outs_with_identical_metadata_that_require_grad: list[torch.Tensor] = (
+            outs_with_identical_metadata_that_require_grad = (
                 []
                 if not isinstance(o, Tensor)
                 else [
@@ -543,8 +534,7 @@ alias each other from a multi-output view call"
             elif functional_tensor_storage_changed and id(o) in inp_tensor_ids:
                 # When there is a set_() on an input, we cannot rely on checking storages
                 # to detect if we are returning an input (since the inputs storage is different)
-                if curr_storage is None:
-                    raise AssertionError("curr_storage must not be None")
+                assert curr_storage is not None
                 base_idx = inp_storage_refs[curr_storage]
                 output_type = OutputType.is_input
 
@@ -690,24 +680,18 @@ from a multi-output view call"
                 if isinstance(o, FunctionalTensor):
                     view_meta_sequence = ViewMetaSequence(o)
 
-            requires_grad = isinstance(o, torch.Tensor) and o.requires_grad
             out_info = OutputAliasInfo(
                 output_type=output_type,
                 raw_type=type(o),
                 base_idx=base_idx,
                 dynamic_dims=dynamic_dims,
-                requires_grad=requires_grad,
-                # A view created under no_grad() inherits requires_grad from
-                # its base but has no grad_fn and does not participate in
-                # differentiation.
-                requires_grad_for_backward=requires_grad
-                and (o._base is None or grad_fn is not None),
+                requires_grad=isinstance(o, torch.Tensor) and o.requires_grad,
                 view_meta_sequence=view_meta_sequence,
             )
             output_info.append(out_info)
 
         # See Note [AOT Autograd: Views to avoid tangents aliasing inputs]
-        def view_avoid_dupes_with_primals(t: object) -> object:
+        def view_avoid_dupes_with_primals(t):
             if isinstance(t, Tensor) and is_traceable_wrapper_subclass(t):
                 return transform_subclass(
                     t, lambda _, inner_t: view_avoid_dupes_with_primals(inner_t)
@@ -719,14 +703,14 @@ from a multi-output view call"
         # This analysis function returns *only* the outputs that are meant to be tangents to the backwards.
         # Anything that aliases (inputs returned in the fw due to metadata mutations, or outputs that alias inputs/intermediates)
         # are *regenerated* later, and not used directly in the autograd graph
-        def _plain_fake_tensor_like_subclass(x: Any) -> torch.Tensor:
+        def _plain_fake_tensor_like_subclass(x):
             # pyrefly: ignore [bad-context-manager]
             with detect_fake_mode():
                 return torch.empty(
                     x.shape, dtype=x.dtype, device=x.device, layout=x.layout
                 )
 
-        def _is_subclass_mutated_input_tangent_always_subclass(inp: object) -> bool:
+        def _is_subclass_mutated_input_tangent_always_subclass(inp):
             return (
                 isinstance(inp, torch.nested._internal.nested_tensor.NestedTensor)
                 or torch._functorch.config.disable_guess_zero_tangent_for_mutated_input_subclass
@@ -790,7 +774,7 @@ from a multi-output view call"
                 OutputType.custom_function_view,
             ]
             and issubclass(info.raw_type, torch.Tensor)
-            and info.requires_grad_for_backward
+            and info.requires_grad
         ]
         f_output_tangents, f_output_tangents_descs = (
             [x[0] for x in f_output_tangents_pairs],
@@ -870,12 +854,6 @@ from a multi-output view call"
                 grad_enabled_mutation,
             )
 
-        subclass_inp_meta = create_subclass_meta(flat_args)
-        subclass_fw_graph_out_meta = create_subclass_meta(fw_graph_outs)
-        subclass_tangent_meta = create_subclass_meta(
-            traced_tangents, count_symints=False, with_memory_format=True
-        )
-
         metadata = ViewAndMutationMeta(
             input_info=input_info,
             output_info=output_info,
@@ -883,9 +861,11 @@ from a multi-output view call"
             keep_input_mutations=keep_input_mutations,
             traced_tangents=traced_tangents,
             traced_tangents_descs=traced_tangents_descs,
-            subclass_inp_meta=subclass_inp_meta,
-            subclass_fw_graph_out_meta=subclass_fw_graph_out_meta,
-            subclass_tangent_meta=subclass_tangent_meta,
+            subclass_inp_meta=create_subclass_meta(flat_args),
+            subclass_fw_graph_out_meta=create_subclass_meta(fw_graph_outs),
+            subclass_tangent_meta=create_subclass_meta(
+                traced_tangents, count_symints=False, with_memory_format=True
+            ),
             is_train=is_train,
             grad_enabled_mutation=grad_enabled_mutation,
             static_input_indices=static_input_indices,

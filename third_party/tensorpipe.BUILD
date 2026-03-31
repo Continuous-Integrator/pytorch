@@ -151,7 +151,7 @@ cc_library(
         ".",
     ],
     copts = [
-        "-std=c++20",
+        "-std=c++17",
     ],
     visibility = ["//visibility:public"],
     deps = [
@@ -168,7 +168,7 @@ cc_library(
         ".",
     ],
     copts = [
-        "-std=c++20",
+        "-std=c++17",
     ],
     visibility = ["//visibility:public"],
     deps = [

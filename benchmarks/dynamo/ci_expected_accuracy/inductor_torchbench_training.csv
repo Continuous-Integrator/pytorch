@@ -106,7 +106,7 @@ mobilenet_v3_large,pass,7
 
 
 
-moco,pass,13
+moco,pass,10
 
 
 
@@ -127,6 +127,10 @@ phlippe_densenet,pass,6
 
 
 phlippe_resnet,pass,6
+
+
+
+pytorch_CycleGAN_and_pix2pix,pass,6
 
 
 
@@ -167,10 +171,6 @@ shufflenet_v2_x1_0,pass,6
 
 
 soft_actor_critic,pass,6
-
-
-
-speech_transformer,pass,16
 
 
 

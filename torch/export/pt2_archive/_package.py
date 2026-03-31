@@ -7,7 +7,6 @@ import tempfile
 import zipfile
 from dataclasses import dataclass
 from typing import Any, IO, TYPE_CHECKING, TypeAlias
-from typing_extensions import TypeIs
 
 import torch
 import torch.utils._pytree as pytree
@@ -332,7 +331,7 @@ def _package_aoti_files(
             logger.debug(weights_config)
 
 
-def _is_fake_tensor(t: torch.Tensor) -> TypeIs[FakeTensor]:
+def _is_fake_tensor(t: torch.Tensor) -> bool:
     return isinstance(t, FakeTensor)
 
 
@@ -1027,9 +1026,7 @@ def _load_aoti(
     )
 
     device = loaded_metadata["AOTI_DEVICE_KEY"]
-    from torch._inductor.codecache import get_device_information
-
-    current_device_info = get_device_information(device)
+    current_device_info = torch._inductor.codecache.get_device_information(device)
 
     for k, v in current_device_info.items():
         if k in loaded_metadata:

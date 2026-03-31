@@ -3,9 +3,7 @@ import importlib
 import inspect
 import io
 import logging
-import os
 import pickle
-import tempfile
 import types
 from collections.abc import Callable, Sequence
 from contextlib import AbstractContextManager, ExitStack, nullcontext
@@ -88,7 +86,6 @@ class AOTCompilePickler(pickle.Pickler):
         return _.__closure__[0]
 
     @classmethod
-    # pyrefly: ignore [implicit-any]
     def _unpickle_bound_method(cls, func: Callable, base: object) -> types.MethodType:
         return types.MethodType(func, base)
 
@@ -173,20 +170,6 @@ class AOTCompileSaveResult:
     serialized_data: bytes
 
 
-def atomic_write_binary(file_path: str, data: bytes):
-    dir_name = os.path.dirname(file_path) or "."
-
-    with tempfile.NamedTemporaryFile(
-        dir=dir_name, delete=False, mode="wb"
-    ) as temp_file:
-        temp_path = temp_file.name
-        temp_file.write(data)
-        temp_file.flush()
-        os.fsync(temp_file.fileno())
-
-    os.replace(temp_path, file_path)
-
-
 @dataclass
 class AOTCompiledFunction:
     _artifacts: CompileArtifacts
@@ -245,9 +228,10 @@ class AOTCompiledFunction:
     def save_compiled_function(
         self, path: str, external_data: dict[str, Any] | None = None
     ) -> AOTCompileSaveResult:
-        result = type(self).serialize(self, external_data)
-        atomic_write_binary(path, result.serialized_data)
-        return result
+        with open(path, "wb") as f:
+            result = type(self).serialize(self, external_data)
+            f.write(result.serialized_data)
+            return result
 
     @classmethod
     def serialize(
@@ -317,9 +301,6 @@ def aot_compile_fullgraph(
     from torch._dynamo.guards import CheckFunctionManager
     from torch._dynamo.package import SourceInfo
     from torch._dynamo.utils import dynamo_timed, get_metrics_context
-    from torch._dynamo.variables.torch_function import (
-        torch_function_mode_stack_state_mgr,
-    )
     from torch._guards import TracingContext
 
     args, kwargs = example_inputs
@@ -335,7 +316,6 @@ def aot_compile_fullgraph(
         dynamo_timed("fullgraph_capture"),
         torch._functorch.config.patch(strict_autograd_cache=True),
         dynamic_ctx,
-        torch_function_mode_stack_state_mgr,
     ):
         capture_output = convert_frame.fullgraph_capture(model, args, kwargs)
         graph_capture_output = capture_output.graph_capture_output
@@ -407,17 +387,9 @@ def aot_compile_fullgraph(
                 + f"from backend {compiler_fn}) does not implement SerializableCallable."
             )
 
-        # Temporarily restore the mode stack so guard expressions that
-        # reference modes can evaluate, matching the compile_inner path.
-        build_guards_ctx = ExitStack()
-        if torch_function_mode_stack_state_mgr.stack:
-            build_guards_ctx.enter_context(
-                torch_function_mode_stack_state_mgr.temp_restore_stack()
-            )
-        with build_guards_ctx:
-            check_fn = graph_capture_output.build_guards(
-                fn.__code__, hooks=hooks, save=True, strict_error=True
-            )
+        check_fn = graph_capture_output.build_guards(
+            fn.__code__, hooks=hooks, save=True, strict_error=True
+        )
 
         assert check_fn.guards_state is not None
 
@@ -520,7 +492,6 @@ def aot_compile_module(
                 backend=backend,
             )
 
-    # pyrefly: ignore [implicit-any]
     compiled_results = []
     for model_input in inputs:
         log.info("Compiling input %s..", model_input)

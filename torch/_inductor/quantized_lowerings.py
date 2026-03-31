@@ -90,10 +90,9 @@ def register_woq_mm_ops() -> None:
                 epilogue_creator=_mul_epilogue,  # type: ignore[arg-type]
             )
 
-        node, _ = autotune_select_algorithm(
+        return autotune_select_algorithm(
             "_weight_int8pack_mm", choices, [mat1, mat2, scale], aten_layout
         )
-        return node
 
     @register_lowering(aten._weight_int4pack_mm_for_cpu, type_promotion_kind=None)  # type: ignore[misc]
     def int4pack_mm_cpu(
@@ -158,14 +157,13 @@ def register_woq_mm_ops() -> None:
             2: lambda x: V.graph.constants[x.get_name()],  # group size
         }
 
-        node, _ = autotune_select_algorithm(
+        return autotune_select_algorithm(
             "_weight_int4pack_mm_for_cpu",
             choices,
             [mat1, mat2, group_size, qScaleAndZeros],
             aten_layout,
             input_gen_fns=input_gen_fns,
         )
-        return node
 
     lowering.make_fallback(aten._dyn_quant_matmul_4bit)
     lowering.make_fallback(aten._dyn_quant_pack_4bit_weight)

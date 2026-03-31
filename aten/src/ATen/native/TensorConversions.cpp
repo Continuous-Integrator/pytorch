@@ -652,6 +652,7 @@ Tensor to_dense_backward(
     default:
       TORCH_CHECK(
           false, "to_dense_backward: Unsupported input layout: ", input_layout);
+      return Tensor{};
   }
 }
 
@@ -1398,6 +1399,7 @@ Tensor dense_to_sparse_with_mask(
       " to ",
       layout_to,
       " conversion not supported");
+  return Tensor{};
 }
 
 Tensor dense_to_sparse_csr(
@@ -1480,6 +1482,7 @@ Tensor dense_to_sparse(
       " to ",
       layout_to,
       " conversion not supported");
+  return Tensor{};
 }
 
 Tensor dense_to_sparse(const Tensor& self, int64_t sparse_dim) {
@@ -1763,6 +1766,7 @@ Tensor sparse_compressed_to_sparse_csr(
       false,
       "sparse_compressed_to_sparse_csr: expected SparseCsr or SparseCsc layout but got ",
       self.layout());
+  return Tensor{};
 }
 
 Tensor sparse_compressed_to_sparse_csc(
@@ -1783,6 +1787,7 @@ Tensor sparse_compressed_to_sparse_csc(
       false,
       "sparse_compressed_to_sparse_csc: expected SparseCsr or SparseCsc layout but got ",
       self.layout());
+  return Tensor{};
 }
 
 Tensor coo_to_sparse_csr(
@@ -2217,6 +2222,7 @@ Tensor sparse_compressed_to_sparse_bsr(
       false,
       "sparse_compressed_to_sparse_bsr: expected SparseCsr, SparseCsc, SparseBsr or SparseBsc layout but got ",
       self.layout());
+  return Tensor{};
 }
 
 Tensor sparse_compressed_to_sparse_bsc(
@@ -2254,6 +2260,7 @@ Tensor sparse_compressed_to_sparse_bsc(
       false,
       "sparse_compressed_to_sparse_bsc: expected SparseCsr, SparseCsc, SparseBsr or SparseBsc layout but got ",
       self.layout());
+  return Tensor{};
 }
 
 Tensor sparse_coo_to_sparse(const Tensor& self, const int64_t sparse_dim) {
@@ -2266,6 +2273,7 @@ Tensor sparse_coo_to_sparse(const Tensor& self, const int64_t sparse_dim) {
       " to ",
       kSparse,
       " conversion not supported");
+  return Tensor{};
 }
 
 Tensor sparse_compressed_to_sparse(
@@ -2369,6 +2377,7 @@ Tensor sparse_compressed_to_sparse(
       " to ",
       layout_to,
       " conversion not supported");
+  return Tensor{};
 }
 
 Tensor sparse_coo_to_sparse(
@@ -2405,6 +2414,7 @@ Tensor sparse_coo_to_sparse(
       " to ",
       layout_to,
       " conversion not supported");
+  return Tensor{};
 }
 
 Tensor to_sparse(const Tensor& self, const int64_t sparse_dim) {

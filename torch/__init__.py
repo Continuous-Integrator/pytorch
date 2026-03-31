@@ -29,7 +29,6 @@ from typing import (
     get_origin as _get_origin,
     overload as _overload,
     TYPE_CHECKING,
-    TypeGuard as _TypeGuard,
     TypeVar as _TypeVar,
 )
 from typing_extensions import (
@@ -133,7 +132,6 @@ __all__ = [
     "sym_min",
     "sym_not",
     "sym_sum",
-    "thread_safe_generator",
     "typename",
     "unravel_index",
     "use_deterministic_algorithms",
@@ -328,11 +326,6 @@ def _preload_cuda_lib(lib_folder: str, lib_name: str, required: bool = True) -> 
 
 def _preload_cuda_deps(err: OSError | None = None) -> None:
     cuda_libs: list[tuple[str, str]] = [
-        # NOTE: Order matters! We must preload libcublasLt BEFORE libcublas to prevent
-        # libcublas from loading a mismatched system-wide libcublasLt via its RUNPATH.
-        # Without this, if a different CUDA Toolkit version exists in the system PATH,
-        # libcublas may load the wrong libcublasLt, causing symbol errors or runtime failures.
-        ("cublas", "libcublasLt.so.*[0-9]"),
         ("cublas", "libcublas.so.*[0-9]"),
         ("cudnn", "libcudnn.so.*[0-9]"),
         ("cuda_nvrtc", "libnvrtc.so.*[0-9]"),
@@ -955,17 +948,11 @@ def sym_min(a, b):
         return builtins.min(a, b)  # type: ignore[call-overload]
 
 
-def sym_sum(*args):
+def sym_sum(args):
     """
     N-ary add which is faster to compute for long lists than iterated binary
     addition.  Only does something special for integers.
-
-    Accepts both ``sym_sum([a, b, c])`` and ``sym_sum(a, b, c)``.
     """
-    # Normalise: accept both sym_sum([a, b, c]) and sym_sum(a, b, c).
-    if len(args) == 1 and isinstance(args[0], (list, tuple)):
-        args = args[0]
-
     if overrides.has_torch_function(args):
         return overrides.handle_torch_function(sym_sum, args, args)
 
@@ -1172,7 +1159,7 @@ def is_tensor(obj: _Any, /) -> _TypeIs["torch.Tensor"]:
     return isinstance(obj, torch.Tensor)
 
 
-def is_storage(obj: _Any, /) -> _TypeGuard["TypedStorage | UntypedStorage"]:
+def is_storage(obj: _Any, /) -> builtins.bool:
     r"""Returns True if `obj` is a PyTorch storage object.
 
     Args:
@@ -2152,14 +2139,7 @@ _tensor_classes: set[type["torch.Tensor"]] = set()
 from torch import amp as amp, random as random, serialization as serialization
 from torch._tensor_str import set_printoptions
 from torch.amp import autocast, GradScaler
-from torch.random import (
-    get_rng_state,
-    initial_seed,
-    manual_seed,
-    seed,
-    set_rng_state,
-    thread_safe_generator,
-)
+from torch.random import get_rng_state, initial_seed, manual_seed, seed, set_rng_state
 from torch.serialization import load, save
 
 
@@ -2470,11 +2450,10 @@ class _TorchCompileInductorWrapper:
                     )
             self.config[attr_name] = val
 
-    def __call__(self, model_, inputs_, *, config_patches=None):
+    def __call__(self, model_, inputs_):
         from torch._inductor.compile_fx import compile_fx
 
-        all_patches = {**self.config, **(config_patches or {})}
-        return compile_fx(model_, inputs_, config_patches=all_patches)
+        return compile_fx(model_, inputs_, config_patches=self.config)
 
     def get_compiler_config(self):
         from torch._inductor.compile_fx import get_patched_config_dict
@@ -2499,7 +2478,7 @@ class _TorchCompileAOTInductorWrapper(_TorchCompileInductorWrapper):
         self.apply_options({"cpp_wrapper": True})
         self.apply_options({"aot_inductor.package": True})
 
-    def __call__(self, model_, inputs_, *, config_patches=None):
+    def __call__(self, model_, inputs_):
         from contextlib import nullcontext
         from unittest import mock
 
@@ -2517,7 +2496,7 @@ class _TorchCompileAOTInductorWrapper(_TorchCompileInductorWrapper):
             ctx,
             torch._inductor.config.patch("enable_autograd_for_aot", True),
         ):
-            return super().__call__(model_, inputs_, config_patches=config_patches)
+            return super().__call__(model_, inputs_)
 
 
 class _TorchCompileWrapper:
@@ -2594,7 +2573,6 @@ def compile(
     mode: str | None = None,
     options: dict[str, str | builtins.int | builtins.bool | _Callable] | None = None,
     disable: builtins.bool = False,
-    recompile_limit: builtins.int | None = None,
 ) -> (
     _Callable[[_Callable[_InputT, _RetT]], _Callable[_InputT, _RetT]]
     | _Callable[_InputT, _RetT]
@@ -2778,7 +2756,6 @@ def compile(
         dynamic=dynamic,
         disable=disable,
         guard_filter_fn=guard_filter_fn,
-        recompile_limit=recompile_limit,
     )(model)  # type: ignore[return-value]
 
 
@@ -3017,6 +2994,3 @@ def _as_tensor_fullprec(t):
 # an autoloaded backend are defined
 if _is_device_backend_autoload_enabled():
     _import_device_backends()
-
-# Register all registered custom / override ops in torch/_native
-import torch._native

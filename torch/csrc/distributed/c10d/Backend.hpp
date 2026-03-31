@@ -1,8 +1,6 @@
 #pragma once
 
 #include <memory>
-#include <string>
-#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -42,7 +40,6 @@ class TORCH_API Backend : public torch::CustomClassHolder {
         std::chrono::milliseconds timeout = kBackendDefaultTimeout)
         : timeout(timeout), backend(std::move(backend)) {}
     ~Options() override = default;
-    Options(const Options&) = default;
 
     std::chrono::milliseconds timeout;
 
@@ -510,26 +507,6 @@ class TORCH_API Backend : public torch::CustomClassHolder {
   // Shutdown the backend if the backend supports it. This should be used for
   // normal shutdown.
   virtual void shutdown() {}
-
-  // APIs related to memory offload
-  virtual void suspend() {
-    TORCH_CHECK(
-        false,
-        c10::str("Backend ", getBackendName(), " does not support suspend"));
-  }
-
-  virtual void resume() {
-    TORCH_CHECK(
-        false,
-        c10::str("Backend ", getBackendName(), " does not support resume"));
-  }
-
-  virtual std::unordered_map<std::string, uint64_t> getMemoryStats() {
-    TORCH_CHECK(
-        false,
-        c10::str(
-            "Backend ", getBackendName(), " does not support getMemoryStats"));
-  }
 
  protected:
   // Implementations of this interface need to call this to setup

@@ -295,11 +295,9 @@ if __name__ == "__main__":
     }
 
     root_path = "benchmarks/dynamo/ci_expected_accuracy/"
-    if not os.path.exists(root_path):
-        raise AssertionError(f"cd <pytorch root> and ensure {root_path} exists")
+    assert os.path.exists(root_path), f"cd <pytorch root> and ensure {root_path} exists"
     rocm_path = "benchmarks/dynamo/ci_expected_accuracy/rocm/"
-    if not os.path.exists(rocm_path):
-        raise AssertionError(f"cd <pytorch root> and ensure {rocm_path} exists")
+    assert os.path.exists(rocm_path), f"cd <pytorch root> and ensure {rocm_path} exists"
 
     results = query_job_sha(repo, args.sha)
 

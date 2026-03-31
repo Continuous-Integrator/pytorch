@@ -5,7 +5,7 @@ r"""This file is allowed to initialize CUDA context when imported."""
 import functools
 import torch
 import torch.cuda
-from torch.testing._internal.common_utils import LazyVal, TEST_NUMBA, TEST_WITH_ROCM, TEST_CUDA, IS_WINDOWS, IS_MACOS, TEST_XPU
+from torch.testing._internal.common_utils import LazyVal, TEST_NUMBA, TEST_WITH_ROCM, TEST_CUDA, IS_WINDOWS, IS_MACOS
 import inspect
 import contextlib
 import os
@@ -36,22 +36,13 @@ SM90OrLater = LazyVal(lambda: torch.cuda.is_available() and torch.cuda.get_devic
 SM100OrLater = LazyVal(lambda: torch.cuda.is_available() and torch.cuda.get_device_capability() >= (10, 0))
 SM120OrLater = LazyVal(lambda: torch.cuda.is_available() and torch.cuda.get_device_capability() >= (12, 0))
 
-IS_THOR = LazyVal(lambda: torch.cuda.is_available() and torch.version.cuda is not None and
+IS_THOR = LazyVal(lambda: torch.cuda.is_available() and
                   ((torch.cuda.get_device_capability() == (11, 0) and int(torch.version.cuda[:2]) >= 13) or
                    (torch.cuda.get_device_capability() == (10, 1) and int(torch.version.cuda[:2]) < 13)))
 IS_JETSON = LazyVal(lambda: torch.cuda.is_available() and (torch.cuda.get_device_capability() in [(7, 2), (8, 7)] or IS_THOR))
 IS_SM89 = LazyVal(lambda: torch.cuda.is_available() and torch.cuda.get_device_capability() == (8, 9))
 IS_SM90 = LazyVal(lambda: torch.cuda.is_available() and torch.cuda.get_device_capability() == (9, 0))
 IS_SM100 = LazyVal(lambda: torch.cuda.is_available() and torch.cuda.get_device_capability() == (10, 0))
-
-@contextlib.contextmanager
-def blas_library_context(backend):
-    prev_backend = torch.backends.cuda.preferred_blas_library()
-    torch.backends.cuda.preferred_blas_library(backend)
-    try:
-        yield
-    finally:
-        torch.backends.cuda.preferred_blas_library(prev_backend)
 
 def evaluate_gfx_arch_within(arch_list):
     if not torch.cuda.is_available():
@@ -76,8 +67,6 @@ def evaluate_platform_supports_flash_attention():
         return evaluate_gfx_arch_within(arch_list)
     if TEST_CUDA:
         return not IS_WINDOWS and SM80OrLater
-    if TEST_XPU:
-        return True
     return False
 
 def evaluate_platform_supports_efficient_attention():
@@ -87,8 +76,6 @@ def evaluate_platform_supports_efficient_attention():
             arch_list += ["gfx1101", "gfx1102", "gfx1150", "gfx1151", "gfx1200"]
         return evaluate_gfx_arch_within(arch_list)
     if TEST_CUDA:
-        return True
-    if TEST_XPU:
         return True
     return False
 
@@ -120,8 +107,6 @@ def evaluate_platform_supports_bf16():
     if torch.version.cuda:
         return SM80OrLater
     elif torch.version.hip:
-        return True
-    elif TEST_XPU:
         return True
     return False
 
@@ -159,8 +144,6 @@ def evaluate_platform_supports_fp8():
                     return True
         else:
             return SM90OrLater or torch.cuda.get_device_capability() == (8, 9)
-    if torch.xpu.is_available():
-        return True
     return False
 
 def evaluate_platform_supports_fp8_grouped_gemm():
@@ -168,7 +151,7 @@ def evaluate_platform_supports_fp8_grouped_gemm():
         if torch.version.hip:
             if "USE_MSLK" not in torch.__config__.show():
                 return False
-            archs = ['gfx942', 'gfx950']
+            archs = ['gfx942']
             for arch in archs:
                 if arch in torch.cuda.get_device_properties(0).gcnArchName:
                     return True
@@ -214,8 +197,7 @@ __cuda_ctx_rng_initialized = False
 # after this call, CUDA context and RNG must have been initialized on each GPU
 def initialize_cuda_context_rng():
     global __cuda_ctx_rng_initialized
-    if not TEST_CUDA:
-        raise AssertionError('CUDA must be available when calling initialize_cuda_context_rng')
+    assert TEST_CUDA, 'CUDA must be available when calling initialize_cuda_context_rng'
     if not __cuda_ctx_rng_initialized:
         # initialize cuda context and rng for memory tests
         for i in range(torch.cuda.device_count()):
@@ -447,12 +429,9 @@ def xfailIfDistributedNotSupported(func):
 
 # When using nvcc from the CUDA toolkit its versuib must be at least the one from ptxas bundled with Triton
 TRITON_PTXAS_VERSION = (12, 8)
-requires_triton_ptxas_compat = unittest.skipIf(not torch.version.xpu
-                                               and torch.version.hip is None
-                                               and _get_torch_cuda_version() < TRITON_PTXAS_VERSION,
+requires_triton_ptxas_compat = unittest.skipIf(torch.version.hip is None and _get_torch_cuda_version() < TRITON_PTXAS_VERSION,
                                                "Requires CUDA {}.{} to match Tritons ptxas version".format(*TRITON_PTXAS_VERSION))
 
 # Importing this module should NOT eagerly initialize CUDA
 if not CUDA_ALREADY_INITIALIZED_ON_IMPORT:
-    if torch.cuda.is_initialized():
-        raise AssertionError("CUDA should not be initialized on import")
+    assert not torch.cuda.is_initialized()

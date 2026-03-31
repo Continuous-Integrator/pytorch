@@ -14,6 +14,7 @@ from torch.testing._internal.common_utils import (
     decorateIf,
     instantiate_parametrized_tests,
     parametrize,
+    skipIfXpu,
 )
 from torch.testing._internal.inductor_utils import GPU_TYPE, HAS_CPU, HAS_GPU
 from torch.testing._internal.triton_utils import requires_gpu
@@ -23,8 +24,7 @@ def _prepend_product_of_values(inputs, possible_values, num_to_prepend=1, device
     result = []
     if len(inputs) != 0:
         device = inputs[0].device
-    if not device:
-        raise AssertionError
+    assert device
     # iterate over the cartesian product of predicate values
     for values in itertools.product(*([possible_values] * num_to_prepend)):
         prepended = [torch.tensor(v, device=device) for v in values]
@@ -384,6 +384,7 @@ class CondTests(TestCase):
             dynamic=dynamic,
         )
 
+    @skipIfXpu(msg="Remove this skip after issue #154949 resolved.")
     @requires_gpu
     def test_cond_control_flow_with_precomputed_size(self):
         class TestModel(torch.nn.Module):

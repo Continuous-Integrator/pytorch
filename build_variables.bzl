@@ -112,7 +112,6 @@ libtorch_profiler_sources = [
     "torch/csrc/profiler/standalone/itt_observer.cpp",
     "torch/csrc/profiler/standalone/nvtx_observer.cpp",
     "torch/csrc/profiler/standalone/privateuse1_observer.cpp",
-    "torch/csrc/profiler/standalone/privateuse1_profiler.cpp",
     "torch/csrc/profiler/stubs/base.cpp",
     "torch/csrc/profiler/orchestration/vulkan.cpp",
     "torch/csrc/profiler/perf.cpp",
@@ -505,7 +504,6 @@ libtorch_distributed_base_sources = [
     "torch/csrc/distributed/c10d/Functional.cpp",
     "torch/csrc/distributed/c10d/GlooDeviceFactory.cpp",
     "torch/csrc/distributed/c10d/GroupRegistry.cpp",
-    "torch/csrc/distributed/c10d/NanCheck.cpp",
     "torch/csrc/distributed/c10d/Ops.cpp",
     "torch/csrc/distributed/c10d/ParamCommsUtils.cpp",
     "torch/csrc/distributed/c10d/PrefixStore.cpp",
@@ -786,7 +784,7 @@ libtorch_nvshmem_sources = [
     "torch/csrc/distributed/c10d/cuda/utils.cpp",
     "torch/csrc/distributed/c10d/symm_mem/CUDASymmetricMemoryUtils.cpp",
     "torch/csrc/distributed/c10d/symm_mem/nvshmem_extension.cu",
-    "torch/csrc/distributed/c10d/symm_mem/NVSHMEMSymmetricMemory.cpp",
+    "torch/csrc/distributed/c10d/symm_mem/NVSHMEMSymmetricMemory.cu",
 ]
 
 libtorch_cuda_distributed_sources = libtorch_cuda_distributed_base_sources + libtorch_cuda_distributed_extra_sources
@@ -888,7 +886,6 @@ libtorch_python_xpu_sources = [
     "torch/csrc/xpu/XPUPluggableAllocator.cpp",
     "torch/csrc/xpu/memory_snapshot.cpp",
     "torch/csrc/xpu/MemPool.cpp",
-    "torch/csrc/xpu/Graph.cpp",
     "torch/csrc/inductor/aoti_runner/model_container_runner_xpu.cpp",
     "torch/csrc/inductor/aoti_torch/shim_xpu.cpp",
 ]
@@ -1159,7 +1156,6 @@ aten_cpu_source_non_codegen_list = [
     "aten/src/ATen/LegacyVmapMode.cpp",
     "aten/src/ATen/LegacyVmapTransforms.cpp",
     "aten/src/ATen/core/BackendSelectFallbackKernel.cpp",
-    "aten/src/ATen/core/CachingHostAllocator.cpp",
     "aten/src/ATen/core/DeprecatedTypeProperties.cpp",
     "aten/src/ATen/core/DeprecatedTypePropertiesRegistry.cpp",
     "aten/src/ATen/core/Dict.cpp",
@@ -1475,8 +1471,6 @@ aten_native_source_non_codegen_list = [
     "aten/src/ATen/native/RowwisePrune.cpp",
     "aten/src/ATen/native/SegmentReduce.cpp",
     "aten/src/ATen/native/Scalar.cpp",
-    "aten/src/ATen/native/ScaledBlas.cpp",
-    "aten/src/ATen/native/ScaledBlasUtils.cpp",
     "aten/src/ATen/native/SobolEngineOps.cpp",
     "aten/src/ATen/native/SobolEngineOpsUtils.cpp",
     "aten/src/ATen/native/SoftMax.cpp",

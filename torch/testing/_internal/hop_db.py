@@ -7,7 +7,6 @@ import torch
 from functorch.experimental.control_flow import map
 from torch.nn.attention.flex_attention import _create_empty_block_mask, flex_attention
 from torch.testing import make_tensor
-from torch._higher_order_ops.inline_asm_elementwise import inline_asm_elementwise
 from torch.testing._internal.common_device_type import onlyCUDA
 from torch.testing._internal.common_dtype import all_types_and, custom_types
 from torch.testing._internal.opinfo.core import DecorateInfo, OpInfo, SampleInput
@@ -78,7 +77,6 @@ FIXME_hop_that_doesnt_have_opinfo_test_allowlist = [
     "autograd_function_apply",
     "run_and_save_rng_state",
     "run_with_rng_state",
-    "run_dtensor_rng_op",
     "graphsafe_run_with_rng_state",
     "out_dtype",
     "trace_wrapped",
@@ -107,7 +105,6 @@ FIXME_hop_that_doesnt_have_opinfo_test_allowlist = [
     "aoti_call_delegate",
     "print",
     "inductor_compiled_code",  # Tested separately in test_inductor_wrap_inductor_compile_regions
-    "invoke_leaf_function",  # Needs torch.compile, tested separately in test_leaf_function*
 ]
 
 torch.library.define(
@@ -245,8 +242,7 @@ def simple_local_map_hop(inp1, inp2):
 
     gm = torch.fx.symbolic_trace(body_gm)
 
-    if not torch.distributed.is_available():
-        raise AssertionError("Expected torch.distributed to be available")
+    assert torch.distributed.is_available()
     from torch.distributed.tensor.placement_types import Replicate
 
     gm.meta["local_map_kwargs"] = {
@@ -291,19 +287,6 @@ def simple_invoke_quant_packed(x):
         return (torch.sin(x),)
 
     return invoke_quant_packed(fn, x)[0] * 2.0
-
-
-def sample_inputs_inline_asm(opinfo, device, dtype, requires_grad, **kwargs):
-    make_arg = functools.partial(
-        make_tensor, device=device, dtype=dtype, requires_grad=requires_grad
-    )
-    yield SampleInput(make_arg(2, 2, 2, low=0.1, high=2))
-
-
-def simple_inline_asm(x):
-    return inline_asm_elementwise(
-        x, asm_str="mov.f32 $0, $1;", constraints="=f,f", dtype=torch.float32
-    )
 
 
 hop_db = [
@@ -533,27 +516,5 @@ hop_db = [
                 not torch.distributed.is_available(), "requires distributed build"
             ),
         ],
-    ),
-    OpInfo(
-        name="inline_asm_elementwise",
-        variant_test_name="simple",
-        op=simple_inline_asm,
-        sample_inputs_func=sample_inputs_inline_asm,
-        dtypes=custom_types(torch.float32),
-        supports_out=False,
-        check_batched_grad=False,
-        check_batched_gradgrad=False,
-        check_batched_forward_grad=False,
-        check_inplace_batched_forward_grad=False,
-        supports_autograd=False,
-        skips=(
-            DecorateInfo(unittest.expectedFailure, "TestHOP", "test_aot_export"),
-            DecorateInfo(
-                unittest.expectedFailure, "TestHOP", "test_pre_dispatch_export"
-            ),
-            DecorateInfo(unittest.expectedFailure, "TestHOP", "test_serialize_export"),
-            DecorateInfo(unittest.expectedFailure, "TestHOP", "test_retrace_export"),
-        ),
-        decorators=[onlyCUDA],
     ),
 ]

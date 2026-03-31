@@ -1,5 +1,5 @@
 # mypy: allow-untyped-defs
-from typing import Any
+from typing import Any, Optional
 
 import sympy
 
@@ -32,7 +32,7 @@ def should_unwrap_unspec_arg(name: str):
     return False
 
 
-def signature_of(arg: KernelArgType, *, size_dtype: str | None) -> str:
+def signature_of(arg: KernelArgType, *, size_dtype: Optional[str]) -> str:
     if isinstance(arg, TensorArg):
         # TODO: Remove fp8 special handling when Triton supports PyTorch fp8 dtypes.
         # Related PR: https://github.com/triton-lang/triton/pull/2279/
@@ -125,9 +125,9 @@ def non_constexpr_signature(signature):
 def signature_to_meta(
     signature: list[KernelArgType],
     *,
-    size_dtype: str | None,
+    size_dtype: Optional[str],
     argdefs: list[ArgName],
-    indices: list[int] | None = None,
+    indices: Optional[list[int]] = None,
     is_template: bool = False,
 ) -> dict[str, str]:
     if indices is None:
@@ -160,21 +160,6 @@ def signature_to_meta(
     }
 
 
-def _get_buffer_layout(buf_name: str) -> "torch._inductor.ir.Layout":
-    """Get the layout for a buffer, handling both scheduler buffers and graph inputs."""
-    if V.graph.scheduler:
-        layout = V.graph.scheduler.get_buffer_layout(buf_name)
-    else:
-        buffer = V.graph.try_get_buffer(buf_name)
-        # output arg
-        if not buffer:
-            assert buf_name == V.kernel.output_node.name
-            layout = V.kernel.output_node.layout
-        else:
-            layout = buffer.get_layout()
-    return layout
-
-
 def is_unaligned_buffer(arg: TensorArg):
     buf_name = arg.buffer
     if buf_name in V.graph.unaligned_buffers:
@@ -190,7 +175,17 @@ def is_unaligned_buffer(arg: TensorArg):
         # all constants are assumed to be aligned
         return False
 
-    layout = _get_buffer_layout(buf_name)
+    if V.graph.scheduler:
+        layout = V.graph.scheduler.get_buffer_layout(buf_name)
+    else:
+        buffer = V.graph.try_get_buffer(buf_name)
+        # output arg
+        if not buffer:
+            assert buf_name == V.kernel.output_node.name
+            layout = V.kernel.output_node.layout
+        else:
+            layout = buffer.get_layout()
+
     if isinstance(layout, torch._inductor.ir.NonOwningLayout):
         return not layout.maybe_guard_aligned()
     else:
@@ -208,7 +203,7 @@ def _arg_equals_1(arg: KernelArgType) -> bool:
 def equal_1_arg_indices(
     args: list[KernelArgType],
     *,
-    indices: list[int] | None = None,
+    indices: Optional[list[int]] = None,
 ) -> tuple[int, ...]:
     if indices is None:
         indices = list(range(len(args)))
@@ -218,36 +213,10 @@ def equal_1_arg_indices(
     return equal_to_1
 
 
-def _is_tensor_within_2gb(arg: TensorArg) -> bool:
-    """Check if a tensor argument's storage is provably within 2GB.
-
-    Mirrors HIPBackend.is_within_2gb() but uses compile-time symbolic analysis
-    instead of runtime tensor inspection. This enables canonicalize_pointers to
-    decompose pointer arithmetic into (splat(base), offset) form for buffer ops.
-    """
-    MAX_BYTES = 2**31 - 1
-    try:
-        # Graph inputs aren't tracked by the scheduler; get their layout
-        # from the graph_inputs dict to avoid KeyError in get_buffer_layout.
-        if arg.buffer in V.graph.graph_inputs:
-            inp = V.graph.graph_inputs[arg.buffer]
-            if hasattr(inp, "get_layout"):
-                layout = inp.get_layout()
-            else:
-                return False
-        else:
-            layout = _get_buffer_layout(arg.buffer)
-        storage_bytes = layout.storage_size() * arg.dtype.itemsize
-        return V.graph.sizevars.statically_known_true(storage_bytes <= MAX_BYTES)
-    except Exception:
-        return False
-
-
 def config_of(
     args: list[KernelArgType],
     *,
-    indices: list[int] | None = None,
-    pointer_range_override: tuple[int, ...] | None = None,
+    indices: Optional[list[int]] = None,
 ) -> Any:
     if indices is None:
         indices = list(range(len(args)))
@@ -273,7 +242,7 @@ def config_of(
                 return False
             if x.expr is None:
                 return False
-            if isinstance(x.expr, (float, bool)):
+            if isinstance(x.expr, float):
                 return False
             return V.graph.sizevars.statically_known_multiple_of(x.expr, alignment)  # type: ignore[arg-type]
         if isinstance(x, WorkspaceArg):
@@ -294,18 +263,5 @@ def config_of(
 
     equal_to_1 = equal_1_arg_indices(args, indices=indices)
 
-    # On AMD/HIP, tag tensor args whose storage fits in 2GB so Triton
-    # can use 32-bit pointer offsets and emit buffer load/store ops.
-    if pointer_range_override is not None:
-        pointer_range_32 = pointer_range_override
-    elif torch.version.hip is not None:
-        pointer_range_32 = tuple(
-            i
-            for i, arg in zip(indices, args)
-            if isinstance(arg, TensorArg) and _is_tensor_within_2gb(arg)
-        )
-    else:
-        pointer_range_32 = ()
-
-    # pyrefly: ignore [bad-argument-count, bad-argument-type]
-    return AttrsDescriptorWrapper(divisible_by_16, equal_to_1, pointer_range_32)
+    # pyrefly: ignore [bad-argument-type]
+    return AttrsDescriptorWrapper(divisible_by_16, equal_to_1)

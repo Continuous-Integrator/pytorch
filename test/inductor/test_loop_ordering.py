@@ -84,8 +84,7 @@ class ImplDetailTest(MockSchedulerTest):
             prefix = str(var)[0]
             break
 
-        if not prefix:
-            raise AssertionError
+        assert prefix
         return prefix
 
     @staticmethod
@@ -585,19 +584,11 @@ class LoopOrderingTest(TestCase):
 
         out, code = run_and_get_code(f, x, y)
 
-        FileCheck().check("def call(").run(code[0])
-        # Prologue fused with mm: 1 kernel. Unfused: 2 kernels (expand+add + mm).
-        # With benchmark_kernel, add 1 for the benchmarking code path.
-        base_expected = 1 + int(inductor_config.benchmark_kernel)
-        run_count = code[0].count(".run(")
-        self.assertGreaterEqual(
-            run_count, base_expected, "Expected at least one kernel launch"
-        )
-        self.assertLessEqual(
-            run_count,
-            base_expected + 1,
-            "Prologue fusion produces 1 kernel; unfused produces 2",
-        )
+        # well when benchmark_kernel flag is on, we have one more .run
+        # call in the benchmarking code.
+        FileCheck().check("def call(").check_count(
+            ".run(", 1 + int(inductor_config.benchmark_kernel), exactly=True
+        ).run(code[0])
 
     @inductor_config.patch(
         {
@@ -770,8 +761,7 @@ class MemoryCoalescingTest(MockSchedulerTest):
         from torch._inductor import tiling_utils
 
         def fn(nodes):
-            if len(nodes) != 1:
-                raise AssertionError(f"Expected 1 node, got {len(nodes)}")
+            assert len(nodes) == 1
             fused_norm_read_writes = tiling_utils.extract_normalized_read_writes(
                 nodes[0]
             )
@@ -1133,8 +1123,7 @@ class TestTiling(TestCase):
                 .unsqueeze(0)
             )
         else:
-            if layout != "NHWC":
-                raise AssertionError(f"Unexpected layout: {layout}")
+            assert layout == "NHWC"
             return torch.rand([1, SIZE_A, SIZE_B, SIZE_C], device=GPU_TYPE).to(
                 memory_format=torch.channels_last
             )
@@ -1231,8 +1220,7 @@ class TestTiling(TestCase):
             self.assertTrue(len(nodes) == 1)
 
             coalesce_analysis = tiling_utils.analyze_memory_coalescing(nodes[0])
-            if coalesce_analysis is None:
-                raise AssertionError
+            assert coalesce_analysis is not None
 
             reads = coalesce_analysis.norm_read_writes.reads
             writes = coalesce_analysis.norm_read_writes.writes
@@ -1352,10 +1340,7 @@ class TestIndexInversion(TestCase):
         import numpy as np
         from sympy import lambdify
 
-        if len(expr.free_symbols) != 1:
-            raise AssertionError(
-                f"Expected 1 free symbol, got {len(expr.free_symbols)}"
-            )
+        assert len(expr.free_symbols) == 1
         p0 = next(iter(expr.free_symbols))
 
         def floordiv_replacement(a, b):

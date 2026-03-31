@@ -456,13 +456,6 @@ op_db: list[OpInfo] = [
                 "test_reference_masked",
                 dtypes=(torch.bool, torch.int8, torch.int16, torch.int32),
             ),
-            # FIXME: improve precision
-            DecorateInfo(
-                unittest.skip("Skipped!"),
-                "TestReductions",
-                "test_reference_masked",
-                dtypes=(torch.float16,),
-            ),
             DecorateInfo(
                 unittest.expectedFailure,
                 "TestNormalizeOperators",
@@ -491,6 +484,13 @@ op_db: list[OpInfo] = [
                 "test_reference_masked",
                 device_type="xpu",
                 dtypes=[torch.complex128],
+            ),
+            # AssertionError: Scalars are not equal!
+            DecorateInfo(
+                unittest.expectedFailure,
+                "TestCommon",
+                "test_non_standard_bool_values",
+                device_type="mps",
             ),
         ),
         decorators=[
@@ -587,6 +587,13 @@ op_db: list[OpInfo] = [
                     torch.int8,
                     torch.complex128,
                 ),
+            ),
+            # AssertionError: Scalars are not equal!
+            DecorateInfo(
+                unittest.expectedFailure,
+                "TestCommon",
+                "test_non_standard_bool_values",
+                device_type="mps",
             ),
         ),
         decorators=[
@@ -1314,6 +1321,16 @@ op_db: list[OpInfo] = [
             ),
             DecorateInfo(
                 unittest.expectedFailure, "TestJit", "test_variant_consistency_jit"
+            ),
+            # Exception: norm ops are not supported for complex yet
+            DecorateInfo(
+                unittest.expectedFailure, "TestCommon", "test_dtypes", device_type="mps"
+            ),
+            DecorateInfo(
+                unittest.expectedFailure,
+                "TestCommon",
+                device_type="mps",
+                dtypes=(torch.complex64,),
             ),
         ),
         gradcheck_wrapper=gradcheck_wrapper_masked_operation,

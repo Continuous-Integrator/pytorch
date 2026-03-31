@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
 
-from __future__ import annotations
-
 import os
 import shutil
 import sys
 from pathlib import Path
 from subprocess import check_call
 from tempfile import TemporaryDirectory
+from typing import Optional
 
 
 SCRIPT_DIR = Path(__file__).parent
@@ -38,7 +37,7 @@ def check_and_replace(inp: str, src: str, dst: str) -> str:
 
 
 def patch_init_py(
-    path: Path, *, version: str, expected_version: str | None = None
+    path: Path, *, version: str, expected_version: Optional[str] = None
 ) -> None:
     if not expected_version:
         expected_version = read_triton_version()
@@ -57,7 +56,7 @@ def build_triton(
     version: str,
     commit_hash: str,
     device: str = "cuda",
-    py_version: str | None = None,
+    py_version: Optional[str] = None,
     release: bool = False,
     with_clang_ldd: bool = False,
 ) -> Path:
@@ -81,16 +80,9 @@ def build_triton(
         check_call(["git", "clone", triton_repo, "triton"], cwd=tmpdir)
         if release:
             ver, rev, patch = version.split(".")
-            if device == "xpu":
-                # XPU uses the patch version in the release branch name
-                check_call(
-                    ["git", "checkout", f"release/{ver}.{rev}.{patch}"],
-                    cwd=triton_basedir,
-                )
-            else:
-                check_call(
-                    ["git", "checkout", f"release/{ver}.{rev}.x"], cwd=triton_basedir
-                )
+            check_call(
+                ["git", "checkout", f"release/{ver}.{rev}.x"], cwd=triton_basedir
+            )
         else:
             check_call(["git", "fetch", "origin", commit_hash], cwd=triton_basedir)
             check_call(["git", "checkout", commit_hash], cwd=triton_basedir)

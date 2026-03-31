@@ -224,10 +224,6 @@ class TORCH_API Context {
     return detail::getCUDAHooks().nvrtc();
   }
 
-  static const at::xpu::LevelZero& getLevelZero() {
-    return detail::getXPUHooks().level_zero();
-  }
-
   static bool setFlushDenormal(bool on);
 
   // NB: This method is *purely* whether or not a user requested
@@ -407,9 +403,8 @@ class TORCH_API Context {
   void setQEngine(at::QEngine e);
   static const std::vector<at::QEngine>& supportedQEngines();
   static bool isXNNPACKAvailable();
-  void setCheckSparseTensorInvariants(std::optional<bool> e);
-  std::optional<bool> checkSparseTensorInvariants(
-      bool warn_when_uninitialized = false) const;
+  void setCheckSparseTensorInvariants(bool e);
+  bool checkSparseTensorInvariants() const;
   // This method is used to release the original weight after pre-packing.
   // It should be called once before loading/running the model.
   // NB: By default it is set to true for mobile builds.
@@ -502,11 +497,7 @@ class TORCH_API Context {
       (c10::utils::check_env("TORCH_BLAS_PREFER_CUBLASLT") == true ||
        c10::utils::check_env("TORCH_BLAS_PREFER_HIPBLASLT") == true) // alias
       ? at::BlasBackend::Cublaslt
-      : ((c10::utils::check_env("TORCH_BLAS_PREFER_CUBLASLT") == false ||
-          c10::utils::check_env("TORCH_BLAS_PREFER_HIPBLASLT") ==
-              false) // alias
-             ? at::BlasBackend::Cublas
-             : at::BlasBackend::Default);
+      : at::BlasBackend::Default;
   at::ROCmFABackend rocm_fa_preferred_backend =
       c10::utils::check_env("TORCH_ROCM_FA_PREFER_CK") == true
       ? at::ROCmFABackend::Ck
@@ -519,7 +510,7 @@ class TORCH_API Context {
   bool display_vmap_fallback_warnings_ = false;
   bool warn_on_accumulate_grad_stream_mismatch_ = true;
   std::atomic<at::QEngine> quantized_engine = at::QEngine::NoQEngine;
-  std::optional<bool> enable_sparse_tensor_invariant_checks = std::nullopt;
+  bool enable_sparse_tensor_invariant_checks = false;
   bool allow_fp16_reduction_cpu = false;
 
   using Key = std::pair<Float32Backend, Float32Op>;

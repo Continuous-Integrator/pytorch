@@ -1,5 +1,5 @@
 # mypy: allow-untyped-defs
-from typing import Any
+from typing import Any, Union
 
 import torch
 from torch.utils._contextlib import (
@@ -376,15 +376,11 @@ class _force_original_view_tracking(_DecoratorContextManager):
 
     def __init__(self, mode: bool) -> None:
         self.prev = torch._C._is_view_replay_enabled()
-        self.mode = mode
         torch._C._set_view_replay_enabled(mode)
-
-    def __call__(self, orig_func: F) -> F:
-        torch._C._set_view_replay_enabled(self.prev)
-        return super().__call__(orig_func)
+        self.mode = mode
 
     def __enter__(self) -> None:
-        torch._C._set_view_replay_enabled(self.mode)
+        pass
 
     def __exit__(self, exc_type: Any, exc_value: Any, traceback: Any) -> None:
         torch._C._set_view_replay_enabled(self.prev)
@@ -416,7 +412,7 @@ class _unsafe_preserve_version_counter(_DecoratorContextManager):
 
     """
 
-    def __init__(self, tensors: torch.Tensor | tuple[torch.Tensor, ...]) -> None:
+    def __init__(self, tensors: Union[torch.Tensor, tuple[torch.Tensor, ...]]) -> None:
         self.tensors = (tensors,) if isinstance(tensors, torch.Tensor) else tensors
         if not isinstance(self.tensors, tuple):
             raise AssertionError("Expected tensors to be a tuple")

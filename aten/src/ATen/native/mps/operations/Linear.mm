@@ -206,7 +206,8 @@ static Tensor _mps_linear_backward_input(IntArrayRef input_size, const Tensor& g
     MPSGraphTensor* outputTensor_ = nil;
   };
 
-  Tensor output = at::empty(input_size, grad_output.options());
+  Tensor output = at::empty(
+      input_size, grad_output.scalar_type(), std::nullopt, kMPS, std::nullopt, grad_output.suggest_memory_format());
   TORCH_CHECK(output.is_mps());
   if (grad_output.numel() == 0) {
     return output;
@@ -274,8 +275,18 @@ static std::tuple<Tensor, Tensor> _mps_linear_backward_weights(const Tensor& gra
   TORCH_CHECK(grad_output_reshaped.is_mps());
   TORCH_CHECK(input_reshaped.is_mps());
 
-  Tensor output = at::empty({grad_output_reshaped.size(1), input_reshaped.size(1)}, grad_output.options());
-  Tensor bias = at::empty({grad_output_reshaped.size(1)}, grad_output.options());
+  Tensor output = at::empty({grad_output_reshaped.size(1), input_reshaped.size(1)},
+                            grad_output.scalar_type(),
+                            std::nullopt,
+                            kMPS,
+                            std::nullopt,
+                            grad_output.suggest_memory_format());
+  Tensor bias = at::empty({grad_output_reshaped.size(1)},
+                          grad_output.scalar_type(),
+                          std::nullopt,
+                          kMPS,
+                          std::nullopt,
+                          grad_output.suggest_memory_format());
   TORCH_CHECK(output.is_mps());
   TORCH_CHECK(bias.is_mps());
 

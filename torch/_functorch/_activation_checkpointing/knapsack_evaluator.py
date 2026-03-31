@@ -123,21 +123,14 @@ class KnapsackEvaluator:
             range(len(self._graph_info_provider.all_recomputable_banned_nodes))
         )
         # Check that there are no overlaps between saved nodes and recomputable nodes
-        if len(recomputable_node_idxs_set.intersection(saved_nodes_idxs_set)) != 0:
-            raise AssertionError(
-                f"Saved nodes and recomputable nodes cannot have any overlaps, "
-                f"but found overlap: {recomputable_node_idxs_set.intersection(saved_nodes_idxs_set)}"
-            )
+        assert (
+            len(recomputable_node_idxs_set.intersection(saved_nodes_idxs_set)) == 0
+        ), "Saved nodes and recomputable nodes cannot have any overlaps"
         # Check that all candidate nodes are accounted for
-        if (
+        assert (
             recomputable_node_idxs_set.union(saved_nodes_idxs_set)
-            != all_candidate_nodes_idxs
-        ):
-            raise AssertionError(
-                f"All candidate nodes must be accounted for in the provided output, "
-                f"got union={recomputable_node_idxs_set.union(saved_nodes_idxs_set)}, "
-                f"expected={all_candidate_nodes_idxs}"
-            )
+            == all_candidate_nodes_idxs
+        ), "All candidate nodes must be accounted for in the provided output"
 
     def evaluate_knapsack_output(
         self,
@@ -207,7 +200,7 @@ class KnapsackEvaluator:
             knapsack_algo (Callable): The knapsack algorithm to use for evaluation.
             memory_budget_values (List[float]): A list of memory budgets to evaluate.
         """
-        results = []
+        results = list()
         for memory_budget in memory_budget_values:
             _, saved_nodes, recomputed_nodes = knapsack_algo(
                 self._graph_info_provider.get_knapsack_memory_input(),

@@ -8,7 +8,6 @@ import sympy
 
 import torch
 from torch._inductor.virtualized import V
-from torch.utils._sympy.functions import FloorDiv, Mod
 
 from ... import ir
 from ...ir import FixedLayout, FlexibleLayout
@@ -70,7 +69,7 @@ def _use_flex_decoding(query, kv_indices, value, kernel_options, enable_gqa) -> 
 
     Hq = query.get_size()[1]
     Hkv = value.get_size()[1]
-    ratio = FloorDiv(Hq, Hkv)
+    ratio = Hq // Hkv
 
     pw_of_two = V.graph.sizevars.guard_or_false(
         sympy.And(sympy.Gt(ratio, 0), sympy.Eq(ratio & (ratio - 1), 0))
@@ -117,7 +116,6 @@ flex_decoding_template = TritonTemplate(
     source=load_flex_template("flex_decode")
     + load_flex_template("utilities")
     + load_flex_template("common"),
-    always_freeze_layout=True,
 )
 
 
@@ -182,10 +180,10 @@ def create_flex_decoding_kernel(*args, **kwargs):
     }
 
     seq_q_divisible = V.graph.sizevars.statically_known_true(
-        sympy.Eq(Mod(seq_len_q, 128), 0)
+        sympy.Eq(seq_len_q % 128, 0)
     )
     seq_kv_divisible = V.graph.sizevars.statically_known_true(
-        sympy.Eq(Mod(seq_len_kv, 128), 0)
+        sympy.Eq(seq_len_kv % 128, 0)
     )
     if seq_q_divisible and seq_kv_divisible:
         kernel_options.setdefault("IS_DIVISIBLE", True)
@@ -193,7 +191,7 @@ def create_flex_decoding_kernel(*args, **kwargs):
         kernel_options.setdefault("IS_DIVISIBLE", False)
 
     # Calculate GQA head sharing
-    gqa_shared_heads = FloorDiv(Hq, Hkv)
+    gqa_shared_heads = Hq // Hkv
     if not is_power_of_2(gqa_shared_heads):
         raise ValueError(
             "Number of shared query heads sharing the same KV head must be power of 2. "
@@ -303,7 +301,7 @@ def create_flex_decoding_kernel(*args, **kwargs):
 
     kernel_options.setdefault(
         "SAFE_M_BOUNDARY",
-        Mod(seq_len_q * gqa_shared_heads, kernel_options["BLOCK_M"]) == 0,
+        ((seq_len_q * gqa_shared_heads) % kernel_options["BLOCK_M"]) == 0,
     )
     # TODO: This feels sketchy
     kernel_options.setdefault("SAFE_N_BOUNDARY", True)
@@ -350,9 +348,7 @@ def create_flex_decoding_kernel(*args, **kwargs):
                 "num_buffers_warp_spec", num_buffers_warp_spec
             )
 
-        # Intel GPU enables TMA by default
-        cur_kernel_options.setdefault("USE_TMA", bool(torch.xpu.is_available()))
-
+        cur_kernel_options.setdefault("USE_TMA", False)
         if cur_kernel_options["USE_TMA"] and not can_use_tma(query, key, value):
             cur_kernel_options["USE_TMA"] = False
 
@@ -414,7 +410,7 @@ def create_flex_decoding_kernel(*args, **kwargs):
         8: create_indices_fake,
     }
 
-    buf_ACC, _ = autotune_select_algorithm(
+    buf_ACC = autotune_select_algorithm(
         "flex_decoding",
         choices,
         inputs_for_flex_decoding,

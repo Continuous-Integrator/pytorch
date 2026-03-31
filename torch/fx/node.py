@@ -29,7 +29,7 @@ __all__ = ["Node", "map_arg", "map_aggregate", "has_side_effect"]
 
 log = logging.getLogger(__name__)
 
-BaseArgumentTypes = Union[  # noqa: UP007
+BaseArgumentTypes = Union[
     str,
     int,
     float,
@@ -47,9 +47,9 @@ BaseArgumentTypes = Union[  # noqa: UP007
 ]
 base_types = typing.get_args(BaseArgumentTypes)
 
-Target: TypeAlias = Callable[..., Any] | str
+Target: TypeAlias = Union[Callable[..., Any], str]
 
-Argument = Optional[  # noqa: UP007, UP045
+Argument = Optional[
     Union[
         tuple["Argument", ...],
         Sequence["Argument"],
@@ -185,7 +185,6 @@ def _get_qualified_name(func: Callable[..., Any]) -> str:
     ):
         return f"torch.Tensor.{func.__name__}"
     name = func.__name__
-
     if name == "<lambda>":
         # For lambdas, try to get their defining name in the module
         try:
@@ -292,10 +291,10 @@ class Node(_NodeBase):
     # generated function return type. (Note this is a special case. ``return``
     # does not produce a value, it's more of a notation. Thus, this value
     # describes the type of args[0] in the ``return`` node.
-    type: Any | None
+    type: Optional[Any]
     _sort_key: Any
     # If set, use this fn to print this node
-    _repr_fn: Callable[["Node"], str] | None
+    _repr_fn: Optional[Callable[["Node"], str]]
     # Dictionary to store metadata passes need to do their
     # transformations. This metadata is preserved across node copies
     meta: dict[str, Any]
@@ -309,7 +308,7 @@ class Node(_NodeBase):
         target: "Target",
         args: tuple["Argument", ...],
         kwargs: dict[str, "Argument"],
-        return_type: Any | None = None,
+        return_type: Optional[Any] = None,
     ) -> None:
         """
         Instantiate an instance of ``Node``. Note: most often, you want to use the
@@ -344,8 +343,7 @@ class Node(_NodeBase):
                     "but a Callable is expected"
                 )
         else:
-            if op not in _legal_ops:
-                raise AssertionError(f"op '{op}' is not in _legal_ops")
+            assert op in _legal_ops
             if not isinstance(target, str):
                 raise ValueError(
                     f"Node [graph = {graph}, name = '{name}'] target {target} has type {torch.typename(target)} "
@@ -513,10 +511,9 @@ class Node(_NodeBase):
             idx (int): The index of the element in ``self.args`` to be inserted before.
             arg (Argument): The new argument value to insert into ``args``
         """
-        if not (0 <= idx <= len(self.args)):
-            raise AssertionError(
-                f"insert_args index must be between 0 and len(self.args), got {idx}"
-            )
+        assert 0 <= idx <= len(self.args), (
+            "insert_args index must be between 0 and len(self.args)"
+        )
         args_left = self.args[:idx]
         args_right = self.args[idx:]
 
@@ -544,7 +541,7 @@ class Node(_NodeBase):
         self.kwargs = {**self.kwargs, key: arg}
 
     @property
-    def stack_trace(self) -> str | None:
+    def stack_trace(self) -> Optional[str]:
         """
         Return the Python stack trace that was recorded during tracing, if any.
         When traced with fx.Tracer, this property is usually populated by
@@ -558,7 +555,7 @@ class Node(_NodeBase):
         return self.meta.get("stack_trace", None)
 
     @stack_trace.setter
-    def stack_trace(self, trace: str | None) -> None:
+    def stack_trace(self, trace: Optional[str]) -> None:
         self.meta["stack_trace"] = trace
 
     def __repr__(self) -> str:
@@ -594,11 +591,11 @@ class Node(_NodeBase):
     @compatibility(is_backward_compatible=True)
     def format_node(
         self,
-        placeholder_names: list[str] | None = None,
-        maybe_return_typename: list[str] | None = None,
+        placeholder_names: Optional[list[str]] = None,
+        maybe_return_typename: Optional[list[str]] = None,
         *,
         include_tensor_metadata: bool = False,
-    ) -> str | None:
+    ) -> Optional[str]:
         """
         Return a descriptive string representation of ``self``.
 
@@ -629,10 +626,7 @@ class Node(_NodeBase):
                 current Node.
         """
         if self.op == "placeholder":
-            if not isinstance(self.target, str):
-                raise AssertionError(
-                    f"Expected target to be str for placeholder, got {type(self.target)}"
-                )
+            assert isinstance(self.target, str)
             arg_str = self.target
             arg_str += arg_str + f": {_type_repr(self.type)}" if self.type else ""
             if placeholder_names:
@@ -692,7 +686,7 @@ class Node(_NodeBase):
     def replace_all_uses_with(
         self,
         replace_with: "Node",
-        delete_user_cb: Callable[["Node"], bool] | None = None,
+        delete_user_cb: Optional[Callable[["Node"], bool]] = None,
         *,
         propagate_meta: bool = False,
     ) -> list["Node"]:
@@ -714,11 +708,10 @@ class Node(_NodeBase):
             The list of Nodes on which this change was made.
         """
         if propagate_meta:
-            if len(replace_with.meta) != 0:
-                raise AssertionError(
-                    "Called node.replace_all_uses_with(replace_with, propagate_meta=True), "
-                    "but replace_with already has .meta keys"
-                )
+            assert len(replace_with.meta) == 0, (
+                "Called node.replace_all_uses_with(replace_with, propagate_meta=True), "
+                "but replace_with already has .meta keys"
+            )
             for k, v in self.meta.items():
                 replace_with.meta[k] = v
         to_process = [*self.users]
@@ -754,15 +747,13 @@ class Node(_NodeBase):
 
         # Check if an impure module.
         if self.op == "call_module":
-            if self.graph.owning_module is None:
-                raise AssertionError(
-                    "self.graph.owning_module not set for purity check"
-                )
+            assert self.graph.owning_module is not None, (
+                "self.graph.owning_module not set for purity check"
+            )
             target_mod = self.graph.owning_module.get_submodule(self.target)
-            if target_mod is None:
-                raise AssertionError(
-                    f"Did not find expected submodule target {self.target}"
-                )
+            assert target_mod is not None, (
+                f"Did not find expected submodule target {self.target}"
+            )
             # NOTE: here we can end up considering GraphModule submodules pure,
             # even if they contain impure ops. It may not be safe to change
             # because this function is used by graph.eliminate_dead_code,
@@ -786,10 +777,10 @@ class Node(_NodeBase):
     def normalized_arguments(
         self,
         root: torch.nn.Module,
-        arg_types: tuple[Any] | None = None,
-        kwarg_types: dict[str, Any] | None = None,
+        arg_types: Optional[tuple[Any]] = None,
+        kwarg_types: Optional[dict[str, Any]] = None,
         normalize_to_only_use_kwargs: bool = False,
-    ) -> ArgsKwargsPair | None:
+    ) -> Optional[ArgsKwargsPair]:
         """
         Returns normalized arguments to Python targets. This means that
         `args/kwargs` will be matched up to the module/functional's
@@ -813,10 +804,7 @@ class Node(_NodeBase):
             Returns NamedTuple ArgsKwargsPair, or `None` if not successful.
         """
         if self.op == "call_function":
-            if not callable(self.target):
-                raise AssertionError(
-                    f"Expected callable target, got {type(self.target)}"
-                )
+            assert callable(self.target)
             return normalize_function(
                 self.target,
                 self.args,  # type: ignore[arg-type]
@@ -826,10 +814,7 @@ class Node(_NodeBase):
                 normalize_to_only_use_kwargs=normalize_to_only_use_kwargs,
             )
         elif self.op == "call_module":
-            if not isinstance(self.target, str):
-                raise AssertionError(
-                    f"Expected str target for call_module, got {type(self.target)}"
-                )
+            assert isinstance(self.target, str)
             return normalize_module(
                 root,
                 self.target,
@@ -870,8 +855,7 @@ class Node(_NodeBase):
         if name == "name" and hasattr(self, "name"):
             m = self.graph.owning_module
             if getattr(m, "_replace_hooks", None):
-                if not isinstance(value, str):
-                    raise AssertionError(f"Expected value to be str, got {type(value)}")
+                assert isinstance(value, str)
                 for user in self.users:
                     for replace_hook in m._replace_hooks:
                         replace_hook(old=self, new=value, user=user)
@@ -896,8 +880,7 @@ def map_arg(a: ArgumentT, fn: Callable[[Node], Argument]) -> ArgumentT:
     arg may be a list, tuple, slice, or dict with string keys: the return value will
     have the same type and structure.
     """
-    if not callable(fn):
-        raise AssertionError("torch.fx.map_arg(a, fn): fn must be a callable")
+    assert callable(fn), "torch.fx.map_arg(a, fn): fn must be a callable"
     return _fx_map_arg(a, fn)
 
 

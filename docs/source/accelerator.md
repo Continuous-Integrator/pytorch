@@ -26,16 +26,6 @@
     device_index
 ```
 
-## Graphs
-
-```{eval-rst}
-.. autosummary::
-    :toctree: generated
-    :nosignatures:
-
-    Graph
-```
-
 ```{eval-rst}
 .. automodule:: torch.accelerator.memory
 ```
@@ -50,7 +40,6 @@
     :nosignatures:
 
      empty_cache
-     empty_host_cache
      get_memory_info
      max_memory_allocated
      max_memory_reserved

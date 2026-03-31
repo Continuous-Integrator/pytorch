@@ -9,11 +9,11 @@ import pickle
 import tokenize
 import unittest
 from collections.abc import Callable
-from contextvars import ContextVar
 from dataclasses import dataclass
 from types import FunctionType, ModuleType
 from typing import Any, Generic, NoReturn, Optional, TYPE_CHECKING, TypeVar
 from typing_extensions import deprecated
+from unittest import mock
 
 from torch._utils_internal import justknobs_check
 
@@ -46,7 +46,7 @@ class _Config(Generic[T]):
             If multiple env variables are given, the precedence order is from
             left to right.
         user_override: If a user sets a value (i.e. foo.bar=True), that
-            has precedence over everything after this.  User overrides are thread-local.
+            has precedence over everything after this.
         env_name_default: If set, this environment variable will override everything
             after this.
             If multiple env variables are given, the precedence order is from
@@ -75,9 +75,6 @@ class _Config(Generic[T]):
     env_name_force: list[str] | None = None
     value_type: type | None = None
     alias: str | None = None
-    # Deprecation support
-    deprecated: bool = False
-    deprecation_message: str | None = None
 
     def __post_init__(self) -> None:
         self.env_name_default = _Config.string_or_list_of_string_to_list(
@@ -125,9 +122,6 @@ if TYPE_CHECKING:
         env_name_force: str | list[str] | None = None,
         value_type: type | None = None,
         alias: str | None = None,
-        # Deprecation support
-        deprecated: bool = False,
-        deprecation_message: str | None = None,
     ) -> T: ...
 
 else:
@@ -139,9 +133,6 @@ else:
         env_name_force: str | list[str] | None = None,
         value_type: type | None = None,
         alias: str | None = None,
-        # Deprecation support
-        deprecated: bool = False,
-        deprecation_message: str | None = None,
     ) -> _Config[T]:
         return _Config(
             default=default,
@@ -150,9 +141,6 @@ else:
             env_name_force=env_name_force,
             value_type=value_type,
             alias=alias,
-            # Deprecation support
-            deprecated=deprecated,
-            deprecation_message=deprecation_message,
         )
 
 
@@ -203,7 +191,7 @@ def install_config_module(module: ModuleType) -> None:
             annotated_type = type_hints.get(key, None)
             if isinstance(value, CONFIG_TYPES):
                 config[name] = _ConfigEntry(
-                    _Config(default=value, value_type=annotated_type), name
+                    _Config(default=value, value_type=annotated_type)
                 )
                 if dest is module:
                     delattr(module, key)
@@ -211,7 +199,7 @@ def install_config_module(module: ModuleType) -> None:
                 if annotated_type is not None and value.value_type is None:
                     value.value_type = annotated_type
 
-                config[name] = _ConfigEntry(value, name)
+                config[name] = _ConfigEntry(value)
 
                 if dest is module:
                     delattr(module, key)
@@ -291,7 +279,7 @@ class _ConfigEntry:
     value_type: type
     # The value specified by the user when they overrode the configuration
     # _UNSET_SENTINEL indicates the value is not set.
-    user_override: ContextVar[object]
+    user_override: Any = _UNSET_SENTINEL
     # The justknob to check for this config
     justknob: str | None = None
     # environment variables are read at install time
@@ -310,24 +298,14 @@ class _ConfigEntry:
     # upstream bug - python/cpython#126886
     hide: bool = False
     alias: str | None = None
-    # Deprecation support
-    deprecated: bool = False
-    deprecation_message: str | None = None
-    _deprecation_warned: bool = False
 
-    def __init__(self, config: _Config, name: str) -> None:
+    def __init__(self, config: _Config) -> None:
         self.default = config.default
         self.value_type = (
             config.value_type if config.value_type is not None else type(self.default)
         )
         self.justknob = config.justknob
         self.alias = config.alias
-        # Deprecation fields
-        self.deprecated = config.deprecated
-        self.deprecation_message = config.deprecation_message
-        self._deprecation_warned = False
-
-        self.user_override = ContextVar(name, default=_UNSET_SENTINEL)
         if config.env_name_default is not None:
             for val in config.env_name_default:
                 if (env_value := _read_env_variable(val)) is not None:
@@ -351,8 +329,8 @@ class _ConfigEntry:
             if self.value_type not in (
                 bool,
                 str,
-                Optional[bool],  # noqa: UP045
-                Optional[str],  # noqa: UP045
+                Optional[bool],
+                Optional[str],
             ):
                 raise AssertionError(
                     f"envvar configs only support (optional) booleans or strings, {self.value_type} is neither"
@@ -376,34 +354,17 @@ class ConfigModule(ModuleType):
             f"use {__name__}.install_config_module(sys.modules[__name__])"
         )
 
-    def _warn_if_deprecated(self, name: str, config: _ConfigEntry) -> None:
-        """Issue deprecation warning for config if not already warned."""
-        if config.deprecated and not config._deprecation_warned:
-            import warnings
-
-            msg = f"{self.__name__}.{name} is deprecated"
-            if config.deprecation_message:
-                msg += f" and {config.deprecation_message}"
-            msg += ". It will be removed in a future version of PyTorch."
-            warnings.warn(msg, FutureWarning, stacklevel=3)
-            config._deprecation_warned = True
-
     def __setattr__(self, name: str, value: object) -> None:
         if name in self._bypass_keys:
             super().__setattr__(name, value)
         elif name not in self._config:
             raise AttributeError(f"{self.__name__}.{name} does not exist")
+        elif self._config[name].alias is not None:
+            self._set_alias_val(self._config[name], value)
         else:
-            # Issue deprecation warning on write (once per config)
-            config = self._config[name]
-            self._warn_if_deprecated(name, config)
-
-            if config.alias is not None:
-                self._set_alias_val(config, value)
-            else:
-                config.user_override.set(value)
-                self._is_dirty = True
-                config.hide = False
+            self._config[name].user_override = value
+            self._is_dirty = True
+            self._config[name].hide = False
 
     def __getattr__(self, name: str) -> Any:
         try:
@@ -412,9 +373,6 @@ class ConfigModule(ModuleType):
             if config.hide:
                 raise AttributeError(f"{self.__name__}.{name} does not exist")
 
-            # Issue deprecation warning on read (once per config)
-            self._warn_if_deprecated(name, config)
-
             alias_val = self._get_alias_val(config)
             if alias_val is not _UNSET_SENTINEL:
                 return alias_val
@@ -422,9 +380,8 @@ class ConfigModule(ModuleType):
             if config.env_value_force is not _UNSET_SENTINEL:
                 return config.env_value_force
 
-            user_override = config.user_override.get()
-            if user_override is not _UNSET_SENTINEL:
-                return user_override
+            if config.user_override is not _UNSET_SENTINEL:
+                return config.user_override
 
             if config.env_value_default is not _UNSET_SENTINEL:
                 return config.env_value_default
@@ -437,8 +394,8 @@ class ConfigModule(ModuleType):
             # copy them to user_overrides in case the user overrides
             # them
             if isinstance(config.default, (list, set, dict)):
-                config.user_override.set(copy.deepcopy(config.default))
-                return config.user_override.get()
+                config.user_override = copy.deepcopy(config.default)
+                return config.user_override
             return config.default
 
         except KeyError as e:
@@ -449,7 +406,7 @@ class ConfigModule(ModuleType):
         self._is_dirty = True
         # must support delete because unittest.mock.patch deletes
         # then recreate things
-        self._config[name].user_override.set(_UNSET_SENTINEL)
+        self._config[name].user_override = _UNSET_SENTINEL
         self._config[name].hide = True
 
     def _get_alias_module_and_name(
@@ -500,10 +457,10 @@ class ConfigModule(ModuleType):
             or config_val.env_value_force == config_val.default
         )
 
-        unset = config_val.user_override.get() is _UNSET_SENTINEL
+        unset = config_val.user_override is _UNSET_SENTINEL
         # Handle reference types specially to avoid spammy warnings
         if isinstance(config_val.default, (list, set, dict)):
-            unset = unset or config_val.user_override.get() == config_val.default
+            unset = unset or config_val.user_override == config_val.default
         return unset and not_set_env_default and not_set_env_force
 
     def _get_dict(
@@ -539,12 +496,7 @@ class ConfigModule(ModuleType):
                 continue
             if self._config[key].alias is not None:
                 continue
-
-            curr_entry = self._config[key]
-            has_been_warned = curr_entry._deprecation_warned
-            curr_entry._deprecation_warned = True
             config[key] = copy.deepcopy(getattr(self, key))
-            curr_entry._deprecation_warned = has_been_warned
 
         return config
 
@@ -690,7 +642,7 @@ class ConfigModule(ModuleType):
         **kwargs: dict[str, Any],
     ) -> "ContextDecorator":
         """
-        Decorator and/or context manager to make temporary changes to a config.  Note that patched settings are thread-local.
+        Decorator and/or context manager to make temporary changes to a config.
 
         As a decorator:
 
@@ -780,13 +732,13 @@ class ConfigModule(ModuleType):
         config = self._config
 
         def change() -> Callable[[], None]:
-            prior = {k: config[k].user_override.get() for k in changes}
+            prior = {k: config[k].user_override for k in changes}
             for k, v in changes.items():
-                self._config[k].user_override.set(v)
+                self._config[k].user_override = v
 
             def revert() -> None:
                 for k, v in prior.items():
-                    self._config[k].user_override.set(v)
+                    self._config[k].user_override = v
 
             return revert
 
@@ -853,6 +805,15 @@ class SubConfigProxy:
 
     def __delattr__(self, name: str) -> None:
         return self._config.__delattr__(self._prefix + name)
+
+
+def patch_object(obj: object, name: str, value: object) -> object:
+    """
+    Workaround `mock.patch.object` issue with ConfigModule
+    """
+    if isinstance(obj, ConfigModule):
+        return obj.patch(name, value)
+    return mock.patch.object(obj, name, value)
 
 
 def get_tristate_env(name: str, default: Any = None) -> bool | None:

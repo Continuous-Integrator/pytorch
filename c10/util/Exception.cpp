@@ -1,4 +1,3 @@
-// @allow-raw-throw
 #include <c10/util/Exception.h>
 #include <c10/util/Logging.h>
 #include <c10/util/Type.h>

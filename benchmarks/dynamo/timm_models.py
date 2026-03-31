@@ -100,7 +100,6 @@ SKIP_ACCURACY_CHECK_AS_EAGER_NON_DETERMINISTIC_MODELS = {}
 REQUIRE_LARGER_MULTIPLIER_FOR_SMALLER_TENSOR = {
     "inception_v3",
     "mobilenetv3_large_100",
-    "vit_base_patch14_dinov2.lvd142m",
 }
 
 
@@ -234,6 +233,10 @@ class TimmRunner(BenchmarkRunner):
     def guard_on_nn_module_models(self):
         return {}
 
+    @property
+    def inline_inbuilt_nn_modules_models(self):
+        return {}
+
     @download_retry_decorator
     def _download_model(self, model_name):
         model = create_model(
@@ -313,7 +316,7 @@ class TimmRunner(BenchmarkRunner):
         else:
             model.eval()
 
-        self.validate_model(model_name, model, example_inputs)
+        self.validate_model(model, example_inputs)
 
         return device, model_name, model, example_inputs, batch_size
 

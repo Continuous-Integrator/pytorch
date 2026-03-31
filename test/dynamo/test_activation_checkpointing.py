@@ -92,8 +92,7 @@ def count_ops(
 
     # assert ((freq or freq_ge) and op) or ((freqs or freqs_ge) and ops)
     if op is not None:
-        if isinstance(op, list):
-            raise AssertionError("Expected op to not be a list")
+        assert not isinstance(op, list)
         ops = [op]
     if freq is not None:
         freqs = [freq]
@@ -106,30 +105,24 @@ def count_ops(
                 if match_rng_op(node, op) or node.target == op:
                     actual_count += 1
             err_msg = f"In graph {gm}, expected {op} to have occurred {freq} times in the graph, but got {actual_count}."
-            if actual_count != freq:
-                raise AssertionError(err_msg)
+            assert actual_count == freq, err_msg
     else:
-        if freqs_ge is None:
-            raise AssertionError("Expected freqs_ge to not be None")
+        assert freqs_ge is not None
         for op, freq_ge in zip(ops, freqs_ge):
             actual_count = 0
             for node in gm.graph.nodes:
                 if match_rng_op(node, op) or node.target == op:
                     actual_count += 1
-            if actual_count < freq_ge:
-                raise AssertionError(
-                    f"In graph {gm}, expected {op} to have occurred at least {freq_ge} times in the graph, but got {actual_count}."
-                )
+            assert actual_count >= freq_ge, (
+                f"In graph {gm}, expected {op} to have occurred at least {freq_ge} times in the graph, but got {actual_count}."
+            )
     return gm
 
 
 def collect_fwd_graph_outputs(graph: torch.fx.Graph, *, fwd_outputs: set[str]):
     if not torch._dynamo.compiled_autograd.in_compiled_autograd_region:  # fwd graph
         return_node = list(graph.nodes)[-1]
-        if return_node.target != "output":
-            raise AssertionError(
-                f"Expected return_node.target to be 'output', got {return_node.target}"
-            )
+        assert return_node.target == "output"
         for x in return_node.args[0]:
             fwd_outputs.add(str(x))
 
@@ -292,9 +285,7 @@ class ActivationCheckpointingViaTagsTests(
                         _log_export_usage=False,
                     )
                     # NOTE: this is necessary for rng to be added to the exported graph
-                    return torch.compile(
-                        gm, fullgraph=False, backend="aot_eager_decomp_partition"
-                    )(*runtime_args)
+                    return torch.compile(gm, fullgraph=False)(*runtime_args)
 
                 return runtime_wrapper
 
@@ -411,146 +402,6 @@ class ActivationCheckpointingViaTagsTests(
                 re.search(r"# ac_graph_id: \d+ - PREFER_RECOMPUTE", gm_str),
                 f"Expected ac_graph_id pattern not found in:\n{gm_str}",
             )
-            return min_cut_rematerialization_partition(joint_gm, *args, **kwargs)
-
-        backend = aot_autograd(
-            fw_compiler=nop, bw_compiler=nop, partition_fn=partition_fn
-        )
-        _ = torch.compile(fn, backend=backend)(x, y)
-
-    @requires_cuda_and_triton
-    def test_ac_tags_through_custom_autograd_function(self, device):
-        class MyMM(torch.autograd.Function):
-            @staticmethod
-            def forward(x, w):
-                return x @ w
-
-            @staticmethod
-            def setup_context(ctx, inputs, output):
-                x, w = inputs
-                ctx.save_for_backward(x, w)
-
-            @staticmethod
-            def backward(ctx, grad):
-                x, w = ctx.saved_tensors
-                return grad @ w.t(), x.t() @ grad
-
-        def gn(x, w):
-            return MyMM.apply(x, w)
-
-        def fn(x, w):
-            return torch.utils.checkpoint.checkpoint(gn, x, w, use_reentrant=False)
-
-        x = torch.randn(4, 4, device=device, requires_grad=True)
-        w = torch.randn(4, 4, device=device, requires_grad=True)
-
-        def partition_fn(joint_gm, *args, **kwargs):
-            fwd_mm_nodes = [
-                node
-                for node in joint_gm.graph.nodes
-                if node.op == "call_function"
-                and node.target == torch.ops.aten.mm.default
-                and node.meta.get("partitioner_tag") == "is_forward"
-            ]
-            self.assertTrue(
-                fwd_mm_nodes, "Expected forward mm nodes in the joint graph"
-            )
-            for node in fwd_mm_nodes:
-                self.assertIn("recompute", node.meta)
-                self.assertIn("ac_graph_id", node.meta)
-            return min_cut_rematerialization_partition(joint_gm, *args, **kwargs)
-
-        backend = aot_autograd(
-            fw_compiler=nop, bw_compiler=nop, partition_fn=partition_fn
-        )
-        out = torch.compile(fn, backend=backend)(x, w)
-        out.sum().backward()
-
-    @requires_cuda_and_triton
-    def test_sac_tags_through_custom_autograd_function(self, device):
-        class MyMM(torch.autograd.Function):
-            @staticmethod
-            def forward(x, w):
-                return x @ w
-
-            @staticmethod
-            def setup_context(ctx, inputs, output):
-                x, w = inputs
-                ctx.save_for_backward(x, w)
-
-            @staticmethod
-            def backward(ctx, grad):
-                x, w = ctx.saved_tensors
-                return grad @ w.t(), x.t() @ grad
-
-        def gn(x, w):
-            return MyMM.apply(x, w)
-
-        context_fn = functools.partial(
-            torch.utils.checkpoint.create_selective_checkpoint_contexts,
-            lambda ctx,
-            op,
-            *args,
-            **kwargs: torch.utils.checkpoint.CheckpointPolicy.PREFER_RECOMPUTE,
-        )
-
-        def fn(x, w):
-            return torch.utils.checkpoint.checkpoint(
-                gn, x, w, use_reentrant=False, context_fn=context_fn
-            )
-
-        x = torch.randn(4, 4, device=device, requires_grad=True)
-        w = torch.randn(4, 4, device=device, requires_grad=True)
-
-        def partition_fn(joint_gm, *args, **kwargs):
-            fwd_mm_nodes = [
-                node
-                for node in joint_gm.graph.nodes
-                if node.op == "call_function"
-                and node.target == torch.ops.aten.mm.default
-                and node.meta.get("partitioner_tag") == "is_forward"
-            ]
-            self.assertTrue(
-                fwd_mm_nodes, "Expected forward mm nodes in the joint graph"
-            )
-            for node in fwd_mm_nodes:
-                self.assertIn("recompute", node.meta)
-                self.assertIn("ac_graph_id", node.meta)
-            return min_cut_rematerialization_partition(joint_gm, *args, **kwargs)
-
-        backend = aot_autograd(
-            fw_compiler=nop, bw_compiler=nop, partition_fn=partition_fn
-        )
-        out = torch.compile(fn, backend=backend)(x, w)
-        out.sum().backward()
-
-    @requires_cuda_and_triton
-    def test_tangent_placeholders_have_is_backward_tag(self, device):
-        """Test that tangent placeholders in the joint graph are tagged with is_backward."""
-
-        def gn(x, y):
-            return torch.sigmoid(torch.matmul(x, y))
-
-        def fn(x, y):
-            return torch.utils.checkpoint.checkpoint(
-                gn, torch.sin(x), y, use_reentrant=False
-            )
-
-        x = torch.randn(4, 4, device=device, requires_grad=True)
-        y = torch.randn(4, 4, device=device, requires_grad=True)
-
-        def partition_fn(joint_gm, *args, **kwargs):
-            # Check partitioner_tag on placeholder nodes
-            for node in joint_gm.graph.nodes:
-                if node.op == "placeholder":
-                    if "tangents" in str(node.target):
-                        self.assertTrue(
-                            "is_backward" in node.meta.get("partitioner_tag", "")
-                        )
-                    else:
-                        self.assertTrue(
-                            "is_forward" in node.meta.get("partitioner_tag", "")
-                        )
             return min_cut_rematerialization_partition(joint_gm, *args, **kwargs)
 
         backend = aot_autograd(
@@ -1709,6 +1560,7 @@ Non-primal fwd outputs from model w/o backward hook: {mod_no_hook_fwd_outputs_no
             self._validate(fn, backend, x, y)
 
     @requires_cuda_and_triton
+    @torch._dynamo.config.patch(inline_inbuilt_nn_modules=True)
     @parametrize(
         "partition_fn",
         [
@@ -1828,7 +1680,7 @@ Non-primal fwd outputs from model w/o backward hook: {mod_no_hook_fwd_outputs_no
             torch.manual_seed(0)
             ref = gn(*args)
 
-            opt_gn = torch.compile(gn, backend="aot_eager_decomp_partition")
+            opt_gn = torch.compile(gn)
             torch.manual_seed(0)
             res = opt_gn(*args)
             self.assertEqual(ref, res)
@@ -1851,7 +1703,7 @@ Non-primal fwd outputs from model w/o backward hook: {mod_no_hook_fwd_outputs_no
             return torch.utils.checkpoint.checkpoint(mod, x, use_reentrant=True)
 
         x = torch.randn(4, 4).to(device)
-        opt_fn = torch.compile(fn, fullgraph=True, backend="aot_eager_decomp_partition")
+        opt_fn = torch.compile(fn, fullgraph=True)
         with self.assertRaisesRegex(
             torch._dynamo.exc.Unsupported, "User-inserted graph break"
         ):
@@ -1878,7 +1730,7 @@ Non-primal fwd outputs from model w/o backward hook: {mod_no_hook_fwd_outputs_no
         y = torch.randn(4, 4).to(device)
         z = torch.randn(4, 4).to(device)
         ref = fn(x, [y, z])
-        opt_fn = torch.compile(fn, backend="aot_eager_decomp_partition", fullgraph=True)
+        opt_fn = torch.compile(fn, backend="eager", fullgraph=True)
         res = opt_fn(x, [y, z])
         self.assertEqual(ref, res)
 
@@ -1926,25 +1778,40 @@ Non-primal fwd outputs from model w/o backward hook: {mod_no_hook_fwd_outputs_no
         opt_fn(*args1).sum().backward()
 
         fwd_graph = aot_graphs[0]
-        # Determine which fused attention backend is expected based on the
-        # prioritization logic in sdp_utils.cpp:check_prefer_cudnn_attention.
-        dprops = torch.cuda.get_device_properties(device)
-        cudnn_version = (
-            torch.backends.cudnn.version() if torch.backends.cudnn.is_available() else 0
+        op1 = torch.ops.aten._scaled_dot_product_flash_attention.default
+        op2 = torch.ops.aten._scaled_dot_product_cudnn_attention.default
+        self.assertTrue(
+            count_ops(
+                fwd_graph,
+                [],
+                freq=1,
+                op=op1,
+            )
+            or count_ops(
+                fwd_graph,
+                [],
+                freq=1,
+                op=op2,
+            )
         )
-        prefer_cudnn = (
-            cudnn_version > 91500 and dprops.major in (9, 10) and dprops.minor in (0, 3)
-        )
-        if prefer_cudnn and torch.version.cuda:
-            sdpa_op = torch.ops.aten._scaled_dot_product_cudnn_attention.default
-        else:
-            sdpa_op = torch.ops.aten._scaled_dot_product_flash_attention.default
-        self.assertTrue(count_ops(fwd_graph, [], freq=1, op=sdpa_op))
         bwd_graph = aot_graphs[1]
         # Check that sin is not recomputed in the backward graph - checks percolate tags
         self.assertTrue(count_ops(bwd_graph, [], freq=0, op=torch.ops.aten.sin.default))
         # Check that the sdpa op is recomputed in the backward graph
-        self.assertTrue(count_ops(bwd_graph, [], freq=1, op=sdpa_op))
+        self.assertTrue(
+            count_ops(
+                bwd_graph,
+                [],
+                freq=1,
+                op=op1,
+            )
+            or count_ops(
+                bwd_graph,
+                [],
+                freq=1,
+                op=op2,
+            )
+        )
 
     @requires_distributed()
     @requires_cuda_and_triton
@@ -1968,20 +1835,20 @@ Non-primal fwd outputs from model w/o backward hook: {mod_no_hook_fwd_outputs_no
         mod = dist_checkpoint_wrapper(MockModule())
         x = torch.randn(4, 4)
         ref = mod(x)
-        opt_mod = torch.compile(
-            mod, backend="aot_eager_decomp_partition", fullgraph=True
-        )
+        opt_mod = torch.compile(mod, backend="eager", fullgraph=True)
         res = opt_mod(x)
         self.assertEqual(ref, res)
 
     @requires_distributed()
     @requires_cuda_and_triton
+    @torch._dynamo.config.patch(inline_inbuilt_nn_modules=True)
     def test_dynamo_does_not_trace_getattr_as_top_frame(self):
+        # inline_inbuilt_nn_modules is a proxy to emulate what FSDP tests do.
         from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import (
             CheckpointWrapper,
         )
 
-        cnt = CompileCounterWithBackend("aot_eager_decomp_partition")
+        cnt = CompileCounterWithBackend("eager")
 
         lin = torch.nn.Linear(1, 1)
         mod = torch.nn.Sequential(lin, lin)
@@ -2050,7 +1917,7 @@ class GraphModule(torch.nn.Module):
         self.assertEqual(counter, 2)
         counter = 0
 
-        opt_fn = torch.compile(fn, backend="aot_eager_decomp_partition", fullgraph=True)
+        opt_fn = torch.compile(fn, backend="eager", fullgraph=True)
         opt_fn(x).sum().backward()
         # The mutation is not reapplied in the backward because the flag was on.
         self.assertEqual(counter, 1)
@@ -2077,7 +1944,7 @@ class GraphModule(torch.nn.Module):
         x = torch.randn(4, 4, requires_grad=True)
         ref = fn(x)
 
-        opt_fn = torch.compile(fn, backend="aot_eager_decomp_partition", fullgraph=True)
+        opt_fn = torch.compile(fn, backend="eager", fullgraph=True)
         res = opt_fn(x)
         self.assertEqual(ref[0], res[0])
         self.assertEqual(ref[1], res[1])
@@ -2221,11 +2088,7 @@ class GraphModule(torch.nn.Module):
                 x=input_eager.x.detach().clone().requires_grad_(True)
             )
             torch.manual_seed(0)
-            compiled_fn = torch.compile(
-                checkpointed_forward,
-                fullgraph=True,
-                backend="aot_eager_decomp_partition",
-            )
+            compiled_fn = torch.compile(checkpointed_forward, fullgraph=True)
             output_compiled = compiled_fn(input_compiled)
             output_compiled.y.sum().backward()
 
@@ -2343,16 +2206,16 @@ def forward(self, arg0_1, arg1_1):
     expand = torch.ops.aten.expand.default(ones_like, [4, 4]);  ones_like = None
     mm_recomputed = torch.ops.aten.mm.default(arg0_1, arg1_1)
     sigmoid_recomputed = torch.ops.aten.sigmoid.default(mm_recomputed);  mm_recomputed = None
-    detach_2_recomputed = torch.ops.aten.detach.default(sigmoid_recomputed);  sigmoid_recomputed = None
-    detach_4 = torch.ops.aten.detach.default(detach_2_recomputed);  detach_2_recomputed = None
-    sigmoid_backward = torch.ops.aten.sigmoid_backward.default(expand, detach_4);  expand = detach_4 = None
+    detach_recomputed = torch.ops.aten.detach.default(sigmoid_recomputed);  sigmoid_recomputed = None
+    detach_2 = torch.ops.aten.detach.default(detach_recomputed);  detach_recomputed = None
+    sigmoid_backward = torch.ops.aten.sigmoid_backward.default(expand, detach_2);  expand = detach_2 = None
     t = torch.ops.aten.t.default(arg0_1);  arg0_1 = None
     mm_2 = torch.ops.aten.mm.default(t, sigmoid_backward);  t = None
     t_1 = torch.ops.aten.t.default(arg1_1);  arg1_1 = None
     mm_3 = torch.ops.aten.mm.default(sigmoid_backward, t_1);  sigmoid_backward = t_1 = None
-    detach_5 = torch.ops.aten.detach.default(mm_3);  mm_3 = None
-    detach_6 = torch.ops.aten.detach.default(mm_2);  mm_2 = None
-    return (detach_5, detach_6)""",
+    detach_3 = torch.ops.aten.detach.default(mm_3);  mm_3 = None
+    detach_4 = torch.ops.aten.detach.default(mm_2);  mm_2 = None
+    return (detach_3, detach_4)""",
         )
 
     def test_ac_rematerialize_with_rng_ops_raises_error(self):
@@ -2371,11 +2234,11 @@ def forward(self, arg0_1, arg1_1):
 
         with self.assertRaisesRegex(
             torch._dynamo.exc.BackendCompilerFailed,
-            "Activation checkpoint rematerialization in `forward-loss-backward` graph does not support RNG ops in recompute regions.",
+            "Activation checkpoint rematerializing in `forward-loss-backward` graph does not support RNG ops in checkpointed regions.",
         ):
             self._compile_and_capture(fwd_bwd_with_rng, True, (x,))
 
-    def test_ac_rematerialize_with_no_annotations_returns_unchanged(self):
+    def test_ac_rematerialize_with_no_annotations_warns_and_returns_unchanged(self):
         x = torch.randn(4, 4, requires_grad=True)
 
         def fwd_bwd(x):
@@ -2385,7 +2248,21 @@ def forward(self, arg0_1, arg1_1):
             loss = z.sum()
             return _grad(loss, x)[0]
 
-        result_with, gm_with = self._compile_and_capture(fwd_bwd, True, (x,))
+        # Without backward annotations, the pass should warn and return unchanged
+        # We verify this by checking that remat_using_tags=True produces the same
+        # graph as remat_using_tags=False (i.e., no recomputation happens)
+        import warnings
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            result_with, gm_with = self._compile_and_capture(fwd_bwd, True, (x,))
+
+            # Check warning was issued
+            self.assertTrue(
+                any("no backward region" in str(warning.message) for warning in w),
+                f"Expected warning about no backward region, got: {[str(warning.message) for warning in w]}",
+            )
+
         # Get the graph without the pass for comparison
         result_without, gm_without = self._compile_and_capture(fwd_bwd, False, (x,))
 
@@ -2523,11 +2400,11 @@ def forward(self, arg0_1):
     ones_like = torch.ops.aten.ones_like.default(sum_1, pin_memory = False, memory_format = torch.preserve_format);  sum_1 = None
     expand = torch.ops.aten.expand.default(ones_like, [4, 4]);  ones_like = None
     sigmoid_recomputed = torch.ops.aten.sigmoid.default(arg0_1);  arg0_1 = None
-    detach_3_recomputed = torch.ops.aten.detach.default(sigmoid_recomputed);  sigmoid_recomputed = None
-    detach_5 = torch.ops.aten.detach.default(detach_3_recomputed);  detach_3_recomputed = None
-    sigmoid_backward = torch.ops.aten.sigmoid_backward.default(expand, detach_5);  expand = detach_5 = None
-    detach_6 = torch.ops.aten.detach.default(sigmoid_backward);  sigmoid_backward = None
-    return (detach_6,)""",
+    detach_recomputed = torch.ops.aten.detach.default(sigmoid_recomputed);  sigmoid_recomputed = None
+    detach_2 = torch.ops.aten.detach.default(detach_recomputed);  detach_recomputed = None
+    sigmoid_backward = torch.ops.aten.sigmoid_backward.default(expand, detach_2);  expand = detach_2 = None
+    detach_3 = torch.ops.aten.detach.default(sigmoid_backward);  sigmoid_backward = None
+    return (detach_3,)""",
         )
 
     def test_joint_graph_passes_permute_optimization(self):
@@ -2572,11 +2449,11 @@ def forward(self, arg0_1):
     ones_like = torch.ops.aten.ones_like.default(sum_1, pin_memory = False, memory_format = torch.preserve_format);  sum_1 = None
     expand = torch.ops.aten.expand.default(ones_like, [4, 4]);  ones_like = None
     sigmoid_recomputed = torch.ops.aten.sigmoid.default(arg0_1);  arg0_1 = None
-    detach_3_recomputed = torch.ops.aten.detach.default(sigmoid_recomputed);  sigmoid_recomputed = None
-    detach_5 = torch.ops.aten.detach.default(detach_3_recomputed);  detach_3_recomputed = None
-    sigmoid_backward = torch.ops.aten.sigmoid_backward.default(expand, detach_5);  expand = detach_5 = None
-    detach_6 = torch.ops.aten.detach.default(sigmoid_backward);  sigmoid_backward = None
-    return (detach_6,)""",
+    detach_recomputed = torch.ops.aten.detach.default(sigmoid_recomputed);  sigmoid_recomputed = None
+    detach_2 = torch.ops.aten.detach.default(detach_recomputed);  detach_recomputed = None
+    sigmoid_backward = torch.ops.aten.sigmoid_backward.default(expand, detach_2);  expand = detach_2 = None
+    detach_3 = torch.ops.aten.detach.default(sigmoid_backward);  sigmoid_backward = None
+    return (detach_3,)""",
         )
 
 

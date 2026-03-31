@@ -3,7 +3,7 @@ import contextlib
 import ctypes
 import pickle
 import sys
-from typing import Any, Literal
+from typing import Any, Literal, Optional
 
 import torch
 from torch._utils import _augment_memory_snapshot_stack_traces, _dummy_type
@@ -15,12 +15,6 @@ from . import _get_device_index, _is_compiled, _lazy_init, is_initialized
 if not _is_compiled():
     # Define dummy base classes
     torch._C.__dict__["_xpu_XPUAllocator"] = _dummy_type("_xpu_XPUAllocator")
-    torch._C.__dict__["_XPUMemPool"] = _dummy_type("_XPUMemPool")
-    torch._C.__dict__["_xpu_beginAllocateCurrentThreadToPool"] = _dummy_type(
-        "_xpu_beginAllocateCurrentThreadToPool"
-    )
-    torch._C.__dict__["_xpu_endAllocateToPool"] = _dummy_type("_xpu_endAllocateToPool")
-    torch._C.__dict__["_xpu_releasePool"] = _dummy_type("_xpu_releasePool")
 
 
 def empty_cache() -> None:
@@ -200,9 +194,8 @@ def mem_get_info(device: Device = None) -> tuple[int, int]:
             if :attr:`device` is ``None`` (default).
 
     Returns:
-        tuple[int, int]: a tuple of two integers (free_memory, total_memory) in bytes.
-            The first value is the free memory on the device (available across all processes and applications),
-            The second value is the device's total hardware memory capacity.
+        int: the memory available on the device in units of bytes.
+        int: the total memory on the device in units of bytes
     """
     _lazy_init()
     device = _get_device_index(device, optional=True)
@@ -251,6 +244,7 @@ def set_per_process_memory_fraction(fraction: float, device: Device = None) -> N
     device = _get_device_index(device, optional=True)
     if not isinstance(fraction, float):
         raise TypeError("Invalid type for fraction argument, must be `float`")
+    # pyrefly: ignore [missing-attribute]
     torch._C._xpu_setMemoryFraction(fraction, device)
 
 
@@ -270,6 +264,7 @@ def memory_snapshot(
     """
     if not is_initialized():
         return []
+    # pyrefly: ignore [missing-attribute]
     return torch._C._xpu_memorySnapshot(mempool_id)["segments"]
 
 
@@ -356,6 +351,7 @@ def _snapshot(device: Device = None, augment_with_fx_traces: bool = False):
     Returns:
         The Snapshot dictionary object
     """
+    # pyrefly: ignore [missing-attribute]
     s = torch._C._xpu_memorySnapshot(None)
     if augment_with_fx_traces:
         s = _augment_memory_snapshot_stack_traces(s)  # type: ignore[assignment, arg-type]
@@ -464,6 +460,7 @@ def _record_memory_history(
 
             Defaults to ``None`` (record all actions).
     """
+    # pyrefly: ignore [missing-attribute]
     torch._C._xpu_recordMemoryHistory(
         enabled,
         context,
@@ -477,6 +474,7 @@ def _record_memory_history(
 class _XPUAllocator:
     r"""Wrapper over internal XPU memory allocators."""
 
+    # pyrefly: ignore [missing-attribute]
     def __init__(self, allocator: torch._C._xpu_XPUAllocator):
         self._allocator = allocator
 
@@ -523,6 +521,7 @@ class XPUPluggableAllocator(_XPUAllocator):
                 "Failed to load allocator symbols from the shared library."
             )
 
+        # pyrefly: ignore [missing-attribute]
         self._allocator = torch._C._xpu_customAllocator(alloc_fn_addr, free_fn_addr)
 
 
@@ -535,6 +534,7 @@ def change_current_allocator(allocator: _XPUAllocator) -> None:
     Arguments:
         allocator (torch.xpu.memory._XPUAllocator): allocator to be set as the active one.
     """
+    # pyrefly: ignore [missing-attribute]
     torch._C._xpu_changeCurrentAllocator(allocator.allocator())
 
 
@@ -544,86 +544,11 @@ def _get_current_allocator() -> _XPUAllocator:
     Returns:
         _XPUAllocator: the allocator being currently used.
     """
+    # pyrefly: ignore [missing-attribute]
     return _XPUAllocator(torch._C._xpu_getAllocator())
 
 
-class MemPool(torch._C._XPUMemPool):
-    r"""MemPool represents a pool of memory in a caching allocator. Currently,
-    it's just the ID of the pool object maintained in the XPUCachingAllocator.
-
-    Args:
-        allocator(torch._C._xpu_XPUAllocator, optional): a
-            torch._C._xpu_XPUAllocator object that can be used to
-            define how memory gets allocated in the pool. If :attr:`allocator`
-            is ``None`` (default), memory allocation follows the default/
-            current configuration of the XPUCachingAllocator.
-        use_on_oom(bool): a bool that indicates if this pool can be used
-            as a last resort if a memory allocation outside of the pool fails due
-            to Out Of Memory. This is ``False`` by default.
-    """
-
-    def __init__(
-        self,
-        allocator: torch._C._xpu_XPUAllocator | None = None,
-        use_on_oom: bool = False,
-    ):
-        super().__init__(allocator, True, use_on_oom)
-
-    @property
-    def id(self) -> tuple[int, int]:
-        r"""Returns the ID of this pool as a tuple of two ints."""
-        return super().id
-
-    @property
-    def allocator(self) -> torch._C._xpu_XPUAllocator | None:
-        r"""Returns the allocator this MemPool routes allocations to."""
-        return super().allocator
-
-    def use_count(self) -> int:
-        r"""Returns the reference count of this pool."""
-        return super().use_count()
-
-    def snapshot(self):
-        r"""Return a snapshot of the XPU memory allocator pool state across all
-        devices.
-
-        Interpreting the output of this function requires familiarity with the
-        memory allocator internals.
-        """
-        snapshot = torch.xpu.memory_snapshot(self.id)
-        return snapshot
-
-
-@contextlib.contextmanager
-def use_mem_pool(pool: MemPool, device: "Device" = None):
-    r"""A context manager that routes allocations to a given pool.
-
-    Args:
-        pool(torch.xpu.MemPool): a :class:`MemPool` object to be made active so that
-            allocations route to this pool.
-        device (torch.device or int, optional): selected device. Uses :class:`MemPool on
-            the current device, given by :func:`~torch.xpu.current_device`,
-            if :attr:`device` is ``None`` (default).
-
-    .. note::
-        This context manager makes only current thread's allocations route to
-        the given pool. If a new thread is spawned inside the context manager
-        (e.g. by calling backward) the allocations in that thread will not
-        route to the given pool.
-    """
-    device_index = (
-        torch.xpu.current_device() if device is None else _get_device_index(device)
-    )
-    torch._C._xpu_beginAllocateCurrentThreadToPool(device_index, pool.id)
-    try:
-        yield
-    finally:
-        torch._C._xpu_endAllocateToPool(device_index, pool.id)
-        torch._C._xpu_releasePool(device_index, pool.id)
-
-
 __all__ = [
-    "MemPool",
     "XPUPluggableAllocator",
     "change_current_allocator",
     "empty_cache",
@@ -639,5 +564,100 @@ __all__ = [
     "reset_accumulated_memory_stats",
     "reset_peak_memory_stats",
     "set_per_process_memory_fraction",
+    "MemPool",
     "use_mem_pool",
 ]
+
+if not hasattr(torch._C, "_XPUMemPool"):
+    # Define dummy base classes
+    torch._C.__dict__["_XPUMemPool"] = _dummy_type("_XPUMemPool")
+    torch._C.__dict__["_xpu_beginAllocateCurrentThreadToPool"] = _dummy_type(
+        "_xpu_beginAllocateCurrentThreadToPool"
+    )
+    torch._C.__dict__["_xpu_endAllocateToPool"] = _dummy_type("_xpu_endAllocateToPool")
+    torch._C.__dict__["_xpu_releasePool"] = _dummy_type("_xpu_releasePool")
+
+from torch._C import (  # noqa: F401;
+    _xpu_beginAllocateCurrentThreadToPool,
+    _xpu_endAllocateToPool,
+    _xpu_releasePool,
+    _xpu_XPUAllocator,
+    _XPUMemPool,
+)
+
+
+class MemPool(_XPUMemPool):
+    r"""MemPool represents a pool of memory in a caching allocator. Currently,
+    it's just the ID of the pool object maintained in the XPUCachingAllocator.
+
+    Args:
+        allocator(torch._C._xpu_XPUAllocator, optional): a
+            torch._C._xpu_XPUAllocator object that can be used to
+            define how memory gets allocated in the pool. If :attr:`allocator`
+            is ``None`` (default), memory allocation follows the default/
+            current configuration of the XPUCachingAllocator.
+        use_on_oom(bool): a bool that indicates if this pool can be used
+            as a last resort if a memory allocation outside of the pool fails due
+            to Out Of Memory. This is False by default.
+
+    """
+
+    def __init__(
+        self,
+        allocator: Optional[_xpu_XPUAllocator] = None,
+        use_on_oom: bool = False,
+    ):
+        super().__init__(allocator, True, use_on_oom)
+
+    @property
+    def id(self) -> tuple[int, int]:
+        r"""Returns the ID of this pool as a tuple of two ints."""
+        return super().id
+
+    @property
+    def allocator(self) -> Optional[_xpu_XPUAllocator]:
+        r"""Returns the allocator this MemPool routes allocations to."""
+        return super().allocator
+
+    def use_count(self) -> int:
+        r"""Returns the reference count of this pool."""
+        return super().use_count()
+
+    def snapshot(self):
+        r"""Return a snapshot of the XPU memory allocator pool state across all
+        devices.
+
+        Interpreting the output of this function requires familiarity with the
+        memory allocator internals.
+
+        """
+        snapshot = torch.xpu.memory_snapshot(self.id)
+        return snapshot
+
+
+@contextlib.contextmanager
+def use_mem_pool(pool: MemPool, device: "Device" = None):
+    r"""A context manager that routes allocations to a given pool.
+
+    Args:
+        pool(torch.xpu.MemPool): a MemPool object to be made active so that
+            allocations route to this pool.
+        device (torch.device or int, optional): selected device. Uses MemPool on
+            the current device, given by :func:`~torch.xpu.current_device`,
+            if :attr:`device` is ``None`` (default).
+
+    .. note::
+        This context manager makes only current thread's allocations route to
+        the given pool. If a new thread is spawned inside the context manager
+        (e.g. by calling backward) the allocations in that thread will not
+        route to the given pool.
+    """
+    device_index = (
+        torch.xpu.current_device() if device is None else _get_device_index(device)
+    )
+    _xpu_beginAllocateCurrentThreadToPool(device_index, pool.id)
+    try:
+        yield
+    finally:
+        _xpu_endAllocateToPool(device_index, pool.id)
+        _xpu_releasePool(device_index, pool.id)

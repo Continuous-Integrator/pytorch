@@ -15,9 +15,9 @@ import signal
 import sys
 import tempfile
 import time
-import unittest
 from collections.abc import Callable
 from itertools import product
+from typing import Union
 from unittest import mock
 
 import torch
@@ -43,7 +43,6 @@ from torch.testing._internal.common_utils import (
     skip_if_pytest,
     TEST_WITH_ASAN,
     TEST_WITH_DEV_DBG_ASAN,
-    TEST_WITH_ROCM,
     TEST_WITH_TSAN,
     TestCase,
 )
@@ -196,7 +195,7 @@ def wait_fn(wait_time: int = 300) -> None:
 
 def start_processes_zombie_test(
     idx: int,
-    entrypoint: str | Callable,
+    entrypoint: Union[str, Callable],
     mp_queue: mp.Queue,
     log_dir: str,
     nproc: int = 2,
@@ -264,7 +263,7 @@ class _StartProcessesTest(TestCase):
                 os.kill(pid, 0)
 
     def _test_zombie_workflow(
-        self, entrypoint: str | Callable, signal_to_send: signal.Signals
+        self, entrypoint: Union[str, Callable], signal_to_send: signal.Signals
     ) -> None:
         mp_queue = mp.get_context("spawn").Queue()
         child_nproc = 2
@@ -449,10 +448,6 @@ if not (TEST_WITH_DEV_DBG_ASAN or IS_WINDOWS or IS_MACOS):
                     for i in range(pc.nprocs):
                         self.assertEqual(size, len(results.return_values[i]))
 
-        @unittest.skipIf(
-            TEST_WITH_ROCM,
-            "Skipped on ROCm due to hang in MultiprocessContext.wait after Kineto bump (PR #177101, 1fd9c49); investigating",
-        )
         def test_function_raise(self):
             """
             run 2x copies of echo2, raise an exception on the first

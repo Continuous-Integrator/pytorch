@@ -1,14 +1,18 @@
 # mypy: allow-untyped-defs
 import io
 from collections.abc import Callable
-from typing import Any, TypeVar
+from dataclasses import dataclass
+from typing import Any, Optional, TYPE_CHECKING, TypeVar, Union
 from typing_extensions import ParamSpec
 
 import torch
 from torch._higher_order_ops.invoke_subgraph import NestedCompileRegionOptions
 
 from . import config
-from ._cache import CacheInfo
+
+
+if TYPE_CHECKING:
+    from ._cache import CacheInfo
 
 
 __all__ = [
@@ -261,7 +265,7 @@ def set_stance(
     stance: str = "default",
     *,
     skip_guard_eval_unsafe: bool = False,
-    force_backend: str | Callable[..., Any] | None = None,
+    force_backend: Union[str, Callable[..., Any], None] = None,
 ):
     """
     Set the current stance of the compiler.
@@ -493,7 +497,7 @@ def is_exporting() -> bool:
     return _is_exporting_flag
 
 
-def save_cache_artifacts() -> tuple[bytes, CacheInfo] | None:
+def save_cache_artifacts() -> Optional[tuple[bytes, "CacheInfo"]]:
     """
     Serializes all the cache artifacts that were created during the compilation
 
@@ -512,7 +516,7 @@ def save_cache_artifacts() -> tuple[bytes, CacheInfo] | None:
     return CacheArtifactManager.serialize()
 
 
-def load_cache_artifacts(serialized_artifacts: bytes) -> CacheInfo | None:
+def load_cache_artifacts(serialized_artifacts: bytes) -> Optional["CacheInfo"]:
     """
     Hot loads cache artifacts that were previously serialized via
     save_cache_artifacts
@@ -659,10 +663,7 @@ def skip_all_guards_unsafe(guard_entries):
 
 
 def nested_compile_region(
-    fn=None,
-    *,
-    options: NestedCompileRegionOptions | None = None,
-    max_reuse_entries: int = 8,
+    fn=None, options: Optional[NestedCompileRegionOptions] = None
 ):
     """
     Tells **``torch.compile``** that the marked set of operations forms a nested
@@ -693,9 +694,6 @@ def nested_compile_region(
         options: Optional backend to use for compiling the subgraph.
             Warning: this is an experimental feature under development and
             not ready for use yet.
-        max_reuse_entries: Maximum number of reuse cache entries per function
-            before raising an error. If this limit is hit, guards keep failing
-            across invocations and hierarchical compilation is not effective.
     """
 
     if options is not None:
@@ -710,9 +708,7 @@ def nested_compile_region(
         mark_compile_region as _mark_compile_region,
     )
 
-    return _mark_compile_region(
-        fn, options=options, max_reuse_entries=max_reuse_entries
-    )
+    return _mark_compile_region(fn, options=options)
 
 
 def load_compiled_function(

@@ -21,7 +21,7 @@ import dataclasses
 import enum
 import functools
 from collections.abc import Callable
-from typing import Any, TYPE_CHECKING
+from typing import Any, Optional, TYPE_CHECKING, Union
 
 from torch import device as device_type
 from torch._guards import (
@@ -118,7 +118,7 @@ def is_constant_source(source: Source) -> bool:
     return False
 
 
-def _get_source_debug_name(source: Source | None) -> str:
+def _get_source_debug_name(source: Optional[Source]) -> str:
     if source is None:
         return "<unknown source>"
     else:
@@ -152,7 +152,7 @@ class LocalSource(Source):
 
     # Whether we know this input is dynamic (based on example_inputs)
     # For non tensors, we simply look at the first index of the tuple
-    dynamism: frozenset[str] | None = None
+    dynamism: Optional[frozenset[str]] = None
 
     # Whether the item at this source is the _content_ of a cell that is
     # dereferenced from the root frame, i.e., it's a part of the `co_cellvars`
@@ -286,10 +286,12 @@ class AttrSource(ChainedSource):
 
     def __post_init__(self) -> None:
         assert self.base, "Can't construct an AttrSource without a valid base source"
-        assert "." not in self.member, (
-            f"AttrSource member must not contain '.', got {self.member!r}. "
-            "Use OutputGraph.get_chained_attr_source() for dotted paths."
-        )
+        if "." in self.member:
+            member_parts = self.member.split(".")
+            object.__setattr__(
+                self, "base", AttrSource(self.base, ".".join(member_parts[:-1]))
+            )
+            object.__setattr__(self, "member", member_parts[-1])
 
     def reconstruct(self, codegen: "PyCodegen") -> None:
         codegen(self.base)
@@ -325,13 +327,13 @@ class GenericAttrSource(ChainedSource):
     member: str
 
     def __post_init__(self) -> None:
-        assert self.base, (
-            "Can't construct a GenericAttrSource without a valid base source"
-        )
-        assert "." not in self.member, (
-            f"GenericAttrSource member must not contain '.', got {self.member!r}. "
-            "Use OutputGraph.get_chained_attr_source() for dotted paths."
-        )
+        assert self.base, "Can't construct an AttrSource without a valid base source"
+        if "." in self.member:
+            member_parts = self.member.split(".")
+            object.__setattr__(
+                self, "base", AttrSource(self.base, ".".join(member_parts[:-1]))
+            )
+            object.__setattr__(self, "member", member_parts[-1])
 
     def reconstruct(self, codegen: "PyCodegen") -> None:
         codegen(self.base)
@@ -456,7 +458,7 @@ class UnspecializedParamBufferSource(AttrSource):
 # present within the final view shape metadata.
 @dataclass_with_cached_hash(frozen=True)
 class EphemeralSource(Source):
-    desc: str | None = None
+    desc: Optional[str] = None
 
     @property
     def guard_source(self) -> GuardSource:
@@ -503,7 +505,7 @@ class TensorProperty(enum.Enum):
 @dataclass_with_cached_hash(frozen=True)
 class TensorPropertySource(ChainedSource):
     prop: TensorProperty
-    idx: int | None = None  # None for STORAGE_OFFSET
+    idx: Optional[int] = None  # None for STORAGE_OFFSET
 
     def __post_init__(self) -> None:
         assert self.base is not None
@@ -639,7 +641,7 @@ class AttrProxySource(ChainedSource):
 
 @dataclass_with_cached_hash(frozen=True)
 class DefaultsSource(ChainedSource):
-    idx_key: int | str
+    idx_key: Union[int, str]
     is_kw: bool = False
     field: str = dataclasses.field(init=False, repr=False, compare=False)
     _name: str = dataclasses.field(init=False, repr=False, compare=False)
@@ -991,27 +993,55 @@ class GlobalStateSource(Source):
 
 
 @dataclass_with_cached_hash(frozen=True)
-class ImportSource(Source):
-    """Points to an imported module - used instead of GlobalSource
-    in case the user has overridden the module name in their local namespace"""
+class TorchSource(Source):
+    """Points to the actual `torch` module - used instead of GlobalSource
+    in case the user has overridden `torch` in their local namespace"""
 
-    module_name: str
-
-    def __post_init__(self) -> None:
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
         from .guards import GuardBuilder, install_guard
 
         install_guard(self.make_guard(GuardBuilder.ID_MATCH))
 
-    @functools.cached_property
+    @property
     def _name_template(self) -> str:
-        return f"__import__('{self.module_name}')"
+        return "__import__('torch')"
 
     def reconstruct(self, codegen: "PyCodegen") -> None:
         codegen.extend_output(
             [
                 codegen.create_load_const(0),  # level
                 create_build_tuple(0),  # fromlist
-                codegen.create_import_name(self.module_name),
+                codegen.create_import_name("torch"),
+            ]
+        )
+
+    @property
+    def guard_source(self) -> GuardSource:
+        return GuardSource.GLOBAL
+
+
+@dataclass_with_cached_hash(frozen=True)
+class CollectionsSource(Source):
+    """Points to the actual `collections` module - used instead of GlobalSource
+    in case the user has overridden `collections` in their local namespace"""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        from .guards import GuardBuilder, install_guard
+
+        install_guard(self.make_guard(GuardBuilder.ID_MATCH))
+
+    @property
+    def _name_template(self) -> str:
+        return "__import__('collections')"
+
+    def reconstruct(self, codegen: "PyCodegen") -> None:
+        codegen.extend_output(
+            [
+                codegen.create_load_const(0),  # level
+                create_build_tuple(0),  # fromlist
+                codegen.create_import_name("collections"),
             ]
         )
 
@@ -1155,7 +1185,7 @@ class BackwardStateSource(Source):
 @functools.lru_cache
 def get_local_source_name(
     source: Source, *, only_allow_input: bool = False
-) -> str | None:
+) -> Optional[str]:
     if isinstance(source, ChainedSource):
         return get_local_source_name(source.base, only_allow_input=only_allow_input)
     if not isinstance(source, LocalSource):
@@ -1206,11 +1236,9 @@ def is_from_closure_source(source: Source) -> bool:
 
 @functools.lru_cache
 def is_from_source(source: Source, target: Source) -> bool:
-    if source == target:
-        return True
     if isinstance(source, ChainedSource):
         return is_from_source(source.base, target)
-    return False
+    return source == target
 
 
 @functools.lru_cache
