@@ -1084,6 +1084,9 @@ class MappingProxyVariable(VariableTracker):
             )
         return self.dv_dict.call_method(tx, name, args, kwargs)
 
+    def mp_length(self, tx: "InstructionTranslator") -> VariableTracker:
+        return self.dv_dict.mp_length(tx)
+
     def call_obj_hasattr(
         self, tx: "InstructionTranslator", name: str
     ) -> ConstantVariable:
