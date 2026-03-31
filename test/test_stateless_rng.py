@@ -72,7 +72,7 @@ class TestPhiloxKeySplit(TestCase):
 
     def test_multi_batch(self, device):
         key = random.key(42, device=device)
-        keys = random.split(key, 12).reshape(3, 4, 2)  # (3, 4, 2)
+        keys = random.split(key, 12).view(3, 4, 2)
         num_splits = 5
         batched = random.split(keys, num_splits)  # (5, 3, 4, 2)
         self.assertEqual(batched.shape, (num_splits, 3, 4, 2))
@@ -161,7 +161,7 @@ class TestPhiloxKeyFoldIn(TestCase):
 
     def test_multi_batch(self, device):
         key = random.key(42, device=device)
-        keys = random.split(key, 12).reshape(3, 4, 2)  # (3, 4, 2)
+        keys = random.split(key, 12).view(3, 4, 2)
         data = 7
         batched = random.fold_in(keys, data)  # (3, 4, 2)
         self.assertEqual(batched.shape, (3, 4, 2))
@@ -239,9 +239,20 @@ class TestPhiloxDistribution(TestCase):
 
     @parametrize("gen_fn_name", ["normal", "uniform"])
     @dtypes(*all_floating_dtypes)
+    def test_batched_keys_large(self, device, dtype, gen_fn_name):
+        # Large event_numel to exercise the multi-key tiled kernel path.
+        key = random.key(42, device=device)
+        keys = random.split(key, 4).unsqueeze(-2)  # (4, 1, 2)
+        result = self._gen(gen_fn_name, keys, (4, 10000), dtype=dtype)
+        for i in range(4):
+            individual = self._gen(gen_fn_name, keys[i], (10000,), dtype=dtype)
+            self.assertEqual(result[i], individual)
+
+    @parametrize("gen_fn_name", ["normal", "uniform"])
+    @dtypes(*all_floating_dtypes)
     def test_multi_batch(self, device, dtype, gen_fn_name):
         key = random.key(42, device=device)
-        keys = random.split(key, 6).reshape(2, 3, 1, 2)  # (2, 3, 1, 2)
+        keys = random.split(key, 6).view(2, 3, 1, 2)
         result = self._gen(gen_fn_name, keys, (2, 3, 50), dtype=dtype)
         for i in range(2):
             for j in range(3):
@@ -262,22 +273,22 @@ class TestPhiloxDistribution(TestCase):
             self.assertNotEqual(result[0][0], result[0][j])
 
         # All-broadcast key matches unbatched (all dims are generation).
-        batched = self._gen(gen_fn_name, key.reshape(1, 1, 2), (4, 100), dtype=dtype)
+        batched = self._gen(gen_fn_name, key.view(1, 1, 2), (4, 100), dtype=dtype)
         unbatched = self._gen(gen_fn_name, key, (400,), dtype=dtype)
         self.assertEqual(batched.flatten(), unbatched)
 
         # Multiple trailing size-1 dims form the generation axis.
-        keys = random.split(key, 4).reshape(4, 1, 1, 2)  # (4, 1, 1, 2)
+        keys = random.split(key, 4).view(4, 1, 1, 2)
         result = self._gen(gen_fn_name, keys, (4, 10, 100), dtype=dtype)
         for i in range(4):
             individual = self._gen(gen_fn_name, keys[i], (10, 100), dtype=dtype)
             self.assertEqual(result[i], individual)
         keys_flat = random.split(key, 4).unsqueeze(-2)  # (4, 1, 2)
         flat = self._gen(gen_fn_name, keys_flat, (4, 1000), dtype=dtype)
-        self.assertEqual(result.reshape(4, 1000), flat)
+        self.assertEqual(result.view(4, 1000), flat)
 
         # No generation dims: every element gets its own key.
-        keys = random.split(key, 12).reshape(4, 3, 2)  # (4, 3, 2)
+        keys = random.split(key, 12).view(4, 3, 2)
         result = self._gen(gen_fn_name, keys, (4, 3), dtype=dtype)
         for i in range(4):
             for j in range(3):
@@ -335,6 +346,43 @@ class TestPhiloxDistribution(TestCase):
             result[wrap_at:],
             self._gen(gen_fn_name, key_zero, (20 - wrap_at,), dtype=dtype),
         )
+
+    @parametrize("gen_fn_name", ["normal", "uniform"])
+    @dtypes(*all_floating_dtypes)
+    def test_small_output_sizes(self, device, dtype, gen_fn_name):
+        key = random.key(42, device=device)
+        large = self._gen(gen_fn_name, key, (100,), dtype=dtype)
+        for n in [0, 1, 2, 3, 4, 5, 7]:
+            result = self._gen(gen_fn_name, key, (n,), dtype=dtype)
+            self.assertEqual(result.shape, (n,))
+            # Determinism.
+            result2 = self._gen(gen_fn_name, key, (n,), dtype=dtype)
+            self.assertEqual(result, result2)
+            # Prefix consistency: first n elements of a larger output.
+            if n > 0:
+                self.assertEqual(result, large[:n])
+
+    @parametrize("gen_fn_name", ["normal", "uniform"])
+    @dtypes(*all_floating_dtypes)
+    def test_inplace(self, device, dtype, gen_fn_name):
+        key = random.key(42, device=device)
+        result = torch.empty(1000, dtype=dtype, device=device)
+        inplace_fn = getattr(random, gen_fn_name + "_")
+        out = inplace_fn(key, result)
+        self.assertIs(out, result)
+        functional = self._gen(gen_fn_name, key, (1000,), dtype=dtype)
+        self.assertEqual(result, functional)
+
+    @parametrize("gen_fn_name", ["normal", "uniform"])
+    @dtypes(*all_floating_dtypes)
+    def test_empty_output(self, device, dtype, gen_fn_name):
+        key = random.key(42, device=device)
+        result = self._gen(gen_fn_name, key, (0,), dtype=dtype)
+        self.assertEqual(result.shape, (0,))
+        self.assertEqual(result.dtype, dtype)
+        result = self._gen(gen_fn_name, key, (3, 0), dtype=dtype)
+        self.assertEqual(result.shape, (3, 0))
+        self.assertEqual(result.dtype, dtype)
 
     # Distribution-specific tests
 
