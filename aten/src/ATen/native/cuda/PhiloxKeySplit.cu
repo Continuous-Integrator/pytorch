@@ -2,7 +2,6 @@
 
 #include <ATen/core/Tensor.h>
 #include <ATen/cuda/CUDAContext.h>
-#include <c10/cuda/CUDAGuard.h>
 
 #include <curand_kernel.h>
 
@@ -95,13 +94,9 @@ Tensor _philox_key_split_cuda(const Tensor& key, int64_t num_splits) {
   TORCH_CHECK(key.scalar_type() == kUInt64,
       "_philox_key_split: key must have dtype uint64, got ",
       key.scalar_type());
-  TORCH_CHECK(key.is_cuda(),
-      "_philox_key_split: key must be a CUDA tensor");
   TORCH_CHECK(num_splits > 0,
       "_philox_key_split: num_splits must be positive, got ",
       num_splits);
-
-  at::cuda::CUDAGuard device_guard(key.device());
 
   // Output shape: (num_splits, *batch, 2)
   auto batch_sizes = key.sizes().slice(0, key.dim() - 1);
@@ -148,10 +143,6 @@ Tensor _philox_key_fold_in_cuda(const Tensor& key, int64_t data) {
   TORCH_CHECK(key.scalar_type() == kUInt64,
       "_philox_key_fold_in: key must have dtype uint64, got ",
       key.scalar_type());
-  TORCH_CHECK(key.is_cuda(),
-      "_philox_key_fold_in: key must be a CUDA tensor");
-
-  at::cuda::CUDAGuard device_guard(key.device());
 
   Tensor output = at::empty_like(key);
   int64_t num_keys = key.numel() / 2;
