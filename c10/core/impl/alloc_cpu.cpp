@@ -11,6 +11,13 @@
 
 #ifdef USE_MIMALLOC
 #include <mimalloc.h>
+
+namespace {
+const bool mimalloc_defaults_set = [] {
+  mi_option_set_default(mi_option_purge_delay, 0);
+  return true;
+}();
+} // namespace
 #endif
 
 #ifdef __linux__
