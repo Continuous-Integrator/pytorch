@@ -1450,16 +1450,21 @@ class UserDefinedObjectVariable(UserDefinedVariable):
 
         return super().call_method(tx, name, args, kwargs)
 
-    def sq_length(self, tx: "InstructionTranslator") -> VariableTracker:
-        """Sequence length for user-defined objects with __len__."""
+    def len_impl(self, tx: "InstructionTranslator") -> VariableTracker:
         method = self._maybe_get_baseclass_method("__len__")
         if method is not None:
             type_attr = self.lookup_class_mro_attr("__len__")
-            source = self.get_source_by_walking_mro(tx, "__len__")
+            source = self.source and self.get_source_by_walking_mro(tx, "__len__")
             return self.resolve_type_attr(
                 tx, "__len__", type_attr, source
             ).call_function(tx, [], {})
         return super().sq_length(tx)
+
+    def sq_length(self, tx: "InstructionTranslator") -> VariableTracker:
+        return self.len_impl(tx)
+
+    def mp_length(self, tx: "InstructionTranslator") -> VariableTracker:
+        return self.len_impl(tx)
 
     def method_setattr_standard(
         self,
