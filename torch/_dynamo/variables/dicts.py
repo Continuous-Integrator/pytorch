@@ -969,7 +969,8 @@ class ConstDictVariable(VariableTracker):
         self.install_dict_keys_match_guard()
         return [x.vt for x in self.items]
 
-    def len_impl(self, tx: "InstructionTranslator") -> VariableTracker:
+    def mp_length(self, tx: "InstructionTranslator") -> VariableTracker:
+        """Mapping length for dict objects."""
         self.install_dict_keys_match_guard()
         return VariableTracker.build(tx, len(self.items))
 
@@ -1845,8 +1846,9 @@ class DictViewVariable(VariableTracker):
             return VariableTracker.build(tx, self.debug_repr())
         return super().call_method(tx, name, args, kwargs)
 
-    def len_impl(self, tx: "InstructionTranslator") -> VariableTracker:
-        return self.dv_dict.len_impl(tx)
+    def mp_length(self, tx: "InstructionTranslator") -> VariableTracker:
+        """Mapping length for dict view objects."""
+        return self.dv_dict.mp_length(tx)
 
 
 class DictKeysVariable(DictViewVariable):

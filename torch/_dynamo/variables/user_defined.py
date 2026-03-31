@@ -1375,6 +1375,7 @@ class UserDefinedObjectVariable(UserDefinedVariable):
         args: list[Any],
         kwargs: dict[str, Any],
     ) -> VariableTracker:
+        from .. import trace_rules
         from . import CONSTANT_VARIABLE_NONE, UserMethodVariable
 
         method = self._maybe_get_baseclass_method(name)
@@ -1414,6 +1415,20 @@ class UserDefinedObjectVariable(UserDefinedVariable):
                     ],
                 )
 
+            # torch.Generator methods like manual_seed(), get_state(), etc.
+            # are stateful RNG operations that cannot be soundly traced.
+            if (
+                isinstance(self.value, torch._C.Generator)
+                and name in trace_rules._GENERATOR_METHODS_THAT_GRAPH_BREAK
+            ):
+                unimplemented(
+                    gb_type="torch.Generator method",
+                    context=f"torch.Generator.{name}",
+                    explanation=f"torch.Generator.{name}() is a stateful RNG "
+                    "operation that cannot be soundly traced in the FX graph.",
+                    hints=[*graph_break_hints.FUNDAMENTAL],
+                )
+
             # check for methods implemented in C++
             if isinstance(method, types.FunctionType):
                 source = self.source
@@ -1435,15 +1450,16 @@ class UserDefinedObjectVariable(UserDefinedVariable):
 
         return super().call_method(tx, name, args, kwargs)
 
-    def len_impl(self, tx: "InstructionTranslator") -> VariableTracker:
+    def sq_length(self, tx: "InstructionTranslator") -> VariableTracker:
+        """Sequence length for user-defined objects with __len__."""
         method = self._maybe_get_baseclass_method("__len__")
         if method is not None:
             type_attr = self.lookup_class_mro_attr("__len__")
-            source = self.source and AttrSource(self.source, "__len__")
+            source = self.get_source_by_walking_mro(tx, "__len__")
             return self.resolve_type_attr(
                 tx, "__len__", type_attr, source
             ).call_function(tx, [], {})
-        return super().len_impl(tx)
+        return super().sq_length(tx)
 
     def method_setattr_standard(
         self,
@@ -2607,7 +2623,8 @@ class SourcelessGraphModuleVariable(UserDefinedObjectVariable):
 class UserDefinedExceptionObjectVariable(UserDefinedObjectVariable):
     def __init__(self, value: object, **kwargs: Any) -> None:
         super().__init__(value, **kwargs)
-        self.exc_vt = variables.ExceptionVariable(self.value_type, ())
+        init_args = kwargs.get("init_args", [])
+        self.exc_vt = variables.ExceptionVariable(self.value_type, init_args)
 
     @property
     def fn(self) -> Callable[..., object]:
@@ -2626,9 +2643,6 @@ class UserDefinedExceptionObjectVariable(UserDefinedObjectVariable):
             and inspect.ismethoddescriptor(method)
             and len(kwargs) == 0
         ):
-            self.exc_vt.args = tuple(args)
-            # pyrefly: ignore[missing-attribute]
-            self.value.args = args
             return variables.CONSTANT_VARIABLE_NONE
         elif (
             name == "__setattr__"
@@ -2642,13 +2656,24 @@ class UserDefinedExceptionObjectVariable(UserDefinedObjectVariable):
             return self.exc_vt.call_method(tx, name, args, kwargs)
         return super().call_method(tx, name, args, kwargs)
 
+    def var_getattr(self, tx: "InstructionTranslator", name: str):
+        if name in (
+            "args",
+            "__cause__",
+            "__context__",
+            "__suppress_context__",
+            "__traceback__",
+        ):
+            return self.exc_vt.var_getattr(tx, name)
+        return super().var_getattr(tx, name)
+
     @property
     def __context__(self) -> "ConstantVariable":
         # type: ignore[return-value]
         return self.exc_vt.__context__
 
     @property
-    def args(self) -> tuple[VariableTracker, ...]:
+    def args(self) -> list[VariableTracker]:
         return self.exc_vt.args
 
     def set_context(self, context: "variables.ExceptionVariable") -> None:
