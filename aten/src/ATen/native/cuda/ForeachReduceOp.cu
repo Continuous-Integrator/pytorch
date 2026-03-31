@@ -42,7 +42,7 @@ enum class NormType { L1, L2, LInf };
 //
 // IF YOU USE THIS STRUCT, PLEASE ADD A ONE-OFF TEST IN test_foreach.py AS THIS
 // IS CURRENTLY ONLY TESTED FOR _foreach_norm.
-const size_t MAX_TENSORS_PER_KERNEL = 3200;
+static constexpr size_t MAX_TENSORS_PER_KERNEL = 3200;
 struct TensorListAddresses {
   const void* addresses[MAX_TENSORS_PER_KERNEL];
 };

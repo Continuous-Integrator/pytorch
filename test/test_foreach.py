@@ -1111,7 +1111,7 @@ class TestForeach(TestCase):
     @ops(foreach_reduce_op_db)
     @parametrize("w_empty", (False, True))
     def test_foreach_reduce_large_input(self, device, dtype, op, w_empty):
-        # test inputs larger than kChunkSize (65536) * max_num_blocks (2560)
+        # test inputs larger than kChunkSize (65536) * max_num_blocks (2240)
         N = 65536 * 320 * 2
         disable_fastpath = False
         kwargs = {}
