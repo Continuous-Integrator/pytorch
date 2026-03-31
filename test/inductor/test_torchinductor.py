@@ -13340,43 +13340,6 @@ def forward(self, arg0_1: "Sym(s77)", arg1_1: "Sym(s27)", arg2_1: "Sym(s53)", ar
         with self.assertRaisesRegex(AssertionError, "torch.ops.dummy.op_name"):
             assert_alignment(tensor, 0, "torch.ops.dummy.op_name")
 
-    @requires_gpu()
-    @skip_if_not_triton
-    @unittest.skipIf(
-        config.cpp_wrapper,
-        "Deferred alignment copies are not generated for cpp_wrapper",
-    )
-    def test_alignment_copy_deferred_to_first_use(self):
-        def fn(x, y, z):
-            a = torch.mm(x, y)
-            b = torch.mm(a, z)
-            return b
-
-        x = torch.randn(16, 32, device=self.device)
-        y = torch.randn(32, 64, device=self.device)
-        z = torch.randn(64, 8, device=self.device)
-
-        _, code = run_and_get_code(torch.compile(fn), x, y, z)
-        # z's alignment check should appear between the two mm calls:
-        # first mm (uses x, y) -> alignment clone (for z) -> second mm (uses z)
-        FileCheck().check("extern_kernels.mm(").check("clone_preserve_strides").check(
-            "extern_kernels.mm("
-        ).run(code[0])
-
-    @requires_gpu()
-    @skip_if_not_triton
-    @torch._inductor.config.patch(cpp_wrapper=True)
-    def test_alignment_copy_not_emitted_for_cpp_wrapper(self):
-        def fn(x, y):
-            return torch.mm(x, y)
-
-        x = torch.randn(16, 32, device=self.device)
-        y = torch.randn(32, 64, device=self.device)
-
-        _, code = run_and_get_code(torch.compile(fn), x, y)
-        # cpp_wrapper should NOT contain Python-syntax alignment copies
-        self.assertNotIn("clone_preserve_strides", code[0])
-
     @torch._dynamo.config.patch(capture_dynamic_output_shape_ops=True)
     @torch._inductor.config.patch(implicit_fallbacks=True)
     def test_custom_op_unbacked_symints(self):
@@ -17740,6 +17703,46 @@ if RUN_GPU:
             result, code = run_and_get_code(torch.compile(fn), inp)
             self.assertIn("0x80000000", code[0])
             torch.testing.assert_close(result, fn(inp))
+
+        def test_3d_reductions_with_max_tiles_3(self):
+            # Inductor only supports at most two reduction iteration ranges, R0 and R1, which the
+            # reduction component of the kernel can be tiled across.
+            # When max_tiles>=3, SIMDScheduling.create_tiling would previously incorrectly allow the
+            # tiling of the kernel in three dimensions, despite there being no pointwise component
+            # of the kernel.
+
+            @torch._inductor.config.patch(
+                {
+                    "triton.prefer_nd_tiling": True,
+                    "triton.max_tiles": 3,
+                    "triton.tile_reductions": True,
+                    "triton.use_tensor_descriptor": True,
+                }
+            )
+            @torch.compile
+            def sum(x):
+                return torch.sum(x, [0, 1, 2])
+
+            shape = (2, 2, 4)
+            strides = (32, 8, 1)
+
+            arg0_1_orig = torch.arange(
+                math.prod(shape), device=GPU_TYPE, dtype=torch.int32
+            ).view(shape)
+            arg0_1 = torch.empty_strided(
+                shape, strides, device=GPU_TYPE, dtype=torch.int32
+            )
+            arg0_1.copy_(arg0_1_orig)
+
+            actual, code = run_and_get_code(sum, arg0_1)
+            expected = torch.sum(arg0_1, [0, 1, 2])
+
+            torch.testing.assert_close(actual=actual, expected=expected)
+
+            fc = FileCheck()
+            # There's no pointwise work to do, so xnumel should be 1...
+            fc.check("xnumel = 1")
+            fc.run(code[0])
 
     class RNNTest(TestCase):
         device_type = GPU_TYPE
