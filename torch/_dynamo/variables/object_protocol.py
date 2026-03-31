@@ -14,7 +14,7 @@ from .constant import CONSTANT_VARIABLE_FALSE, CONSTANT_VARIABLE_TRUE
 
 
 if TYPE_CHECKING:
-    from ..symbolic_convert import InstructionTranslator
+    from ..symbolic_convert import InstructionTranslatorBase
 
 
 def vt_identity_compare(
@@ -72,7 +72,7 @@ def vt_identity_compare(
 
 
 def vt_getitem(
-    tx: "InstructionTranslator",
+    tx: "InstructionTranslatorBase",
     obj: VariableTracker,
     key: VariableTracker,
 ) -> VariableTracker:

@@ -63,6 +63,15 @@ class GetItemTests(torch._dynamo.test_case.TestCase):
         x = torch.randn(4)
         self.assertEqual(fn(x), self._compile(fn, x))
 
+    def test_list_invalid_index_type(self):
+        def fn(x):
+            items = [x, x + 1, x + 2]
+            return operator.getitem(items, "a")
+
+        x = torch.randn(4)
+        with self.assertRaises(TypeError):
+            self._compile(fn, x)
+
     # --- BaseListVariable (TupleVariable) ---
 
     def test_tuple_int_index(self):
