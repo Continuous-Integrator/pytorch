@@ -2377,6 +2377,19 @@ def compile_fx_forward(
             ),
         )
 
+        # Snapshot stack traces before passes run. The partitioner does this
+        # for training, but inference skips partitioning. Passes may strip
+        # stack_trace from individual nodes, so we save them early.
+        _output = output_node(gm)
+        _output.meta["output_stack_traces"] = [
+            (
+                arg.meta.get("stack_trace")
+                if isinstance(arg, torch.fx.node.Node)
+                else None
+            )
+            for arg in _output.args[0]  # type: ignore[union-attr]
+        ]
+
         # Record original output strides BEFORE joint_graph_passes, because
         # pad_mm (run as part of joint_graph_passes) can introduce views with
         # padded strides that would be incorrectly captured as "original".

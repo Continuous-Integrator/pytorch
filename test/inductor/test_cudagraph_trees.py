@@ -154,9 +154,7 @@ if HAS_CUDA_AND_TRITON:
     def all_live_block_count():
         return len(all_live_blocks())
 
-    class _AssertOutputStackTraces(
-        torch._inductor.custom_graph_pass.CustomGraphPass
-    ):
+    class _AssertOutputStackTraces(torch._inductor.custom_graph_pass.CustomGraphPass):
         """Asserts all non-placeholder output args have stack traces.
 
         Only fires on graphs that were traced by Dynamo (which captures
@@ -214,10 +212,8 @@ if HAS_CUDA_AND_TRITON:
                         "triton.cudagraph_trees": True,
                         "triton.fast_path_cudagraph_asserts": True,  # too slow
                         "triton.slow_path_cudagraph_asserts": True,
-                        "triton.cudagraph_assert_stack_traces": True,
-                        "pre_grad_custom_pass": _AssertOutputStackTraces(
-                            "pre_grad"
-                        ),
+                        "test_configs.cudagraph_assert_stack_traces": True,
+                        "pre_grad_custom_pass": _AssertOutputStackTraces("pre_grad"),
                         "joint_custom_post_pass": _AssertOutputStackTraces(
                             "joint_graph"
                         ),
