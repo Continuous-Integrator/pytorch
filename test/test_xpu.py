@@ -6,6 +6,7 @@ import contextlib
 import ctypes
 import gc
 import json
+import os
 import random
 import re
 import subprocess
@@ -17,6 +18,7 @@ import unittest
 import warnings
 from copy import deepcopy
 from itertools import product
+from unittest.mock import patch
 
 import torch
 import torch.xpu._gpu_trace as gpu_trace
@@ -246,6 +248,24 @@ if __name__ == "__main__":
         # XPU have extra lines, so get the last line, refer https://github.com/intel/torch-xpu-ops/issues/2261
         rc = check_output(test_script).splitlines()[-1]
         self.assertEqual(rc, str(torch.xpu.device_count()))
+
+    def test_parse_visible_devices(self):
+        def _parse_visible_devices(val):
+            from torch.xpu import _parse_visible_devices as _pvd
+
+            with patch.dict(os.environ, {"ZE_AFFINITY_MASK": val}, clear=True):
+                return _pvd()
+
+        # Tokens with trailing non-numeric characters are invalid; entire list is rejected
+        self.assertEqual(_parse_visible_devices("1a,2b"), [])
+        # Negative indices are silently skipped; valid indices before and after are kept
+        self.assertEqual(_parse_visible_devices("0, 1, 2, -1, 3"), [0, 1, 2, 3])
+        # Duplicate indices are silently ignored; each ordinal appears at most once
+        self.assertEqual(_parse_visible_devices("0, 1, 2, 1"), [0, 1, 2])
+        # Leading '+'/'-' on an integer are accepted; '-0' is treated as 0
+        self.assertEqual(_parse_visible_devices("2, +3, -0, 5"), [2, 3, 0, 5])
+        # Purely alphabetic tokens make the entire list invalid
+        self.assertEqual(_parse_visible_devices("one,two,3,4"), [])
 
     def test_device_count_respects_affinity_mask(self):
         try:

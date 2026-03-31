@@ -47,7 +47,6 @@ _is_in_bad_fork = getattr(torch._C, "_xpu_isInBadFork", lambda: False)
 _lazy_seed_tracker = _LazySeedTracker()
 default_generators: tuple[torch._C.Generator] = ()  # type: ignore[assignment]
 _cached_device_count: int | None = None
-_HAS_PYZES: bool | None = None  # None = not yet attempted; True/False after first call
 
 
 def _is_compiled() -> bool:
@@ -121,15 +120,9 @@ def _raw_device_count_zes(visible_mask: list[int]) -> int:
     """
     from ctypes import byref, c_uint32
 
-    global _HAS_PYZES
-    if _HAS_PYZES is None:
-        try:
-            import pyzes  # type: ignore[import]
-
-            _HAS_PYZES = True
-        except ImportError:
-            _HAS_PYZES = False
-    if not _HAS_PYZES:
+    try:
+        import pyzes  # type: ignore[import]
+    except ImportError:
         return -1
 
     def _zes_check(rc: int, msg: str) -> bool:
@@ -138,13 +131,11 @@ def _raw_device_count_zes(visible_mask: list[int]) -> int:
             warnings.warn(msg, stacklevel=3)
         return rc != 0
 
-    # pyrefly: ignore[unbound-name]
     if _zes_check(pyzes.zesInit(0), "Can't initialize Level Zero Sysman"):
         return -1
 
     driver_count = c_uint32(0)
     if _zes_check(
-        # pyrefly: ignore[unbound-name]
         pyzes.zesDriverGet(byref(driver_count), None),
         "Can't get Level Zero Sysman driver count",
     ):
@@ -152,10 +143,8 @@ def _raw_device_count_zes(visible_mask: list[int]) -> int:
     if driver_count.value == 0:
         return 0
 
-    # pyrefly: ignore[unbound-name]
     drivers = (pyzes.zes_driver_handle_t * driver_count.value)()
     if _zes_check(
-        # pyrefly: ignore[unbound-name]
         pyzes.zesDriverGet(byref(driver_count), drivers),
         "Can't get Level Zero Sysman driver handles",
     ):
@@ -163,16 +152,13 @@ def _raw_device_count_zes(visible_mask: list[int]) -> int:
 
     device_count = c_uint32(0)
     if _zes_check(
-        # pyrefly: ignore[unbound-name]
         pyzes.zesDeviceGet(drivers[0], byref(device_count), None),
         "Can't get Level Zero Sysman device count",
     ):
         return -1
 
-    # pyrefly: ignore[unbound-name]
     devices = (pyzes.zes_device_handle_t * device_count.value)()
     if _zes_check(
-        # pyrefly: ignore[unbound-name]
         pyzes.zesDeviceGet(drivers[0], byref(device_count), devices),
         "Can't get Level Zero Sysman device handles",
     ):
@@ -189,12 +175,9 @@ def _raw_device_count_zes(visible_mask: list[int]) -> int:
     num_dgpu = 0
 
     for device in devices:
-        # pyrefly: ignore[unbound-name]
         props = pyzes.zes_device_properties_t()
-        # pyrefly: ignore[unbound-name]
         props.stype = pyzes.ZES_STRUCTURE_TYPE_DEVICE_PROPERTIES
         if _zes_check(
-            # pyrefly: ignore[unbound-name]
             pyzes.zesDeviceGetProperties(device, byref(props)),
             "Can't get Level Zero Sysman device properties",
         ):
