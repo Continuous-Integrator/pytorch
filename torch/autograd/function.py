@@ -315,8 +315,10 @@ class BackwardCFunction(_C._FunctionBase, FunctionCtx, _HookMixin):
             )
         user_fn = vjp_fn if vjp_fn is not Function.vjp else backward_fn
         # When boxed_grads_call is True, backward expects args boxed into list
-        if getattr(self._forward_cls, "boxed_grads_call", False):  # type: ignore[attr-defined]  # pyrefly: ignore[missing-attribute]
-            args = (list(args),)
+        fwd_cls = self._forward_cls  # type: ignore[attr-defined]  # pyrefly: ignore[missing-attribute]
+        if getattr(fwd_cls, "boxed_grads_call", False):
+            if not (len(args) == 1 and isinstance(args[0], list)):
+                args = (list(args),)
         return user_fn(self, *args)
 
     def apply_jvp(self, *args):
