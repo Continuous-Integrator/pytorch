@@ -1,7 +1,6 @@
 # Owner(s): ["module: random"]
 
 import torch
-import torch._dynamo.testing
 import torch.func._random as random
 from torch.testing._internal.common_device_type import (
     dtypes,
@@ -14,7 +13,32 @@ from torch.testing._internal.common_utils import parametrize, run_tests, TestCas
 all_floating_dtypes = floating_types_and(torch.half, torch.bfloat16)
 
 
-class TestPhiloxKeySplit(TestCase):
+class TestStatelessRNGKey(TestCase):
+    def test_basic_shape_and_dtype(self, device):
+        key = random.key(42, device=device)
+        self.assertEqual(key.shape, (2,))
+        self.assertEqual(key.dtype, torch.uint64)
+        self.assertEqual(key.device, torch.device(device))
+
+    def test_different_seeds(self, device):
+        key1 = random.key(42, device=device)
+        key2 = random.key(43, device=device)
+        self.assertNotEqual(key1, key2)
+
+    def test_determinism(self, device):
+        key1 = random.key(42, device=device)
+        key2 = random.key(42, device=device)
+        self.assertEqual(key1, key2)
+
+    def test_error_unsupported_impl(self, device):
+        with self.assertRaises(NotImplementedError):
+            random.key(42, impl="unsupported", device=device)
+
+
+instantiate_device_type_tests(TestStatelessRNGKey, globals(), only_for=("cuda"))
+
+
+class TestStatelessRNGKeySplit(TestCase):
     def test_basic_shape_and_dtype(self, device):
         key = random.key(42, device=device)
         splits = random.split(key, 4)
@@ -71,7 +95,7 @@ class TestPhiloxKeySplit(TestCase):
 
     def test_multi_batch(self, device):
         key = random.key(42, device=device)
-        keys = random.split(key, 12).view(3, 4, 2)
+        keys = random.split(key, 12).reshape(3, 4, 2)
         num_splits = 5
         batched = random.split(keys, num_splits)  # (5, 3, 4, 2)
         self.assertEqual(batched.shape, (num_splits, 3, 4, 2))
@@ -109,10 +133,10 @@ class TestPhiloxKeySplit(TestCase):
             random.split(key, 4)
 
 
-instantiate_device_type_tests(TestPhiloxKeySplit, globals(), only_for=("cuda"))
+instantiate_device_type_tests(TestStatelessRNGKeySplit, globals(), only_for=("cuda"))
 
 
-class TestPhiloxKeyFoldIn(TestCase):
+class TestStatelessRNGKeyFoldIn(TestCase):
     def test_basic_shape_and_dtype(self, device):
         key = random.key(42, device=device)
         result = random.fold_in(key, 7)
@@ -156,7 +180,7 @@ class TestPhiloxKeyFoldIn(TestCase):
 
     def test_multi_batch(self, device):
         key = random.key(42, device=device)
-        keys = random.split(key, 12).view(3, 4, 2)
+        keys = random.split(key, 12).reshape(3, 4, 2)
         data = 7
         batched = random.fold_in(keys, data)  # (3, 4, 2)
         self.assertEqual(batched.shape, (3, 4, 2))
@@ -186,10 +210,10 @@ class TestPhiloxKeyFoldIn(TestCase):
             random.fold_in(key, 0)
 
 
-instantiate_device_type_tests(TestPhiloxKeyFoldIn, globals(), only_for=("cuda"))
+instantiate_device_type_tests(TestStatelessRNGKeyFoldIn, globals(), only_for=("cuda"))
 
 
-class TestPhiloxDistribution(TestCase):
+class TestStatelessRNGDistribution(TestCase):
     def _gen(self, gen_fn_name, *args, **kwargs):
         return getattr(random, gen_fn_name)(*args, **kwargs)
 
@@ -408,20 +432,13 @@ class TestPhiloxDistribution(TestCase):
         self.assertTrue(result.max().item() <= 5.0)
 
 
-instantiate_device_type_tests(TestPhiloxDistribution, globals(), only_for=("cuda"))
+instantiate_device_type_tests(
+    TestStatelessRNGDistribution, globals(), only_for=("cuda")
+)
 
 
-class TestPhiloxCompile(TestCase):
-    def test_uniform_aot_eager(self, device):
-        key = random.key(42, device=device)
-
-        @torch.compile(backend="aot_eager", fullgraph=True)
-        def f(key):
-            return random.uniform(key, (100,))
-
-        self.assertEqual(f(key), random.uniform(key, (100,)))
-
-    def test_split_aot_eager(self, device):
+class TestStatelessRNGCompile(TestCase):
+    def test_split_fullgraph(self, device):
         key = random.key(42, device=device)
 
         @torch.compile(backend="aot_eager", fullgraph=True)
@@ -430,7 +447,7 @@ class TestPhiloxCompile(TestCase):
 
         self.assertEqual(f(key), random.split(key, 4))
 
-    def test_fold_in_aot_eager(self, device):
+    def test_fold_in_fullgraph(self, device):
         key = random.key(42, device=device)
 
         @torch.compile(backend="aot_eager", fullgraph=True)
@@ -439,7 +456,16 @@ class TestPhiloxCompile(TestCase):
 
         self.assertEqual(f(key), random.fold_in(key, 7))
 
-    def test_normal_aot_eager(self, device):
+    def test_uniform_fullgraph(self, device):
+        key = random.key(42, device=device)
+
+        @torch.compile(backend="aot_eager", fullgraph=True)
+        def f(key):
+            return random.uniform(key, (100,))
+
+        self.assertEqual(f(key), random.uniform(key, (100,)))
+
+    def test_normal_fullgraph(self, device):
         key = random.key(42, device=device)
 
         @torch.compile(backend="aot_eager", fullgraph=True)
@@ -448,7 +474,7 @@ class TestPhiloxCompile(TestCase):
 
         self.assertEqual(f(key), random.normal(key, (100,)))
 
-    def test_batched_normal_aot_eager(self, device):
+    def test_batched_normal_fullgraph(self, device):
         key = random.key(42, device=device)
         keys = random.split(key, 4).unsqueeze(-2)  # (4, 1, 2)
 
@@ -458,7 +484,7 @@ class TestPhiloxCompile(TestCase):
 
         self.assertEqual(f(keys), random.normal(keys, (4, 50)))
 
-    def test_split_then_normal_aot_eager(self, device):
+    def test_split_then_normal_fullgraph(self, device):
         key = random.key(42, device=device)
 
         @torch.compile(backend="aot_eager", fullgraph=True)
@@ -470,7 +496,7 @@ class TestPhiloxCompile(TestCase):
             f(key), random.normal(random.split(key, 4).unsqueeze(-2), (4, 100))
         )
 
-    def test_fold_in_then_uniform_aot_eager(self, device):
+    def test_fold_in_then_uniform_fullgraph(self, device):
         key = random.key(42, device=device)
 
         @torch.compile(backend="aot_eager", fullgraph=True)
@@ -481,7 +507,7 @@ class TestPhiloxCompile(TestCase):
         self.assertEqual(f(key), random.uniform(random.fold_in(key, 3), (100,)))
 
 
-instantiate_device_type_tests(TestPhiloxCompile, globals(), only_for=("cuda"))
+instantiate_device_type_tests(TestStatelessRNGCompile, globals(), only_for=("cuda"))
 
 
 if __name__ == "__main__":

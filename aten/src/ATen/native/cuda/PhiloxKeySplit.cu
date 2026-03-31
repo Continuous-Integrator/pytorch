@@ -49,13 +49,11 @@ __global__ void philox_key_split_kernel(
     }
 
     for (int64_t split_idx = split_start; split_idx < split_end; split_idx++) {
-      uint32_t r0 = curand(&state);
-      uint32_t r1 = curand(&state);
-      uint32_t r2 = curand(&state);
-      uint32_t r3 = curand(&state);
+      // Sample randomness to derive each new (seed, offset) pair.
+      uint4 r = curand4(&state);
 
-      uint64_t new_seed = static_cast<uint64_t>(r0) | (static_cast<uint64_t>(r1) << 32);
-      uint64_t new_offset = static_cast<uint64_t>(r2) | (static_cast<uint64_t>(r3) << 32);
+      uint64_t new_seed = static_cast<uint64_t>(r.x) | (static_cast<uint64_t>(r.y) << 32);
+      uint64_t new_offset = static_cast<uint64_t>(r.z) | (static_cast<uint64_t>(r.w) << 32);
 
       output[(split_idx * num_keys + key_idx) * 2] = new_seed;
       output[(split_idx * num_keys + key_idx) * 2 + 1] = new_offset;
@@ -77,13 +75,11 @@ __global__ void philox_key_fold_in_kernel(
     curand_init(seed, /*subsequence=*/0, /*offset=*/offset, &state);
     skipahead(static_cast<unsigned long long>(data) * 4, &state);
 
-    uint32_t r0 = curand(&state);
-    uint32_t r1 = curand(&state);
-    uint32_t r2 = curand(&state);
-    uint32_t r3 = curand(&state);
+    // Sample randomness to derive a new (seed, offset) pair.
+    uint4 r = curand4(&state);
 
-    uint64_t new_seed = static_cast<uint64_t>(r0) | (static_cast<uint64_t>(r1) << 32);
-    uint64_t new_offset = static_cast<uint64_t>(r2) | (static_cast<uint64_t>(r3) << 32);
+    uint64_t new_seed = static_cast<uint64_t>(r.x) | (static_cast<uint64_t>(r.y) << 32);
+    uint64_t new_offset = static_cast<uint64_t>(r.z) | (static_cast<uint64_t>(r.w) << 32);
 
     output[idx * 2] = new_seed;
     output[idx * 2 + 1] = new_offset;
@@ -107,9 +103,6 @@ Tensor _philox_key_split_cuda(const Tensor& key, int64_t num_splits) {
 
   at::cuda::CUDAGuard device_guard(key.device());
 
-  auto key_contig = key.contiguous();
-  int64_t num_keys = key.numel() / 2;
-
   // Output shape: (num_splits, *batch, 2)
   auto batch_sizes = key.sizes().slice(0, key.dim() - 1);
   std::vector<int64_t> output_sizes;
@@ -121,10 +114,12 @@ Tensor _philox_key_split_cuda(const Tensor& key, int64_t num_splits) {
   output_sizes.push_back(2);
 
   Tensor output = at::empty(output_sizes, key.options());
-
+  int64_t num_keys = key.numel() / 2;
   if (num_keys == 0) {
     return output;
   }
+
+  auto key_contig = key.contiguous();
 
   // Each thread generates splits_per_thread consecutive splits for one key,
   // amortizing curand_init over many sequential curand calls.
@@ -158,14 +153,13 @@ Tensor _philox_key_fold_in_cuda(const Tensor& key, int64_t data) {
 
   at::cuda::CUDAGuard device_guard(key.device());
 
-  auto key_contig = key.contiguous();
+  Tensor output = at::empty_like(key);
   int64_t num_keys = key.numel() / 2;
-
-  Tensor output = at::empty_like(key_contig);
-
   if (num_keys == 0) {
     return output;
   }
+
+  auto key_contig = key.contiguous();
 
   constexpr int block_size = 256;
   int num_blocks = std::min(
