@@ -117,6 +117,73 @@ class PlacementTypesTestCase(TestCase):
                         f"num_chunks={num_chunks}, idx={idx}",
                     )
 
+    def test_strided_shard_split_roundtrip(self):
+        """Test that _StridedShard._split_tensor partitions all elements correctly."""
+        for dim_size in [6, 12, 15, 31]:
+            for split_factor in [2, 3, 4]:
+                for num_chunks in [2, 3, 4]:
+                    ss = _StridedShard(0, split_factor=split_factor)
+                    tensor = torch.arange(dim_size)
+                    shards, _ = ss._split_tensor(tensor, num_chunks, with_padding=False)
+                    recovered = torch.cat(shards).sort().values
+                    self.assertEqual(
+                        recovered,
+                        tensor,
+                        msg=f"dim_size={dim_size}, sf={split_factor}, "
+                        f"chunks={num_chunks}",
+                    )
+                    self.assertEqual(
+                        sum(s.numel() for s in shards),
+                        dim_size,
+                        msg=f"element count mismatch: dim_size={dim_size}, "
+                        f"sf={split_factor}, chunks={num_chunks}",
+                    )
+
+    def test_strided_shard_replicate_permutation(self):
+        """Simulate _to_replicate_tensor's index_select logic without collectives.
+
+        Verifies that the permutation algorithm correctly reconstructs the
+        original tensor from padded all_gather output.
+        """
+        for dim_size in [6, 9, 12, 15, 31]:
+            for split_factor in [2, 3]:
+                for num_chunks in [2, 3, 4]:
+                    ss = _StridedShard(0, split_factor=split_factor)
+                    original = torch.arange(dim_size)
+                    shards, pad_sizes = ss._split_tensor(
+                        original, num_chunks, with_padding=True
+                    )
+                    # _split_tensor returns unpadded shards + pad_sizes;
+                    # simulate pad + all_gather by padding each shard
+                    max_chunk = max(s.size(0) for s in shards)
+                    padded_shards = [
+                        torch.nn.functional.pad(s, (0, max_chunk - s.size(0)))
+                        for s in shards
+                    ]
+                    gathered = torch.cat(padded_shards)
+
+                    # Build select_indices (mirrors _to_replicate_tensor)
+                    indices = torch.arange(dim_size)
+                    index_shards, _ = ss._split_tensor(
+                        indices, num_chunks, with_padding=False
+                    )
+                    padded_pos = [
+                        i * max_chunk + torch.arange(len(s))
+                        for i, s in enumerate(index_shards)
+                    ]
+                    permutation = torch.cat(index_shards)
+                    select_pos = torch.cat(padded_pos)
+                    select_indices = select_pos.index_select(
+                        0, torch.argsort(permutation)
+                    )
+                    recovered = gathered.index_select(0, select_indices)
+                    self.assertEqual(
+                        recovered,
+                        original,
+                        msg=f"dim_size={dim_size}, sf={split_factor}, "
+                        f"chunks={num_chunks}",
+                    )
+
     def test_select_split_tensor_symint_with_padding_raises(self):
         """
         Test that _select_split_tensor raises GuardOnDataDependentSymNode when
