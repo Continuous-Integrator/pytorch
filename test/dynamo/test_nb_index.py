@@ -172,7 +172,7 @@ class NbIndexTests(TestCase):
                 return str(e)
 
         result = torch.compile(fn, backend="eager", fullgraph=True)(torch.tensor(0))
-        self.assertIn("cannot be interpreted as an integer", result)
+        self.assertIn("list indices must be integers or slices", result)
 
     def test_user_defined_staticmethod_index(self):
         class StaticIdx:
@@ -259,6 +259,67 @@ class NbIndexTests(TestCase):
         )
         self.assertEqual(eager_result, "caught")
         self.assertEqual(compiled_result, "caught")
+
+    def test_list_subscript_error_message_matches_cpython(self):
+        def fn(x):
+            try:
+                return [10, 20]["hello"]  # noqa: RUF016
+            except TypeError as e:
+                return str(e)
+
+        eager_result = fn(torch.tensor(0))
+        compiled_result = torch.compile(fn, backend="eager", fullgraph=True)(
+            torch.tensor(0)
+        )
+        self.assertIn("list indices must be integers or slices", eager_result)
+        self.assertIn("list indices must be integers or slices", compiled_result)
+
+    def test_index_returning_non_int_raises(self):
+        class Bad:
+            def __index__(self):
+                return "not an int"  # noqa: PLE0305
+
+        obj = Bad()
+
+        def fn(x):
+            try:
+                return operator.index(obj)
+            except TypeError as e:
+                return str(e)
+
+        result = torch.compile(fn, backend="eager", fullgraph=True)(torch.tensor(0))
+        self.assertIn("__index__ returned non-int", result)
+
+    def test_negative_index_via_user_defined(self):
+        class NegIdx:
+            def __index__(self):
+                return -1
+
+        idx = NegIdx()
+
+        def fn(x):
+            lst = [10, 20, 30]
+            return lst[idx]
+
+        self.assertEqual(
+            torch.compile(fn, backend="eager", fullgraph=True)(torch.tensor(0)), 30
+        )
+
+    def test_index_raising_exception_propagates(self):
+        class RaisingIdx:
+            def __index__(self):
+                raise ValueError("custom error")
+
+        obj = RaisingIdx()
+
+        def fn(x):
+            try:
+                return operator.index(obj)
+            except ValueError as e:
+                return str(e)
+
+        result = torch.compile(fn, backend="eager", fullgraph=True)(torch.tensor(0))
+        self.assertEqual(result, "custom error")
 
 
 if __name__ == "__main__":

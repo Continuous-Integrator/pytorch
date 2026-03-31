@@ -1309,7 +1309,19 @@ class UserDefinedObjectVariable(UserDefinedVariable):
         if type_attr is None:
             return super().nb_index_impl(tx)
         method_var = self.resolve_type_attr(tx, "__index__", type_attr, source=None)
-        return method_var.call_function(tx, [], {})
+        result = method_var.call_function(tx, [], {})
+        # CPython validates that __index__ returns an int (abstract.c:1433-1438).
+        if result.is_python_constant() and not isinstance(
+            result.as_python_constant(), int
+        ):
+            raise_observed_exception(
+                TypeError,
+                tx,
+                args=[
+                    f"__index__ returned non-int (type {type(result.as_python_constant()).__name__})"
+                ],
+            )
+        return result
 
     def torch_function_check(self) -> None:
         assert has_torch_function(self), (
