@@ -102,6 +102,15 @@ struct UniformPolicy {
     warp_smem[lane * PADDED + k * 4 + 2] = flow + frange * u.z;
     warp_smem[lane * PADDED + k * 4 + 3] = flow + frange * u.w;
   }
+
+  __device__ void tiled_body_double(
+      double* warp_smem, int lane, int PADDED, int k,
+      curandStatePhilox4_32_10_t* state) const {
+    double range = high - low;
+    double2 u = curand_uniform2_double(state);
+    warp_smem[lane * PADDED + k * 2 + 0] = low + range * u.x;
+    warp_smem[lane * PADDED + k * 2 + 1] = low + range * u.y;
+  }
 };
 
 template <typename scalar_t>
@@ -217,6 +226,14 @@ struct NormalPolicy {
     warp_smem[lane * PADDED + k * 4 + 2] = fmean + fstd * n.z;
     warp_smem[lane * PADDED + k * 4 + 3] = fmean + fstd * n.w;
   }
+
+  __device__ void tiled_body_double(
+      double* warp_smem, int lane, int PADDED, int k,
+      curandStatePhilox4_32_10_t* state) const {
+    double2 n = curand_normal2_double(state);
+    warp_smem[lane * PADDED + k * 2 + 0] = mean + stddev * n.x;
+    warp_smem[lane * PADDED + k * 2 + 1] = mean + stddev * n.y;
+  }
 };
 
 // -- Unified Philox distribution kernel -------------------------------------
@@ -310,29 +327,64 @@ __global__ void philox_distribution_kernel(
     uint64_t seed = keys[0];
     uint64_t key_offset = keys[1];
 
-    // For non-double types, use warp-cooperative tiled generation with
-    // shared memory transpose for coalesced writes.  Each warp processes
-    // 1024-element tiles: 32 threads x 8 curand calls x 4 elements/call.
-    // Values go to shared memory in thread-major order, then are read
-    // back in position-major order for coalesced stores.
+    // Warp-cooperative tiled generation with shared memory transpose for
+    // coalesced writes.  Values go to shared memory in thread-major order,
+    // then are read back in position-major order for coalesced stores.
     bool could_wrap = key_offset != 0 &&
         (key_offset + static_cast<unsigned long long>(event_numel) *
          outputs_per_value < key_offset);
-    if constexpr (elems_per_call == 4) {
-      if (dist.tiled_ok(key_offset) && !could_wrap) {
+    // Peel leading elements to achieve 4-alignment for normal distribution.
+    // The tiled path requires curand offsets to be 4-aligned.  When
+    // key_offset is misaligned, we generate the first few elements with
+    // a single thread, then tile the aligned remainder.
+    int peel = 0;
+    bool can_tile = true;
+    if constexpr (DistPolicy::needs_alignment) {
+      int uint32_peel = (4 - static_cast<int>(key_offset & 3)) & 3;
+      if (uint32_peel % outputs_per_value != 0) {
+        can_tile = false;
+      } else {
+        peel = uint32_peel / outputs_per_value;
+      }
+    }
+
+    // Skip the tiled path for small outputs: below one tile, the warp
+    // generates a full tile but most elements are discarded.  The fallback
+    // is cheaper because only threads with actual work call curand_init.
+    constexpr int64_t tile_size = 32 * elems_per_call * 8;  // K=8
+
+    if (can_tile && !could_wrap && event_numel >= tile_size) {
+      int warp_id = threadIdx.x / 32;
+      int lane = threadIdx.x % 32;
+      int global_warp =
+          (static_cast<int>(blockIdx.x) * blockDim.x + threadIdx.x) / 32;
+      int num_warps = static_cast<int>(gridDim.x) * (blockDim.x / 32);
+
+      if constexpr (DistPolicy::needs_alignment) {
+        if (peel > 0) {
+          if (global_warp == 0 && lane == 0) {
+            curandStatePhilox4_32_10_t peel_state;
+            curand_init(seed, /*subsequence=*/0,
+                        /*offset=*/key_offset & ~3ULL, &peel_state);
+            dist.generate_skip(output, 0, 0,
+                               min(static_cast<int64_t>(peel), event_numel),
+                               &peel_state, static_cast<int>(key_offset & 3));
+          }
+          key_offset += static_cast<uint64_t>(peel) * outputs_per_value;
+          event_numel -= peel;
+          output += peel;
+        }
+      }
+
+      if constexpr (elems_per_call == 4) {
+        // float/half/bfloat16: 32 threads x 8 curand calls x 4 elems = 1024
         constexpr int K = 8;
         constexpr int EPT = elems_per_call * K;  // 32 elements per thread
         constexpr int TILE = 32 * EPT;            // 1024 elements per tile
         constexpr int PADDED = EPT + 1;            // 33, bank-conflict-free
 
         float* smem = reinterpret_cast<float*>(philox_smem_);
-        int warp_id = threadIdx.x / 32;
-        int lane = threadIdx.x % 32;
         float* warp_smem = smem + warp_id * 32 * PADDED;
-
-        int global_warp =
-            (static_cast<int>(blockIdx.x) * blockDim.x + threadIdx.x) / 32;
-        int num_warps = static_cast<int>(gridDim.x) * (blockDim.x / 32);
 
         for (int64_t tile = static_cast<int64_t>(global_warp) * TILE;
              tile < event_numel;
@@ -351,9 +403,6 @@ __global__ void philox_distribution_kernel(
           }
           __syncwarp();
 
-          // Read in position-major order: step m reads thread m's row,
-          // lane selects the element.  Consecutive lanes write consecutive
-          // global addresses -> coalesced stores.
           #pragma unroll
           for (int m = 0; m < EPT; m++) {
             int64_t pos = tile + static_cast<int64_t>(m) * 32 + lane;
@@ -363,8 +412,49 @@ __global__ void philox_distribution_kernel(
           }
           __syncwarp();
         }
-        return;
       }
+      if constexpr (elems_per_call == 2) {
+        // double: 32 threads x 8 curand calls x 2 elems = 512 per tile.
+        // K=8 (not 16) to keep shared memory under 48 KB.
+        constexpr int K = 8;
+        constexpr int EPT = elems_per_call * K;  // 16 elements per thread
+        constexpr int TILE = 32 * EPT;            // 512 elements per tile
+        constexpr int PADDED = EPT + 1;            // 17
+
+        double* smem = reinterpret_cast<double*>(philox_smem_);
+        double* warp_smem = smem + warp_id * 32 * PADDED;
+
+        for (int64_t tile = static_cast<int64_t>(global_warp) * TILE;
+             tile < event_numel;
+             tile += static_cast<int64_t>(num_warps) * TILE) {
+
+          int64_t my_start = tile + static_cast<int64_t>(lane) * EPT;
+          unsigned long long philox_offset = key_offset +
+              static_cast<unsigned long long>(my_start) * outputs_per_value;
+
+          curandStatePhilox4_32_10_t state;
+          curand_init(seed, /*subsequence=*/0, /*offset=*/philox_offset, &state);
+
+          #pragma unroll
+          for (int k = 0; k < K; k++) {
+            dist.tiled_body_double(warp_smem, lane, PADDED, k, &state);
+          }
+          __syncwarp();
+
+          #pragma unroll
+          for (int s = 0; s < EPT; s++) {
+            int idx = s * 32 + lane;
+            int r = idx / EPT;
+            int c = idx % EPT;
+            int64_t pos = tile + static_cast<int64_t>(idx);
+            if (pos < event_numel) {
+              output[pos] = warp_smem[r * PADDED + c];
+            }
+          }
+          __syncwarp();
+        }
+      }
+      return;
     }
 
     // Fallback: contiguous per thread.
@@ -383,15 +473,16 @@ __global__ void philox_distribution_kernel(
     return;
   }
 
-  // Multi-key: each thread handles a fixed-size chunk for one key.
-  // curand_init is called per chunk.
-  int64_t num_chunks = (event_numel + elems_per_thread - 1) / elems_per_thread;
-  int64_t total_threads = num_keys * num_chunks;
-  int64_t tid = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  // Multi-key: work is divided into fixed-size chunks across all keys.
+  // Each thread processes one or more chunks via grid-stride loop,
+  // calling curand_init per chunk.
+  int64_t chunks_per_key = (event_numel + elems_per_thread - 1) / elems_per_thread;
+  int64_t total_work = num_keys * chunks_per_key;
+  int64_t work_idx = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
 
-  for (; tid < total_threads; tid += static_cast<int64_t>(gridDim.x) * blockDim.x) {
-    int64_t key_idx = tid / num_chunks;
-    int64_t chunk_idx = tid % num_chunks;
+  for (; work_idx < total_work; work_idx += static_cast<int64_t>(gridDim.x) * blockDim.x) {
+    int64_t key_idx = work_idx / chunks_per_key;
+    int64_t chunk_idx = work_idx % chunks_per_key;
     auto key_elem_offset = key_offset_calc.get(key_idx)[0];
     uint64_t seed = keys[key_elem_offset];
     uint64_t key_offset = keys[key_elem_offset + 1];
@@ -602,22 +693,37 @@ Tensor& philox_distribution_impl(
         static_cast<int>((elems_per_key + block_size - 1) / block_size),
         max_blocks);
   } else {
-    int64_t num_chunks = (elems_per_key + elems_per_thread - 1) / elems_per_thread;
-    int64_t total_threads = num_keys * num_chunks;
+    int64_t chunks_per_key = (elems_per_key + elems_per_thread - 1) / elems_per_thread;
+    int64_t total_work = num_keys * chunks_per_key;
     num_blocks = std::min(
-        static_cast<int>((total_threads + block_size - 1) / block_size),
+        static_cast<int>((total_work + block_size - 1) / block_size),
         max_blocks);
   }
 
   AT_DISPATCH_FLOATING_TYPES_AND2(kHalf, kBFloat16, self.scalar_type(), op_name, [&] {
     DistPolicyT<scalar_t> dist(param1, param2);
 
-    // Shared memory for the single-key tiled path (non-double only).
-    // Layout: warps_per_block * 32 threads * (EPT + 1 padding) floats.
+    // Shared memory for the single-key tiled path.
+    // Layout: warps_per_block * 32 threads * PADDED elements.
+    // Only allocate when the output is large enough to benefit from tiling;
+    // small outputs skip the tiled path and the lack of smem allows higher
+    // occupancy for the per-thread fallback.
+    constexpr size_t compute_size =
+        sizeof(scalar_t) < sizeof(float) ? sizeof(float) : sizeof(scalar_t);
+    constexpr int elems_per_call = 4 / static_cast<int>(compute_size / sizeof(float));
+    constexpr int64_t tile_threshold = 32 * elems_per_call * 8;  // K=8
+
     size_t smem_bytes = 0;
-    if (num_keys == 1 && sizeof(scalar_t) <= sizeof(float)) {
-      constexpr int PADDED = 4 * 8 + 1;  // elems_per_call * K + 1 = 33
-      smem_bytes = (block_size / 32) * 32 * PADDED * sizeof(float);
+    if (num_keys == 1 && elems_per_key >= tile_threshold) {
+      if constexpr (std::is_same_v<scalar_t, double>) {
+        // double: K=8, EPT=16, PADDED=17, 8 bytes per element
+        constexpr int PADDED = 17;
+        smem_bytes = (block_size / 32) * 32 * PADDED * sizeof(double);
+      } else {
+        // float/half/bfloat16: K=8, EPT=32, PADDED=33, 4 bytes per element
+        constexpr int PADDED = 33;
+        smem_bytes = (block_size / 32) * 32 * PADDED * sizeof(float);
+      }
     }
 
     if (num_keys == 1) {
