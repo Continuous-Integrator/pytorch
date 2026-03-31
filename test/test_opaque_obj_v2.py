@@ -3442,11 +3442,17 @@ def forward(self, p_linear_weight, p_linear_bias, obj_lifted_custom_0, x):
                 dist.init_process_group("fake", store=FakeStore(), rank=0, world_size=2)
 
     @unittest.skipIf(not dist.is_available(), "requires distributed")
-    def test_hoist_device_mesh_getattrs_hoists_mesh(self):
-        """_hoist_device_mesh_getattrs converts DeviceMesh get_attr nodes into
-        placeholders and appends the mesh value to joint_inputs."""
+    def test_hoist_device_mesh_getattrs_backward_submesh(self):
+        """Backward closure captures create get_attr nodes for DeviceMesh
+        submeshes (e.g. the FSDP submesh of a 2-D mesh). Without hoisting
+        these land in torchbind_constants and fail to pickle.
+
+        _hoist_device_mesh_getattrs converts the submesh get_attr into a
+        placeholder, and _wrap_hoisted_device_meshes derives the submesh from
+        the parent mesh at runtime."""
         from torch._functorch._aot_autograd.graph_compile import (
             _hoist_device_mesh_getattrs,
+            _wrap_hoisted_device_meshes,
         )
         from torch.distributed.device_mesh import DeviceMesh
         from torch.testing._internal.distributed.fake_pg import FakeStore
@@ -3455,35 +3461,61 @@ def forward(self, p_linear_weight, p_linear_bias, obj_lifted_custom_0, x):
         if already_initialized:
             dist.destroy_process_group()
 
-        dist.init_process_group("fake", store=FakeStore(), rank=0, world_size=2)
+        dist.init_process_group("fake", store=FakeStore(), rank=0, world_size=4)
         try:
-            mesh = DeviceMesh("cpu", torch.arange(2))
+            parent_mesh = DeviceMesh(
+                "cpu", torch.arange(4).reshape(2, 2),
+                mesh_dim_names=("dp", "tp"),
+            )
+            tp_submesh = parent_mesh["tp"]
 
+            # Build a joint graph that mimics backward closure capture:
+            # the forward uses x normally, the backward captured the tp
+            # submesh as a get_attr (which would fail to pickle without
+            # hoisting).
             graph = torch.fx.Graph()
             x_ph = graph.placeholder("x")
-            mesh_node = graph.get_attr("_mesh")
-            graph.output((x_ph, mesh_node))
+            submesh_node = graph.get_attr("_tp_submesh")
+            graph.output((x_ph, submesh_node))
 
-            root = {"_mesh": mesh}
+            root = {"_tp_submesh": tp_submesh}
             gm = torch.fx.GraphModule(root, graph)
 
             joint_inputs = ([torch.tensor(1.0)], [])
             info = _hoist_device_mesh_getattrs(gm, joint_inputs)
 
+            # Submesh hoisted: get_attr replaced by placeholder
             self.assertEqual(len(info), 1)
+            self.assertEqual(info[0]["mesh_dim_names"], ("tp",))
 
             placeholders = [n for n in gm.graph.nodes if n.op == "placeholder"]
             get_attrs = [n for n in gm.graph.nodes if n.op == "get_attr"]
-            # get_attr replaced by a new placeholder
             self.assertEqual(len(placeholders), 2)
             self.assertEqual(len(get_attrs), 0)
-            # mesh value appended to joint_inputs
             self.assertEqual(len(joint_inputs[0]), 2)
-            self.assertIs(joint_inputs[0][1], mesh)
+            self.assertIs(joint_inputs[0][1], tp_submesh)
+
+            # Verify the runtime wrapper derives the submesh from parent.
+            called_with = []
+
+            def fake_compiled(args):
+                called_with.append(list(args))
+                return args[0]
+
+            wrapped = _wrap_hoisted_device_meshes(fake_compiled, info)
+            wrapped([parent_mesh, torch.tensor(1.0)])
+
+            # The wrapper should have appended a derived tp submesh
+            self.assertEqual(len(called_with[0]), 3)
+            derived = called_with[0][2]
+            self.assertIsInstance(derived, DeviceMesh)
+            self.assertEqual(derived.mesh_dim_names, ("tp",))
         finally:
             dist.destroy_process_group()
             if already_initialized:
-                dist.init_process_group("fake", store=FakeStore(), rank=0, world_size=2)
+                dist.init_process_group(
+                    "fake", store=FakeStore(), rank=0, world_size=4
+                )
 
     def test_hoist_device_mesh_getattrs_skips_non_mesh(self):
         """_hoist_device_mesh_getattrs only hoists DeviceMesh get_attr nodes,
