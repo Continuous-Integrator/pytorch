@@ -33,7 +33,7 @@ from functools import lru_cache, partial
 from pathlib import Path
 from tempfile import _TemporaryFileWrapper
 from time import time, time_ns
-from types import ModuleType
+from types import BuiltinFunctionType, BuiltinMethodType, FunctionType, MethodType, ModuleType
 from typing import Any, cast, Generic, Literal, NoReturn, TYPE_CHECKING, TypeVar
 from typing_extensions import override, Self
 
@@ -488,6 +488,39 @@ def extract_tensor_metadata_for_cache_key(t: Tensor) -> TensorMetadata:
     return meta
 
 
+# Types that pickle handles natively via GLOBAL/INST opcodes even though their
+# __reduce_ex__ may raise TypeError. We must not treat these as unpicklable in
+# reducer_override to avoid infinite recursion.
+_PICKLE_NATIVE_TYPES = frozenset({
+    FunctionType,
+    BuiltinFunctionType,
+    BuiltinMethodType,
+    MethodType,
+    type,
+})
+
+
+def _get_stable_obj_key(obj: object) -> str:
+    """Produce a deterministic string key for an otherwise-unpicklable object.
+
+    Used by FxGraphCachePickler.reducer_override as a fallback for objects
+    whose types don't support standard pickling (e.g. pybind11 enums).
+    """
+    t = type(obj)
+    type_id = f"{t.__module__}.{t.__qualname__}"
+    for accessor in (
+        lambda o: o.type.name,  # pybind11 enum pattern
+        lambda o: o.name,  # Python enum / named constant pattern
+        lambda o: str(o.value),  # value-based pattern
+    ):
+        try:
+            val = accessor(obj)
+            return f"{type_id}:{val}"
+        except Exception:
+            continue
+    return f"{type_id}:id={id(obj)}"
+
+
 class FxGraphCachePickler(pickle.Pickler):
     """
     Custom pickler to customize the pickling of some objects (Tensors), only for the
@@ -534,9 +567,36 @@ class FxGraphCachePickler(pickle.Pickler):
                 self._reduce_graph_module
             )
 
+        # Track types whose __reduce_ex__ raises TypeError so we only probe once per type.
+        self._unpicklable_types: set[type] = set()
+
         # Run with pickler.fast so it doesn't intern strings, making the hash result more predictable
         # TODO: pickler.fast is technically deprecated. Will this work on new python versions?
         self.fast = True
+
+    def reducer_override(self, obj: Any) -> Any:
+        """Fallback reducer for objects not registered in dispatch_table.
+
+        This handles extension types (e.g. pybind11 enums) that don't support
+        default pickling.  Instead of bypassing the FX graph cache entirely,
+        we serialize a deterministic string representation of the object which
+        is sufficient for cache-key hashing.
+        """
+        t = type(obj)
+        # Types already registered or handled by default pickle.
+        if t in self.dispatch_table or t in _PICKLE_NATIVE_TYPES:
+            return NotImplemented
+        # Fast path for known unpicklable types.
+        if t in self._unpicklable_types:
+            return _ident, (_get_stable_obj_key(obj),)
+        # Probe whether the default reduce protocol works.
+        try:
+            obj.__reduce_ex__(pickle.DEFAULT_PROTOCOL)
+        except (TypeError, AttributeError):
+            self._unpicklable_types.add(t)
+            return _ident, (_get_stable_obj_key(obj),)
+        # Default pickling works – let pickle handle it.
+        return NotImplemented
 
     def _reduce_fake_tensor(
         self, t: Tensor

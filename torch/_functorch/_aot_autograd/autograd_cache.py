@@ -547,8 +547,8 @@ class AOTAutogradCachePickler(FxGraphCachePickler):
                 )
                 return (_ident, (self._default_stable_hash_for_caching(obj),))
             return self._reduce_tensor(obj)
-        # Return NotImplemented to fall back to default behavior
-        return NotImplemented
+        # Fall back to parent class reducer which handles unpicklable types
+        return super().reducer_override(obj)
 
     # [NOTE] Tensor subclass stable hashing for AOT autograd cache
     # Python's hash() varies with PYTHONHASHSEED, making cache keys unstable
