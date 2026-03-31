@@ -35,7 +35,6 @@ from torch.distributed.tensor._ops.utils import (
 )
 from torch.distributed.tensor.placement_types import (
     _MaskPartial,
-    _StridedShard,
     Partial,
     Placement,
     Replicate,
@@ -358,11 +357,7 @@ def select_int_strategy(op_schema: OpSchema) -> StrategyType:
 
         # determine input spec
         input_specs = arg_spec
-        # is_tensor_dim_sharded uses is_shard() which misses _StridedShard
-        if is_tensor_dim_sharded(arg_spec, dim=selected_dim) or any(
-            isinstance(p, _StridedShard) and p.dim == selected_dim
-            for p in arg_spec.placements
-        ):
+        if is_tensor_dim_sharded(arg_spec, dim=selected_dim):
             # if input is sharded on the selected dim, need to unshard it, change to replicate
             arg_target_placements = unshard_tensor_dim(
                 arg_spec.placements, dim=selected_dim
@@ -371,10 +366,7 @@ def select_int_strategy(op_schema: OpSchema) -> StrategyType:
 
         # determine output spec
         output_specs = input_specs
-        # is_sharded() uses is_shard() which misses _StridedShard
-        if input_specs.is_sharded() or any(
-            isinstance(p, _StridedShard) for p in input_specs.placements
-        ):
+        if input_specs.is_sharded():
             # handle cases with sharded_dim != selected_dim
             output_placements = shift_shard_dims_after_remove(
                 input_specs.placements, selected_dim
@@ -524,9 +516,7 @@ def unshard_tensor_dim(
 ) -> tuple[Placement, ...]:
     """Disallow the given tensor dimension to be sharded."""
     return tuple(
-        p
-        if (not isinstance(p, (Shard, _StridedShard)) or p.dim != dim)
-        else Replicate()
+        p if (not isinstance(p, Shard) or p.dim != dim) else Replicate()
         for p in placements
     )
 

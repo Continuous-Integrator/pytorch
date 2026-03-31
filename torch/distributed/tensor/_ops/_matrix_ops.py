@@ -36,7 +36,6 @@ from torch.distributed.tensor._utils import (
     compute_local_stride,
 )
 from torch.distributed.tensor.placement_types import (
-    _StridedShard,
     Partial,
     Placement,
     Replicate,
@@ -63,16 +62,10 @@ def transpose_strategy(op_schema: OpSchema) -> OpStrategy:
         if ndim <= 1:
             output_placements = list(input_spec.placements)
         else:
-            output_placements: list[Placement] = []
-            for p in input_spec.placements:
-                if isinstance(p, _StridedShard):
-                    output_placements.append(
-                        _StridedShard(1 - p.dim, split_factor=p.split_factor)
-                    )
-                elif isinstance(p, Shard):
-                    output_placements.append(Shard(1 - p.dim))
-                else:
-                    output_placements.append(p)
+            output_placements = [
+                Shard(1 - p.dim) if isinstance(p, Shard) else p
+                for p in input_spec.placements
+            ]
         transpose_strategy = OpSpec(
             output_specs=DTensorSpec(
                 mesh=input_strategy.mesh,
