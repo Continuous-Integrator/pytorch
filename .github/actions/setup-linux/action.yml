@@ -97,14 +97,16 @@ runs:
         echo "system info $(uname -a)"
 
     - name: Check if in a container runner
-      if: ${{ inputs.use-arc != 'true' && !contains(runner.name, 's390x') }}
+      if: ${{ inputs.use-arc != 'true' }}
       shell: bash
       id: check_container_runner
-      run: echo "IN_CONTAINER_RUNNER=$(if [ -f /.inarc ] || [ -f /.incontainer ]; then echo true ; else echo false; fi)" >> "$GITHUB_OUTPUT"
+      run: |
+        set -eux
+        echo "IN_CONTAINER_RUNNER=$(if [ -f /.inarc ] || [ -f /.incontainer ]; then echo true ; else echo false; fi)" >> "$GITHUB_OUTPUT"
 
     - name: Start docker if docker daemon is not running
       shell: bash
-      if: ${{ inputs.use-arc != 'true' && !contains(runner.name, 's390x') && steps.check_container_runner.outputs.IN_CONTAINER_RUNNER == 'false' }}
+      if: ${{ !contains(runner.name, 's390x') && steps.check_container_runner.outputs.IN_CONTAINER_RUNNER == 'false' }}
       run: |
         if ! docker version >/dev/null 2>/dev/null; then
           if systemctl is-active --quiet docker; then
@@ -116,13 +118,13 @@ runs:
 
     - name: Install uv (EC2)
       uses: pytorch/test-infra/.github/actions/setup-uv@main
-      if: ${{ inputs.use-arc != 'true' && steps.check_container_runner.outputs.IN_CONTAINER_RUNNER == 'false' }}
+      if: ${{ steps.check_container_runner.outputs.IN_CONTAINER_RUNNER == 'false' }}
       with:
         python-version: "3.12"
 
     - name: Install pip
       shell: bash
-      if: ${{ inputs.use-arc != 'true' && steps.check_container_runner.outputs.IN_CONTAINER_RUNNER == 'false' }}
+      if: ${{ steps.check_container_runner.outputs.IN_CONTAINER_RUNNER == 'false' }}
       run: |
         set -euo pipefail
         if command -v pip3 &> /dev/null; then
@@ -133,7 +135,7 @@ runs:
         fi
 
     - name: Kill any existing containers, clean up images
-      if: ${{ inputs.use-arc != 'true' && !contains(runner.name, 's390x') && steps.check_container_runner.outputs.IN_CONTAINER_RUNNER == 'false' }}
+      if: ${{ !contains(runner.name, 's390x') && steps.check_container_runner.outputs.IN_CONTAINER_RUNNER == 'false' }}
       shell: bash
       run: |
         # ignore expansion of "docker ps -q" since it could be empty
@@ -145,7 +147,7 @@ runs:
     - name: Check that the docker daemon is running
       shell: bash
       continue-on-error: true
-      if: ${{ inputs.use-arc != 'true' && !contains(runner.name, 's390x') && steps.check_container_runner.outputs.IN_CONTAINER_RUNNER == 'true' }}
+      if: ${{ steps.check_container_runner.outputs.IN_CONTAINER_RUNNER == 'true' }}
       run: |
         set +x
 
