@@ -3082,10 +3082,10 @@ class TestFxGraphCacheHashing(TestCase):
         data = pickler.dumps([1, 2, 3])
         self.assertEqual(pickle.loads(data), [1, 2, 3])
 
-    def test_reducer_override_caches_unpicklable_types(self):
+    def test_reducer_override_caches_probed_types(self):
         """
-        Test that once a type is detected as unpicklable, it is cached
-        in _unpicklable_types for subsequent fast-path lookups.
+        Test that once a type is probed, it is cached in _checked_types
+        for subsequent fast-path lookups (both picklable and unpicklable).
         """
 
         class AnotherUnpicklable:
@@ -3098,9 +3098,10 @@ class TestFxGraphCacheHashing(TestCase):
         gm = torch.fx.GraphModule({}, torch.fx.Graph())
         pickler = FxGraphCachePickler(gm)
 
-        self.assertNotIn(AnotherUnpicklable, pickler._unpicklable_types)
+        # Unpicklable type gets cached as True
+        self.assertNotIn(AnotherUnpicklable, pickler._checked_types)
         pickler.dumps(AnotherUnpicklable("x"))
-        self.assertIn(AnotherUnpicklable, pickler._unpicklable_types)
+        self.assertTrue(pickler._checked_types[AnotherUnpicklable])
 
         # Second call should use fast path (same result)
         obj1 = AnotherUnpicklable("y")

@@ -514,7 +514,12 @@ def _get_stable_obj_key(obj: object) -> str:
     """Produce a deterministic string key for an otherwise-unpicklable object.
 
     Used by FxGraphCachePickler.reducer_override as a fallback for objects
-    whose types don't support standard pickling (e.g. pybind11 enums).
+    whose types don't support default pickling (e.g. pybind11 enums).
+
+    The key is derived from the object's fully-qualified type name plus a
+    value obtained via common accessor patterns.  If none of the accessors
+    succeed, falls back to ``str(obj)`` which may not be stable across
+    processes for certain types.
     """
     t = type(obj)
     type_id = f"{t.__module__}.{t.__qualname__}"
@@ -528,7 +533,7 @@ def _get_stable_obj_key(obj: object) -> str:
             return f"{type_id}:{val}"
         except Exception:
             continue
-    return f"{type_id}:id={id(obj)}"
+    return f"{type_id}:{str(obj)}"
 
 
 class FxGraphCachePickler(pickle.Pickler):
@@ -577,8 +582,9 @@ class FxGraphCachePickler(pickle.Pickler):
                 self._reduce_graph_module
             )
 
-        # Track types whose __reduce_ex__ raises TypeError so we only probe once per type.
-        self._unpicklable_types: OrderedSet[type] = OrderedSet()
+        # Cache probe results so we only call __reduce_ex__ once per type.
+        # Maps type -> True (unpicklable) or False (picklable).
+        self._checked_types: dict[type, bool] = {}
 
         # Run with pickler.fast so it doesn't intern strings, making the hash result more predictable
         # TODO: pickler.fast is technically deprecated. Will this work on new python versions?
@@ -597,16 +603,20 @@ class FxGraphCachePickler(pickle.Pickler):
         # Types already registered or handled by default pickle.
         if t in self.dispatch_table or t in _PICKLE_NATIVE_TYPES:
             return NotImplemented
-        # Fast path for known unpicklable types.
-        if t in self._unpicklable_types:
+        # Fast path for already-probed types.
+        cached = self._checked_types.get(t)
+        if cached is True:
             return _ident, (_get_stable_obj_key(obj),)
+        if cached is False:
+            return NotImplemented
         # Probe whether the default reduce protocol works.
         try:
             obj.__reduce_ex__(pickle.DEFAULT_PROTOCOL)
         except (TypeError, AttributeError):
-            self._unpicklable_types.add(t)
+            self._checked_types[t] = True
             return _ident, (_get_stable_obj_key(obj),)
         # Default pickling works – let pickle handle it.
+        self._checked_types[t] = False
         return NotImplemented
 
     def _reduce_fake_tensor(
