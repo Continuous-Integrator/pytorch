@@ -154,6 +154,7 @@ supported_ctx_manager_classes = dict.fromkeys(
         # This allows us to support calling functions decorated with these
         # context managers, without much extra effort or code dup.
         torch.nn.attention.sdpa_kernel.__wrapped__,  # type: ignore[attr-defined]
+        torch._subclasses.fake_tensor.FakeTensorMode,
     ]
 )
 
@@ -508,6 +509,7 @@ class TorchCtxManagerClassVariable(BaseTorchVariable):
             StreamVariable,
             VmapIncrementNestingCtxManagerVariable,
         )
+        from .ctx_manager import NullContextVariable
 
         if self.value is torch.no_grad:
             if len(args) == 1 and isinstance(
@@ -634,6 +636,11 @@ class TorchCtxManagerClassVariable(BaseTorchVariable):
             backends = name_to_arg_map["backends"].as_python_constant()
             set_priority = name_to_arg_map["set_priority"].as_python_constant()
             return SDPAKernelVariable.create(tx, backends, set_priority)
+        elif self.value is torch._subclasses.fake_tensor.FakeTensorMode:
+            # FakeTensorMode.__init__ is in MOD_SKIPLIST. Dynamo already
+            # has a FakeTensorMode active during tracing, so treat as no-op.
+            # On graph break resume, this reconstructs as nullcontext.
+            return NullContextVariable()
 
         return super().call_function(tx, args, kwargs)
 

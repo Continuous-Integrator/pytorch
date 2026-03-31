@@ -139,6 +139,47 @@ class TorchDispatchModeTests(torch._dynamo.test_case.TestCase):
         self.assertEqual(eager_res, compiled_res)
         self.assertEqual(cnt.frame_count, 0)
 
+    def test_fake_tensor_mode_fullgraph(self):
+        # FakeTensorMode construction and context manager usage inside
+        # compiled code should not graph-break. During tracing, Dynamo
+        # already has its own FakeTensorMode, so it's treated as a no-op.
+        from torch._subclasses.fake_tensor import FakeTensorMode
+
+        cnt = torch._dynamo.testing.CompileCounter()
+
+        @torch.compile(backend=cnt, fullgraph=True)
+        def fn(x):
+            _mode = FakeTensorMode()
+            with FakeTensorMode():
+                pass
+            return x + 1
+
+        result = fn(torch.randn(4))
+        self.assertEqual(result.shape, (4,))
+        self.assertEqual(cnt.frame_count, 1)
+        self.assertEqual(cnt.op_count, 1)
+
+    def test_fake_tensor_mode_graph_break_resume(self):
+        # When a graph break occurs inside `with FakeTensorMode():`,
+        # the resume path reconstructs as contextlib.nullcontext.
+        # Verify this works correctly without fullgraph=True.
+        from torch._subclasses.fake_tensor import FakeTensorMode
+
+        cnt = torch._dynamo.testing.CompileCounter()
+
+        @torch.compile(backend=cnt)
+        def fn(x):
+            with FakeTensorMode():
+                y = x + 1
+                torch._dynamo.graph_break()
+                z = y + 1
+            return z
+
+        result = fn(torch.randn(4))
+        self.assertEqual(result.shape, (4,))
+        # Two frames: one before and one after the graph break
+        self.assertEqual(cnt.frame_count, 2)
+
 
 class TorchFunctionModeTests(torch._dynamo.test_case.TestCase):
     @classmethod
