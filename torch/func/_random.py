@@ -12,9 +12,9 @@ import torch
 def key(
     seed: int, impl: str = "philox4x32-10", device: torch.device | None = None
 ) -> torch.Tensor:
-    r"""Create a stateless PRNG key from a seed.
+    r"""Create a PRNG key from a seed.
 
-    A key is an opaque tensor that encodes the state needed to deterministically
+    A key is a tensor that encodes the state needed to deterministically
     produce random values. Keys are consumed by generation functions to produce
     reproducible random tensors without any global state. The internal
     representation of the key depends on the chosen PRNG algorithm.
@@ -27,19 +27,17 @@ def key(
             returned key. Default: ``cpu``.
 
     Returns:
-        Tensor: An opaque tensor representing the PRNG key.
+        A tensor representing the PRNG key.
 
     .. note::
 
         For the ``"philox4x32-10"`` algorithm, the key is a uint64 tensor of
         shape ``(2,)`` encoding a ``(seed, offset)`` pair. The offset determines
-        the starting position in the Philox output stream and is used by
-        :func:`split`, :func:`fold_in`, and tiling APIs to derive independent
-        subsequences.
+        the starting position in the Philox output stream.
 
     Example::
 
-        >>> key = torch.func._random.key(42)
+        >>> key = torch.func._random.key(42, device="cuda")
     """
     if impl != "philox4x32-10":
         raise NotImplementedError(f"key() does not support PRNG impl '{impl}'")
@@ -63,11 +61,11 @@ def split(key: torch.Tensor, num: int = 2) -> torch.Tensor:
         num (int): Number of keys to produce. Default: ``2``.
 
     Returns:
-        Tensor: A uint64 tensor of shape ``(num, *key.shape[:-1], 2)``.
+        A uint64 tensor of shape ``(num, *key.shape[:-1], 2)``.
 
     Example::
 
-        >>> key = torch.func._random.key(42)
+        >>> key = torch.func._random.key(42, device="cuda")
         >>> k1, k2 = torch.func._random.split(key)
     """
     return torch.ops.aten._philox_key_split(key, num)
@@ -214,11 +212,11 @@ def fold_in(key: torch.Tensor, data: int) -> torch.Tensor:
         data (int): A non-negative integer to fold into the key.
 
     Returns:
-        Tensor: A new uint64 key tensor with the same shape as ``key``.
+        A new uint64 key tensor with the same shape as ``key``.
 
     Example::
 
-        >>> key = torch.func._random.key(42)
+        >>> key = torch.func._random.key(42, device="cuda")
         >>> k0 = torch.func._random.fold_in(key, 0)
         >>> k1 = torch.func._random.fold_in(key, 1)
         >>> # Equivalent to split:
