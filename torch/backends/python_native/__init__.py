@@ -18,8 +18,8 @@ Example usage::
     pn.cutedsl.enabled = True  # Enable all cutedsl ops
 
     # Individual operation control
-    pn.disable_operations('scaled_mm')  # Disable specific op across all DSLs
-    pn.enable_operations('scaled_mm')   # Re-enable specific op
+    pn.disable_operations("scaled_mm")  # Disable specific op across all DSLs
+    pn.enable_operations("scaled_mm")  # Re-enable specific op
 
     # Context manager support
     with pn.triton.disabled():
@@ -27,7 +27,7 @@ Example usage::
 
     # Query capabilities
     print(pn.available_dsls)  # ['triton', 'cutedsl']
-    print(pn.get_dsl_operations('triton'))  # Operations for triton
+    print(pn.get_dsl_operations("triton"))  # Operations for triton
 """
 
 import functools
@@ -168,7 +168,7 @@ class PythonNativeModule(types.ModuleType):
 
         Example::
 
-            ops = torch.backends.python_native.get_dsl_operations('triton')
+            ops = torch.backends.python_native.get_dsl_operations("triton")
             print(ops)  # ['triton_to_mxfp8_dim0', ...]
         """
         _, _, graphs = _get_registry_functions()
@@ -191,10 +191,12 @@ class PythonNativeModule(types.ModuleType):
         Example::
 
             # Disable scaled matrix multiply across all DSLs
-            torch.backends.python_native.disable_operations('scaled_mm')
+            torch.backends.python_native.disable_operations("scaled_mm")
 
             # Disable multiple operations
-            torch.backends.python_native.disable_operations('scaled_mm', 'flash_attention')
+            torch.backends.python_native.disable_operations(
+                "scaled_mm", "flash_attention"
+            )
         """
         deregister_op_overrides, _, _ = _get_registry_functions()
         deregister_op_overrides(disable_op_symbols=list(op_symbols))
@@ -208,7 +210,9 @@ class PythonNativeModule(types.ModuleType):
         Example::
 
             # Re-enable previously disabled operations
-            torch.backends.python_native.enable_operations('scaled_mm', 'flash_attention')
+            torch.backends.python_native.enable_operations(
+                "scaled_mm", "flash_attention"
+            )
         """
         _, reenable_op_overrides, _ = _get_registry_functions()
         reenable_op_overrides(enable_op_symbols=list(op_symbols))
@@ -222,7 +226,7 @@ class PythonNativeModule(types.ModuleType):
         Example::
 
             # Disable all native operations on CUDA
-            torch.backends.python_native.disable_dispatch_keys('CUDA')
+            torch.backends.python_native.disable_dispatch_keys("CUDA")
         """
         deregister_op_overrides, _, _ = _get_registry_functions()
         deregister_op_overrides(disable_dispatch_keys=list(dispatch_keys))
@@ -236,7 +240,7 @@ class PythonNativeModule(types.ModuleType):
         Example::
 
             # Re-enable native operations on CUDA
-            torch.backends.python_native.enable_dispatch_keys('CUDA')
+            torch.backends.python_native.enable_dispatch_keys("CUDA")
         """
         _, reenable_op_overrides, _ = _get_registry_functions()
         reenable_op_overrides(enable_dispatch_keys=list(dispatch_keys))
@@ -250,7 +254,7 @@ class PythonNativeModule(types.ModuleType):
 
         Example::
 
-            with torch.backends.python_native.operations_disabled('scaled_mm'):
+            with torch.backends.python_native.operations_disabled("scaled_mm"):
                 # scaled_mm is disabled across all DSLs
                 result = model(input)
             # scaled_mm is automatically re-enabled here
