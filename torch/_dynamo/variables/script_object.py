@@ -384,15 +384,15 @@ class TorchScriptObjectVariable(UserDefinedObjectVariable):
             method_name=name,
         )
 
-    # We only support method calls on script objects. Interpreting the bytecodes
-    # should go through var_getattr then call_function instead of call_method.
-    #
-    def getitem_impl(
+    def mp_subscript_impl(
         self,
         tx: "InstructionTranslator",
         key: "VariableTracker",
     ) -> "VariableTracker":
         return self.call_method(tx, "__getitem__", [key], {})
+
+    # We only support method calls on script objects. Interpreting the bytecodes
+    # should go through var_getattr then call_function instead of call_method.
 
     # However, it's possible for call_method to be used directly e.g. for __setattr__.
     @_raise_hard_error_if_graph_break(

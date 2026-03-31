@@ -1,8 +1,8 @@
 # Owner(s): ["module: dynamo"]
-"""Tests for getitem_impl: unified __getitem__ dispatch via vt_getitem in Dynamo.
+"""Tests for mp_subscript_impl: unified __getitem__ dispatch via vt_getitem in Dynamo.
 
-Each test uses operator.getitem() to exercise the vt_getitem → getitem_impl
-path (BuiltinVariable.call_getitem → vt_getitem → VT.getitem_impl), which
+Each test uses operator.getitem() to exercise the vt_getitem → mp_subscript_impl
+path (BuiltinVariable.call_getitem → vt_getitem → VT.mp_subscript_impl), which
 is distinct from the call_method("__getitem__") path.
 """
 
@@ -12,8 +12,8 @@ import types
 import unittest
 
 import torch
+import torch._dynamo.test_case
 import torch._dynamo.testing
-from torch.testing._internal.common_utils import run_tests, TestCase
 from torch.testing._internal.inductor_utils import HAS_CUDA_AND_TRITON, HAS_GPU
 
 
@@ -22,7 +22,7 @@ requires_gpu_and_triton = unittest.skipUnless(
 )
 
 
-class GetItemTests(TestCase):
+class GetItemTests(torch._dynamo.test_case.TestCase):
     def _compile(self, fn, *args):
         return torch.compile(fn, backend="eager", fullgraph=True)(*args)
 
@@ -51,6 +51,14 @@ class GetItemTests(TestCase):
         def fn(x):
             items = [x, x + 1, x + 2]
             return operator.getitem(items, -1)
+
+        x = torch.randn(4)
+        self.assertEqual(fn(x), self._compile(fn, x))
+
+    def test_list_bool_index(self):
+        def fn(x):
+            items = [x, x + 1, x + 2]
+            return operator.getitem(items, True)
 
         x = torch.randn(4)
         self.assertEqual(fn(x), self._compile(fn, x))
@@ -255,6 +263,18 @@ class GetItemTests(TestCase):
         x = torch.randn(4)
         self.assertEqual(fn(x), self._compile(fn, x))
 
+    def test_object_without_getitem(self):
+        class NoGetItem:
+            pass
+
+        def fn(x):
+            obj = NoGetItem()
+            return operator.getitem(obj, 0)
+
+        x = torch.randn(4)
+        with self.assertRaises(torch._dynamo.exc.Unsupported):
+            self._compile(fn, x)
+
     # --- UserDefinedListVariable ---
 
     def test_user_defined_list_getitem(self):
@@ -289,6 +309,29 @@ class GetItemTests(TestCase):
         def fn(x):
             d = MyDict(a=1)
             return x + operator.getitem(d, "b")
+
+        x = torch.randn(4)
+        self.assertEqual(fn(x), self._compile(fn, x))
+
+    def test_user_defined_dict_custom_missing(self):
+        class DefaultDict(dict):
+            def __missing__(self, key):
+                self[key] = len(self)
+                return self[key]
+
+        def fn(x):
+            d = DefaultDict()
+            d["a"] = 1
+            val = operator.getitem(d, "b")
+            return x + val
+
+        x = torch.randn(4)
+        self.assertEqual(fn(x), self._compile(fn, x))
+
+    def test_collections_counter_getitem(self):
+        def fn(x):
+            c = collections.Counter({"a": 1, "b": 2})
+            return x + operator.getitem(c, "a")
 
         x = torch.randn(4)
         self.assertEqual(fn(x), self._compile(fn, x))
@@ -380,4 +423,6 @@ class GetItemTests(TestCase):
 
 
 if __name__ == "__main__":
+    from torch._dynamo.test_case import run_tests
+
     run_tests()

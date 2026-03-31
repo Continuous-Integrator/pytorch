@@ -234,12 +234,12 @@ class BaseListVariable(VariableTracker):
             mutation_type=ValueMutationNew(),
         )
 
-    def getitem_impl(
+    def mp_subscript_impl(
         self,
         tx: "InstructionTranslator",
         key: VariableTracker,
     ) -> VariableTracker:
-        # https://github.com/python/cpython/blob/v3.13.3/Objects/listobject.c#L3072
+        # list_subscript: https://github.com/python/cpython/blob/62a6e898e01/Objects/listobject.c#L3689-L3710
         from .builder import SourcelessBuilder
 
         if key.is_tensor():
@@ -249,18 +249,24 @@ class BaseListVariable(VariableTracker):
             else:
                 unimplemented(
                     gb_type="Indexing list with non-scalar tensor",
-                    context=f"getitem_impl {self} {key}",
+                    context=f"mp_subscript_impl {self} {key}",
                     explanation=(
                         "Attempted to index list-like object with tensor with > 1 element."
                     ),
                     hints=[*graph_break_hints.USER_ERROR],
                 )
 
-        if key.python_type() not in (int, slice):
-            msg = f"indices must be integers or slices, not {key.python_type()}"
-            raise_observed_exception(
-                TypeError, tx, args=[SourcelessBuilder.create(tx, msg)]
-            )
+        # _PyIndex_Check: https://github.com/python/cpython/blob/62a6e898e01/Include/internal/pycore_abstract.h#L13-L17
+        # Accept int, bool, SymInt (have nb_index), and slice.
+        # TODO: support user classes with __index__
+        if not (issubclass(key.python_type(), int) or key.python_type() is slice):
+            from .tensor import SymNodeVariable
+
+            if not isinstance(key, SymNodeVariable):
+                msg = f"indices must be integers or slices, not {key.python_type()}"
+                raise_observed_exception(
+                    TypeError, tx, args=[SourcelessBuilder.create(tx, msg)]
+                )
 
         return self.getitem_const(tx, key)
 
@@ -649,12 +655,12 @@ class RangeVariable(BaseListVariable):
             return int(re)
         return 0
 
-    def getitem_impl(
+    def mp_subscript_impl(
         self,
         tx: "InstructionTranslator",
         key: VariableTracker,
     ) -> VariableTracker:
-        # https://github.com/python/cpython/blob/v3.13.3/Objects/rangeobject.c#L393
+        # range_subscript: https://github.com/python/cpython/blob/62a6e898e01/Objects/rangeobject.c#L729-L748
         return self.getitem_const(tx, key)
 
     def call_method(
@@ -1456,12 +1462,12 @@ class SizeVariable(TupleVariable):
             result = mul.call_function(tx, [result, v], {})
         return result
 
-    def getitem_impl(
+    def mp_subscript_impl(
         self,
         tx: "InstructionTranslator",
         key: VariableTracker,
     ) -> VariableTracker:
-        # https://github.com/python/cpython/blob/v3.13.3/Objects/tupleobject.c#L386
+        # tuple_subscript: https://github.com/python/cpython/blob/62a6e898e01/Objects/tupleobject.c#L877-L930
         return self.get_item_dyn(tx, key)
 
     def call_method(

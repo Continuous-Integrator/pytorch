@@ -599,12 +599,13 @@ class ConstDictVariable(VariableTracker):
             else:
                 self.install_dict_keys_match_guard()
 
-    def getitem_impl(
+    def mp_subscript_impl(
         self,
         tx: "InstructionTranslator",
         key: VariableTracker,
     ) -> VariableTracker:
-        # https://github.com/python/cpython/blob/v3.13.3/Objects/dictobject.c#L2626
+        # dict_subscript: https://github.com/python/cpython/blob/62a6e898e01/Objects/dictobject.c#L3673-L3706
+        # TODO: check tp_hash — raise TypeError if key is unhashable
         return self.getitem_const_raise_exception_if_absent(tx, key)
 
     def call_method(
@@ -1079,14 +1080,14 @@ class MappingProxyVariable(VariableTracker):
                 ],
             )
 
-    def getitem_impl(
+    def mp_subscript_impl(
         self,
         tx: "InstructionTranslator",
         key: VariableTracker,
     ) -> VariableTracker:
-        # https://github.com/python/cpython/blob/v3.13.3/Objects/descrobject.c#L1512
+        # mappingproxy_getitem: https://github.com/python/cpython/blob/62a6e898e01/Objects/descrobject.c#L1052-L1056
         self._check_mutation_guard(tx)
-        return self.dv_dict.getitem_impl(tx, key)
+        return self.dv_dict.mp_subscript_impl(tx, key)
 
     def call_method(
         self,
@@ -1155,12 +1156,12 @@ class DefaultDictVariable(ConstDictVariable):
             ),
         ) or (isinstance(arg, variables.ConstantVariable) and arg.value is None)
 
-    def getitem_impl(
+    def mp_subscript_impl(
         self,
         tx: "InstructionTranslator",
         key: VariableTracker,
     ) -> VariableTracker:
-        # https://github.com/python/cpython/blob/v3.13.3/Modules/_collectionsmodule.c#L2295
+        # defdict_missing: https://github.com/python/cpython/blob/62a6e898e01/Modules/_collectionsmodule.c#L2233-L2254
         if key in self:
             return self.getitem_const(tx, key)
 

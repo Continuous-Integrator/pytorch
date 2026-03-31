@@ -1368,16 +1368,15 @@ class GetAttrVariable(VariableTracker):
                 return obj.var_getattr(tx, k)
         return None
 
-    def getitem_impl(
+    def mp_subscript_impl(
         self,
         tx: "InstructionTranslator",
         key: VariableTracker,
     ) -> VariableTracker:
-        # https://github.com/python/cpython/blob/v3.13.3/Objects/abstract.c#L164-L202
         result = self._getattr_dict_lookup(tx, key)
         if result is not None:
             return result
-        return super().getitem_impl(tx, key)
+        return super().mp_subscript_impl(tx, key)
 
     def call_method(
         self,
@@ -1664,7 +1663,7 @@ class TypingVariable(VariableTracker):
         super().__init__(**kwargs)
         self.value = value
 
-    def getitem_impl(
+    def mp_subscript_impl(
         self,
         tx: "InstructionTranslator",
         key: VariableTracker,

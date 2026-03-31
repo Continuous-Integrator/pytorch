@@ -548,15 +548,15 @@ class VariableTracker(metaclass=VariableTrackerMeta):
             ],
         )
 
-    def getitem_impl(
+    def mp_subscript_impl(
         self,
         tx: "InstructionTranslator",
         key: "VariableTracker",
     ) -> "VariableTracker":
-        # https://github.com/python/cpython/blob/v3.13.3/Objects/abstract.c#L164-L202
+        # PyObject_GetItem: https://github.com/python/cpython/blob/62a6e898e01/Objects/abstract.c#L155-L206
         unimplemented(
             gb_type="unsupported __getitem__",
-            context=f"getitem_impl {self} {key}",
+            context=f"mp_subscript_impl {self} {key}",
             explanation=f"Dynamo does not know how to handle __getitem__ on {self}",
             hints=[],
         )
@@ -570,7 +570,7 @@ class VariableTracker(metaclass=VariableTrackerMeta):
     ) -> "VariableTracker":
         if name == "__getitem__":
             if len(args) == 1 and not kwargs:
-                return self.getitem_impl(tx, args[0])
+                return self.mp_subscript_impl(tx, args[0])
             from ..utils import raise_args_mismatch
 
             raise_args_mismatch(

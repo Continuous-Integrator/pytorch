@@ -3221,7 +3221,7 @@ class TritonKernelVariable(VariableTracker):
             self, args, kwargs, tx
         )
 
-    def getitem_impl(
+    def mp_subscript_impl(
         self,
         tx: "InstructionTranslator",
         key: VariableTracker,

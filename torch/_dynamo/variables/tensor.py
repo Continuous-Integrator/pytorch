@@ -762,19 +762,18 @@ class TensorVariable(VariableTracker):
             torch._dynamo.config._autograd_backward_strict_mode_conditional_banned_ops
         )
 
-    def getitem_impl(
+    def mp_subscript_impl(
         self,
         tx: "InstructionTranslator",
         key: VariableTracker,
     ) -> VariableTracker:
-        # https://github.com/python/cpython/blob/v3.13.3/Objects/abstract.c#L164-L202
         from .builder import SourcelessBuilder, VariableBuilder
         from .torch_function import can_dispatch_torch_function, dispatch_torch_function
 
         if self.is_strict_mode(tx) and "__getitem__" in self._strict_mode_banned_ops():
             unimplemented(
                 gb_type="Illegal __getitem__ invocation in strict mode",
-                context=f"getitem_impl {self} {key}",
+                context=f"mp_subscript_impl {self} {key}",
                 explanation="Dynamo currently does not support __getitem__ "
                 "invocation in strict mode.",
                 hints=[],

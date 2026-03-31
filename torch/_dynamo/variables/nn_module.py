@@ -579,12 +579,11 @@ class NNModuleVariable(VariableTracker):
                     kwargs,
                 )
 
-    def getitem_impl(
+    def mp_subscript_impl(
         self,
         tx: "InstructionTranslator",
         key: "VariableTracker",
     ) -> "VariableTracker":
-        # https://github.com/python/cpython/blob/v3.13.3/Objects/abstract.c#L164-L202
         from .lists import SliceVariable
         from .tensor import SymNodeVariable
 
@@ -605,7 +604,7 @@ class NNModuleVariable(VariableTracker):
             ):
                 unimplemented(
                     gb_type="Invalid or non-const argument in nn.Module __getitem__",
-                    context=f"getitem_impl: {self} {key}",
+                    context=f"mp_subscript_impl: {self} {key}",
                     explanation="Dynamo does not support calling "
                     f"method `__getitem__` of ``nn.Module`` {module} with a non-constant or non-(str, int) key.",
                     hints=["Use constant arguments of type str or int for __getitem__"],
@@ -660,7 +659,7 @@ class NNModuleVariable(VariableTracker):
         else:
             unimplemented(
                 gb_type="Unsupported key type for nn.Module.__getitem__",
-                context=f"getitem_impl: {self} {key}",
+                context=f"mp_subscript_impl: {self} {key}",
                 explanation="Dynamo does not support getitem on "
                 "`nn.Module` with non-constant key.",
                 hints=[],
