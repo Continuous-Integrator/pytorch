@@ -67,6 +67,14 @@ typedef struct VISIBILITY_HIDDEN ExtraState {
   // Lazily allocated per-region map for isolated_region support.
   // Only created when the first isolated region (region_id >= 0) is used.
   // Does NOT include region -1 entries — those stay in cache_entry_list.
+  //
+  // IMPORTANT: CacheEntry::_owner_list holds raw pointers to the std::list
+  // values inside this map. The C++ standard guarantees that unordered_map
+  // insert/rehash does not invalidate pointers or references to elements,
+  // so these pointers remain valid. However, erasing a region from this map
+  // would invalidate all _owner_list pointers for that region's entries,
+  // leading to use-after-free. Do NOT erase regions for the lifetime of
+  // this ExtraState.
   std::unique_ptr<std::unordered_map<int64_t, std::list<CacheEntry>>>
       region_cache_map;
   // Frame state to detect dynamic shape dims

@@ -600,7 +600,7 @@ class ConvertFrameAssert:
         self._package = package
         self._recompile_limit = recompile_limit
         self._isolated_region = isolated_region
-        self._region_compilation_counts: dict[CodeType, int] = {}
+        self._region_compilation_counts: dict[int, int] = {}
         if isolated_region:
             global _next_region_id
             self._region_id = _next_region_id
@@ -775,8 +775,8 @@ class ConvertFrameAssert:
             initial_global_state = prev_initial_global_state
 
         if result.guarded_code is not None:
-            self._region_compilation_counts[code] = (
-                self._region_compilation_counts.get(code, 0) + 1
+            self._region_compilation_counts[id(code)] = (
+                self._region_compilation_counts.get(id(code), 0) + 1
             )
 
         if config.caching_precompile and self._package is not None:
