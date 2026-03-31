@@ -47,6 +47,8 @@ def _softmax_out_impl(
 
 
 def _register_oink_softmax() -> None:
+    if not cu.runtime_available():
+        return
     fallback = torch.library.get_kernel("aten::_softmax.out", "CUDA")
     cu.register_op_override(
         "aten",
