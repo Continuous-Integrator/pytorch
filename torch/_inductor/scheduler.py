@@ -4128,7 +4128,7 @@ class Scheduler:
                         future_choices.append(
                             (choice, *compile_kernel(node_list_fused))
                         )
-                else:  # is_nvgemm
+                elif is_nvgemm:
                     with multi_node.swap_as_nvgemm_caller(choice):
                         future_choices.append(
                             (choice, *compile_kernel(node_list_fused))

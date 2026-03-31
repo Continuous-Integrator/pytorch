@@ -211,6 +211,11 @@ class NVUniversalGemmKernel(Kernel):
             epilogue_import = "from cutlass_api.arguments import EpilogueArguments"
             # Embed epilogue function directly as code (not as a string)
             epilogue_fn_def = self.epilogue_fn_code
+            # Embed a hash of the source for stable cache keying
+            # (avoids unreliable inspect.getsource on generated code)
+            import hashlib
+            _source_hash = hashlib.sha256(self.epilogue_fn_code.encode()).hexdigest()
+            epilogue_fn_def += f'\n_EPILOGUE_FN_SOURCE = "{_source_hash}"'
             epilogue_args_construction = f"""
     epi_args = EpilogueArguments(
         epilogue_fn=_epilogue_fn,
@@ -246,11 +251,8 @@ class NVUniversalGemmKernel(Kernel):
         if self.epilogue_fn_code:
             # EFC kernels are directly in choices, so the kernel is already an EFC kernel
             kernel_cache_import = "from torch._inductor.codegen.nv_universal_gemm.kernel_cache import get_efc_kernel_with_epilogue"
-            # Use get_efc_kernel_with_epilogue for fast O(1) lookup + kernel construction
-            # This avoids the slow get_kernels() call by constructing the kernel directly
-            # with epilogue metadata from the cached base kernel
             kernel_lookup_code = f"""# Get EFC kernel with epilogue (fast path using cached metadata)
-    kernel = get_efc_kernel_with_epilogue("{kernel_name_str}", epi_args)
+    kernel = get_efc_kernel_with_epilogue("{kernel_name_str}", epi_args, epilogue_source=_EPILOGUE_FN_SOURCE)
     if kernel is None:
         raise RuntimeError(f"Could not find EFC kernel: {kernel_name_str}")"""
         else:
@@ -390,6 +392,8 @@ def {self.kernel_name}_main({params_str}):
             call_args.append(read_name)
             arg_types.append(V.graph.get_dtype(read_name))
             buf = V.graph.get_buffer(read_name)
+            if buf is None:
+                buf = V.graph.graph_inputs.get(read_name)
             raw_args.append(buf)
             raw_keys.append(read_name)
 

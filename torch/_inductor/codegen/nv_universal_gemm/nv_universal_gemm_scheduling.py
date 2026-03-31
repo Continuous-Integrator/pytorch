@@ -33,6 +33,16 @@ from .nv_universal_gemm import NVUniversalGemmCaller
 log = logging.getLogger(__name__)
 
 MAIN_SUFFIX = "main"
+_BENCHMARK_KERNEL_PREFIX = "nv_gemm_"
+EPILOGUE_FN_NAME = "_epilogue_fn"
+
+
+def _sizes_equal(size_a: list, size_b: list) -> bool:
+    """Compare size lists element-wise. Explicit about iteration to avoid
+    ambiguity with Python list comparison on sympy expressions."""
+    if len(size_a) != len(size_b):
+        return False
+    return all(a == b for a, b in zip(size_a, size_b))
 
 
 class NVUniversalGemmScheduling(BaseScheduling):
@@ -198,6 +208,23 @@ class NVUniversalGemmScheduling(BaseScheduling):
                     ir_node.variant.op_name,
                 )
                 return False
+        elif isinstance(ir_node, MultiTemplateBuffer):
+            # For MultiTemplateBuffer, verify that NVGEMM EFC choices are plain GEMM
+            try:
+                choice_timings = ir_node.choice_timings()
+                has_non_gemm_efc = any(
+                    isinstance(choice, NVUniversalGemmCaller)
+                    and choice.supports_epilogue_fusion
+                    and choice.variant != GemmVariant.GEMM
+                    for choice in choice_timings.keys()
+                )
+                if has_non_gemm_efc:
+                    log.debug(
+                        "NVGEMM epilogue fusion: MultiTemplateBuffer has non-GEMM EFC choices"
+                    )
+                    return False
+            except (RuntimeError, ValueError):
+                return False
 
         # Check if the kernel supports epilogue fusion
         if isinstance(ir_node, NVUniversalGemmBuffer):
@@ -243,7 +270,7 @@ class NVUniversalGemmScheduling(BaseScheduling):
                 return False
 
             # Size must match the GEMM output
-            if node.get_size() != ir_node.get_size():
+            if not _sizes_equal(node.get_size(), ir_node.get_size()):
                 log.debug(
                     "NVGEMM epilogue fusion: size mismatch %s vs %s",
                     node.get_size(),
@@ -263,7 +290,7 @@ class NVUniversalGemmScheduling(BaseScheduling):
                 if read_buf is None:
                     continue
                 read_size = read_buf.get_size()
-                if read_size != gemm_size:
+                if not _sizes_equal(read_size, gemm_size):
                     log.debug(
                         "NVGEMM epilogue fusion: read buffer %s size %s != GEMM size %s (broadcast not supported)",
                         rd.name, read_size, gemm_size,
@@ -295,15 +322,20 @@ class NVUniversalGemmScheduling(BaseScheduling):
             log.debug("NVGEMM epilogue fusion: reductions not supported")
             return False
 
-        # Trial EVT codegen to verify the epilogue ops are translatable
+        # Trial EVT codegen to verify the epilogue ops are translatable.
+        # Use the same removed_buffers as the real codegen path to avoid
+        # false positives/negatives from seeing different graph state.
         all_epilogue_nodes = list(existing_epilogue_nodes) + list(
             node_to_fuse.get_nodes()
+        )
+        trial_removed_buffers = V.graph.removed_buffers | OrderedSet(
+            [ir_node.get_name()]
         )
         try:
             CutlassEVTCodegen.ir_to_evt_python_code(
                 ir_node.get_name(),
                 all_epilogue_nodes,
-                OrderedSet([ir_node.get_name()]),
+                trial_removed_buffers,
             )
         except NotImplementedError as e:
             log.debug(
@@ -431,7 +463,7 @@ class NVUniversalGemmScheduling(BaseScheduling):
                         original_buffer_name,
                         list(epilogue_nodes),
                         removed_buffers_with_gemm,
-                        fn_name="_epilogue_fn",
+                        fn_name=EPILOGUE_FN_NAME,
                         as_standalone_function=True,
                     )
                 )
@@ -516,7 +548,7 @@ class NVUniversalGemmScheduling(BaseScheduling):
 
         assert src_code is not None
         # Replace placeholder with generic name for benchmarking
-        src_code = src_code.replace(str(Placeholder.KERNEL_NAME), "nv_gemm_")
+        src_code = src_code.replace(str(Placeholder.KERNEL_NAME), _BENCHMARK_KERNEL_PREFIX)
 
         # Add benchmarking helpers for epilogue fusion benchmarking
         if benchmark_kernel:
@@ -627,6 +659,7 @@ class NVUniversalGemmScheduling(BaseScheduling):
 
             params_str = ", ".join(param_list)
             args_code.writeline("stream = torch.cuda.current_stream().cuda_stream")
-            args_code.writeline(f"nv_gemm__main({params_str}, stream=stream)")
+            bench_fn_name = f"{_BENCHMARK_KERNEL_PREFIX}_{MAIN_SUFFIX}"
+            args_code.writeline(f"{bench_fn_name}({params_str}, stream=stream)")
 
         return src_code + args_code.getvalue()

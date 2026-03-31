@@ -35,6 +35,12 @@ def _build_kernel_cache() -> dict[str, Any]:
     return cache
 
 
+def _build_and_set_kernel_cache() -> None:
+    """Build and set the global kernel cache. Caller must hold _cache_lock."""
+    global _kernel_by_name_cache
+    _kernel_by_name_cache = _build_kernel_cache()
+
+
 def get_compatible_kernels(
     args: Any,
     cc: int,
@@ -116,7 +122,11 @@ from torch._inductor.utils import clear_on_fresh_cache
 clear_on_fresh_cache(_NVGEMMCacheWrapper())
 
 
-def get_efc_kernel_with_epilogue(efc_kernel_name: str, epilogue_args: Any) -> Any:
+def get_efc_kernel_with_epilogue(
+    efc_kernel_name: str,
+    epilogue_args: Any,
+    epilogue_source: str = "",
+) -> Any:
     """Get an EFC kernel configured with a specific epilogue.
 
     This avoids the slow get_kernels() call by:
@@ -126,61 +136,52 @@ def get_efc_kernel_with_epilogue(efc_kernel_name: str, epilogue_args: Any) -> An
     Args:
         efc_kernel_name: The EFC kernel name (e.g., cutedsl.PersistentDenseGemmEFCKernel_...)
         epilogue_args: EpilogueArguments from cutlass_api
+        epilogue_source: Source code string of the epilogue function (preferred cache key).
+            When provided, avoids unreliable inspect.getsource on generated code.
 
     Returns:
         The configured EFC kernel, or None if not found.
     """
-    import inspect
+    if not epilogue_source:
+        epilogue_source = str(epilogue_args) if epilogue_args is not None else ""
 
-    # Get epilogue function code for cache key
-    if epilogue_args is None:
-        epilogue_fn_code = ""
-    elif callable(epilogue_args.epilogue_fn):
-        try:
-            epilogue_fn_code = inspect.getsource(epilogue_args.epilogue_fn)
-        except (OSError, TypeError):
-            # Fallback: use bytecode hash for stable cache key (repr includes
-            # memory address which changes across invocations)
-            code_obj = getattr(epilogue_args.epilogue_fn, "__code__", None)
-            if code_obj is not None:
-                epilogue_fn_code = str(code_obj.co_code)
-            else:
-                epilogue_fn_code = repr(epilogue_args.epilogue_fn)
-    else:
-        epilogue_fn_code = str(epilogue_args.epilogue_fn)
+    cache_key = (efc_kernel_name, epilogue_source)
 
-    cache_key = (efc_kernel_name, epilogue_fn_code)
+    # Hold lock for the full operation — this is not a hot path (called once per
+    # unique kernel+epilogue combination), so simplicity beats concurrency here.
     with _cache_lock:
         if cache_key in _efc_epilogue_cache:
             log.debug("EFC kernel with epilogue found in cache: %s", efc_kernel_name)
             return _efc_epilogue_cache[cache_key]
 
-    base_kernel = get_kernel_by_name(efc_kernel_name)
-    if base_kernel is None:
-        log.debug("Base EFC kernel not found: %s", efc_kernel_name)
-        return None
+        # get_kernel_by_name uses its own double-checked locking, but we're
+        # already holding _cache_lock so we access the cache directly.
+        if _kernel_by_name_cache is None:
+            _build_and_set_kernel_cache()
 
-    from cutlass_api.metadata import EpilogueMetadata, KernelMetadata
+        base_kernel = _kernel_by_name_cache.get(efc_kernel_name) if _kernel_by_name_cache else None
+        if base_kernel is None:
+            log.debug("Base EFC kernel not found: %s", efc_kernel_name)
+            return None
 
-    epilogue_metadata = EpilogueMetadata.from_args(epilogue_args)
+        from cutlass_api.metadata import EpilogueMetadata, KernelMetadata
 
-    base_metadata = base_kernel.metadata
-    new_metadata = KernelMetadata(
-        operands=base_metadata.operands,
-        design=base_metadata.design,
-        kernel_name=base_metadata.kernel_name,
-        kernel_class=base_metadata.kernel_class,
-        min_cc=base_metadata.min_cc,
-        epilogue=epilogue_metadata,
-    )
+        epilogue_metadata = EpilogueMetadata.from_args(epilogue_args)
 
-    kernel_class = base_metadata.kernel_class
-    new_kernel = kernel_class(new_metadata)
+        base_metadata = base_kernel.metadata
+        new_metadata = KernelMetadata(
+            operands=base_metadata.operands,
+            design=base_metadata.design,
+            kernel_name=base_metadata.kernel_name,
+            kernel_class=base_metadata.kernel_class,
+            min_cc=base_metadata.min_cc,
+            epilogue=epilogue_metadata,
+        )
 
-    with _cache_lock:
-        if cache_key in _efc_epilogue_cache:
-            return _efc_epilogue_cache[cache_key]
+        kernel_class = base_metadata.kernel_class
+        new_kernel = kernel_class(new_metadata)
+
         _efc_epilogue_cache[cache_key] = new_kernel
-    log.debug("Created and cached EFC kernel with epilogue: %s", efc_kernel_name)
+        log.debug("Created and cached EFC kernel with epilogue: %s", efc_kernel_name)
 
-    return new_kernel
+        return new_kernel
