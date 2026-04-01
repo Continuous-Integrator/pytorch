@@ -56,7 +56,7 @@ from torch.testing._internal.common_utils import (
     IS_FBCODE,
     parametrize,
 )
-from torch.testing._internal.common_xpu import PLATFORM_SUPPORTS_SYCLTLA
+from torch.testing._internal.common_xpu import Xe2_Or_Later
 from torch.testing._internal.inductor_utils import (
     _quantize_rowwise,
     _quantize_tensorwise,
@@ -234,7 +234,7 @@ class TestCutlassBackend(TestCase):
         self.assertTrue(os.path.exists(cutlass_mock_pydot_path))
         self.assertTrue(os.path.exists(cutlass_mock_scipy_path))
 
-    @skipXPUIf(not PLATFORM_SUPPORTS_SYCLTLA, "")
+    @skipXPUIf(not Xe2_Or_Later, "")
     @skipCUDAIf(not SM90OrLater, "need sm_90")
     @mock.patch.dict(os.environ, {"PATH": _get_path_without_sccache()})
     def test_max_autotune_cutlass_threshold(self):
@@ -269,7 +269,7 @@ class TestCutlassBackend(TestCase):
 
                 self.assertEqual(choices, [])
 
-    @skipXPUIf(not PLATFORM_SUPPORTS_SYCLTLA, "")
+    @skipXPUIf(not Xe2_Or_Later, "")
     @mock.patch.dict(os.environ, {"PATH": _get_path_without_sccache()})
     def test_import_cutlass(self):
         from torch._inductor.codegen.cutlass.utils import try_import_cutlass
@@ -279,7 +279,7 @@ class TestCutlassBackend(TestCase):
         import cutlass_cppgen  # type: ignore[import-not-found]  # noqa: F401
         import cutlass_library  # noqa: F401
 
-    @skipXPUIf(not PLATFORM_SUPPORTS_SYCLTLA, "")
+    @skipXPUIf(not Xe2_Or_Later, "")
     def test_cutlass_key(self):
         from torch._inductor.codegen.cutlass.utils import try_import_cutlass
 
@@ -288,7 +288,7 @@ class TestCutlassBackend(TestCase):
 
         self.assertIsNotNone(cutlass_key())
 
-    @skipXPUIf(not PLATFORM_SUPPORTS_SYCLTLA, "")
+    @skipXPUIf(not Xe2_Or_Later, "")
     @skipCUDAIf(not SM90OrLater, "need sm_90")
     @mock.patch.dict(os.environ, {"PATH": _get_path_without_sccache()})
     def test_cutlass_backend_subproc_mm(self):
@@ -324,7 +324,7 @@ class TestCutlassBackend(TestCase):
 
             torch.testing.assert_close(Y_compiled, Y, atol=atol, rtol=rtol)
 
-    @skipXPUIf(not PLATFORM_SUPPORTS_SYCLTLA, "")
+    @skipXPUIf(not Xe2_Or_Later, "")
     @skipCUDAIf(not SM90OrLater, "need sm_90")
     @mock.patch.dict(os.environ, {"PATH": _get_path_without_sccache()})
     @parametrize("dtype", (torch.float16, torch.bfloat16))
@@ -374,7 +374,7 @@ class TestCutlassBackend(TestCase):
                     rtol = None
                 torch.testing.assert_close(Y_compiled, Y, atol=atol, rtol=rtol)
 
-    @skipXPUIf(not PLATFORM_SUPPORTS_SYCLTLA, "")
+    @skipXPUIf(not Xe2_Or_Later, "")
     @skipCUDAIf(not SM90OrLater, "need sm_90")
     @mock.patch.dict(os.environ, {"PATH": _get_path_without_sccache()})
     def test_cutlass_backend_subproc_bmm(self):
@@ -400,7 +400,7 @@ class TestCutlassBackend(TestCase):
             Y = torch.bmm(a, b)
             torch.testing.assert_close(Y_compiled, Y)
 
-    @skipXPUIf(not PLATFORM_SUPPORTS_SYCLTLA, "")
+    @skipXPUIf(not Xe2_Or_Later, "")
     @skipCUDAIf(not SM90OrLater, "need sm_90")
     @parametrize("dynamic", (False, True))
     @mock.patch.dict(os.environ, {"PATH": _get_path_without_sccache()})
@@ -444,7 +444,7 @@ class TestCutlassBackend(TestCase):
                 2,
             ).run(codes[0])
 
-    @skipXPUIf(not PLATFORM_SUPPORTS_SYCLTLA, "")
+    @skipXPUIf(not Xe2_Or_Later, "")
     @skipCUDAIf(not SM90OrLater, "need sm_90")
     @mock.patch.dict(os.environ, {"PATH": _get_path_without_sccache()})
     def test_number_mm_precompiles(self):
@@ -496,7 +496,7 @@ class TestCutlassBackend(TestCase):
             )
 
     # NOTE: right now tuned_mm doesn't support cutlass 2x, which is used by A100
-    @skipXPUIf(not PLATFORM_SUPPORTS_SYCLTLA, "")
+    @skipXPUIf(not Xe2_Or_Later, "")
     @skipCUDAIf(not SM90OrLater, "need sm_90")
     @parametrize("dynamic", (False, True))
     @parametrize("use_aoti", (False, True))
@@ -700,7 +700,7 @@ class TestCutlassBackend(TestCase):
         expected = scaled_mm_fn(a8, b8)
         torch.testing.assert_close(actual, expected, rtol=1e-2, atol=0.05)
 
-    @skipXPUIf(not PLATFORM_SUPPORTS_SYCLTLA, "")
+    @skipXPUIf(not Xe2_Or_Later, "")
     @skipCUDAIf(not SM90OrLater, "need sm_90")
     @parametrize("dynamic", (False, True))
     @parametrize("use_aoti", (False, True))
@@ -842,7 +842,7 @@ class TestCutlassBackend(TestCase):
         finally:
             AlgorithmSelectorCache.benchmark_choices = original_benchmark_choices
 
-    @skipXPUIf(not PLATFORM_SUPPORTS_SYCLTLA, "")
+    @skipXPUIf(not Xe2_Or_Later, "")
     @skipCUDAIf(not SM90OrLater, "need sm_90")
     @parametrize("dynamic", (False, True))
     @parametrize("use_aoti", (False, True))
@@ -1058,7 +1058,7 @@ class TestCutlassBackend(TestCase):
                 )
             torch.testing.assert_close(Y_compiled, Y, atol=1e-2, rtol=1e-2)
 
-    @skipXPUIf(not PLATFORM_SUPPORTS_SYCLTLA, "")
+    @skipXPUIf(not Xe2_Or_Later, "")
     @skipCUDAIf(not SM90OrLater, "need sm_90")
     def test_max_autotune_cutlass_backend_simple_fusion_fp16_fp32acc(self):
         def mm(a, b):
@@ -1068,7 +1068,7 @@ class TestCutlassBackend(TestCase):
             fp16=True, expected_fuse_count=0, mm=mm
         )
 
-    @skipXPUIf(not PLATFORM_SUPPORTS_SYCLTLA, "")
+    @skipXPUIf(not Xe2_Or_Later, "")
     @skipCUDAIf(not SM90OrLater, "need sm_90")
     def test_max_autotune_cutlass_backend_chained_fusion_fp16_fp32acc(self):
         def mm(a, b):
@@ -1078,7 +1078,7 @@ class TestCutlassBackend(TestCase):
             fp16=True, expected_fuse_count=0, mm=mm
         )
 
-    @skipXPUIf(not PLATFORM_SUPPORTS_SYCLTLA, "")
+    @skipXPUIf(not Xe2_Or_Later, "")
     @skipCUDAIf(not SM90OrLater, "need sm_90")
     def test_max_autotune_cutlass_backend_relu_fusion_fp16_fp32acc(self):
         def mm(a, b):
@@ -1089,7 +1089,7 @@ class TestCutlassBackend(TestCase):
             fp16=True, expected_fuse_count=0, mm=mm
         )
 
-    @skipXPUIf(not PLATFORM_SUPPORTS_SYCLTLA, "")
+    @skipXPUIf(not Xe2_Or_Later, "")
     @skipCUDAIf(not SM90OrLater, "need sm_90")
     def test_max_autotune_cutlass_backend_relu6_fusion_fp16_fp32acc(self):
         def mm(a, b):
@@ -1100,7 +1100,7 @@ class TestCutlassBackend(TestCase):
             fp16=True, expected_fuse_count=0, mm=mm
         )
 
-    @skipXPUIf(not PLATFORM_SUPPORTS_SYCLTLA, "")
+    @skipXPUIf(not Xe2_Or_Later, "")
     @skipCUDAIf(not SM90OrLater, "need sm_90")
     def test_max_autotune_cutlass_backend_no_fusion_dtype_mismatch(self):
         def mm(a, b):
@@ -1111,7 +1111,7 @@ class TestCutlassBackend(TestCase):
             fp16=True, expected_fuse_count=0, mm=mm
         )
 
-    @skipXPUIf(not PLATFORM_SUPPORTS_SYCLTLA, "")
+    @skipXPUIf(not Xe2_Or_Later, "")
     @skipCUDAIf(not SM90OrLater, "need sm_90")
     def test_max_autotune_cutlass_backend_shape_dependent_normalization_fusion(self):
         def mm(a, b):
@@ -1158,7 +1158,7 @@ class TestCutlassBackend(TestCase):
             torch.testing.assert_close(Y_compiled, Y)
 
     @mock.patch.dict(os.environ, {"PATH": _get_path_without_sccache()})
-    @skipXPUIf(not PLATFORM_SUPPORTS_SYCLTLA, "")
+    @skipXPUIf(not Xe2_Or_Later, "")
     @skipCUDAIf(not SM90OrLater, "need sm_90")
     def test_force_cutlass_backend_aoti_dynamic(self):
         class MyModel(torch.nn.Module):
@@ -1192,7 +1192,7 @@ class TestCutlassBackend(TestCase):
             torch.testing.assert_close(expected, actual)
 
     @mock.patch.dict(os.environ, {"PATH": _get_path_without_sccache()})
-    @skipXPUIf(not PLATFORM_SUPPORTS_SYCLTLA, "")
+    @skipXPUIf(not Xe2_Or_Later, "")
     @skipCUDAIf(not SM90OrLater, "need sm_90")
     def test_force_cutlass_backend_aoti_cexpr_codegen(self):
         class MyModel(torch.nn.Module):
@@ -1314,7 +1314,7 @@ class TestCutlassBackend(TestCase):
                 f"Expected cutlass_kernels_count > 0, got {cutlass_kernels_count}"
             )
 
-    @skipXPUIf(not PLATFORM_SUPPORTS_SYCLTLA, "")
+    @skipXPUIf(not Xe2_Or_Later, "")
     @skipCUDAIf(not SM90OrLater, "need sm_90")
     @mock.patch.dict(os.environ, {"PATH": _get_path_without_sccache()})
     def test_cutlass_backend_op_denylist(
@@ -1513,7 +1513,7 @@ class TestCutlassBackend(TestCase):
         run_test(True)
         run_test(False)
 
-    @skipXPUIf(not PLATFORM_SUPPORTS_SYCLTLA, "")
+    @skipXPUIf(not Xe2_Or_Later, "")
     @skipCUDAIf(not SM90OrLater, "need sm_90")
     @mock.patch.dict(os.environ, {"PATH": _get_path_without_sccache()})
     def test_cutlass_backend_shape_coverage_mm(
@@ -1598,7 +1598,7 @@ class TestCutlassBackend(TestCase):
                     f"M={M}, N={N}, K={K}",
                 )
 
-    @skipXPUIf(not PLATFORM_SUPPORTS_SYCLTLA, "")
+    @skipXPUIf(not Xe2_Or_Later, "")
     @skipCUDAIf(not SM80OrLater, "need sm_80")
     @mock.patch.dict(os.environ, {"PATH": _get_path_without_sccache()})
     def test_get_max_alignment(self):
@@ -1741,7 +1741,7 @@ class TestCutlassBackend(TestCase):
             os.remove(cu_file.name)
             os.remove(exe_file.name)
 
-    @skipXPUIf(not PLATFORM_SUPPORTS_SYCLTLA, "")
+    @skipXPUIf(not Xe2_Or_Later, "")
     @skipCUDAIf(not SM90OrLater, "need sm_90")
     @mock.patch.dict(os.environ, {"PATH": _get_path_without_sccache()})
     def test_cutlass_backend_integration(self):
@@ -1785,7 +1785,7 @@ class TestCutlassBackend(TestCase):
             num_ops = int(match.group(1))
             self.assertTrue(num_ops > 0, "The number of ops should be greater than 0")
 
-    @skipXPUIf(not PLATFORM_SUPPORTS_SYCLTLA, "")
+    @skipXPUIf(not Xe2_Or_Later, "")
     @skipCUDAIf(not SM90OrLater, "need sm_90")
     def test_maybe_append_choice_caching(self):
         """
@@ -1836,7 +1836,7 @@ class TestCutlassBackend(TestCase):
 
         self.assertEqual(render_call_count, NUM_ITERATIONS + 2)
 
-    @skipXPUIf(not PLATFORM_SUPPORTS_SYCLTLA, "")
+    @skipXPUIf(not Xe2_Or_Later, "")
     @skipCUDAIf(not SM90OrLater, "need sm_90")
     @mock.patch.dict(os.environ, {"PATH": _get_path_without_sccache()})
     def test_multiple_mm(self):
@@ -1894,12 +1894,9 @@ class TestCutlassBackend(TestCase):
 
         num_matmuls = 2
         expected_count = num_matmuls + num_matmuls * 2
-        if GPU_TYPE == "xpu":
-            # there is only one gemm op from cutlass backend on xpu
-            expected_count = num_matmuls + num_matmuls
         self.assertEqual(render_call_count, expected_count)
 
-    @skipXPUIf(not PLATFORM_SUPPORTS_SYCLTLA, "")
+    @skipXPUIf(not Xe2_Or_Later, "")
     @skipCUDAIf(not SM90OrLater, "need sm_90")
     @mock.patch.dict(os.environ, {"PATH": _get_path_without_sccache()})
     def test_multiple_mm_with_dynamic_shape(self):
@@ -1960,13 +1957,9 @@ class TestCutlassBackend(TestCase):
 
         num_matmuls = 2
         expected_count = num_matmuls + num_matmuls * 2
-        if GPU_TYPE == "xpu":
-            # there is only one gemm op from cutlass backend on xpu
-            expected_count = num_matmuls + num_matmuls
-
         self.assertEqual(render_call_count, expected_count)
 
-    @skipXPUIf(not PLATFORM_SUPPORTS_SYCLTLA, "")
+    @skipXPUIf(not Xe2_Or_Later, "")
     @skipCUDAIf(not SM90OrLater, "need sm_90")
     @mock.patch.dict(os.environ, {"PATH": _get_path_without_sccache()})
     def test_cutlass_backend_matmul_same_tensor(self):
@@ -1986,7 +1979,7 @@ class TestCutlassBackend(TestCase):
 
             torch.testing.assert_close(A @ A.t(), compiled(A, A.t()))
 
-    @skipXPUIf(not PLATFORM_SUPPORTS_SYCLTLA, "")
+    @skipXPUIf(not Xe2_Or_Later, "")
     @skipCUDAIf(not SM90OrLater, "need sm_90")
     @mock.patch.dict(os.environ, {"PATH": _get_path_without_sccache()})
     def test_cutlass_backend_matmul_nonzero_offset(self):
@@ -2007,7 +2000,7 @@ class TestCutlassBackend(TestCase):
                 A[1:, :] @ A[1:, :].t(), compiled(A[1:, :], A[1:, :].t())
             )
 
-    @skipXPUIf(not PLATFORM_SUPPORTS_SYCLTLA, "")
+    @skipXPUIf(not Xe2_Or_Later, "")
     @skipCUDAIf(not SM90OrLater, "need sm_90")
     @mock.patch.dict(os.environ, {"PATH": _get_path_without_sccache()})
     def test_flexible_layout(self):
@@ -2057,7 +2050,7 @@ class TestCutlassBackend(TestCase):
             1,
         )
 
-    @skipXPUIf(not PLATFORM_SUPPORTS_SYCLTLA, "")
+    @skipXPUIf(not Xe2_Or_Later, "")
     @skipCUDAIf(not SM90OrLater, "need sm_90")
     @mock.patch.dict(os.environ, {"PATH": _get_path_without_sccache()})
     def test_filtered_ops_cache(self):
@@ -2088,7 +2081,7 @@ class TestCutlassBackend(TestCase):
             time_limit = 60
         self.assertTrue(time.time() - start_time < time_limit)
 
-    @skipXPUIf(not PLATFORM_SUPPORTS_SYCLTLA, "")
+    @skipXPUIf(not Xe2_Or_Later, "")
     @skipCUDAIf(not SM90OrLater, "need sm_90")
     @mock.patch.dict(os.environ, {"PATH": _get_path_without_sccache()})
     @parametrize("use_aoti", (False, True))
@@ -2360,7 +2353,7 @@ class TestCutlassBackend(TestCase):
     def test_gemm_operation_serialization_cuda(self, arch: str, cuda_version: str):
         self._test_gemm_operation_serialization(arch, cuda_version)
 
-    @skipXPUIf(not PLATFORM_SUPPORTS_SYCLTLA, "")
+    @skipXPUIf(not Xe2_Or_Later, "")
     @unittest.skipIf(not HAS_XPU, "XPU not available")
     @mock.patch.dict(os.environ, {"PATH": _get_path_without_sccache()})
     @parametrize("arch", ("Xe12", "Xe20"))
@@ -2629,7 +2622,7 @@ class TestCutlassBackend(TestCase):
         # setting a small absolute tolerance in these tests
         torch.testing.assert_close(y_eager, y_compiled, rtol=1e-2, atol=0.05)
 
-    @skipXPUIf(not PLATFORM_SUPPORTS_SYCLTLA, "")
+    @skipXPUIf(not Xe2_Or_Later, "")
     @skipCUDAIf(not SM90OrLater, "need sm_90")
     def test_config_number_post_filtering(self) -> None:
         """
