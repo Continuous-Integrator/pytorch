@@ -2,7 +2,9 @@
 
 #include <ATen/core/Tensor.h>
 #include <ATen/cuda/CUDAContext.h>
+#include <ATen/cuda/StatelessPhilox4x32.cuh>
 #include <ATen/Dispatch.h>
+#include <ATen/ExpandUtils.h>
 #include <ATen/cuda/detail/OffsetCalculator.cuh>
 #include <ATen/native/cuda/MemoryAccess.cuh>
 #include <ATen/core/TransformationHelper.h>
@@ -23,161 +25,113 @@ namespace at::native {
 
 namespace {
 
-// Philox outputs per scalar element: double consumes 2 uint32 outputs, others 1.
+using at::cuda::philox_4x32;
+
+// Elements produced per Philox 4x32 call: 4 for float/half/bfloat16, 2 for double.
+// Note that we use a full float for each generated half/bfloat16 for better numerics.
 template <typename scalar_t>
-constexpr int OPV = std::is_same_v<scalar_t, double> ? 2 : 1;
+constexpr int elems_per_call = std::is_same_v<scalar_t, double> ? 2 : 4;
 
-// Elements produced per curand4 call: 4 for float/half/bfloat16, 2 for double.
-template <typename scalar_t>
-constexpr int EPC = 4 / OPV<scalar_t>;
+// Box-Muller: convert 4 uniform uint32 values into 4 standard normal floats.
+__device__ __forceinline__ float4 box_muller_float(uint4 r) {
+  constexpr float M = 2.3283064365386963e-10f; // 1/2^32
+  constexpr float TWO_PI = 6.2831853071795864f;
+  // Map to (0, 1] to avoid log(0).
+  float u1 = fmaf(r.x, M, M * 0.5f);
+  float u2 = fmaf(r.y, M, M * 0.5f);
+  float u3 = fmaf(r.z, M, M * 0.5f);
+  float u4 = fmaf(r.w, M, M * 0.5f);
 
-// Generate elements in [elem_start, elem_end) from a Philox stream defined
-// by (seed, key_offset). Handles Box-Muller alignment (controlled by needs_alignment)
-// and 64-bit offset wrapping.
-template <typename scalar_t, bool needs_alignment, typename dist_t, typename transform_t>
-__device__ void generate_range(
-    scalar_t* out, int64_t elem_start, int64_t elem_end,
-    uint64_t seed, uint64_t key_offset,
-    const dist_t& dist_func, const transform_t& transform_func) {
-
-  unsigned long long raw_offset = key_offset +
-      static_cast<unsigned long long>(elem_start) * OPV<scalar_t>;
-  unsigned long long philox_offset = raw_offset;
-  int skip = 0;
-
-  if constexpr (needs_alignment) {
-    // Round down to a 4-output boundary so Box-Muller always pairs
-    // the same absolute Philox stream positions.
-    int misalign = static_cast<int>(raw_offset & 3);
-    if (misalign > 0 && (misalign % OPV<scalar_t>) == 0) {
-      skip = misalign / OPV<scalar_t>;
-      philox_offset = raw_offset - misalign;
-    }
-  }
-
-  // Detect 64-bit offset wrap within this range.
-  auto range_outputs =
-      static_cast<unsigned long long>(elem_end - elem_start) * OPV<scalar_t>;
-  bool wraps =
-      raw_offset != 0 && (raw_offset + range_outputs < raw_offset);
-  int64_t wrap_at = wraps
-      ? elem_start + static_cast<int64_t>((0ULL - raw_offset) / OPV<scalar_t>)
-      : elem_end;
-
-  curandStatePhilox4_32_10_t state;
-  curand_init(seed, /*subsequence=*/0, /*offset=*/philox_offset, &state);
-
-  int64_t gen_end = min(wrap_at, elem_end);
-  int64_t elem = elem_start;
-
-  if constexpr (needs_alignment) {
-    if (skip > 0 && elem < gen_end) {
-      auto rand = dist_func(&state);
-      for (int j = skip; j < EPC<scalar_t> && elem < gen_end; j++, elem++) {
-        out[elem] = transform_func((&rand.x)[j]);
-      }
-    }
-  }
-
-  for (; elem < gen_end; elem += EPC<scalar_t>) {
-    auto rand = dist_func(&state);
-    #pragma unroll
-    for (int j = 0; j < EPC<scalar_t> && elem + j < gen_end; j++) {
-      out[elem + j] = transform_func((&rand.x)[j]);
-    }
-  }
-
-  // Handle 64-bit offset wrap: reinitialize at offset 0 and continue.
-  if (wraps) {
-    curand_init(seed, /*subsequence=*/0, /*offset=*/0ULL, &state);
-    for (elem = wrap_at; elem < elem_end; elem += EPC<scalar_t>) {
-      auto rand = dist_func(&state);
-      #pragma unroll
-      for (int j = 0; j < EPC<scalar_t> && elem + j < elem_end; j++) {
-        out[elem + j] = transform_func((&rand.x)[j]);
-      }
-    }
-  }
+  float radius1 = sqrtf(-2.0f * __logf(u1));
+  float radius2 = sqrtf(-2.0f * __logf(u3));
+  float s1, c1, s2, c2;
+  __sincosf(TWO_PI * u2, &s1, &c1);
+  __sincosf(TWO_PI * u4, &s2, &c2);
+  return {radius1 * c1, radius1 * s1, radius2 * c2, radius2 * s2};
 }
 
-// Single-key kernel. Uses a vectorized grid-stride loop when the Philox
-// offset is 4-aligned (the common case). Falls back to contiguous per-thread
-// generation for Box-Muller misalignment or 64-bit offset wrapping.
-template <typename scalar_t, bool needs_alignment, typename dist_t, typename transform_t>
+// Box-Muller: convert 4 uint32 values (packed into 2 uint64) into 2 standard
+// normal doubles.
+__device__ __forceinline__ double2 box_muller_double(uint4 r) {
+  constexpr double M = 2.3283064365386963e-10; // 1/2^32
+  constexpr double TWO_PI = 6.2831853071795864;
+  // Pack pairs of uint32 for ~64 bits of uniform randomness.
+  double u1 = fma(static_cast<double>(r.x), M,
+                  static_cast<double>(r.y) * M * M + M * M * 0.5);
+  double u2 = fma(static_cast<double>(r.z), M,
+                  static_cast<double>(r.w) * M * M + M * M * 0.5);
+
+  double radius = sqrt(-2.0 * log(u1));
+  double s, c;
+  sincos(TWO_PI * u2, &s, &c);
+  return {radius * c, radius * s};
+}
+
+// Single-key kernel: vectorized grid-stride loop over chunks of elements,
+// where each chunk comes from a single Philox 4x32 call.
+template <typename scalar_t, typename sample_t, typename param_t>
 C10_LAUNCH_BOUNDS_2(256, 4)
 __global__ void philox_single_key_kernel(
     scalar_t* __restrict__ output,
     const uint64_t* __restrict__ key,
-    int64_t numel,
-    dist_t dist_func,
-    transform_t transform_func) {
+    int64_t num_elems,
+    sample_t sample_func,
+    param_t param_func) {
 
   uint64_t seed = key[0];
-  uint64_t key_offset = key[1];
+  uint64_t offset = key[1];
 
   int64_t tid = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
-  int64_t total_threads = static_cast<int64_t>(gridDim.x) * blockDim.x;
+  int64_t stride = static_cast<int64_t>(gridDim.x) * blockDim.x;
 
-  // Fall back to contiguous per-thread generation when the vectorized
-  // path can't be used due to Box-Muller misalignment or 64-bit offset wrap.
-  bool misaligned = needs_alignment && (key_offset & 3) != 0;
-  bool could_wrap = key_offset != 0 &&
-      (key_offset + static_cast<unsigned long long>(numel) * OPV<scalar_t> < key_offset);
-  if (misaligned || could_wrap) {
-    int64_t per_thread =
-        ((numel + total_threads - 1) / total_threads + EPC<scalar_t> - 1) / EPC<scalar_t> * EPC<scalar_t>;
-    int64_t start = tid * per_thread;
-    if (start < numel) {
-      generate_range<scalar_t, needs_alignment>(
-          output, start, min(start + per_thread, numel),
-          seed, key_offset, dist_func, transform_func);
-    }
-    return;
-  }
+  constexpr int epc = elems_per_call<scalar_t>;
+  int64_t num_full_chunks = num_elems / epc;
 
-  // Vectorized grid-stride loop usable when Philox offset is 4-aligned
-  // so we're guaranteed to get correctly paired Box-Muller normals.
-  int64_t vec_end = numel / EPC<scalar_t> * EPC<scalar_t>;
-  curandStatePhilox4_32_10_t state;
-  curand_init(seed, /*subsequence=*/0,
-              key_offset + static_cast<unsigned long long>(tid) * EPC<scalar_t> * OPV<scalar_t>,
-              &state);
-  for (int64_t pos = tid * EPC<scalar_t>; pos < vec_end;
-       pos += total_threads * EPC<scalar_t>) {
-    auto rand = dist_func(&state);
-    constexpr int vec_bytes = EPC<scalar_t> * sizeof(scalar_t);
+  // Vectorized writes for full chunks.
+  for (int64_t chunk = tid; chunk < num_full_chunks; chunk += stride) {
+    auto sample = sample_func(seed, offset + static_cast<uint64_t>(chunk));
+    constexpr int vec_bytes = epc * sizeof(scalar_t);
     memory::Vec<vec_bytes> v;
     auto* vals = reinterpret_cast<scalar_t*>(&v);
     #pragma unroll
-    for (int i = 0; i < EPC<scalar_t>; i++) {
-      vals[i] = transform_func((&rand.x)[i]);
+    for (int j = 0; j < epc; j++) {
+      vals[j] = param_func((&sample.x)[j]);
     }
-    memory::st_vec<vec_bytes>(output + pos, v);
-    skipahead(static_cast<unsigned long long>(total_threads - 1) * 4, &state);
+    memory::st_vec<vec_bytes>(output + chunk * epc, v);
   }
 
-  // Scalar tail for remaining elements that don't fill a full vector.
-  if (tid == 0 && vec_end < numel) {
-    generate_range<scalar_t, needs_alignment>(
-        output, vec_end, numel, seed, key_offset,
-        dist_func, transform_func);
+  // Scalar tail for remaining elements.
+  if (tid == 0) {
+    int64_t tail_start = num_full_chunks * epc;
+    if (tail_start < num_elems) {
+      auto sample = sample_func(seed, offset + static_cast<uint64_t>(num_full_chunks));
+      for (int j = 0; j < num_elems - tail_start; j++) {
+        output[tail_start + j] = param_func((&sample.x)[j]);
+      }
+    }
   }
 }
 
-// Multi-key: each thread handles a fixed-size chunk of elements for one key.
-// Threads are indexed over (key_idx, chunk_idx) via grid-stride loop.
-template <typename scalar_t, bool needs_alignment, typename dist_t, typename transform_t>
+// Multi-key kernel: grid-stride loop over (key_idx, chunk) pairs,
+// where each chunk comes from a single Philox 4x32 call. Uses vectorized
+// writes for full chunks and scalar writes for the tail.
+template <typename scalar_t, typename sample_t, typename param_t>
 __global__ void philox_multi_key_kernel(
     scalar_t* __restrict__ output,
     const uint64_t* __restrict__ keys,
     int64_t num_keys,
-    int64_t event_numel,
-    int64_t elems_per_thread,
-    dist_t dist_func,
-    transform_t transform_func,
+    int64_t elems_per_key,
+    sample_t sample_func,
+    param_t param_func,
     OffsetCalculator<1> key_offset_calc) {
-  int64_t chunks_per_key =
-      (event_numel + elems_per_thread - 1) / elems_per_thread;
+
+  constexpr int epc = elems_per_call<scalar_t>;
+  // Vectorized writes require aligned base addresses. This is guaranteed
+  // when elems_per_key is a multiple of epc, since
+  // base = key_idx * elems_per_key + chunk * epc.
+  bool aligned = elems_per_key % epc == 0;
+  int64_t full_chunks_per_key = elems_per_key / epc;
+  int64_t chunks_per_key = (elems_per_key + epc - 1) / epc;
   int64_t total_work = num_keys * chunks_per_key;
 
   for (int64_t work_idx =
@@ -185,72 +139,66 @@ __global__ void philox_multi_key_kernel(
        work_idx < total_work;
        work_idx += static_cast<int64_t>(gridDim.x) * blockDim.x) {
     int64_t key_idx = work_idx / chunks_per_key;
-    int64_t chunk_idx = work_idx % chunks_per_key;
+    int64_t chunk = work_idx % chunks_per_key;
 
     auto elem_offset = key_offset_calc.get(key_idx)[0];
     uint64_t seed = keys[elem_offset];
-    uint64_t key_offset = keys[elem_offset + 1];
+    uint64_t offset = keys[elem_offset + 1];
 
-    int64_t elem_start = chunk_idx * elems_per_thread;
-    int64_t elem_end = min(elem_start + elems_per_thread, event_numel);
+    auto sample = sample_func(seed, offset + static_cast<uint64_t>(chunk));
+    int64_t base = key_idx * elems_per_key + chunk * epc;
 
-    generate_range<scalar_t, needs_alignment>(
-        output + key_idx * event_numel, elem_start, elem_end,
-        seed, key_offset, dist_func, transform_func);
+    if (aligned && chunk < full_chunks_per_key) {
+      constexpr int vec_bytes = epc * sizeof(scalar_t);
+      memory::Vec<vec_bytes> v;
+      auto* vals = reinterpret_cast<scalar_t*>(&v);
+      #pragma unroll
+      for (int j = 0; j < epc; j++) {
+        vals[j] = param_func((&sample.x)[j]);
+      }
+      memory::st_vec<vec_bytes>(output + base, v);
+    } else {
+      for (int j = 0; j < epc && chunk * epc + j < elems_per_key; j++) {
+        output[base + j] = param_func((&sample.x)[j]);
+      }
+    }
   }
 }
 
-// Shared distribution kernel dispatches to single-key or multi-key kernels.
-template <typename scalar_t, bool needs_alignment, typename dist_t, typename transform_t>
+// Dispatches to single-key or multi-key kernels as needed.
+template <typename scalar_t, typename sample_t, typename param_t>
 void philox_distribution_kernel(
     const char* op_name,
     Tensor& self, const Tensor& key,
-    const dist_t& dist_func, const transform_t& transform_func) {
-  TORCH_CHECK(key.dim() >= 1 && key.size(-1) == 2,
-      op_name, ": key must have shape (2,) or (*batch, 2), got shape ",
-      key.sizes());
-  TORCH_CHECK(key.scalar_type() == kUInt64,
-      op_name, ": key must have dtype uint64, got ",
-      key.scalar_type());
+    const sample_t& sample_func, const param_t& param_func) {
   TORCH_CHECK(self.is_floating_point(),
       op_name, ": self must be a floating point tensor, got ",
       self.scalar_type());
+  TORCH_CHECK(key.scalar_type() == kUInt64,
+      op_name, ": key must have dtype uint64, got ",
+      key.scalar_type());
   TORCH_CHECK(self.device() == key.device(),
       op_name, ": self and key must be on the same device, got ",
       self.device(), " and ", key.device());
+  TORCH_CHECK(key.dim() >= 1 && key.size(-1) == 2,
+      op_name, ": key must have shape (2,) or (*batch, 2), got shape ",
+      key.sizes());
+  if (key.dim() > 1) {
+    TORCH_CHECK(key.dim() == self.dim() + 1,
+        op_name, ": batched key must have ndim == output ndim + 1, "
+        "got key shape ", key.sizes(), " with output shape ", self.sizes());
+    auto key_batch = key.sizes().slice(0, self.dim());
+    TORCH_CHECK(is_expandable_to(key_batch, self.sizes()),
+        op_name, ": key batch shape ", key_batch,
+        " is not broadcastable with output shape ", self.sizes());
+  }
 
   if (self.numel() == 0) {
     return;
   }
 
-  int64_t ndim = self.dim();
-  int64_t elems_per_key = 1;
-  int64_t key_dims = 0;
-
-  if (key.dim() > 1) {
-    TORCH_CHECK(key.dim() == ndim + 1,
-        op_name, ": batched key must have ndim == output ndim + 1, "
-        "got key shape ", key.sizes(), " with output shape ", self.sizes());
-
-    for (int64_t i = 0; i < ndim; i++) {
-      TORCH_CHECK(key.size(i) == 1 || key.size(i) == self.size(i),
-          op_name, ": key dim ", i, " (size ", key.size(i),
-          ") is not broadcastable with output dim ", i,
-          " (size ", self.size(i), ")");
-    }
-
-    key_dims = ndim;
-    for (int64_t i = ndim - 1; i >= 0; i--) {
-      if (key.size(i) != 1) break;
-      elems_per_key *= self.size(i);
-      key_dims--;
-    }
-  } else {
-    elems_per_key = self.numel();
-  }
-
-  int64_t num_keys = self.numel() / elems_per_key;
-  // ensure output contiguity for simplicity
+  // Enforce contiguous output for simplicity. Since this is an in-place kernel,
+  // we require copying back into self afterwards for the non-contiguous case.
   auto output = self.contiguous();
 
   constexpr int block_size = 256;
@@ -259,22 +207,36 @@ void philox_distribution_kernel(
       (at::cuda::getCurrentDeviceProperties()->maxThreadsPerMultiProcessor /
        block_size);
 
-  auto key_arg = num_keys == 1 ? key.contiguous() : key;
-  const uint64_t* key_ptr = key_arg.data_ptr<uint64_t>();
-
-  if (num_keys == 1) {
-    // === Launch single key kernel. ===
+  if (key.dim() == 1) {
+    // === Launch single key kernel ===
+    int64_t elems_per_key = self.numel();
     int num_blocks = std::min(
         static_cast<int>((elems_per_key + block_size - 1) / block_size),
         max_blocks);
 
-    philox_single_key_kernel<scalar_t, needs_alignment>
+    auto key_contig = key.contiguous();
+    philox_single_key_kernel<scalar_t>
         <<<num_blocks, block_size, 0, at::cuda::getCurrentCUDAStream()>>>(
         output.mutable_data_ptr<scalar_t>(),
-        key_ptr, elems_per_key, dist_func, transform_func);
+        key_contig.data_ptr<uint64_t>(),
+        elems_per_key, sample_func, param_func);
   } else {
-    // === Launch batched key kernel. ===
-    // Handle key, self broadcasting via OffsetCalculator
+    // === Launch batched (multiple) key kernel ===
+    // The kernel writes each key's output as a contiguous block of
+    // elems_per_key elements. We determine elems_per_key by counting
+    // trailing size-1 key dims; these are the output dimensions that a
+    // single key generates over. For example, with key shape (4, 1, 1, 2)
+    // and output shape (4, 10, 100): key_dims=1, elems_per_key=1000.
+    int64_t elems_per_key = 1;
+    int64_t key_dims = self.dim();
+    for (int64_t i = self.dim() - 1; i >= 0; i--) {
+      if (key.size(i) != 1) break;
+      elems_per_key *= self.size(i);
+      key_dims--;
+    }
+    int64_t num_keys = self.numel() / elems_per_key;
+
+    // Handle key, self broadcasting via OffsetCalculator.
     c10::SmallVector<int64_t, MAX_DIMS> oc_sizes(key_dims);
     c10::SmallVector<int64_t, MAX_DIMS> oc_strides(key_dims);
     for (int64_t i = 0; i < key_dims; i++) {
@@ -286,19 +248,19 @@ void philox_distribution_kernel(
     auto key_offset_calc = OffsetCalculator<1>(
         key_dims, oc_sizes.data(), &oc_strides_ptr);
 
-    constexpr int64_t elems_per_thread = 16;
     int64_t chunks_per_key =
-        (elems_per_key + elems_per_thread - 1) / elems_per_thread;
+        (elems_per_key + elems_per_call<scalar_t> - 1) / elems_per_call<scalar_t>;
     int64_t total_work = num_keys * chunks_per_key;
     int num_blocks = std::min(
         static_cast<int>((total_work + block_size - 1) / block_size),
         max_blocks);
 
-    philox_multi_key_kernel<scalar_t, needs_alignment>
+    philox_multi_key_kernel<scalar_t>
         <<<num_blocks, block_size, 0, at::cuda::getCurrentCUDAStream()>>>(
         output.mutable_data_ptr<scalar_t>(),
-        key_ptr, num_keys, elems_per_key, elems_per_thread,
-        dist_func, transform_func, key_offset_calc);
+        key.data_ptr<uint64_t>(),
+        num_keys, elems_per_key,
+        sample_func, param_func, key_offset_calc);
   }
   C10_CUDA_KERNEL_LAUNCH_CHECK();
 
@@ -402,30 +364,31 @@ Tensor& _philox_uniform_cuda_(
   }
   AT_DISPATCH_FLOATING_TYPES_AND2(
       kHalf, kBFloat16, self.scalar_type(), "_philox_uniform_", [&] {
-    auto lo = static_cast<scalar_t>(low);
-    auto hi = static_cast<scalar_t>(high);
-    auto transform_func = [lo, hi] __device__ (auto rand) {
-      return static_cast<scalar_t>(
-          at::transformation::uniform_real(rand, lo, hi));
-    };
-    auto dist_func = []() {
+    auto sample_func = []() {
       if constexpr (std::is_same_v<scalar_t, double>) {
-        return [] __device__ (curandStatePhilox4_32_10_t* state) {
-          // double needs 53 bits of randomness; pack pairs of uint32 into uint64.
-          uint4 r = curand4(state);
-          ulonglong2 result;
-          result.x = (static_cast<unsigned long long>(r.x) << 32) | r.y;
-          result.y = (static_cast<unsigned long long>(r.z) << 32) | r.w;
-          return result;
+        return [] __device__ (uint64_t seed, uint64_t offset) {
+          uint4 r = philox_4x32(seed, offset);
+          ulonglong2 packed;
+          packed.x = (static_cast<unsigned long long>(r.x) << 32) | r.y;
+          packed.y = (static_cast<unsigned long long>(r.z) << 32) | r.w;
+          return packed;
         };
       } else {
-        return [] __device__ (curandStatePhilox4_32_10_t* state) {
-          return curand4(state);
+        return [] __device__ (uint64_t seed, uint64_t offset) {
+          return philox_4x32(seed, offset);
         };
       }
     }();
-    philox_distribution_kernel<scalar_t, /*needs_alignment=*/false>(
-        "_philox_uniform_", self, key, dist_func, transform_func);
+
+    auto lo = static_cast<scalar_t>(low);
+    auto hi = static_cast<scalar_t>(high);
+    auto param_func = [lo, hi] __device__ (auto rand) {
+      return static_cast<scalar_t>(
+          at::transformation::uniform_real(rand, lo, hi));
+    };
+
+    philox_distribution_kernel<scalar_t>(
+        "_philox_uniform_", self, key, sample_func, param_func);
   });
   return self;
 }
@@ -440,24 +403,26 @@ Tensor& _philox_normal_cuda_(
   AT_DISPATCH_FLOATING_TYPES_AND2(
       kHalf, kBFloat16, self.scalar_type(), "_philox_normal_", [&] {
     using compute_t = std::conditional_t<std::is_same_v<scalar_t, double>, double, float>;
-    auto mu = static_cast<compute_t>(mean);
-    auto sigma = static_cast<compute_t>(stddev);
-    auto transform_func = [mu, sigma] __device__ (compute_t rand) {
-      return static_cast<scalar_t>(rand * sigma + mu);
-    };
-    auto dist_func = []() {
+    auto sample_func = []() {
       if constexpr (std::is_same_v<scalar_t, double>) {
-        return [] __device__ (curandStatePhilox4_32_10_t* state) {
-          return curand_normal2_double(state);
+        return [] __device__ (uint64_t seed, uint64_t offset) {
+          return box_muller_double(philox_4x32(seed, offset));
         };
       } else {
-        return [] __device__ (curandStatePhilox4_32_10_t* state) {
-          return curand_normal4(state);
+        return [] __device__ (uint64_t seed, uint64_t offset) {
+          return box_muller_float(philox_4x32(seed, offset));
         };
       }
     }();
-    philox_distribution_kernel<scalar_t, /*needs_alignment=*/true>(
-        "_philox_normal_", self, key, dist_func, transform_func);
+
+    auto mu = static_cast<compute_t>(mean);
+    auto sigma = static_cast<compute_t>(stddev);
+    auto param_func = [mu, sigma] __device__ (compute_t rand) {
+      return static_cast<scalar_t>(rand * sigma + mu);
+    };
+
+    philox_distribution_kernel<scalar_t>(
+        "_philox_normal_", self, key, sample_func, param_func);
   });
   return self;
 }
