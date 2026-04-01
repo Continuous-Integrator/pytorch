@@ -56,17 +56,24 @@ RUN rm -r ci_commit_pins
 COPY ./common/install_rocm_magma.sh install_rocm_magma.sh
 RUN if [ "${ROCM_VERSION}" != "nightly" ]; then bash ./install_rocm_magma.sh ${ROCM_VERSION}; fi
 RUN rm install_rocm_magma.sh
-COPY ./common/install_rocSHMEM.sh install_rocSHMEM.sh
-RUN bash ./install_rocSHMEM.sh ${ROCM_VERSION}
-RUN rm install_rocSHMEM.sh
 ADD ./common/install_miopen.sh install_miopen.sh
 RUN if [ "${ROCM_VERSION}" != "nightly" ]; then bash ./install_miopen.sh ${ROCM_VERSION}; fi && rm install_miopen.sh
 ADD ./common/install_rocm_drm.sh install_rocm_drm.sh
 RUN if [ "${ROCM_VERSION}" != "nightly" ]; then bash ./install_rocm_drm.sh /usr ; fi && rm install_rocm_drm.sh
 
-# ROCm environment variables are set in /etc/rocm_env.sh by install_rocm.sh
-# and sourced via /etc/bash.bashrc for interactive shells.
-# CI scripts should source /etc/rocm_env.sh directly.
+# Default ROCm environment; /etc/rocm_env.sh (created by install_rocm.sh) may
+# override these at runtime for different install methods (tarballs vs wheels).
+ENV ROCM_PATH=/opt/rocm \
+    ROCM_HOME=/opt/rocm \
+    ROCM_SOURCE_DIR=/opt/rocm \
+    ROCM_BIN=/opt/rocm/bin \
+    ROCM_CMAKE=/opt/rocm \
+    ROCM_DEVICE_LIB_PATH=/opt/rocm/amdgcn/bitcode \
+    HIP_DEVICE_LIB_PATH=/opt/rocm/amdgcn/bitcode \
+    MAGMA_HOME=/opt/rocm/magma
+ENV PATH=/opt/rocm/bin:/opt/rocm/llvm/bin:$PATH
+ENV LD_LIBRARY_PATH=/opt/rocm/lib:${LD_LIBRARY_PATH:-}
+
 ENV LANG C.UTF-8
 ENV LC_ALL C.UTF-8
 
