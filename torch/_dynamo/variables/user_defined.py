@@ -296,6 +296,21 @@ class UserDefinedClassVariable(UserDefinedVariable):
     def can_constant_fold_through(self) -> bool:
         return self.value in self._constant_fold_classes()
 
+    def nb_or_impl(
+        self,
+        tx: "InstructionTranslator",
+        other: VariableTracker,
+    ) -> VariableTracker:
+        # CPython's type.__or__ implements _Py_union_type_or (type unions).
+        try:
+            other_val = other.as_python_constant()
+        except NotImplementedError:
+            return VariableTracker.build(tx, NotImplemented)
+        result = type(self.value).__or__(self.value, other_val)
+        if result is NotImplemented:
+            return VariableTracker.build(tx, NotImplemented)
+        return VariableTracker.build(tx, result)
+
     def var_getattr(self, tx: "InstructionTranslator", name: str) -> VariableTracker:
         from . import ConstantVariable
 
@@ -1390,6 +1405,24 @@ class UserDefinedObjectVariable(UserDefinedVariable):
             random.uniform,
         }
         return fns
+
+    def nb_or_impl(
+        self,
+        tx: "InstructionTranslator",
+        other: VariableTracker,
+    ) -> VariableTracker:
+        method = self._maybe_get_baseclass_method("__or__")
+        if method is not None and isinstance(method, types.FunctionType):
+            from . import UserMethodVariable
+
+            source = self.source
+            source_fn = None
+            if source:
+                source_fn = self.get_source_by_walking_mro(tx, "__or__")
+            return UserMethodVariable(
+                method, self, source_fn=source_fn, source=source
+            ).call_function(tx, [other], {})
+        return VariableTracker.build(tx, NotImplemented)
 
     def call_method(
         self,
@@ -2838,6 +2871,20 @@ class UserDefinedDictVariable(UserDefinedObjectVariable):
             self._dict_vt = dict_vt
         self._dict_methods = dict_methods
 
+    def nb_or_impl(
+        self,
+        tx: "InstructionTranslator",
+        other: VariableTracker,
+    ) -> VariableTracker:
+        return self._dict_vt.nb_or_impl(tx, other)
+
+    def nb_ior_impl(
+        self,
+        tx: "InstructionTranslator",
+        other: VariableTracker,
+    ) -> VariableTracker:
+        return self._dict_vt.nb_ior_impl(tx, other)
+
     def call_method(
         self,
         tx: "InstructionTranslator",
@@ -2934,6 +2981,20 @@ class UserDefinedSetVariable(UserDefinedObjectVariable):
                 )
         else:
             self._set_vt = set_vt
+
+    def nb_or_impl(
+        self,
+        tx: "InstructionTranslator",
+        other: VariableTracker,
+    ) -> VariableTracker:
+        return self._set_vt.nb_or_impl(tx, other)
+
+    def nb_ior_impl(
+        self,
+        tx: "InstructionTranslator",
+        other: VariableTracker,
+    ) -> VariableTracker:
+        return self._set_vt.nb_ior_impl(tx, other)
 
     def call_method(
         self,

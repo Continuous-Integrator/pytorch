@@ -2203,6 +2203,21 @@ class SymNodeVariable(VariableTracker):
     ) -> VariableTracker:
         return self.nb_int_impl(tx)
 
+    def nb_or_impl(
+        self,
+        tx: "InstructionTranslator",
+        other: VariableTracker,
+    ) -> VariableTracker:
+        if not other.is_symnode_like():
+            return VariableTracker.build(tx, NotImplemented)
+        return SymNodeVariable.create(
+            tx,
+            tx.output.create_proxy(
+                "call_function", operator.or_, *proxy_args_kwargs([self, other], {})
+            ),
+            sym_num=None,
+        )
+
     def is_python_hashable(self) -> bool:
         return True
 

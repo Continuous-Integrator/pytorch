@@ -405,6 +405,23 @@ its type to `common_constant_types`.
             return ConstantVariable.create(int(self.value))
         return super().nb_int_impl(tx)
 
+    def nb_or_impl(
+        self,
+        tx: Any,
+        other: "VariableTracker",
+    ) -> "VariableTracker":
+        # CPython: int, bool, frozenset, and type all define nb_or.
+        # For type objects, nb_or implements _Py_union_type_or (type unions).
+        if not isinstance(self.value, (int, bool, frozenset, type)):
+            return ConstantVariable.create(NotImplemented)
+        if not other.is_python_constant():
+            return ConstantVariable.create(NotImplemented)
+        other_val = other.as_python_constant()
+        result = type(self.value).__or__(self.value, other_val)
+        if result is NotImplemented:
+            return ConstantVariable.create(NotImplemented)
+        return VariableTracker.build(tx, result)
+
 
 CONSTANT_VARIABLE_NONE = ConstantVariable(None)
 CONSTANT_VARIABLE_TRUE = ConstantVariable(True)

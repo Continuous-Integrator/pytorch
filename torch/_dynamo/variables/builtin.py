@@ -3215,80 +3215,18 @@ class BuiltinVariable(VariableTracker):
     def call_or_(
         self, tx: "InstructionTranslator", a: VariableTracker, b: VariableTracker
     ) -> VariableTracker | None:
-        # Rely on constant_handler
-        if isinstance(a, ConstantVariable) and isinstance(b, ConstantVariable):
-            return None
+        # TensorVariable | is handled by the can_insert_in_graph fast path
+        # in _make_handler before we get here.
+        from .object_protocol import binary_op
 
-        # Constant fold or_ for class/type variables (e.g. Shard | _StridedShard
-        # producing a types.UnionType for isinstance checks). This handles cases
-        # like OpaqueObjectClassVariable where is_python_constant() returns False
-        # but as_python_constant() works.
-        try:
-            a_const = a.as_python_constant()
-            b_const = b.as_python_constant()
-            if isinstance(a_const, type) and isinstance(b_const, type):
-                return VariableTracker.build(tx, a_const | b_const)
-        except NotImplementedError:
-            pass
-
-        if a.is_symnode_like() and b.is_symnode_like():
-            return SymNodeVariable.create(
-                tx,
-                tx.output.create_proxy(
-                    "call_function", operator.or_, *proxy_args_kwargs([a, b], {})
-                ),
-                sym_num=None,
-            )
-
-        # This call looks like `{"one": torch.ones(1)} | {"two": torch.ones(2)}`.
-        if isinstance(
-            a,
-            (
-                ConstDictVariable,
-                DictKeysVariable,
-                MutableMappingVariable,
-                SetVariable,
-                UserDefinedDictVariable,
-                UserDefinedObjectVariable,
-            ),
-        ):
-            # TODO(guilhermeleobas): forward the call to b.__ror__(a) if
-            # a.__ror__(b) returns NotImplemented
-            return a.call_method(tx, "__or__", [b], {})
-
-        # None no-ops this handler and lets the driving function proceed
-        return None
+        return binary_op(tx, a, b, "nb_or", "|")
 
     def call_ior(
         self, tx: "InstructionTranslator", a: VariableTracker, b: VariableTracker
     ) -> VariableTracker | None:
-        # Rely on constant_handler
-        if isinstance(a, ConstantVariable) and isinstance(b, ConstantVariable):
-            return None
-        if a.is_symnode_like() and b.is_symnode_like():
-            return SymNodeVariable.create(
-                tx,
-                tx.output.create_proxy(
-                    "call_function", operator.ior, *proxy_args_kwargs([a, b], {})
-                ),
-                sym_num=None,
-            )
+        from .object_protocol import binary_iop
 
-        # This call looks like `{"one": torch.ones(1)} |= {"two": torch.ones(2)}`.
-        if isinstance(
-            a,
-            (
-                ConstDictVariable,
-                DictKeysVariable,
-                MutableMappingVariable,
-                SetVariable,
-                UserDefinedObjectVariable,
-            ),
-        ):
-            return a.call_method(tx, "__ior__", [b], {})
-
-        # None no-ops this handler and lets the driving function proceed
-        return None
+        return binary_iop(tx, a, b, "nb_ior", "nb_or", "|=")
 
     def call_not_(
         self, tx: "InstructionTranslator", a: VariableTracker

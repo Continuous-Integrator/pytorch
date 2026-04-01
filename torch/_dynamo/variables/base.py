@@ -569,6 +569,10 @@ class VariableTracker(metaclass=VariableTrackerMeta):
             return self.nb_index_impl(tx)
         elif name == "__int__" and not args and not kwargs:
             return self.nb_int_impl(tx)
+        elif name == "__or__" and len(args) == 1 and not kwargs:
+            return self.nb_or_impl(tx, args[0])
+        elif name == "__ior__" and len(args) == 1 and not kwargs:
+            return self.nb_ior_impl(tx, args[0])
         elif name in cmp_name_to_op_mapping and len(args) == 1 and not kwargs:
             other = args[0]
             if not isinstance(self, type(other)) and not (
@@ -959,6 +963,22 @@ class VariableTracker(metaclass=VariableTrackerMeta):
                 f"int() argument must be a string, a bytes-like object or a real number, not '{self.python_type_name()}'"
             ],
         )
+
+    def nb_or_impl(
+        self,
+        tx: Any,
+        other: "VariableTracker",
+    ) -> "VariableTracker":
+        """tp_as_number->nb_or slot. Default: returns NotImplemented."""
+        return variables.ConstantVariable.create(NotImplemented)
+
+    def nb_ior_impl(
+        self,
+        tx: Any,
+        other: "VariableTracker",
+    ) -> "VariableTracker":
+        """tp_as_number->nb_inplace_or slot. Default: returns NotImplemented."""
+        return variables.ConstantVariable.create(NotImplemented)
 
     def __init__(
         self,
