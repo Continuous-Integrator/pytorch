@@ -393,8 +393,6 @@ jobs:
       - name: Archive artifacts into zip
         if: inputs.build-generates-artifacts && steps.build.outcome != 'skipped' && steps.use-old-whl.outputs.reuse != 'true'
         run: |
-          # DEBUG: TO BE REMOVED ONCE THIS IS ADDED TO CI IMAGE
-          sudo apt-get install -y zip
           zip -1 -r artifacts.zip dist/ build/custom_test_artifacts build/lib build/bin .additional_ci_files
 
       - name: Store PyTorch Build Artifacts on S3
@@ -570,6 +568,8 @@ jobs:
       - name: Archive artifacts into zip
         if: inputs.build-generates-artifacts && steps.build.outcome != 'skipped' && steps.use-old-whl.outputs.reuse != 'true'
         run: |
+          # DEBUG: TO BE REMOVED ONCE THIS IS ADDED TO CI IMAGE
+          sudo apt-get install -y zip
           zip -1 -r artifacts.zip dist/ build/custom_test_artifacts build/lib build/bin .additional_ci_files
 
       - name: Store build artifacts on S3
