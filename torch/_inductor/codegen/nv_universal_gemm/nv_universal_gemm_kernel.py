@@ -143,68 +143,22 @@ class NVUniversalGemmKernel(Kernel):
 
         extra_imports = ""
         if is_scaled:
-            extra_imports = """from cutlass_api.arguments import ScaledTensor
-            from cutlass_api.library import ScaleMode, ScaleSwizzleMode"""
+            extra_imports = (
+                "from cutlass_api.arguments import ScaledTensor\n"
+                "from cutlass_api.library import ScaleMode, ScaleSwizzleMode"
+            )
 
         # Variant-specific code generation:
         # - cache_key_code: expression for cache key
         # - create_args_code: code to create Arguments object
         if is_grouped:
             cache_key_code = "(in_ptr0.shape, in_ptr0.dtype, in_ptr1.shape, in_ptr1.dtype, in_ptr2.shape)"
-            create_args_code = f"""args = cutlass_api.arguments.GroupedGemmArguments(
-                        in_ptr0,
-                        in_ptr1,
-                        out_ptr0,
-                        accumulator_type={acc_dtype_str},
-                        offsets=in_ptr2,
-                    )"""
+            create_args_code = (
+                f"args = cutlass_api.arguments.GroupedGemmArguments("
+                f"in_ptr0, in_ptr1, out_ptr0, "
+                f"accumulator_type={acc_dtype_str}, offsets=in_ptr2)"
+            )
         elif is_scaled:
-            scale_mode_a, swizzle_mode_a = to_cutlass_scale_mode(
-                self.scale_type_a, self.swizzle_type_a
-            )
-            scale_mode_b, swizzle_mode_b = to_cutlass_scale_mode(
-                self.scale_type_b, self.swizzle_type_b
-            )
-            scale_mode_a_str = scale_mode_a.name if scale_mode_a else ""
-            scale_mode_b_str = scale_mode_b.name if scale_mode_b else ""
-            swizzle_mode_a_str = swizzle_mode_a.name if swizzle_mode_a else ""
-            swizzle_mode_b_str = swizzle_mode_b.name if swizzle_mode_b else ""
-            cache_key_code = "(in_ptr0.dtype, in_ptr1.shape, in_ptr1.dtype)"
-            create_args_code = f"""scaled_a = ScaledTensor(
-                    in_ptr0, in_ptr2, ScaleMode.{scale_mode_a_str}, ScaleSwizzleMode.{swizzle_mode_a_str}
-                )
-                scaled_b = ScaledTensor(
-                    in_ptr1, in_ptr3, ScaleMode.{scale_mode_b_str}, ScaleSwizzleMode.{swizzle_mode_b_str}
-                )
-                args = cutlass_api.arguments.GemmArguments(
-                    scaled_a,
-                    scaled_b,
-                    out_ptr0,
-                    accumulator_type={acc_dtype_str},
-                )"""
-        else:
-            cache_key_code = (
-                "(in_ptr0.shape, in_ptr0.dtype, in_ptr1.shape, in_ptr1.dtype)"
-            )
-            create_args_code = f"""args = cutlass_api.arguments.GemmArguments(
-                        in_ptr0,
-                        in_ptr1,
-                        out_ptr0,
-                        accumulator_type={acc_dtype_str},
-                    )"""
-
-        if is_scaled and self.workspace_size == 0:
-            # Fast path: cache compiled object, call cute_run directly to
-            # bypass ScaledTensor/GemmArguments creation on every call.
-            kernel_var = f"_{var_prefix}_kernel"
-            compiled_var = f"_{var_prefix}_compiled"
-            cute_run_args = ", ".join(
-                [f"in_ptr{i}" for i in range(len(self.input_nodes))]
-                + ["out_ptr0", "stream"]
-            )
-            # Inline the ScaledTensor/GemmArguments creation rather than using
-            # create_args_code, because f-string substitution doesn't preserve
-            # indentation for multi-line strings inside nested blocks.
             scale_mode_a, swizzle_mode_a = to_cutlass_scale_mode(
                 self.scale_type_a, self.swizzle_type_a
             )
@@ -215,152 +169,91 @@ class NVUniversalGemmKernel(Kernel):
             smb = scale_mode_b.name if scale_mode_b else ""
             swa = swizzle_mode_a.name if swizzle_mode_a else ""
             swb = swizzle_mode_b.name if swizzle_mode_b else ""
-            # Call the compiled TVM function directly, bypassing cute_run's
-            # isinstance checks. Stream must be converted each call (changes
-            # between warmup and CUDA graph capture).
-            fn_var = f"_{var_prefix}_fn"
-            fn_call_args = ", ".join(
-                [f"in_ptr{i}" for i in range(len(self.input_nodes))]
-                + ["out_ptr0", "stream"]
+            cache_key_code = "(in_ptr0.dtype, in_ptr1.shape, in_ptr1.dtype)"
+            # Single-line to avoid indentation issues in generated code
+            create_args_code = (
+                f"scaled_a = ScaledTensor(in_ptr0, in_ptr2, ScaleMode.{sma}, ScaleSwizzleMode.{swa}); "
+                f"scaled_b = ScaledTensor(in_ptr1, in_ptr3, ScaleMode.{smb}, ScaleSwizzleMode.{swb}); "
+                f"args = cutlass_api.arguments.GemmArguments(scaled_a, scaled_b, out_ptr0, accumulator_type={acc_dtype_str})"
             )
+        else:
+            cache_key_code = (
+                "(in_ptr0.shape, in_ptr0.dtype, in_ptr1.shape, in_ptr1.dtype)"
+            )
+            create_args_code = (
+                f"args = cutlass_api.arguments.GemmArguments("
+                f"in_ptr0, in_ptr1, out_ptr0, accumulator_type={acc_dtype_str})"
+            )
+
+        if self.workspace_size == 0:
+            # Fast path: cache args + artifact on first call, reuse on
+            # subsequent calls. This avoids rebuilding GemmArguments /
+            # ScaledTensor / GroupedGemmArguments (~20-140us) every call.
+            # kernel.run() handles all calling conventions uniformly.
+            kernel_var = f"_{var_prefix}_kernel"
+            args_var = f"_{var_prefix}_args"
+            artifact_var = f"_{var_prefix}_artifact"
+
             code = IndentedBuffer()
             code.splice(
-                f"""
-                import cutlass
-                import cutlass_api
-                import torch
-                from torch._inductor.codegen.nv_universal_gemm.kernel_cache import get_kernel_by_name
-                from cutlass_api.arguments import ScaledTensor
-                from cutlass_api.library import ScaleMode, ScaleSwizzleMode
+                f"""\
+import cutlass
+import cutlass_api
+import torch
+from torch._inductor.codegen.nv_universal_gemm.kernel_cache import get_kernel_by_name
+{extra_imports}
 
-                {kernel_name_var} = "{kernel_name_str}"
-                {fn_var} = None
-                _{var_prefix}_needs_problem_mnkl = False
+{kernel_name_var} = "{kernel_name_str}"
+{kernel_var} = None
+{args_var} = None
+{artifact_var} = None
 
-                def {self.kernel_name}_main({params_str}):
-                    global {fn_var}, _{var_prefix}_needs_problem_mnkl
+def {self.kernel_name}_main({params_str}):
+    global {kernel_var}, {args_var}, {artifact_var}
 
-                    if {fn_var} is None:
-                        kernel = get_kernel_by_name({kernel_name_var})
-                        if kernel is None:
-                            raise RuntimeError(f"Could not find kernel: {{{kernel_name_var}}}")
-                        scaled_a = ScaledTensor(in_ptr0, in_ptr2, ScaleMode.{sma}, ScaleSwizzleMode.{swa})
-                        scaled_b = ScaledTensor(in_ptr1, in_ptr3, ScaleMode.{smb}, ScaleSwizzleMode.{swb})
-                        args = cutlass_api.arguments.GemmArguments(scaled_a, scaled_b, out_ptr0, accumulator_type={acc_dtype_str})
-                        artifact = kernel.compile(args)
-                        {fn_var} = artifact.compiled_obj
-                        _{var_prefix}_needs_problem_mnkl = "inductor_vendored" not in {kernel_name_var}
+    if {kernel_var} is None:
+        {kernel_var} = get_kernel_by_name({kernel_name_var})
+        if {kernel_var} is None:
+            raise RuntimeError(f"Could not find kernel: {{{kernel_name_var}}}")
 
-                    if _{var_prefix}_needs_problem_mnkl:
-                        M = in_ptr0.shape[0]
-                        K = in_ptr0.shape[1]
-                        N = out_ptr0.shape[-1]
-                        {fn_var}(in_ptr0.data_ptr(), in_ptr1.data_ptr(), in_ptr2.data_ptr(), in_ptr3.data_ptr(), out_ptr0.data_ptr(), (M, N, K, 1), stream)
-                    else:
-                        {fn_var}({fn_call_args})
-                """
-            )
-        elif is_grouped and self.workspace_size == 0:
-            # Fast path for grouped GEMM: cache compiled object, call directly.
-            # This avoids reconstructing GroupedGemmArguments (~140us) on every call.
-            # The compiled function signature is (a, b, out, offsets, stream),
-            # but input_nodes are [a, b, offsets], so we must reorder.
-            fn_var = f"_{var_prefix}_fn"
-            fn_call_args = "in_ptr0, in_ptr1, out_ptr0, in_ptr2, stream"
-            code = IndentedBuffer()
-            code.splice(
-                f"""
-                import cutlass
-                import cutlass_api
-                import torch
-                from torch._inductor.codegen.nv_universal_gemm.kernel_cache import get_kernel_by_name
+        {create_args_code}
 
-                {kernel_name_var} = "{kernel_name_str}"
-                {fn_var} = None
+        {artifact_var} = {kernel_var}.compile(args)
+        {args_var} = args
 
-                def {self.kernel_name}_main({params_str}):
-                    global {fn_var}
-
-                    if {fn_var} is None:
-                        kernel = get_kernel_by_name({kernel_name_var})
-                        if kernel is None:
-                            raise RuntimeError(f"Could not find kernel: {{{kernel_name_var}}}")
-                        args = cutlass_api.arguments.GroupedGemmArguments(
-                            in_ptr0, in_ptr1, out_ptr0,
-                            accumulator_type={acc_dtype_str},
-                            offsets=in_ptr2,
-                        )
-                        artifact = kernel.compile(args)
-                        {fn_var} = artifact.compiled_obj
-
-                    {fn_var}({fn_call_args})
-                """
-            )
-        elif not is_grouped and not is_scaled and self.workspace_size == 0:
-            # Fast path for dense GEMM: cache compiled object, call directly.
-            fn_var = f"_{var_prefix}_fn"
-            fn_call_args = ", ".join(
-                [f"in_ptr{i}" for i in range(len(self.input_nodes))]
-                + ["out_ptr0", "stream"]
-            )
-            code = IndentedBuffer()
-            code.splice(
-                f"""
-                import cutlass
-                import cutlass_api
-                import torch
-                from torch._inductor.codegen.nv_universal_gemm.kernel_cache import get_kernel_by_name
-
-                {kernel_name_var} = "{kernel_name_str}"
-                {fn_var} = None
-
-                def {self.kernel_name}_main({params_str}):
-                    global {fn_var}
-
-                    if {fn_var} is None:
-                        kernel = get_kernel_by_name({kernel_name_var})
-                        if kernel is None:
-                            raise RuntimeError(f"Could not find kernel: {{{kernel_name_var}}}")
-                        args = cutlass_api.arguments.GemmArguments(
-                            in_ptr0, in_ptr1, out_ptr0,
-                            accumulator_type={acc_dtype_str},
-                        )
-                        artifact = kernel.compile(args)
-                        {fn_var} = artifact.compiled_obj
-
-                    {fn_var}({fn_call_args})
-                """
+    {kernel_var}.run({args_var}, {artifact_var}, stream=stream, assume_supported_args=True)
+"""
             )
         else:
             code = IndentedBuffer()
             code.splice(
-                f"""
-                import cutlass
-                import cutlass_api
-                from torch._inductor.codegen.nv_universal_gemm.kernel_cache import get_kernel_by_name
-                {extra_imports}
+                f"""\
+import cutlass
+import cutlass_api
+from torch._inductor.codegen.nv_universal_gemm.kernel_cache import get_kernel_by_name
+{extra_imports}
 
-                {kernel_name_var} = "{kernel_name_str}"
-                {cache_var} = {{}}
+{kernel_name_var} = "{kernel_name_str}"
+{cache_var} = {{}}
 
-                def {self.kernel_name}_main({params_str}):
-                    global {cache_var}
+def {self.kernel_name}_main({params_str}):
+    global {cache_var}
 
-                    kernel = get_kernel_by_name({kernel_name_var})
-                    if kernel is None:
-                        raise RuntimeError(f"Could not find kernel: {{{kernel_name_var}}}")
+    kernel = get_kernel_by_name({kernel_name_var})
+    if kernel is None:
+        raise RuntimeError(f"Could not find kernel: {{{kernel_name_var}}}")
 
-                    {create_args_code}
+    {create_args_code}
 
-                    cache_key = {cache_key_code}
-                    artifact = {cache_var}.get(cache_key)
-                    if artifact is None:
-                        artifact = kernel.compile(args)
-                        {cache_var}[cache_key] = artifact
+    cache_key = {cache_key_code}
+    artifact = {cache_var}.get(cache_key)
+    if artifact is None:
+        artifact = kernel.compile(args)
+        {cache_var}[cache_key] = artifact
 
-                    kernel.run(args, artifact, stream=stream, workspace={workspace_arg}, assume_supported_args=True)
-                    {post_run_code}
-                """
+    kernel.run(args, artifact, stream=stream, workspace={workspace_arg}, assume_supported_args=True)
+    {post_run_code}
+"""
             )
 
         return code.getvalue()
