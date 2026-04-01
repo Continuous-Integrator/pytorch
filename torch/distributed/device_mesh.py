@@ -4,7 +4,7 @@ import logging
 import os
 import threading
 import warnings
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from itertools import zip_longest
 from typing import Any, TYPE_CHECKING
 
@@ -1599,6 +1599,47 @@ else:
 _distributed_opaque_types_registered = False
 
 
+def _device_mesh_reconstruct_fn(
+    mesh: "OpaqueBase",
+    get_tracked_proxy: Callable[["OpaqueBase"], "torch.fx.Proxy | None"],
+    tracer: Any,
+) -> "torch.fx.Proxy | None":
+    """Reconstruct a DeviceMesh submesh from its root mesh.
+
+    Called by PythonKeyTracer when make_fx encounters a DeviceMesh that isn't
+    tracked (e.g. a submesh captured by a backward closure). If the root mesh
+    is already a graph input, emits a call_function node that derives the
+    submesh via the _get_submesh custom op.
+    """
+    if not isinstance(mesh, DeviceMesh):
+        raise AssertionError("DeviceMesh expected")
+    root_mesh = mesh._get_root_mesh()
+
+    # Only submeshes can be reconstructed; root meshes must already be tracked.
+    if mesh is root_mesh:
+        return None
+
+    # The root mesh must already be a graph input for us to derive from it.
+    root_proxy = get_tracked_proxy(root_mesh)
+    if root_proxy is None:
+        return None
+
+    dim_names = mesh._mesh_dim_names
+    root_dim_names = root_mesh._mesh_dim_names
+    if dim_names is None or root_dim_names is None:
+        return None
+
+    # Convert dim names to indices into the root mesh's dim names
+    mesh_dims = [root_dim_names.index(n) for n in dim_names]
+
+    # Ensure the custom op is registered
+    from torch.distributed._ops import device_mesh as _dm_ops  # noqa: F401
+
+    # Dispatch through the custom op with proxy mode active so that
+    # meta["val"] is set and the result is tracked in opaque_tracker.
+    return torch.ops.device_mesh._get_submesh(root_proxy, mesh_dims)
+
+
 def _register_distributed_opaque_types():
     """
     Register DeviceMesh as an opaque type for torch.compile.
@@ -1629,6 +1670,7 @@ def _register_distributed_opaque_types():
     register_opaque_type(
         DeviceMesh,
         typ="reference",
+        reconstruct_fn=_device_mesh_reconstruct_fn,
         guard_fn=lambda obj: [
             obj._flatten_rank_map,
             obj._layout,
