@@ -360,28 +360,30 @@ class FSDPParamGroup:
             )
             param_all_gather_input_dtypes: list[list[torch.dtype]] = []
             param_all_gather_input_numels: list[list[int]] = []
-            with record_function(self._with_fqn("FSDP::all_gather")):
-                with self.device_handle.stream(copy_in_stream):
-                    for fsdp_param in self.fsdp_params:
-                        all_gather_inputs = fsdp_param.all_gather_inputs
-                        all_gather_input = all_gather_inputs[0]
-                        param_all_gather_input_dtypes.append(
-                            [inp.dtype for inp in all_gather_inputs]
-                        )
-                        param_all_gather_input_numels.append(
-                            [inp.numel() for inp in all_gather_inputs]
-                        )
-                        fsdp_param.init_all_gather_outputs(
-                            [all_gather_input.numel()],
-                            [all_gather_input.dtype],
-                            world_size,
-                            self.device,
-                            force_recreate=False,
-                        )
-                        tensor = fsdp_param.all_gather_outputs[0]
-                        alloc_storage(tensor)
-                        with torch.autograd._unsafe_preserve_version_counter(tensor):
-                            tensor.copy_(all_gather_input, non_blocking=True)
+            with (
+                record_function(self._with_fqn("FSDP::all_gather")),
+                self.device_handle.stream(copy_in_stream),
+            ):
+                for fsdp_param in self.fsdp_params:
+                    all_gather_inputs = fsdp_param.all_gather_inputs
+                    all_gather_input = all_gather_inputs[0]
+                    param_all_gather_input_dtypes.append(
+                        [inp.dtype for inp in all_gather_inputs]
+                    )
+                    param_all_gather_input_numels.append(
+                        [inp.numel() for inp in all_gather_inputs]
+                    )
+                    fsdp_param.init_all_gather_outputs(
+                        [all_gather_input.numel()],
+                        [all_gather_input.dtype],
+                        world_size,
+                        self.device,
+                        force_recreate=False,
+                    )
+                    tensor = fsdp_param.all_gather_outputs[0]
+                    alloc_storage(tensor)
+                    with torch.autograd._unsafe_preserve_version_counter(tensor):
+                        tensor.copy_(all_gather_input, non_blocking=True)
             self._all_gather_result = AllGatherResult(
                 all_gather_output=self._all_gather_output,
                 all_gather_event=copy_in_stream.record_event(),
