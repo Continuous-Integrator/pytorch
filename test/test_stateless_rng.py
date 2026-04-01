@@ -123,6 +123,19 @@ class TestStatelessRNGKeySplit(TestCase):
         with self.assertRaises(RuntimeError):
             random.split(key, -1)
 
+    def test_offsets_are_4_aligned(self, device):
+        key = random.key(42, device=device)
+        splits = random.split(key, 1000)
+        offsets = splits[:, 1].to(torch.int64)
+        self.assertTrue((offsets % 4 == 0).all())
+
+    def test_batched_offsets_are_4_aligned(self, device):
+        key = random.key(42, device=device)
+        keys = random.split(key, 8)
+        splits = random.split(keys, 100)
+        offsets = splits[..., 1].to(torch.int64)
+        self.assertTrue((offsets % 4 == 0).all())
+
     def test_error_batched_last_dim_not_2(self, device):
         key = torch.tensor([[42, 0, 1], [43, 0, 1]], dtype=torch.uint64, device=device)
         with self.assertRaises(RuntimeError):
@@ -205,6 +218,18 @@ class TestStatelessRNGKeyFoldIn(TestCase):
         with self.assertRaises(RuntimeError):
             random.fold_in(key, 0)
 
+    def test_offsets_are_4_aligned(self, device):
+        key = random.key(42, device=device)
+        for data in range(20):
+            folded = random.fold_in(key, data)
+            self.assertEqual(folded[1].item() % 4, 0)
+
+    def test_batched_offsets_are_4_aligned(self, device):
+        key = random.key(42, device=device)
+        keys = random.split(key, 100)
+        folded = random.fold_in(keys, 7)
+        offsets = folded[:, 1].to(torch.int64)
+        self.assertTrue((offsets % 4 == 0).all())
     def test_error_batched_last_dim_not_2(self, device):
         key = torch.tensor([[42, 0, 1], [43, 0, 1]], dtype=torch.uint64, device=device)
         with self.assertRaises(RuntimeError):
