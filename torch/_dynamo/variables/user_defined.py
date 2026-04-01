@@ -296,13 +296,6 @@ class UserDefinedClassVariable(UserDefinedVariable):
     def can_constant_fold_through(self) -> bool:
         return self.value in self._constant_fold_classes()
 
-    def has_key_in_generic_dict(self, tx: "InstructionTranslator", key: str) -> bool:
-        if tx.output.side_effects.has_pending_mutation_of_attr(self, key):
-            mutated_attr = tx.output.side_effects.load_attr(self, key, deleted_ok=True)
-            return not isinstance(mutated_attr, variables.DeletedVariable)
-
-        return key in self.value.__dict__
-
     def lookup_cls_mro_attr(self, name: str) -> object:
         """Walk cls.__mro__ only (not the metaclass chain) to find *name*."""
         for base in self.value.__mro__:
@@ -409,14 +402,24 @@ class UserDefinedClassVariable(UserDefinedVariable):
     ) -> VariableTracker:
         """Handle data descriptors from the metaclass MRO (type.__dict__ slots)."""
         if name == "__dict__":
-            return variables.GetAttrVariable(self, name, None, source=source)
+            return VariableTracker.build(
+                tx,
+                self.value.__dict__,
+                source=self.source and AttrSource(self.source, "__dict__"),
+            )
         if name == "__mro__":
             attr_source = self.source and TypeMROSource(self.source)
             return VariableTracker.build(tx, self.value.__mro__, attr_source)
         # __name__, __qualname__, __doc__, __module__, __bases__,
         # __abstractmethods__, etc. — all C-level getset descriptors on type.
         resolved = type.__getattribute__(self.value, name)
-        return VariableTracker.build(tx, resolved, source)
+        if source:
+            return VariableTracker.build(tx, resolved, source)
+        from . import ConstantVariable
+
+        if ConstantVariable.is_literal(resolved):
+            return VariableTracker.build(tx, resolved)
+        return variables.GetAttrVariable(self, name, None, source=source)
 
     def resolve_cls_descriptor(
         self,
