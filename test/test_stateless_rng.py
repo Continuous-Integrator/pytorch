@@ -341,7 +341,7 @@ class TestStatelessRNGDistribution(TestCase):
             self._gen(gen_fn_name, key, (100,))
 
     @parametrize("gen_fn_name", ["normal", "uniform"])
-    @dtypes(torch.float32, torch.float64)
+    @dtypes(*all_floating_dtypes)
     def test_offset_shift_consistency(self, device, dtype, gen_fn_name):
         seed = 42
         n = 100
@@ -355,7 +355,7 @@ class TestStatelessRNGDistribution(TestCase):
             self.assertEqual(result, ref[elem_offset:])
 
     @parametrize("gen_fn_name", ["normal", "uniform"])
-    @dtypes(torch.float32, torch.float64)
+    @dtypes(*all_floating_dtypes)
     def test_offset_overflow(self, device, dtype, gen_fn_name):
         seed = 42
         outputs_per_elem = 2 if dtype == torch.float64 else 1
@@ -431,8 +431,8 @@ class TestStatelessRNGDistribution(TestCase):
         key = random.key(42, device=device)
         result = random.uniform(key, (100000,), dtype=dtype)
         self.assertTrue(abs(result.mean().item() - 0.5) < 0.05)
-        self.assertTrue(result.min().item() > 0.0)
-        self.assertTrue(result.max().item() <= 1.0)
+        self.assertTrue(result.min().item() >= 0.0)
+        self.assertTrue(result.max().item() < 1.0)
 
     @dtypes(*all_floating_dtypes)
     def test_custom_low_high(self, device, dtype):
