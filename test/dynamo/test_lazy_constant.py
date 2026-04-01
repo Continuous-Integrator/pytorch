@@ -1155,6 +1155,22 @@ class LazyConstantVariableTests(TestCase):
         x = torch.randn(4)
         self.assertEqual(opt_mod(x), x + 64)
 
+    def test_list_mul_with_lazy_constants_guards_length(self):
+        """list * int must guard on the list length even when items are lazy."""
+
+        def fn(x):
+            i = x.tolist()
+            return i * 2, x + 1
+
+        opt_fn = torch.compile(fn, backend="eager", dynamic=True)
+
+        x = torch.tensor([10, 20, 30])
+        self.assertEqual(opt_fn(x), fn(x))
+
+        # Shorter list must trigger recompilation, not IndexError.
+        x2 = torch.tensor([5, 6])
+        self.assertEqual(opt_fn(x2), fn(x2))
+        
     def test_dict_mutation_no_recompile_on_unused_key_change(self):
         """Test that mutating a dict doesn't guard on unused keys.
 

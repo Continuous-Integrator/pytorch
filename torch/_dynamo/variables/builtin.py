@@ -756,6 +756,7 @@ class BuiltinVariable(VariableTracker):
                 lst, const = const, lst
             try:
                 assert isinstance(lst, BaseListVariable)
+                lst._install_list_length_guard()
                 return lst.__class__(
                     items=lst.items * const.as_python_constant(),
                     mutation_type=ValueMutationNew(),
