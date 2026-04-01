@@ -5,7 +5,6 @@ import torch
 import torch._dynamo
 import torch._dynamo.logging
 import torch._dynamo.test_case
-import torch._inductor.config
 import torch.distributed as dist
 import torch.fx as fx
 
@@ -1230,6 +1229,7 @@ class TestCrossPGOverlap(InductorTestCase):
 
 @requires_accelerator_dist_backend(["nccl", "xccl"])
 @unittest.skipIf(not HAS_GPU, "Inductor+gpu needs triton and recent GPU arch")
+@instantiate_parametrized_tests
 class TestFusibleNodeOverlap(InductorTestCase):
     """Test that fusible nodes are used for overlapping with collectives."""
 
@@ -1346,6 +1346,56 @@ class TestFusibleNodeOverlap(InductorTestCase):
         FileCheck().check("all_gather_into_tensor").check("add").check("mul").check(
             "sub"
         ).check("wait_tensor").run(graph_str)
+
+    @parametrize("enable_fusion_regions", [False, True])
+    def test_precomputed_estimations_via_custom_runtime(self, enable_fusion_regions):
+        """Pre-computed estimations from gather_node_runtime_estimations can be
+        fed into OverlapScheduler via custom_runtime_estimation wrapping a dict."""
+
+        def func(a):
+            group_name = "0"
+            group_size = 1
+            ag = torch.ops._c10d_functional.all_gather_into_tensor(
+                a, group_size, group_name
+            )
+            b = a + 1
+            b = b * 2
+            ag_out = torch.ops._c10d_functional.wait_tensor(ag)
+            return ag_out.sum() + b.sum()
+
+        with FakeTensorMode():
+            a = torch.ones(1024, 1024, device=self.device)
+            traced = make_fx(func)(a)
+
+        from torch._inductor.fx_passes.overlap_scheduling import (
+            gather_node_runtime_estimations,
+            OverlapScheduler,
+        )
+
+        estimations, fusion_region_of = gather_node_runtime_estimations(
+            traced,
+            collective_estimator="analytical",
+            enable_fusion_regions=enable_fusion_regions,
+        )
+        for node in fusion_region_of:
+            self.assertIn(node, estimations)
+
+        scheduler = OverlapScheduler(
+            traced,
+            max_in_flight_gb=5.0,
+            max_compute_pre_fetch=200,
+            collective_bucketing=False,
+            insert_overlap_deps=False,
+            compute_overlap_multipler=1.0,
+            max_coll_distance=200,
+            custom_runtime_estimation=lambda node, _: estimations.get(node),
+            collective_estimator="analytical",
+        )
+        out = scheduler.run()
+        FileCheck().check("all_gather_into_tensor").check("wait_tensor").run(
+            str(out.graph)
+        )
+        self.assertEqual(len(scheduler.collective_info), 1)
 
 
 @requires_accelerator_dist_backend(["nccl", "xccl"])
@@ -1570,71 +1620,6 @@ class TestForeachGroupsUnit(InductorTestCase):
             ag_ins, 2, "default", torch.float32, out_dtype_ints, 0, None
         )
         self.assertTrue(torch.allclose(result_with, result_without))
-
-
-class TestForeachImprov(InductorTestCase):
-    """Unit tests for _foreach_improv config (cat+copy_ vs _foreach_copy_)."""
-
-    @classmethod
-    def setUpClass(cls):
-        super().setUpClass()
-        from torch.testing._internal.distributed.fake_pg import FakeStore
-
-        store = FakeStore()
-        dist.init_process_group(backend="fake", rank=0, world_size=2, store=store)
-        cls.device = "cuda"
-
-    @classmethod
-    def tearDownClass(cls):
-        super().tearDownClass()
-        dist.destroy_process_group()
-
-    @unittest.skipIf(not HAS_GPU, "Requires GPU")
-    def test_foreach_improv_uses_cat_copy(self):
-        """Test that _foreach_improv replaces _foreach_copy_ with cat+copy_."""
-        from torch._inductor.fx_passes.bucketing import all_gather_merge_fn_to_trace
-
-        with FakeTensorMode():
-            ag_ins = [
-                torch.randn(4, 4, device=self.device),
-                torch.randn(8, 4, device=self.device),
-            ]
-            with torch._inductor.config.patch(_foreach_improv=True):
-                traced = make_fx(all_gather_merge_fn_to_trace)(
-                    ag_ins,
-                    2,
-                    "0",
-                    torch.float32,
-                    [torch.float32, torch.float32],
-                    0,
-                )
-            graph_str = str(traced.graph)
-            # Should use cat + copy_, not _foreach_copy_
-            self.assertIn("cat", graph_str)
-            self.assertIn("copy_", graph_str)
-            self.assertNotIn("_foreach_copy_", graph_str)
-
-    @unittest.skipIf(not HAS_GPU, "Requires GPU")
-    def test_default_uses_foreach_copy(self):
-        """Test that default mode still uses _foreach_copy_."""
-        from torch._inductor.fx_passes.bucketing import all_gather_merge_fn_to_trace
-
-        with FakeTensorMode():
-            ag_ins = [
-                torch.randn(4, 4, device=self.device),
-                torch.randn(8, 4, device=self.device),
-            ]
-            with torch._inductor.config.patch(_foreach_improv=False):
-                traced = make_fx(all_gather_merge_fn_to_trace)(
-                    ag_ins,
-                    2,
-                    "0",
-                    torch.float32,
-                    [torch.float32, torch.float32],
-                    0,
-                )
-            graph_str = str(traced.graph)
-            self.assertIn("_foreach_copy_", graph_str)
 
 
 if __name__ == "__main__":

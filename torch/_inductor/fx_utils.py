@@ -1,10 +1,9 @@
 # mypy: allow-untyped-defs
 import contextlib
-import logging
 import operator
 from collections import defaultdict
 from collections.abc import Callable
-from typing import Any, Optional
+from typing import Any
 
 import sympy
 
@@ -24,9 +23,6 @@ from torch.utils._pytree import tree_map
 from torch.utils.flop_counter import flop_registry
 
 from .virtualized import V
-
-
-log = logging.getLogger(__name__)
 
 
 # Check the pattern: (nn.module, F.function/torch.Tensor.method) matched.
@@ -95,7 +91,7 @@ class FakeTensorUpdater:
 
     def incremental_update(self):
         """Update FakeTensors on self.graph. We will try to do the minimum amount of work."""
-        existing_storages: defaultdict[Optional[int], int] = defaultdict(int)
+        existing_storages: defaultdict[int | None, int] = defaultdict(int)
         for node in self.graph.nodes:
             existing_storages[get_node_storage(node)] += 1
 
@@ -257,7 +253,7 @@ def get_storage(t: torch.Tensor) -> int:
     return t.untyped_storage()._cdata
 
 
-def get_node_storage(node: torch.fx.Node) -> Optional[int]:
+def get_node_storage(node: torch.fx.Node) -> int | None:
     if "val" not in node.meta:
         return None
     if not isinstance(node.meta["val"], torch.Tensor):
@@ -319,23 +315,20 @@ def is_node_realized(node: torch.fx.Node) -> bool:
     return False
 
 
-def count_flops_fx(node: torch.fx.Node) -> Optional[int]:
+def count_flops_fx(node: torch.fx.Node) -> int | None:
     if not countable_fx(node) or isinstance(node.target, str):
         return None
-    try:
-        with FakeTensorMode(allow_non_fake_inputs=True):
-            success, args, kwargs = get_fake_args_kwargs(node)
+    with FakeTensorMode(allow_non_fake_inputs=True):
+        success, args, kwargs = get_fake_args_kwargs(node)
 
-            if success:
-                with torch.utils.flop_counter.FlopCounterMode(
-                    display=False
-                ) as flop_counter_mode:
-                    node.target(*args, **kwargs)
+        if success:
+            with torch.utils.flop_counter.FlopCounterMode(
+                display=False
+            ) as flop_counter_mode:
+                node.target(*args, **kwargs)
 
-                counted_flops = flop_counter_mode.get_total_flops()
-                return counted_flops
-    except Exception:
-        log.debug("Failed to count flops for node %s", node)
+            counted_flops = flop_counter_mode.get_total_flops()
+            return counted_flops
     return None
 
 

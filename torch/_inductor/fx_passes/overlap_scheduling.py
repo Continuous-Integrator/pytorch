@@ -18,12 +18,8 @@ from torch._inductor.fx_passes.bucketing import (
     bucket_key,
     BucketMode,
     get_full_bucket_key,
-    is_all_gather_into_tensor,
-    is_fsdp_reduce_scatter,
-    is_reduce_scatter_tensor,
     is_wait_tensor,
 )
-from torch._inductor.fx_passes.fsdp import is_fsdp_all_gather
 from torch._inductor.fx_passes.memory_estimator import MemoryTracker
 from torch._logging import trace_structured
 from torch.fx.operator_schemas import normalize_function
@@ -140,6 +136,7 @@ def estimate_collective_time(
     override_size: int | None = None,
     custom_runtime_estimation: Callable[[fx.Node, int | None], float | None]
     | None = None,
+    collective_estimator: Literal["analytical", "benchmark"] = "analytical",
 ) -> float:
     """Estimate the runtime of a collective operation, optionally with an overridden size."""
     if (
@@ -147,16 +144,18 @@ def estimate_collective_time(
     ) is not None:
         return est
 
-    # Use analytical model (benchmarking is handled separately in alignment)
+    if collective_estimator == "benchmark":
+        from torch._inductor.fx_passes.node_runtime_estimation import (
+            benchmark_collective_with_cuda_events,
+        )
+
+        cuda_val, _ = benchmark_collective_with_cuda_events(n, nruns=5)
+        if cuda_val is not None:
+            return cuda_val
+
+    # Analytical model (also fallback when benchmark returns None)
     return torch._inductor.comm_analysis.estimate_nccl_collective_runtime_from_fx_node(
         n, override_size
-    )
-
-
-def estimate_nccl_collective_runtime(n: fx.Node) -> float:
-    """Estimate collective runtime in nanoseconds (convenience wrapper)."""
-    return torch._inductor.comm_analysis.estimate_nccl_collective_runtime_from_fx_node(
-        n
     )
 
 
@@ -207,13 +206,7 @@ def estimate_roofline_runtime_ms(node: fx.Node) -> float:
     compute_ns: float = 0.0
     func_packet = getattr(node.target, "overloadpacket", None)
     if func_packet in flop_registry and len(out_dtypes) == 1:
-        try:
-            compute_ns = get_compute_time(
-                func_packet, args, kwargs, out, out_dtypes.copy()
-            )
-        except Exception:
-            log.debug("Failed to estimate compute time for %s", node)
-            compute_ns = 0.0
+        compute_ns = get_compute_time(func_packet, args, kwargs, out, out_dtypes.copy())
         # Extract hint from symbolic value if needed
         if isinstance(compute_ns, (torch.SymInt, torch.SymFloat)):
             compute_ns = compute_ns.node.hint if compute_ns.node.has_hint() else 0.0
@@ -323,24 +316,6 @@ def set_cached_node_time(key: str, value: float) -> None:
 
 
 @dataclass
-class _StreamPoolCtx:
-    """Mutable state shared across stream pool strategy functions."""
-
-    pool_size: int
-    pool_counter: list[int]
-    in_flight_mem: dict[str, int]
-    in_flight_time: dict[str, float]
-    start_info: dict[fx.Node, tuple[str, int]]
-    has_budget: bool
-    budget_bytes: int
-    # ag_rs strategy: separate counters for AG and RS
-    ag_counter: list[int] = field(default_factory=lambda: [0])
-    rs_counter: list[int] = field(default_factory=lambda: [0])
-    # Greedy: maps start node -> (stream_name, runtime_ns)
-    start_info_time: dict[fx.Node, tuple[str, float]] = field(default_factory=dict)
-
-
-@dataclass
 class CollectiveInfo:
     """Track info about a collective operation"""
 
@@ -404,8 +379,9 @@ class OverlapScheduler:
         insert_overlap_deps: bool,
         compute_overlap_multipler: float,
         max_coll_distance: int,
-        custom_runtime_estimation: Callable[[fx.Node, int | None], float | None] | None,
-        collective_estimator: Literal["analytical", "benchmark"],
+        custom_runtime_estimation: Callable[[fx.Node, int | None], float | None]
+        | None = None,
+        collective_estimator: Literal["analytical", "benchmark"] = "analytical",
         compute_estimator: Literal["analytical", "benchmark"] = "benchmark",
         max_memory_increase_gb: float | None = 1.0,
         max_memory_increase_ratio: float | None = 0.05,
@@ -456,20 +432,18 @@ class OverlapScheduler:
                 num_device_put_converted,
             )
 
-        # Build and collapse fusion regions FIRST so all subsequent operations
-        # work on the collapsed graph where fused ops are atomic units
-        self.region_of: dict[fx.Node, Any] = {}
-        if enable_fusion_regions:
-            from torch._inductor.fx_passes.fusion_regions import (
-                build_fusion_regions,
-                collapse_fusion_regions,
-            )
-
-            self.region_of = build_fusion_regions(self.gm)
-            if self.region_of:
-                self.region_of = collapse_fusion_regions(self.gm, self.region_of)
-                # fuse_by_partitions replaces gm.graph, so we need to update our reference
-                self.graph = gm.graph
+        # Build fusion regions (mutates gm.graph) and compute initial node runtime
+        # estimates. Compute nodes use roofline model here; the alignment step in
+        # run() replaces them with benchmarked + cross-rank-aligned values.
+        self.node_estimations, self.region_of = gather_node_runtime_estimations(
+            gm,
+            custom_runtime_estimation,
+            enable_fusion_regions=enable_fusion_regions,
+            log_estimations=True,
+        )
+        if self.region_of:
+            # fuse_by_partitions replaces gm.graph, so we need to update our reference
+            self.graph = gm.graph
 
         # Build structures
         stable_topological_sort(self.graph)
@@ -679,9 +653,11 @@ class OverlapScheduler:
         for node in self.nodes:
             if _schedulable_wait_node(node):
                 start = node.args[0]
-                coll_time_ms = estimate_collective_time(
-                    start, custom_runtime_estimation=self.custom_runtime_estimation
+                assert start in self.node_estimations, (
+                    f"Missing estimation for collective {start.name}. "
+                    f"Ensure custom_runtime_estimation returns a value for this node."
                 )
+                coll_time_ms = self.node_estimations[start]
 
                 info = CollectiveInfo(
                     start_node=start,
@@ -834,6 +810,9 @@ class OverlapScheduler:
                 continue
             if idx < compute_key_count:
                 # Compute node
+                self.node_estimations[self.compute_nodes[idx]] = (
+                    median_runtime_estimation
+                )
                 set_cached_node_time(key, median_runtime_estimation)
             else:
                 # Collective CUDA event benchmark
@@ -849,6 +828,7 @@ class OverlapScheduler:
                 info = self.collective_info[coll_node]
                 info.estimated_time_ms = median_runtime_estimation
                 info.exposed_time_ms = median_runtime_estimation
+                self.node_estimations[coll_node] = median_runtime_estimation
 
                 collective_keys.append(key)
                 collective_medians.append(median_runtime_estimation)
@@ -1023,8 +1003,6 @@ class OverlapScheduler:
             bucket_only_internode_comms=self.bucket_only_internode_comms,
         )
 
-        self._assign_stream_pool()
-
         if self.log_final_collectives_estimations:
             from torch._inductor.fx_passes.node_runtime_estimation import (
                 _log_graph_collective_benchmarks,
@@ -1035,180 +1013,6 @@ class OverlapScheduler:
             )
 
         return self.gm
-
-    def _assign_stream_pool(self) -> None:
-        """Assign comm streams to FSDP collectives using the configured strategy.
-
-        Only FSDP collectives (AG/RS connected to graph inputs/outputs via
-        unary op chains) get pool streams; TP collectives stay on the default
-        stream.
-        """
-        pool_size = config.aten_distributed_optimizations.comm_stream_pool_size
-        if pool_size <= 0:
-            return
-
-        strategy = config.aten_distributed_optimizations.comm_stream_pool_strategy
-        budget_gb = (
-            config.aten_distributed_optimizations.comm_stream_pool_exceed_budget_gb
-        )
-        has_budget = budget_gb is not None
-        budget_bytes = int(budget_gb * 1024**3) if has_budget else 0
-
-        def _is_fsdp_collective(node: fx.Node) -> bool:
-            if is_all_gather_into_tensor(node):
-                return is_fsdp_all_gather(node)
-            if is_reduce_scatter_tensor(node):
-                return is_fsdp_reduce_scatter(node)
-            return False
-
-        # Build the pick function for each strategy.
-        if strategy == "ag_rs":
-            stream_name_fn = self._strategy_ag_rs
-        elif strategy == "greedy":
-            stream_name_fn = self._strategy_greedy
-        else:
-            stream_name_fn = self._strategy_round_robin
-
-        # State shared across all strategies.
-        pool_counter = [0]
-        # Per-stream in-flight memory: stream_name -> bytes
-        in_flight_mem: dict[str, int] = defaultdict(int)
-        # Per-stream estimated remaining runtime (ns) at the time the latest
-        # collective was placed; decremented heuristically as we walk the graph.
-        in_flight_time: dict[str, float] = defaultdict(float)
-        # Map start node -> (stream_name, size_bytes)
-        start_info: dict[fx.Node, tuple[str, int]] = {}
-
-        ctx = _StreamPoolCtx(
-            pool_size=pool_size,
-            pool_counter=pool_counter,
-            in_flight_mem=in_flight_mem,
-            in_flight_time=in_flight_time,
-            start_info=start_info,
-            has_budget=has_budget,
-            budget_bytes=budget_bytes,
-        )
-
-        fsdp_count = 0
-        skipped_count = 0
-        for node in self.gm.graph.nodes:
-            if is_all_gather_into_tensor(node) or is_reduce_scatter_tensor(node):
-                if _is_fsdp_collective(node):
-                    fsdp_count += 1
-                    stream_name = stream_name_fn(node, ctx)
-
-                    # Memory budget enforcement (applied on top of any strategy).
-                    coll_bytes = (
-                        estimate_fx_collective_memory_footprint(node)
-                        if has_budget
-                        else 0
-                    )
-                    if has_budget:
-                        total_in_flight = sum(in_flight_mem.values())
-                        if (
-                            total_in_flight + coll_bytes > budget_bytes
-                            and in_flight_mem
-                        ):
-                            stream_name = max(
-                                in_flight_mem, key=lambda s: in_flight_mem[s]
-                            )
-                        in_flight_mem[stream_name] += coll_bytes
-                        start_info[node] = (stream_name, coll_bytes)
-
-                    node.meta["use_comm_stream"] = stream_name
-                else:
-                    skipped_count += 1
-
-            elif _schedulable_wait_node(node):
-                start = node.args[0]
-                if isinstance(start, fx.Node) and "use_comm_stream" in start.meta:
-                    node.meta["use_comm_stream"] = start.meta["use_comm_stream"]
-                    if start in start_info:
-                        sname, sbytes = start_info.pop(start)
-                        in_flight_mem[sname] -= sbytes
-                        if in_flight_mem[sname] <= 0:
-                            del in_flight_mem[sname]
-                    if start in ctx.start_info_time:
-                        sname, stime = ctx.start_info_time.pop(start)
-                        in_flight_time[sname] -= stime
-                        if in_flight_time[sname] <= 0:
-                            del in_flight_time[sname]
-
-        log.info(
-            "Stream pool: %d FSDP collectives assigned to %d streams "
-            "(strategy=%s), %d non-FSDP collectives skipped",
-            fsdp_count,
-            pool_size,
-            strategy,
-            skipped_count,
-        )
-
-    # -- Strategy implementations ------------------------------------------------
-
-    @staticmethod
-    def _strategy_round_robin(node: fx.Node, ctx: _StreamPoolCtx) -> str:
-        name = f"pool_{ctx.pool_counter[0] % ctx.pool_size}"
-        ctx.pool_counter[0] += 1
-        return name
-
-    @staticmethod
-    def _strategy_ag_rs(node: fx.Node, ctx: _StreamPoolCtx) -> str:
-        """AllGather on lower-half streams, ReduceScatter on upper-half."""
-        ag_slots = max(ctx.pool_size // 2, 1)
-        if is_all_gather_into_tensor(node):
-            name = f"pool_{ctx.ag_counter[0] % ag_slots}"
-            ctx.ag_counter[0] += 1
-        else:
-            base = ag_slots
-            rs_slots = max(ctx.pool_size - base, 1)
-            name = f"pool_{base + ctx.rs_counter[0] % rs_slots}"
-            ctx.rs_counter[0] += 1
-        return name
-
-    @staticmethod
-    def _strategy_greedy(node: fx.Node, ctx: _StreamPoolCtx) -> str:
-        """Pick the stream with the least remaining runtime (earliest to finish)."""
-        # If not all streams are populated yet, use the next empty one.
-        if len(ctx.in_flight_time) < ctx.pool_size:
-            for i in range(ctx.pool_size):
-                name = f"pool_{i}"
-                if name not in ctx.in_flight_time:
-                    break
-        else:
-            # Pick the stream closest to finishing.
-            name = min(ctx.in_flight_time, key=lambda s: ctx.in_flight_time[s])
-
-        # Track this collective's runtime for future decisions.
-        runtime_ns = estimate_nccl_collective_runtime(node)
-        ctx.in_flight_time[name] += runtime_ns
-        ctx.start_info_time[node] = (name, runtime_ns)
-        return name
-
-    def get_non_collective_runtime_estimate(self, node: fx.Node) -> float | None:
-        """Get runtime estimation for a node in ms. Returns None if no estimation is available."""
-        if is_compute_node(node):
-            if self.compute_estimator == "benchmark":
-                return benchmark_node(node, self.custom_runtime_estimation)
-            else:
-                return estimate_roofline_runtime_ms(node)
-
-        # Use precomputed cost for fusion region call_module nodes
-        # This takes priority even over custom estimation since fusion regions
-        # have already computed their cost based on their contents
-        if node in self.region_of:
-            return self.region_of[node].cost_ms
-
-        if self.custom_runtime_estimation is not None:
-            if (est := self.custom_runtime_estimation(node, None)) is not None:
-                return est
-            # Custom estimation provided but returned None - don't fall through to fusible estimation
-            return None
-
-        # assume any node without flop counter is mem bound
-        if node.op == "call_function":
-            return estimate_roofline_runtime_ms(node)
-
-        return None
 
     def _reduce_exposed_time_of_in_flight_collectives(
         self,
@@ -1248,7 +1052,7 @@ class OverlapScheduler:
 
     def _handle_compute_or_other(self, node: fx.Node) -> None:
         """Handle scheduling compute or other nodes and attempt to overlap with collectives."""
-        runtime_estimate = self.get_non_collective_runtime_estimate(node)
+        runtime_estimate = self.node_estimations.get(node)
 
         # TODO: we could consider skipping overlapping for overlapable, unary chains to collectives.
         # using these nodes for overlap prevents bucketing. potentially if chain time < latency
@@ -1775,6 +1579,146 @@ class OverlapScheduler:
         return self.compute_potential_hidden_nodes(wait_nodes)
 
 
+def gather_node_runtime_estimations(
+    gm: torch.fx.GraphModule,
+    custom_runtime_estimation: Callable[[fx.Node, int | None], float | None]
+    | None = None,
+    collective_estimator: Literal["analytical", "benchmark"] = "analytical",
+    enable_fusion_regions: bool = False,
+    log_estimations: bool = False,
+) -> tuple[dict[fx.Node, float], dict[fx.Node, Any]]:
+    """Gather initial runtime estimations for all nodes without scheduling.
+
+    Uses analytical models (roofline) for compute nodes — the alignment step
+    in OverlapScheduler.run() replaces these with benchmarked + cross-rank-aligned
+    values. Collectives use bandwidth formulas or CUDA events depending on
+    collective_estimator.
+
+    When enable_fusion_regions is True, builds and collapses fusion regions
+    (mutating gm's graph), then includes their costs in the estimations.
+
+    Args:
+        collective_estimator: "analytical" uses bandwidth formulas,
+            "benchmark" uses CUDA events for collectives.
+        log_estimations: When True, log compute and collective estimations
+            via trace_structured for tlparse.
+
+    Returns (estimations, fusion_region_of) where estimations maps fx.Node to
+    runtime in ms, and fusion_region_of maps call_module nodes to FusionRegion
+    objects (empty dict if fusion regions are disabled).
+    """
+    # Build and collapse fusion regions first (mutates gm)
+    fusion_region_of: dict[fx.Node, Any] = {}
+    if enable_fusion_regions:
+        from torch._inductor.fx_passes.fusion_regions import (
+            build_fusion_regions,
+            collapse_fusion_regions,
+        )
+
+        fusion_region_of = build_fusion_regions(gm)
+        if fusion_region_of:
+            fusion_region_of = collapse_fusion_regions(gm, fusion_region_of)
+
+    estimations: dict[fx.Node, float] = {}
+    nodes = list(gm.graph.nodes)
+
+    # Collectives
+    collective_nodes: list[fx.Node] = []
+    for node in nodes:
+        if _schedulable_wait_node(node):
+            start = node.args[0]
+            estimations[start] = estimate_collective_time(
+                start,
+                custom_runtime_estimation=custom_runtime_estimation,
+                collective_estimator=collective_estimator,
+            )
+            collective_nodes.append(start)
+
+    # Compute nodes (matmul, bmm, etc.) — analytical estimates only.
+    # The alignment step in run() replaces these with benchmarked + aligned values.
+    compute_nodes: list[fx.Node] = []
+    compute_analytical: list[float] = []
+
+    for node in nodes:
+        if is_compute_node(node):
+            est = estimate_roofline_runtime_ms(node)
+            if custom_runtime_estimation is not None:
+                custom_est = custom_runtime_estimation(node, None)
+                if custom_est is not None:
+                    est = custom_est
+            estimations[node] = est
+            compute_nodes.append(node)
+            compute_analytical.append(est)
+        elif node.op == "call_function" and node not in estimations:
+            if custom_runtime_estimation is not None:
+                est = custom_runtime_estimation(node, None)
+                if est is not None:
+                    estimations[node] = est
+            else:
+                est = estimate_roofline_runtime_ms(node)
+                if est > 0:
+                    estimations[node] = est
+
+    # Fusion region costs (call_module nodes from collapse_fusion_regions)
+    for node, region in fusion_region_of.items():
+        estimations[node] = region.cost_ms  # pyrefly: ignore[missing-attribute]
+
+    # Logging
+    if log_estimations and compute_nodes:
+        from torch._inductor.fx_passes.node_runtime_estimation import (
+            _log_compute_estimations,
+        )
+
+        _log_compute_estimations(
+            compute_nodes,
+            compute_analytical,
+            compute_analytical,
+        )
+
+    if log_estimations and collective_nodes:
+        from torch._inductor.fx_passes.node_runtime_estimation import (
+            _log_collective_benchmarks,
+        )
+
+        _log_collective_benchmarks(
+            collective_nodes,
+            artifact_name="fx_collectives_analytical_estimation",
+        )
+
+    return estimations, fusion_region_of
+
+
+def align_estimations_across_ranks(
+    estimations: dict[fx.Node, float],
+) -> dict[fx.Node, float]:
+    """Align runtime estimations across distributed ranks using median.
+
+    All ranks must make identical scheduling decisions, so we gather each
+    rank's values and take the median. All nodes in estimations are aligned.
+
+    Returns a new estimations dict with aligned values.
+    """
+    import torch.distributed as dist
+    from torch._subclasses.fake_tensor import unset_fake_temporarily
+    from torch.distributed.distributed_c10d import _get_default_group
+
+    nodes = list(estimations.keys())
+    if not nodes:
+        return {}
+
+    local_values = [estimations[n] for n in nodes]
+
+    world_size = dist.get_world_size()
+    pg = _get_default_group()
+
+    with unset_fake_temporarily():
+        gathered: list[list[float]] = [[] for _ in range(world_size)]
+        dist.all_gather_object(gathered, local_values, pg)
+        medians = torch.median(torch.tensor(gathered), dim=0).values.tolist()
+
+    return dict(zip(nodes, medians))
+
+
 def schedule_overlap_bucketing(
     gm: torch.fx.GraphModule,
     max_in_flight_gb: float = 5,
@@ -1811,8 +1755,9 @@ def schedule_overlap_bucketing(
         compute_overlap_multipler: Scale factor for compute time used to hide collectives. This can be used
             to address over or under aggressive overlapping.
         max_coll_distance: Maximum pre fetch or bucketing candidates. Mainly intended for compile time
-        custom_runtime_estimation: Custom runtime estimation function that estimates runtime in ms for an fx node.
-            If None, uses default estimations. This is currently limited to collectives and compute nodes.
+        custom_runtime_estimation: Override runtime estimation for specific nodes. Called as
+            custom_runtime_estimation(node, override_size) -> float | None. To pass pre-computed
+            estimations, wrap a dict: lambda node, _: estimations.get(node).
         collective_estimator: Method for estimating collective runtime. "analytical" uses bandwidth formulas,
             "benchmark" uses CUDA events with power-of-2 rounding and interpolation.
         compute_estimator: Method for estimating compute (ATen op) runtime. "analytical" uses roofline model

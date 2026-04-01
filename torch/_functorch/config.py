@@ -399,7 +399,8 @@ disable_guess_zero_tangent_for_mutated_input_subclass = False
 # At runtime non contiguous tangents will be coerced to be contiguous.
 # This config changes this guess for tangents strides to be the same as outputs.
 # TODO(ivankobzarev): Remove this config once extra memory usage is investigated.
-guess_tangent_strides_as_outputs = False
+guess_tangent_strides_as_outputs = not is_fbcode()
+
 
 # This is a temporary config to ensure all ranks take the same decision in the partitioner
 # it will ultimately be removed once we share size_hints across ranks through compiler collectives
@@ -417,11 +418,6 @@ _sync_decision_cross_ranks = False
 # "all" - no filtering, everything saved for backward.
 saved_tensors_hooks_filtering_mode = "donated"
 
-
-# When True, cleanup_recompute_tags skips Case A (boundary saves between
-# consecutive AC regions). Used with explicit boundary saves in graph passes
-# for controlled A/B activation memory experiments.
-skip_ac_boundary_saves = False
 
 # This callback is invoked on the joint graph before partitioning
 joint_custom_pass: Callable = None  # type: ignore[assignment]

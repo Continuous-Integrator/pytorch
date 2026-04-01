@@ -1,6 +1,7 @@
 # Owner(s): ["module: inductor"]
 import contextlib
 import re
+import unittest
 from unittest.mock import patch
 
 import functorch
@@ -28,6 +29,7 @@ from torch._inductor.utils import run_and_get_code
 # performance for that setting.
 #
 # Defines all the kernels for tests
+from torch.testing._internal.common_utils import TEST_WITH_ROCM
 from torch.testing._internal.inductor_utils import GPU_TYPE, HAS_GPU_AND_TRITON
 from torch.testing._internal.triton_utils import requires_gpu_and_triton
 
@@ -353,18 +355,18 @@ class NumBytesMetricTests(TestCase):
             T(32, 32, grad=True),
         )
 
-        # Default: mask components may be materialized as output buffers
-        metrics.reset()
-        torch.compile(f, backend=compile_but_use_eager)(*inp)
-        default_bytes = metrics.num_bytes_accessed
-
-        # With deferred realization: mask stays inlined
-        with patch.object(config, "delay_realize_cheap_outputs", True):
+        # Without deferred realization: mask gets materialized as output buffer
+        with patch.object(config, "delay_realize_cheap_outputs", False):
             metrics.reset()
             torch.compile(f, backend=compile_but_use_eager)(*inp)
-            deferred_bytes = metrics.num_bytes_accessed
+            eager_bytes = metrics.num_bytes_accessed
 
-        self.assertLessEqual(deferred_bytes, default_bytes)
+        # Default (deferred realization on): mask stays inlined
+        metrics.reset()
+        torch.compile(f, backend=compile_but_use_eager)(*inp)
+        deferred_bytes = metrics.num_bytes_accessed
+
+        self.assertLessEqual(deferred_bytes, eager_bytes)
 
 
 class FusionTests(TestCase):
@@ -512,6 +514,25 @@ class FusionTests(TestCase):
 
         inp = (T(10, 10), T(10, 10), T(10, 10))
         self.assertExpectedInline(count_numel(f, *inp), """500""")
+
+    @unittest.skipIf(TEST_WITH_ROCM, "copy_(cat()) fusion not supported on ROCm")
+    # TODO(ivankobzarev): enable copy_(cat()) fusion for CUDA 13+
+    @unittest.skipIf(
+        torch.version.cuda
+        and tuple(int(x) for x in torch.version.cuda.split(".")) >= (13, 0),
+        "copy_(cat()) fusion not supported on CUDA 13+",
+    )
+    def test_copy_cat_fusion(self):
+        """copy_(cat(...)) should fuse: no intermediate allocation for cat."""
+
+        def f(dst, a, b):
+            dst.copy_(torch.cat([a, b]))
+
+        dst = T(20)
+        inp = (dst, T(10), T(10))
+        # 10 (read a) + 10 (read b) + 20 (write dst) = 40
+        # Without fusion cat would allocate intermediate: 80
+        self.assertExpectedInline(count_numel(f, *inp), """40""")
 
     def test_reduction_pointwise_multi_level_reduction(self):
         hidden_size = 4096

@@ -5,7 +5,7 @@ import itertools
 import time
 from contextlib import nullcontext
 from functools import wraps
-from typing import Any, TYPE_CHECKING
+from typing import Any, Literal, TYPE_CHECKING
 from typing_extensions import ParamSpec, TypeVar
 from unittest.mock import patch
 
@@ -24,16 +24,13 @@ from torch._dynamo.utils import (
     preserve_rng_state,
     set_feature_use,
 )
+from torch._functorch._aot_autograd.autograd_cache import create_fx_config
 from torch._guards import detect_fake_mode
-from torch._inductor.utils import BoxedBool
+from torch._inductor.codecache import resolve_pre_grad_pass_timing
 from torch._subclasses import FakeTensor, FakeTensorMode
 from torch.export._tree_utils import reorder_kwargs
 from torch.fx.experimental.proxy_tensor import make_fx
 
-
-static_inputs_log = torch._logging.getArtifactLogger(
-    __name__, "cudagraph_static_inputs"
-)
 from . import config
 from ._aot_autograd.autograd_cache import (  # noqa: F401
     AOTAutogradCache,
@@ -123,6 +120,7 @@ from ._aot_autograd.schemas import (  # noqa: F401
     InputAliasInfo,
     JointWithDescriptors,
     MutationType,
+    OpaqueMeta,
     OutputAliasInfo,
     OutputType,
     SerializableAOTDispatchCompiler,
@@ -140,7 +138,6 @@ from ._aot_autograd.subclass_utils import (  # noqa: F401
 )
 from ._aot_autograd.utils import (  # noqa: F401
     _get_autocast_states,
-    _get_symint_hints,
     call_func_at_runtime_with_args,
     create_tree_flattened_fn,
     KNOWN_TYPES,
@@ -162,7 +159,7 @@ if TYPE_CHECKING:
 
     from torch._inductor.cudagraph_utils import BoxedDeviceIndex
     from torch._inductor.output_code import OutputCode
-    from torch._inductor.utils import InputType
+    from torch._inductor.utils import BoxedBool, InputType
     from torch._ops import OpOverload
     from torch.fx.experimental.symbolic_shapes import ShapeEnv
 
@@ -585,7 +582,6 @@ def create_aot_state(
                     flat_args_descs=flat_args_descs,
                     static_input_indices=aot_config.static_input_indices,
                     keep_input_mutations=aot_config.keep_inference_input_mutations,
-                    is_train=needs_autograd,
                     pre_dispatch=aot_config.pre_dispatch,
                 )(*_dup_fake_script_obj(fake_flat_args))
 
@@ -621,35 +617,6 @@ def create_aot_state(
                 # and none of the inputs that require grad are mutated.
                 # so we actually have an inference graph.
                 needs_autograd = False
-                # A bit silly: right now in the subclass codepath, our ViewAndMutationMeta
-                # changes depending on whether we pass in is_train / keep_input_mutations,
-                # so we're forced to recompute the metadata.
-                # TODO: refactor the subclass path of run_functionalized_fw_and_collect_metadata
-                # so that this is unnecessary.
-                if req_subclass_dispatch:
-                    fw_metadata = run_functionalized_fw_and_collect_metadata(
-                        flat_fn,
-                        flat_args_descs=flat_args_descs,
-                        keep_input_mutations=aot_config.keep_inference_input_mutations,
-                        is_train=False,
-                        pre_dispatch=aot_config.pre_dispatch,
-                        static_input_indices=aot_config.static_input_indices,
-                    )(*fake_flat_args)
-                else:
-                    fw_metadata = ViewAndMutationMeta(
-                        input_info=fw_metadata.input_info,
-                        output_info=fw_metadata.output_info,
-                        num_intermediate_bases=fw_metadata.num_intermediate_bases,
-                        keep_input_mutations=aot_config.keep_inference_input_mutations,
-                        traced_tangents=fw_metadata.traced_tangents,
-                        traced_tangents_descs=fw_metadata.traced_tangents_descs,
-                        subclass_inp_meta=fw_metadata.subclass_inp_meta,
-                        subclass_fw_graph_out_meta=fw_metadata.subclass_fw_graph_out_meta,
-                        subclass_tangent_meta=fw_metadata.subclass_tangent_meta,
-                        is_train=False,
-                        tokens=fw_metadata.tokens,
-                        static_input_indices=fw_metadata.static_input_indices,
-                    )
 
     if fw_metadata.num_intermediate_bases > 0:
         if req_subclass_dispatch:
@@ -1085,6 +1052,11 @@ def aot_module_simplified(
     boxed_forward_device_index: BoxedDeviceIndex | None = None,
     ignore_shape_env: bool = False,
     disable_functionalization: bool = False,
+    # Optional callback to run passes on the module at the start of AOT autograd.
+    pre_grad_passes: Callable[
+        [torch.fx.GraphModule, Sequence[InputType]], torch.fx.GraphModule
+    ]
+    | None = None,
 ) -> Callable[..., Any]:
     """
     This is the simplified or low overhead version of aot_module. For frontends
@@ -1096,9 +1068,6 @@ def aot_module_simplified(
 
     :func:`aot_module_simplified` removes these overheads.
     """
-
-    if cudagraphs is None:
-        cudagraphs = BoxedBool(torch._inductor.config.triton.cudagraphs)
 
     with contextlib.ExitStack() as stack:
         (
@@ -1128,6 +1097,15 @@ def aot_module_simplified(
 
         compiled_fn = None
 
+        pre_grad_pass_timing: Literal["early", "late"] = resolve_pre_grad_pass_timing()
+
+        if (
+            pre_grad_pass_timing == "early"
+            and pre_grad_passes
+            and isinstance(mod, torch.fx.GraphModule)
+        ):
+            mod = pre_grad_passes(mod, fake_flat_args)
+
         if (
             isinstance(fw_compiler, SerializableAOTDispatchCompiler)
             or torch._functorch.config.force_autograd_cache
@@ -1136,17 +1114,24 @@ def aot_module_simplified(
             remote = should_use_remote_autograd_cache()
             if local or remote:
                 set_feature_use("aot_autograd_remote_cache", remote)
+                fx_config = create_fx_config(cudagraphs, boxed_forward_device_index)
                 compiled_fn = AOTAutogradCache.try_load(
                     mod,
                     fake_flat_args,
                     aot_config,
-                    cudagraphs,
-                    boxed_forward_device_index,
+                    fx_config,
                     local,
                     remote,
                 )
 
         if compiled_fn is None:
+            if (
+                pre_grad_pass_timing == "late"
+                and pre_grad_passes
+                and isinstance(mod, torch.fx.GraphModule)
+            ):
+                mod = pre_grad_passes(mod, fake_flat_args)
+
             stack.enter_context(compiled_autograd._disable())
             aot_state = create_aot_state(
                 stack,
