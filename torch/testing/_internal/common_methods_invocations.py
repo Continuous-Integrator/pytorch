@@ -23,6 +23,7 @@ from torch.testing._internal.common_dtype import (
     _dispatch_dtypes, floating_types, floating_types_and, complex_types, floating_and_complex_types,
     floating_and_complex_types_and, all_types_and_complex_and, all_types_and, all_types_and_complex, integral_types_and,
     empty_types, complex_types_and, integral_types, custom_types, all_types_complex_float8_and, float8_types,
+    highest_precision_complex,
     highest_precision_float,
 )
 from torch.testing._internal.common_device_type import (
@@ -1616,7 +1617,7 @@ def sample_inputs_like_fns(self, device, dtype, requires_grad, **kwargs):
         ((S,), {'dtype': dtype, 'device': device}),
         # Hard-code some dtypes/devices. We want to test cases where the
         # (dtype, device) is different from the input's (dtype, device)
-        ((S,), {'dtype': torch.double if device != 'mps:0' else torch.float}),
+        ((S,), {'dtype': highest_precision_float(device)}),
         ((S,), {'device': 'cpu'}),
         ((S,), {'dtype': torch.double, 'device': 'cpu'}),
     ]
@@ -1810,7 +1811,7 @@ def sample_inputs_new_fns(self, device, dtype, requires_grad, *, is_strided=Fals
         ((S,), (2, 3), (7, 8), {'dtype': dtype, 'device': device}),
         # Hard-code some dtypes/devices. We want to test cases where the
         # (dtype, device) is different from the input's (dtype, device)
-        ((S,), (10,), (S,), {'dtype': torch.double if device != 'mps:0' else torch.float}),
+        ((S,), (10,), (S,), {'dtype': highest_precision_float(device)}),
         ((S,), (1, 1, 12), (S, L, M), {'device': 'cpu'}),
         ((S,), (2, 2, 2), (L, M, S), {'dtype': torch.double, 'device': 'cpu'}),
     ]
@@ -1933,7 +1934,7 @@ def sample_inputs_full_like(self, device, dtype, requires_grad, **kwargs):
     def get_val(dtype):
         return make_tensor([], dtype=dtype, device="cpu").item()
 
-    double_dtype = torch.double if device != "mps:0" else torch.float
+    double_dtype = highest_precision_float(device)
     inputs = [
         ((), get_val(dtype), {}),
         ((S, S), get_val(dtype), {}),
@@ -4058,8 +4059,8 @@ def sample_inputs_conv1d(op_info, device, dtype, requires_grad, **kwargs):
 
 
 def error_inputs_conv1d(opinfo, device, **kwargs):
-    dtype = torch.float64 if device != 'mps:0' else torch.float32
-    cdtype = torch.complex128 if device != 'mps:0' else torch.complex64
+    dtype = highest_precision_float(device)
+    cdtype = highest_precision_complex(device)
     make_arg = partial(make_tensor, device=device, dtype=dtype)
     make_int_arg = partial(make_tensor, device=device, dtype=torch.int64)
     make_complex_arg = partial(make_tensor, device=device, dtype=cdtype)
@@ -4120,8 +4121,8 @@ def error_inputs_conv1d(opinfo, device, **kwargs):
 
 
 def error_inputs_conv2d(opinfo, device, **kwargs):
-    dtype = torch.float64 if device != 'mps:0' else torch.float32
-    cdtype = torch.complex128 if device != 'mps:0' else torch.complex64
+    dtype = highest_precision_float(device)
+    cdtype = highest_precision_complex(device)
     make_arg = partial(make_tensor, device=device, dtype=dtype)
     make_int_arg = partial(make_tensor, device=device, dtype=torch.int64)
     make_complex_arg = partial(make_tensor, device=device, dtype=cdtype)
@@ -4259,8 +4260,8 @@ def sample_inputs_conv3d(opinfo, device, dtype, requires_grad, **kwargs):
 
 
 def error_inputs_conv3d(opinfo, device, **kwargs):
-    dtype = torch.float64 if device != 'mps:0' else torch.float32
-    cdtype = torch.complex128 if device != 'mps:0' else torch.complex64
+    dtype = highest_precision_float(device)
+    cdtype = highest_precision_complex(device)
     make_arg = partial(make_tensor, device=device, dtype=dtype)
     make_int_arg = partial(make_tensor, device=device, dtype=torch.int64)
     make_complex_arg = partial(make_tensor, device=device, dtype=cdtype)
@@ -9780,6 +9781,8 @@ class foreach_inputs_sample_func:
         if self.arity == 1:
             if "foreach_abs" in opinfo.name and dtype in complex_types():
                 return True
+            if "foreach_clone" in opinfo.name:
+                return False
             # unary
             if opinfo.ref in (torch.abs, torch.neg):
                 return False
@@ -9973,7 +9976,7 @@ class foreach_norm_sample_func(foreach_inputs_sample_func):
         for num_tensors, ord, out_dtype, intersperse_empty_tensors in product(
             num_input_tensors,
             (0, 1, 2, -1, -2, float('inf'), float('-inf')),
-            (None,) + (torch.complex128,) if dtype in complex_types() else (torch.float64,),
+            (None,) + (highest_precision_complex(device),) if dtype in complex_types() else (highest_precision_float(device),),
             (True, False),
         ):
             # inf norm and negative norms on empty tensors is not supported by our reference func vector norm:
@@ -11246,6 +11249,13 @@ foreach_unary_op_db: list[OpInfo] = [
                 dtypes=(torch.complex128,),
             ),
         ),
+    ),
+    ForeachFuncInfo(
+        "clone",
+        sample_inputs_func=foreach_inputs_sample_func(1, False, False),
+        supports_forward_ad=True,
+        supports_autograd=True,
+        supports_inplace_autograd=True,
     ),
 ]
 
@@ -13631,21 +13641,8 @@ op_db: list[OpInfo] = [
            skips=(
                # cumsum does not handle correctly out= dtypes
                DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_out'),
-               # The following dtypes did not work in forward but are listed by the OpInfo: {torch.complex64}
+               # The following dtypes did not work in forward but are listed by the OpInfo: {torch.bool}
                DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_dtypes', device_type='mps'),
-               # RuntimeError: cumulative ops are not yet supported for complex
-               DecorateInfo(
-                   unittest.expectedFailure, 'TestCommon', 'test_noncontiguous_samples',
-                   device_type='mps', dtypes=(torch.complex64,)
-               ),
-               DecorateInfo(
-                   unittest.expectedFailure, 'TestCommon', 'test_out_requires_grad_error',
-                   device_type='mps', dtypes=(torch.complex64,)
-               ),
-               DecorateInfo(
-                   unittest.expectedFailure, 'TestCommon', 'test_variant_consistency_eager',
-                   device_type='mps', dtypes=(torch.complex64,)
-               ),
            ),
            sample_inputs_func=sample_inputs_cumulative_ops),
     OpInfo('cumprod',
@@ -13656,21 +13653,8 @@ op_db: list[OpInfo] = [
            skips=(
                # cumprod does not handle correctly out= dtypes
                DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_out'),
-               # The following dtypes did not work in forward but are listed by the OpInfo: {torch.complex64}
+               # The following dtypes did not work in forward but are listed by the OpInfo: {torch.bool}
                DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_dtypes', device_type='mps'),
-               # RuntimeError: cumulative ops are not yet supported for complex
-               DecorateInfo(
-                   unittest.expectedFailure, 'TestCommon', 'test_noncontiguous_samples',
-                   device_type='mps', dtypes=(torch.complex64,)
-               ),
-               DecorateInfo(
-                   unittest.expectedFailure, 'TestCommon', 'test_out_requires_grad_error',
-                   device_type='mps', dtypes=(torch.complex64,)
-               ),
-               DecorateInfo(
-                   unittest.expectedFailure, 'TestCommon', 'test_variant_consistency_eager',
-                   device_type='mps', dtypes=(torch.complex64,)
-               ),
            ),
            # gradgradcheck fails in fast_mode=True: #56275
            sample_inputs_func=sample_inputs_cumprod,
@@ -15419,11 +15403,6 @@ op_db: list[OpInfo] = [
            dtypes=floating_and_complex_types_and(torch.half, torch.bfloat16),
            sample_inputs_func=sample_inputs_normalize,
            supports_forward_ad=True,
-           skips=(
-               # Exception: norm ops are not supported for complex yet
-               DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_dtypes', device_type='mps'),
-               DecorateInfo(unittest.expectedFailure, 'TestCommon', device_type='mps', dtypes=(torch.complex64,)),
-           ),
            supports_fwgrad_bwgrad=True),
     OpInfo('aminmax',
            ref=lambda x, dim=None, keepdim=False: (np.amin(x, axis=dim, keepdims=keepdim), np.amax(x, axis=dim, keepdims=keepdim)),
@@ -17064,9 +17043,8 @@ op_db: list[OpInfo] = [
            supports_expanded_weight=True,
            skips=(
                # RuntimeError: MPS device does not support linear for non-float inputs
-               # RuntimeError: mps linear does not support complex types
                DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_dtypes', device_type='mps'),
-               DecorateInfo(unittest.expectedFailure, 'TestCommon', device_type='mps', dtypes=(torch.complex64, torch.int64)),
+               DecorateInfo(unittest.expectedFailure, 'TestCommon', device_type='mps', dtypes=(torch.int64,)),
            ),
            decorators=(
                # Strides are not the same!
@@ -17658,11 +17636,6 @@ op_db: list[OpInfo] = [
         supports_out=False,
         supports_forward_ad=True,
         supports_fwgrad_bwgrad=True,
-        skips=(
-            # RuntimeError: norm ops are not supported for complex yet
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_dtypes', device_type='mps'),
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', device_type='mps', dtypes=(torch.complex64,)),
-        ),
     ),
     OpInfo(
         "nn.functional.triplet_margin_with_distance_loss",
@@ -17685,9 +17658,6 @@ op_db: list[OpInfo] = [
                 "TestNormalizeOperators",
                 "test_normalize_operator_exhaustive",
             ),
-            # RuntimeError: norm ops are not supported for complex yet
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_dtypes', device_type='mps'),
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', device_type='mps', dtypes=(torch.complex64,)),
         ),
     ),
     BinaryUfuncInfo('nextafter',
@@ -18125,18 +18095,6 @@ op_db: list[OpInfo] = [
            # Could not allocate memory to change Tensor SizesAndStrides!
            check_batched_forward_grad=False,
            supports_fwgrad_bwgrad=True,
-           skips=(
-               # norm ops are not supported for complex yet
-               DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_dtypes', device_type='mps'),
-               DecorateInfo(
-                   unittest.expectedFailure, 'TestCommon', 'test_noncontiguous_samples',
-                   device_type='mps', dtypes=(torch.complex64,)
-               ),
-               DecorateInfo(
-                   unittest.expectedFailure, 'TestCommon', 'test_variant_consistency_eager',
-                   device_type='mps', dtypes=(torch.complex64,)
-               ),
-           ),
            sample_inputs_func=sample_inputs_dist),
     OpInfo('outer',
            op=torch.outer,
@@ -19583,10 +19541,6 @@ op_db: list[OpInfo] = [
            supports_forward_ad=True,
            supports_fwgrad_bwgrad=True,
            error_inputs_func=error_inputs_gather,
-           skips=(
-               # RuntimeError: gather(): Yet not supported for complex
-               DecorateInfo(unittest.expectedFailure, 'TestCommon', device_type='mps', dtypes=(torch.complex64,)),
-           ),
            ),
     OpInfo('index_fill',
            dtypes=all_types_and_complex_and(torch.bool, torch.float16, torch.bfloat16, torch.complex32),
@@ -19791,9 +19745,6 @@ op_db: list[OpInfo] = [
                # Compiler issue on ROCm. Regression started in ROCm 6.4.
                DecorateInfo(unittest.skip('Skipped!'), 'TestCommon', 'test_non_standard_bool_values',
                             dtypes=[torch.bool], active_if=TEST_WITH_ROCM),
-               # RuntimeError: scatter(): Yet not supported for complex
-               DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_dtypes', device_type='mps'),
-               DecorateInfo(unittest.expectedFailure, 'TestCommon', device_type='mps', dtypes=(torch.complex64,)),
            )),
     UnaryUfuncInfo(
         'bfloat16',
@@ -20607,9 +20558,6 @@ op_db: list[OpInfo] = [
                # Compiler issue on ROCm. Regression started in ROCm 6.4.
                DecorateInfo(unittest.skip('Skipped!'), 'TestCommon', 'test_non_standard_bool_values',
                             dtypes=[torch.bool], active_if=TEST_WITH_ROCM),
-               # RuntimeError: scatter(): Yet not supported for complex
-               DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_dtypes', device_type='mps'),
-               DecorateInfo(unittest.expectedFailure, 'TestCommon', device_type='mps', dtypes=(torch.complex64,)),
            )),
     OpInfo('stack',
            dtypes=all_types_and_complex_and(torch.complex32, torch.bool, torch.float16, torch.bfloat16),
@@ -20855,7 +20803,7 @@ op_db: list[OpInfo] = [
                             device_type='cpu', dtypes=(torch.float16,)),
                DecorateInfo(toleranceOverride({torch.float16: tol(atol=3e-4, rtol=3e-6)}),
                             "TestConsistency", "test_output_match", device_type="mps"),
-               # RuntimeError: norm ops are not supported for complex yet
+               # RuntimeError: Failed to create function state object for: renorm_float2
                DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_dtypes', device_type='mps'),
                DecorateInfo(unittest.expectedFailure, 'TestCommon', device_type='mps', dtypes=(torch.complex64,)),
            )),
@@ -20871,9 +20819,6 @@ op_db: list[OpInfo] = [
                   sample_inputs_func=sample_repeat_tile,
                   skips=(
                       DecorateInfo(unittest.expectedFailure, "TestNormalizeOperators", "test_normalize_operator_exhaustive"),
-                      # Exception: repeat(): Not supported for complex yet!
-                      DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_dtypes', device_type='mps'),
-                      DecorateInfo(unittest.expectedFailure, 'TestCommon', device_type='mps', dtypes=(torch.complex64,)),
                   )),
     OpInfo('squeeze',
            ref=_squeeze_ref,
@@ -20987,9 +20932,6 @@ op_db: list[OpInfo] = [
            decorators=(
                # RuntimeError: view size is not compatible with input tensor's size and stride
                DecorateInfo(unittest.expectedFailure, "TestMeta", "test_dispatch_symbolic_meta_outplace_all_strides"),
-               # MPS: gather(): Yet not supported for complex
-               DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_dtypes', device_type='mps'),
-               DecorateInfo(unittest.expectedFailure, 'TestCommon', device_type='mps', dtypes=(torch.complex64,)),
            )),
     ShapeFuncInfo('tile',
                   ref=np.tile,
@@ -20999,11 +20941,6 @@ op_db: list[OpInfo] = [
                   supports_out=False,
                   supports_forward_ad=True,
                   supports_fwgrad_bwgrad=True,
-                  skips=(
-                      # RuntimeError: repeat(): Not supported for complex yet!
-                      DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_dtypes', device_type='mps'),
-                      DecorateInfo(unittest.expectedFailure, 'TestCommon', device_type='mps', dtypes=(torch.complex64,)),
-                  ),
                   sample_inputs_func=sample_repeat_tile),
     OpInfo('trapz',  # TODO: in the future, 'trapz' should be made a proper alias of 'trapezoid'
            dtypes=all_types_and_complex_and(torch.float16, torch.bfloat16),
@@ -21045,16 +20982,6 @@ op_db: list[OpInfo] = [
                    toleranceOverride({torch.float16: tol(atol=4e-3, rtol=4e-3)}),
                    'TestInductorOpInfo', 'test_comprehensive',
                ),
-               # RuntimeError: cumulative ops are not yet supported for complex
-               DecorateInfo(
-                   unittest.expectedFailure, 'TestCommon', 'test_variant_consistency_eager',
-                   device_type='mps', dtypes=(torch.complex64,)
-               ),
-               DecorateInfo(
-                   unittest.expectedFailure, 'TestCommon', 'test_noncontiguous_samples',
-                   device_type='mps', dtypes=(torch.complex64,)
-               ),
-               DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_dtypes', device_type='mps'),
            ),
            sample_inputs_func=sample_cumulative_trapezoid,),
     OpInfo('unsqueeze',
@@ -21355,8 +21282,6 @@ op_db: list[OpInfo] = [
                    "test_comprehensive",
                    device_type="cuda"
                ),
-               # RuntimeError: Failed to create function state object for: logcumsumexp_outer_float2
-               DecorateInfo(unittest.expectedFailure, 'TestCommon', device_type='mps', dtypes=(torch.complex64,)),
                # AssertionError: UserWarning not triggered : Resized a non-empty tensor but did not warn about it.
                DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_out_warning', device_type='mps'),
            ),
@@ -21805,15 +21730,6 @@ op_db: list[OpInfo] = [
         supports_forward_ad=True,
         supports_fwgrad_bwgrad=True,
         skips=(
-            # AssertionError: RuntimeError not raised : Expected RuntimeError when doing an unsafe cast
-            # from a result of dtype torch.float32 into an out= with dtype torch.long
-            DecorateInfo(
-                unittest.expectedFailure, 'TestCommon', 'test_out',
-                device_type='mps', dtypes=(torch.float32,)
-            ),
-            # Error: norm ops are not supported for complex yet
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_dtypes', device_type='mps'),
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', device_type='mps', dtypes=(torch.cfloat, torch.chalf)),
             # Dispatches in Python to vector_norm. Not sure how to make this test happy
             # Happens to pass on complex64. Also a mystery
             DecorateInfo(unittest.expectedFailure, 'TestJit', 'test_variant_consistency_jit',
@@ -21859,12 +21775,6 @@ op_db: list[OpInfo] = [
                    'test_output_match',
 
                ),
-               # RuntimeError: norm ops are not supported for complex yet
-               DecorateInfo(unittest.expectedFailure, 'TestCommon', device_type='mps', dtypes=(torch.complex64,)),
-               DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_dtypes', device_type='mps'),
-               # AssertionError: RuntimeError not raised : Expected RuntimeError when doing an
-               # unsafe cast from a result of dtype torch.float32 into an out= with dtype torch.long
-               DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_out', device_type='mps', dtypes=(torch.float32,)),
                # Issue with conj and torch dispatch, see https://github.com/pytorch/pytorch/issues/82479
                DecorateInfo(
                    unittest.skip("Skipped!"),
@@ -21887,18 +21797,10 @@ op_db: list[OpInfo] = [
         # fast gradcheck produces NaNs
         gradcheck_fast_mode=False,
         skips=(
-            # RuntimeError: norm ops are not supported for complex yet
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_dtypes', device_type='mps'),
-            # AssertionError: RuntimeError not raised : Expected RuntimeError
-            # when doing an unsafe cast from a result of dtype torch.float32
-            # into an out= with dtype torch.long
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_out', device_type='mps', dtypes=(torch.float32,)),
             DecorateInfo(
                 toleranceOverride({torch.float16: tol(atol=2e-3, rtol=1e-3)}),
                 'TestInductorOpInfo', 'test_comprehensive', device_type='cuda',
             ),
-            # Error: norm ops are not supported for complex yet
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', device_type='mps', dtypes=(torch.cfloat, torch.chalf)),
             # Dispatches in Python to vector_norm. Not sure how to make this test happy
             # Happens to pass on complex64. Also a mystery
             DecorateInfo(unittest.expectedFailure, 'TestJit', 'test_variant_consistency_jit',
@@ -22688,8 +22590,6 @@ op_db: list[OpInfo] = [
                 unittest.skip('Skipped!'), 'TestReductions', 'test_ref_small_input',
                 device_type='xpu',
                 dtypes=[torch.complex128, torch.int8, torch.int16, torch.int32, torch.int64]),
-            # RuntimeError: cumulative ops are not yet supported for complex
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', device_type='mps', dtypes=(torch.complex64,)),
         ),
     ),
     ReductionOpInfo(
@@ -22999,9 +22899,6 @@ op_db: list[OpInfo] = [
                 "test_variant_consistency_jit",
                 dtypes=(torch.float32, torch.complex64),
             ),
-            # RuntimeError: norm ops are not supported for complex yet
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_dtypes', device_type='mps'),
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', device_type='mps', dtypes=(torch.complex64,)),
         ),
     ),
     OpInfo(
@@ -23743,9 +23640,6 @@ python_ref_db = [
             DecorateInfo(unittest.expectedFailure,
                          'TestCommon',
                          'test_python_ref'),
-            # MPS: gather(): Yet not supported for complex
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_dtypes', device_type='mps'),
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', device_type='mps', dtypes=(torch.complex64,)),
         ),
     ),
     PythonRefInfo(
@@ -24636,11 +24530,6 @@ python_ref_db = [
         "_refs.nn.functional.pairwise_distance",
         torch_opinfo_name="nn.functional.pairwise_distance",
         supports_out=True,
-        skips=(
-            # RuntimeError: norm ops are not supported for complex yet
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_dtypes', device_type='mps'),
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', device_type='mps', dtypes=(torch.complex64,)),
-        ),
     ),
     PythonRefInfo(
         "_refs.nn.functional.pdist",
@@ -25568,9 +25457,6 @@ python_ref_db = [
             # Greatest relative difference: 8.519846983548175e-06 at index (4,) (up to 1.3e-06 allowed)
             DecorateInfo(unittest.skip("Skipped!"), 'TestCommon', 'test_python_ref',
                          dtypes=(torch.uint8,), device_type="cpu"),
-            # RuntimeError: norm ops are not supported for complex yet
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_dtypes', device_type='mps'),
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', device_type='mps', dtypes=(torch.complex64,)),
         )
     ),
     ElementwiseBinaryPythonRefInfo(
@@ -26047,17 +25933,7 @@ python_ref_db = [
         "_refs.renorm",
         torch_opinfo_name="renorm",
         skips=(
-            # RuntimeError: norm ops are not supported for complex yet
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_dtypes', device_type='mps'),
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', device_type='mps', dtypes=(torch.complex64,)),
-        ),
-    ),
-    PythonRefInfo(
-        "_refs.repeat",
-        torch_opinfo_name="repeat",
-        validate_view_consistency=False,
-        skips=(
-            # Exception: repeat(): Not supported for complex yet!
+            # RuntimeError: Failed to create function state object for: renorm_float2
             DecorateInfo(
                 unittest.expectedFailure, 'TestCommon', 'test_python_ref',
                 device_type='mps', dtypes=(torch.complex64,)
@@ -26067,6 +25943,11 @@ python_ref_db = [
                 device_type='mps', dtypes=(torch.complex64,)
             ),
         ),
+    ),
+    PythonRefInfo(
+        "_refs.repeat",
+        torch_opinfo_name="repeat",
+        validate_view_consistency=False,
     ),
     PythonRefInfo(
         "_refs.reshape",
@@ -26419,15 +26300,6 @@ python_ref_db = [
         skips=(
             # doesn't test out behavior properly for this operator
             DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_out'),
-            # RuntimeError: cumulative ops are not yet supported for complex
-            DecorateInfo(
-                unittest.expectedFailure, 'TestCommon', 'test_python_ref', device_type='mps',
-                dtypes=(torch.complex64,)
-            ),
-            DecorateInfo(
-                unittest.expectedFailure, 'TestCommon', 'test_python_ref_torch_fallback', device_type='mps',
-                dtypes=(torch.complex64,)
-            ),
         ),
     ),
     PythonRefInfo(
@@ -26437,15 +26309,6 @@ python_ref_db = [
         skips=(
             # doesn't test out behavior properly for this operator
             DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_out'),
-            # RuntimeError: cumulative ops are not yet supported for complex
-            DecorateInfo(
-                unittest.expectedFailure, 'TestCommon', 'test_python_ref', device_type='mps',
-                dtypes=(torch.complex64,)
-            ),
-            DecorateInfo(
-                unittest.expectedFailure, 'TestCommon', 'test_python_ref_torch_fallback', device_type='mps',
-                dtypes=(torch.complex64,)
-            ),
         ),
     ),
     PythonRefInfo(
@@ -26558,14 +26421,6 @@ python_ref_db = [
         # Uses vector_norm inside and vector_norm is affected by
         # https://github.com/pytorch/pytorch/issues/77216
         validate_view_consistency=False,
-        skips=(
-            # RuntimeError: norm ops are not supported for complex yet
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_dtypes', device_type='mps'),
-            DecorateInfo(
-                unittest.expectedFailure, 'TestCommon', device_type='mps',
-                dtypes=(torch.complex32, torch.complex64)
-            ),
-        ),
     ),
     #
     # Tensor Creation Reference OpInfos
