@@ -38,11 +38,14 @@ static constexpr int64_t kBlockSize = 512;
 // the maximum number of tensors when this causes a parameter buffer
 // to be too large.
 
-// Unfortunately, since Pascal GPU's are still supported in Pytorch as
-// of today's writing, we cannot simply change the values of
-// depth_to_max_blocks. Instead, we must support both code
-// paths. Since you current GPU is known only at runtime, we must
-// compile for both code paths at build time.
+// Unfortunately, nvcc enforces a single kernel-parameter budget for the entire
+// translation unit. That means a mixed Pascal+Volta build cannot compile both
+// the legacy 4 KiB path and the larger Volta-era path in the same `.cu` file.
+//
+// Instead, we choose a single configuration for the translation unit based on
+// the minimum architecture in `__CUDA_ARCH_LIST__`: use the larger tables only
+// when every compiled architecture is Volta or newer, and otherwise keep the
+// legacy 4 KiB limits.
 
 static constexpr int depth_to_max_tensors[5] = {110, 64, 48, 36, 30};
 static constexpr int depth_to_max_blocks[5] = {320, 320, 320, 320, 320};
@@ -85,29 +88,23 @@ __device__ __forceinline__ void load_store(
 // doesn't actually do that.
 namespace mta_detail {
 
-// __CUDA_ARCH_LIST__ has the compute capabilities sorted from lowest
-// to highest. Thus, we know we are compiling only for Volta or higher
-// if the first value of the list is at least 700.
-// We know we are compiling only for Pascal or lower if the last value
-// is less than 700.
+// __CUDA_ARCH_LIST__ has the compute capabilities sorted from lowest to
+// highest, so the first value tells us whether every target architecture is
+// Volta-or-newer and thus whether we can use the larger kernel-parameter limit.
 // https://docs.nvidia.com/cuda/cuda-compiler-driver-nvcc/#virtual-architecture-macros
-#if defined(__CUDA_ARCH_LIST__)
-constexpr int cuda_arch_list[] = {__CUDA_ARCH_LIST__};
-constexpr int cuda_arch_list_len =
-    sizeof(cuda_arch_list) / sizeof(cuda_arch_list[0]);
-constexpr bool kCompileForVoltaAndHigherOnly = cuda_arch_list[0] >= 700;
-constexpr bool kCompileForPascalAndLowerOnly =
-    cuda_arch_list[cuda_arch_list_len - 1] < 700;
-#else
-// If __CUDA_ARCH_LIST__ is not defined (for rocm builds),
-// fallback to the original behavior.
-constexpr bool kCompileForVoltaAndHigherOnly = false;
-constexpr bool kCompileForPascalAndLowerOnly = true;
-#endif
+template <int First, int... Rest>
+struct FirstCudaArch {
+  static constexpr int value = First;
+};
 
-static_assert(
-    !(kCompileForVoltaAndHigherOnly && kCompileForPascalAndLowerOnly),
-    "Cannot compile for only Pascal or lower and only Volta or higher at the same time.");
+#if defined(__CUDA_ARCH_LIST__)
+constexpr bool kUseLargeKernelParams =
+    FirstCudaArch<__CUDA_ARCH_LIST__>::value >= 700;
+#else
+// If __CUDA_ARCH_LIST__ is not defined (for rocm builds), keep the legacy
+// parameter budget.
+constexpr bool kUseLargeKernelParams = false;
+#endif
 
 template <bool IS_VOLTA_OR_HIGHER, int depth>
 struct MTAConfig {
@@ -132,9 +129,7 @@ struct MTAComplexDoubleConfig {
 
 } // namespace mta_detail
 
-template <
-    int n,
-    bool IS_VOLTA_OR_HIGHER = mta_detail::kCompileForVoltaAndHigherOnly>
+template <int n, bool IS_VOLTA_OR_HIGHER = mta_detail::kUseLargeKernelParams>
 struct TensorListMetadata {
  private:
   using Config = mta_detail::MTAConfig<IS_VOLTA_OR_HIGHER, n>;
@@ -150,7 +145,7 @@ struct TensorListMetadata {
 template <
     typename scalar_vals_t,
     int n,
-    bool IS_VOLTA_OR_HIGHER = mta_detail::kCompileForVoltaAndHigherOnly>
+    bool IS_VOLTA_OR_HIGHER = mta_detail::kUseLargeKernelParams>
 struct TensorListScalarListMetadata {
  private:
   using Config = mta_detail::MTAConfig<IS_VOLTA_OR_HIGHER, n>;
@@ -240,7 +235,7 @@ struct TensorListScalarListMetadata<
 // NOTE(crcrpar): This is a conservative resolution to handle `state_steps`
 // whose each element is `at::Tensor` of 1 element representing the number of
 // `step`s called so far.
-template <int n, bool IS_VOLTA_OR_HIGHER = false>
+template <int n, bool IS_VOLTA_OR_HIGHER = mta_detail::kUseLargeKernelParams>
 struct FusedOptimizerTensorListMetadata {
  private:
   using Config = mta_detail::MTAConfig<IS_VOLTA_OR_HIGHER, n>;
@@ -266,14 +261,6 @@ __global__ void multi_tensor_apply_kernel(
 }
 
 } // namespace
-
-inline bool is_current_device_volta_or_higher() {
-#if defined(USE_ROCM)
-  return false;
-#else
-  return at::cuda::getCurrentDeviceProperties()->major >= 7;
-#endif
-}
 
 // multi_tensor_apply enables horizontal fusion across lists of tensors.
 // For example, whereas you once had a for-loop of a + b = c, where a, b,
@@ -396,21 +383,8 @@ void multi_tensor_apply(
     at::ArrayRef<Scalar> scalars,
     T callable,
     ArgTypes... args) {
-  if constexpr (mta_detail::kCompileForVoltaAndHigherOnly) {
-    multi_tensor_apply_impl<true, depth, scalar_T>(
-        tensor_lists, scalars, callable, args...);
-  } else if constexpr (mta_detail::kCompileForPascalAndLowerOnly) {
-    multi_tensor_apply_impl<false, depth, scalar_T>(
-        tensor_lists, scalars, callable, args...);
-  } else {
-    if (is_current_device_volta_or_higher()) {
-      multi_tensor_apply_impl<true, depth, scalar_T>(
-          tensor_lists, scalars, callable, args...);
-    } else {
-      multi_tensor_apply_impl<false, depth, scalar_T>(
-          tensor_lists, scalars, callable, args...);
-    }
-  }
+  multi_tensor_apply_impl<mta_detail::kUseLargeKernelParams, depth, scalar_T>(
+      tensor_lists, scalars, callable, args...);
 }
 
 template <bool IS_VOLTA_OR_HIGHER, int depth, typename T, typename... ArgTypes>
@@ -461,8 +435,8 @@ void multi_tensor_apply_impl(
 
       if (tensors_full || blocks_full) {
         multi_tensor_apply_kernel<<<
-            loc_block_info, // number of blocks
-            kBlockSize, // threads per block
+            loc_block_info,
+            kBlockSize,
             0,
             at::cuda::getCurrentCUDAStream()>>>(
             tensorListMeta, callable, args...);
@@ -503,17 +477,8 @@ void multi_tensor_apply(
     std::vector<std::vector<at::Tensor>>& tensor_lists,
     T callable,
     ArgTypes... args) {
-  if constexpr (mta_detail::kCompileForVoltaAndHigherOnly) {
-    multi_tensor_apply_impl<true, depth>(tensor_lists, callable, args...);
-  } else if constexpr (mta_detail::kCompileForPascalAndLowerOnly) {
-    multi_tensor_apply_impl<false, depth>(tensor_lists, callable, args...);
-  } else {
-    if (is_current_device_volta_or_higher()) {
-      multi_tensor_apply_impl<true, depth>(tensor_lists, callable, args...);
-    } else {
-      multi_tensor_apply_impl<false, depth>(tensor_lists, callable, args...);
-    }
-  }
+  multi_tensor_apply_impl<mta_detail::kUseLargeKernelParams, depth>(
+      tensor_lists, callable, args...);
 }
 
 template <bool IS_VOLTA_OR_HIGHER, int depth, typename T, typename... ArgTypes>
@@ -606,21 +571,9 @@ void multi_tensor_apply_for_fused_optimizer(
     at::TensorList state_steps,
     T callable,
     ArgTypes... args) {
-  if constexpr (mta_detail::kCompileForVoltaAndHigherOnly) {
-    multi_tensor_apply_for_fused_optimizer_impl<true, depth>(
-        tensor_lists, state_steps, callable, args...);
-  } else if constexpr (mta_detail::kCompileForPascalAndLowerOnly) {
-    multi_tensor_apply_for_fused_optimizer_impl<false, depth>(
-        tensor_lists, state_steps, callable, args...);
-  } else {
-    if (is_current_device_volta_or_higher()) {
-      multi_tensor_apply_for_fused_optimizer_impl<true, depth>(
-          tensor_lists, state_steps, callable, args...);
-    } else {
-      multi_tensor_apply_for_fused_optimizer_impl<false, depth>(
-          tensor_lists, state_steps, callable, args...);
-    }
-  }
+  multi_tensor_apply_for_fused_optimizer_impl<
+      mta_detail::kUseLargeKernelParams,
+      depth>(tensor_lists, state_steps, callable, args...);
 }
 
 } // namespace at::native
