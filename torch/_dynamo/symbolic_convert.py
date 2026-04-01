@@ -3867,10 +3867,17 @@ class InstructionTranslatorBase(
     BINARY_REMAINDER = stack_op(operator.mod)
     BINARY_ADD = stack_op(operator.add)
     BINARY_SUBTRACT = stack_op(operator.sub)
-    BINARY_SUBSCR = break_graph_if_unsupported(
+
+    @break_graph_if_unsupported(
         push=True,
         msg_prefix="Encountered graph break when attempting to trace BINARY_SUBSCR: a binary subscript, e.g. x[attr]",
-    )(stack_op(operator.getitem))
+    )
+    def BINARY_SUBSCR(self, inst):
+        from .variables.object_protocol import vt_getitem
+
+        obj, key = self.popn(2)
+        self.push(vt_getitem(self, obj, key))
+
     BINARY_LSHIFT = stack_op(operator.lshift)
     BINARY_RSHIFT = stack_op(operator.rshift)
     BINARY_AND = stack_op(operator.and_)

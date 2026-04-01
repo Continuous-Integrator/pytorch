@@ -548,6 +548,16 @@ class VariableTracker(metaclass=VariableTrackerMeta):
             ],
         )
 
+    def mp_subscript_impl(
+        self,
+        tx: Any,
+        key: "VariableTracker",
+    ) -> "VariableTracker":
+        # PyObject_GetItem: https://github.com/python/cpython/blob/62a6e898e01/Objects/abstract.c#L155-L206
+        # Default: delegate to call_method. Subclasses override with direct
+        # slot logic and remove __getitem__ from their call_method.
+        return self.call_method(tx, "__getitem__", [key], {})
+
     def call_method(
         self,
         tx: Any,

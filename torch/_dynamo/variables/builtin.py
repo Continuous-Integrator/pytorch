@@ -2330,7 +2330,9 @@ class BuiltinVariable(VariableTracker):
         *args: VariableTracker,
         **kwargs: VariableTracker,
     ) -> VariableTracker:
-        return args[0].call_method(tx, "__getitem__", list(args[1:]), kwargs)
+        from .object_protocol import vt_getitem
+
+        return vt_getitem(tx, args[0], args[1])
 
     def call_isinstance(
         self,
