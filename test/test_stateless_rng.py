@@ -83,6 +83,13 @@ class TestStatelessRNGKeySplit(TestCase):
         splits2 = random.split(key2, 4)
         self.assertNotEqual(splits1, splits2)
 
+    def test_offset_zero_vs_one_produce_different_splits(self, device):
+        key1 = random.key(42, device=device)
+        key2 = torch.tensor([42, 1], dtype=torch.uint64, device=device)
+        splits1 = random.split(key1, 4)
+        splits2 = random.split(key2, 4)
+        self.assertNotEqual(splits1, splits2)
+
     def test_batched(self, device):
         key = random.key(42, device=device)
         keys = random.split(key, 4)  # (4, 2)
@@ -122,19 +129,6 @@ class TestStatelessRNGKeySplit(TestCase):
             random.split(key, 0)
         with self.assertRaises(RuntimeError):
             random.split(key, -1)
-
-    def test_offsets_are_4_aligned(self, device):
-        key = random.key(42, device=device)
-        splits = random.split(key, 1000)
-        offsets = splits[:, 1].to(torch.int64)
-        self.assertTrue((offsets % 4 == 0).all())
-
-    def test_batched_offsets_are_4_aligned(self, device):
-        key = random.key(42, device=device)
-        keys = random.split(key, 8)
-        splits = random.split(keys, 100)
-        offsets = splits[..., 1].to(torch.int64)
-        self.assertTrue((offsets % 4 == 0).all())
 
     def test_error_batched_last_dim_not_2(self, device):
         key = torch.tensor([[42, 0, 1], [43, 0, 1]], dtype=torch.uint64, device=device)
@@ -218,18 +212,6 @@ class TestStatelessRNGKeyFoldIn(TestCase):
         with self.assertRaises(RuntimeError):
             random.fold_in(key, 0)
 
-    def test_offsets_are_4_aligned(self, device):
-        key = random.key(42, device=device)
-        for data in range(20):
-            folded = random.fold_in(key, data)
-            self.assertEqual(folded[1].item() % 4, 0)
-
-    def test_batched_offsets_are_4_aligned(self, device):
-        key = random.key(42, device=device)
-        keys = random.split(key, 100)
-        folded = random.fold_in(keys, 7)
-        offsets = folded[:, 1].to(torch.int64)
-        self.assertTrue((offsets % 4 == 0).all())
     def test_error_batched_last_dim_not_2(self, device):
         key = torch.tensor([[42, 0, 1], [43, 0, 1]], dtype=torch.uint64, device=device)
         with self.assertRaises(RuntimeError):
@@ -315,7 +297,7 @@ class TestStatelessRNGDistribution(TestCase):
     def test_key_broadcasting_semantics(self, device, dtype, gen_fn_name):
         key = random.key(42, device=device)
 
-        # Broadcast key dim: size-1 dims replicate, real dims index keys.
+        # Broadcast key dim: size-1 dims replicate, other dims index keys.
         keys = random.split(key, 3).unsqueeze(0).unsqueeze(-2)  # (1, 3, 1, 2)
         result = self._gen(gen_fn_name, keys, (4, 3, 100), dtype=dtype)
         for i in range(1, 4):
@@ -323,12 +305,12 @@ class TestStatelessRNGDistribution(TestCase):
         for j in range(1, 3):
             self.assertNotEqual(result[0][0], result[0][j])
 
-        # All-broadcast key matches unbatched (all dims are generation).
+        # All-broadcast key matches unbatched.
         batched = self._gen(gen_fn_name, key.view(1, 1, 2), (4, 100), dtype=dtype)
         unbatched = self._gen(gen_fn_name, key, (400,), dtype=dtype)
         self.assertEqual(batched.flatten(), unbatched)
 
-        # Multiple trailing size-1 dims form the generation axis.
+        # Multiple trailing size-1 dims to broadcast over.
         keys = random.split(key, 4).view(4, 1, 1, 2)
         result = self._gen(gen_fn_name, keys, (4, 10, 100), dtype=dtype)
         for i in range(4):
@@ -353,50 +335,55 @@ class TestStatelessRNGDistribution(TestCase):
             self._gen(gen_fn_name, key, (100,))
 
     @parametrize("gen_fn_name", ["normal", "uniform"])
-    def test_error_shape_mismatch(self, device, gen_fn_name):
+    def test_error_key_shape(self, device, gen_fn_name):
         key = random.key(42, device=device)
-        keys = random.split(key, 3).unsqueeze(-2)  # (3, 1, 2)
+        # Last dim must be 2.
+        bad_key = torch.tensor([42, 0, 1], dtype=torch.uint64, device=device)
         with self.assertRaises(RuntimeError):
-            self._gen(gen_fn_name, keys, (2, 100))  # batch dim 2 != 3
-
-    @parametrize("gen_fn_name", ["normal", "uniform"])
-    def test_error_key_last_dim_not_2(self, device, gen_fn_name):
-        key = torch.tensor([42, 0, 1], dtype=torch.uint64, device=device)
+            self._gen(gen_fn_name, bad_key, (100,))
+        # Key batch ndim must equal output ndim (too few).
         with self.assertRaises(RuntimeError):
-            self._gen(gen_fn_name, key, (100,))
+            self._gen(gen_fn_name, random.split(key, 3), (3, 4, 100))
+        # Key batch ndim must equal output ndim (too many).
+        with self.assertRaises(RuntimeError):
+            self._gen(gen_fn_name, random.split(key, 3).view(3, 1, 1, 2), (3, 100))
+        # Key batch dims must be broadcastable with output.
+        with self.assertRaises(RuntimeError):
+            self._gen(gen_fn_name, random.split(key, 5).unsqueeze(-2), (3, 100))
 
     @parametrize("gen_fn_name", ["normal", "uniform"])
     @dtypes(*all_floating_dtypes)
     def test_offset_shift_consistency(self, device, dtype, gen_fn_name):
         seed = 42
         n = 100
-        outputs_per_elem = 2 if dtype == torch.float64 else 1
-        key0 = torch.tensor([seed, 0], dtype=torch.uint64, device=device)
+        key0 = random.key(seed, device=device)
         ref = self._gen(gen_fn_name, key0, (n,), dtype=dtype)
-        for elem_offset in range(1, 4):
-            offset = elem_offset * outputs_per_elem
+
+        # as a key's offset shifts, we expect the stream to shift by
+        # the number of elements per philox call (2 for double; 4 otherwise)
+        for offset in range(1, 4):
             key = torch.tensor([seed, offset], dtype=torch.uint64, device=device)
-            result = self._gen(gen_fn_name, key, (n - elem_offset,), dtype=dtype)
-            self.assertEqual(result, ref[elem_offset:])
+            elems_per_call = 2 if dtype == torch.float64 else 4
+            expected_shift = offset * elems_per_call
+            result = self._gen(gen_fn_name, key, (n,), dtype=dtype)
+            self.assertEqual(ref[expected_shift:], result[:-expected_shift])
 
     @parametrize("gen_fn_name", ["normal", "uniform"])
     @dtypes(*all_floating_dtypes)
     def test_offset_overflow(self, device, dtype, gen_fn_name):
         seed = 42
-        outputs_per_elem = 2 if dtype == torch.float64 else 1
-        wrap_at = 5
-        near_max = (1 << 64) - wrap_at * outputs_per_elem
-        key = torch.tensor([seed, near_max], dtype=torch.uint64, device=device)
-        result = self._gen(gen_fn_name, key, (20,), dtype=dtype)
-        self.assertEqual(
-            result[:wrap_at],
-            self._gen(gen_fn_name, key, (wrap_at,), dtype=dtype),
+        n = 100
+        last_offset_before_wrap = (1 << 64) - 1
+        key = torch.tensor(
+            [seed, last_offset_before_wrap], dtype=torch.uint64, device=device
         )
-        key_zero = torch.tensor([seed, 0], dtype=torch.uint64, device=device)
-        self.assertEqual(
-            result[wrap_at:],
-            self._gen(gen_fn_name, key_zero, (20 - wrap_at,), dtype=dtype),
-        )
+        result = self._gen(gen_fn_name, key, (n,), dtype=dtype)
+
+        # ensure offset wraps around to 0 by comparing with 0-offset key results
+        key0 = random.key(seed, device=device)
+        result0 = self._gen(gen_fn_name, key0, (n,), dtype=dtype)
+        elems_per_call = 2 if dtype == torch.float64 else 4
+        self.assertEqual(result[elems_per_call:], result0[:-elems_per_call])
 
     @parametrize("gen_fn_name", ["normal", "uniform"])
     @dtypes(*all_floating_dtypes)
