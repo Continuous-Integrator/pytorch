@@ -3867,10 +3867,27 @@ class InstructionTranslatorBase(
     BINARY_REMAINDER = stack_op(operator.mod)
     BINARY_ADD = stack_op(operator.add)
     BINARY_SUBTRACT = stack_op(operator.sub)
-    BINARY_SUBSCR = break_graph_if_unsupported(
+
+    @break_graph_if_unsupported(
         push=True,
         msg_prefix="Encountered graph break when attempting to trace BINARY_SUBSCR: a binary subscript, e.g. x[attr]",
-    )(stack_op(operator.getitem))
+    )
+    def BINARY_SUBSCR(self, inst):
+        args = self.popn(2)
+        obj, key = args[0], args[1]
+        # Fast path: dispatch directly to mp_subscript_impl when the VT
+        # overrides it, skipping the BuiltinVariable(operator.getitem)
+        # dispatch chain.
+        if type(obj).mp_subscript_impl is not VariableTracker.mp_subscript_impl:
+            from .variables.object_protocol import vt_getitem
+
+            self.push(vt_getitem(self, obj, key))  # type: ignore[arg-type]
+        else:
+            # Types without mp_subscript_impl (e.g., BuiltinVariable for type
+            # subscripts like list[int]) need the full dispatch chain, which
+            # includes the constant fold fallback.
+            self.push(BuiltinVariable(operator.getitem).call_function(self, args, {}))  # type: ignore[arg-type]
+
     BINARY_LSHIFT = stack_op(operator.lshift)
     BINARY_RSHIFT = stack_op(operator.rshift)
     BINARY_AND = stack_op(operator.and_)
