@@ -496,7 +496,7 @@ class UserDefinedClassVariable(UserDefinedVariable):
             self.value in {collections.OrderedDict, collections.defaultdict}
             and name == "fromkeys"
         ):
-            return variables.BuiltinVariable.call_custom_dict_fromkeys(
+            return variables.DictBuiltinVariable.call_custom_dict_fromkeys(
                 tx, self.value, *args, **kwargs
             )
         elif self.value is collections.OrderedDict and name == "move_to_end":
@@ -620,7 +620,7 @@ class UserDefinedClassVariable(UserDefinedVariable):
                 args = []
             else:
                 default_factory, *args = args
-            dict_vt = variables.BuiltinVariable.call_custom_dict(
+            dict_vt = variables.DictBuiltinVariable.call_custom_dict(
                 tx, dict, *args, **kwargs
             )
             return DefaultDictVariable(
@@ -640,7 +640,9 @@ class UserDefinedClassVariable(UserDefinedVariable):
                         *graph_break_hints.SUPPORTABLE,
                     ],
                 )
-            return SourcelessBuilder.create(tx, dict).call_dict(tx, *args, **kwargs)
+            return variables.DictBuiltinVariable.call_custom_dict(
+                tx, dict, *args, **kwargs
+            )
         elif self.value is collections.deque:
             maxlen = variables.CONSTANT_VARIABLE_NONE
 
@@ -1341,6 +1343,30 @@ class UserDefinedObjectVariable(UserDefinedVariable):
             return self.value
         return super().guard_as_python_constant()
 
+    def nb_index_impl(
+        self,
+        tx: "InstructionTranslator",
+    ) -> VariableTracker:
+        # CPython: PyNumber_Index checks tp_as_number->nb_index.
+        # For user-defined types, __index__ in tp_dict means nb_index is set.
+        type_attr = inspect.getattr_static(type(self.value), "__index__", None)
+        if type_attr is None:
+            return super().nb_index_impl(tx)
+        method_var = self.resolve_type_attr(tx, "__index__", type_attr, source=None)
+        result = method_var.call_function(tx, [], {})
+        # CPython validates that __index__ returns an int (abstract.c:1433-1438).
+        if result.is_python_constant() and not isinstance(
+            result.as_python_constant(), int
+        ):
+            raise_observed_exception(
+                TypeError,
+                tx,
+                args=[
+                    f"__index__ returned non-int (type {type(result.as_python_constant()).__name__})"
+                ],
+            )
+        return result
+
     def torch_function_check(self) -> None:
         assert has_torch_function(self), (
             f"calling torch function on object without __torch_function__ {self}"
@@ -1481,9 +1507,9 @@ class UserDefinedObjectVariable(UserDefinedVariable):
         if method is not None:
             type_attr = self.lookup_class_mro_attr("__len__")
             source = self.source and self.get_source_by_walking_mro(tx, "__len__")
-            return self.resolve_type_attr(
-                tx, "__len__", type_attr, source
-            ).call_function(tx, [], {})
+            method_var = self.resolve_type_attr(tx, "__len__", type_attr, source)
+            if not isinstance(method_var, variables.GetAttrVariable):
+                return method_var.call_function(tx, [], {})
         return super().sq_length(tx)
 
     def sq_length(self, tx: "InstructionTranslator") -> VariableTracker:
