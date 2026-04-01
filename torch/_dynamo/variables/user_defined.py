@@ -349,16 +349,21 @@ class UserDefinedClassVariable(UserDefinedVariable):
         if name in cmp_name_to_op_mapping and not isinstance(obj, types.FunctionType):
             return variables.GetAttrVariable(self, name, None, source=source)
 
-        # Check if obj is a metaclass method. In Python, `Color.__iter__` returns a
-        # bound method because EnumType.__iter__ is found via type.__getattribute__,
-        # but inspect.getattr_static returns the raw function. We need to bind it.
-        if isinstance(obj, types.FunctionType) and type(self.value) is not type:
-            metaclass = type(self.value)
+        # Check if the metaclass defines this method. In Python, dunder methods
+        # used by protocols (e.g. `for x in Color:` calls `type(Color).__iter__`)
+        # are looked up on the metaclass, not the class itself.
+        # inspect.getattr_static searches the class MRO which may find a different
+        # method (e.g. Flag.__iter__ vs EnumType.__iter__). Use the metaclass version.
+        metaclass = type(self.value)
+        if metaclass is not type:
             for klass in metaclass.__mro__:
                 if klass is type:
                     break
-                if name in klass.__dict__ and klass.__dict__[name] is obj:
-                    return variables.UserMethodVariable(obj, self, source=source)
+                if name in klass.__dict__:
+                    method = klass.__dict__[name]
+                    if isinstance(method, types.FunctionType):
+                        return variables.UserMethodVariable(method, self, source=source)
+                    break
 
         if isinstance(obj, staticmethod):
             return VariableTracker.build(tx, obj.__get__(self.value), source)
@@ -1282,7 +1287,7 @@ class UserDefinedObjectVariable(UserDefinedVariable):
 
         return super().as_python_constant()
 
-    def as_proxy(self) -> enum.Enum | int:
+    def as_proxy(self) -> object:
         if isinstance(self.value, int) and isinstance(self.value, enum.Enum):
             return int(self.value)
         return super().as_proxy()
@@ -2219,6 +2224,12 @@ class UserDefinedObjectVariable(UserDefinedVariable):
         return hash(self.value)
 
     def is_python_equal(self, other: object) -> bool:
+        if (
+            isinstance(other, VariableTracker)
+            and self.is_python_constant()
+            and other.is_python_constant()
+        ):
+            return self.as_python_constant() == other.as_python_constant()
         # id check
         if not isinstance(other, UserDefinedVariable):
             return False

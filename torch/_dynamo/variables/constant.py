@@ -16,12 +16,7 @@ from torch._dynamo.source import GetItemSource
 
 from .. import variables
 from ..exc import raise_observed_exception, unimplemented
-from ..utils import (
-    common_constant_types,
-    istype,
-    np,
-    raise_args_mismatch,
-)
+from ..utils import common_constant_types, istype, np, raise_args_mismatch
 from .base import ValueMutationNew, VariableTracker
 
 
@@ -440,5 +435,3 @@ class FakeIdVariable(VariableTracker):
                 "Avoid using id() on containers in code that may graph-break.",
             ],
         )
-
-
