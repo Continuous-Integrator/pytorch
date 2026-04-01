@@ -151,15 +151,16 @@ def split(key: torch.Tensor, num: int = 2) -> torch.Tensor:
     This is the primary mechanism for deriving multiple independent keys from
     a single parent key without mutating any state.
 
-    Supports batched keys: if ``key`` has shape ``(*batch, 2)``, each key in the
-    batch is split independently and the result has shape ``(num, *batch, 2)``.
+    Supports batched keys: if ``key`` has shape ``(*batch, K)``, each key in the
+    batch is split independently and the result has shape ``(num, *batch, K)``.
 
     Args:
-        key (Tensor): A PRNG key of shape ``(..., 2)`` with dtype ``torch.uint64``.
+        key (Tensor): A PRNG key returned by :func:`key`, :func:`split`, or
+            :func:`fold_in`.
         num (int): Number of keys to produce. Default: ``2``.
 
     Returns:
-        A uint64 tensor of shape ``(num, *key.shape[:-1], 2)``.
+        A tensor of shape ``(num, *key.shape)`` containing the derived keys.
 
     Example::
 
@@ -306,15 +307,16 @@ def fold_in(key: torch.Tensor, data: int) -> torch.Tensor:
     only a single derived key is needed. Useful for associating a key with
     a loop iteration, layer index, or other integer identifier.
 
-    Supports batched keys: if ``key`` has shape ``(*batch, 2)``, each key in
+    Supports batched keys: if ``key`` has shape ``(*batch, K)``, each key in
     the batch is folded independently.
 
     Args:
-        key (Tensor): A PRNG key of shape ``(..., 2)`` with dtype ``torch.uint64``.
+        key (Tensor): A PRNG key returned by :func:`key`, :func:`split`, or
+            :func:`fold_in`.
         data (int): A non-negative integer to fold into the key.
 
     Returns:
-        A new uint64 key tensor with the same shape as ``key``.
+        A new key tensor with the same shape as ``key``.
 
     Example::
 
