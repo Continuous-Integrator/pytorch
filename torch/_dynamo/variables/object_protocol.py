@@ -1,14 +1,21 @@
 """
 Dynamo implementations of CPython's PyObject_* default slot algorithms.
 
-Analogous to CPython's Objects/object.c, this module holds the general
-comparison dispatch machinery that is independent of any specific type.
-Per-type richcompare_impl hooks live in their respective VT files.
+Analogous to CPython's Objects/object.c and abstract.c, this module holds
+the general comparison and binary-op dispatch machinery that is independent
+of any specific type. Per-type slot hooks live in their respective VT files.
 """
 
+from typing import TYPE_CHECKING
+
+from ..exc import raise_observed_exception
 from ..utils import istype
 from .base import NO_SUCH_SUBOBJ, VariableTracker
 from .constant import CONSTANT_VARIABLE_FALSE, CONSTANT_VARIABLE_TRUE
+
+
+if TYPE_CHECKING:
+    from ..symbolic_convert import InstructionTranslator
 
 
 def vt_identity_compare(
@@ -63,3 +70,106 @@ def vt_identity_compare(
         return CONSTANT_VARIABLE_FALSE
 
     return None
+
+
+# ---------------------------------------------------------------------------
+# Binary-op dispatch (CPython's abstract.c: binary_op1 / binary_op)
+# https://github.com/python/cpython/blob/v3.13.0/Objects/abstract.c#L927 (binary_op1)
+# ---------------------------------------------------------------------------
+
+
+def is_nb_not_implemented(result: VariableTracker) -> bool:
+    return result.is_constant_match(NotImplemented)
+
+
+def binary_op1(
+    tx: "InstructionTranslator",
+    v: VariableTracker,
+    w: VariableTracker,
+    slot_name: str,
+) -> VariableTracker:
+    """CPython's binary_op1: try v's slot, then w's slot with subclass priority.
+
+    Each VT that participates provides a ``<slot_name>_impl(self, tx, other,
+    reverse)`` method. ``reverse=False`` means "self is left operand" (forward,
+    e.g. ``__or__``), ``reverse=True`` means "self is right operand" (reverse,
+    e.g. ``__ror__``). For built-in types the flag is ignored because their
+    slots check both operands symmetrically.
+    """
+    impl_attr = f"{slot_name}_impl"
+    v_slot = getattr(type(v), impl_attr, None)
+    w_slot = getattr(type(w), impl_attr, None)
+
+    # Same class → only call once (CPython: slotw = NULL if same type)
+    if type(v) is type(w):
+        w_slot = None
+    # Same implementation (inherited) → skip w
+    elif v_slot is w_slot:
+        w_slot = None
+
+    if v_slot is not None:
+        # Subclass priority: if type(w) is a proper subtype of type(v) and
+        # overrides the slot, try w's slot first (CPython abstract.c:952-960).
+        if w_slot is not None and issubclass(type(w), type(v)):
+            result = w_slot(w, tx, v, True)
+            if not is_nb_not_implemented(result):
+                return result
+            w_slot = None
+        result = v_slot(v, tx, w, False)
+        if not is_nb_not_implemented(result):
+            return result
+    if w_slot is not None:
+        result = w_slot(w, tx, v, True)
+        if not is_nb_not_implemented(result):
+            return result
+    from .constant import ConstantVariable
+
+    return ConstantVariable.create(NotImplemented)
+
+
+def binary_op(
+    tx: "InstructionTranslator",
+    v: VariableTracker,
+    w: VariableTracker,
+    slot_name: str,
+    op_symbol: str,
+) -> VariableTracker:
+    """CPython's binary_op: binary_op1 + TypeError fallback."""
+    result = binary_op1(tx, v, w, slot_name)
+    if is_nb_not_implemented(result):
+        raise_observed_exception(
+            TypeError,
+            tx,
+            args=[
+                f"unsupported operand type(s) for {op_symbol}: "
+                f"'{v.python_type_name()}' and '{w.python_type_name()}'"
+            ],
+        )
+    return result
+
+
+def binary_iop(
+    tx: "InstructionTranslator",
+    v: VariableTracker,
+    w: VariableTracker,
+    islot_name: str,
+    slot_name: str,
+    op_symbol: str,
+) -> VariableTracker:
+    """CPython's binary_iop: try inplace slot, fallback to binary_op1."""
+    islot_impl = getattr(type(v), f"{islot_name}_impl", None)
+    if islot_impl is not None:
+        result = islot_impl(v, tx, w, False)
+        if not is_nb_not_implemented(result):
+            return result
+    result = binary_op1(tx, v, w, slot_name)
+    if is_nb_not_implemented(result):
+        raise_observed_exception(
+            TypeError,
+            tx,
+            args=[
+                f"unsupported operand type(s) for {op_symbol}: "
+                f"'{v.python_type_name()}' and '{w.python_type_name()}'"
+            ],
+        )
+    return result
