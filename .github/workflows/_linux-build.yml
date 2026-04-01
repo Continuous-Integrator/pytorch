@@ -393,6 +393,8 @@ jobs:
       - name: Archive artifacts into zip
         if: inputs.build-generates-artifacts && steps.build.outcome != 'skipped' && steps.use-old-whl.outputs.reuse != 'true'
         run: |
+          # DEBUG: TO BE REMOVED ONCE THIS IS ADDED TO CI IMAGE
+          sudo apt-get install -y zip
           zip -1 -r artifacts.zip dist/ build/custom_test_artifacts build/lib build/bin .additional_ci_files
 
       - name: Store PyTorch Build Artifacts on S3
@@ -471,7 +473,7 @@ jobs:
       actions: read
     # Don't run on forked repos
     if: github.repository_owner == 'pytorch' && inputs.use-arc
-    runs-on: ${{ inputs.runner_prefix }}${{ inputs.runner }}
+    runs-on: ${{ inputs.runner_prefix }}${{ startsWith(inputs.runner, 'l-') && inputs.runner || 'l-x86iavx512-8-64' }}
     container:
       image: ghcr.io/pytorch/${{ inputs.docker-image-name }}
     timeout-minutes: 480
