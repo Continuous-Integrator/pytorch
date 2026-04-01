@@ -93,27 +93,27 @@ def _codegen_unwrap_subclass(
                     include_symints=include_symints,
                 )
 
-    if not include_symints:
-        return
-
     # Emit symint extraction
-    size_placeholders = _compute_placeholders(meta.outer_size)
-    stride_placeholders = _compute_placeholders(meta.outer_stride)
-    has_size_symints = any(size_placeholders)
-    has_stride_symints = any(stride_placeholders)
+    if include_symints:
+        size_placeholders = _compute_placeholders(meta.outer_size)
+        stride_placeholders = _compute_placeholders(meta.outer_stride)
+        has_size_symints = any(size_placeholders)
+        has_stride_symints = any(stride_placeholders)
 
-    if has_size_symints or has_stride_symints:
-        size_var = state.fresh_name("_size")
-        state.emit(f"{size_var} = {var}.size()", indent=indent)
-        for i, is_sym in enumerate(size_placeholders):
-            if is_sym:
-                state.emit(f"unwrapped_args.append({size_var}[{i}])", indent=indent)
+        if has_size_symints or has_stride_symints:
+            size_var = state.fresh_name("_size")
+            state.emit(f"{size_var} = {var}.size()", indent=indent)
+            for i, is_sym in enumerate(size_placeholders):
+                if is_sym:
+                    state.emit(f"unwrapped_args.append({size_var}[{i}])", indent=indent)
 
-        stride_var = state.fresh_name("_stride")
-        state.emit(f"{stride_var} = {var}.stride()", indent=indent)
-        for i, is_sym in enumerate(stride_placeholders):
-            if is_sym:
-                state.emit(f"unwrapped_args.append({stride_var}[{i}])", indent=indent)
+            stride_var = state.fresh_name("_stride")
+            state.emit(f"{stride_var} = {var}.stride()", indent=indent)
+            for i, is_sym in enumerate(stride_placeholders):
+                if is_sym:
+                    state.emit(
+                        f"unwrapped_args.append({stride_var}[{i}])", indent=indent
+                    )
 
 
 def _concrete_value(val: None | int | SymInt) -> int:
@@ -214,23 +214,16 @@ def _emit_output_wrapping(
     return result_exprs, num_args_tallied
 
 
-def _codegen_subclass_wrapper_source(
+def _emit_input_unwrapping(
+    state: _CodegenState,
     inp_metas: list[PlainTensorMeta | SubclassCreationMeta],
-    out_metas: list[PlainTensorMeta | SubclassCreationMeta],
-    num_fw_outs_saved_for_bw: int | None,
     frozen_inp_indices: frozenset[int] = frozenset(),
-) -> tuple[str, dict[str, object]]:
-    """Generate source and globals for a subclass wrapper.
+    include_symints: bool = True,
+) -> None:
+    """Emit unwrapping code for input metas into unwrapped_args.
 
-    Returns (source, globals_dict).  The globals_dict will NOT contain
-    ``compiled_fn`` — the caller is responsible for adding it before exec.
+    Caller must have already emitted ``unwrapped_args = []``.
     """
-    state = _CodegenState()
-
-    state.emit("def inner_fn(args):", indent=0)
-
-    # --- Input unwrapping ---
-    state.emit("unwrapped_args = []")
     for i, meta in enumerate(inp_metas):
         if isinstance(meta, PlainTensorMeta):
             state.emit(f"unwrapped_args.append(args[{i}])")
@@ -248,7 +241,29 @@ def _codegen_subclass_wrapper_source(
                 f"assert type({inp_var}) is {type_name}, "
                 f"f'expected {{{type_name}}}, got {{type({inp_var})}}'",
             )
-            _codegen_unwrap_subclass(state, meta, inp_var, indent=1)
+            _codegen_unwrap_subclass(
+                state, meta, inp_var, indent=1, include_symints=include_symints
+            )
+
+
+def _codegen_subclass_wrapper_source(
+    inp_metas: list[PlainTensorMeta | SubclassCreationMeta],
+    out_metas: list[PlainTensorMeta | SubclassCreationMeta],
+    num_fw_outs_saved_for_bw: int | None,
+    frozen_inp_indices: frozenset[int] = frozenset(),
+) -> tuple[str, dict[str, object]]:
+    """Generate source and globals for a subclass wrapper.
+
+    Returns (source, globals_dict).  The globals_dict will NOT contain
+    ``compiled_fn`` — the caller is responsible for adding it before exec.
+    """
+    state = _CodegenState()
+
+    state.emit("def inner_fn(args):", indent=0)
+
+    # --- Input unwrapping ---
+    state.emit("unwrapped_args = []")
+    _emit_input_unwrapping(state, inp_metas, frozen_inp_indices=frozen_inp_indices)
 
     # Pass through any trailing args not covered by inp_metas
     # (e.g. rng seed/offset added by FunctionalizedRngRuntimeWrapper).
@@ -324,80 +339,52 @@ def _compile_and_exec_source(
     return fn  # type: ignore[return-value]
 
 
-def codegen_backward_subclass_wrap(
-    out_metas: list[PlainTensorMeta | SubclassCreationMeta],
-) -> Callable[..., object]:
-    """Generate a specialized function for wrapping backward outputs into subclasses."""
-    source, globals_dict = _codegen_subclass_wrap_source(out_metas)
-    return _compile_and_exec_source(
-        source, globals_dict, "wrap_fn", "backward_subclass_wrapper"
-    )
-
-
 def _codegen_subclass_unwrap_source(
     inp_metas: list[PlainTensorMeta | SubclassCreationMeta],
     include_symints: bool = False,
 ) -> tuple[str, dict[str, object]]:
     """Generate source for unwrapping subclass inputs into flat tensors.
 
-    This is a subset of _codegen_subclass_wrapper_source that only
-    generates the input unwrapping part, used for the backward prologue.
+    Shares input-unwrapping logic with _codegen_subclass_wrapper_source
+    via _emit_input_unwrapping. Used for the backward prologue.
     Returns (source, globals_dict).
     """
     state = _CodegenState()
 
     state.emit("def unwrap_fn(args):", indent=0)
     state.emit("unwrapped_args = []")
-
-    for i, meta in enumerate(inp_metas):
-        if isinstance(meta, PlainTensorMeta):
-            state.emit(f"unwrapped_args.append(args[{i}])")
-        else:
-            inp_var = state.fresh_name("_inp")
-            type_name = state.add_global(
-                state.fresh_name("_expected_type"),
-                meta.original_subclass_type or type(meta.original_subclass),
-            )
-            state.emit(f"{inp_var} = args[{i}]")
-            state.emit(
-                f"assert type({inp_var}) is {type_name}, "
-                f"f'expected {{{type_name}}}, got {{type({inp_var})}}'",
-            )
-            _codegen_unwrap_subclass(
-                state,
-                meta,
-                inp_var,
-                indent=1,
-                include_symints=include_symints,
-            )
-
+    _emit_input_unwrapping(state, inp_metas, include_symints=include_symints)
     state.emit("return unwrapped_args")
 
     source = "\n".join(state.lines)
     return source, state.globals
 
 
-def codegen_backward_subclass_unwrap(
-    inp_metas: list[PlainTensorMeta | SubclassCreationMeta] | None = None,
-) -> Callable[..., object]:
-    """Generate a specialized function for unwrapping backward non-tangent subclass inputs.
+def codegen_backward_subclass_fns(
+    grad_input_metas: list[PlainTensorMeta | SubclassCreationMeta] | None = None,
+) -> tuple[Callable[..., object], Callable[..., object] | None]:
+    """Generate codegen'd unwrap and wrap functions for the backward pass.
 
-    When inp_metas is None, generates an identity function (all non-tangent
-    backward args are plain tensors in AOT dispatch, since the compiled
-    forward operates on unwrapped inner tensors).
+    Returns (unwrap_fn, wrap_fn). unwrap_fn is used by the backward prologue
+    to unwrap non-tangent subclass inputs (always an identity in AOT dispatch
+    since the compiled forward operates on unwrapped inner tensors). wrap_fn
+    is used by the backward epilogue to wrap flat grad inputs back into
+    subclasses; it is None when grad_input_metas is None.
     """
-    if inp_metas is not None:
-        source, globals_dict = _codegen_subclass_unwrap_source(
-            inp_metas,
-            include_symints=False,
-        )
-    else:
-        source = "def unwrap_fn(args):\n    return list(args)"
-        globals_dict: dict[str, object] = {}
-
-    return _compile_and_exec_source(
+    source = "def unwrap_fn(args):\n    return list(args)"
+    globals_dict: dict[str, object] = {}
+    unwrap_fn = _compile_and_exec_source(
         source, globals_dict, "unwrap_fn", "backward_subclass_unwrap"
     )
+
+    wrap_fn = None
+    if grad_input_metas is not None:
+        wrap_source, wrap_globals = _codegen_subclass_wrap_source(grad_input_metas)
+        wrap_fn = _compile_and_exec_source(
+            wrap_source, wrap_globals, "wrap_fn", "backward_subclass_wrapper"
+        )
+
+    return unwrap_fn, wrap_fn
 
 
 def codegen_subclass_wrapper(

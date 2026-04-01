@@ -2775,19 +2775,14 @@ class _AOTDispatchAutogradFunctionFactory:
         aot_config = self.spec.aot_config
         fw_metadata = self.spec.fw_metadata
 
-        _codegen_bw_wrap_fn = None
         _codegen_bw_unwrap_fn = None
+        _codegen_bw_wrap_fn = None
         if maybe_subclass_meta is not None:
-            from .subclass_codegen import (
-                codegen_backward_subclass_unwrap,
-                codegen_backward_subclass_wrap,
-            )
+            from .subclass_codegen import codegen_backward_subclass_fns
 
-            if maybe_subclass_meta.grad_input_metas is not None:
-                _codegen_bw_wrap_fn = codegen_backward_subclass_wrap(
-                    maybe_subclass_meta.grad_input_metas,
-                )
-            _codegen_bw_unwrap_fn = codegen_backward_subclass_unwrap()
+            _codegen_bw_unwrap_fn, _codegen_bw_wrap_fn = codegen_backward_subclass_fns(
+                grad_input_metas=maybe_subclass_meta.grad_input_metas,
+            )
 
         class CompiledFunction(torch.autograd.Function):
             compiled_fw = compiled_fw_func
