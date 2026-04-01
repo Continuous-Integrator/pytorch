@@ -1048,7 +1048,7 @@ class OverlapPreservingBucketer:
             for old_start in old_starts:
                 erased_to_new[old_start] = coll_start
             for old_wait, new_wait in zip(old_waits, new_waits):
-                erased_to_new[old_wait] = new_wait
+                erased_to_new[old_wait] = new_wait  # noqa: PERF403
 
         # Handle convert_element_type nodes that were fused and erased
         # The bucketed operation may have a _pre_bucket op that handles dtype conversion

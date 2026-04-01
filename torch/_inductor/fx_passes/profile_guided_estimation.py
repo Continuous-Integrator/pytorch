@@ -1,5 +1,5 @@
 """
-Profile-Guided Latency Estimation (PGLE) for overlap scheduling.
+Profile-Guided Estimation (PGE) for overlap scheduling.
 
 Parses a Chrome Trace JSON (from torch.profiler) and builds lookup tables
 for collective, matmul, and attention kernel runtimes. These are used as
@@ -20,15 +20,17 @@ from typing import Any
 
 import torch
 import torch.fx as fx
+from torch._inductor.fx_passes.bucketing import (
+    is_all_gather_into_tensor,
+    is_all_reduce_tensor,
+    is_all_to_all_tensor,
+    is_reduce_scatter_tensor,
+)
+from torch._logging import trace_structured
 from torch.utils._ordered_set import OrderedSet
 
 
 log = logging.getLogger(__name__)
-
-
-# ---------------------------------------------------------------------------
-# Mesh dimension identification via rank stride patterns
-# ---------------------------------------------------------------------------
 
 
 def _rank_stride(ranks: tuple[int, ...]) -> int | None:
@@ -51,11 +53,6 @@ def _rank_stride(ranks: tuple[int, ...]) -> int | None:
     return stride
 
 
-# ---------------------------------------------------------------------------
-# Data classes for profile records
-# ---------------------------------------------------------------------------
-
-
 @dataclass
 class CollectiveRecord:
     """A single collective kernel observation from the profile."""
@@ -63,7 +60,8 @@ class CollectiveRecord:
     collective_name: str  # "all_gather_into_tensor", "reduce_scatter_tensor", etc.
     pg_ranks: tuple[int, ...]  # sorted rank tuple
     group_size: int
-    nelems: int
+    in_nelems: int  # "In msg nelems" from profile
+    out_nelems: int  # "Out msg nelems" from profile
     dtype: str  # "Float", "BFloat16", etc.
     duration_us: float
 
@@ -89,11 +87,6 @@ class SdpaRecord:
     dtype: str
     is_backward: bool
     duration_us: float  # sum of all GPU kernels for this CPU op
-
-
-# ---------------------------------------------------------------------------
-# Profile data loader and lookup
-# ---------------------------------------------------------------------------
 
 
 _DTYPE_BYTES: dict[str, int] = {
@@ -153,7 +146,7 @@ class ProfileData:
         self._build_indices()
 
         log.info(
-            "PGLE loaded: %d collectives, %d matmuls, %d sdpa records, %d PGs",
+            "PGE loaded: %d collectives, %d matmuls, %d sdpa records, %d PGs",
             len(self.collectives),
             len(self.matmuls),
             len(self.sdpa_records),
@@ -210,13 +203,13 @@ class ProfileData:
             pg_name = args.get("Process Group Name", "")
             pg_ranks_str = args.get("Process Group Ranks", "")
             group_size = args.get("Group size", 0)
-            nelems = args.get("In msg nelems", 0)
+            in_nelems = args.get("In msg nelems", 0)
+            out_nelems = args.get("Out msg nelems", 0)
             dtype = args.get("dtype", "")
             dur = ev.get("dur", 0.0)
             if dur <= 0:
                 continue
 
-            # Parse ranks from string like "[0, 1, 2, 3]"
             pg_ranks = self._parse_ranks(pg_ranks_str, pg_name)
 
             self.collectives.append(
@@ -224,7 +217,8 @@ class ProfileData:
                     collective_name=coll_name,
                     pg_ranks=pg_ranks,
                     group_size=group_size,
-                    nelems=nelems,
+                    in_nelems=in_nelems,
+                    out_nelems=out_nelems,
                     dtype=dtype,
                     duration_us=dur,
                 )
@@ -291,22 +285,6 @@ class ProfileData:
             )
         )
 
-    @staticmethod
-    def _to_output_nelems(norm_name: str, in_nelems: int, group_size: int) -> int:
-        """Convert profile 'In msg nelems' to output-tensor convention.
-
-        The profile records input nelems per collective, but the FX scheduler
-        computes nelems from node.meta["val"] which is the output tensor:
-          all_gather output = input * group_size
-          reduce_scatter output = input / group_size
-          all_reduce output = input (same size)
-        """
-        if "all_gather" in norm_name:
-            return in_nelems * group_size
-        if "reduce_scatter" in norm_name:
-            return max(in_nelems // group_size, 1)
-        return in_nelems
-
     def _build_indices(self) -> None:
         """Build lookup indices from parsed records."""
         coll_idx: dict[tuple[str, tuple[int, ...], str], list[tuple[int, float]]] = (
@@ -322,14 +300,13 @@ class ProfileData:
         for rec in self.collectives:
             norm_name = self._normalize_collective_name(rec.collective_name)
             gs = len(rec.pg_ranks) if rec.pg_ranks else rec.group_size
-            nelems = self._to_output_nelems(norm_name, rec.nelems, gs)
             coll_idx[(norm_name, rec.pg_ranks, rec.dtype)].append(
-                (nelems, rec.duration_us)
+                (rec.out_nelems, rec.duration_us)
             )
             stride = _rank_stride(rec.pg_ranks)
             if stride is not None:
                 coll_idx_by_stride[(norm_name, stride, gs, rec.dtype)].append(
-                    (nelems, rec.duration_us)
+                    (rec.out_nelems, rec.duration_us)
                 )
                 pg_sets_by_stride[(stride, gs)].add(rec.pg_ranks)
         # Sort by nelems for interpolation
@@ -371,18 +348,18 @@ class ProfileData:
         # is most representative of hardware speed, not dominated by startup latency).
         # Uses output-convention bytes (matching _estimate_with_pg_bandwidth).
         _TOP_N = 5  # consider top N largest messages for peak BW
-        pg_bw_samples: dict[tuple[int, ...], list[tuple[int, float]]] = defaultdict(list)
-        stride_bw_samples: dict[tuple[int, int], list[tuple[int, float]]] = (
-            defaultdict(list)
+        pg_bw_samples: dict[tuple[int, ...], list[tuple[int, float]]] = defaultdict(
+            list
+        )
+        stride_bw_samples: dict[tuple[int, int], list[tuple[int, float]]] = defaultdict(
+            list
         )
         for rec in self.collectives:
-            if rec.nelems <= 0 or rec.duration_us <= 0:
+            if rec.out_nelems <= 0 or rec.duration_us <= 0:
                 continue
-            norm_name = self._normalize_collective_name(rec.collective_name)
             gs = len(rec.pg_ranks) if rec.pg_ranks else rec.group_size
-            out_nelems = self._to_output_nelems(norm_name, rec.nelems, gs)
             elem_bytes = self._dtype_elem_bytes(rec.dtype)
-            total_bytes = out_nelems * elem_bytes
+            total_bytes = rec.out_nelems * elem_bytes
             bw_gbps = total_bytes / (rec.duration_us * 1e-6) / 1e9  # GB/s
             pg_bw_samples[rec.pg_ranks].append((total_bytes, bw_gbps))
             stride = _rank_stride(rec.pg_ranks)
@@ -431,10 +408,6 @@ class ProfileData:
         if "all_to_all" in n or "alltoall" in n:
             return "all_to_all"
         return name
-
-    # -----------------------------------------------------------------------
-    # Lookup methods (return ms or None)
-    # -----------------------------------------------------------------------
 
     # Maximum ratio of target_nelems / max_observed before switching from
     # log-log extrapolation to bandwidth-based estimation.
@@ -638,10 +611,6 @@ class ProfileData:
         return None
 
 
-# ---------------------------------------------------------------------------
-# FX node inspection helpers
-# ---------------------------------------------------------------------------
-
 # Mapping from torch dtype to profile dtype strings
 _DTYPE_TO_PROFILE_STR: dict[torch.dtype, str] = {
     torch.float32: "Float",
@@ -701,7 +670,7 @@ def _is_sdpa_node(node: fx.Node) -> bool:
     target = node.target
     if not hasattr(target, "__name__"):
         return False
-    name = target.__name__ if hasattr(target, "__name__") else str(target)
+    name = target.__name__
     return any(
         kw in name.lower()
         for kw in ("scaled_dot_product", "cudnn_attention", "flash_attention", "sdpa")
@@ -734,7 +703,7 @@ def _get_mm_shapes(
 
         shape = [get_hint(s) for s in t.shape]
         if any(s is None for s in shape):
-            log.debug("PGLE: unresolved symbolic dims in shape %s", t.shape)
+            log.debug("PGE: unresolved symbolic dims in shape %s", t.shape)
             return None
         return tuple(shape)  # type: ignore[arg-type]
 
@@ -772,12 +741,11 @@ def _get_sdpa_key(
 
 def _is_collective_node(node: fx.Node) -> bool:
     """Check if node is a collective communication op."""
-    return node.target in (
-        torch.ops._c10d_functional.all_gather_into_tensor.default,
-        torch.ops._c10d_functional.all_gather_into_tensor_out.default,
-        torch.ops._c10d_functional.reduce_scatter_tensor.default,
-        torch.ops._c10d_functional.all_reduce.default,
-        torch.ops._c10d_functional.all_to_all_single.default,
+    return (
+        is_all_gather_into_tensor(node)
+        or is_reduce_scatter_tensor(node)
+        or is_all_reduce_tensor(node)
+        or is_all_to_all_tensor(node)
     )
 
 
@@ -835,7 +803,7 @@ def _get_collective_info(
         return (collective_name, pg_ranks, nelems, dtype)
     except Exception:
         log.debug(
-            "PGLE: failed to extract collective info for %s", node.name, exc_info=True
+            "PGE: failed to extract collective info for %s", node.name, exc_info=True
         )
         return None
 
@@ -889,3 +857,324 @@ def _normalize_profile_indices(profile: ProfileData) -> None:
         norm_dtype = _normalize_profile_dtype(dtype)
         sdpa_groups[(b, h, s, d, norm_dtype, bwd)].append(dur)
     profile._sdpa_index = {k: sum(v) / len(v) for k, v in sdpa_groups.items()}
+
+
+class ProfileGuidedEstimator:
+    """Profile-guided runtime estimator for FX nodes.
+
+    Implements the ``custom_runtime_estimation`` interface:
+    ``(fx.Node, int | None) -> float | None`` (returns ms or None for fallback).
+    """
+
+    profile: ProfileData
+    estimation_log: list[dict[str, Any]]
+    miss_log: list[dict[str, Any]]
+
+    def __init__(self, trace_path: str) -> None:
+        self.profile = ProfileData()
+        self.estimation_log: list[dict[str, Any]] = []
+        self.miss_log: list[dict[str, Any]] = []
+        try:
+            self.profile.load(trace_path)
+            _normalize_profile_indices(self.profile)
+        except Exception:
+            log.exception("PGE: failed to load profile from %s", trace_path)
+
+    def __call__(self, node: fx.Node, override_size: int | None = None) -> float | None:
+        # Collectives
+        if _is_collective_node(node):
+            return self._estimate_collective(node, override_size)
+        # Matmul
+        if _is_mm_node(node):
+            return self._estimate_mm(node)
+        # SDPA
+        if _is_sdpa_node(node):
+            return self._estimate_sdpa(node)
+        return None
+
+    def _estimate_collective(
+        self, node: fx.Node, override_size: int | None
+    ) -> float | None:
+        info = _get_collective_info(node)
+        if info is None:
+            self.miss_log.append(
+                {
+                    "node": node.name,
+                    "target": str(node.target),
+                    "reason": "get_collective_info returned None",
+                }
+            )
+            return None
+        coll_name, pg_ranks, nelems, dtype = info
+        if override_size is not None:
+            if override_size == 0:
+                return 0.0
+            val = node.meta.get("val")
+            if isinstance(val, torch.Tensor):
+                elem_size = val.element_size()
+                if elem_size > 0:
+                    nelems = override_size // elem_size
+        dtype_bytes = 0
+        val = node.meta.get("val")
+        if isinstance(val, torch.Tensor):
+            dtype_bytes = val.element_size()
+        est = self.profile.lookup_collective(coll_name, pg_ranks, nelems, dtype)
+        if est is not None:
+            self.estimation_log.append(
+                {
+                    "node": node.name,
+                    "op": coll_name,
+                    "nelems": nelems,
+                    "dtype": dtype,
+                    "dtype_bytes": dtype_bytes,
+                    "group_size": len(pg_ranks),
+                    "stride": _rank_stride(pg_ranks),
+                    "pge_ms": est,
+                    "source": self.profile.last_estimation_source or "profile",
+                }
+            )
+        else:
+            self.miss_log.append(
+                {
+                    "node": node.name,
+                    "op": coll_name,
+                    "nelems": nelems,
+                    "dtype": dtype,
+                    "group_size": len(pg_ranks),
+                    "reason": "no match in profile",
+                }
+            )
+        return est
+
+    def _estimate_mm(self, node: fx.Node) -> float | None:
+        shapes = _get_mm_shapes(node)
+        if shapes is None:
+            self.miss_log.append(
+                {
+                    "node": node.name,
+                    "target": str(node.target),
+                    "reason": "get_mm_shapes returned None",
+                }
+            )
+            return None
+        dtype = _get_node_dtype_str(node)
+        est = self.profile.lookup_mm(shapes, dtype)
+        if est is not None:
+            self.estimation_log.append(
+                {
+                    "node": node.name,
+                    "op": "mm",
+                    "shapes": [list(s) for s in shapes],
+                    "dtype": dtype,
+                    "pge_ms": est,
+                    "source": "profile",
+                }
+            )
+        else:
+            self.miss_log.append(
+                {
+                    "node": node.name,
+                    "op": "mm",
+                    "shapes": [list(s) for s in shapes],
+                    "dtype": dtype,
+                    "reason": "no match in profile",
+                }
+            )
+        return est
+
+    def _estimate_sdpa(self, node: fx.Node) -> float | None:
+        sdpa_key = _get_sdpa_key(node)
+        if sdpa_key is None:
+            self.miss_log.append(
+                {
+                    "node": node.name,
+                    "target": str(node.target),
+                    "reason": "get_sdpa_key returned None",
+                }
+            )
+            return None
+        batch, heads, seq_len, head_dim, dtype, is_bwd = sdpa_key
+        est = self.profile.lookup_sdpa(batch, heads, seq_len, head_dim, dtype, is_bwd)
+        if est is not None:
+            self.estimation_log.append(
+                {
+                    "node": node.name,
+                    "op": "sdpa_bwd" if is_bwd else "sdpa_fwd",
+                    "shape": [batch, heads, seq_len, head_dim],
+                    "dtype": dtype,
+                    "pge_ms": est,
+                    "source": "profile",
+                }
+            )
+        else:
+            self.miss_log.append(
+                {
+                    "node": node.name,
+                    "op": "sdpa",
+                    "shape": [batch, heads, seq_len, head_dim],
+                    "dtype": dtype,
+                    "reason": "no match in profile",
+                }
+            )
+        return est
+
+
+def log_pge_estimations(
+    estimator: ProfileGuidedEstimator,
+    analytical_estimates: dict[str, float] | None = None,
+) -> None:
+    """Dump PGE estimation results via trace_structured for tlparse."""
+    rows = []
+    for entry in estimator.estimation_log:
+        row = dict(entry)
+        node_name = entry.get("node", "")
+        if analytical_estimates and node_name in analytical_estimates:
+            analytical_ms = analytical_estimates[node_name]
+            row["analytical_ms"] = analytical_ms
+            pge_ms = entry.get("pge_ms", 0)
+            if analytical_ms > 0:
+                row["pge_vs_analytical_pct"] = round(
+                    (pge_ms - analytical_ms) / analytical_ms * 100, 1
+                )
+        rows.append(row)
+
+    table = _format_pge_table(rows, estimator.miss_log)
+    trace_structured(
+        "artifact",
+        metadata_fn=lambda: {
+            "name": "pge_estimations_table",
+            "encoding": "string",
+        },
+        payload_fn=lambda: table,
+    )
+
+    log.info(
+        "PGE: %d estimations, %d misses logged to trace_structured",
+        len(rows),
+        len(estimator.miss_log),
+    )
+
+
+def _format_bytes(nbytes: int) -> str:
+    """Format byte count as human-readable K/M/G string."""
+    if nbytes >= 1 << 30:
+        return f"{nbytes / (1 << 30):.1f}G"
+    if nbytes >= 1 << 20:
+        return f"{nbytes / (1 << 20):.1f}M"
+    if nbytes >= 1 << 10:
+        return f"{nbytes / (1 << 10):.0f}K"
+    return f"{nbytes}B"
+
+
+def _format_pge_table(
+    rows: list[dict[str, Any]],
+    miss_log: list[dict[str, Any]] | None = None,
+) -> str:
+    """Format PGE estimations + misses as a single aligned text table."""
+    misses: list[dict[str, Any]] = list(miss_log) if miss_log is not None else []
+    lines: list[str] = []
+    try:
+        gpu_name = torch.cuda.get_device_name(0)
+        gpu_count = torch.cuda.device_count()
+        lines.append(f"GPU: {gpu_name} x{gpu_count}")
+    except Exception:
+        lines.append("GPU: unknown")
+    lines.append("")
+
+    has_analytical = any("analytical_ms" in r for r in rows)
+
+    if has_analytical:
+        header = (
+            f"{'node':<45} {'op':<30} {'size':>8} {'gs':>4} {'st':>3}"
+            f" {'pge_ms':>10} {'analytical_ms':>15} {'diff%':>8} {'':>3}"
+            f" {'pge_GB/s':>10} {'analytical_GB/s':>15}"
+        )
+    else:
+        header = (
+            f"{'node':<45} {'op':<30} {'size':>8} {'gs':>4} {'st':>3} {'pge_ms':>10}"
+        )
+    lines.append(header)
+    lines.append("-" * len(header))
+
+    for row in rows:
+        node = row.get("node", "")[:44]
+        op = row.get("op", "")[:29]
+        gs = row.get("group_size", "")
+        stride = row.get("stride", "")
+        stride_str = str(stride) if stride is not None else "-"
+        pge_ms = row.get("pge_ms", 0)
+        dtype_bytes = row.get("dtype_bytes", 0)
+        n = row.get("nelems", 0) if isinstance(row.get("nelems"), int) else 0
+        size_str = _format_bytes(n * dtype_bytes) if dtype_bytes > 0 and n > 0 else "-"
+
+        if has_analytical:
+            anal_ms = row.get("analytical_ms", None)
+            diff_pct = row.get("pge_vs_analytical_pct", None)
+            anal_str = f"{anal_ms:.4f}" if anal_ms is not None else "-"
+            diff_str = f"{diff_pct:+.1f}%" if diff_pct is not None else "-"
+            flag = ""
+            if diff_pct is not None:
+                adp = abs(diff_pct)
+                if adp > 50:
+                    flag = "***"
+                elif adp > 15:
+                    flag = "**"
+            pge_bw_str = ""
+            anal_bw_str = ""
+            if dtype_bytes > 0 and n > 0:
+                data_bytes = n * dtype_bytes
+                if pge_ms > 0:
+                    pge_bw = data_bytes / (pge_ms * 1e-3) / 1e9
+                    pge_bw_str = f"{pge_bw:.1f}"
+                if anal_ms is not None and anal_ms > 0:
+                    anal_bw = data_bytes / (anal_ms * 1e-3) / 1e9
+                    anal_bw_str = f"{anal_bw:.1f}"
+            line = (
+                f"{node:<45} {op:<30} {size_str:>8} {gs:>4} {stride_str:>3}"
+                f" {pge_ms:>10.4f} {anal_str:>15} {diff_str:>8} {flag:>3}"
+                f" {pge_bw_str:>10} {anal_bw_str:>15}"
+            )
+        else:
+            line = (
+                f"{node:<45} {op:<30} {size_str:>8} {gs:>4} {stride_str:>3}"
+                f" {pge_ms:>10.4f}"
+            )
+        lines.append(line.rstrip())
+
+    lines.append("")
+    lines.append(f"Total: {len(rows)} estimations")
+    if has_analytical:
+        f1 = sum(
+            1
+            for r in rows
+            if r.get("pge_vs_analytical_pct") is not None
+            and abs(r["pge_vs_analytical_pct"]) > 50
+        )
+        f2 = sum(
+            1
+            for r in rows
+            if r.get("pge_vs_analytical_pct") is not None
+            and 15 < abs(r["pge_vs_analytical_pct"]) <= 50
+        )
+        lines.append(f"Flagged: {f2} ** (>15%), {f1} *** (>50%)")
+
+    if misses:
+        lines.append("")
+        lines.append(f"=== MISSES ({len(misses)}) ===")
+        miss_header = f"{'node':<45} {'op':<30} {'reason'}"
+        lines.append(miss_header)
+        lines.append("-" * len(miss_header))
+        for m in misses:  # pyrefly: ignore[unsupported-operation]
+            node = m.get("node", "")[:44]
+            op = (m.get("op") or m.get("target") or "")[:29]
+            reason = m.get("reason", "")
+            shapes = m.get("shapes")
+            shape_info = m.get("shape")
+            extra = ""
+            if shapes:
+                extra = f" shapes={shapes}"
+            elif shape_info:
+                extra = f" shape={shape_info}"
+            lines.append(f"{node:<45} {op:<30} {reason}{extra}".rstrip())
+
+    return "\n".join(lines)

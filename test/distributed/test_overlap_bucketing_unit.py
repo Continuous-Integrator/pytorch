@@ -1,4 +1,7 @@
 # Owner(s): ["module: inductor"]
+import json
+import os
+import tempfile
 import unittest
 
 import torch
@@ -11,6 +14,12 @@ import torch.fx as fx
 # for some reason importing functional collectives after dynamo breaks collectives handling!
 from torch._C import FileCheck
 from torch._dynamo.utils import counters
+from torch._inductor.fx_passes.profile_guided_estimation import (
+    _normalize_profile_dtype,
+    _normalize_profile_indices,
+    _rank_stride,
+    ProfileData,
+)
 from torch._inductor.test_case import TestCase as InductorTestCase
 from torch._subclasses.fake_tensor import FakeTensorMode
 from torch.fx.experimental.proxy_tensor import make_fx
@@ -1623,29 +1632,13 @@ class TestForeachGroupsUnit(InductorTestCase):
         self.assertTrue(torch.allclose(result_with, result_without))
 
 
-# ---------------------------------------------------------------------------
-# Profile-Guided Latency Estimation (PGLE) unit tests — no GPU required
-# ---------------------------------------------------------------------------
-
-import json
-import os
-import tempfile
-
-from torch._inductor.fx_passes.profile_guided_estimation import (
-    _normalize_profile_dtype,
-    _normalize_profile_indices,
-    _rank_stride,
-    ProfileData,
-)
-
-
-def _make_pgle_trace(
+def _make_pge_trace(
     collectives=None,
     matmuls=None,
     sdpa_ops=None,
     pg_config=None,
 ):
-    """Build a minimal Chrome Trace JSON dict for PGLE testing."""
+    """Build a minimal Chrome Trace JSON dict for PGE testing."""
     events = []
     eid = 1000
 
@@ -1661,6 +1654,7 @@ def _make_pgle_trace(
                     "Process Group Ranks": coll.get("ranks", "[0, 1]"),
                     "Group size": coll.get("group_size", 2),
                     "In msg nelems": coll.get("nelems", 1024),
+                    "Out msg nelems": coll.get("out_nelems", coll.get("nelems", 1024)),
                     "dtype": coll.get("dtype", "Float"),
                 },
             }
@@ -1722,7 +1716,7 @@ def _make_pgle_trace(
     return {"traceEvents": events, "distributedInfo": dist_info}
 
 
-def _load_pgle_profile(data):
+def _load_pge_profile(data):
     """Write trace dict to a temp file and load via ProfileData."""
     with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
         json.dump(data, f)
@@ -1755,7 +1749,7 @@ class TestProfileGuidedEstimation(TestCase):
         self.assertEqual(norm("barrier"), "barrier")
 
         # Load trace with two data points for interpolation + stride fallback
-        trace = _make_pgle_trace(
+        trace = _make_pge_trace(
             collectives=[
                 {
                     "name": "allreduce",
@@ -1776,7 +1770,7 @@ class TestProfileGuidedEstimation(TestCase):
             ],
             pg_config={"0": {"ranks": [0, 2, 4, 6]}},
         )
-        profile = _load_pgle_profile(trace)
+        profile = _load_pge_profile(trace)
         _normalize_profile_indices(profile)
 
         self.assertEqual(len(profile.collectives), 2)
@@ -1801,21 +1795,21 @@ class TestProfileGuidedEstimation(TestCase):
         )
 
         # Zero-duration events skipped
-        trace_zero = _make_pgle_trace(
+        trace_zero = _make_pge_trace(
             collectives=[
                 {"name": "allreduce", "dur": 0.0, "nelems": 1024, "dtype": "Float"}
             ]
         )
-        self.assertEqual(len(_load_pgle_profile(trace_zero).collectives), 0)
+        self.assertEqual(len(_load_pge_profile(trace_zero).collectives), 0)
 
         # Empty trace
-        empty = _load_pgle_profile({"traceEvents": []})
+        empty = _load_pge_profile({"traceEvents": []})
         self.assertEqual(len(empty.collectives), 0)
         self.assertEqual(len(empty.matmuls), 0)
 
     def test_matmul_and_sdpa_lookup(self):
         """Matmul and SDPA: exact match, FLOP-ratio interpolation, backward, dtype miss."""
-        trace = _make_pgle_trace(
+        trace = _make_pge_trace(
             matmuls=[
                 {
                     "shapes": [[128, 256], [256, 512]],
@@ -1847,7 +1841,7 @@ class TestProfileGuidedEstimation(TestCase):
                 },
             ],
         )
-        profile = _load_pgle_profile(trace)
+        profile = _load_pge_profile(trace)
         _normalize_profile_indices(profile)
 
         # Matmul exact match: 50 us -> 0.05 ms
@@ -1916,10 +1910,10 @@ class TestProfileGuidedEstimation(TestCase):
         self.assertAlmostEqual(profile2._sdpa_index[key2], 200.0)
 
         # PG config parsing: dict format
-        trace = _make_pgle_trace(
+        trace = _make_pge_trace(
             pg_config={"0": {"ranks": [0, 1, 2, 3]}, "1": {"ranks": [0, 2]}},
         )
-        profile3 = _load_pgle_profile(trace)
+        profile3 = _load_pge_profile(trace)
         self.assertEqual(profile3.pg_configs["0"], (0, 1, 2, 3))
         self.assertEqual(profile3.pg_configs["1"], (0, 2))
 
@@ -1930,9 +1924,8 @@ class TestProfileGuidedEstimation(TestCase):
                 "pg_config": [{"pg_name": "default", "ranks": [0, 1, 2, 3]}]
             },
         }
-        profile4 = _load_pgle_profile(trace_list)
+        profile4 = _load_pge_profile(trace_list)
         self.assertEqual(profile4.pg_configs["default"], (0, 1, 2, 3))
-
 
 
 if __name__ == "__main__":

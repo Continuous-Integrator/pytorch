@@ -7,7 +7,7 @@ import sys
 from collections import Counter, defaultdict
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Any, Literal, TYPE_CHECKING
 
 import torch
 import torch.fx as fx
@@ -26,6 +26,12 @@ from torch._logging import trace_structured
 from torch.fx.operator_schemas import normalize_function
 from torch.utils._ordered_set import OrderedSet
 from torch.utils._python_dispatch import _disable_current_modes
+
+
+if TYPE_CHECKING:
+    from torch._inductor.fx_passes.profile_guided_estimation import (
+        ProfileGuidedEstimator,
+    )
 
 
 log = logging.getLogger(__name__)
@@ -1722,14 +1728,16 @@ def align_estimations_across_ranks(
 
 def _collect_analytical_estimates(
     gm: torch.fx.GraphModule,
-    pgle_estimator: Callable[[fx.Node, int | None], float | None],
+    pge_estimator: "ProfileGuidedEstimator",
 ) -> dict[str, float]:
-    """Collect analytical runtime estimates for nodes that PGLE matched.
+    """Collect analytical runtime estimates for nodes that PGE matched.
 
     Runs the analytical estimator (no custom override) over the same nodes
-    to enable PGLE vs analytical comparison.
+    to enable PGE vs analytical comparison.
     """
-    estimation_log = getattr(pgle_estimator, "estimation_log", [])
+    from torch._inductor.fx_passes.profile_guided_estimation import _is_collective_node
+
+    estimation_log = pge_estimator.estimation_log
     matched_names = OrderedSet([e["node"] for e in estimation_log])
     if not matched_names:
         return {}
@@ -1746,12 +1754,7 @@ def _collect_analytical_estimates(
                     start
                 )
                 analytical[start.name] = est
-        elif node.target in (
-            torch.ops._c10d_functional.all_gather_into_tensor.default,
-            torch.ops._c10d_functional.reduce_scatter_tensor.default,
-            torch.ops._c10d_functional.all_reduce.default,
-            torch.ops._c10d_functional.all_to_all_single.default,
-        ):
+        elif _is_collective_node(node):
             est = torch._inductor.comm_analysis.estimate_nccl_collective_runtime_from_fx_node(
                 node
             )
@@ -1811,52 +1814,11 @@ def schedule_overlap_bucketing(
         max_memory_increase_ratio: Maximum increase as ratio of baseline peak memory. If None, no ratio limit.
             Uses minimum of absolute and ratio limits when both are specified.
         enable_fusion_regions: Enable fusion region detection and cost estimation for fusible ops.
+        bucket_mode: Bucket mode for collective bucketing. "default" uses plain torch.cat
+            (visible to Inductor), "custom_ops"/"custom_ops_multidtype" use opaque custom ops.
     """
     if not any(is_wait_tensor(n) for n in gm.graph.nodes):
         return gm
-
-    # Auto-load PGLE if configured and no custom estimation provided
-    if custom_runtime_estimation is None:
-        from torch._inductor import config as inductor_config
-
-        pgle_path = inductor_config.aten_distributed_optimizations.profile_guided_estimation_path
-        if pgle_path:
-            from torch._inductor.fx_passes.node_runtime_estimation import (
-                make_profile_guided_estimator,
-            )
-            from torch._inductor.fx_passes.profile_guided_estimation import _rank_stride
-
-            custom_runtime_estimation = make_profile_guided_estimator(pgle_path)
-            log.info("PGLE: using profile-guided estimation from %s", pgle_path)
-            # Log profile stats
-            profile = custom_runtime_estimation.profile  # type: ignore[union-attr]
-            coll_keys = list(profile._collective_index.keys())
-            mm_count = len(profile._matmul_index)
-            sdpa_count = len(profile._sdpa_index)
-            trace_structured(
-                "artifact",
-                metadata_fn=lambda: {
-                    "name": "pgle_profile_loaded",
-                    "encoding": "json",
-                },
-                payload_fn=lambda: json.dumps(
-                    {
-                        "path": pgle_path,
-                        "collective_keys": [
-                            {
-                                "name": k[0],
-                                "ranks": list(k[1]),
-                                "group_size": len(k[1]),
-                                "stride": _rank_stride(k[1]),
-                                "dtype": k[2],
-                            }
-                            for k in coll_keys
-                        ],
-                        "matmul_count": mm_count,
-                        "sdpa_count": sdpa_count,
-                    }
-                ),
-            )
 
     trace_structured(
         "artifact",
@@ -1866,8 +1828,7 @@ def schedule_overlap_bucketing(
         },
         payload_fn=lambda: gm.print_readable(False),
     )
-    ret = OverlapScheduler(
-        gm,
+    overlap_kwargs: dict[str, object] = dict(
         compute_overlap_multipler=compute_overlap_multipler,
         max_in_flight_gb=max_in_flight_gb,
         max_coll_distance=max_coll_distance,
@@ -1898,17 +1859,16 @@ def schedule_overlap_bucketing(
         payload_fn=lambda: ret.print_readable(False),
     )
 
-    # Log PGLE estimations to trace_structured for tlparse
-    if custom_runtime_estimation is not None and hasattr(
-        custom_runtime_estimation, "estimation_log"
-    ):
-        from torch._inductor.fx_passes.node_runtime_estimation import (
-            log_pgle_estimations,
+    # Log PGE estimations to trace_structured for tlparse
+    if custom_runtime_estimation is not None:
+        from torch._inductor.fx_passes.profile_guided_estimation import (
+            log_pge_estimations,
+            ProfileGuidedEstimator,
         )
 
-        # Collect analytical estimates for comparison
-        analytical = _collect_analytical_estimates(ret, custom_runtime_estimation)
-        log_pgle_estimations(custom_runtime_estimation, analytical)
+        if isinstance(custom_runtime_estimation, ProfileGuidedEstimator):
+            analytical = _collect_analytical_estimates(ret, custom_runtime_estimation)
+            log_pge_estimations(custom_runtime_estimation, analytical)
 
     return ret
 
@@ -1947,20 +1907,52 @@ def schedule_overlap_bucketing_from_inductor_configs(
         "bucket_only_internode_comms",
         "enable_fusion_regions",
         "prioritize_bucketing_during_scheduling",
+        "bucket_mode",
     )
     for key in config_keys:
         if (val := getattr(dist_opts, key, None)) is not None:
             kwargs[key] = val
 
     # Profile-guided latency estimation: load profile and set as custom estimator
-    pgle_path = dist_opts.profile_guided_estimation_path
-    if pgle_path and "custom_runtime_estimation" not in kwargs:
+    pge_path = dist_opts.profile_guided_estimations_profile_path
+    if pge_path and "custom_runtime_estimation" not in kwargs:
         from torch._inductor.fx_passes.node_runtime_estimation import (
             make_profile_guided_estimator,
         )
+        from torch._inductor.fx_passes.profile_guided_estimation import _rank_stride
 
-        pgle_estimator = make_profile_guided_estimator(pgle_path)
-        kwargs["custom_runtime_estimation"] = pgle_estimator
-        log.info("PGLE: using profile-guided estimation from %s", pgle_path)
+        pge_estimator = make_profile_guided_estimator(pge_path)
+        kwargs["custom_runtime_estimation"] = pge_estimator
+        log.info("PGE: using profile-guided estimation from %s", pge_path)
+
+        # Log profile stats for tlparse
+        profile = pge_estimator.profile
+        coll_keys = list(profile._collective_index.keys())
+        mm_count = len(profile._matmul_index)
+        sdpa_count = len(profile._sdpa_index)
+        trace_structured(
+            "artifact",
+            metadata_fn=lambda: {
+                "name": "pge_profile_loaded",
+                "encoding": "json",
+            },
+            payload_fn=lambda: json.dumps(
+                {
+                    "path": pge_path,
+                    "collective_keys": [
+                        {
+                            "name": k[0],
+                            "ranks": list(k[1]),
+                            "group_size": len(k[1]),
+                            "stride": _rank_stride(k[1]),
+                            "dtype": k[2],
+                        }
+                        for k in coll_keys
+                    ],
+                    "matmul_count": mm_count,
+                    "sdpa_count": sdpa_count,
+                }
+            ),
+        )
 
     return schedule_overlap_bucketing(gm, **kwargs)  # type: ignore[arg-type]
