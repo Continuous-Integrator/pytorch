@@ -100,6 +100,7 @@ inductor_decompositions = get_decompositions(
         aten.triu_indices,
         aten.unbind_copy.int,
         aten.upsample_bilinear2d.vec,
+        aten.hann_window,
         quantized.linear_dynamic_fp16_unpacked_weight,
         _quantized.wrapped_quantized_linear,
     ]
@@ -571,7 +572,7 @@ def add(
     if y.ndim == 0:
         y = y.reshape(1)
 
-    z: torch.Tensor = y
+    z = y
     if alpha is not None:
         z = alpha * y
     complex_type = torch.promote_types(x.dtype, y.dtype)
