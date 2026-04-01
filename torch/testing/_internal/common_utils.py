@@ -49,9 +49,7 @@ from pathlib import Path
 from statistics import mean
 from typing import (
     Any,
-    Optional,
     TypeVar,
-    Union,
 )
 from collections.abc import Callable
 from collections.abc import Iterable, Iterator
@@ -84,13 +82,14 @@ from torch.onnx import (
 )
 from torch.testing import make_tensor
 from torch.testing._comparison import (
+    _unwrap_dtensor_for_comparison,
     BooleanPair,
     NonePair,
+    not_close_error_metas,
     NumberPair,
     Pair,
     TensorLikePair,
 )
-from torch.testing._comparison import not_close_error_metas
 from torch.testing._internal.common_dtype import get_all_dtypes
 from torch.utils._import_utils import _check_module_exists
 import torch.utils._pytree as pytree
@@ -116,7 +115,7 @@ class ProfilingMode(Enum):
 
 # Set by parse_cmd_line_args() if called
 DISABLED_TESTS_FILE = ""
-GRAPH_EXECUTOR : Optional[ProfilingMode] = None
+GRAPH_EXECUTOR : ProfilingMode | None = None
 LOG_SUFFIX = ""
 PYTEST_SINGLE_TEST = ""
 REPEAT_COUNT = 0
@@ -304,7 +303,7 @@ PRINT_REPRO_ON_FAILURE: bool = TestEnvironment.def_flag(
 )
 
 # possibly restrict OpInfo tests to a single sample input
-OPINFO_SAMPLE_INPUT_INDEX: Optional[int] = TestEnvironment.def_setting(
+OPINFO_SAMPLE_INPUT_INDEX: int | None = TestEnvironment.def_setting(
     "OPINFO_SAMPLE_INPUT_INDEX",
     env_var="PYTORCH_OPINFO_SAMPLE_INPUT_INDEX",
     default=None,
@@ -355,7 +354,7 @@ def gcIfJetson(fn):
 
 # Tries to extract the current test function by crawling the stack.
 # If unsuccessful, return None.
-def extract_test_fn() -> Optional[Callable]:
+def extract_test_fn() -> Callable | None:
     try:
         stack = inspect.stack()
         for frame_info in stack:
@@ -382,7 +381,7 @@ class TrackedInput:
 
 # Attempt to pull out tracked input information from the test function.
 # A TrackedInputIter is used to insert this information.
-def get_tracked_input() -> Optional[TrackedInput]:
+def get_tracked_input() -> TrackedInput | None:
     test_fn = extract_test_fn()
     if test_fn is None:
         return None
@@ -1410,15 +1409,9 @@ IS_PPC = platform.machine() == "ppc64le"
 IS_X86 = platform.machine() in ('x86_64', 'i386')
 IS_ARM64 = platform.machine() in ('arm64', 'aarch64')
 IS_S390X = platform.machine() == "s390x"
-
-def is_avx512_vnni_supported():
-    if sys.platform != 'linux':
-        return False
-    with open("/proc/cpuinfo", encoding="ascii") as f:
-        lines = f.read()
-    return "vnni" in lines
-
-IS_AVX512_VNNI_SUPPORTED = is_avx512_vnni_supported()
+IS_AVX512_VNNI_SUPPORTED = torch.cpu.get_capabilities().get("avx512_vnni", False)
+IS_CPU_EXT_SVE_SUPPORTED = torch.cpu.get_capabilities().get("sve", False)
+IS_CPU_CAPABILITY_SVE256 = torch._C._get_cpu_capability() == "SVE256"
 
 if IS_WINDOWS:
     @contextmanager
@@ -1902,7 +1895,7 @@ def skipIfLegacyJitExecutor(msg="test doesn't currently work with legacy JIT exe
 
 
 def make_dynamo_test(
-    fn: Optional[Callable[..., Any]] = None
+    fn: Callable[..., Any] | None = None
 ) -> Callable[..., Any]:
     """
     Decorator function to create a dynamo test case. A function annotate with
@@ -3090,8 +3083,8 @@ class UnittestPair(Pair):
 
     Define the :attr:`UnittestPair.CLS` in a subclass to indicate which class(es) of the inputs the pair should support.
     """
-    CLS: Union[type, tuple[type, ...]]
-    TYPE_NAME: Optional[str] = None
+    CLS: type | tuple[type, ...]
+    TYPE_NAME: str | None = None
 
     def __init__(self, actual, expected, **other_parameters):
         self._check_inputs_isinstance(actual, expected, cls=self.CLS)
@@ -4282,10 +4275,10 @@ class TestCase(expecttest.TestCase):
             self,
             x,
             y,
-            msg: Optional[Union[str, Callable[[str], str]]] = None,
+            msg: str | Callable[[str], str] | None = None,
             *,
-            atol: Optional[float] = None,
-            rtol: Optional[float] = None,
+            atol: float | None = None,
+            rtol: float | None = None,
             equal_nan=True,
             exact_dtype=True,
             # TODO: default this to True
@@ -4322,6 +4315,8 @@ class TestCase(expecttest.TestCase):
             x = x.unbind()
         if isinstance(y, torch.Tensor) and y.is_nested and y.layout == torch.strided:
             y = y.unbind()
+
+        x, y = _unwrap_dtensor_for_comparison(x, y)
 
         error_metas = not_close_error_metas(
             x,
@@ -4369,8 +4364,8 @@ class TestCase(expecttest.TestCase):
                 (lambda generated_msg: f"{generated_msg}\n{msg}") if isinstance(msg, str) and self.longMessage else msg
             )
 
-    def assertNotEqual(self, x, y, msg: Optional[str] = None, *,                                       # type: ignore[override]
-                       atol: Optional[float] = None, rtol: Optional[float] = None, **kwargs) -> None:
+    def assertNotEqual(self, x, y, msg: str | None = None, *,                                       # type: ignore[override]
+                       atol: float | None = None, rtol: float | None = None, **kwargs) -> None:
         with self.assertRaises(AssertionError, msg=msg):
             self.assertEqual(x, y, msg, atol=atol, rtol=rtol, **kwargs)
 
@@ -4390,7 +4385,7 @@ class TestCase(expecttest.TestCase):
     # _ignore_not_implemented_error is True
     def assertRaises(self, expected_exception, *args, **kwargs):
         if self._ignore_not_implemented_error:
-            context: Optional[AssertRaisesContextIgnoreNotImplementedError] = \
+            context: AssertRaisesContextIgnoreNotImplementedError | None = \
                 AssertRaisesContextIgnoreNotImplementedError(expected_exception, self)  # type: ignore[call-arg]
             try:
                 return context.handle('assertRaises', args, kwargs)  # type: ignore[union-attr, arg-type]
@@ -4704,7 +4699,7 @@ class TestCase(expecttest.TestCase):
         self,
         file: pathlib.Path,
         import_string: str,
-        expected_failure_message: Optional[str] = None
+        expected_failure_message: str | None = None
     ) -> None:
         """
         Attempts weights_only `torch.load` in a subprocess. This is used to test that
@@ -6050,3 +6045,17 @@ def patch_test_members(updates: dict[str, Any]):
 
         return wrapper
     return decorator
+
+def get_gcc_major_version():
+    """
+    Return GCC major version as int, or None if GCC is not available.
+    """
+    try:
+        out = subprocess.check_output(
+            ["gcc", "-dumpfullversion", "-dumpversion"],
+            stderr=subprocess.STDOUT,
+            text=True,
+        ).strip()
+        return int(out.split(".")[0])
+    except Exception:
+        return None
