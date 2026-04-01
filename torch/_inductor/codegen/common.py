@@ -640,13 +640,13 @@ def _initialize_device_op_overrides():
     # corresponding DeviceOpOverrides via `register_device_op_overrides`.
     # We explicitly import all known backends here to guarantee complete
     # and deterministic registration.
-    from . import (
-        cpu_device_op_overrides,  # noqa: F401
-        mps_device_op_overrides,  # noqa: F401
-    )
+    from .cpu_device_op_overrides import CpuDeviceOpOverrides
+    from . import mps_device_op_overrides,  # noqa: F401
     from .cuda import device_op_overrides  # noqa: F401
     from .mtia import device_op_overrides as mtia_op_overrides  # noqa: F401
     from .xpu import device_op_overrides as xpu_op_overrides  # noqa: F401
+    # For backends like TPU that only need no-op overrides (Pallas handles codegen)
+    register_device_op_overrides("tpu", CpuDeviceOpOverrides())
 
     # Mark initialization as complete to prevent duplicate imports and
     # ensure consistent behavior even if this function is called multiple times.
@@ -657,12 +657,6 @@ def get_device_op_overrides(device: str) -> DeviceOpOverrides:
     assert isinstance(device, str), type(device)
 
     _initialize_device_op_overrides()
-
-    if device not in device_op_overrides_dict and device == "tpu":
-        # For backends like TPU that only need no-op overrides (Pallas handles codegen)
-        from .cpu_device_op_overrides import CpuDeviceOpOverrides
-
-        register_device_op_overrides(device, CpuDeviceOpOverrides())
 
     return device_op_overrides_dict[device]
 
