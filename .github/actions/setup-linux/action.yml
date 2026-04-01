@@ -64,6 +64,8 @@ runs:
         set -eux
         git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
+        sleep 7200
+
     - name: Checkout PyTorch
       uses: pytorch/pytorch/.github/actions/checkout-pytorch@main
       with:
