@@ -1932,20 +1932,37 @@ def interp_pool_1out_2in_strategy(
     ]
 
 
-@register_single_dim_strategy(
+@register_op_strategy(
     [aten.max_pool2d_with_indices_backward.default],
     schema_info=RuntimeSchemaInfo(1),
 )
-def pool_1out_3in_strategy(
-    op: torch._ops.OpOverload,
-    args_schema: tuple[Any, ...],
-    kwargs_schema: dict[str, Any],
-) -> list[list[Placement | _ShardingPlaceholder]]:
-    # 1 output + 3 inputs (grad_output, self, indices) = 4 placements
-    return [
-        [_ShardingPlaceholder(0)] * 4,
-        [_ShardingPlaceholder(1)] * 4,
+def pool_backward_strategy(op_schema: OpSchema) -> OpStrategy:
+    # max_pool2d_with_indices_backward(grad_output, self, ..., indices) -> grad_input
+    # `self` is only used for output shape; `indices` drives the scatter so it
+    # must be identical on all ranks (Replicate).  The backward is a pure
+    # selection from grad_output, so Partial(sum/avg/max/min) all pass through.
+    input_strategy = cast(OpStrategy, op_schema.args_schema[0])
+    mesh = input_strategy.mesh
+    # n = 1 output + 3 tensor inputs
+    n = 4
+    single_mesh_dim_strategies: list[PlacementList] = [
+        [Replicate()] * n,
+        [Shard(0)] * n,
     ]
+    is_batched = input_strategy.ndim >= 4  # (N, C, H, W)
+    if is_batched:
+        single_mesh_dim_strategies.append([Shard(1)] * n)
+    # The backward is linear in grad_output, so P(sum/avg) pass through.
+    # indices must be replicated (integer positions, not reducible).
+    # self is only used for shape, so replicate it too.
+    # Order: [output, grad_output, self, indices]
+    r = Replicate()
+    for reduce_op in ("sum", "avg"):
+        p = Partial(reduce_op)
+        single_mesh_dim_strategies.append([p, p, r, r])
+    return expand_to_full_mesh_op_strategy(
+        mesh, op_schema, single_mesh_dim_strategies, input_index=1
+    )
 
 
 @register_single_dim_strategy(

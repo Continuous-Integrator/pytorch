@@ -3461,11 +3461,7 @@ def get_num_workers() -> int:
     if "TORCHINDUCTOR_COMPILE_THREADS" in os.environ:
         return int(os.environ["TORCHINDUCTOR_COMPILE_THREADS"])
 
-    cpu_count = (
-        len(os.sched_getaffinity(0))
-        if hasattr(os, "sched_getaffinity")
-        else os.cpu_count()
-    )
+    cpu_count = torch._utils.cpu_count()
     assert cpu_count
 
     # Divide the number of CPUs by the number of GPUs for distributed workloads
@@ -3759,7 +3755,7 @@ class AlgorithmSelectorCache(PersistentCache):
 
         if len(choices) == 0:
             raise self.create_no_valid_choices(name, "No choices exist for backend.")
-        log.debug("Max autotune selects from %s choices.", str(len(choices)))
+        log.debug("Max autotune selects from %s choices.", len(choices))
 
         if len(choices) == 1:
             if not isinstance(choices[0], CUTLASSTemplateCaller):
