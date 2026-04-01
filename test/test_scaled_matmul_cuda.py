@@ -51,6 +51,7 @@ from torch.testing._internal.common_utils import (
     skipIfRocm,
     TEST_CUDA,
     TestCase,
+    skipIfXpu,
 )
 from torch.testing._internal.common_quantized import (
     _bfloat16_to_float4_e2m1fn_x2,
@@ -653,23 +654,49 @@ class TestFP8Matmul(TestCase):
 
     # Skip on XPU due to known oneDNN accuracy issue (#169772)
     @skipXPU
-    def test_float8_basics(self, device) -> None:
+    @parametrize(
+        "test_case",
+        [
+            # test_case tuple schema:
+            # (case_name, x_dtype, y_dtype, out_dtype, size)
+            # "default" in case_name means out_dtype=None (backend default output dtype path).
+            ("e4m3_e4m3_default", e4m3_type, e4m3_type, None, 16),
+            ("e5m2_e5m2_default", e5m2_type, e5m2_type, None, 16),
+            ("e5m2_e5m2_f32", e5m2_type, e5m2_type, torch.float32, 16),
+            ("e4m3_e5m2_default", e4m3_type, e5m2_type, None, 32),
+            ("e5m2_e4m3_default", e5m2_type, e4m3_type, None, 48),
+            ("e4m3_e4m3_f16", e4m3_type, e4m3_type, torch.float16, 64),
+            ("e4m3_e4m3_f32", e4m3_type, e4m3_type, torch.float32, 96),
+            ("e4m3_e4m3_bf16", e4m3_type, e4m3_type, torch.bfloat16, 80),
+        ],
+        name_fn=lambda test_case: f"cuda_{test_case[0]}",
+    )
+    def test_float8_basics(self, device, test_case) -> None:
         if not _device_supports_scaled_mm_fp8(device):
             raise unittest.SkipTest(f8_msg)
-        self._test_tautological_mm(device, e4m3_type, e4m3_type, size=16)
+        _, x_dtype, y_dtype, out_dtype, size = test_case
+        expect_e5m2_cuda_error = x_dtype == e5m2_type and y_dtype == e5m2_type
         # According to https://docs.nvidia.com/cuda/cublas/#id99 8F_E5M2 MM is unsupported
         # supported on ROCm but fails on CUDA
-        ctx = self.assertRaises(ValueError) if torch.version.hip is None and "cuda" in device else contextlib.nullcontext()
+        ctx = (
+            self.assertRaises(ValueError)
+            if expect_e5m2_cuda_error and torch.version.hip is None and "cuda" in device
+            else contextlib.nullcontext()
+        )
         with ctx:
-            self._test_tautological_mm(device, e5m2_type, e5m2_type)
+            self._test_tautological_mm(
+                device,
+                x_dtype=x_dtype,
+                y_dtype=y_dtype,
+                out_dtype=out_dtype,
+                size=size,
+            )
 
-        self._test_tautological_mm(device, e4m3_type, e5m2_type, size=32)
-        self._test_tautological_mm(device, e5m2_type, e4m3_type, size=48)
-
-        self._test_tautological_mm(device, size=64, out_dtype=torch.float16)
-        self._test_tautological_mm(device, size=96, out_dtype=torch.float32)
-        self._test_tautological_mm(device, size=80, out_dtype=torch.bfloat16)
-
+    # Skip on XPU due to known oneDNN accuracy issue (#169772)
+    @skipXPU
+    def test_float8_basics_layout_permutations(self, device) -> None:
+        if not _device_supports_scaled_mm_fp8(device):
+            raise unittest.SkipTest(f8_msg)
         if torch.cuda.is_available():
             for (x_cm, y_cm) in itertools.product([True, False], repeat=2):
                 # SM 10 and 11 support all permutations, SM 12 TT and TN, SM 9 only TN
@@ -683,6 +710,11 @@ class TestFP8Matmul(TestCase):
                 with contextlib.nullcontext() if layouts_supported else self.assertRaises(RuntimeError):
                     self._test_tautological_mm(device, size=64, out_dtype=torch.bfloat16, x_cm=x_cm, y_cm=y_cm)
 
+    # Skip on XPU due to known oneDNN accuracy issue (#169772)
+    @skipXPU
+    def test_float8_basics_invalid_out_dtype(self, device) -> None:
+        if not _device_supports_scaled_mm_fp8(device):
+            raise unittest.SkipTest(f8_msg)
         with self.assertRaises(
             AssertionError if (torch.version.hip or "xpu" in device or "cpu" in device)
             else RuntimeError
@@ -922,14 +954,13 @@ class TestFP8Matmul(TestCase):
         # Assert outputs are close.
         torch.testing.assert_close(y_lp, y_bf16, atol=8.0e-2, rtol=8.0e-2)
 
-
     @unittest.skipIf(not PLATFORM_SUPPORTS_FP8, f8_msg)
     @parametrize("base_dtype", [torch.float16, torch.bfloat16, torch.float32])
     @parametrize("x_cm", [True, False])
     @parametrize("y_cm", [True, False])
     def test_scaled_mm_vs_emulated(self, base_dtype, x_cm, y_cm, device="cuda"):
         # Blackwell (SM_10) supports all possible layout permutations, while Hopper only TN
-        if (x_cm, y_cm) != (True, False) and torch.cuda.get_device_properties(0).major != 10:
+        if (x_cm, y_cm) != (True, False) and torch.cuda.is_available() and torch.cuda.get_device_properties(0).major != 10:
             raise unittest.SkipTest("Unsupported layout on the architecture")
         torch.manual_seed(42)
         input_dtype = e4m3_type
@@ -1105,6 +1136,7 @@ class TestFP8Matmul(TestCase):
             lambda: scaled_mm_wrap(x, y, scale_a, scale_b, out_dtype=torch.float32),
         )
 
+    @skipIfXpu(msg="AssertionError, torch-xpu-ops: 2862")
     @unittest.skipIf(not PLATFORM_SUPPORTS_FP8, f8_msg)
     @unittest.skipIf(SM100OrLater, "fast_accum is SM90-only")
     def test_float8_scale_fast_accum(self, device) -> None:
@@ -1626,12 +1658,11 @@ class TestFP8Matmul(TestCase):
             output_dtype
         )
 
-    @skipIfRocm
     @onlyCUDA
     @unittest.skipIf(not PLATFORM_SUPPORTS_FP8 or IS_WINDOWS, f8_msg)
     @unittest.skipIf(IS_SM90, "DeepSeek style (1x128, 128x128) blockwise scaling works on SM90 (Hopper)")
     @unittest.skipIf(
-        _get_torch_cuda_version() < (12, 9),
+        not torch.version.hip and _get_torch_cuda_version() < (12, 9),
         "cuBLAS blockwise scaling added in CUDA 12.9",
     )
     @parametrize("output_dtype", [torch.bfloat16, ])
@@ -1640,6 +1671,7 @@ class TestFP8Matmul(TestCase):
     def test_scaled_mm_deepseek_error_messages(
         self, output_dtype, lhs_block, rhs_block, M, N, K
     ):
+
         torch.manual_seed(42)
 
         x = torch.randn(M, K, device="cuda", dtype=output_dtype).pow(3)
@@ -1661,10 +1693,18 @@ class TestFP8Matmul(TestCase):
         else:
             rhs_recipe = ScalingType.BlockWise128x128
 
-        # Verify that actual F8 mm raises expected error on non-SM90
+        # Verify that actual F8 mm raises expected error
+        if torch.version.hip:
+            # ROCm does not yet support DeepSeek-style blockwise scaling
+            expected_error = ValueError
+            expected_pattern = "Invalid scaling configuration"
+        else:
+            # CUDA non-SM90 should raise NotImplementedError
+            expected_error = NotImplementedError
+            expected_pattern = ".*DeepSeek.*scaling.*only supported in CUDA for SM90.*"
         with self.assertRaisesRegex(
-            NotImplementedError,
-            ".*DeepSeek.*scaling.*only supported in CUDA for SM90.*"
+            expected_error,
+            expected_pattern
         ):
             scaled_mm_wrap(
                 x_fp8,
