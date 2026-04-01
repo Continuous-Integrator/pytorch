@@ -2204,10 +2204,15 @@ class BuiltinVariable(BaseBuiltinVariable):
 
         if type(args[0]).mp_subscript_impl is not VariableTracker.mp_subscript_impl:
             return vt_getitem(tx, args[0], args[1])
-        # Fallback: VTs without mp_subscript_impl override (e.g.
-        # UserDefinedEnumClassVariable, BuiltinVariable for type subscripts).
-        # Let BuiltinVariable dispatch handle via constant fold or call_method.
-        return args[0].call_method(tx, "__getitem__", list(args[1:]), kwargs)
+        # VTs without mp_subscript_impl override (e.g. BuiltinVariable for
+        # type subscripts like list[int]). Raise Unsupported so the
+        # _make_handler dispatch chain falls through to constant fold.
+        unimplemented(
+            gb_type="unsupported __getitem__",
+            context=f"mp_subscript_impl {args[0]} {args[1]}",
+            explanation=f"Dynamo does not know how to handle __getitem__ on {args[0]}",
+            hints=[],
+        )
 
     def call_isinstance(
         self,
