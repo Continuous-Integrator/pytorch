@@ -529,10 +529,10 @@ def _get_stable_obj_key(obj: object) -> str:
     for accessor in (
         lambda o: o.type.name,  # pybind11 enum pattern
         lambda o: o.name,  # Python enum / named constant pattern
-        lambda o: str(o.value),  # value-based pattern
+        lambda o: o.value,  # value-based pattern
     ):
         try:
-            parts.append(accessor(obj))
+            parts.append(str(accessor(obj)))
         except Exception:
             continue
     if parts:

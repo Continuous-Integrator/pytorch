@@ -3101,7 +3101,7 @@ class TestFxGraphCacheHashing(TestCase):
 
             def __init__(self, type_name, value):
                 self.type = _EnumType(type_name)
-                self._value = value
+                self.value = value
 
             def __reduce_ex__(self, protocol):
                 raise TypeError("cannot pickle 'Pybind11Enum' object")
