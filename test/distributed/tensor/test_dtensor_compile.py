@@ -2038,9 +2038,7 @@ class outer_fn(torch.nn.Module):
                         local, fsdp_mesh, [Shard(0)], run_check=False
                     )
                     return (
-                        fsdp_dt.redistribute(fsdp_mesh, [Replicate()])
-                        .to_local()
-                        .sum()
+                        fsdp_dt.redistribute(fsdp_mesh, [Replicate()]).to_local().sum()
                     )
 
                 local_t = torch.randn(4, 4)
@@ -2067,8 +2065,7 @@ class outer_fn(torch.nn.Module):
             submesh_ops = [
                 node
                 for node in gm.graph.nodes
-                if node.op == "call_function"
-                and "get_submesh" in str(node.target)
+                if node.op == "call_function" and "get_submesh" in str(node.target)
             ]
             self.assertGreater(
                 len(submesh_ops),
