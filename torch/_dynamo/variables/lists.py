@@ -1604,6 +1604,8 @@ class SizeVariable(TupleVariable):
         key: VariableTracker,
     ) -> VariableTracker:
         # tuple_subscript: https://github.com/python/cpython/blob/62a6e898e01/Objects/tupleobject.c#L877-L930
+        # TODO: investigate sharing BaseListVariable.mp_subscript_impl —
+        # get_item_dyn differs by handling SymNodeVariable and wrapping as SizeVariable.
         return self.get_item_dyn(tx, key)
 
     def call_method(

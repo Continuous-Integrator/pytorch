@@ -2832,6 +2832,8 @@ class UserDefinedDictVariable(UserDefinedObjectVariable):
         key: VariableTracker,
     ) -> VariableTracker:
         # dict_subscript: https://github.com/python/cpython/blob/62a6e898e01/Objects/dictobject.c#L3673-L3706
+        # On key-not-found, dict_subscript checks if the subclass defines
+        # __missing__ and calls it (this is how defaultdict / Counter work).
         method = self._maybe_get_baseclass_method("__getitem__")
         if method in self._dict_methods:
             try:

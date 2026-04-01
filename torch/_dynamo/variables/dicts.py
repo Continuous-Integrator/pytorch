@@ -1167,6 +1167,9 @@ class DefaultDictVariable(ConstDictVariable):
         tx: "InstructionTranslator",
         key: VariableTracker,
     ) -> VariableTracker:
+        # defaultdict inherits mp_subscript from dict (no override in
+        # _collectionsmodule.c slot table), so dict_subscript runs first.
+        # On KeyError, dict_subscript calls tp->__missing__ which resolves to
         # defdict_missing: https://github.com/python/cpython/blob/62a6e898e01/Modules/_collectionsmodule.c#L2233-L2254
         if key in self:
             return self.getitem_const(tx, key)

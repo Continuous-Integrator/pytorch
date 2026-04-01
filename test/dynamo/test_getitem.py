@@ -63,6 +63,19 @@ class GetItemTests(torch._dynamo.test_case.TestCase):
         x = torch.randn(4)
         self.assertEqual(fn(x), self._compile(fn, x))
 
+    def test_list_custom_index_class(self):
+        class MyIdx:
+            def __index__(self):
+                return 1
+
+        def fn(x):
+            items = [x, x + 1, x + 2]
+            idx = MyIdx()
+            return operator.getitem(items, idx)
+
+        x = torch.randn(4)
+        self.assertEqual(fn(x), self._compile(fn, x))
+
     def test_list_invalid_index_type(self):
         def fn(x):
             items = [x, x + 1, x + 2]
