@@ -82,13 +82,14 @@ from torch.onnx import (
 )
 from torch.testing import make_tensor
 from torch.testing._comparison import (
+    _unwrap_dtensor_for_comparison,
     BooleanPair,
     NonePair,
+    not_close_error_metas,
     NumberPair,
     Pair,
     TensorLikePair,
 )
-from torch.testing._comparison import not_close_error_metas
 from torch.testing._internal.common_dtype import get_all_dtypes
 from torch.utils._import_utils import _check_module_exists
 import torch.utils._pytree as pytree
@@ -1595,8 +1596,6 @@ TEST_CUDA_GRAPH = TEST_CUDA and (not TEST_SKIP_CUDAGRAPH) and (
     torch.version.cuda or
     (torch.version.hip and float(".".join(torch.version.hip.split(".")[0:2])) >= 5.3)
 )
-
-TEST_CUDAMALLOCASYNC = LazyVal(lambda: TEST_CUDA and (torch.cuda.get_allocator_backend() == "cudaMallocAsync"))  # type: ignore[call-arg]
 
 TEST_CUDA_CUDSS = TEST_CUDA and (torch.version.cuda and int(torch.version.cuda.split(".")[0]) >= 12)
 TEST_CUDA_GRAPH_CONDITIONAL_NODES = TEST_CUDA_GRAPH and (
@@ -4316,6 +4315,8 @@ class TestCase(expecttest.TestCase):
             x = x.unbind()
         if isinstance(y, torch.Tensor) and y.is_nested and y.layout == torch.strided:
             y = y.unbind()
+
+        x, y = _unwrap_dtensor_for_comparison(x, y)
 
         error_metas = not_close_error_metas(
             x,

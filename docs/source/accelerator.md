@@ -20,6 +20,7 @@
     set_device_idx
     current_device_index
     current_device_idx
+    get_device_capability
     set_stream
     current_stream
     synchronize
@@ -34,8 +35,6 @@
     :nosignatures:
 
     Graph
-    generate_graph_pool_handle
-    is_graph_available
 ```
 
 ```{eval-rst}

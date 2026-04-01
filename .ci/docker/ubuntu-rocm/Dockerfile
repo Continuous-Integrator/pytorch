@@ -43,13 +43,6 @@ ARG CLANG_VERSION
 COPY ./common/install_clang.sh install_clang.sh
 RUN bash ./install_clang.sh && rm install_clang.sh
 
-# (optional) Install vision packages like OpenCV
-ARG VISION
-COPY ./common/install_vision.sh ./common/cache_vision_models.sh ./common/common_utils.sh ./
-RUN if [ -n "${VISION}" ]; then bash ./install_vision.sh; fi
-RUN rm install_vision.sh cache_vision_models.sh common_utils.sh
-ENV INSTALLED_VISION ${VISION}
-
 # Install rocm
 ARG ROCM_VERSION
 ENV ROCM_VERSION=${ROCM_VERSION}
@@ -63,6 +56,9 @@ RUN rm -r ci_commit_pins
 COPY ./common/install_rocm_magma.sh install_rocm_magma.sh
 RUN if [ "${ROCM_VERSION}" != "nightly" ]; then bash ./install_rocm_magma.sh ${ROCM_VERSION}; fi
 RUN rm install_rocm_magma.sh
+COPY ./common/install_rocSHMEM.sh install_rocSHMEM.sh
+RUN bash ./install_rocSHMEM.sh ${ROCM_VERSION}
+RUN rm install_rocSHMEM.sh
 ADD ./common/install_miopen.sh install_miopen.sh
 RUN if [ "${ROCM_VERSION}" != "nightly" ]; then bash ./install_miopen.sh ${ROCM_VERSION}; fi && rm install_miopen.sh
 ADD ./common/install_rocm_drm.sh install_rocm_drm.sh
