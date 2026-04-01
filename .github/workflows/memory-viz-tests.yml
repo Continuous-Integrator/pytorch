@@ -1,0 +1,26 @@
+name: Memory Viz Tests
+
+on:
+  pull_request:
+    paths:
+      - torch/utils/viz/**
+      - test/profiler/test_memory_viz.*
+  push:
+    branches: [main]
+    paths:
+      - torch/utils/viz/**
+      - test/profiler/test_memory_viz.*
+  workflow_dispatch:
+
+permissions: read-all
+
+jobs:
+  memory-viz:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Run MemoryViz JS tests (nonretryable)
+        run: node test/profiler/test_memory_viz.js
