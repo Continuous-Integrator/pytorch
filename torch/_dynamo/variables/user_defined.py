@@ -384,6 +384,23 @@ class UserDefinedClassVariable(UserDefinedVariable):
 
         return super().var_getattr(tx, name)
 
+    def len_impl(self, tx: "InstructionTranslator") -> VariableTracker:
+        m = self._maybe_get_baseclass_method("__len__")
+        if m:
+            source = self.source and AttrSource(self.source, "__len__")
+            return variables.UserMethodVariable(
+                m, self, source_fn=source
+            ).call_function(tx, [], {})
+        raise_type_error_exc(
+            tx, f"object of type {self.python_type_name()} has no length"
+        )
+
+    def sq_length(self, tx: "InstructionTranslator") -> VariableTracker:
+        return self.len_impl(tx)
+
+    def mp_length(self, tx: "InstructionTranslator") -> VariableTracker:
+        return self.len_impl(tx)
+
     def _call_cross_entropy_loss(
         self,
         tx: "InstructionTranslator",
@@ -1140,6 +1157,15 @@ class UserDefinedEnumClassVariable(UserDefinedClassVariable):
                 ).call_function(tx, args, kwargs)
 
         return super().call_method(tx, name, args, kwargs)
+
+    def len_impl(self, tx: "InstructionTranslator") -> VariableTracker:
+        return VariableTracker.build(tx, len(self.value))
+
+    def sq_length(self, tx: "InstructionTranslator") -> VariableTracker:
+        return self.len_impl(tx)
+
+    def mp_length(self, tx: "InstructionTranslator") -> VariableTracker:
+        return self.len_impl(tx)
 
     def unpack_var_sequence(
         self, tx: "InstructionTranslator"
