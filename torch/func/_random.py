@@ -37,7 +37,7 @@ def key(
 
     Example::
 
-        >>> key = torch.func._random.key(42, device="cuda")
+        >>> key = torch.func._random.key(42, device="cuda")  # doctest: +SKIP
     """
     if impl != "philox4x32-10":
         raise NotImplementedError(f"key() does not support PRNG impl '{impl}'")
@@ -65,8 +65,8 @@ def split(key: torch.Tensor, num: int = 2) -> torch.Tensor:
 
     Example::
 
-        >>> key = torch.func._random.key(42, device="cuda")
-        >>> k1, k2 = torch.func._random.split(key)
+        >>> key = torch.func._random.key(42, device="cuda")  # doctest: +SKIP
+        >>> k1, k2 = torch.func._random.split(key)  # doctest: +SKIP
     """
     return torch.ops.aten._philox_key_split(key, num)
 
@@ -216,13 +216,13 @@ def fold_in(key: torch.Tensor, data: int) -> torch.Tensor:
 
     Example::
 
-        >>> key = torch.func._random.key(42, device="cuda")
-        >>> k0 = torch.func._random.fold_in(key, 0)
-        >>> k1 = torch.func._random.fold_in(key, 1)
+        >>> key = torch.func._random.key(42, device="cuda")  # doctest: +SKIP
+        >>> k0 = torch.func._random.fold_in(key, 0)  # doctest: +SKIP
+        >>> k1 = torch.func._random.fold_in(key, 1)  # doctest: +SKIP
         >>> # Equivalent to split:
-        >>> keys = torch.func._random.split(key, 2)
-        >>> assert torch.equal(k0, keys[0])
-        >>> assert torch.equal(k1, keys[1])
+        >>> keys = torch.func._random.split(key, 2)  # doctest: +SKIP
+        >>> assert torch.equal(k0, keys[0])  # doctest: +SKIP
+        >>> assert torch.equal(k1, keys[1])  # doctest: +SKIP
     """
     return torch.ops.aten._philox_key_fold_in(key, data)
 
