@@ -84,7 +84,7 @@ def try_import_cutlass() -> bool:
         except ImportError as e:
             log.warning(  # noqa: G200
                 "Failed to import CUTLASS packages in fbcode: %s, ignoring the CUTLASS backend.",
-                str(e),
+                e,
             )
             return False
 
@@ -169,7 +169,7 @@ def try_import_cutlass() -> bool:
         except ImportError as e:
             log.debug(  # noqa: G200
                 "Failed to import CUTLASS packages: %s, ignoring the CUTLASS backend.",
-                str(e),
+                e,
             )
     else:
         log.debug(
