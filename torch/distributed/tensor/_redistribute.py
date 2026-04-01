@@ -1552,6 +1552,15 @@ def redistribute_local_tensor(
                 mesh_to_use = device_mesh
             i = transform_info.mesh_dim
             current, target = transform_info.src_dst_placements
+
+            # _StridedShard methods use device_mesh directly, not mesh_to_use.
+            # This is safe because _StridedShard.is_shard() returns False, so
+            # _comm_type_key() returns None and flattening is never attempted.
+            if isinstance(current, _StridedShard) or isinstance(target, _StridedShard):
+                assert mesh_to_use is device_mesh, (  # noqa: S101
+                    "_StridedShard redistribute assumes no flattened transforms"
+                )
+
             num_chunks = mesh_to_use.size(mesh_dim=i)
 
             if current == target:
