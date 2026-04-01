@@ -241,6 +241,133 @@ def get_placement_from_reduction_op(reduction_op: ReductionOpType) -> Placement:
     return Partial(reduction_op)
 
 
+# ---------------------------------------------------------------------------
+# Shared single-dim strategy helpers
+# ---------------------------------------------------------------------------
+
+
+def _shard_except_dim_strategy(
+    n_placements: int,
+    op: torch._ops.OpOverload,
+    args_schema: tuple[Any, ...],
+    kwargs_schema: dict[str, Any],
+    active_dim: int,
+) -> list[list[Placement | _ShardingPlaceholder]]:
+    """Build single-dim strategies that shard on every dim except an active dim.
+
+    Used by sort-like ops (sort, topk, cummax, cummin), scan ops (cumsum, cumprod,
+    logcumsumexp), and softmax-like ops. All outputs and inputs get the same sharding
+    placeholder.
+
+    Args:
+        n_placements: Total number of placements per rule (outputs + inputs).
+        active_dim: The dim to exclude from sharding (e.g. sort dim, softmax dim).
+    """
+    input_meta = args_schema[0]
+    if not isinstance(input_meta, TensorMeta):
+        raise AssertionError(f"Expected TensorMeta, got {type(input_meta)}")
+    ndim = len(input_meta.shape)
+    active_dim = normalize_dim(active_dim, ndim)
+    strategies: list[list[Placement | _ShardingPlaceholder]] = []
+    for d in range(ndim):
+        if d != active_dim:
+            strategies.append([_ShardingPlaceholder(d)] * n_placements)
+    return strategies
+
+
+def _shard_non_reduction_dim(
+    args_schema: tuple[Any, ...],
+    dim: int,
+    keep_dim: bool,
+    n_outputs: int,
+) -> list[list[Placement | _ShardingPlaceholder]]:
+    """Shared logic for ops that shard on non-reduction dims with dim remapping.
+
+    Used by dim-reduction ops returning (values, indices) and argmax/argmin.
+
+    Args:
+        args_schema: Op args with TensorMeta at position 0.
+        dim: The reduction dimension.
+        keep_dim: Whether the reduction dim is kept.
+        n_outputs: Number of output tensors (1 for argmax, 2 for max.dim).
+    """
+    input_meta = args_schema[0]
+    if not isinstance(input_meta, TensorMeta):
+        raise AssertionError(f"Expected TensorMeta, got {type(input_meta)}")
+
+    ndim = len(input_meta.shape)
+    dim = normalize_dim(dim, ndim)
+
+    strategies: list[list[Placement | _ShardingPlaceholder]] = []
+    for d in range(ndim):
+        if d == dim:
+            continue
+        out_d = d if keep_dim or d < dim else d - 1
+        strategies.append(
+            [_ShardingPlaceholder(out_d)] * n_outputs
+            + [_ShardingPlaceholder(d)]  # pyrefly: ignore[bad-argument-type]
+        )
+    return strategies
+
+
+def _reduction_single_dim_strategy(
+    args_schema: tuple[Any, ...],
+    reduction_dims: list[int] | None,
+    keep_dim: bool,
+    reduction_linear: bool,
+    reduction_op: ReductionOpType,
+    extra_partial_rules: list[list[Placement | _ShardingPlaceholder]] | None = None,
+) -> list[list[Placement | _ShardingPlaceholder]]:
+    """Build single-dim strategies for reduction ops.
+
+    For non-reduction dims: shard input and output on that dim (with dim remapping).
+    For reduction dims (if reduction_linear): shard input on reduction dim, output is
+    Partial. Also adds partial propagation rules for linear reductions.
+
+    Note: For "avg" reductions, S(reduction_dim)->P(avg) is skipped because avg of
+    unequal-sized chunks != overall avg, and mesh size is unknown at rule time.
+    """
+    input_meta = args_schema[0]
+    if not isinstance(input_meta, TensorMeta):
+        raise AssertionError(f"Expected TensorMeta, got {type(input_meta)}")
+    ndim = len(input_meta.shape)
+
+    reduce_dims = list(range(ndim)) if reduction_dims is None else reduction_dims
+
+    strategies: list[list[Placement | _ShardingPlaceholder]] = []
+
+    for d in range(ndim):
+        if d in reduce_dims:
+            if reduction_linear:
+                # Shard on reduction dim -> Partial output.
+                # Skip for "avg": avg of unequal-sized chunks != overall avg,
+                # and we don't know mesh size at rule-generation time.
+                if reduction_op != "avg":
+                    strategies.append(
+                        [
+                            get_placement_from_reduction_op(reduction_op),
+                            _ShardingPlaceholder(d),
+                        ]
+                    )
+        else:
+            # Shard on non-reduction dim -> shard output (with dim remapping)
+            if keep_dim:
+                out_d = d
+            else:
+                out_d = d - sum(1 for rd in reduce_dims if rd < d)
+            strategies.append([_ShardingPlaceholder(out_d), _ShardingPlaceholder(d)])
+
+    # Partial propagation: Partial(reduction_op) input -> Partial(reduction_op) output
+    if reduction_linear:
+        partial_placement = get_placement_from_reduction_op(reduction_op)
+        strategies.append([partial_placement, partial_placement])
+
+    if extra_partial_rules:
+        strategies.extend(extra_partial_rules)
+
+    return strategies
+
+
 def common_reduction_strategy(
     input_strategy: OpStrategy,
     reduce_dims: list[int],
