@@ -53,15 +53,10 @@ runs:
         set -eux
         git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
-        pwd
-        id
-        ls -la .
-        sleep 7200
-
     - name: Checkout PyTorch
       uses: pytorch/pytorch/.github/actions/checkout-pytorch@main
       with:
-        no-sudo: ${{ inputs.use-arc != 'true' }}
+        no-sudo: true
         checkout-mode: treeless
         submodules: ${{ inputs.submodules }}
 
