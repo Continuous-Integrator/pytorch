@@ -5,11 +5,11 @@ from functools import lru_cache
 from typing import Any, TYPE_CHECKING, TypeAlias
 
 import torch.fx.graph
-from torch._inductor.scheduler import BaseSchedulerNode
 
 
 if TYPE_CHECKING:
     from torch._functorch.partitioners import NodeInfo
+    from torch._inductor.scheduler import BaseSchedulerNode
 
 
 class CustomGraphPass(ABC):
@@ -109,7 +109,7 @@ class CustomSchedulerPass(ABC):
     """
 
     @abstractmethod
-    def __call__(self, nodes: list[BaseSchedulerNode]) -> list[BaseSchedulerNode]:
+    def __call__(self, nodes: list["BaseSchedulerNode"]) -> list["BaseSchedulerNode"]:
         """
         Implementation of the custom pass.
         """
