@@ -4,9 +4,16 @@
 import collections
 import operator
 import types
+import unittest
 
 import torch
 import torch._dynamo.test_case
+from torch.testing._internal.inductor_utils import HAS_CUDA_AND_TRITON, HAS_GPU
+
+
+requires_gpu_and_triton = unittest.skipUnless(
+    HAS_GPU and HAS_CUDA_AND_TRITON, "requires gpu and triton"
+)
 
 
 class GetItemTests(torch._dynamo.test_case.TestCase):
@@ -248,6 +255,168 @@ class GetItemTests(torch._dynamo.test_case.TestCase):
 
         x = torch.randn(4)
         self.assertEqual(fn(x), self._compile(fn, x))
+
+    # --- TensorVariable ---
+
+    def test_tensor_int_index(self):
+        def fn(x):
+            return operator.getitem(x, 0)
+
+        x = torch.randn(4, 4)
+        self.assertEqual(fn(x), self._compile(fn, x))
+
+    def test_tensor_slice(self):
+        def fn(x):
+            return operator.getitem(x, slice(0, 2))
+
+        x = torch.randn(4, 4)
+        self.assertEqual(fn(x), self._compile(fn, x))
+
+    def test_tensor_tuple_index(self):
+        def fn(x):
+            return operator.getitem(x, (0, slice(1, 3)))
+
+        x = torch.randn(4, 4)
+        self.assertEqual(fn(x), self._compile(fn, x))
+
+    # --- NamedTupleVariable (via UserDefinedTupleVariable) ---
+
+    def test_namedtuple_int_index(self):
+        def fn(x):
+            result = torch.topk(x, 2)
+            return operator.getitem(result, 1)
+
+        x = torch.randn(10)
+        self.assertEqual(fn(x), self._compile(fn, x))
+
+    def test_namedtuple_values_index(self):
+        def fn(x):
+            result = torch.topk(x, 2)
+            return operator.getitem(result, 0)
+
+        x = torch.randn(10)
+        self.assertEqual(fn(x), self._compile(fn, x))
+
+    # --- NNModuleVariable (ModuleList) ---
+
+    def test_nn_module_list_int_index(self):
+        class Model(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.layers = torch.nn.ModuleList(
+                    [torch.nn.Linear(4, 4) for _ in range(3)]
+                )
+
+            def forward(self, x):
+                return operator.getitem(self.layers, 1)(x)
+
+        model = Model()
+        x = torch.randn(4)
+        compiled = torch.compile(model, backend="eager", fullgraph=True)
+        self.assertEqual(model(x), compiled(x))
+
+    # --- NNModuleVariable (ModuleDict) ---
+
+    def test_nn_module_dict_str_key(self):
+        class Model(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.layers = torch.nn.ModuleDict({"fc": torch.nn.Linear(4, 4)})
+
+            def forward(self, x):
+                return operator.getitem(self.layers, "fc")(x)
+
+        model = Model()
+        x = torch.randn(4)
+        compiled = torch.compile(model, backend="eager", fullgraph=True)
+        self.assertEqual(model(x), compiled(x))
+
+    # --- NNModuleVariable (Sequential) ---
+
+    def test_nn_sequential_int_index(self):
+        class Model(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.seq = torch.nn.Sequential(
+                    torch.nn.Linear(4, 4),
+                    torch.nn.ReLU(),
+                )
+
+            def forward(self, x):
+                return operator.getitem(self.seq, 0)(x)
+
+        model = Model()
+        x = torch.randn(4)
+        compiled = torch.compile(model, backend="eager", fullgraph=True)
+        self.assertEqual(model(x), compiled(x))
+
+    # --- TorchScriptObjectVariable ---
+
+    def test_opaque_object_getitem(self):
+        from torch._library.opaque_object import (
+            MemberType,
+            OpaqueBase,
+            register_opaque_type,
+        )
+
+        class OpaqueScaler(OpaqueBase):
+            def __init__(self, scale):
+                self.scale = scale
+
+            def apply(self, x):
+                return x * self.scale
+
+        class OpaqueContainer(OpaqueBase):
+            def __init__(self, items):
+                self.items = items
+
+            def __getitem__(self, idx):
+                return self.items[idx]
+
+        register_opaque_type(
+            OpaqueScaler,
+            typ="reference",
+            members={
+                "scale": MemberType.USE_REAL,
+                "apply": MemberType.INLINED,
+            },
+        )
+        register_opaque_type(
+            OpaqueContainer,
+            typ="reference",
+            members={
+                "items": MemberType.USE_REAL,
+                "__getitem__": MemberType.INLINED,
+            },
+        )
+
+        def fn(x, c):
+            scaler = operator.getitem(c, 0)
+            return scaler.apply(x)
+
+        x = torch.randn(4)
+        c = OpaqueContainer([OpaqueScaler(2.0), OpaqueScaler(3.0)])
+        compiled = torch.compile(fn, backend="eager", fullgraph=True)
+        self.assertEqual(fn(x, c), compiled(x, c))
+
+    # --- TritonKernelVariable ---
+
+    @requires_gpu_and_triton
+    def test_triton_kernel_getitem_grid(self):
+        from torch.testing._internal.triton_utils import add_kernel
+
+        def fn(x, y):
+            output = torch.zeros_like(x)
+            n_elements = output.numel()
+            grid = (n_elements // 256,)
+            bound = operator.getitem(add_kernel, grid)
+            bound(x, y, output, n_elements, BLOCK_SIZE=256)
+            return output
+
+        x = torch.randn(256, device="cuda")
+        y = torch.randn(256, device="cuda")
+        compiled = torch.compile(fn, backend="eager", fullgraph=True)
+        self.assertEqual(fn(x, y), compiled(x, y))
 
 
 if __name__ == "__main__":
