@@ -56,6 +56,7 @@ from torch.testing._internal.common_utils import (
     skipIfTorchDynamo,
     subtest,
     TemporaryFileName,
+    TEST_WITH_CROSSREF,
     TestCase,
 )
 from torch.testing._internal.custom_op_db import numpy_nonzero
@@ -4501,6 +4502,7 @@ Please use `add.register_fake` to add an fake impl.""",
                 torch.library.get_kernel("test_invalid_kernel::cpu_only_op", "CUDA")
 
 
+@unittest.skipIf(TEST_WITH_CROSSREF, "Fast path tests are eager-mode only")
 @skipIfTorchDynamo("Fast path tests are eager-mode only")
 class TestCustomOpFastPath(TestCase):
     """Tests for the fast dispatch path in custom_op."""
