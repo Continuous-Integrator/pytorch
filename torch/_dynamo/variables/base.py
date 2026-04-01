@@ -569,16 +569,17 @@ class VariableTracker(metaclass=VariableTrackerMeta):
         kwargs: dict[str, "VariableTracker"],
     ) -> "VariableTracker":
         if name == "__getitem__":
-            if len(args) == 1 and not kwargs:
-                return self.mp_subscript_impl(tx, args[0])
-            from ..utils import raise_args_mismatch
+            if type(self).mp_subscript_impl is not VariableTracker.mp_subscript_impl:
+                if len(args) == 1 and not kwargs:
+                    return self.mp_subscript_impl(tx, args[0])
+                from ..utils import raise_args_mismatch
 
-            raise_args_mismatch(
-                tx,
-                name,
-                "1 args and 0 kwargs",
-                f"{len(args)} args and {len(kwargs)} kwargs",
-            )
+                raise_args_mismatch(
+                    tx,
+                    name,
+                    "1 args and 0 kwargs",
+                    f"{len(args)} args and {len(kwargs)} kwargs",
+                )
         elif name == "__len__" and self.has_unpack_var_sequence(tx):
             assert not (args or kwargs)
             return variables.ConstantVariable.create(len(self.unpack_var_sequence(tx)))

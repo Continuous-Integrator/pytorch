@@ -2199,9 +2199,15 @@ class BuiltinVariable(BaseBuiltinVariable):
         # that don't — when mp_subscript_impl raises Unsupported here, the
         # BuiltinVariable dispatch continues to constant fold (step 5),
         # which handles type subscripts like list[int] / dict[str, Any].
+        from .base import VariableTracker
         from .object_protocol import vt_getitem
 
-        return vt_getitem(tx, args[0], args[1])
+        if type(args[0]).mp_subscript_impl is not VariableTracker.mp_subscript_impl:
+            return vt_getitem(tx, args[0], args[1])
+        # Fallback: VTs without mp_subscript_impl override (e.g.
+        # UserDefinedEnumClassVariable, BuiltinVariable for type subscripts).
+        # Let BuiltinVariable dispatch handle via constant fold or call_method.
+        return args[0].call_method(tx, "__getitem__", list(args[1:]), kwargs)
 
     def call_isinstance(
         self,
