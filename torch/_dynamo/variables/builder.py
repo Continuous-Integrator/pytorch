@@ -125,6 +125,7 @@ from ..source import (
     GradSource,
     is_constant_source,
     is_from_closure_source,
+    is_from_flatten_script_object_source,
     is_from_global_source,
     is_from_nonlocal_source,
     is_from_optimizer_source,
@@ -1526,14 +1527,17 @@ class VariableBuilder:
                 # ID_MATCH even if its a global variable.
                 self.install_guards(GuardBuilder.CLASS_MATCH)
 
-            if is_opaque_type(value):
-                return OpaqueObjectClassVariable(
+            if isinstance(value, type) and issubclass(value, enum.Enum):
+                # Order this before OpaqueObjectClassVariable since it's better
+                # to use the native UserDefinedEnumClassVariable
+                return UserDefinedEnumClassVariable(
                     value,
                     source=self.source,
                 )
 
-            if isinstance(value, type) and issubclass(value, enum.Enum):
-                return UserDefinedEnumClassVariable(
+            if is_opaque_type(value):
+                assert not (isinstance(value, type) and issubclass(value, enum.Enum))
+                return OpaqueObjectClassVariable(
                     value,
                     source=self.source,
                 )
@@ -1853,8 +1857,15 @@ class VariableBuilder:
             return ConstantVariable.create(value=value)
 
         # One can index a tensor with a list/tuple. Therefore, we need to
-        # have a stricter match.
-        self.install_guards(GuardBuilder.SEQUENCE_LENGTH)
+        # have a stricter match. Keep plain list length guards lazy so mutating
+        # methods like append()/clear() don't specialize on untouched contents.
+        # Flattened torchbind state still needs eager length guards because its
+        # size can be observed through fake-class methods outside list VT reads.
+        if type(value) is not list or (
+            self.source is not None
+            and is_from_flatten_script_object_source(self.source)
+        ):
+            self.install_guards(GuardBuilder.SEQUENCE_LENGTH)
 
         # Tuples are immutable objects, so we should mark its items static. This
         # avoids wrapping of tuple items as symints. This helps for nn module
@@ -1953,8 +1964,12 @@ class VariableBuilder:
             # https://github.com/pytorch/pytorch/issues/153701.
             for vt in output:
                 vt.realize()
+        list_options: dict[str, Any] = {"source": self.source}
+        if type(value) is list:
+            list_options["mutation_type"] = ValueMutationExisting()
+
         # type: ignore[arg-type]
-        result = BaseListVariable.cls_for_instance(value)(output, source=self.source)
+        result = BaseListVariable.cls_for_instance(value)(output, **list_options)
         if istype(value, (list, collections.deque)):
             return self.tx.output.side_effects.track_mutable(value, result)
         return result
@@ -2513,25 +2528,22 @@ class VariableBuilder:
             if is_dtensor:
                 self.install_guards(GuardBuilder.TYPE_MATCH)
 
-                # The inner tensor name is always _local_tensor. If its not, we
-                # raise assertion to update the check accordingly.
-                inner_tensor_name = value.__tensor_flatten__()[0][0]
-                if inner_tensor_name != "_local_tensor":
+                inner_attrs = value.__tensor_flatten__()[0]
+                if inner_attrs != ["_local_tensor", "device_mesh"]:
                     raise RuntimeError(
-                        "Expecting Dtensor inner tensor name to be _local_tensor"
+                        "Expecting DTensor inner attrs to be ['_local_tensor', 'device_mesh']"
                     )
 
-                # Now selectively guard on the flattening context
                 flattening_ctx = value.__tensor_flatten__()[1]
-                # This is supposed to be (self._spec, self.requires_grad)
                 if not (
-                    len(flattening_ctx) == 2
-                    and flattening_ctx[0] == value._spec
-                    and flattening_ctx[1] == value.requires_grad
+                    len(flattening_ctx) == 4
+                    and flattening_ctx[0] == value._spec.placements
+                    and flattening_ctx[1] == value._spec.tensor_meta
+                    and flattening_ctx[2] == value._spec.shard_order
+                    and flattening_ctx[3] == value.requires_grad
                 ):
-                    # If not, raise an assertion to update to the new guards
                     raise RuntimeError(
-                        "Expecting Dtensor flattening ctx to be _spec, requires_grad"
+                        "Expecting DTensor flattening ctx to be (placements, tensor_meta, shard_order, requires_grad)"
                     )
                 # Guard on the dtensor spec
                 install_guard(
@@ -2555,9 +2567,17 @@ class VariableBuilder:
             attrs, _ = value.__tensor_flatten__()
             for attr in attrs:
                 inner_value = getattr(value, attr)
+                # FakeScriptObject wraps the real opaque object during
+                # fake-mode tracing; unwrap before the type check.
+                inner_type = type(inner_value)
+                if isinstance(
+                    inner_value,
+                    torch._library.fake_class_registry.FakeScriptObject,
+                ):
+                    inner_type = type(inner_value.real_obj)
                 if not isinstance(
                     inner_value, torch.Tensor
-                ) and not is_opaque_reference_type(type(inner_value)):
+                ) and not is_opaque_reference_type(inner_type):
                     raise RuntimeError(
                         f"{type(inner_value).__name__!r} found in tensor attrs of "
                         f"{type(value).__name__}.__tensor_flatten__(). "
@@ -4233,7 +4253,7 @@ class SourcelessBuilder:
         if isinstance(value, VariableTracker):
             # This is always valid to call, and useful for recursive calls.
             return value
-        elif is_opaque_value_type(type(value)):
+        elif is_opaque_value_type(type(value)) and not isinstance(value, enum.Enum):
             return TorchScriptObjectVariable.create(value, value)
         elif is_opaque_reference_type(type(value)):
             # This is for handling opaque objects in custom ops
@@ -4241,7 +4261,7 @@ class SourcelessBuilder:
                 tx.output.fake_mode, value
             )
             return TorchScriptObjectVariable.create(
-                value,
+                value,  # pyrefly: ignore[bad-argument-type]
                 fake_script_obj,
             )
         # type: ignore[attr-defined]
