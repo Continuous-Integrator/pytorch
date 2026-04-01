@@ -2441,15 +2441,29 @@ class FakeTensorMode(TorchDispatchMode):
 
         flat_args, args_spec = pytree.tree_flatten((args, kwargs))
 
+        # Single pass over flat_args to compute subclass check, collect fake
+        # tensors, and detect symbolic sizes. This replaces three separate
+        # iterations (_check_for_subclass, list comprehension for fakes,
+        # and has_symbolic_sizes any() calls).
         # DO NOT PUT LOGIC BEFORE UNRECOGNIZED TYPE CHECKING
         # We must throw NotImplemented in case of unrecognized types to handle subclasses.
-        # Throwing the exception will pass the control to the next __torch_dispatch__.
         # See [subclass inputs] below
-        # NB: If you're seeing a mysterious infinite loop involving fake
-        # tensor, it might be related to this line.  Though I'm not sure
-        # how you'll know to read this comment, as this line won't show up
-        # in the stack trace.
-        has_unrecognized_types = _check_for_subclass(flat_args)
+        flat_arg_fake_tensors: list[FakeTensor] = []
+        has_symbolic_sizes = False
+        has_unrecognized_types = False
+        has_non_fake_tensors = False
+        for x in flat_args:
+            if isinstance(x, FakeTensor) and x.fake_mode is self:
+                flat_arg_fake_tensors.append(x)
+                if x._has_symbolic_sizes_strides:
+                    has_symbolic_sizes = True
+            elif isinstance(x, SymInt):
+                has_symbolic_sizes = True
+            elif isinstance(x, Tensor):
+                has_non_fake_tensors = True
+                if type(x) is not Tensor and type(x) is not torch.nn.Parameter:
+                    has_unrecognized_types = True
+
         if has_unrecognized_types:
             unrecognized_types = [
                 type(x) for x in flat_args if _check_for_subclass_arg(x)
@@ -2458,11 +2472,6 @@ class FakeTensorMode(TorchDispatchMode):
                 "FakeTensorMode unrecognized subclass(es): %s", unrecognized_types
             )
             return NotImplemented
-
-        flat_arg_fake_tensors = [t for t in flat_args if self.is_our_fake(t)]
-        has_symbolic_sizes = any(
-            i._has_symbolic_sizes_strides for i in flat_arg_fake_tensors
-        ) or any(isinstance(a, SymInt) for a in flat_args)
 
         converter = self.fake_tensor_converter
 
@@ -2538,11 +2547,13 @@ class FakeTensorMode(TorchDispatchMode):
             if type(args[0]) is Tensor:
                 return converter.from_real_tensor(self, args[0])
 
-        # Recompute flat_arg_fake_tensors here again in case some of the inputs
-        # were real tensors and fakified in validate_and_convert_non_fake_tensors
-        (flat_args, flat_arg_fake_tensors) = self.validate_and_convert_non_fake_tensors(
-            func, converter, flat_args, args_spec
-        )
+        # Only validate/convert when there are non-fake tensor inputs.
+        # When all tensor args are already our fakes (the common case during
+        # tracing), skip the redundant iteration and list rebuilding.
+        if has_non_fake_tensors:
+            (flat_args, flat_arg_fake_tensors) = self.validate_and_convert_non_fake_tensors(
+                func, converter, flat_args, args_spec
+            )
         del args, kwargs  # Invalidated
 
         # The current constant handling only support tracing systems
