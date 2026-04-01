@@ -14,6 +14,7 @@ Tests cover:
 
 import collections
 import types
+import unittest
 
 import torch
 import torch._dynamo.test_case
@@ -1146,6 +1147,42 @@ class TestMappingProxyLen(torch._dynamo.test_case.TestCase):
         d = types.MappingProxyType({i: i * 2 for i in range(20)})
         self.assertEqual(len(d), 20)
         self.assertEqual(d.__len__(), 20)
+
+
+class MetaclassWithLen(type):
+    """A metaclass that defines __len__ on the class itself"""
+
+    def __len__(cls):
+        """Return the number of items defined in the metaclass"""
+        return 5
+
+
+class SimpleMetaclassClass(metaclass=MetaclassWithLen):
+    """A class using the MetaclassWithLen metaclass"""
+
+
+class TestMetaclassLen(torch._dynamo.test_case.TestCase):
+    """Tests for len() on metaclasses, classmethods, staticmethods, and properties"""
+
+    def setUp(self):
+        self.old = torch._dynamo.config.enable_trace_unittest
+        torch._dynamo.config.enable_trace_unittest = True
+        super().setUp()
+
+    def tearDown(self):
+        torch._dynamo.config.enable_trace_unittest = self.old
+        return super().tearDown()
+
+    @make_dynamo_test
+    def test_metaclass_len_basic(self):
+        """Test len() on a class with __len__ defined in metaclass"""
+        self.assertEqual(len(SimpleMetaclassClass), 5)
+
+    @unittest.expectedFailure
+    @make_dynamo_test
+    def test_metaclass_len_direct_call(self):
+        """Test direct call to __len__() on a class with metaclass-defined __len__"""
+        self.assertEqual(SimpleMetaclassClass.__len__(), 5)
 
 
 if __name__ == "__main__":

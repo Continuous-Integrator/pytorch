@@ -595,7 +595,6 @@ class VariableTracker(metaclass=VariableTrackerMeta):
             hints=[*graph_break_hints.SUPPORTABLE],
         )
 
-
     def contains_impl(self, tx: Any, item: "VariableTracker") -> "VariableTracker":
         """
         Implements sq_contains / mp_contains (tp_as_sequence/tp_as_mapping contains slot).

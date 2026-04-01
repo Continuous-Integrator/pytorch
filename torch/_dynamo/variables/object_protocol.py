@@ -116,6 +116,14 @@ def vt_implements_tp_iter(obj: "VariableTracker") -> bool:
     return vt_implements_slot(obj, "__iter__", "iter_impl")
 
 
+def vt_implements_tp_iternext(obj: "VariableTracker") -> bool:
+    return vt_implements_slot(obj, "__next__", "iternext_impl")
+
+
+def vt_implements_sq_contains(obj: "VariableTracker") -> bool:
+    return vt_implements_slot(obj, "__contains__", "contains_impl")
+
+
 def vt_sequence_check(obj: "VariableTracker") -> bool:
     """Implements PySequence_Check semantics for VariableTracker objects."""
     # ref: https://github.com/python/cpython/blob/v3.13.0/Objects/abstract.c#1715
@@ -126,7 +134,6 @@ def vt_sequence_check(obj: "VariableTracker") -> bool:
 
     # needs generic_getitem to be implemented in Dynamo
     return True
-    # return vt_implements_method(obj, " getitem_impl")
 
 
 def vt_mapping_check(obj: "VariableTracker") -> bool:
@@ -135,7 +142,6 @@ def vt_mapping_check(obj: "VariableTracker") -> bool:
 
     # needs generic_getitem to be implemented in Dynamo
     return True
-    # return vt_implements_method(obj, " getitem_impl")
 
 
 def vt_mapping_size(
@@ -218,10 +224,6 @@ def generic_getiter(
         )
 
 
-def vt_implements_tp_iternext(obj: "VariableTracker") -> bool:
-    return vt_implements_slot(obj, "__next__", "iternext_impl")
-
-
 def generic_iternext(
     tx: "InstructionTranslator", obj: "VariableTracker"
 ) -> "VariableTracker":
@@ -242,10 +244,6 @@ def generic_iternext(
         raise_observed_exception(TypeError, tx, args=[msg])
 
     return obj.iternext_impl(tx)
-
-
-def vt_implements_sq_contains(obj: "VariableTracker") -> bool:
-    return vt_implements_slot(obj, "__contains__", "contains_impl")
 
 
 def vt_sequence_contains(
