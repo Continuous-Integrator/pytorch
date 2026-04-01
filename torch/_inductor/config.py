@@ -208,7 +208,12 @@ fx_wrapper: bool = os.environ.get("TORCHINDUCTOR_FX_WRAPPER", "0") == "1"
 # Controls automatic precompiling of common include files for codecache.CppCodeCache
 # (i.e. for cpp_wrapper mode and for cpp kernels on CPU).  AOTI header precompiling is
 # controlled by a separate flag.
-cpp_cache_precompile_headers: bool = not is_fbcode()
+cpp_cache_precompile_headers: bool = (
+    os.environ.get(
+        "TORCHINDUCTOR_CPP_CACHE_PRECOMPILE_HEADERS", "0" if is_fbcode() else "1"
+    )
+    == "1"
+)
 
 online_softmax = os.environ.get("TORCHINDUCTOR_ONLINE_SOFTMAX", "1") == "1"
 
@@ -1186,11 +1191,7 @@ def decide_compile_threads() -> int:
         compile_threads = 1
         log.info("compile_threads set to 1 in fbcode")
     else:
-        cpu_count = (
-            len(os.sched_getaffinity(0))
-            if hasattr(os, "sched_getaffinity")
-            else os.cpu_count()
-        )
+        cpu_count = torch._utils.cpu_count()
         assert cpu_count
         compile_threads = min(32, cpu_count)
         log.info("compile_threads set to %d", compile_threads)
