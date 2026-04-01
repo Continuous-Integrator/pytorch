@@ -1948,7 +1948,59 @@ def cat(inputs, dim=0):
         horizontal_fuse_cat = all(
             should_lower_cat_input(inp) for inp in inputs
         ) and not any(can_fuse_reduction(t) for t in inputs)
-        if fuse_pointwise_use or (horizontal_fuse_cat and not fusable_reduction):
+
+        # When cat inputs are just splitting and recombining the same data
+        # (e.g. qknorm output → rope → cat), pointwise cat lets the unified
+        # iteration space fuse with the upstream reduction. We check:
+        # 1. All inputs are unrealized Pointwise reading the same buffers
+        # 2. Equal sizes along cat dim (balanced branches)
+        # 3. Cat output numel ≈ max read buffer numel (no broadcast inflation)
+        same_reads_cat = False
+        if all(should_lower_cat_input(inp) for inp in inputs):
+            read_names = []
+            cat_sizes = []
+            for inp in inputs:
+                t = unwrap_tensor(inp)
+                if isinstance(t, ir.StorageBox):
+                    t = t.data
+                if not isinstance(t, ir.Pointwise):
+                    break
+                read_names.append(t.get_read_names())
+                cat_sizes.append(inp.get_size()[dim])
+            if (
+                len(read_names) == len(inputs)
+                and len(read_names) >= 2
+                and all(r == read_names[0] for r in read_names[1:])
+                and all(
+                    V.graph.sizevars.statically_known_equals(s, cat_sizes[0])
+                    for s in cat_sizes[1:]
+                )
+            ):
+                # The cat output should be the same size as the upstream
+                # reduction being recombined. If larger (e.g. broadcasting),
+                # each element redundantly evaluates all masked branches.
+                cat_dim_total = sum(cat_sizes)
+                cat_out_size = list(inputs[0].get_size())
+                cat_out_size[dim] = cat_dim_total
+                cat_out_numel = sympy_product(cat_out_size)
+                for name in read_names[0]:
+                    buf = V.graph.try_get_buffer(name)
+                    if (
+                        buf is not None
+                        and isinstance(buf, ir.ComputedBuffer)
+                        and isinstance(buf.data, ir.Reduction)
+                    ):
+                        reduction_numel = sympy_product(
+                            buf.data.get_size()
+                        ) * sympy_product(buf.data.get_reduction_size())
+                        same_reads_cat = (
+                            V.graph.sizevars.statically_known_equals(
+                                cat_out_numel, reduction_numel
+                            )
+                        )
+                        break
+
+        if fuse_pointwise_use or (horizontal_fuse_cat and not fusable_reduction) or same_reads_cat:
             return pointwise_cat(inputs, dim)
 
     return TensorBox(ir.ConcatKernel.create(inputs, dim))
