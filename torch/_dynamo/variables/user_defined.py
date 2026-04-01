@@ -1299,6 +1299,30 @@ class UserDefinedObjectVariable(UserDefinedVariable):
             return self.value
         return super().guard_as_python_constant()
 
+    def nb_index_impl(
+        self,
+        tx: "InstructionTranslator",
+    ) -> VariableTracker:
+        # CPython: PyNumber_Index checks tp_as_number->nb_index.
+        # For user-defined types, __index__ in tp_dict means nb_index is set.
+        type_attr = inspect.getattr_static(type(self.value), "__index__", None)
+        if type_attr is None:
+            return super().nb_index_impl(tx)
+        method_var = self.resolve_type_attr(tx, "__index__", type_attr, source=None)
+        result = method_var.call_function(tx, [], {})
+        # CPython validates that __index__ returns an int (abstract.c:1433-1438).
+        if result.is_python_constant() and not isinstance(
+            result.as_python_constant(), int
+        ):
+            raise_observed_exception(
+                TypeError,
+                tx,
+                args=[
+                    f"__index__ returned non-int (type {type(result.as_python_constant()).__name__})"
+                ],
+            )
+        return result
+
     def torch_function_check(self) -> None:
         assert has_torch_function(self), (
             f"calling torch function on object without __torch_function__ {self}"
@@ -1341,6 +1365,19 @@ class UserDefinedObjectVariable(UserDefinedVariable):
             random.uniform,
         }
         return fns
+
+    def mp_subscript_impl(
+        self,
+        tx: "InstructionTranslator",
+        key: VariableTracker,
+    ) -> VariableTracker:
+        # PyObject_GetItem: https://github.com/python/cpython/blob/62a6e898e01/Objects/abstract.c#L155-L206
+        method = self._maybe_get_baseclass_method("__getitem__")
+        if method is not None:
+            return self.resolve_type_attr(
+                tx, "__getitem__", method, self.source
+            ).call_function(tx, [key], {})
+        return super().mp_subscript_impl(tx, key)
 
     def call_method(
         self,
@@ -2789,6 +2826,25 @@ class UserDefinedDictVariable(UserDefinedObjectVariable):
             self._dict_vt = dict_vt
         self._dict_methods = dict_methods
 
+    def mp_subscript_impl(
+        self,
+        tx: "InstructionTranslator",
+        key: VariableTracker,
+    ) -> VariableTracker:
+        # dict_subscript: https://github.com/python/cpython/blob/62a6e898e01/Objects/dictobject.c#L3673-L3706
+        method = self._maybe_get_baseclass_method("__getitem__")
+        if method in self._dict_methods:
+            try:
+                return self._dict_vt.mp_subscript_impl(tx, key)
+            except ObservedKeyError:
+                if issubclass(
+                    self.python_type(), dict
+                ) and self._maybe_get_baseclass_method("__missing__"):
+                    return self.call_method(tx, "__missing__", [key], {})
+                else:
+                    raise
+        return super().mp_subscript_impl(tx, key)
+
     def call_method(
         self,
         tx: "InstructionTranslator",
@@ -2964,6 +3020,17 @@ class UserDefinedListVariable(UserDefinedObjectVariable):
         else:
             self._list_vt = list_vt
 
+    def mp_subscript_impl(
+        self,
+        tx: "InstructionTranslator",
+        key: VariableTracker,
+    ) -> VariableTracker:
+        assert self._list_vt is not None
+        method = self._maybe_get_baseclass_method("__getitem__")
+        if method in list_methods:
+            return self._list_vt.mp_subscript_impl(tx, key)
+        return super().mp_subscript_impl(tx, key)
+
     def call_method(
         self,
         tx: "InstructionTranslator",
@@ -3039,6 +3106,17 @@ class UserDefinedTupleVariable(UserDefinedObjectVariable):
             _, (idx, _) = type_attr.__reduce__()
             return self._tuple_vt.items[idx]  # type: ignore[union-attr]
         return super().resolve_data_descriptor(tx, name, type_attr, source)
+
+    def mp_subscript_impl(
+        self,
+        tx: "InstructionTranslator",
+        key: VariableTracker,
+    ) -> VariableTracker:
+        assert self._tuple_vt is not None
+        method = self._maybe_get_baseclass_method("__getitem__")
+        if method in tuple_methods:
+            return self._tuple_vt.mp_subscript_impl(tx, key)
+        return super().mp_subscript_impl(tx, key)
 
     def call_method(
         self,

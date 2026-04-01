@@ -548,6 +548,19 @@ class VariableTracker(metaclass=VariableTrackerMeta):
             ],
         )
 
+    def mp_subscript_impl(
+        self,
+        tx: "InstructionTranslator",
+        key: "VariableTracker",
+    ) -> "VariableTracker":
+        # PyObject_GetItem: https://github.com/python/cpython/blob/62a6e898e01/Objects/abstract.c#L155-L206
+        unimplemented(
+            gb_type="unsupported __getitem__",
+            context=f"mp_subscript_impl {self} {key}",
+            explanation=f"Dynamo does not know how to handle __getitem__ on {self}",
+            hints=[],
+        )
+
     def call_method(
         self,
         tx: Any,
@@ -555,7 +568,18 @@ class VariableTracker(metaclass=VariableTrackerMeta):
         args: list["VariableTracker"],
         kwargs: dict[str, "VariableTracker"],
     ) -> "VariableTracker":
-        if name == "__len__" and self.has_unpack_var_sequence(tx):
+        if name == "__getitem__":
+            if len(args) == 1 and not kwargs:
+                return self.mp_subscript_impl(tx, args[0])
+            from ..utils import raise_args_mismatch
+
+            raise_args_mismatch(
+                tx,
+                name,
+                "1 args and 0 kwargs",
+                f"{len(args)} args and {len(kwargs)} kwargs",
+            )
+        elif name == "__len__" and self.has_unpack_var_sequence(tx):
             assert not (args or kwargs)
             return variables.ConstantVariable.create(len(self.unpack_var_sequence(tx)))
         elif (
@@ -565,6 +589,8 @@ class VariableTracker(metaclass=VariableTrackerMeta):
             and not kwargs
         ):
             return self.var_getattr(tx, args[0].as_python_constant())
+        elif name == "__index__" and not args and not kwargs:
+            return self.nb_index_impl(tx)
         elif name in cmp_name_to_op_mapping and len(args) == 1 and not kwargs:
             other = args[0]
             if not isinstance(self, type(other)) and not (
@@ -904,6 +930,25 @@ class VariableTracker(metaclass=VariableTrackerMeta):
                     f"Consider using a different type of object as the dictionary key instead of {self.python_type()}."
                 ),
                 *graph_break_hints.SUPPORTABLE,
+            ],
+        )
+
+    def nb_index_impl(
+        self,
+        tx: Any,
+    ) -> "VariableTracker":
+        """Mirrors CPython's PyNumber_Index / nb_index slot.
+
+        https://github.com/python/cpython/blob/c09ccd9c429/Objects/abstract.c#L1411-L1450
+
+        The base implementation raises TypeError, matching CPython's behavior
+        when tp_as_number->nb_index is NULL (_PyIndex_Check fails).
+        """
+        raise_observed_exception(
+            TypeError,
+            tx,
+            args=[
+                f"'{self.python_type_name()}' object cannot be interpreted as an integer"
             ],
         )
 
