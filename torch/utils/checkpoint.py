@@ -1334,7 +1334,9 @@ class _CachingTorchDispatchMode(TorchDispatchMode):
         if isinstance(policy, bool):
             policy = _policy_from_bool(policy)
 
-        is_compiling = _is_compiling(func, args, kwargs)
+        # TODO: eventually we will only rely on tagging for the compile path
+        # and remove the eager checkpoint machinery entirely in compile path.
+        is_compiling = _is_compiling(func, args, kwargs) and not torch.compiler._is_non_strict_tracing()
 
         if is_compiling:
             # Overwrite each node's "recompute" tag to add in the user annotation.
@@ -1376,7 +1378,7 @@ class _CachedTorchDispatchMode(TorchDispatchMode):
         if isinstance(policy, bool):
             policy = _policy_from_bool(policy)
 
-        is_compiling = _is_compiling(func, args, kwargs)
+        is_compiling = _is_compiling(func, args, kwargs) and not torch.compiler._is_non_strict_tracing()
 
         if policy in (CheckpointPolicy.MUST_SAVE, CheckpointPolicy.PREFER_SAVE) or is_compiling:
             storage = self.storage.get(func)
@@ -1542,7 +1544,7 @@ def _checkpoint_without_reentrant_generator(
     device_type = _infer_device_type(*args)
     device_module = _get_device_module(device_type)
     forward_context, recompute_context = context_fn()
-    if _is_compiling(fn, args, kwargs) and context_fn is not noop_context_fn:
+    if (_is_compiling(fn, args, kwargs) and not torch.compiler._is_non_strict_tracing()) and context_fn is not noop_context_fn:
         if (
             not isinstance(forward_context, TorchDispatchMode)
             or not isinstance(recompute_context, TorchDispatchMode)
