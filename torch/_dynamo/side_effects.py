@@ -35,6 +35,7 @@ from typing import Any, TYPE_CHECKING
 import torch
 import torch.nn
 from torch._dynamo.variables.misc import AutogradFunctionContextVariable
+from torch.utils._ordered_set import OrderedSet
 
 from . import config, graph_break_hints, utils, variables
 from .bytecode_transformation import (
@@ -45,7 +46,7 @@ from .bytecode_transformation import (
 )
 from .codegen import PyCodegen
 from .exc import collapse_resume_frames, get_stack_above_dynamo, unimplemented
-from .source import GlobalSource, LocalCellSource, Source, TempLocalSource
+from .source import AttrSource, GlobalSource, LocalCellSource, Source, TempLocalSource
 from .utils import is_frozen_dataclass, nn_module_new, object_new
 from .variables.base import (
     AttributeMutation,
@@ -84,6 +85,14 @@ def _manual_dict_setitem(
 def _manual_list_update(list_from: list[Any], list_to: list[Any]) -> None:
     list.clear(list_to)
     list.extend(list_to, list_from)
+
+
+def _manual_list_replay(
+    list_to: list[Any], appended_items: list[Any], clear_first: bool
+) -> None:
+    if clear_first:
+        list.clear(list_to)
+    list.extend(list_to, appended_items)
 
 
 class SideEffects:
@@ -159,6 +168,9 @@ class SideEffects:
         # Used for temporary mutations in contexts like torch.func.functional_call,
         # where module parameters/buffers are modified but later restored.
         self.ignore_mutation_on_these_variables: set[VariableTracker] = set()
+        # Sources mutated during tracing: AttrSource for attribute
+        # mutations, var.source for value mutations (list/dict/etc).
+        self.mutated_sources: OrderedSet[Source] = OrderedSet()
 
     def ignore_mutations_on(self, var: VariableTracker) -> None:
         """Mutations to this variable will be executed but not not tracked,
@@ -256,6 +268,19 @@ class SideEffects:
             and output_graph.current_tx.output.current_tracer.is_reconstructing_generator
         )
 
+    def _maybe_record_side_effect(self, item: VariableTracker) -> None:
+        """Record the first externally-visible side effect on the current tracer."""
+        if item.mutation_type is not None and not is_side_effect_safe(
+            item.mutation_type
+        ):
+            output_graph = self.output_graph_weakref()
+            if output_graph:
+                tracer = output_graph.current_tx.output.current_tracer
+                if tracer.side_effect_stack is None:
+                    tracer.side_effect_stack = (
+                        torch._guards.TracingContext.extract_stack()
+                    )
+
     def check_allowed_side_effect(self, item: VariableTracker) -> bool:
         from torch._dynamo.variables.misc import AutogradFunctionContextVariable
 
@@ -264,8 +289,10 @@ class SideEffects:
         if isinstance(item, AutogradFunctionContextVariable):
             return True
         if self.should_allow_externally_visible_side_effects_in_subtracer():
+            self._maybe_record_side_effect(item)
             return True
         if self.should_allow_side_effects_in_hop():
+            self._maybe_record_side_effect(item)
             return True
         if self.is_reconstructing_generator():
             # This is missing the case where one mutates a tensor. See
@@ -306,6 +333,9 @@ class SideEffects:
         self.store_attr_mutations[item][name] = value
         # Capture user stack for this mutation
         self._capture_user_stack(item)
+        item_source = getattr(item, "source", None)
+        if item_source is not None:
+            self.mutated_sources.add(AttrSource(item_source, name))
 
     def load_attr(
         self,
@@ -340,6 +370,16 @@ class SideEffects:
 
     def load_cell(self, cellvar: VariableTracker) -> VariableTracker:
         assert isinstance(cellvar, variables.CellVariable)
+        # Track the cell_contents source during subgraph tracing so that
+        # mutations (e.g. nonlocal counter = 3) are detected by the reuse
+        # mechanism via set intersection with mutated_sources.
+        output_graph = self.output_graph_weakref()
+        if output_graph:
+            cell_source = getattr(cellvar, "source", None)
+            if cell_source is not None:
+                output_graph.current_tx.output.current_tracer.traced_sources.add(
+                    AttrSource(cell_source, "cell_contents")
+                )
         if self.has_pending_mutation_of_attr(cellvar, "cell_contents"):
             return self.load_attr(cellvar, "cell_contents", check=False)
         if cellvar.pre_existing_contents:
@@ -517,6 +557,8 @@ class SideEffects:
         else:
             if isinstance(base_cls_vt, variables.BuiltinVariable):
                 base_cls = base_cls_vt.fn
+            elif isinstance(base_cls_vt, variables.DictBuiltinVariable):
+                base_cls = dict
             elif isinstance(base_cls_vt, variables.UserDefinedClassVariable):
                 base_cls = base_cls_vt.value
             else:
@@ -704,6 +746,8 @@ class SideEffects:
 
         if isinstance(var.mutation_type, ValueMutationExisting):
             var.mutation_type.is_modified = True
+        if var.source is not None:
+            self.mutated_sources.add(var.source)
         if (
             var.source
             and isinstance(var, variables.ConstDictVariable)
@@ -800,6 +844,17 @@ class SideEffects:
 
                 cg.add_cache(var)
                 var.source = TempLocalSource(cg.tempvars[var])
+
+                if isinstance(var, variables.FrozenDataClassVariable):
+                    for name, value in self.store_attr_mutations.get(var, {}).items():
+                        cg.load_import_from("builtins", "object")
+                        cg.load_method("__setattr__")
+                        cg(var.source)  # type: ignore[attr-defined]
+                        cg(variables.ConstantVariable(name))
+                        cg(value)
+                        cg.extend_output(
+                            [*create_call_method(3), create_instruction("POP_TOP")]
+                        )
 
         for ctx, args in self.save_for_backward:
             cg(ctx.source)
@@ -970,6 +1025,31 @@ class SideEffects:
                 # Log individual side effects for granular debugging
                 side_effects_log.debug(msg)
 
+        def _codegen_direct_list_replay(
+            list_vt: "ListVariable", source: Source | None
+        ) -> bool:
+            if source is None or not list_vt.has_direct_list_replay():
+                return False
+            appended_items = list_vt.direct_list_replay_appends()
+
+            cg.add_push_null(
+                lambda: cg.load_import_from(__name__, "_manual_list_replay")
+            )
+            cg(source)
+            cg.foreach(appended_items)
+            cg.append_output(create_instruction("BUILD_LIST", arg=len(appended_items)))
+            cg.append_output(
+                cg.create_load_const(list_vt.direct_list_replay_should_clear())
+            )
+            suffixes.append(
+                [
+                    *create_call_function(3, False),
+                    create_instruction("POP_TOP"),
+                ]
+            )
+            _maybe_log_side_effect(list_vt)
+            return True
+
         suffixes = []
         for var in self._get_modified_vars():
             # When replay_side_effects=False, only update variables with TempLocalSource
@@ -978,6 +1058,8 @@ class SideEffects:
             ):
                 continue
             if isinstance(var, variables.ListVariable):
+                if _codegen_direct_list_replay(var, var.source):
+                    continue
                 # old[:] = new
                 cg(var, allow_cache=False)  # Don't codegen via source
                 cg(var.source)  # type: ignore[attr-defined]
@@ -1098,7 +1180,13 @@ class SideEffects:
                     _maybe_log_side_effect(var)
 
             elif self.is_attribute_mutation(var):
-                if isinstance(
+                if isinstance(var.mutation_type, AttributeMutationNew) and isinstance(
+                    var, variables.FrozenDataClassVariable
+                ):
+                    # These frozen attribute initializations are handled in codegen_save_tempvars
+                    # and don't need to be reset in the suffix.
+                    continue
+                elif isinstance(
                     var,
                     variables.UserDefinedDictVariable,
                 ) and self.is_modified(var._dict_vt):
@@ -1157,41 +1245,42 @@ class SideEffects:
                     var,
                     variables.UserDefinedListVariable,
                 ) and self.is_modified(var._list_vt):
-                    # Update the list to the updated items. Be careful in
-                    # calling the list methods and not the overridden methods.
-                    varname_map = {}
-                    for name in _manual_list_update.__code__.co_varnames:
-                        varname_map[name] = cg.tx.output.new_var()
+                    if not _codegen_direct_list_replay(var._list_vt, var.source):
+                        # Update the list to the updated items. Be careful in
+                        # calling the list methods and not the overridden methods.
+                        varname_map = {}
+                        for name in _manual_list_update.__code__.co_varnames:
+                            varname_map[name] = cg.tx.output.new_var()
 
-                    cg(var.source)  # type: ignore[attr-defined]
-                    cg.extend_output(
-                        [
-                            create_instruction(
-                                "STORE_FAST", argval=varname_map["list_to"]
-                            )
-                        ]
-                    )
+                        cg(var.source)  # type: ignore[attr-defined]
+                        cg.extend_output(
+                            [
+                                create_instruction(
+                                    "STORE_FAST", argval=varname_map["list_to"]
+                                )
+                            ]
+                        )
 
-                    cg(var._list_vt, allow_cache=False)  # Don't codegen via source
-                    cg.extend_output(
-                        [
-                            create_instruction(
-                                "STORE_FAST", argval=varname_map["list_from"]
-                            )
-                        ]
-                    )
+                        cg(var._list_vt, allow_cache=False)  # Don't codegen via source
+                        cg.extend_output(
+                            [
+                                create_instruction(
+                                    "STORE_FAST", argval=varname_map["list_from"]
+                                )
+                            ]
+                        )
 
-                    list_update_insts = bytecode_from_template(
-                        _manual_list_update, varname_map=varname_map
-                    )
+                        list_update_insts = bytecode_from_template(
+                            _manual_list_update, varname_map=varname_map
+                        )
 
-                    suffixes.append(
-                        [
-                            *list_update_insts,
-                            create_instruction("POP_TOP"),
-                        ]
-                    )
-                    _maybe_log_side_effect(var._list_vt)
+                        suffixes.append(
+                            [
+                                *list_update_insts,
+                                create_instruction("POP_TOP"),
+                            ]
+                        )
+                        _maybe_log_side_effect(var._list_vt)
 
                 # Applying mutations involves two steps: 1) Push all
                 # reconstructed objects onto the stack.  2) Call STORE_ATTR to
@@ -1274,6 +1363,15 @@ class SideEffects:
                     _maybe_log_side_effect(var)
             elif isinstance(var, variables.ListIteratorVariable):
                 for _ in range(var.index):
+                    cg.add_push_null(
+                        lambda: cg.load_import_from(utils.__name__, "iter_next")
+                    )
+                    cg(var.source)  # type: ignore[attr-defined]
+                    cg.call_function(1, False)
+                    cg.pop_top()
+                _maybe_log_side_effect(var)
+            elif isinstance(var, variables.CountIteratorVariable):
+                for _ in range(var.advance_count):
                     cg.add_push_null(
                         lambda: cg.load_import_from(utils.__name__, "iter_next")
                     )

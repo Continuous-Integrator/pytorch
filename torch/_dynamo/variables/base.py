@@ -43,8 +43,11 @@ log = logging.getLogger(__name__)
 
 # Tracks active method calls on VariableTracker instances to detect self-referential
 # calls (e.g., as_python_constant on a list that contains itself). Maps
-# (id(instance), method_name) tuples to track which calls are in progress.
-_vt_active_calls: ContextVar[set[tuple[int, str]] | None] = ContextVar(
+# (id(instance), id(original_method)) tuples to track which calls are in progress.
+# We use id(original_method) rather than the method name string so that super()
+# delegation within a class hierarchy (e.g. TorchScriptObjectVariable.as_python_constant
+# calling UserDefinedObjectVariable.as_python_constant) is not a false positive.
+_vt_active_calls: ContextVar[set[tuple[int, int]] | None] = ContextVar(
     "_vt_active_calls", default=None
 )
 
@@ -214,6 +217,10 @@ def is_side_effect_safe(m: MutationType) -> bool:
         return True
     # Otherwise, only allow local mutation of variables created in the current scope
     return m.scope == scope_id
+
+
+class NO_SUCH_SUBOBJ:
+    """Sentinel indicating no concrete Python object is available."""
 
 
 # This helps users of `as_python_constant` to catch unimplemented error with
@@ -558,6 +565,8 @@ class VariableTracker(metaclass=VariableTrackerMeta):
             and not kwargs
         ):
             return self.var_getattr(tx, args[0].as_python_constant())
+        elif name == "__index__" and not args and not kwargs:
+            return self.nb_index_impl(tx)
         elif name in cmp_name_to_op_mapping and len(args) == 1 and not kwargs:
             other = args[0]
             if not isinstance(self, type(other)) and not (
@@ -595,7 +604,7 @@ class VariableTracker(metaclass=VariableTrackerMeta):
                 raise_observed_exception(
                     type(e),
                     tx,
-                    args=[list(map(variables.ConstantVariable.create, e.args))],
+                    args=list(e.args),
                 )
         hints = [
             f"Avoid calling `{self.python_type_name()}.{name}` in your code.",
@@ -876,6 +885,13 @@ class VariableTracker(metaclass=VariableTrackerMeta):
             ],
         )
 
+    def get_real_python_backed_value(self) -> object:
+        """Return the Python object this VT wraps, for `is` comparison.
+
+        Returns NO_SUCH_SUBOBJ if no concrete Python object is available.
+        """
+        return NO_SUCH_SUBOBJ
+
     def is_python_equal(self, other: object) -> bool:
         """
         NB - Deliberately not overriding the __eq__ method because that can
@@ -890,6 +906,25 @@ class VariableTracker(metaclass=VariableTrackerMeta):
                     f"Consider using a different type of object as the dictionary key instead of {self.python_type()}."
                 ),
                 *graph_break_hints.SUPPORTABLE,
+            ],
+        )
+
+    def nb_index_impl(
+        self,
+        tx: Any,
+    ) -> "VariableTracker":
+        """Mirrors CPython's PyNumber_Index / nb_index slot.
+
+        https://github.com/python/cpython/blob/c09ccd9c429/Objects/abstract.c#L1411-L1450
+
+        The base implementation raises TypeError, matching CPython's behavior
+        when tp_as_number->nb_index is NULL (_PyIndex_Check fails).
+        """
+        raise_observed_exception(
+            TypeError,
+            tx,
+            args=[
+                f"'{self.python_type_name()}' object cannot be interpreted as an integer"
             ],
         )
 
@@ -976,7 +1011,7 @@ class VariableTracker(metaclass=VariableTrackerMeta):
                 active = set()
                 _vt_active_calls.set(active)
 
-            key = (id(self), method)
+            key = (id(self), id(original_method))
             if key in active:
                 callback(self)
 
@@ -991,8 +1026,7 @@ class VariableTracker(metaclass=VariableTrackerMeta):
 
 
 def raise_type_error_exc(tx: Any, msg_str: str) -> NoReturn:
-    msg = variables.ConstantVariable.create(msg_str)
-    raise_observed_exception(TypeError, tx, args=[msg])
+    raise_observed_exception(TypeError, tx, args=[msg_str])
 
 
 def typestr(*objs: object) -> str:

@@ -14,7 +14,6 @@ from dataclasses import dataclass
 from datetime import timedelta
 from itertools import product
 from sys import platform
-from typing import Optional
 
 import torch
 import torch.distributed as dist
@@ -1019,7 +1018,7 @@ class CommonDistributedDataParallelTest:
 
     @dataclass
     class CustomOutput:
-        o1: Optional[torch.Tensor]
+        o1: torch.Tensor | None
         o2: dict[str, torch.Tensor]
 
     class DataclassOutputModule(nn.Module):
@@ -1546,6 +1545,42 @@ class AbstractLargeCommTest:
                 torch.tensor([pg_idx, ranks_in[1]], device=self.device),
             ]
             self.assertEqual(output_tensor_list, expected)
+
+    def _test_new_group_ordered(self, backend):
+        store = dist.FileStore(self.file_name, self.world_size)
+        dist.init_process_group(
+            backend,
+            world_size=self.world_size,
+            rank=self.rank,
+            store=store,
+        )
+        rank = dist.get_rank()
+
+        # Reverse-order ranks: group rank 0 = highest global rank
+        reversed_ranks = list(range(self.world_size - 1, -1, -1))
+        new_pg = dist.new_group(ranks=reversed_ranks, sort_ranks=False)
+
+        # Verify that the group rank assignment follows the user-provided order
+        expected_group_rank = reversed_ranks.index(rank)
+        self.assertEqual(dist.get_group_rank(new_pg, rank), expected_group_rank)
+        self.assertEqual(
+            dist.get_process_group_ranks(new_pg),
+            reversed_ranks,
+        )
+
+        # Verify that all_gather results follow the custom rank order
+        input_tensor = torch.tensor([rank], device=self.device)
+        output_tensor_list = [
+            torch.tensor([-1], device=self.device) for _ in range(self.world_size)
+        ]
+        dist.all_gather(output_tensor_list, input_tensor, group=new_pg)
+
+        # Group rank i holds global rank reversed_ranks[i]
+        expected = [
+            torch.tensor([reversed_ranks[i]], device=self.device)
+            for i in range(self.world_size)
+        ]
+        self.assertEqual(output_tensor_list, expected)
 
 
 class CommTest(AbstractCommTest, MultiProcessTestCase):
@@ -2291,6 +2326,30 @@ class LocalRankTest(MultiProcessTestCase):
     def testNodeLocalRank(self):
         os.environ["LOCAL_RANK"] = str(self.rank)
         self.assertEqual(dist.get_node_local_rank(), self.rank)
+
+
+class RecordCommTest(TestCase):
+    def test_set_get(self):
+        self.assertEqual(torch._C._distributed_c10d._get_comm_profiling_name(), "")
+        with dist.record_comm("test_name"):
+            self.assertEqual(
+                torch._C._distributed_c10d._get_comm_profiling_name(), "test_name"
+            )
+        self.assertEqual(torch._C._distributed_c10d._get_comm_profiling_name(), "")
+
+    def test_nesting(self):
+        with dist.record_comm("outer"):
+            self.assertEqual(
+                torch._C._distributed_c10d._get_comm_profiling_name(), "outer"
+            )
+            with dist.record_comm("inner"):
+                self.assertEqual(
+                    torch._C._distributed_c10d._get_comm_profiling_name(), "inner"
+                )
+            self.assertEqual(
+                torch._C._distributed_c10d._get_comm_profiling_name(), "outer"
+            )
+        self.assertEqual(torch._C._distributed_c10d._get_comm_profiling_name(), "")
 
 
 if __name__ == "__main__":
