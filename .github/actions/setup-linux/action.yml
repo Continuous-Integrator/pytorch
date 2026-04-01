@@ -62,9 +62,7 @@ runs:
     - name: Ack Git cache ownership
       if: ${{ inputs.use-arc == 'true' }}
       shell: bash
-      run: |
-        set -eux
-        git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
     # ── Common steps (shared) ────────────────────────────────────────
     - name: Determine checkout mode
