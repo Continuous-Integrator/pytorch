@@ -66,27 +66,11 @@ runs:
         git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
     # ── Common steps (shared) ────────────────────────────────────────
-    - name: Determine checkout mode
-      id: checkout-mode
-      shell: bash
-      run: |
-        # Treeless checkout (--filter=tree:0) requires git 2.36+, CI images currently
-        # are on the older git 2.34
-        GIT_VERSION=$(git --version | sed 's/git version //')
-        GIT_MAJOR=$(echo "$GIT_VERSION" | cut -d. -f1)
-        GIT_MINOR=$(echo "$GIT_VERSION" | cut -d. -f2)
-        if [ "$GIT_MAJOR" -gt 2 ] || { [ "$GIT_MAJOR" -eq 2 ] && [ "$GIT_MINOR" -ge 36 ]; }; then
-          echo "mode=treeless" >> "$GITHUB_OUTPUT"
-        else
-          echo "Git $GIT_VERSION does not support --filter=tree:0, falling back to normal checkout"
-          echo "mode=normal" >> "$GITHUB_OUTPUT"
-        fi
-
     - name: Checkout PyTorch
       uses: pytorch/pytorch/.github/actions/checkout-pytorch@main
       with:
         no-sudo: true
-        checkout-mode: ${{ steps.checkout-mode.outputs.mode }}
+        checkout-mode: treeless
         submodules: ${{ inputs.submodules }}
 
     - name: Parse ref
