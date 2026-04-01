@@ -1508,7 +1508,8 @@ class UserDefinedObjectVariable(UserDefinedVariable):
             type_attr = self.lookup_class_mro_attr("__len__")
             source = self.source and self.get_source_by_walking_mro(tx, "__len__")
             method_var = self.resolve_type_attr(tx, "__len__", type_attr, source)
-            return method_var.call_function(tx, [], {})
+            if not isinstance(method_var, variables.GetAttrVariable):
+                return method_var.call_function(tx, [], {})
         return super().sq_length(tx)
 
     def sq_length(self, tx: "InstructionTranslator") -> VariableTracker:
@@ -2941,6 +2942,11 @@ class UserDefinedDictVariable(UserDefinedObjectVariable):
         raise_on_overridden_hash(self.value, self)
         return False
 
+    def mp_length(self, tx: "InstructionTranslator") -> VariableTracker:
+        if self._maybe_get_baseclass_method("__len__") in self._dict_methods:
+            return self._dict_vt.mp_length(tx)
+        return super().mp_length(tx)
+
 
 class UserDefinedSetVariable(UserDefinedObjectVariable):
     """
@@ -3015,6 +3021,11 @@ class UserDefinedSetVariable(UserDefinedObjectVariable):
     @property
     def items(self) -> list[VariableTracker]:
         return self._set_vt.items
+
+    def sq_length(self, tx: "InstructionTranslator") -> VariableTracker:
+        if self._maybe_get_baseclass_method("__len__") in self._set_methods:
+            return self._set_vt.sq_length(tx)
+        return super().sq_length(tx)
 
     def is_underlying_vt_modified(self, side_effects: "SideEffects") -> bool:
         return side_effects.is_modified(self._set_vt)
@@ -3093,6 +3104,12 @@ class UserDefinedListVariable(UserDefinedObjectVariable):
     def is_python_hashable(self) -> Literal[False]:
         raise_on_overridden_hash(self.value, self)
         return False
+
+    def sq_length(self, tx: "InstructionTranslator") -> VariableTracker:
+        assert self._list_vt is not None
+        if self._maybe_get_baseclass_method("__len__") in list_methods:
+            return self._list_vt.sq_length(tx)
+        return super().sq_length(tx)
 
 
 class UserDefinedTupleVariable(UserDefinedObjectVariable):
@@ -3179,6 +3196,11 @@ class UserDefinedTupleVariable(UserDefinedObjectVariable):
         raise_on_overridden_hash(self.value, self)
         return self._tuple_vt.is_python_hashable()
 
+    def sq_length(self, tx: "InstructionTranslator") -> VariableTracker:
+        if self._maybe_get_baseclass_method("__len__") in tuple_methods:
+            return self._tuple_vt.sq_length(tx)
+        return super().sq_length(tx)
+
     def get_python_hash(self) -> int:
         return self._tuple_vt.get_python_hash()
 
@@ -3243,6 +3265,11 @@ class MutableMappingVariable(UserDefinedObjectVariable):
             return variables.UserMethodVariable(polyfills.mapping_get, self)
         else:
             return super().var_getattr(tx, name)
+
+    def mp_length(self, tx: "InstructionTranslator") -> VariableTracker:
+        if self._maybe_get_baseclass_method("__len__") in dict_methods:
+            return VariableTracker.build(tx, len(self.value))
+        return super().mp_length(tx)
 
 
 class RandomVariable(UserDefinedObjectVariable):

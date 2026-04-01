@@ -13,6 +13,7 @@ Tests cover:
 """
 
 import collections
+import dataclasses
 import types
 import unittest
 
@@ -1183,6 +1184,113 @@ class TestMetaclassLen(torch._dynamo.test_case.TestCase):
     def test_metaclass_len_direct_call(self):
         """Test direct call to __len__() on a class with metaclass-defined __len__"""
         self.assertEqual(SimpleMetaclassClass.__len__(), 5)
+
+
+class CustomMutableMapping(collections.abc.MutableMapping):
+    """Custom mutable mapping implementation with __len__."""
+
+    def __init__(self, data=None):
+        self._data = data if data is not None else {}
+
+    def __len__(self):
+        return len(self._data)
+
+    def __getitem__(self, key):
+        return self._data[key]
+
+    def __setitem__(self, key, value):
+        self._data[key] = value
+
+    def __delitem__(self, key):
+        del self._data[key]
+
+    def __iter__(self):
+        return iter(self._data)
+
+
+@dataclasses.dataclass(frozen=True)
+class FrozenPoint:
+    """Frozen dataclass with __len__ method."""
+
+    x: float
+    y: float
+    z: float
+
+    def __len__(self):
+        return 3
+
+
+@dataclasses.dataclass(frozen=True)
+class FrozenData:
+    """Frozen dataclass with __len__ based on items."""
+
+    items: tuple
+
+    def __len__(self):
+        return len(self.items)
+
+
+class TestMutableMappingLen(torch._dynamo.test_case.TestCase):
+    """Tests for len() on mutable mapping types."""
+
+    def setUp(self):
+        self.old = torch._dynamo.config.enable_trace_unittest
+        torch._dynamo.config.enable_trace_unittest = True
+        super().setUp()
+
+    def tearDown(self):
+        torch._dynamo.config.enable_trace_unittest = self.old
+        return super().tearDown()
+
+    @make_dynamo_test
+    def test_len_custom_mutable_mapping(self):
+        """Test len() on custom mutable mapping."""
+        m = CustomMutableMapping({"x": 10, "y": 20, "z": 30})
+        self.assertEqual(len(m), 3)
+        self.assertEqual(m.__len__(), 3)
+
+    @make_dynamo_test
+    def test_len_custom_mutable_mapping_empty(self):
+        """Test len() on empty custom mutable mapping."""
+        m = CustomMutableMapping()
+        self.assertEqual(len(m), 0)
+
+
+class TestFrozenDataclassLen(torch._dynamo.test_case.TestCase):
+    """Tests for len() on frozen dataclasses."""
+
+    def setUp(self):
+        self.old = torch._dynamo.config.enable_trace_unittest
+        torch._dynamo.config.enable_trace_unittest = True
+        super().setUp()
+
+    def tearDown(self):
+        torch._dynamo.config.enable_trace_unittest = self.old
+        return super().tearDown()
+
+    @make_dynamo_test
+    def test_len_frozen_dataclass_with_len(self):
+        """Test len() on frozen dataclass with custom __len__."""
+        p = FrozenPoint(1.0, 2.0, 3.0)
+        self.assertEqual(len(p), 3)
+        self.assertEqual(p.__len__(), 3)
+
+    @make_dynamo_test
+    def test_len_frozen_dataclass_via_tuple(self):
+        """Test len() on frozen dataclass with __len__ based on contained data."""
+        obj = FrozenData((1, 2, 3, 4))
+        self.assertEqual(len(obj), 4)
+        self.assertEqual(obj.__len__(), 4)
+
+    @make_dynamo_test
+    def test_len_frozen_dataclass_consistency(self):
+        """Test that len() on frozen dataclass is consistent across multiple calls."""
+        obj = FrozenData(("a", "b", "c"))
+        # Call len() twice to ensure consistency
+        len1 = len(obj)
+        len2 = len(obj)
+        self.assertEqual(len1, 3)
+        self.assertEqual(len2, 3)
 
 
 if __name__ == "__main__":
