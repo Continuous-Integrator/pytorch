@@ -5,7 +5,13 @@ import logging
 
 import torch
 from functorch.compile import aot_function, make_boxed_func
-from torch.testing._internal.common_utils import run_tests, skipIfTorchDynamo, TestCase
+from torch.testing._internal.common_utils import (
+    instantiate_parametrized_tests,
+    parametrize,
+    run_tests,
+    skipIfTorchDynamo,
+    TestCase,
+)
 from torch.utils.debug_log import debug_grad_log
 
 
@@ -24,6 +30,30 @@ class _LogCapture(logging.Handler):
         self.records.append(self.format(record))
 
 
+def _run_eager(f, *inputs):
+    cloned = [x.clone().detach().requires_grad_(x.requires_grad) for x in inputs]
+    out = f(*cloned)
+    out.sum().backward()
+
+
+def _run_aot(f, *inputs):
+    cloned = [x.clone().detach().requires_grad_(x.requires_grad) for x in inputs]
+    aot_f = aot_function(f, fw_compiler=nop, bw_compiler=nop)
+    out = aot_f(*cloned)
+    out.sum().backward()
+
+
+def _run_compile(f, *inputs):
+    torch._dynamo.reset()
+    cloned = [x.clone().detach().requires_grad_(x.requires_grad) for x in inputs]
+    compiled_f = torch.compile(f, backend="aot_eager", fullgraph=True)
+    out = compiled_f(*cloned)
+    out.sum().backward()
+
+
+_RUNNERS = {"eager": _run_eager, "aot": _run_aot, "compile": _run_compile}
+
+
 @skipIfTorchDynamo("debug_grad_log tests manage their own compilation")
 class TestDebugGradLog(TestCase):
     def _add_log_capture(self):
@@ -34,29 +64,38 @@ class TestDebugGradLog(TestCase):
         self.addCleanup(logger.removeHandler, capture)
         return capture
 
-    def test_single_tensor_eager(self):
+    @parametrize("backend", ["eager", "aot", "compile"])
+    def test_single_tensor(self, backend):
         """Backward gradient norm is logged for a single tensor."""
         capture = self._add_log_capture()
 
-        x = torch.randn(3, requires_grad=True)
-        y = x * 2
-        debug_grad_log("single", y)
-        y.sum().backward()
+        def f(x):
+            y = x * 2
+            debug_grad_log("single", y)
+            return y
+
+        _RUNNERS[backend](f, torch.randn(4, requires_grad=True))
 
         bwd = [r for r in capture.records if "[bwd]" in r]
         self.assertEqual(len(bwd), 1)
         self.assertIn("[single][bwd]", bwd[0])
         self.assertIn("t0_grad_norm=", bwd[0])
 
-    def test_multi_tensor_eager(self):
+    @parametrize("backend", ["eager", "aot", "compile"])
+    def test_multi_tensor(self, backend):
         """Backward gradient norms logged for multiple tensors, fires once."""
         capture = self._add_log_capture()
 
-        x = torch.randn(3, requires_grad=True)
-        y = torch.randn(3, requires_grad=True)
-        z = x * 2 + y * 3
-        debug_grad_log("multi", x, y)
-        z.sum().backward()
+        def f(x, y):
+            z = x * 2 + y * 3
+            debug_grad_log("multi", x, y)
+            return z
+
+        _RUNNERS[backend](
+            f,
+            torch.randn(4, requires_grad=True),
+            torch.randn(4, requires_grad=True),
+        )
 
         bwd = [r for r in capture.records if "[bwd]" in r]
         self.assertEqual(len(bwd), 1)
@@ -64,20 +103,24 @@ class TestDebugGradLog(TestCase):
         self.assertIn("t0_grad_norm=", bwd[0])
         self.assertIn("t1_grad_norm=", bwd[0])
 
-    def test_multi_tensor_gradient_values(self):
+    @parametrize("backend", ["eager", "aot", "compile"])
+    def test_gradient_values(self, backend):
         """Verify logged gradient norms match expected values."""
         capture = self._add_log_capture()
 
-        # x grad = 2, y grad = 3; norms of scalar grads are themselves
-        x = torch.tensor([2.0], requires_grad=True)
-        y = torch.tensor([3.0], requires_grad=True)
-        z = x * 2 + y * 3
-        debug_grad_log("values", x, y)
-        z.sum().backward()
+        def f(x, y):
+            debug_grad_log("values", x, y)
+            return x * 2 + y * 3
+
+        _RUNNERS[backend](
+            f,
+            torch.tensor([1.0], requires_grad=True),
+            torch.tensor([1.0], requires_grad=True),
+        )
 
         bwd = [r for r in capture.records if "[bwd]" in r]
         self.assertEqual(len(bwd), 1)
-        # x_grad = 2.0, y_grad = 3.0
+        # d(x*2+y*3)/dx = 2, d(x*2+y*3)/dy = 3
         self.assertIn("t0_grad_norm=2.0000", bwd[0])
         self.assertIn("t1_grad_norm=3.0000", bwd[0])
 
@@ -91,67 +134,6 @@ class TestDebugGradLog(TestCase):
         bwd = [r for r in capture.records if "[bwd]" in r]
         self.assertEqual(len(bwd), 0)
 
-    def test_aot_function_single_tensor(self):
-        """Works under aot_function with a single tensor."""
-        capture = self._add_log_capture()
-
-        def f(x):
-            y = x * 2
-            debug_grad_log("aot", y)
-            return y
-
-        x = torch.randn(4, requires_grad=True)
-        aot_f = aot_function(f, fw_compiler=nop, bw_compiler=nop)
-        out = aot_f(x)
-        out.sum().backward()
-
-        bwd = [r for r in capture.records if "[bwd]" in r]
-        self.assertEqual(len(bwd), 1)
-        self.assertIn("[aot][bwd]", bwd[0])
-
-    def test_aot_function_multi_tensor(self):
-        """Works under aot_function with multiple tensors."""
-        capture = self._add_log_capture()
-
-        def f(x, y):
-            z = x * 2 + y * 3
-            debug_grad_log("aot_multi", x, y)
-            return z
-
-        x = torch.randn(4, requires_grad=True)
-        y = torch.randn(4, requires_grad=True)
-        aot_f = aot_function(f, fw_compiler=nop, bw_compiler=nop)
-        out = aot_f(x, y)
-        out.sum().backward()
-
-        bwd = [r for r in capture.records if "[bwd]" in r]
-        self.assertEqual(len(bwd), 1)
-        self.assertIn("[aot_multi][bwd]", bwd[0])
-        self.assertIn("t0_grad_norm=", bwd[0])
-        self.assertIn("t1_grad_norm=", bwd[0])
-
-    def test_compile_multi_tensor(self):
-        """Works under torch.compile with multiple tensors."""
-        capture = self._add_log_capture()
-        torch._dynamo.reset()
-
-        def f(x, y):
-            z = x * 2 + y * 3
-            debug_grad_log("compiled", x, y)
-            return z
-
-        compiled_f = torch.compile(f, backend="aot_eager", fullgraph=True)
-        x = torch.randn(4, requires_grad=True)
-        y = torch.randn(4, requires_grad=True)
-        out = compiled_f(x, y)
-        out.sum().backward()
-
-        bwd = [r for r in capture.records if "[bwd]" in r]
-        self.assertEqual(len(bwd), 1)
-        self.assertIn("[compiled][bwd]", bwd[0])
-        self.assertIn("t0_grad_norm=", bwd[0])
-        self.assertIn("t1_grad_norm=", bwd[0])
-
     def test_forward_is_noop(self):
         """debug_grad_log does nothing in the forward pass."""
         capture = self._add_log_capture()
@@ -159,8 +141,10 @@ class TestDebugGradLog(TestCase):
         x = torch.randn(3, requires_grad=True)
         debug_grad_log("fwd_check", x)
 
-        # Before backward, no logs at all
         self.assertEqual(len(capture.records), 0)
+
+
+instantiate_parametrized_tests(TestDebugGradLog)
 
 
 if __name__ == "__main__":

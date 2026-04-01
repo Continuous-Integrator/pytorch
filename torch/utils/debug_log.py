@@ -65,6 +65,9 @@ def debug_grad_log(tag, *tensors, ranks=None):
 
     For forward logging, use ``torch._higher_order_ops.print`` directly.
 
+    Supported backends: eager, ``aot_eager``, and ``torch.compile`` with
+    ``aot_eager``. Inductor backend is not yet supported.
+
     Args:
         tag: String label included in the log output.
         *tensors: One or more tensors to monitor. Each must require grad and
