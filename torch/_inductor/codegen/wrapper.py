@@ -13,7 +13,7 @@ import os
 import random
 import re
 import tempfile
-from collections.abc import Callable, Iterable
+from collections.abc import Callable
 from itertools import chain, count
 from typing import Any, TYPE_CHECKING
 
