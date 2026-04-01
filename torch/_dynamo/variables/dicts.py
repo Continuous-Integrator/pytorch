@@ -606,7 +606,7 @@ class ConstDictVariable(VariableTracker):
         other: VariableTracker,
         reverse: bool = False,
     ) -> VariableTracker:
-        # https://github.com/python/cpython/blob/v3.13.0/Objects/dictobject.c#L4644 (dict_or)
+        # https://github.com/python/cpython/blob/v3.13.0/Objects/dictobject.c#L4599 (dict_or)
         if not istype(
             other,
             (
@@ -648,6 +648,7 @@ class ConstDictVariable(VariableTracker):
     ) -> VariableTracker:
         # CPython's dict.__ior__ delegates to dict.update, which accepts
         # dicts, iterables of key-value pairs, etc.
+        # https://github.com/python/cpython/blob/v3.13.0/Objects/dictobject.c#L4660-L4667 (dict_ior)
         self.call_method(tx, "update", [other], {})
         return self
 
@@ -1300,7 +1301,7 @@ class SetVariable(ConstDictVariable):
         other: VariableTracker,
         reverse: bool = False,
     ) -> VariableTracker:
-        # https://github.com/python/cpython/blob/v3.13.0/Objects/setobject.c#L1319 (set_or)
+        # https://github.com/python/cpython/blob/v3.13.0/Objects/setobject.c#L1294 (set_or)
         if not isinstance(other, (SetVariable, variables.UserDefinedSetVariable)):
             return VariableTracker.build(tx, NotImplemented)
         return self.call_method(tx, "union", [other], {})
@@ -1311,6 +1312,7 @@ class SetVariable(ConstDictVariable):
         other: VariableTracker,
         reverse: bool = False,
     ) -> VariableTracker:
+        # https://github.com/python/cpython/blob/v3.13.0/Objects/setobject.c#L1316 (set_ior)
         if not isinstance(other, (SetVariable, variables.UserDefinedSetVariable)):
             return VariableTracker.build(tx, NotImplemented)
         self.call_method(tx, "update", [other], {})

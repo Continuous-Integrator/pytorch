@@ -909,10 +909,11 @@ class BuiltinVariable(VariableTracker):
         other: VariableTracker,
         reverse: bool = False,
     ) -> VariableTracker:
-        # BuiltinVariable can wrap types like list, tuple, dict, etc.
-        # CPython's type.__or__ implements _Py_union_type_or (type unions).
-        # https://github.com/python/cpython/blob/v3.13.0/Objects/typeobject.c#L6028-L6030 (type_as_number.nb_or)
-        # https://github.com/python/cpython/blob/v3.13.0/Objects/unionobject.c#L162 (_Py_union_type_or)
+        # BuiltinVariable wraps built-in types like list, tuple, dict.
+        # type(self.fn).__or__(self.fn, other_val) delegates to CPython's
+        # _Py_union_type_or for type unions (e.g. list | tuple).
+        # https://github.com/python/cpython/blob/v3.13.0/Objects/typeobject.c#L6028-L6030 (type_as_number.nb_or = _Py_union_type_or)
+        # https://github.com/python/cpython/blob/3.13/Objects/unionobject.c#L162 (_Py_union_type_or)
         if not isinstance(self.fn, type):
             return VariableTracker.build(tx, NotImplemented)
         try:

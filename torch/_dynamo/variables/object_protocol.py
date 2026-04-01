@@ -82,6 +82,14 @@ def is_nb_not_implemented(result: VariableTracker) -> bool:
     return result.is_constant_match(NotImplemented)
 
 
+def _is_python_subtype(w: VariableTracker, v: VariableTracker) -> bool:
+    """Check if w's underlying Python type is a proper subtype of v's."""
+    try:
+        return issubclass(w.python_type(), v.python_type())
+    except NotImplementedError:
+        return False
+
+
 def binary_op1(
     tx: "InstructionTranslator",
     v: VariableTracker,
@@ -95,6 +103,8 @@ def binary_op1(
     e.g. ``__or__``), ``reverse=True`` means "self is right operand" (reverse,
     e.g. ``__ror__``). For built-in types the flag is ignored because their
     slots check both operands symmetrically.
+
+    https://github.com/python/cpython/blob/3.13/Objects/abstract.c#L926-L977
     """
     impl_attr = f"{slot_name}_impl"
     v_slot = getattr(type(v), impl_attr, None)
@@ -108,9 +118,9 @@ def binary_op1(
         w_slot = None
 
     if v_slot is not None:
-        # Subclass priority: if type(w) is a proper subtype of type(v) and
-        # overrides the slot, try w's slot first (CPython abstract.c:952-960).
-        if w_slot is not None and issubclass(type(w), type(v)):
+        # Subclass priority: if w's Python type is a proper subtype of v's
+        # Python type and overrides the slot, try w first (CPython abstract.c:952-960).
+        if w_slot is not None and _is_python_subtype(w, v):
             result = w_slot(w, tx, v, True)
             if not is_nb_not_implemented(result):
                 return result
@@ -134,7 +144,10 @@ def binary_op(
     slot_name: str,
     op_symbol: str,
 ) -> VariableTracker:
-    """CPython's binary_op: binary_op1 + TypeError fallback."""
+    """CPython's binary_op: binary_op1 + TypeError fallback.
+    https://github.com/python/cpython/blob/3.13/Objects/abstract.c#L997-L1020
+    """
+
     result = binary_op1(tx, v, w, slot_name)
     if is_nb_not_implemented(result):
         raise_observed_exception(
@@ -156,7 +169,11 @@ def binary_iop(
     slot_name: str,
     op_symbol: str,
 ) -> VariableTracker:
-    """CPython's binary_iop: try inplace slot, fallback to binary_op1."""
+    """CPython's binary_iop: try inplace slot, fallback to binary_op1.
+
+    Combines binary_iop1 + TypeError fallback from binary_iop.
+    https://github.com/python/cpython/blob/3.13/Objects/abstract.c#L1229-L1270 (binary_iop1, binary_iop)
+    """
     islot_impl = getattr(type(v), f"{islot_name}_impl", None)
     if islot_impl is not None:
         result = islot_impl(v, tx, w, False)

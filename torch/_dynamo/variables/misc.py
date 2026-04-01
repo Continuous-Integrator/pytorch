@@ -1593,6 +1593,7 @@ class TypingVariable(VariableTracker):
         if not other.is_python_constant():
             return VariableTracker.build(tx, NotImplemented)
         other_val = other.as_python_constant()
+        # pyrefly: ignore[bad-argument-count]
         result = type(self.value).__or__(self.value, other_val)
         if result is NotImplemented:
             return VariableTracker.build(tx, NotImplemented)

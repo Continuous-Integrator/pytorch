@@ -534,6 +534,25 @@ class EnumVariable(VariableTracker):
         source = self.source and AttrSource(self.source, name)
         return VariableTracker.build(tx, member, source=source)
 
+    def nb_or_impl(
+        self,
+        tx: Any,
+        other: "VariableTracker",
+        reverse: bool = False,
+    ) -> "VariableTracker":
+        # Flag enums define __or__ for combining flags (e.g. Perm.R | Perm.W).
+        dunder = "__ror__" if reverse else "__or__"
+        method = getattr(type(self.value), dunder, None)
+        if method is None:
+            return ConstantVariable.create(NotImplemented)
+        if not other.is_python_constant():
+            return ConstantVariable.create(NotImplemented)
+        other_val = other.as_python_constant()
+        result = method(self.value, other_val)
+        if result is NotImplemented:
+            return ConstantVariable.create(NotImplemented)
+        return VariableTracker.build(tx, result)
+
     def is_python_hashable(self) -> Literal[True]:
         raise_on_overridden_hash(self.value, self)
         return True

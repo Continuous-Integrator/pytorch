@@ -1408,41 +1408,6 @@ class UserDefinedObjectVariable(UserDefinedVariable):
         }
         return fns
 
-    def _trace_dunder(
-        self, tx: "InstructionTranslator", name: str, args: list[Any]
-    ) -> VariableTracker | None:
-        """Look up a dunder on the user's class and trace into it if it's a
-        Python function. Returns None if not found or not traceable."""
-        method = self._maybe_get_baseclass_method(name)
-        if method is not None and isinstance(method, types.FunctionType):
-            from . import UserMethodVariable
-
-            source = self.source
-            source_fn = None
-            if source:
-                source_fn = self.get_source_by_walking_mro(tx, name)
-            return UserMethodVariable(
-                method, self, source_fn=source_fn, source=source
-            ).call_function(tx, args, {})
-        return None
-
-    def _constant_fold_dunder(
-        self, tx: "InstructionTranslator", name: str, other: VariableTracker
-    ) -> VariableTracker | None:
-        """Try to constant-fold a dunder method (e.g. for C extension methods
-        like pybind11 instancemethods that _trace_dunder can't handle)."""
-        method = self._maybe_get_baseclass_method(name)
-        if method is None:
-            return None
-        try:
-            other_val = other.as_python_constant()
-        except NotImplementedError:
-            return None
-        result = method(self.value, other_val)
-        if result is NotImplemented:
-            return None
-        return VariableTracker.build(tx, result)
-
     def nb_or_impl(
         self,
         tx: "InstructionTranslator",
@@ -1450,13 +1415,11 @@ class UserDefinedObjectVariable(UserDefinedVariable):
         reverse: bool = False,
     ) -> VariableTracker:
         dunder = "__ror__" if reverse else "__or__"
-        result = self._trace_dunder(tx, dunder, [other])
-        if result is not None:
-            return result
-        result = self._constant_fold_dunder(tx, dunder, other)
-        if result is not None:
-            return result
-        return VariableTracker.build(tx, NotImplemented)
+        type_attr = inspect.getattr_static(type(self.value), dunder, None)
+        if type_attr is None:
+            return VariableTracker.build(tx, NotImplemented)
+        method_var = self.resolve_type_attr(tx, dunder, type_attr, source=None)
+        return method_var.call_function(tx, [other], {})
 
     def nb_ior_impl(
         self,
@@ -1464,13 +1427,11 @@ class UserDefinedObjectVariable(UserDefinedVariable):
         other: VariableTracker,
         reverse: bool = False,
     ) -> VariableTracker:
-        result = self._trace_dunder(tx, "__ior__", [other])
-        if result is not None:
-            return result
-        result = self._constant_fold_dunder(tx, "__ior__", other)
-        if result is not None:
-            return result
-        return VariableTracker.build(tx, NotImplemented)
+        type_attr = inspect.getattr_static(type(self.value), "__ior__", None)
+        if type_attr is None:
+            return VariableTracker.build(tx, NotImplemented)
+        method_var = self.resolve_type_attr(tx, "__ior__", type_attr, source=None)
+        return method_var.call_function(tx, [other], {})
 
     def call_method(
         self,
@@ -2925,7 +2886,11 @@ class UserDefinedDictVariable(UserDefinedObjectVariable):
         other: VariableTracker,
         reverse: bool = False,
     ) -> VariableTracker:
-        return self._dict_vt.nb_or_impl(tx, other, reverse)
+        dunder = "__ror__" if reverse else "__or__"
+        method = self._maybe_get_baseclass_method(dunder)
+        if method in self._dict_methods:
+            return self._dict_vt.nb_or_impl(tx, other, reverse)
+        return super().nb_or_impl(tx, other, reverse)
 
     def nb_ior_impl(
         self,
@@ -2933,7 +2898,10 @@ class UserDefinedDictVariable(UserDefinedObjectVariable):
         other: VariableTracker,
         reverse: bool = False,
     ) -> VariableTracker:
-        return self._dict_vt.nb_ior_impl(tx, other, reverse)
+        method = self._maybe_get_baseclass_method("__ior__")
+        if method in self._dict_methods:
+            return self._dict_vt.nb_ior_impl(tx, other, reverse)
+        return super().nb_ior_impl(tx, other, reverse)
 
     def call_method(
         self,
@@ -3038,7 +3006,11 @@ class UserDefinedSetVariable(UserDefinedObjectVariable):
         other: VariableTracker,
         reverse: bool = False,
     ) -> VariableTracker:
-        return self._set_vt.nb_or_impl(tx, other, reverse)
+        dunder = "__ror__" if reverse else "__or__"
+        method = self._maybe_get_baseclass_method(dunder)
+        if method in self._set_methods:
+            return self._set_vt.nb_or_impl(tx, other, reverse)
+        return super().nb_or_impl(tx, other, reverse)
 
     def nb_ior_impl(
         self,
@@ -3046,7 +3018,10 @@ class UserDefinedSetVariable(UserDefinedObjectVariable):
         other: VariableTracker,
         reverse: bool = False,
     ) -> VariableTracker:
-        return self._set_vt.nb_ior_impl(tx, other, reverse)
+        method = self._maybe_get_baseclass_method("__ior__")
+        if method in self._set_methods:
+            return self._set_vt.nb_ior_impl(tx, other, reverse)
+        return super().nb_ior_impl(tx, other, reverse)
 
     def call_method(
         self,
