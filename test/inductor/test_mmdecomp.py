@@ -202,10 +202,14 @@ class TestDecomp(NNTestCase):
             rhs_unbacked_k = torch.empty((b, rhs_k_unbacked, n), device=device)
 
             self.assertIsNot(
+                decomp_bmm(lhs_static_k, rhs_static_k),
+                NotImplemented,
+            )
+            self.assertIs(
                 decomp_bmm(lhs_static_k, rhs_unbacked_k),
                 NotImplemented,
             )
-            self.assertIsNot(
+            self.assertIs(
                 decomp_bmm(lhs_unbacked_k, rhs_static_k),
                 NotImplemented,
             )
@@ -219,22 +223,18 @@ class TestDecomp(NNTestCase):
         B, M, N = 4, 8, 16
 
         cases = [
-            # LHS: batch dim permuted
             (
                 torch.randn(M, B, 1, device=device).permute(1, 0, 2),
                 torch.randn(B, 1, N, device=device),
             ),
-            # RHS: batch dim permuted
             (
                 torch.randn(B, M, 1, device=device),
                 torch.randn(N, B, 1, device=device).permute(1, 2, 0),
             ),
-            # Both permuted
             (
                 torch.randn(M, B, 1, device=device).permute(1, 0, 2),
                 torch.randn(N, B, 1, device=device).permute(1, 2, 0),
             ),
-            # LHS: fully transposed [1, M, B] -> [B, M, 1]
             (
                 torch.randn(1, M, B, device=device).permute(2, 1, 0),
                 torch.randn(B, 1, N, device=device),
