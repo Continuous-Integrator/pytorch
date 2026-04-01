@@ -574,15 +574,6 @@ void CUDAGraphImpl::end_capture_to_conditional_node() {
 #endif
 }
 
-std::function<bool(cudaStream_t)> CUDAGraphImpl::create_allocate_filter() {
-  return [this](cudaStream_t stream) {
-    cudaStreamCaptureStatus status{};
-    CaptureId_t stream_capture_id = 0;
-    AT_CUDA_CHECK(cudaStreamGetCaptureInfo(stream, &status, &stream_capture_id));
-    return status == cudaStreamCaptureStatus::cudaStreamCaptureStatusActive && stream_capture_id == capture_id_;
-  };
-}
-
 std::function<bool(cudaStream_t)> CUDAGraphImpl::create_child_allocate_filter() {
 #if !defined(USE_ROCM) && (defined(CUDA_VERSION) && CUDA_VERSION >= 12040)
   return [&current_capture_id = conditional_graph_capture_ids_.top()](cudaStream_t stream) {
