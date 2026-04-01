@@ -883,6 +883,16 @@ class _TorchDynamoContext:
 
         # Optimize the forward method of torch.nn.Module object
         if isinstance(fn, torch.nn.Module):
+            if type(fn) is torch.jit._script.RecursiveScriptModule:
+                raise RuntimeError(
+                    "torch.compile does not support compiling torch.jit.script or "
+                    "torch.jit.freeze models directly.\n\n"
+                    "Workaround: compile the original eager module instead:\n"
+                    "  model = torch.nn.Linear(3, 3)\n"
+                    "  compiled_model = torch.compile(model)  # compile the eager module\n\n"
+                    "torch.jit.script and torch.jit.freeze are deprecated in favor of "
+                    "torch.compile. See https://pytorch.org/docs/main/jit.html for details."
+                )
             mod = fn
             new_mod = OptimizedModule(mod, self)
             # Save the function pointer to find the original callable while nesting
@@ -951,6 +961,12 @@ class _TorchDynamoContext:
 
         @functools.wraps(fn)
         def compile_wrapper(*args: Any, **kwargs: Any) -> Any:
+            # NB: function calls here could change global state (e.g. random state)
+            # and that can result in different behavior between eager and compiled!
+            # In particular, we don't have control over internal functions like justknobs_check
+            # called in _maybe_set_eval_frame.
+            # Unlike in eval_frame_cpp.cpp/convert_frame.py, we don't attempt to restore global state
+            # due to additional overhead costs.
             prior = set_eval_frame(None)
             prior_eval_frame_override: _EvalFrameOverride | None = None
             if self.fullgraph:
@@ -1018,7 +1034,7 @@ class _TorchDynamoContext:
 
                 try:
                     return fn(*args, **kwargs)
-                except (Unsupported, UncapturedHigherOrderOpError) as e:
+                except (Unsupported, UncapturedHigherOrderOpError, UserError) as e:
                     if config.verbose:
                         raise
                     # strip internal tracebacks from causes
@@ -1058,7 +1074,6 @@ class _TorchDynamoContext:
             )
         else:
             compile_wrapper._torchdynamo_inline = fn  # type: ignore[attr-defined]
-
         # Save the function pointer to find the original callable while nesting
         # of decorators.
         compile_wrapper._torchdynamo_orig_callable = fn  # type: ignore[attr-defined]
@@ -1165,6 +1180,11 @@ class OptimizeContext(_TorchDynamoContext):
                 return functools.partial(ctx.__exit__, None, None, None)
 
             self.enter_exit_hooks.append(call_compiled_autograd)
+
+    def __call__(self, fn: Callable[..., Any]) -> Callable[..., Any]:
+        result = super().__call__(fn)
+        result._is_torch_compile = True  # type: ignore[attr-defined]
+        return result
 
     def __reduce__(
         self,
@@ -1494,6 +1514,7 @@ def _optimize(
     disable: bool = False,
     dynamic: bool | None = None,
     package: CompilePackage | None = None,
+    recompile_limit: int | None = None,
 ) -> OptimizeContext | _NullDecorator:
     """
     The main entrypoint of TorchDynamo.  Do graph capture and call
@@ -1552,6 +1573,7 @@ def _optimize(
             hooks=hooks,
             rebuild_ctx=rebuild_ctx,
             package=package,
+            recompile_limit=recompile_limit,
         )
 
     backend = get_compiler_fn(backend)
@@ -1575,6 +1597,7 @@ def _optimize(
             backend,
             hooks,
             package=package,
+            recompile_limit=recompile_limit,
         ),
         hooks,
         backend_ctx_ctor,
@@ -2427,6 +2450,7 @@ def _optimize_assert(
     export_constraints: Any | None = None,
     dynamic: bool | None = None,
     package: CompilePackage | None = None,
+    recompile_limit: int | None = None,
 ) -> OptimizeContext:
     """
     Guarantees single-graph capture.
@@ -2457,6 +2481,7 @@ def _optimize_assert(
             export=export,
             export_constraints=export_constraints,
             package=package,
+            recompile_limit=recompile_limit,
         ),
         hooks,
         backend_ctx_ctor,
