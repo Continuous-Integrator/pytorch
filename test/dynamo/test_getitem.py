@@ -69,7 +69,7 @@ class GetItemTests(torch._dynamo.test_case.TestCase):
             return operator.getitem(items, "a")
 
         x = torch.randn(4)
-        with self.assertRaises(TypeError):
+        with self.assertRaises(torch._dynamo.exc.Unsupported):
             self._compile(fn, x)
 
     # --- BaseListVariable (TupleVariable) ---
