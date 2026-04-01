@@ -19,28 +19,40 @@ namespace at::native {
 
 namespace {
 
-// Each thread handles a contiguous chunk of splits for one key. Threads are
-// indexed over (key_idx, chunk_idx) where chunk_idx partitions the splits
-// dimension, so we get parallelism across both keys and splits while calling
-// curand_init only once per thread.
+// Sample randomness from a Philox state to derive a new (seed, offset) key.
+__device__ __forceinline__ void philox_derive_key(
+    curandStatePhilox4_32_10_t* state,
+    uint64_t* out_seed,
+    uint64_t* out_offset) {
+  uint4 r = curand4(state);
+  // Use 64-bits for the seed and the other 64-bits for the offset.
+  // Offset is 4-aligned for consistent Box-Muller normal generation.
+  *out_seed = static_cast<uint64_t>(r.x) | (static_cast<uint64_t>(r.y) << 32);
+  *out_offset = (static_cast<uint64_t>(r.z) | (static_cast<uint64_t>(r.w) << 32)) & ~uint64_t{3};
+}
+
+// Grid-stride loop over (key_idx, chunk_idx) pairs. Each thread handles a
+// chunk of consecutive splits for one key, amortizing curand_init costs.
 __global__ void philox_key_split_kernel(
     const uint64_t* __restrict__ input,
     uint64_t* __restrict__ output,
     int64_t num_keys,
     int64_t num_splits,
-    int64_t splits_per_thread) {
-  int64_t total_threads = num_keys * ((num_splits + splits_per_thread - 1) / splits_per_thread);
+    int64_t chunk_size) {
+  int64_t total_threads = num_keys * ((num_splits + chunk_size - 1) / chunk_size);
   int64_t tid = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
-  int64_t num_chunks = (num_splits + splits_per_thread - 1) / splits_per_thread;
+  int64_t num_chunks = (num_splits + chunk_size - 1) / chunk_size;
   for (; tid < total_threads; tid += static_cast<int64_t>(gridDim.x) * blockDim.x) {
     int64_t key_idx = tid / num_chunks;
     int64_t chunk_idx = tid % num_chunks;
-    int64_t split_start = chunk_idx * splits_per_thread;
-    int64_t split_end = min(split_start + splits_per_thread, num_splits);
+    int64_t split_start = chunk_idx * chunk_size;
+    int64_t split_end = min(split_start + chunk_size, num_splits);
 
     uint64_t seed = input[key_idx * 2];
     uint64_t offset = input[key_idx * 2 + 1];
 
+    // NB: Maintaining subsequence=0 is done for consistency across
+    // # of threads and thus across input shapes and devices.
     curandStatePhilox4_32_10_t state;
     curand_init(seed, /*subsequence=*/0, /*offset=*/offset, &state);
     if (split_start > 0) {
@@ -48,14 +60,8 @@ __global__ void philox_key_split_kernel(
     }
 
     for (int64_t split_idx = split_start; split_idx < split_end; split_idx++) {
-      // Sample randomness to derive each new (seed, offset) pair.
-      uint4 r = curand4(&state);
-
-      uint64_t new_seed = static_cast<uint64_t>(r.x) | (static_cast<uint64_t>(r.y) << 32);
-      uint64_t new_offset = static_cast<uint64_t>(r.z) | (static_cast<uint64_t>(r.w) << 32);
-
-      output[(split_idx * num_keys + key_idx) * 2] = new_seed;
-      output[(split_idx * num_keys + key_idx) * 2 + 1] = new_offset;
+      int64_t out = (split_idx * num_keys + key_idx) * 2;
+      philox_derive_key(&state, &output[out], &output[out + 1]);
     }
   }
 }
@@ -70,18 +76,13 @@ __global__ void philox_key_fold_in_kernel(
     uint64_t seed = input[idx * 2];
     uint64_t offset = input[idx * 2 + 1];
 
+    // NB: Maintaining subsequence=0 is done for consistency across
+    // # of threads and thus across input shapes and devices.
     curandStatePhilox4_32_10_t state;
     curand_init(seed, /*subsequence=*/0, /*offset=*/offset, &state);
     skipahead(static_cast<unsigned long long>(data) * 4, &state);
 
-    // Sample randomness to derive a new (seed, offset) pair.
-    uint4 r = curand4(&state);
-
-    uint64_t new_seed = static_cast<uint64_t>(r.x) | (static_cast<uint64_t>(r.y) << 32);
-    uint64_t new_offset = static_cast<uint64_t>(r.z) | (static_cast<uint64_t>(r.w) << 32);
-
-    output[idx * 2] = new_seed;
-    output[idx * 2 + 1] = new_offset;
+    philox_derive_key(&state, &output[idx * 2], &output[idx * 2 + 1]);
   }
 }
 
@@ -98,39 +99,29 @@ Tensor _philox_key_split_cuda(const Tensor& key, int64_t num_splits) {
       "_philox_key_split: num_splits must be positive, got ",
       num_splits);
 
-  // Output shape: (num_splits, *batch, 2)
-  auto batch_sizes = key.sizes().slice(0, key.dim() - 1);
-  std::vector<int64_t> output_sizes;
-  output_sizes.reserve(batch_sizes.size() + 2);
-  output_sizes.push_back(num_splits);
-  for (auto s : batch_sizes) {
-    output_sizes.push_back(s);
-  }
-  output_sizes.push_back(2);
-
+  // Output shape: (num_splits, *key.shape)
+  auto output_sizes = key.sizes().vec();
+  output_sizes.insert(output_sizes.begin(), num_splits);
   Tensor output = at::empty(output_sizes, key.options());
   int64_t num_keys = key.numel() / 2;
   if (num_keys == 0) {
     return output;
   }
 
-  auto key_contig = key.contiguous();
-
-  // Each thread generates splits_per_thread consecutive splits for one key,
-  // amortizing curand_init over many sequential curand calls.
-  constexpr int64_t splits_per_thread = 16;
-  int64_t num_chunks = (num_splits + splits_per_thread - 1) / splits_per_thread;
+  constexpr int64_t chunk_size = 16;
+  int64_t num_chunks = (num_splits + chunk_size - 1) / chunk_size;
   int64_t total_threads = num_keys * num_chunks;
   constexpr int block_size = 256;
   int num_blocks = std::min(
       static_cast<int>((total_threads + block_size - 1) / block_size),
       at::cuda::getCurrentDeviceProperties()->multiProcessorCount * 4);
 
+  auto key_contig = key.contiguous();
   philox_key_split_kernel<<<num_blocks, block_size, 0,
       at::cuda::getCurrentCUDAStream()>>>(
       key_contig.data_ptr<uint64_t>(),
       output.data_ptr<uint64_t>(),
-      num_keys, num_splits, splits_per_thread);
+      num_keys, num_splits, chunk_size);
   C10_CUDA_KERNEL_LAUNCH_CHECK();
 
   return output;
@@ -150,13 +141,12 @@ Tensor _philox_key_fold_in_cuda(const Tensor& key, int64_t data) {
     return output;
   }
 
-  auto key_contig = key.contiguous();
-
   constexpr int block_size = 256;
   int num_blocks = std::min(
       static_cast<int>((num_keys + block_size - 1) / block_size),
       at::cuda::getCurrentDeviceProperties()->multiProcessorCount * 4);
 
+  auto key_contig = key.contiguous();
   philox_key_fold_in_kernel<<<num_blocks, block_size, 0,
       at::cuda::getCurrentCUDAStream()>>>(
       key_contig.data_ptr<uint64_t>(),
