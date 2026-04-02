@@ -605,13 +605,15 @@ class FxGraphCachePickler(pickle.Pickler):
         # Types already registered or handled by default pickle.
         if t in self.dispatch_table or t in _PICKLE_NATIVE_TYPES:
             return NotImplemented
-        # Fast path for already-probed types.
-        cached = self._checked_types.get(t)
-        if cached is True:
-            return self._reduce_unpicklable(obj)
-        if cached is False:
-            return NotImplemented
-        # Probe whether the default reduce protocol works.
+        # Fast path: type already probed.
+        # _checked_types maps type -> bool:
+        #   True  = unpicklable, use stable key fallback
+        #   False = picklable, let default pickle handle it
+        if t in self._checked_types:
+            if self._checked_types[t]:  # unpicklable
+                return self._reduce_unpicklable(obj)
+            return NotImplemented  # picklable
+        # First encounter: probe whether the default reduce protocol works.
         try:
             obj.__reduce_ex__(pickle.DEFAULT_PROTOCOL)
         except (TypeError, AttributeError):
