@@ -165,11 +165,6 @@ class BaseListVariable(VariableTracker):
         self._install_list_length_guard()
         return list(self.items)
 
-    def sq_length(self, tx: "InstructionTranslator") -> VariableTracker:
-        """Sequence length for lists, tuples, and range objects."""
-        self._install_list_length_guard()
-        return VariableTracker.build(tx, len(self.items))
-
     def call_tree_map_branch(
         self,
         tx: "InstructionTranslator",
@@ -278,7 +273,7 @@ class BaseListVariable(VariableTracker):
 
         if name == "__len__":
             self._install_list_length_guard()
-            return self.sq_length(tx)
+            return ConstantVariable.create(len(self.items))
         elif name == "__getitem__":
             if kwargs or len(args) != 1:
                 raise_args_mismatch(
@@ -655,13 +650,6 @@ class RangeVariable(BaseListVariable):
         self, tx: Optional["InstructionTranslator"] = None
     ) -> list[VariableTracker]:
         return [variables.ConstantVariable.create(x) for x in self.as_python_constant()]
-
-    def sq_length(self, tx: "InstructionTranslator") -> VariableTracker:
-        """Sequence length for range objects."""
-        length = self.range_length()
-        if length > sys.maxsize:
-            raise_observed_exception(OverflowError, tx)
-        return VariableTracker.build(tx, length)
 
     def reconstruct(self, codegen: "PyCodegen") -> None:
         assert "range" not in codegen.tx.f_globals

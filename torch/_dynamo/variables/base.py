@@ -563,22 +563,6 @@ class VariableTracker(metaclass=VariableTrackerMeta):
             ],
         )
 
-    def sq_length(self, tx: Any) -> "VariableTracker":
-        """Called when sq_length is not implemented."""
-        raise_observed_exception(
-            TypeError,
-            tx,
-            args=[f"object of type '{self.python_type_name()}' has no len()"],
-        )
-
-    def mp_length(self, tx: Any) -> "VariableTracker":
-        """Called when mp_length is not implemented."""
-        raise_observed_exception(
-            TypeError,
-            tx,
-            args=[f"object of type '{self.python_type_name()}' has no len()"],
-        )
-
     def getitem_impl(self, tx: Any, item: "VariableTracker") -> "VariableTracker":
         """
         Implements sq_item / mp_item (tp_as_sequence/tp_as_mapping getitem slot).
@@ -604,7 +588,6 @@ class VariableTracker(metaclass=VariableTrackerMeta):
     ) -> "VariableTracker":
         if name == "__len__" and not (args or kwargs):
             from .object_protocol import generic_len
-
             return generic_len(tx, self)
         elif name == "__iter__" and not args and not kwargs:
             from .object_protocol import generic_getiter
