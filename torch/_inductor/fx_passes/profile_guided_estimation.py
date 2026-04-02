@@ -136,6 +136,13 @@ class ProfileData:
 
     def load(self, trace_path: str) -> None:
         """Load and parse a Chrome Trace JSON file."""
+        import os
+
+        if not os.path.isfile(trace_path):
+            raise FileNotFoundError(
+                f"PGE trace file not found: {trace_path}. "
+                f"Check config.aten_distributed_optimizations.profile_guided_estimations_profile_path"
+            )
         with open(trace_path) as f:
             data = json.load(f)
 
@@ -555,10 +562,11 @@ class ProfileData:
             log_dur = log_d0 + t * (log_d1 - log_d0)
             return math.exp(log_dur) / 1e3  # us -> ms
         elif lower is not None:
-            # Extrapolate from nearest lower (scale proportionally)
+            # Linear extrapolation (not log-log) from nearest lower;
+            # EXTRAPOLATION_CAP in lookup_collective limits how far this reaches.
             return (lower[1] * target_nelems / lower[0]) / 1e3
         elif upper is not None:
-            # Extrapolate from nearest upper
+            # Linear extrapolation from nearest upper
             return (upper[1] * target_nelems / upper[0]) / 1e3
 
         return None
@@ -970,6 +978,14 @@ class ProfileGuidedEstimator:
                 elem_size = val.element_size()
                 if elem_size > 0:
                     nelems = override_size // elem_size
+            else:
+                # Can't convert override_size (bytes) to nelems without dtype info;
+                # fall through using original nelems from _get_collective_info.
+                log.debug(
+                    "PGE: override_size=%d but val is not a tensor for %s",
+                    override_size,
+                    node.name,
+                )
         dtype_bytes = val.element_size() if isinstance(val, torch.Tensor) else 0
         result = self.profile.lookup_collective(coll_name, pg_ranks, nelems, dtype)
         if result is not None:
