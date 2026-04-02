@@ -11,16 +11,9 @@ from typing import TYPE_CHECKING
 from .. import polyfills
 from ..exc import raise_observed_exception
 from ..utils import istype
-from .base import NO_SUCH_SUBOBJ, raise_type_error_exc, VariableTracker
+from .base import NO_SUCH_SUBOBJ, VariableTracker
 from .constant import CONSTANT_VARIABLE_FALSE, CONSTANT_VARIABLE_TRUE
 from .functions import UserFunctionVariable
-
-
-type_error = raise_type_error_exc
-
-
-if TYPE_CHECKING:
-    from ..symbolic_convert import InstructionTranslator
 
 
 def vt_identity_compare(
