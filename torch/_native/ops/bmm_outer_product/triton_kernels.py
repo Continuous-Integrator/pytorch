@@ -52,14 +52,26 @@ def _bmm_outer_product_kernel(
     )
 
 
+def _pick_block_sizes(m: int, n: int) -> tuple[int, int]:
+    """I swept over some shapes and in the future we should figure out @autotune story"""
+    if m <= 32:
+        block_m = triton.next_power_of_2(m)
+    elif m <= 96:
+        block_m = 32
+    elif m <= 192:
+        block_m = 64
+    else:
+        block_m = 128
+    return block_m, min(triton.next_power_of_2(n), 128)
+
+
 def bmm_outer_product(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
     B, M, _ = a.shape
     N = b.shape[2]
 
     out = torch.empty(B, M, N, dtype=a.dtype, device=a.device)
 
-    BLOCK_M = min(triton.next_power_of_2(M), 128)
-    BLOCK_N = min(triton.next_power_of_2(N), 128)
+    BLOCK_M, BLOCK_N = _pick_block_sizes(M, N)
 
     _bmm_outer_product_kernel[(B * triton.cdiv(M, BLOCK_M) * triton.cdiv(N, BLOCK_N),)](
         a,

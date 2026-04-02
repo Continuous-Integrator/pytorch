@@ -10,6 +10,25 @@ from torch.testing._internal.inductor_utils import HAS_GPU
 
 @unittest.skipIf(not HAS_GPU, "requires GPU")
 class TestBmmOuterProduct(TestCase):
+    def _check_bmm(self, a, b, **kwargs):
+        self.assertEqual(torch.bmm(a, b), a @ b, **kwargs)
+
+    def test_shapes(self):
+        shapes = [
+            (4, 8, 16),
+            (32, 8, 256),
+            (16, 128, 512),
+            (1, 64, 128),
+            (8, 1, 1),
+            (64, 256, 512),
+            (256, 8, 2048),
+        ]
+        for B, M, N in shapes:
+            with self.subTest(B=B, M=M, N=N):
+                a = torch.randn(B, M, 1, device="cuda")
+                b = torch.randn(B, 1, N, device="cuda")
+                self._check_bmm(a, b)
+
     def test_basic_dtypes(self):
         for dtype in [torch.float32, torch.float16, torch.bfloat16]:
             with self.subTest(dtype=dtype):
