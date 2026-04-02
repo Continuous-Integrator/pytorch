@@ -1170,7 +1170,7 @@ class LazyConstantVariableTests(TestCase):
         # Shorter list must trigger recompilation, not IndexError.
         x2 = torch.tensor([5, 6])
         self.assertEqual(opt_fn(x2), fn(x2))
-        
+
     def test_dict_mutation_no_recompile_on_unused_key_change(self):
         """Test that mutating a dict doesn't guard on unused keys.
 
