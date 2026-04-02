@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import heapq
-import operator
 from collections import Counter, defaultdict
 from typing import Any, TYPE_CHECKING
 
@@ -9,6 +8,7 @@ import torch
 import torch.fx as fx
 from torch._dynamo.graph_deduplication import _stable_topological_sort
 from torch._inductor.fx_passes.bucketing import (
+    _get_collective_node_from_wait,
     _schedulable_wait_node,
     BucketMode,
     is_all_gather_into_tensor as is_all_gather,
@@ -101,14 +101,10 @@ class ManualOverlapPreservingBucketer(OverlapPreservingBucketer):
             assert isinstance(new_start, fx.Node)
         else:
             # Coalesced bucketing: N waits, find the collective start through getitem
-            coll_start = new_waits[0].args[0]
-            assert isinstance(coll_start, fx.Node)
-            if (
-                coll_start.op == "call_function"
-                and coll_start.target is operator.getitem
-            ):
-                coll_start = coll_start.args[0]  # pyrefly: ignore[bad-assignment]
-            assert isinstance(coll_start, fx.Node)
+            coll_start = _get_collective_node_from_wait(new_waits[0])
+            assert coll_start is not None, (
+                f"Expected collective node behind wait, got {new_waits[0]}"
+            )
             new_start = coll_start
             # Use last wait as the canonical wait for scheduling
             new_wait = new_waits[-1]
@@ -175,19 +171,16 @@ class ManualOverlapScheduler(OverlapScheduler):
             collective_estimator="analytical",
             max_memory_increase_gb=None,
             max_memory_increase_ratio=None,
-            bucket_mode=bucket_mode or "custom_ops_multidtype",
+            bucket_mode=bucket_mode,
         )
         self.module_bucket_plans = module_bucket_plans
         self.nodes_in_subgraph: list[list[fx.Node]] = []
 
-        bucketer_kwargs: dict[str, object] = {}
-        if bucket_mode is not None:
-            bucketer_kwargs["bucket_mode"] = bucket_mode
         self.bucketer = ManualOverlapPreservingBucketer(
             graph=self.graph,
             collective_info=self.collective_info,
             scheduled=OrderedSet(self.graph.nodes),
-            **bucketer_kwargs,
+            bucket_mode=bucket_mode,
         )
         self.insert_overlap_deps = insert_overlap_deps
 
