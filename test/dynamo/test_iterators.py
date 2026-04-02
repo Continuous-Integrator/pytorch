@@ -971,6 +971,209 @@ class TestEnumIteration(torch._dynamo.test_case.TestCase):
         self.assertEqual(c, Color.BLUE)
 
 
+class TestIterWithBuiltins(torch._dynamo.test_case.TestCase):
+    """Test iter() with builtin iterators like zip, map, filter, reversed"""
+
+    def setUp(self):
+        super().setUp()
+        self._u_prev = torch._dynamo.config.enable_trace_unittest
+        torch._dynamo.config.enable_trace_unittest = True
+
+    def tearDown(self):
+        super().tearDown()
+        torch._dynamo.config.enable_trace_unittest = self._u_prev
+
+    @make_dynamo_test
+    def test_iter_of_zip(self):
+        """Test iter(zip(a, b)) returns an iterator"""
+        lst1 = [1, 2, 3]
+        lst2 = [10, 20, 30]
+        zip_obj = zip(lst1, lst2)
+        it = iter(zip_obj)
+        result = []
+        for a, b in it:
+            result.append((a, b))
+        self.assertEqual(result, [(1, 10), (2, 20), (3, 30)])
+
+    @make_dynamo_test
+    def test_iter_of_map(self):
+        """Test iter(map(...)) returns an iterator"""
+        lst = [1, 2, 3, 4]
+        map_obj = map(lambda x: x * 2, lst)  # noqa: C417
+        it = iter(map_obj)
+        result = list(it)
+        self.assertEqual(result, [2, 4, 6, 8])
+
+    @make_dynamo_test
+    def test_iter_of_filter(self):
+        """Test iter(filter(...)) returns an iterator"""
+        lst = [1, 2, 3, 4, 5, 6]
+        filter_obj = filter(lambda x: x > 3, lst)
+        it = iter(filter_obj)
+        result = list(it)
+        self.assertEqual(result, [4, 5, 6])
+
+    @make_dynamo_test
+    def test_iter_of_reversed(self):
+        """Test iter(reversed(list)) returns an iterator"""
+        lst = [1, 2, 3, 4, 5]
+        rev_obj = reversed(lst)
+        it = iter(rev_obj)
+        result = list(it)
+        self.assertEqual(result, [5, 4, 3, 2, 1])
+
+    @make_dynamo_test
+    def test_iter_of_enumerate(self):
+        """Test iter(enumerate(...)) returns an iterator"""
+        lst = ["a", "b", "c"]
+        enum_obj = enumerate(lst)
+        it = iter(enum_obj)
+        result = list(it)
+        self.assertEqual(result, [(0, "a"), (1, "b"), (2, "c")])
+
+    @make_dynamo_test
+    def test_iter_of_zip_multiple(self):
+        """Test iter(zip(...)) with multiple iterables"""
+        a = [1, 2, 3]
+        b = [10, 20, 30]
+        c = [100, 200, 300]
+        zip_obj = zip(a, b, c)
+        it = iter(zip_obj)
+        result = list(it)
+        self.assertEqual(result, [(1, 10, 100), (2, 20, 200), (3, 30, 300)])
+
+    @make_dynamo_test
+    def test_iter_of_map_with_filter(self):
+        """Test iter(map(...)) followed by filter"""
+        lst = [1, 2, 3, 4, 5]
+        mapped = map(lambda x: x * 10, lst)  # noqa: C417
+        filtered = filter(lambda x: x > 20, mapped)
+        it = iter(filtered)
+        result = list(it)
+        self.assertEqual(result, [30, 40, 50])
+
+    @make_dynamo_test
+    def test_iter_preserves_iterator_state(self):
+        """Test that iter() on iterator returns the same iterator"""
+        lst = [1, 2, 3, 4]
+        map_obj = map(lambda x: x * 2, lst)  # noqa: C417
+        it1 = iter(map_obj)
+        it2 = iter(it1)
+        # They should be the same object
+        self.assertIs(it1, it2)
+        # Advancing one should affect the other
+        val1 = next(it1)
+        self.assertEqual(val1, 2)
+        val2 = next(it2)
+        self.assertEqual(val2, 4)
+
+    @make_dynamo_test
+    def test_iter_idempotent_on_iterators(self):
+        """Test that iter() called multiple times on iterator works"""
+        lst = [1, 2, 3]
+        it = iter(lst)
+        it_again = iter(it)
+        it_again_2 = iter(it_again)
+        val1 = next(it_again_2)
+        self.assertEqual(val1, 1)
+        val2 = next(it)
+        self.assertEqual(val2, 2)
+
+    @make_dynamo_test
+    def test_iter_of_zip_empty(self):
+        """Test iter(zip(...)) with empty iterables"""
+        lst1 = []
+        lst2 = []
+        zip_obj = zip(lst1, lst2)
+        it = iter(zip_obj)
+        result = list(it)
+        self.assertEqual(result, [])
+
+    @make_dynamo_test
+    def test_iter_of_filter_empty_result(self):
+        """Test iter(filter(...)) when filter returns empty"""
+        lst = [1, 2, 3]
+        filter_obj = filter(lambda x: x > 10, lst)
+        it = iter(filter_obj)
+        result = list(it)
+        self.assertEqual(result, [])
+
+    @make_dynamo_test
+    def test_iter_of_map_with_zip(self):
+        """Test iter(map(...)) with zip"""
+        a = [1, 2, 3]
+        b = [10, 20, 30]
+        zip_obj = zip(a, b)
+        mapped = map(lambda pair: pair[0] + pair[1], zip_obj)  # noqa: C417
+        it = iter(mapped)
+        result = list(it)
+        self.assertEqual(result, [11, 22, 33])
+
+    @make_dynamo_test
+    def test_iter_exhaustion_with_builtin_iterators(self):
+        """Test exhausting iter() of builtin iterators"""
+        lst = [1, 2]
+        map_obj = map(lambda x: x * 2, lst)  # noqa: C417
+        it = iter(map_obj)
+        next(it)
+        next(it)
+        with self.assertRaises(StopIteration):
+            next(it)
+
+    @make_dynamo_test
+    def test_iter_next_with_default_on_builtin(self):
+        """Test next() with default on iter() of builtin iterator"""
+        lst = [1, 2]
+        filter_obj = filter(lambda x: x > 1, lst)
+        it = iter(filter_obj)
+        val = next(it)
+        self.assertEqual(val, 2)
+        result = next(it, "EMPTY")
+        self.assertEqual(result, "EMPTY")
+
+    @make_dynamo_test
+    def test_iter_of_zip_uneven_lengths(self):
+        """Test iter(zip(...)) with uneven length iterables"""
+        a = [1, 2, 3]
+        b = [10, 20]
+        zip_obj = zip(a, b)
+        it = iter(zip_obj)
+        result = list(it)
+        self.assertEqual(result, [(1, 10), (2, 20)])
+
+    @make_dynamo_test
+    def test_iter_chaining_builtin_iterators(self):
+        """Test chaining multiple iter() calls on builtin iterators"""
+        lst = [1, 2, 3, 4, 5]
+        # Create a chain of iterators: map -> filter -> iter
+        mapped = map(lambda x: x * 2, lst)  # noqa: C417
+        filtered = filter(lambda x: x > 4, mapped)
+        it = iter(filtered)
+        result = list(it)
+        self.assertEqual(result, [6, 8, 10])
+
+    @make_dynamo_test
+    def test_iter_enumerate_with_start(self):
+        """Test iter(enumerate(...)) with start parameter"""
+        lst = ["a", "b", "c"]
+        enum_obj = enumerate(lst, start=10)
+        it = iter(enum_obj)
+        result = list(it)
+        self.assertEqual(result, [(10, "a"), (11, "b"), (12, "c")])
+
+    @make_dynamo_test
+    def test_iter_zip_with_filter_and_map(self):
+        """Test iter() with nested builtin iterators"""
+        a = [1, 2, 3, 4, 5]
+        b = [10, 20, 30, 40, 50]
+        zipped = zip(a, b)
+        # Flatten and just test that iteration works
+        it = iter(zipped)
+        result = list(it)
+        self.assertEqual(len(result), 5)
+        self.assertEqual(result[0], (1, 10))
+
+
 class NotIterable:
     pass
 

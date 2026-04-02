@@ -318,6 +318,9 @@ class RepeatIteratorVariable(IteratorVariable):
         codegen(self.item)
         codegen.extend_output(create_call_function(1, False))
 
+    def python_type(self) -> type:
+        return itertools.repeat
+
 
 class CountIteratorVariable(IteratorVariable):
     # advance_count tracks how many next() calls were made during tracing,
@@ -363,6 +366,9 @@ class CountIteratorVariable(IteratorVariable):
         codegen(self.item)
         codegen(self.step)
         codegen.extend_output(create_call_function(2, False))
+
+    def python_type(self) -> type:
+        return itertools.count
 
 
 class ZipVariable(IteratorVariable):
@@ -630,3 +636,6 @@ class DictIterator(IteratorVariable):
                 tx,
                 args=[VariableTracker.build(tx, a) for a in e.args],
             )
+
+    def python_type(self) -> type:
+        return type(iter({}))

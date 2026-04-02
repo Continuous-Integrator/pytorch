@@ -928,6 +928,16 @@
       "Hints": []
     }
   ],
+  "GB6012": [
+    {
+      "Gb_type": "Cannot trace user-defined __len__",
+      "Context": "{self.python_type_name()}.__len__()",
+      "Explanation": "Dynamo cannot trace len() on {self.python_type_name()} because the __len__ method is either not traceable (e.g., defined in C or built-in) or returns a non-constant value.",
+      "Hints": [
+        "It may be possible to write Dynamo tracing rules for this code. Please report an issue to PyTorch if you encounter this graph break often and it is causing performance issues."
+      ]
+    }
+  ],
   "GB0075": [
     {
       "Gb_type": "LOAD_BUILD_CLASS bytecode not supported",
@@ -1978,6 +1988,16 @@
       ]
     }
   ],
+  "GB4841": [
+    {
+      "Gb_type": "Unsupported python_type() call",
+      "Context": "{obj} does not implement python_type()",
+      "Explanation": "This VariableTracker does not implement python_type(), which is required for object protocol operations.",
+      "Hints": [
+        "This is likely to be a Dynamo bug. Please report an issue to PyTorch."
+      ]
+    }
+  ],
   "GB8335": [
     {
       "Gb_type": "Generator reconstruction with mutations",
@@ -1986,16 +2006,6 @@
       "Hints": [
         "Remove mutations from the generator.",
         "This graph break is fundamental - it is unlikely that Dynamo will ever be able to trace through your code. Consider finding a workaround."
-      ]
-    }
-  ],
-  "GB5115": [
-    {
-      "Gb_type": "Missing getitem_impl",
-      "Context": "getitem({self.python_type_name()}, {item.python_type_name()})",
-      "Explanation": "Dynamo does not support getitem() on {self.python_type_name()}. Add getitem_impl to this VariableTracker subclass.",
-      "Hints": [
-        "It may be possible to write Dynamo tracing rules for this code. Please report an issue to PyTorch if you encounter this graph break often and it is causing performance issues."
       ]
     }
   ],
@@ -3661,6 +3671,16 @@
       "Explanation": "Tracing numpy.* functions as methods is not supported.",
       "Hints": [
         "This graph break may be difficult to debug. Please report an issue to PyTorch for assistance."
+      ]
+    }
+  ],
+  "GB7906": [
+    {
+      "Gb_type": "Missing len_impl",
+      "Context": "len({type(self).__name__})",
+      "Explanation": "Dynamo does not support len() on {type(self).__name__}. Add len_impl to this VariableTracker subclass.",
+      "Hints": [
+        "It may be possible to write Dynamo tracing rules for this code. Please report an issue to PyTorch if you encounter this graph break often and it is causing performance issues."
       ]
     }
   ],

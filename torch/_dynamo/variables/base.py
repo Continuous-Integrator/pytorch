@@ -563,20 +563,20 @@ class VariableTracker(metaclass=VariableTrackerMeta):
             ],
         )
 
-    def getitem_impl(self, tx: Any, item: "VariableTracker") -> "VariableTracker":
-        """
-        Implements sq_item / mp_item (tp_as_sequence/tp_as_mapping getitem slot).
-        Subclasses must override this to support getitem(). Reaching this base is a
-        bug — it means getitem_impl is missing for that VariableTracker subclass.
-        """
-        unimplemented(
-            gb_type="Missing getitem_impl",
-            context=f"getitem({self.python_type_name()}, {item.python_type_name()})",
-            explanation=(
-                f"Dynamo does not support getitem() on {self.python_type_name()}."
-                " Add getitem_impl to this VariableTracker subclass."
-            ),
-            hints=[*graph_break_hints.SUPPORTABLE],
+    def sq_length(self, tx: Any) -> "VariableTracker":
+        """Called when sq_length is not implemented."""
+        raise_observed_exception(
+            TypeError,
+            tx,
+            args=[f"object of type '{self.python_type_name()}' has no len()"],
+        )
+
+    def mp_length(self, tx: Any) -> "VariableTracker":
+        """Called when mp_length is not implemented."""
+        raise_observed_exception(
+            TypeError,
+            tx,
+            args=[f"object of type '{self.python_type_name()}' has no len()"],
         )
 
     def call_method(
@@ -588,6 +588,7 @@ class VariableTracker(metaclass=VariableTrackerMeta):
     ) -> "VariableTracker":
         if name == "__len__" and not (args or kwargs):
             from .object_protocol import generic_len
+
             return generic_len(tx, self)
         elif name == "__iter__" and not args and not kwargs:
             from .object_protocol import generic_getiter
