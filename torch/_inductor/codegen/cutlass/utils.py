@@ -7,7 +7,7 @@ import shutil
 import sys
 import time
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any
 from typing_extensions import TypeIs
 
 import sympy
@@ -82,7 +82,7 @@ def try_import_cutlass() -> bool:
         except ImportError as e:
             log.warning(  # noqa: G200
                 "Failed to import CUTLASS packages in fbcode: %s, ignoring the CUTLASS backend.",
-                str(e),
+                e,
             )
             return False
 
@@ -167,7 +167,7 @@ def try_import_cutlass() -> bool:
         except ImportError as e:
             log.debug(  # noqa: G200
                 "Failed to import CUTLASS packages: %s, ignoring the CUTLASS backend.",
-                str(e),
+                e,
             )
     else:
         log.debug(
@@ -212,10 +212,10 @@ class CUTLASSArgs:
     CUTLASS args used to initialize a CUTLASS Manifest.
     """
 
-    architectures: Optional[str] = None
-    cuda_version: Optional[str] = None
-    instantiation_level: Optional[str] = None
-    operations: Optional[str] = None
+    architectures: str | None = None
+    cuda_version: str | None = None
+    instantiation_level: str | None = None
+    operations: str | None = None
 
     build_dir = ""
     curr_build_dir = ""
@@ -328,13 +328,17 @@ def torch_dtype_to_cutlass_type(
         return cutlass_library.library.DataType.f16
     elif torch_dtype == torch.bfloat16:
         return cutlass_library.library.DataType.bf16
+    elif torch_dtype == torch.float8_e4m3fn:
+        return cutlass_library.library.DataType.e4m3
+    elif torch_dtype == torch.float8_e5m2:
+        return cutlass_library.library.DataType.e5m2
     else:
         raise NotImplementedError(f"Unsupported data type: {torch_dtype=}")
 
 
 @functools.lru_cache(32)
 def dtype_match(
-    torch_dtype: Optional[torch.dtype],
+    torch_dtype: torch.dtype | None,
     cutlass_dtype: "cutlass_library.library.DataType",  # type: ignore[name-defined]  # noqa: F821
 ) -> bool:
     # Import cutlass python scripts.
@@ -366,7 +370,7 @@ def dtype_match(
 
 def get_accumulator_dtype(
     input_torch_dtypes: list[torch.dtype],
-) -> Optional[torch.dtype]:
+) -> torch.dtype | None:
     """
     Given a pair of input torch dtypes, returns the inferred accumulator torch dtype.
     """
