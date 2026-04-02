@@ -89,10 +89,10 @@ def has_slot(slots: int, slot_bit: int) -> bool:
     return (slots & (1 << slot_bit)) != 0
 
 
-def dbg_slot(slot_bitmask: int, slot_enum: type) -> None:
+def get_slots(slot_bitmask: int, slot_enum: type) -> list[str]:
     """Get the names of all slots set in a bitmask for a given slot enum."""
     names = []
     for slot in slot_enum:
         if has_slot(slot_bitmask, slot):
             names.append(slot.name)
-    print(names)
+    return names
