@@ -477,7 +477,6 @@ class TestStatelessRNGDistribution(TestCase):
         self.assertTrue(result.max().item() <= 5.0)
 
 
-
 class TestStatelessRNGCompile(TestCase):
     def test_split_fullgraph(self, device):
         key = random.key(42, device=device)
