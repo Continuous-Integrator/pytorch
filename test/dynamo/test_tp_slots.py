@@ -12,6 +12,7 @@ import enum
 import unittest
 
 from torch._C._dynamo import get_type_slots
+from torch.testing._internal.common_utils import TestCase, run_tests
 from torch._dynamo._type_slots import (
     has_slot,
     PyMappingSlots,
@@ -21,7 +22,7 @@ from torch._dynamo._type_slots import (
 )
 
 
-class TestTypeSlots(unittest.TestCase):
+class TestTypeSlots(TestCase):
     """Test suite for type slot detection."""
 
     def _get_slot_info(self, obj_type):
@@ -277,4 +278,4 @@ class TestTypeSlots(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main()
+    run_tests()
