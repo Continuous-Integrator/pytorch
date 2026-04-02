@@ -7,7 +7,7 @@ import sys
 from collections import Counter, defaultdict
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
-from typing import Any, Literal, TYPE_CHECKING
+from typing import Any, Literal
 
 import torch
 import torch.fx as fx
@@ -26,12 +26,6 @@ from torch._logging import trace_structured
 from torch.fx.operator_schemas import normalize_function
 from torch.utils._ordered_set import OrderedSet
 from torch.utils._python_dispatch import _disable_current_modes
-
-
-if TYPE_CHECKING:
-    from torch._inductor.fx_passes.profile_guided_estimation import (
-        ProfileGuidedEstimator,
-    )
 
 
 log = logging.getLogger(__name__)
@@ -1727,47 +1721,6 @@ def align_estimations_across_ranks(
     return dict(zip(nodes, medians))
 
 
-def _collect_analytical_estimates(
-    gm: torch.fx.GraphModule,
-    pge_estimator: "ProfileGuidedEstimator",
-) -> dict[str, float]:
-    """Collect analytical runtime estimates for nodes that PGE matched.
-
-    Runs the analytical estimator (no custom override) over the same nodes
-    to enable PGE vs analytical comparison.
-    """
-    from torch._inductor.fx_passes.profile_guided_estimation import _is_collective_node
-
-    estimation_log = pge_estimator.estimation_log
-    matched_names = OrderedSet([e["node"] for e in estimation_log])
-    if not matched_names:
-        return {}
-
-    analytical: dict[str, float] = {}
-    for node in gm.graph.nodes:
-        if node.name not in matched_names:
-            continue
-        # Collective: use analytical NCCL estimator
-        if _schedulable_wait_node(node):
-            start = node.args[0]
-            if isinstance(start, fx.Node) and start.name in matched_names:
-                est = torch._inductor.comm_analysis.estimate_nccl_collective_runtime_from_fx_node(
-                    start
-                )
-                analytical[start.name] = est
-        elif _is_collective_node(node):
-            est = torch._inductor.comm_analysis.estimate_nccl_collective_runtime_from_fx_node(
-                node
-            )
-            analytical[node.name] = est
-        # Compute: use roofline estimation
-        elif is_compute_node(node) and node.name in matched_names:
-            est = estimate_roofline_runtime_ms(node)
-            if est is not None:
-                analytical[node.name] = est
-    return analytical
-
-
 def schedule_overlap_bucketing(
     gm: torch.fx.GraphModule,
     max_in_flight_gb: float = 5,
@@ -1857,16 +1810,22 @@ def schedule_overlap_bucketing(
         payload_fn=lambda: ret.print_readable(False),
     )
 
-    # Log PGE estimations to trace_structured for tlparse
-    if custom_runtime_estimation is not None:
+    # Log PGE vs analytical estimations to trace_structured for tlparse.
+    # Only for ProfileGuidedEstimator — not for arbitrary custom estimators.
+    from torch._inductor.fx_passes.profile_guided_estimation import (
+        ProfileGuidedEstimator,
+    )
+
+    if isinstance(custom_runtime_estimation, ProfileGuidedEstimator):
+        from torch._inductor.fx_passes.node_runtime_estimation import (
+            _collect_analytical_estimates,
+        )
         from torch._inductor.fx_passes.profile_guided_estimation import (
             log_pge_estimations,
-            ProfileGuidedEstimator,
         )
 
-        if isinstance(custom_runtime_estimation, ProfileGuidedEstimator):
-            analytical = _collect_analytical_estimates(ret, custom_runtime_estimation)
-            log_pge_estimations(custom_runtime_estimation, analytical)
+        analytical = _collect_analytical_estimates(ret, custom_runtime_estimation)
+        log_pge_estimations(custom_runtime_estimation, analytical)
 
     return ret
 

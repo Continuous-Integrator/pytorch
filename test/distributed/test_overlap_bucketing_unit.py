@@ -36,6 +36,7 @@ from torch.utils._ordered_set import OrderedSet
 
 
 # flake8: noqa: B950
+# Owner(s): ["module: inductor"]
 
 
 aten = torch.ops.aten
@@ -2026,9 +2027,7 @@ class TestProfileGuidedEstimatorIntegration(InductorTestCase):
     def test_estimator_call_on_fx_graph(self):
         """ProfileGuidedEstimator returns estimates for collective and mm nodes in a traced graph."""
         group_name = dist.distributed_c10d._get_default_group().group_name
-        pg_ranks = tuple(
-            sorted(dist.get_process_group_ranks(dist.group.WORLD))
-        )
+        pg_ranks = tuple(sorted(dist.get_process_group_ranks(dist.group.WORLD)))
 
         # Build a trace with matching collective and matmul data
         trace = _make_pge_trace(
@@ -2053,9 +2052,7 @@ class TestProfileGuidedEstimatorIntegration(InductorTestCase):
             pg_config={"0": {"ranks": list(pg_ranks)}},
         )
 
-        with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".json", delete=False
-        ) as f:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
             json.dump(trace, f)
             f.flush()
             trace_path = f.name
@@ -2090,7 +2087,9 @@ class TestProfileGuidedEstimatorIntegration(InductorTestCase):
                         mm_hit = True
                         self.assertAlmostEqual(est, 0.05, places=4)
 
-            self.assertTrue(collective_hit, "Estimator should match the collective node")
+            self.assertTrue(
+                collective_hit, "Estimator should match the collective node"
+            )
             self.assertTrue(mm_hit, "Estimator should match the mm node")
             self.assertGreater(len(estimator.estimation_log), 0)
         finally:
