@@ -211,7 +211,7 @@ def fold_in(key: torch.Tensor, data: int) -> torch.Tensor:
     Args:
         key (Tensor): A PRNG key returned by :func:`key`, :func:`split`, or
             :func:`fold_in`.
-        data (int): A non-negative integer to fold into the key.
+        data (int): An integer to fold into the key, interpreted as uint64.
 
     Returns:
         A new key tensor with the same shape as ``key``.
@@ -311,9 +311,11 @@ def normal(
         >>> torch.func._random.normal(key, (1000,))
     """
     if len(shape) == 1 and isinstance(shape[0], Sequence):
+        # pyrefly: ignore [bad-argument-type]
         shape = tuple(shape[0])
     if dtype is None:
         dtype = torch.float32
+    # pyrefly: ignore [no-matching-overload]
     result = torch.empty(shape, dtype=dtype, device=key.device)
     return normal_(key, result, mean=mean, std=std, portable=portable)
 
@@ -397,8 +399,10 @@ def uniform(
         >>> torch.func._random.uniform(key, (1000,))
     """
     if len(shape) == 1 and isinstance(shape[0], Sequence):
+        # pyrefly: ignore [bad-argument-type]
         shape = tuple(shape[0])
     if dtype is None:
         dtype = torch.float32
+    # pyrefly: ignore [no-matching-overload]
     result = torch.empty(shape, dtype=dtype, device=key.device)
     return uniform_(key, result, low=low, high=high, portable=portable)
