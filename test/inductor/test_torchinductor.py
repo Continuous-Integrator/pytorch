@@ -1,6 +1,7 @@
 # Owner(s): ["module: inductor"]
 # ruff: noqa: F841
 import contextlib
+import contextvars
 import copy
 import dataclasses
 import functools
@@ -5413,8 +5414,9 @@ class CommonTemplate:
         threads = []
         compiled_m = torch.compile(model)
         for _ in range(1, numb_instance + 1):
+            ctx = contextvars.copy_context()
             thread = threading.Thread(
-                target=run_weights_sharing_model, args=(compiled_m, inp)
+                target=ctx.run, args=(run_weights_sharing_model, compiled_m, inp)
             )
             threads.append(thread)
             thread.start()
@@ -16285,7 +16287,10 @@ if RUN_GPU:
             if config.triton.multi_kernel:
                 self.assertEqual(len(kernels), 4)
                 expected_divisible[2] = expected_divisible.pop(1)
-            elif config.triton.cooperative_reductions:
+            elif (
+                config.triton.cooperative_reductions
+                or config.triton.force_cooperative_reductions
+            ):
                 self.assertEqual(len(kernels), 1)
                 expected_divisible = {
                     # one kernel, with extra workspace/semaphore args
@@ -17374,8 +17379,15 @@ if RUN_GPU:
 
         @torch._functorch.config.patch("donated_buffer", True)
         # The inplace updating does not happen after we fused the
-        # layernorm backward
-        @torch._inductor.config.patch("triton.mix_order_reduction", False)
+        # layernorm backward, or if we do cooperative reductions (due to the change in
+        # optimal peak memory ordering).
+        @torch._inductor.config.patch(
+            {
+                "triton.cooperative_reductions": False,
+                "triton.force_cooperative_reductions": False,
+                "triton.mix_order_reduction": False,
+            }
+        )
         def test_donated_buffer_inplace(self):
             batch_size = 32
             seq_length = 50
