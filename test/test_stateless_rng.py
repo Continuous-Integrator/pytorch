@@ -30,7 +30,6 @@ class TestStatelessRNGKey(TestCase):
             random.key(42, impl="unsupported", device=device)
 
 
-
 class TestStatelessRNGKeySplit(TestCase):
     def test_basic_shape_and_dtype(self, device):
         key = random.key(42, device=device)
@@ -114,27 +113,22 @@ class TestStatelessRNGKeySplit(TestCase):
 
     def test_error_wrong_dtype(self, device):
         key = torch.tensor([42, 0], dtype=torch.float32, device=device)
-        with self.assertRaisesRegex(
-            RuntimeError, "key must have dtype uint64"
-        ):
+        with self.assertRaisesRegex(RuntimeError, "key must have dtype uint64"):
             random.split(key, 4)
 
     def test_error_wrong_device(self, device):
         key = random.key(42)  # CPU key
         with self.assertRaisesRegex(
-            NotImplementedError, "Could not run .* with arguments from the 'CPU' backend"
+            NotImplementedError,
+            "Could not run .* with arguments from the 'CPU' backend",
         ):
             random.split(key, 4)
 
     def test_error_invalid_num_splits(self, device):
         key = random.key(42, device=device)
-        with self.assertRaisesRegex(
-            RuntimeError, "num_splits must be positive"
-        ):
+        with self.assertRaisesRegex(RuntimeError, "num_splits must be positive"):
             random.split(key, 0)
-        with self.assertRaisesRegex(
-            RuntimeError, "num_splits must be positive"
-        ):
+        with self.assertRaisesRegex(RuntimeError, "num_splits must be positive"):
             random.split(key, -1)
 
     def test_error_batched_last_dim_not_2(self, device):
@@ -152,7 +146,6 @@ class TestStatelessRNGKeySplit(TestCase):
         key0 = torch.tensor([42, 0], dtype=torch.uint64, device=device)
         self.assertEqual(splits[1], random.fold_in(key0, 0))
         self.assertEqual(splits[2], random.fold_in(key0, 1))
-
 
 
 class TestStatelessRNGKeyFoldIn(TestCase):
@@ -217,15 +210,14 @@ class TestStatelessRNGKeyFoldIn(TestCase):
 
     def test_error_wrong_dtype(self, device):
         key = torch.tensor([42, 0], dtype=torch.float32, device=device)
-        with self.assertRaisesRegex(
-            RuntimeError, "key must have dtype uint64"
-        ):
+        with self.assertRaisesRegex(RuntimeError, "key must have dtype uint64"):
             random.fold_in(key, 0)
 
     def test_error_wrong_device(self, device):
         key = random.key(42)  # CPU key
         with self.assertRaisesRegex(
-            NotImplementedError, "Could not run .* with arguments from the 'CPU' backend"
+            NotImplementedError,
+            "Could not run .* with arguments from the 'CPU' backend",
         ):
             random.fold_in(key, 0)
 
@@ -244,7 +236,6 @@ class TestStatelessRNGKeyFoldIn(TestCase):
         result = random.fold_in(key, 1)
         key0 = torch.tensor([42, 0], dtype=torch.uint64, device=device)
         self.assertEqual(result, random.fold_in(key0, 0))
-
 
 
 class TestStatelessRNGCompile(TestCase):
