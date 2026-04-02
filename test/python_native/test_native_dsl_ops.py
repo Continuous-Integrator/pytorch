@@ -8,7 +8,12 @@ import textwrap
 import uuid
 from unittest.mock import patch
 
-from torch.testing._internal.common_utils import run_tests, TestCase
+from torch.testing._internal.common_utils import (
+    instantiate_parametrized_tests,
+    parametrize,
+    run_tests,
+    TestCase,
+)
 
 
 def _subprocess_lastline(script, env=None):
@@ -76,10 +81,17 @@ class TestNativeDSLOps(TestCase):
                 pass
 
     def test_consistent_helper_interface(self):
-        """Test triton_utils and cutedsl_utils expose consistent public APIs."""
+        """Test all registered DSL utils expose consistent public APIs."""
+        from torch.testing._internal.common_utils import get_all_dsls
+
+        # Automatically discover all registered DSLs
+        dsl_names = get_all_dsls()
+        if not dsl_names:
+            # Fallback to hardcoded list if registry not available
+            dsl_names = ["triton", "cutedsl"]
+
         modules_info = [
-            ("triton_utils.py", "torch._native.triton_utils"),
-            ("cutedsl_utils.py", "torch._native.cutedsl_utils"),
+            (f"{dsl}_utils.py", f"torch._native.{dsl}_utils") for dsl in dsl_names
         ]
 
         # Import modules directly to avoid dependency issues
@@ -146,24 +158,23 @@ class TestNativeDSLOps(TestCase):
         result = _subprocess_lastline(script)
         self.assertEqual(result, "[]", f"DSL modules leaked on import torch: {result}")
 
-    def test_check_native_jit_disabled_environment_variable(self):
+    @parametrize("env_value, expected", [(None, False), ("1", True)])
+    def test_check_native_jit_disabled_environment_variable(self, env_value, expected):
         """Test TORCH_DISABLE_NATIVE_JIT environment variable behavior."""
         from torch._native.common_utils import check_native_jit_disabled
 
-        env_scenarios = [
-            ({}, False, "unset environment variable"),
-            ({"TORCH_DISABLE_NATIVE_JIT": "1"}, True, "set to 1"),
-        ]
+        if env_value is None:
+            os.environ.pop("TORCH_DISABLE_NATIVE_JIT", None)
+        else:
+            os.environ["TORCH_DISABLE_NATIVE_JIT"] = env_value
 
-        for env_patch, expected_result, description in env_scenarios:
-            with self.subTest(scenario=description):
-                with patch.dict(os.environ, env_patch, clear=False):
-                    if not env_patch:  # For empty dict, ensure var is not set
-                        os.environ.pop("TORCH_DISABLE_NATIVE_JIT", None)
-
-                    # Clear cache so function re-reads environment variable
-                    check_native_jit_disabled.cache_clear()
-                    self.assertEqual(check_native_jit_disabled(), expected_result)
+        try:
+            # Clear cache so function re-reads environment variable
+            check_native_jit_disabled.cache_clear()
+            self.assertEqual(check_native_jit_disabled(), expected)
+        finally:
+            # Clean up environment variable
+            os.environ.pop("TORCH_DISABLE_NATIVE_JIT", None)
 
     def test_unavailable_reason_missing(self):
         """Nonexistent package -> _unavailable_reason returns a string."""
@@ -190,28 +201,22 @@ class TestNativeDSLOps(TestCase):
 
         # Test various version format scenarios
         version_scenarios = [
-            ("0.7.0rc1", "pre-release version"),
-            ("3.1.0.post1", "post-release version"),
-            ("2.4.0a1", "alpha version"),
-            ("1.2.3", "standard version"),
-            ("abc", "invalid version string"),
+            ("0.7.0rc1", Version("0.7.0rc1"), "pre-release version"),
+            ("3.1.0.post1", Version("3.1.0.post1"), "post-release version"),
+            ("2.4.0a1", Version("2.4.0a1"), "alpha version"),
+            ("1.2.3", Version("1.2.3"), "standard version"),
+            ("abc", None, "invalid version string"),
         ]
 
-        for version_str, description in version_scenarios:
+        for version_str, expected_result, description in version_scenarios:
             with self.subTest(version=version_str, scenario=description):
                 with patch("importlib.metadata.version", return_value=version_str):
                     result = common_utils._available_version("fake_package")
-
-                    if version_str == "abc":
-                        # Completely unparsable -> None
-                        self.assertIsNone(result)
-                    else:
-                        # Valid versions should parse correctly
-                        self.assertEqual(
-                            result,
-                            Version(version_str),
-                            f"_available_version({version_str!r}) = {result}",
-                        )
+                    self.assertEqual(
+                        result,
+                        expected_result,
+                        f"_available_version({version_str!r}) = {result}",
+                    )
 
     def test_registry_mechanics(self):
         """_get_or_create_library caches Library instances per (lib, dispatch_key)."""
@@ -307,28 +312,12 @@ class TestNativeDSLOps(TestCase):
             # Clear all relevant caches to ensure clean state
             check_native_version_skip.cache_clear()
 
-            # Clear module-specific caches with error handling
-            for module, cache_names in [
-                (
-                    triton_utils,
-                    [
-                        "_version_is_sufficient",
-                        "check_native_jit_disabled",
-                        "check_native_version_skip",
-                    ],
-                ),
-                (
-                    cutedsl_utils,
-                    [
-                        "_version_is_ok",
-                        "check_native_jit_disabled",
-                        "check_native_version_skip",
-                    ],
-                ),
-            ]:
-                for cache_name in cache_names:
-                    if hasattr(module, cache_name):
-                        getattr(module, cache_name).cache_clear()
+            # Clear module-specific caches for the imported modules
+            for module in [triton_utils, cutedsl_utils]:
+                for attr_name in dir(module):
+                    attr = getattr(module, attr_name)
+                    if hasattr(attr, "cache_clear"):
+                        attr.cache_clear()
 
             with (
                 patch.object(
@@ -358,25 +347,78 @@ class TestNativeDSLOps(TestCase):
                     f"Expected 2 calls but got triton: {triton_mock.call_count}, cutedsl: {cute_mock.call_count}",
                 )
 
-    def test_check_native_version_skip_environment_variable(self):
+    @parametrize("env_value, expected", [(None, False), ("1", True)])
+    def test_check_native_version_skip_environment_variable(self, env_value, expected):
         """Test TORCH_NATIVE_SKIP_VERSION_CHECK environment variable behavior."""
         from torch._native.common_utils import check_native_version_skip
 
-        env_scenarios = [
-            ({}, False, "unset environment variable"),
-            ({"TORCH_NATIVE_SKIP_VERSION_CHECK": "1"}, True, "set to 1"),
-        ]
+        if env_value is None:
+            os.environ.pop("TORCH_NATIVE_SKIP_VERSION_CHECK", None)
+        else:
+            os.environ["TORCH_NATIVE_SKIP_VERSION_CHECK"] = env_value
 
-        for env_patch, expected_result, description in env_scenarios:
-            with self.subTest(scenario=description):
-                with patch.dict(os.environ, env_patch, clear=False):
-                    if not env_patch:  # For empty dict, ensure var is not set
-                        os.environ.pop("TORCH_NATIVE_SKIP_VERSION_CHECK", None)
+        try:
+            # Clear cache so function re-reads environment variable
+            check_native_version_skip.cache_clear()
+            self.assertEqual(check_native_version_skip(), expected)
+        finally:
+            # Clean up environment variable
+            os.environ.pop("TORCH_NATIVE_SKIP_VERSION_CHECK", None)
 
-                    # Clear cache so function re-reads environment variable
-                    check_native_version_skip.cache_clear()
-                    self.assertEqual(check_native_version_skip(), expected_result)
+    def test_dsl_registry_functionality(self):
+        """Test that DSL registry works correctly"""
+        from torch.testing._internal.common_utils import (
+            get_all_dsls,
+            get_available_dsls,
+            is_dsl_available,
+        )
 
+        # Test registry returns expected DSLs
+        all_dsls = get_all_dsls()
+        self.assertIsInstance(all_dsls, list)
+        self.assertIn("triton", all_dsls)
+        self.assertIn("cutedsl", all_dsls)
+
+        # Test available DSLs are subset of all DSLs
+        available_dsls = get_available_dsls()
+        self.assertIsInstance(available_dsls, list)
+        for dsl in available_dsls:
+            self.assertIn(dsl, all_dsls)
+
+        # Test availability check function
+        for dsl in all_dsls:
+            availability = is_dsl_available(dsl)
+            self.assertIsInstance(availability, bool)
+            # If DSL is in available list, it should return True
+            if dsl in available_dsls:
+                self.assertTrue(availability)
+
+    def test_dsl_test_helpers(self):
+        """Test that DSL test helper decorators work"""
+        from torch.testing._internal.common_utils import (
+            skipIfDSLUnavailable,
+            skipIfNoCuteDSL,
+            skipIfNoTritonDSL,
+            skipUnlessDSLAvailable,
+        )
+
+        # Test that decorators are callable
+        self.assertTrue(callable(skipIfNoTritonDSL))
+        self.assertTrue(callable(skipIfNoCuteDSL))
+        self.assertTrue(callable(skipIfDSLUnavailable))
+        self.assertTrue(callable(skipUnlessDSLAvailable))
+
+        # Test dynamic decorators can be called
+        try:
+            decorator1 = skipIfDSLUnavailable("nonexistent_dsl")
+            decorator2 = skipUnlessDSLAvailable("triton")
+            self.assertTrue(callable(decorator1))
+            self.assertTrue(callable(decorator2))
+        except Exception as e:
+            self.fail(f"Dynamic DSL decorators failed: {e}")
+
+
+instantiate_parametrized_tests(TestNativeDSLOps)
 
 if __name__ == "__main__":
     run_tests()
