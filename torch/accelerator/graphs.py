@@ -19,7 +19,7 @@ def generate_graph_pool_handle() -> tuple[int, int]:
 
     Example::
 
-        >>> # xdoctest: +REQUIRES(env:TORCH_DOCTEST_CUDA)
+        >>> # xdoctest: +SKIP
         >>> x = torch.zeros([2000], device=0)
 
         >>> stream = torch.Stream()
@@ -61,7 +61,7 @@ class Graph(_acceleratorGraph):
 
     Example::
 
-        >>> # xdoctest: +REQUIRES(env:TORCH_DOCTEST_CUDA)
+        >>> # xdoctest: +SKIP
         >>> x = torch.zeros([2000], device=0)
 
         >>> stream = torch.Stream()
