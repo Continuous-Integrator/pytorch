@@ -2,7 +2,8 @@ set(PYTORCH_FOUND_HIP FALSE)
 
 # If ROCM_PATH is set, assume intention is to compile with
 # ROCm support and error out if the ROCM_PATH does not exist.
-# Else ROCM_PATH does not exist, assume a default of /opt/rocm
+# Else ROCM_PATH does not exist, try to get it from rocm-sdk,
+# or assume a default of /opt/rocm
 # In the latter case, if /opt/rocm does not exist emit status
 # message and return.
 if(DEFINED ENV{ROCM_PATH})
@@ -13,11 +14,31 @@ if(DEFINED ENV{ROCM_PATH})
       "Set a valid ROCM_PATH or unset ROCM_PATH environment variable to fix.")
   endif()
 else()
-  if(UNIX)
-    set(ROCM_PATH /opt/rocm)
-  else() # Win32
-    set(ROCM_PATH C:/opt/rocm)
+  # Try to get ROCM_PATH from rocm-sdk if available
+  find_program(ROCM_SDK_EXECUTABLE rocm-sdk)
+  if(ROCM_SDK_EXECUTABLE)
+    execute_process(
+      COMMAND ${ROCM_SDK_EXECUTABLE} path --root
+      OUTPUT_VARIABLE ROCM_SDK_PATH
+      OUTPUT_STRIP_TRAILING_WHITESPACE
+      RESULT_VARIABLE ROCM_SDK_RESULT
+      ERROR_QUIET
+    )
+    if(ROCM_SDK_RESULT EQUAL 0 AND EXISTS "${ROCM_SDK_PATH}")
+      set(ROCM_PATH "${ROCM_SDK_PATH}")
+      message(STATUS "Found ROCm installation via rocm-sdk at: ${ROCM_PATH}")
+    endif()
   endif()
+
+  # Fall back to default paths if rocm-sdk did not work
+  if(NOT DEFINED ROCM_PATH OR NOT EXISTS ${ROCM_PATH})
+    if(UNIX)
+      set(ROCM_PATH /opt/rocm)
+    else() # Win32
+      set(ROCM_PATH C:/opt/rocm)
+    endif()
+  endif()
+
   if(NOT EXISTS ${ROCM_PATH})
     message(STATUS
         "ROCM_PATH environment variable is not set and ${ROCM_PATH} does not exist.\n"
@@ -54,7 +75,7 @@ message("Building PyTorch for GPU arch: ${PYTORCH_ROCM_ARCH}")
 # needed because the find_package call to this module uses the Module mode search
 # https://cmake.org/cmake/help/latest/command/find_package.html#search-modes
 if(UNIX)
-  set(CMAKE_MODULE_PATH ${ROCM_PATH}/lib/cmake/hip ${CMAKE_MODULE_PATH})
+  set(CMAKE_MODULE_PATH ${ROCM_PATH}/lib/cmake/hip;${ROCM_PATH}/lib/${CMAKE_LIBRARY_ARCHITECTURE}/cmake/hip ${CMAKE_MODULE_PATH})
 else() # Win32
   set(CMAKE_MODULE_PATH ${ROCM_PATH}/cmake/ ${CMAKE_MODULE_PATH})
 endif()
@@ -90,9 +111,13 @@ if(HIP_FOUND)
     if(NOT DASH_POS EQUAL -1)
       string(SUBSTRING "${HIP_VERSION}" 0 ${DASH_POS} HIP_VERSION_CLEAN)
       set(HIP_VERSION "${HIP_VERSION_CLEAN}")
+    else()
+      set(HIP_VERSION_CLEAN "${HIP_VERSION}")
+    endif()
+    message("HIP version: ${HIP_VERSION}")
+  else()
+    set(HIP_VERSION_CLEAN "")
   endif()
-  message("HIP version: ${HIP_VERSION}")
-endif()
 
 # The rocm-core package was only introduced in ROCm 6.4, so we make it optional.
   find_package(rocm-core CONFIG)
@@ -180,6 +205,26 @@ endif()
   find_package_and_print_version(rocthrust REQUIRED)
   find_package_and_print_version(hipsolver REQUIRED)
   find_package_and_print_version(rocsolver REQUIRED)
+  # hipdnn packages export include dirs via target INTERFACE_INCLUDE_DIRECTORIES
+  # rather than the ${PACKAGE_NAME}_INCLUDE_DIR variable that
+  # find_package_and_print_version checks, so we call find_package directly.
+  find_package(hipdnn_frontend CONFIG)
+  if(hipdnn_frontend_FOUND)
+    message(STATUS "hipdnn_frontend VERSION: ${hipdnn_frontend_VERSION}")
+    get_target_property(_hipdnn_fe_includes hipdnn_frontend INTERFACE_INCLUDE_DIRECTORIES)
+    if(_hipdnn_fe_includes)
+      list(APPEND ROCM_INCLUDE_DIRS ${_hipdnn_fe_includes})
+      set(USE_HIPDNN ON)
+      message(STATUS "Found hipDNN, enabling USE_HIPDNN")
+    else()
+      set(USE_HIPDNN OFF)
+      message(STATUS "hipDNN found but missing include directories, disabling USE_HIPDNN")
+    endif()
+  else()
+    set(USE_HIPDNN OFF)
+    message(STATUS "hipDNN not found, disabling USE_HIPDNN")
+  endif()
+
   # workaround cmake 4 build issue
   if(CMAKE_VERSION VERSION_GREATER_EQUAL "4.0.0")
     message(WARNING "Work around hiprtc cmake failure for cmake >= 4")
@@ -194,6 +239,7 @@ endif()
   if(UNIX)
     find_package_and_print_version(rccl)
     find_package_and_print_version(hsa-runtime64 REQUIRED)
+    find_package_and_print_version(rocm_smi REQUIRED)
   endif()
 
   # Optional components.

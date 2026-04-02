@@ -14,6 +14,7 @@
 #include <ATen/native/layer_norm.h>
 #include <ATen/native/Resize.h>
 #include <ATen/native/nested/NestedTensorUtils.h>
+#include <c10/util/Exception.h>
 
 #include <tuple>
 #include <utility>
@@ -41,7 +42,7 @@ Tensor pad_tensor_to_shape(
     const Tensor& t,
     IntArrayRef goal_shape,
     double value = 0) {
-  std::vector<int64_t> padd;
+  std::vector<int64_t> padding;
   auto tup = t.sizes();
   TORCH_CHECK(
       t.dim() == (int64_t)(goal_shape.size()),
@@ -51,10 +52,10 @@ Tensor pad_tensor_to_shape(
       goal_shape.size(),
       " of goal shape.");
   for (int64_t i = static_cast<int64_t>(tup.size()) - 1; i >= 0; i--) {
-    padd.push_back(0);
-    padd.push_back(goal_shape[i] - tup[i]);
+    padding.push_back(0);
+    padding.push_back(goal_shape[i] - tup[i]);
   }
-  Tensor new_tensor = at::constant_pad_nd(t, IntArrayRef(padd), value);
+  Tensor new_tensor = at::constant_pad_nd(t, IntArrayRef(padding), value);
   new_tensor = new_tensor.reshape(goal_shape);
   return new_tensor;
 }
@@ -614,7 +615,6 @@ Tensor squeeze_nested(const Tensor& self) {
   "squeeze(): For nested tensors, squeeze without the dim argument is not supported ",
   "at the moment, however you can use squeeze(Tensor self, int dim) instead ",
   "if you need this feature, please open an issue on github describing your use case.");
-  return self;
 }
 
 Tensor squeeze_dim_nested(const Tensor& self, IntArrayRef dims) {
@@ -745,12 +745,8 @@ inline std::tuple<bool, Tensor, Tensor> NestedTensor_compute_size_stride(
           numel_reshaped *= size_reshaped;
         }
         else if (size_reshaped == -1) {
-          if (infer_index > -1) {
-            throw std::runtime_error("only one dimension can be inferred");
-          }
-          else {
-            infer_index = idim;
-          }
+          TORCH_CHECK(infer_index <= -1, "only one dimension can be inferred");
+          infer_index = idim;
         }
         else {
           TORCH_CHECK(false, "invalid shape dimension ", size_reshaped);
@@ -1025,6 +1021,7 @@ static Tensor cat_nested_as_jagged(
   const auto first_item_dim = first_item.dim();
   const auto first_item_batch_size = first_item.size(0);
   std::vector<Tensor> jagged_views;
+  jagged_views.reserve(tensors.size());
   for (auto i : c10::irange(tensors.size())) {
     auto t = tensors[i].get();
     TORCH_CHECK(t.is_nested(),
@@ -1076,6 +1073,8 @@ static Tensor cat_nested_impl(
     // handle simple case of dim=0: concat NT components
     std::vector<at::Tensor> buffers;
     std::vector<at::Tensor> sizes;
+    buffers.reserve(tensors.size());
+    sizes.reserve(tensors.size());
     for (const auto i : c10::irange(tensors.size())) {
       const Tensor& t = tensors[i];
       TORCH_CHECK(

@@ -42,6 +42,7 @@ struct CUDAHooks : public at::CUDAHooksInterface {
   Allocator* getPinnedMemoryAllocator() const override;
   bool compiledWithCuDNN() const override;
   bool compiledWithMIOpen() const override;
+  bool compiledWithHipDNN() const override;
   bool supportsDilatedConvolutionWithCuDNN() const override;
   bool supportsDepthwiseConvolutionWithCuDNN() const override;
   bool supportsBFloat16ConvolutionWithCuDNNv8() const override;
@@ -52,6 +53,7 @@ struct CUDAHooks : public at::CUDAHooksInterface {
   long versionRuntimeCuDNN() const override;
   long versionCuDNNFrontend() const override;
   long versionMIOpen() const override;
+  long versionHipBLASLt() const override;
   std::string showConfig() const override;
   double batchnormMinEpsilonCuDNN() const override;
   int64_t cuFFTGetPlanCacheMaxSize(DeviceIndex device_index) const override;
@@ -64,6 +66,8 @@ struct CUDAHooks : public at::CUDAHooksInterface {
 
 #ifdef USE_ROCM
   bool isGPUArch(const std::vector<std::string>& archs, DeviceIndex device_index = -1) const override;
+  const std::vector<std::string>& getHipblasltPreferredArchs() const override;
+  const std::vector<std::string>& getHipblasltSupportedArchs() const override;
 #endif
   void deviceSynchronize(DeviceIndex device_index) const override;
 };

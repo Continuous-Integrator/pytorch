@@ -127,11 +127,7 @@ bool should_allow_numbers_as_tensors(const std::string& name) {
 
 // NOLINTNEXTLINE(cppcoreguidelines-pro-type-member-init)
 FunctionParameter::FunctionParameter(const std::string& fmt, bool keyword_only)
-    : optional(false),
-      allow_none(false),
-      keyword_only(keyword_only),
-      size(0),
-      default_scalar(0) {
+    : keyword_only(keyword_only), default_scalar(0) {
   auto space = fmt.find(' ');
   TORCH_CHECK(
       space != std::string::npos, "FunctionParameter(): missing type: " + fmt);
@@ -306,8 +302,22 @@ static py::object maybe_get_registered_torch_dispatch_rule(
 static bool is_dtensor(PyObject* obj) {
 #ifdef USE_DISTRIBUTED
   const py::handle dtensor = get_dtensor_class();
-  return (PyObject*)Py_TYPE(obj) == dtensor.ptr() ||
-      py::isinstance(py::handle(obj), dtensor);
+  if ((PyObject*)Py_TYPE(obj) == dtensor.ptr()) {
+    return true;
+  }
+  if (!py::isinstance(py::handle(obj), dtensor)) {
+    return false;
+  }
+  // DTensor subclass: only use the C++ fast path if it does not override
+  // __torch_dispatch__. Subclasses with a custom override should fall
+  // through to the normal Python dispatch path.
+  // Compare via __func__ because @classmethod descriptors create new bound
+  // method objects on each attr access, making direct identity checks fail.
+  static py::object base_td =
+      dtensor.attr("__torch_dispatch__").attr("__func__");
+  py::object sub_td =
+      py::type::handle_of(obj).attr("__torch_dispatch__").attr("__func__");
+  return sub_td.is(base_td);
 #else
   return false;
 #endif
@@ -1473,12 +1483,7 @@ void FunctionParameter::set_default_str(const std::string& str) {
 
 // NOLINTNEXTLINE(cppcoreguidelines-pro-type-member-init)
 FunctionSignature::FunctionSignature(const std::string& fmt, int index)
-    : min_args(0),
-      max_args(0),
-      max_pos_args(0),
-      index(index),
-      hidden(false),
-      deprecated(false) {
+    : index(index) {
   auto open_paren = fmt.find('(');
   if (open_paren == std::string::npos) {
     TORCH_CHECK(false, "missing opening parenthesis: " + fmt);
@@ -1687,7 +1692,9 @@ bool FunctionSignature::parse(
   if (max_pos_args == 1 &&
       (params[0].type_ == ParameterType::INT_LIST ||
        params[0].type_ == ParameterType::SYM_INT_LIST)) {
-    allow_varargs_intlist = true;
+    int64_t failed_idx = -1;
+    allow_varargs_intlist = is_int_or_symint_list(
+        args, params[0].size, &failed_idx, &overloaded_args);
   }
 
   if (static_cast<size_t>(nargs) > max_pos_args && !allow_varargs_intlist) {
@@ -1818,7 +1825,7 @@ bool FunctionSignature::parse(
 PythonArgParser::PythonArgParser(
     const std::vector<std::string>& fmts,
     bool traceable)
-    : max_args(0), traceable(traceable) {
+    : traceable(traceable) {
   int index = 0;
   for (auto& fmt : fmts) {
     signatures_.emplace_back(fmt, index);

@@ -14,8 +14,9 @@ handling of iterator operations during code transformation and optimization.
 """
 
 import itertools
+import sys
 from collections.abc import Callable, Sequence
-from typing import Any, TYPE_CHECKING, Union
+from typing import Any, TYPE_CHECKING
 
 from .. import graph_break_hints, polyfills, variables
 from ..bytecode_transformation import (
@@ -52,6 +53,9 @@ class ItertoolsVariable(VariableTracker):
         return f"ItertoolsVariable({self.value})"
 
     def as_python_constant(self) -> Any:
+        return self.value
+
+    def get_real_python_backed_value(self) -> Any:
         return self.value
 
     def call_function(
@@ -115,7 +119,7 @@ class ItertoolsVariable(VariableTracker):
             def retrieve_const_key(key: VariableTracker) -> Any:
                 if isinstance(key, variables.SymNodeVariable):
                     return key.evaluate_expr()
-                elif isinstance(key, variables.ConstantVariable):
+                elif key.is_python_constant():
                     return key.as_python_constant()
                 else:
                     unimplemented(
@@ -157,7 +161,6 @@ class ItertoolsVariable(VariableTracker):
 
             result = []
             try:
-                # pyrefly: ignore [unbound-name]
                 for k, v in itertools.groupby(seq, key=keyfunc):
                     result.append(
                         variables.TupleVariable(
@@ -195,10 +198,20 @@ class ItertoolsVariable(VariableTracker):
             return tx.inline_user_function_return(
                 VariableTracker.build(tx, polyfills.repeat), args, kwargs
             )
-        elif self.value is itertools.count:
-            return variables.CountIteratorVariable(
-                *args, mutation_type=ValueMutationNew()
-            )
+        elif self.value is itertools.count and not kwargs:
+            if len(args) == 0:
+                return variables.CountIteratorVariable(mutation_type=ValueMutationNew())
+            if len(args) == 1:
+                return variables.CountIteratorVariable(
+                    item=args[0], mutation_type=ValueMutationNew()
+                )
+            if len(args) == 2:
+                return variables.CountIteratorVariable(
+                    item=args[0],
+                    step=args[1],
+                    mutation_type=ValueMutationNew(),
+                )
+            return super().call_function(tx, args, kwargs)
         elif (
             self.value is itertools.permutations
             and (len(args) == 1 or (len(args) == 2 and args[1].is_python_constant()))
@@ -262,9 +275,9 @@ class IteratorVariable(VariableTracker):
 
     def call_obj_hasattr(
         self, tx: "InstructionTranslator", name: str
-    ) -> "VariableTracker":
+    ) -> "ConstantVariable":
         if name == "__iter__" or name == "__next__":
-            return variables.ConstantVariable.create(True)
+            return variables.CONSTANT_VARIABLE_TRUE
         return super().call_obj_hasattr(tx, name)
 
     def call_method(
@@ -336,10 +349,18 @@ class RepeatIteratorVariable(IteratorVariable):
 
 
 class CountIteratorVariable(IteratorVariable):
+    # advance_count tracks how many next() calls were made during tracing,
+    # used by side_effects.py to replay them on the real iterator post-execution.
+    _nonvar_fields = {
+        "advance_count",
+        *IteratorVariable._nonvar_fields,
+    }
+
     def __init__(
         self,
-        item: Union[int, VariableTracker] = 0,
-        step: Union[int, VariableTracker] = 1,
+        item: int | VariableTracker = 0,
+        step: int | VariableTracker = 1,
+        advance_count: int = 0,
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
@@ -349,12 +370,14 @@ class CountIteratorVariable(IteratorVariable):
             step = ConstantVariable.create(step)
         self.item = item
         self.step = step
+        self.advance_count = advance_count
 
     def next_variable(self, tx: "InstructionTranslator") -> VariableTracker:
         assert self.is_mutable()
         old_item = self.item
         tx.output.side_effects.mutation(self)
         self.item = self.item.call_method(tx, "__add__", [self.step], {})
+        self.advance_count += 1
         return old_item
 
     def reconstruct(self, codegen: "PyCodegen") -> None:
@@ -428,7 +451,7 @@ class ZipVariable(IteratorVariable):
         args = []
 
         def get_item(
-            it: Union[list[VariableTracker], VariableTracker],
+            it: list[VariableTracker] | VariableTracker,
         ) -> VariableTracker:
             if isinstance(it, list):
                 if old_index >= len(it):
@@ -522,12 +545,21 @@ class MapVariable(ZipVariable):
         )
         codegen(self.fn)
         self.reconstruct_items(codegen)
-        codegen.extend_output(
-            [
-                create_build_tuple(len(self.iterables) + 1),
-                *create_call_function_ex(False, False),
-            ]
-        )
+        codegen.append_output(create_build_tuple(len(self.iterables) + 1))
+        if self.strict:
+            assert sys.version_info >= (3, 14), (
+                "Unexpected bug: map(strict=True) requires Python 3.14+"
+            )
+            codegen.extend_output(
+                [
+                    codegen.create_load_const("strict"),
+                    codegen.create_load_const(self.strict),
+                    create_instruction("BUILD_MAP", arg=1),
+                    *create_call_function_ex(True, False),
+                ]
+            )
+        else:
+            codegen.extend_output(create_call_function_ex(False, False))
 
 
 class FilterVariable(IteratorVariable):
@@ -585,7 +617,7 @@ class FilterVariable(IteratorVariable):
         while True:
             item = _next()
             self.index += 1
-            if isinstance(self.fn, ConstantVariable) and self.fn.value is None:
+            if self.fn.is_constant_none():
                 res = item
             else:
                 res = self.fn.call_function(tx, [item], {})

@@ -14,7 +14,6 @@ from torch.testing._internal.common_utils import (
     decorateIf,
     instantiate_parametrized_tests,
     parametrize,
-    skipIfXpu,
 )
 from torch.testing._internal.inductor_utils import GPU_TYPE, HAS_CPU, HAS_GPU
 from torch.testing._internal.triton_utils import requires_gpu
@@ -24,7 +23,8 @@ def _prepend_product_of_values(inputs, possible_values, num_to_prepend=1, device
     result = []
     if len(inputs) != 0:
         device = inputs[0].device
-    assert device
+    if not device:
+        raise AssertionError
     # iterate over the cartesian product of predicate values
     for values in itertools.product(*([possible_values] * num_to_prepend)):
         prepended = [torch.tensor(v, device=device) for v in values]
@@ -278,6 +278,16 @@ class CondModels:
 
             return torch.cond(x0.sum() > 0, fn, fn)
 
+    class StridePadding(torch.nn.Module):
+        def forward(self, p, x):
+            def true_fn(t):
+                return t.clone().contiguous()
+
+            def false_fn(t):
+                return t.clone().contiguous() + 1
+
+            return torch.cond(p, true_fn, false_fn, [x])
+
 
 class CondTests(TestCase):
     def _run_test(
@@ -338,6 +348,15 @@ class CondTests(TestCase):
         )
 
     @requires_gpu
+    def test_cond_subgraph_output_stride_padding(self):
+        self._run_test(
+            model=CondModels.StridePadding(),
+            # inner dim 19500 triggers stride padding
+            inputs=(torch.randn(15, 19500),),
+            device=GPU_TYPE,
+        )
+
+    @requires_gpu
     @parametrize("device", ["cpu", GPU_TYPE])
     def test_cond_simple_with_int_closure(self, device):
         self._run_test(
@@ -365,7 +384,6 @@ class CondTests(TestCase):
             dynamic=dynamic,
         )
 
-    @skipIfXpu(msg="Remove this skip after issue #154949 resolved.")
     @requires_gpu
     def test_cond_control_flow_with_precomputed_size(self):
         class TestModel(torch.nn.Module):
@@ -1428,7 +1446,7 @@ class WhileLoopTests(TestCase):
     def test_while_loop_infinite_loop_error(self):
         with self.assertRaisesRegex(
             torch._dynamo.exc.UncapturedHigherOrderOpError,
-            "while_loop doesn't work unless it is captured completely",
+            "torch.while_loop",
         ):
             self._run_test(
                 model=WhileLoopModels.InfiniteLoop(),

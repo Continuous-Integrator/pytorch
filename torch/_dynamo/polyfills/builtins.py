@@ -7,6 +7,7 @@ from __future__ import annotations
 import builtins
 import functools
 import operator
+import typing
 from collections.abc import Callable
 from typing import TYPE_CHECKING, TypeVar
 
@@ -20,6 +21,7 @@ if TYPE_CHECKING:
 __all__ = [
     "all",
     "any",
+    "cast",
     "enumerate",
     "sum",
 ]
@@ -82,16 +84,15 @@ class _CallableIterator:
         return r
 
 
-class _SENTINEL_MISSING:
-    pass
+_sentinel_missing = object()
 
 
 # TODO(guilhermeleobas): use substitute_in_graph for iter()
-def iter_(fn_or_iterable, sentinel=_SENTINEL_MISSING, /):  # type: ignore[no-untyped-def]
+def iter_(fn_or_iterable, sentinel=_sentinel_missing, /):  # type: ignore[no-untyped-def]
     # Without a second argument, object must be a collection object which supports
     # the iterable (__iter__) or the sequence protocol (__getitem__ with an integer
     # starting at 0)
-    if sentinel is _SENTINEL_MISSING:
+    if sentinel is _sentinel_missing:
         iterable = fn_or_iterable
         if hasattr(iterable, "__iter__"):
             iterator = iterable.__iter__()
@@ -121,3 +122,8 @@ def iter_(fn_or_iterable, sentinel=_SENTINEL_MISSING, /):  # type: ignore[no-unt
             raise TypeError("iter(v, w): v must be a callable")
 
         return _CallableIterator(fn, sentinel)
+
+
+@substitute_in_graph(typing.cast, can_constant_fold_through=True)
+def cast(typ: type, val: _T) -> _T:  # type: ignore[type-var]
+    return val

@@ -31,11 +31,13 @@
 #include <thrust/binary_search.h>
 #include <thrust/device_ptr.h>
 #include <thrust/distance.h>
+#include <thrust/for_each.h>
 #include <thrust/iterator/constant_iterator.h>
+#include <thrust/iterator/discard_iterator.h>
 #include <thrust/scan.h>
 #include <thrust/sequence.h>
 #include <thrust/sort.h>
-#include <thrust/system/cuda/execution_policy.h>
+#include <thrust/transform.h>
 
 #include <cuda_runtime_api.h>
 #include <cusparse.h>
@@ -47,22 +49,6 @@
 #include <ATen/native/cuda/Loops.cuh>
 
 #include <c10/macros/Macros.h>
-#include <thrust/copy.h>
-#include <thrust/device_ptr.h>
-#include <thrust/distance.h>
-#include <thrust/for_each.h>
-#include <thrust/functional.h>
-#include <thrust/gather.h>
-#include <thrust/generate.h>
-#include <thrust/iterator/discard_iterator.h>
-#include <thrust/reduce.h>
-#include <thrust/scan.h>
-#include <thrust/sequence.h>
-#include <thrust/sort.h>
-#include <thrust/transform.h>
-#include <thrust/unique.h>
-
-#include <c10/cuda/CUDAMathCompat.h>
 
 namespace at::native {
 namespace {
@@ -330,8 +316,13 @@ std::tuple<Tensor, Tensor, Tensor, Tensor> compute_pool_max(
       [offsets_ptr] __device__(int64_t x, int64_t y) {
         return offsets_ptr[x] == offsets_ptr[y];
       });
+#if !defined(USE_ROCM)
+  auto new_sz = ::cuda::std::distance(
+      thrust_ptr(pool_sizes.template data_ptr<int64_t>()), new_end.second);
+#else
   auto new_sz = thrust::distance(
       thrust_ptr(pool_sizes.template data_ptr<int64_t>()), new_end.second);
+#endif
   pool_sizes.resize_({new_sz});
 
   auto pool_offsets = pool_sizes.clone();

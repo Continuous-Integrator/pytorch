@@ -8,6 +8,7 @@ in `./_utils/worker.py`.
 
 from __future__ import annotations
 
+import contextlib
 import functools
 import itertools
 import logging
@@ -605,31 +606,10 @@ class DataLoader(Generic[_T_co]):
             return
 
         # try to compute a suggested max number of worker based on system's resource
-        max_num_worker_suggest = None
-        cpuset_checked = False
-        if hasattr(os, "sched_getaffinity"):
-            try:
-                max_num_worker_suggest = len(os.sched_getaffinity(0))
-                cpuset_checked = True
-            except Exception:
-                pass
-        if max_num_worker_suggest is None:
-            # os.cpu_count() could return Optional[int]
-            # get cpu count first and check None in order to satisfy mypy check
-            cpu_count = os.cpu_count()
-            if cpu_count is not None:
-                max_num_worker_suggest = cpu_count
+        max_num_worker_suggest = torch._utils.cpu_count()
+        cpuset_checked = hasattr(os, "sched_getaffinity")
 
-        if max_num_worker_suggest is None:
-            warnings.warn(
-                _create_warning_msg(
-                    max_num_worker_suggest, self.num_workers, cpuset_checked
-                ),
-                stacklevel=2,
-            )
-            return
-
-        if self.num_workers > max_num_worker_suggest:
+        if max_num_worker_suggest is None or self.num_workers > max_num_worker_suggest:
             warnings.warn(
                 _create_warning_msg(
                     max_num_worker_suggest, self.num_workers, cpuset_checked
@@ -1334,7 +1314,11 @@ class _MultiProcessingDataLoaderIter(_BaseDataLoaderIter):
                 # test.
                 # See NOTE [ DataLoader on Linux and open files limit ]
                 fds_limit_margin = 10
-                [tempfile.NamedTemporaryFile() for _ in range(fds_limit_margin)]  # noqa: SIM115
+                with contextlib.ExitStack() as stack:
+                    for _ in range(fds_limit_margin):
+                        stack.enter_context(
+                            tempfile.NamedTemporaryFile()  # pyrefly: ignore [bad-argument-type]
+                        )
             except OSError as e:
                 if e.errno == errno.EMFILE:
                     raise RuntimeError(
@@ -1623,7 +1607,9 @@ class _MultiProcessingDataLoaderIter(_BaseDataLoaderIter):
         # the logic of this function.
         if (
             _utils is None
+            # pyrefly: ignore [unnecessary-comparison]
             or _utils.python_exit_status is True
+            # pyrefly: ignore [unnecessary-comparison]
             or _utils.python_exit_status is None
         ):
             # See (2) of the note. If Python is shutting down, do no-op.

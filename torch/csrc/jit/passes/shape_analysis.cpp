@@ -11,9 +11,6 @@
 #include <torch/csrc/jit/runtime/exception_message.h>
 #include <torch/csrc/jit/runtime/operator.h>
 
-#include <torch/csrc/autograd/variable.h>
-
-#include <ATen/DeviceGuard.h>
 #include <ATen/ExpandUtils.h>
 #include <ATen/core/symbol.h>
 
@@ -107,10 +104,6 @@ void PropertyPropBase::setUnshapedType(Node* node) {
   for (auto o : node->outputs()) {
     setUnshapedType(o);
   }
-}
-
-namespace prim {
-using namespace ::c10::prim;
 }
 
 #define SHAPE_ASSERT(cond) \

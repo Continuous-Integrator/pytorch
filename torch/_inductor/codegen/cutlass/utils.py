@@ -7,8 +7,7 @@ import shutil
 import sys
 import time
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 from typing_extensions import TypeIs
 
 import sympy
@@ -22,7 +21,6 @@ from ... import config
 from ...ir import Layout
 from ...runtime.runtime_utils import cache_dir
 from ...virtualized import V
-from ..cpp_utils import DTYPE_TO_CPP
 from ..cuda.cuda_env import get_cuda_arch, get_cuda_version
 
 
@@ -31,17 +29,20 @@ log = logging.getLogger(__name__)
 CUTLASS_OPERATION_KIND: str = "gemm"
 ACCUMULATOR_DTYPES: OrderedSet[torch.dtype] = OrderedSet([torch.float, torch.int32])
 XW_DTYPES: OrderedSet[torch.dtype] = OrderedSet(
-    [torch.half, torch.bfloat16, torch.float8_e4m3fn, torch.int8]
+    [torch.half, torch.bfloat16, torch.float8_e4m3fn, torch.int8, torch.float8_e5m2]
 )
 
 
 @atexit.register
 def move_cutlass_compiled_cache() -> None:
     """Move CUTLASS compiled cache file to the cache directory if it exists."""
-    if not try_import_cutlass.cache_info().currsize > 0:
+    if try_import_cutlass.cache_info().currsize == 0:
         return
 
-    import cutlass_cppgen  # type: ignore[import-not-found]
+    try:
+        import cutlass_cppgen  # type: ignore[import-not-found]
+    except ImportError:
+        return
 
     # Check if the CACHE_FILE attribute exists in cutlass_cppgen and if the file exists
     if not hasattr(cutlass_cppgen, "CACHE_FILE") or not os.path.exists(
@@ -81,7 +82,7 @@ def try_import_cutlass() -> bool:
         except ImportError as e:
             log.warning(  # noqa: G200
                 "Failed to import CUTLASS packages in fbcode: %s, ignoring the CUTLASS backend.",
-                str(e),
+                e,
             )
             return False
 
@@ -166,7 +167,7 @@ def try_import_cutlass() -> bool:
         except ImportError as e:
             log.debug(  # noqa: G200
                 "Failed to import CUTLASS packages: %s, ignoring the CUTLASS backend.",
-                str(e),
+                e,
             )
     else:
         log.debug(
@@ -178,26 +179,31 @@ def try_import_cutlass() -> bool:
 
 @functools.lru_cache(8)
 def _normalize_cuda_arch(arch: str) -> str:
-    if int(arch) >= 100:
-        log.warning(
-            "Detected CUDA architecture >= 100: %s. We will generate operations with "
-            "GenerateSM100 (if available) and GenerateSM90. Please file an "
-            "issue for any problems and feedback. ",
-            arch,
-        )
-
-    if int(arch) >= 100:
-        return "100"
-    elif int(arch) >= 90:
-        return "90"
-    elif int(arch) >= 80:
-        return "80"
-    elif int(arch) >= 75:
-        return "75"
-    elif int(arch) >= 70:
-        return "70"
+    arch_num = arch
+    if isinstance(arch, str):
+        digits = "".join(ch for ch in arch if ch.isdigit())
+        if not digits:
+            raise ValueError(f"Unrecognized cuda arch: {arch}")
+        arch_num = int(digits)
     else:
-        raise NotImplementedError(f"Unsupported cuda arch: {arch}")
+        arch_num = int(arch)
+
+    if arch_num > 103:
+        log.warning("Detected CUDA architecture > 103: %s. Please file an issue.", arch)
+        return str(arch_num)
+    if arch_num >= 103:
+        return "103"
+    if arch_num >= 100:
+        return "100"
+    if arch_num >= 90:
+        return "90"
+    if arch_num >= 80:
+        return "80"
+    if arch_num >= 75:
+        return "75"
+    if arch_num >= 70:
+        return "70"
+    raise NotImplementedError(f"Unsupported cuda arch: {arch}")
 
 
 @dataclass
@@ -206,10 +212,10 @@ class CUTLASSArgs:
     CUTLASS args used to initialize a CUTLASS Manifest.
     """
 
-    architectures: Optional[str] = None
-    cuda_version: Optional[str] = None
-    instantiation_level: Optional[str] = None
-    operations: Optional[str] = None
+    architectures: str | None = None
+    cuda_version: str | None = None
+    instantiation_level: str | None = None
+    operations: str | None = None
 
     build_dir = ""
     curr_build_dir = ""
@@ -252,9 +258,12 @@ def _gen_ops_cached(arch, version) -> dict[Any, Any]:
         )
         return {}
     arch = _normalize_cuda_arch(arch)
+    gen_arch = (
+        "100" if arch == "103" else arch
+    )  # CUTLASS SM103 generator only covers NVFB4; fallback to SM100 set
     instantiation_level: str = config.cutlass.cutlass_instantiation_level
     args = CUTLASSArgs(
-        architectures=arch,
+        architectures=gen_arch,
         cuda_version=version,
         instantiation_level=instantiation_level,
         operations=CUTLASS_OPERATION_KIND,
@@ -262,17 +271,17 @@ def _gen_ops_cached(arch, version) -> dict[Any, Any]:
     manifest = cutlass_manifest.Manifest(args)
 
     start_time = time.time()
-    if arch == "100":
+    if gen_arch == "100":
         if hasattr(cutlass_generator, "GenerateSM100"):
             cutlass_generator.GenerateSM100(manifest, args.cuda_version)
         cutlass_generator.GenerateSM90(manifest, args.cuda_version)
     else:
         try:
-            func = getattr(cutlass_generator, "GenerateSM" + arch)
+            func = getattr(cutlass_generator, "GenerateSM" + gen_arch)
             func(manifest, args.cuda_version)
         except AttributeError as e:
             raise NotImplementedError(
-                "Arch " + arch + " is not supported by current cutlass lib."
+                "Arch " + gen_arch + " is not supported by current cutlass lib."
             ) from e
 
     log.info(
@@ -293,11 +302,15 @@ def gen_ops() -> dict[Any, Any]:
         return _gen_ops_cached(arch, version)
 
 
+from ..cpp_utils import DTYPE_TO_CPP
+
+
 DTYPE_TO_CUTLASS_TYPE = {
     **DTYPE_TO_CPP,
     torch.float16: "__half",
     torch.bfloat16: "__nv_bfloat16",
     torch.float8_e4m3fn: "__nv_fp8_e4m3",
+    torch.float8_e5m2: "__nv_fp8_e5m2",
 }
 
 
@@ -315,13 +328,17 @@ def torch_dtype_to_cutlass_type(
         return cutlass_library.library.DataType.f16
     elif torch_dtype == torch.bfloat16:
         return cutlass_library.library.DataType.bf16
+    elif torch_dtype == torch.float8_e4m3fn:
+        return cutlass_library.library.DataType.e4m3
+    elif torch_dtype == torch.float8_e5m2:
+        return cutlass_library.library.DataType.e5m2
     else:
         raise NotImplementedError(f"Unsupported data type: {torch_dtype=}")
 
 
 @functools.lru_cache(32)
 def dtype_match(
-    torch_dtype: Optional[torch.dtype],
+    torch_dtype: torch.dtype | None,
     cutlass_dtype: "cutlass_library.library.DataType",  # type: ignore[name-defined]  # noqa: F821
 ) -> bool:
     # Import cutlass python scripts.
@@ -345,13 +362,15 @@ def dtype_match(
         return cutlass_dtype == cutlass_library.library.DataType.s32
     elif torch_dtype == torch.float8_e4m3fn:
         return cutlass_dtype == cutlass_library.library.DataType.e4m3
+    elif torch_dtype == torch.float8_e5m2:
+        return cutlass_dtype == cutlass_library.library.DataType.e5m2
     else:
         return False
 
 
 def get_accumulator_dtype(
     input_torch_dtypes: list[torch.dtype],
-) -> Optional[torch.dtype]:
+) -> torch.dtype | None:
     """
     Given a pair of input torch dtypes, returns the inferred accumulator torch dtype.
     """
@@ -362,6 +381,11 @@ def get_accumulator_dtype(
 
     if len(input_torch_dtypes) != 2:
         return None
+
+    if OrderedSet(input_torch_dtypes) == OrderedSet(
+        [torch.float8_e5m2, torch.float8_e4m3fn]
+    ):
+        return torch.float
 
     torch_dtype = None
     if input_torch_dtypes[0] == input_torch_dtypes[1]:
@@ -379,7 +403,13 @@ def get_accumulator_dtype(
         ]:
             torch_dtype = dtype0
 
-    if torch_dtype in (torch.float16, torch.bfloat16, torch.float, torch.float8_e4m3fn):
+    if torch_dtype in (
+        torch.float16,
+        torch.bfloat16,
+        torch.float,
+        torch.float8_e4m3fn,
+        torch.float8_e5m2,
+    ):
         accumulator_dtype = torch.float
     elif torch_dtype == torch.int8:
         accumulator_dtype = torch.int32
@@ -403,7 +433,12 @@ def get_alignments(torch_dtype: torch.dtype) -> list[int]:
         return [8, 4, 2, 1]
     elif torch_dtype == torch.float:
         return [4, 2, 1]
-    elif torch_dtype in (torch.uint8, torch.int8, torch.float8_e4m3fn):
+    elif torch_dtype in (
+        torch.uint8,
+        torch.int8,
+        torch.float8_e4m3fn,
+        torch.float8_e5m2,
+    ):
         return [16, 8, 4, 2]
     elif torch_dtype == torch.int32:
         return [4, 2, 1]
@@ -447,47 +482,3 @@ def get_max_alignment(inductor_layout: Layout) -> int:
         ):
             return alignment
     return 1
-
-
-class CUDACompileSourceCapturingContext:
-    # Helper class for Benchmarking and Testing CUTLASS Kernels in isolation.
-    # Can be used to capture the sourcecode passed to CUDACodeCache.compile
-
-    def __init__(self):
-        self.sources = []
-        self._compile_patch = None
-
-    def __enter__(self, *args, **kwargs):
-        import unittest.mock as mock
-
-        import torch._inductor.codecache
-
-        _compile_method_orig = torch._inductor.codecache.CUDACodeCache.compile
-
-        def my_compile(
-            source_code, dst_file_ext, extra_args: Optional[list[str]] = None
-        ):
-            self.sources.append(source_code)
-            return _compile_method_orig(source_code, dst_file_ext)
-
-        # pyrefly: ignore [bad-assignment]
-        self._compile_patch = mock.patch(
-            "torch._inductor.codecache.CUDACodeCache.compile", my_compile
-        )
-        self._compile_patch.__enter__(*args, **kwargs)  # type: ignore[union-attr]
-        return self
-
-    def __exit__(self, *args, **kwargs):
-        self._compile_patch.__exit__(*args, **kwargs)  # type: ignore[union-attr]
-
-
-def cuda_standalone_runner_compile_command(srcpath: Path, exepath: Path):
-    # returns command string to compile a (captured) CUDA GEMM Kernel source to a standalone executable that's ready to run
-    # Passes the correct preprocessor define to nvcc to ensure the standalone runner is enabled.
-    from torch._inductor.codecache import cuda_compile_command
-
-    extra_args = ["-DGENERATE_STANDALONE_RUNNER=1", "-DCUTLASS_DEBUG_TRACE_LEVEL=1"]
-    compile_command = cuda_compile_command(
-        [str(srcpath)], str(exepath), "exe", extra_args=extra_args
-    )
-    return compile_command

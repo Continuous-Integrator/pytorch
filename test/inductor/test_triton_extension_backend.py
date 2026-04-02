@@ -2,9 +2,10 @@
 import functools
 import random
 import string
+import sys
 import unittest
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import torch
 import torch._dynamo
@@ -13,7 +14,7 @@ from torch._inductor import config
 
 
 try:
-    from extension_backends.triton.device_interface import (  # @manual=fbcode//caffe2/test/inductor/extension_backends:extension_codegen_backend  # noqa: B950
+    from extension_backends.triton.device_interface import (  # @manual=fbcode//caffe2/test/inductor/extension_backends:device_interface  # noqa: B950
         DeviceInterface,
     )
     from extension_backends.triton.extension_codegen_backend import (  # @manual=fbcode//caffe2/test/inductor/extension_backends:extension_codegen_backend  # noqa: B950
@@ -21,7 +22,7 @@ try:
         ExtensionScheduling,
         ExtensionWrapperCodegen,
     )
-    from extension_backends.triton.extension_triton_heuristics import (
+    from extension_backends.triton.extension_triton_heuristics import (  # @manual=fbcode//caffe2/test/inductor/extension_backends:extension_triton_heuristics  # noqa: B950
         EXTENSION_TRITON_META_FIELD,
     )
 except ImportError:
@@ -50,8 +51,12 @@ from torch._inductor.codegen.common import (
 from torch._inductor.codegen.wrapper import PythonWrapperCodegen
 from torch._inductor.utils import get_triton_code, run_and_get_triton_code
 from torch.testing._internal.common_utils import IS_FBCODE, IS_MACOS
-from torch.testing._internal.inductor_utils import GPU_TYPE, HAS_CPU, HAS_GPU_AND_TRITON
-from torch.testing._internal.triton_utils import requires_cuda_and_triton
+from torch.testing._internal.inductor_utils import (
+    GPU_TYPE,
+    HAS_CPU,
+    HAS_GPU_AND_TRITON,
+    TRITON_HAS_CPU,
+)
 
 
 try:
@@ -59,9 +64,18 @@ try:
 except ImportError:
     from test_extension_backend import BaseExtensionBackendTests
 
-if HAS_GPU_AND_TRITON:
+if TRITON_HAS_CPU or HAS_GPU_AND_TRITON:
     import triton
     import triton.language as tl
+
+    if TRITON_HAS_CPU:
+        TRITON_DEVICE_TYPE = "cpu"
+    else:
+        TRITON_DEVICE_TYPE = GPU_TYPE
+
+requires_triton_backend = unittest.skipUnless(
+    HAS_GPU_AND_TRITON or TRITON_HAS_CPU, "Requires Triton backend."
+)
 
 
 def mock_triton_hash_with_backend(*args, **kwargs):
@@ -138,6 +152,17 @@ class TritonExtensionBackendTests(BaseExtensionBackendTests):
         ).check("device_str='privateuseone'").run(code)
 
     def _register_custom_backend_with_heuristics(self, device):
+        path_to_ext_heuristics = str(
+            Path(__file__).parent / "extension_backends" / "triton"
+        )
+        # Add the path to sys.path in the parent process so that the
+        # ExtensionCachingAutotuner class (defined in extension_triton_heuristics)
+        # can be resolved when the compiled kernel is unpickled from the
+        # compile subprocess back into the parent process.
+        if path_to_ext_heuristics not in sys.path:
+            sys.path.append(path_to_ext_heuristics)
+            self.addCleanup(sys.path.remove, path_to_ext_heuristics)
+
         class ExtensionTritonKernel(codegen.triton.TritonKernel):
             @classmethod
             @functools.lru_cache(None)
@@ -145,13 +170,8 @@ class TritonExtensionBackendTests(BaseExtensionBackendTests):
                 default_imports = super().gen_common_triton_imports()
                 custom_imports = IndentedBuffer()
                 custom_imports.splice(default_imports)
-                path_to_ext_heuristics = (
-                    Path(__file__).parent / "extension_backends" / "triton"
-                )
 
-                custom_imports.splice(f"""
-                    import sys
-                    sys.path.append("{path_to_ext_heuristics}")
+                custom_imports.splice("""
                     import extension_triton_heuristics as triton_heuristics
                 """)
                 return custom_imports
@@ -173,13 +193,15 @@ class TritonExtensionBackendTests(BaseExtensionBackendTests):
             @staticmethod
             def create(
                 is_subgraph: bool,
-                subgraph_name: Optional[str],
-                parent_wrapper: Optional[PythonWrapperCodegen],
-                partition_signatures: Optional[ir.GraphPartitionSignature] = None,
+                subgraph_name: str | None,
+                parent_wrapper: PythonWrapperCodegen | None,
+                partition_signatures: ir.GraphPartitionSignature | None = None,
             ):
                 if is_subgraph:
-                    assert subgraph_name is not None
-                    assert parent_wrapper is not None
+                    if subgraph_name is None:
+                        raise AssertionError
+                    if parent_wrapper is None:
+                        raise AssertionError
                     return PythonWrapperCodegen.create(
                         subgraph_name, parent_wrapper, partition_signatures
                     )
@@ -189,9 +211,9 @@ class TritonExtensionBackendTests(BaseExtensionBackendTests):
             device, ExtensionTritonScheduling, ExtensionPythonWrapperCodegen
         )
 
-    @requires_cuda_and_triton
+    @requires_triton_backend
     def test_codegen_with_custom_heuristics_module(self):
-        self._register_custom_backend_with_heuristics(GPU_TYPE)
+        self._register_custom_backend_with_heuristics(TRITON_DEVICE_TYPE)
 
         def add(x, y):
             return x + y
@@ -205,9 +227,9 @@ class TritonExtensionBackendTests(BaseExtensionBackendTests):
             f"{EXTENSION_TRITON_META_FIELD}"
         ).check("@triton.jit").run(code)
 
-    @requires_cuda_and_triton
+    @requires_triton_backend
     def test_codegen_with_custom_heuristics_module_udtk(self):
-        self._register_custom_backend_with_heuristics(GPU_TYPE)
+        self._register_custom_backend_with_heuristics(TRITON_DEVICE_TYPE)
 
         @triton.jit
         def add_kernel(
@@ -247,5 +269,5 @@ class TritonExtensionBackendTests(BaseExtensionBackendTests):
 if __name__ == "__main__":
     from torch._inductor.test_case import run_tests
 
-    if (HAS_CPU or HAS_GPU_AND_TRITON) and not IS_MACOS:
+    if HAS_CPU and not IS_MACOS:
         run_tests()

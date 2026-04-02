@@ -293,6 +293,10 @@ PyObject* THPAutograd_initExtension(PyObject* _unused, PyObject* unused) {
       .def(
           "linked_correlation_id",
           [](const KinetoEvent& e) { return e.linkedCorrelationId(); })
+      .def("flow_id", [](const KinetoEvent& e) { return e.flowId(); })
+      .def("flow_type", [](const KinetoEvent& e) { return e.flowType(); })
+      .def("flow_start", [](const KinetoEvent& e) { return e.flowStart(); })
+      .def("external_id", [](const KinetoEvent& e) { return e.externalId(); })
       // compute flops
       .def("flops", [](const KinetoEvent& e) { return e.flops(); })
       // Whether this is async event or not
@@ -307,15 +311,25 @@ PyObject* THPAutograd_initExtension(PyObject* _unused, PyObject* unused) {
                 e.activityType() ==
                 (uint8_t)libkineto::ActivityType::GPU_USER_ANNOTATION;
           })
+      .def(
+          "is_python_function",
+          [](const KinetoEvent& e) { return e.isPythonFunction(); })
       .def("nbytes", [](const KinetoEvent& e) { return e.nBytes(); })
       // whether the event is hidden
       .def(
           "is_hidden_event",
           [](const KinetoEvent& e) { return e.isHiddenEvent(); })
       // KinetoEvent metadata
-      .def("metadata_json", [](const KinetoEvent& e) {
-        return e.metadataJson();
-      });
+      .def(
+          "metadata_json",
+          [](const KinetoEvent& e) { return e.metadataJson(); })
+      .def(
+          "activity_type",
+          [](const KinetoEvent& e) {
+            return libkineto::toString(
+                static_cast<libkineto::ActivityType>(e.activityType()));
+          })
+      .def("extra_meta", [](const KinetoEvent& e) { return e.extraMeta(); });
 
   m.def("_soft_assert_raises", &setSoftAssertRaises);
   m.def("_get_sequence_nr", &at::sequence_number::peek);
@@ -339,6 +353,9 @@ PyObject* THPAutograd_initExtension(PyObject* _unused, PyObject* unused) {
   m.def(
       "_prepare_profiler",
       prepareProfiler,
+      py::arg("config"),
+      py::arg("activities"),
+      py::arg("activity_filter") = torch::autograd::profiler::ActivityFilter{},
       py::call_guard<py::gil_scoped_release>());
   m.def(
       "_toggle_collection_dynamic",
@@ -583,6 +600,11 @@ PyObject* THPAutograd_initExtension(PyObject* _unused, PyObject* unused) {
             "Trying to create a SavedTensor object from Python is forbidden.");
       }))
       .def(
+          "unpack",
+          [](const torch::autograd::SavedVariable& s) -> at::Tensor {
+            return s.unpack();
+          })
+      .def(
           "register_hooks",
           [](torch::autograd::SavedVariable& s,
              py::function& pack_hook,
@@ -620,6 +642,18 @@ PyObject* THPAutograd_initExtension(PyObject* _unused, PyObject* unused) {
             auto* unpack_ptr = unpack_safe.ptr(getPyInterpreter());
             return py::reinterpret_borrow<py::function>(unpack_ptr);
           });
+
+  m.def(
+      "_make_saved_tensor",
+      [](const at::Tensor& tensor,
+         bool is_output,
+         bool is_inplace_on_view) -> torch::autograd::SavedVariable {
+        return torch::autograd::SavedVariable(
+            tensor, is_output, is_inplace_on_view);
+      },
+      py::arg("tensor"),
+      py::arg("is_output"),
+      py::arg("is_inplace_on_view") = false);
 
   torch::autograd::profiler::python_tracer::init();
   Py_RETURN_TRUE;
@@ -1104,7 +1138,7 @@ static PyObject* any_output_is_alias_to_input_or_output(
   PyObject* outs = PyTuple_GET_ITEM(args, 2);
   std::unordered_set<void*> s;
   visit_tensors<false>(inps, inps_kwargs, [&s](at::Tensor& t) {
-    if (!t.storage()) {
+    if (!t.has_storage()) {
       return false;
     }
     auto* cp = t.storage().unsafeGetStorageImpl();
@@ -1115,7 +1149,7 @@ static PyObject* any_output_is_alias_to_input_or_output(
   });
   bool ret = false;
   visit_tensors<false>(outs, nullptr, [&s, &ret](at::Tensor& t) {
-    if (!t.storage()) {
+    if (!t.has_storage()) {
       return false;
     }
     auto* cp = t.storage().unsafeGetStorageImpl();
@@ -1409,6 +1443,10 @@ static PyObject* pop_torch_dispatch_stack(
   HANDLE_TH_ERRORS
   std::optional<c10::impl::TorchDispatchModeKey> mode_key;
   PyObject* r = nullptr;
+  // Keep the mode alive until after Py_INCREF to prevent use-after-free.
+  // When the shared_ptr is destroyed, ~SafePyObject will Py_DECREF, so we must
+  // Py_INCREF first to give the caller a valid reference.
+  std::shared_ptr<c10::impl::PyObject_TorchDispatchMode> mode;
   if (maybe_mode_key != Py_None) {
     mode_key = py::cast<c10::impl::TorchDispatchModeKey>(maybe_mode_key);
     auto maybe_mode =
@@ -1418,12 +1456,16 @@ static PyObject* pop_torch_dispatch_stack(
         "Attempted to unset ",
         c10::impl::to_string(mode_key.value()),
         ", but there wasn't one active.");
-    auto mode = maybe_mode.value();
-    r = mode->ptr(getPyInterpreter());
+    mode = maybe_mode.value();
   } else {
-    auto mode = c10::impl::TorchDispatchModeTLS::pop_stack();
-    r = mode->ptr(getPyInterpreter());
+    mode = c10::impl::TorchDispatchModeTLS::pop_stack();
   }
+  r = mode->ptr(getPyInterpreter());
+  // Increment refcount to give Python a reference. The SafePyObject destructor
+  // will decref when the shared_ptr is destroyed, so this balances out.
+  // Note: We cannot use release() here because the SafePyObject may be shared
+  // via ThreadLocalState copies, and release() would null out data_ causing
+  // other shared_ptr holders to see nullptr.
   Py_INCREF(r);
   return r;
   END_HANDLE_TH_ERRORS

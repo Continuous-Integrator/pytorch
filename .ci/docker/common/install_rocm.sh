@@ -26,6 +26,125 @@ install_ubuntu() {
     apt-get install -y libc++1
     apt-get install -y libc++abi1
 
+    # When ROCM_VERSION=nightly, install ROCm from TheRock nightly tarballs
+    # Mirrors: https://github.com/ROCm/TheRock/blob/main/dockerfiles/install_rocm_tarball.sh
+    if [[ "${ROCM_VERSION}" == "nightly" ]]; then
+      if [[ -d /opt/rocm ]]; then
+        rm -rf /opt/rocm
+      fi
+
+      # Determine GPU family based on target architecture
+      AMDGPU_FAMILY="${THEROCK_AMDGPU_FAMILY:-}"
+      if [[ -z "${AMDGPU_FAMILY}" ]]; then
+        if [[ "${BUILD_ENVIRONMENT}" == *"gfx950"* ]] || [[ "${PYTORCH_ROCM_ARCH}" == *"gfx950"* ]]; then
+          AMDGPU_FAMILY="gfx950-dcgpu"
+        else
+          AMDGPU_FAMILY="gfx94X-dcgpu"
+        fi
+      fi
+
+      # Auto-detect latest nightly version if not pinned
+      VERSION="${THEROCK_VERSION:-}"
+      if [[ -z "${VERSION}" ]]; then
+        VERSION=$(curl -fsSL "https://rocm.nightlies.amd.com/tarball/" \
+          | grep -oP "therock-dist-linux-${AMDGPU_FAMILY}-\K[^\"]+(?=\.tar\.gz)" \
+          | grep -v ADHOCBUILD \
+          | sort -V \
+          | tail -1)
+        if [[ -z "${VERSION}" ]]; then
+          echo "Error: Could not find a nightly tarball for ${AMDGPU_FAMILY}"
+          exit 1
+        fi
+      fi
+
+      # URL-encode '+' as '%2B' in VERSION (required for devreleases)
+      VERSION_ENCODED="${VERSION//+/%2B}"
+
+      TARBALL_URL="https://rocm.nightlies.amd.com/tarball/therock-dist-linux-${AMDGPU_FAMILY}-${VERSION_ENCODED}.tar.gz"
+
+      echo "=============================================="
+      echo "ROCm Tarball Installation"
+      echo "=============================================="
+      echo "Version:         ${VERSION}"
+      echo "AMDGPU Family:   ${AMDGPU_FAMILY}"
+      echo "Tarball URL:     ${TARBALL_URL}"
+      echo "=============================================="
+
+      # Download tarball
+      TARBALL_FILE="/tmp/rocm-tarball.tar.gz"
+
+      echo "Downloading tarball..."
+      curl -fsSL -o "$TARBALL_FILE" "$TARBALL_URL" || {
+        echo "Error: Failed to download tarball from $TARBALL_URL"
+        exit 1
+      }
+
+      # Verify download
+      if [ ! -f "$TARBALL_FILE" ] || [ ! -s "$TARBALL_FILE" ]; then
+        echo "Error: Downloaded file is empty or does not exist"
+        exit 1
+      fi
+
+      # Install directory is fixed to /opt/rocm-{VERSION}
+      ROCM_INSTALL_DIR="/opt/rocm-${VERSION}"
+
+      # Extract tarball to versioned directory
+      echo "Extracting tarball to ${ROCM_INSTALL_DIR}..."
+      mkdir -p "$ROCM_INSTALL_DIR"
+      tar -xzf "$TARBALL_FILE" -C "$ROCM_INSTALL_DIR"
+
+      # Clean up downloaded file
+      rm -f "$TARBALL_FILE"
+      echo "Tarball extracted and cleaned up"
+
+      # Create symlink /opt/rocm -> /opt/rocm-{VERSION} for compatibility
+      ln -sfn "$ROCM_INSTALL_DIR" /opt/rocm
+      echo "Created symlink: /opt/rocm -> $ROCM_INSTALL_DIR"
+
+      # Verify bin and lib folder exists after extraction
+      echo "Verifying installation..."
+      for dir in bin clients include lib libexec share; do
+        if [ ! -d "$ROCM_INSTALL_DIR/$dir" ]; then
+          echo "Error: ROCm $dir directory not found"
+          exit 1
+        fi
+        echo "ROCm $dir found in $ROCM_INSTALL_DIR/$dir"
+      done
+
+      echo "=============================================="
+      echo "ROCm installed successfully to $ROCM_INSTALL_DIR"
+      echo "ROCM_PATH=$ROCM_INSTALL_DIR"
+      echo "PATH should include: $ROCM_INSTALL_DIR/bin"
+      echo "=============================================="
+
+      # Write environment file (sourced by CI scripts and interactive shells)
+      cat > /etc/rocm_env.sh << ROCM_ENV
+# ROCm paths
+export ROCM_PATH=/opt/rocm
+export ROCM_HOME=/opt/rocm
+export ROCM_SOURCE_DIR=/opt/rocm
+export ROCM_BIN=/opt/rocm/bin
+export ROCM_CMAKE=/opt/rocm
+export PATH=/opt/rocm/bin:/opt/rocm/llvm/bin:\${PATH}
+export LD_LIBRARY_PATH=/opt/rocm/lib:\${LD_LIBRARY_PATH:-}
+# Sysdeps include paths (libdrm headers, etc.)
+export CPLUS_INCLUDE_PATH=/opt/rocm/lib/rocm_sysdeps/include:\${CPLUS_INCLUDE_PATH:-}
+export C_INCLUDE_PATH=/opt/rocm/lib/rocm_sysdeps/include:\${C_INCLUDE_PATH:-}
+# Device library path
+export HIP_DEVICE_LIB_PATH=/opt/rocm/amdgcn/bitcode
+export MAGMA_HOME=/opt/rocm/magma
+# Disable MSLK for theRock nightly (not yet supported)
+export USE_MSLK=0
+ROCM_ENV
+
+      echo "source /etc/rocm_env.sh" >> /etc/bash.bashrc
+
+      # --- End of theRock nightly tarball installation ---
+    else
+      # =========================================================================
+      # Non-nightly: install ROCm from repo.radeon.com apt packages
+      # =========================================================================
+
     # Make sure rocm packages from repo.radeon.com have highest priority
     cat << EOF > /etc/apt/preferences.d/rocm-pin-600
 Package: *
@@ -36,6 +155,11 @@ EOF
     # we want the patch version of 6.4 instead
     if [[ $(ver $ROCM_VERSION) -eq $(ver 6.4) ]]; then
         ROCM_VERSION="${ROCM_VERSION}.2"
+    fi
+
+    # we want the patch version of 7.2 instead
+    if [[ $(ver $ROCM_VERSION) -eq $(ver 7.2) ]]; then
+        ROCM_VERSION="${ROCM_VERSION}.1"
     fi
 
     # Default url values
@@ -112,9 +236,27 @@ EOF
 
     pip_install "git+https://github.com/rocm/composable_kernel@$ROCM_COMPOSABLE_KERNEL_VERSION"
 
+    # Write environment file (sourced by CI scripts and interactive shells)
+    cat > /etc/rocm_env.sh << ROCM_ENV
+# ROCm paths
+export ROCM_PATH=/opt/rocm
+export ROCM_HOME=/opt/rocm
+export ROCM_SOURCE_DIR=/opt/rocm
+export ROCM_BIN=/opt/rocm/bin
+export ROCM_CMAKE=/opt/rocm
+export PATH=/opt/rocm/bin:/opt/rocm/llvm/bin:\${PATH}
+export LD_LIBRARY_PATH=/opt/rocm/lib:\${LD_LIBRARY_PATH:-}
+# Device library path
+export HIP_DEVICE_LIB_PATH=/opt/rocm/amdgcn/bitcode
+export MAGMA_HOME=/opt/rocm/magma
+ROCM_ENV
+
+    echo "source /etc/rocm_env.sh" >> /etc/bash.bashrc
+
     # Cleanup
     apt-get autoclean && apt-get clean
     rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+    fi
 }
 
 install_centos() {

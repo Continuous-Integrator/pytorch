@@ -13,7 +13,7 @@ import time
 from collections.abc import Callable
 from concurrent.futures.thread import ThreadPoolExecutor
 from threading import Event
-from typing import Optional, TextIO, TYPE_CHECKING
+from typing import TextIO, TYPE_CHECKING
 
 
 if TYPE_CHECKING:
@@ -30,7 +30,7 @@ def tail_logfile(
     dst: TextIO,
     finished: Event,
     interval_sec: float,
-    log_line_filter: Optional[Callable[[str], bool]] = None,
+    log_line_filter: Callable[[str], bool] | None = None,
 ):
     while not os.path.exists(file):
         if finished.is_set():
@@ -98,14 +98,13 @@ class TailLog:
         name: str,
         log_files: dict[int, str],
         dst: TextIO,
-        log_line_prefixes: Optional[dict[int, str]] = None,
+        log_line_prefixes: dict[int, str] | None = None,
         interval_sec: float = 0.1,
         log_line_filter: Callable[[str], bool] = (lambda _: True),
     ):
         n = len(log_files)
         self._threadpool = None
         if n > 0:
-            # pyrefly: ignore [bad-assignment]
             self._threadpool = ThreadPoolExecutor(
                 max_workers=n,
                 thread_name_prefix=f"{self.__class__.__qualname__}_{name}",
