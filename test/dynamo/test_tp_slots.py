@@ -9,10 +9,8 @@ Tests that get_type_slots correctly identifies which protocol methods
 import collections.abc
 import dataclasses
 import enum
-import unittest
 
 from torch._C._dynamo import get_type_slots
-from torch.testing._internal.common_utils import TestCase, run_tests
 from torch._dynamo._type_slots import (
     has_slot,
     PyMappingSlots,
@@ -20,6 +18,7 @@ from torch._dynamo._type_slots import (
     PySequenceSlots,
     PyTypeSlots,
 )
+from torch.testing._internal.common_utils import run_tests, TestCase
 
 
 class TestTypeSlots(TestCase):
