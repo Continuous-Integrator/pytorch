@@ -55,9 +55,17 @@ if [ -n "$ANACONDA_PYTHON_VERSION" ]; then
   else
     PYTHON_DEP="python=${ANACONDA_PYTHON_VERSION}"
   fi
+
+  CONDA_CHANNEL_ARGS=""
+  if [[ $PYTHON_DEV_CHANNEL == "1" ]]
+  then
+    CONDA_CHANNEL_ARGS="-c conda-forge/label/python_dev"
+  fi
+
   # Install correct Python version
   # Also ensure sysroot is using a modern GLIBC to match system compilers
   as_jenkins conda create -n py_$ANACONDA_PYTHON_VERSION -y\
+             ${CONDA_CHANNEL_ARGS} \
              ${PYTHON_DEP} \
              ${SYSROOT_DEP} \
              "icu<78"
@@ -65,13 +73,6 @@ if [ -n "$ANACONDA_PYTHON_VERSION" ]; then
   # Miniforge installer doesn't install sqlite by default
   if [[ "$BUILD_ENVIRONMENT" == *rocm* ]]; then
     conda_install sqlite
-  fi
-
-  # Install PyTorch conda deps, as per https://github.com/pytorch/pytorch README
-  if [[ $(uname -m) != "aarch64" ]]; then
-    pip_install mkl==2024.2.0
-    pip_install mkl-static==2024.2.0
-    pip_install mkl-include==2024.2.0
   fi
 
   # Install llvm-8 as it is required to compile llvmlite-0.30.0 from source
@@ -102,6 +103,9 @@ if [ -n "$ANACONDA_PYTHON_VERSION" ]; then
     # We are currently building docs with python 3.8 (min support version)
     pip_install -r /opt/conda/requirements-docs.txt
   fi
+
+  # Clean conda package cache
+  as_jenkins conda clean -ya
 
   popd
 fi
