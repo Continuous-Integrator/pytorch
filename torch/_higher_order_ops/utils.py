@@ -96,10 +96,26 @@ def _maybe_run_with_interpreter(fn):
     return maybe_interpreted_fn
 
 
+def _hop_compile_and_call(fn, args, kwargs=None):
+    """Compile and call fn with fullgraph=True for HOP eager execution.
+
+    If the frame is skipped (e.g., due to a non-infra dispatch mode), falls
+    back to eager execution since the HOP dispatch will handle it.
+    """
+    from torch._dynamo.exc import FullgraphSkippedFrameError
+
+    with setup_compilation_env() as backend:
+        try:
+            return torch.compile(fn, backend=backend, fullgraph=True)(
+                *args, **(kwargs or {})
+            )
+        except FullgraphSkippedFrameError:
+            return fn(*args, **(kwargs or {}))
+
+
 def _maybe_compile_and_run_fn(fn, *args):
     if not torch.compiler.is_dynamo_compiling():
-        with setup_compilation_env() as backend:  # type: ignore[attr-defined]
-            return torch.compile(fn, backend=backend, fullgraph=True)(*args)
+        return _hop_compile_and_call(fn, args)
     else:
         return fn(*args)
 
