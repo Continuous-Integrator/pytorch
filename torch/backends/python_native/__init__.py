@@ -35,6 +35,33 @@ import sys
 import types
 from contextlib import contextmanager
 
+from torch.backends import ContextProp, flags_frozen, PropModule
+
+
+@contextmanager
+def _preserve_filter_state():
+    """Context manager to save and restore registry filter state."""
+    filter_state = _get_filter_state()
+
+    # Save original state
+    original_state = (
+        set(filter_state._dsl_names),
+        set(filter_state._op_symbols),
+        set(filter_state._dispatch_keys),
+    )
+
+    try:
+        yield filter_state
+    finally:
+        # Restore original state
+        filter_state._dsl_names.clear()
+        filter_state._op_symbols.clear()
+        filter_state._dispatch_keys.clear()
+
+        filter_state._dsl_names.update(original_state[0])
+        filter_state._op_symbols.update(original_state[1])
+        filter_state._dispatch_keys.update(original_state[2])
+
 
 def _get_dsl_registry():
     """Lazy import to avoid circular imports."""
@@ -46,12 +73,18 @@ def _get_dsl_registry():
 def _get_registry_functions():
     """Lazy import of registry functions."""
     from torch._native.registry import (
+        _filter_state,
         _graphs,
         deregister_op_overrides,
         reenable_op_overrides,
     )
 
-    return deregister_op_overrides, reenable_op_overrides, _graphs
+    return deregister_op_overrides, reenable_op_overrides, _graphs, _filter_state
+
+
+def _get_filter_state():
+    """Direct access to filter state."""
+    return _get_registry_functions()[3]
 
 
 def _get_dsl_module(dsl_name: str):
@@ -86,7 +119,6 @@ class DSLController:
 
     def __init__(self, dsl_name: str):
         self._dsl_name = dsl_name
-        self._enabled_state = True  # Track our enable/disable state
 
     @property
     def name(self) -> str:
@@ -107,11 +139,17 @@ class DSLController:
     @property
     def enabled(self) -> bool:
         """Check if DSL is currently enabled."""
-        return self._enabled_state
+        filter_state = _get_filter_state()
+        return self._dsl_name not in filter_state._dsl_names
 
     @enabled.setter
     def enabled(self, value: bool):
         """Enable or disable the DSL."""
+        if flags_frozen():
+            raise RuntimeError(
+                f"not allowed to set {self._dsl_name} DSL flags "
+                "after disable_global_flags; please use flags() context manager instead"
+            )
         if value:
             self.enable()
         else:
@@ -121,18 +159,16 @@ class DSLController:
         """Disable all operations for this DSL."""
         dsl_module = _get_dsl_module(self._dsl_name)
         dsl_module.deregister_op_overrides()
-        self._enabled_state = False
 
     def enable(self):
         """Re-enable all operations for this DSL."""
-        deregister_op_overrides, reenable_op_overrides, _ = _get_registry_functions()
+        reenable_op_overrides = _get_registry_functions()[1]
         reenable_op_overrides(enable_dsl_names=self._dsl_name)
-        self._enabled_state = True
 
     @contextmanager
     def disabled(self):
         """Context manager to temporarily disable DSL."""
-        original_state = self._enabled_state
+        original_state = self.enabled
         try:
             self.disable()
             yield
@@ -146,28 +182,25 @@ class DSLController:
         return f"DSLController({self._dsl_name}, {status}, {enabled_status})"
 
 
-class PythonNativeModule(types.ModuleType):
+class PythonNativeModule(PropModule):
     """Main module for python_native DSL control."""
 
     def __init__(self, original_module):
-        super().__init__(original_module.__name__)
-
-        # Copy over existing attributes
-        for attr in dir(original_module):
-            if not attr.startswith("_"):
-                setattr(self, attr, getattr(original_module, attr))
+        super().__init__(original_module, original_module.__name__)
 
     @property
     def available_dsls(self) -> list[str]:
         """Get list of available DSLs."""
         registry = _get_dsl_registry()
-        return registry.list_available_dsls()
+        result = registry.list_available_dsls()
+        return list(result) if not isinstance(result, list) else result
 
     @property
     def all_dsls(self) -> list[str]:
         """Get list of all registered DSLs."""
         registry = _get_dsl_registry()
-        return registry.list_all_dsls()
+        result = registry.list_all_dsls()
+        return list(result) if not isinstance(result, list) else result
 
     @functools.lru_cache(maxsize=32)  # noqa: B019
     def get_dsl_operations(self, dsl_name: str) -> list[str]:
@@ -184,7 +217,7 @@ class PythonNativeModule(types.ModuleType):
             ops = torch.backends.python_native.get_dsl_operations("triton")
             print(ops)  # ['triton_to_mxfp8_dim0', ...]
         """
-        _, _, graphs = _get_registry_functions()
+        graphs = _get_registry_functions()[2]
         operations = set()
 
         for (op_symbol, dispatch_key), nodes in graphs.items():
@@ -211,7 +244,7 @@ class PythonNativeModule(types.ModuleType):
                 "scaled_mm", "flash_attention"
             )
         """
-        deregister_op_overrides, _, _ = _get_registry_functions()
+        deregister_op_overrides = _get_registry_functions()[0]
         deregister_op_overrides(disable_op_symbols=list(op_symbols))
 
     def enable_operations(self, *op_symbols: str):
@@ -227,7 +260,7 @@ class PythonNativeModule(types.ModuleType):
                 "scaled_mm", "flash_attention"
             )
         """
-        _, reenable_op_overrides, _ = _get_registry_functions()
+        reenable_op_overrides = _get_registry_functions()[1]
         reenable_op_overrides(enable_op_symbols=list(op_symbols))
 
     def disable_dispatch_keys(self, *dispatch_keys: str):
@@ -241,7 +274,7 @@ class PythonNativeModule(types.ModuleType):
             # Disable all native operations on CUDA
             torch.backends.python_native.disable_dispatch_keys("CUDA")
         """
-        deregister_op_overrides, _, _ = _get_registry_functions()
+        deregister_op_overrides = _get_registry_functions()[0]
         deregister_op_overrides(disable_dispatch_keys=list(dispatch_keys))
 
     def enable_dispatch_keys(self, *dispatch_keys: str):
@@ -255,7 +288,7 @@ class PythonNativeModule(types.ModuleType):
             # Re-enable native operations on CUDA
             torch.backends.python_native.enable_dispatch_keys("CUDA")
         """
-        _, reenable_op_overrides, _ = _get_registry_functions()
+        reenable_op_overrides = _get_registry_functions()[1]
         reenable_op_overrides(enable_dispatch_keys=list(dispatch_keys))
 
     @contextmanager
@@ -272,29 +305,60 @@ class PythonNativeModule(types.ModuleType):
                 result = model(input)
             # scaled_mm is automatically re-enabled here
         """
-        # Disable operations
+        filter_state = _get_filter_state()
+        previously_disabled_ops = {
+            op for op in op_symbols if op in filter_state._op_symbols
+        }
+
         self.disable_operations(*op_symbols)
         try:
             yield
         finally:
-            # Re-enable operations
-            self.enable_operations(*op_symbols)
+            # Only re-enable operations that weren't already disabled
+            ops_to_reenable = [
+                op for op in op_symbols if op not in previously_disabled_ops
+            ]
+            if ops_to_reenable:
+                self.enable_operations(*ops_to_reenable)
 
     @functools.lru_cache(maxsize=16)  # noqa: B019
     def _get_dsl_controller(self, name: str) -> "DSLController":
         """Get or create a DSL controller (cached)."""
         return DSLController(name)
 
+    def _get_registry_functions(self):
+        """Expose registry functions for testing."""
+        return _get_registry_functions()
+
+    def is_operation_disabled(self, op_symbol: str) -> bool:
+        """Check if an operation is currently disabled."""
+        filter_state = _get_filter_state()
+        return op_symbol in filter_state._op_symbols
+
+    def is_dsl_disabled(self, dsl_name: str) -> bool:
+        """Check if a DSL is currently disabled."""
+        filter_state = _get_filter_state()
+        return dsl_name in filter_state._dsl_names
+
     def __getattr__(self, name: str):
         """Dynamic attribute access for DSL controllers."""
         if name in self.all_dsls:
             return self._get_dsl_controller(name)
 
+        # Expose internal functions for testing
+        if name == "_get_dsl_module":
+            return _get_dsl_module
+        if name == "_get_registry_functions":
+            return self._get_registry_functions
+        if name == "_get_filter_state":
+            return _get_filter_state
+
         raise AttributeError(f"module '{self.__name__}' has no attribute '{name}'")
 
     def __dir__(self):
         """Return available attributes including DSL names."""
-        attrs = set(
+        attrs = set(super().__dir__())
+        attrs.update(
             {
                 "available_dsls",
                 "all_dsls",
@@ -304,6 +368,8 @@ class PythonNativeModule(types.ModuleType):
                 "disable_dispatch_keys",
                 "enable_dispatch_keys",
                 "operations_disabled",
+                "is_operation_disabled",
+                "is_dsl_disabled",
             }
         )
 
