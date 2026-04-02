@@ -71,6 +71,7 @@ from torch.testing._internal.common_utils import (
     find_library_location,
     IS_FBCODE,
     IS_MACOS,
+    IS_ARM64,
     IS_WINDOWS,
     run_tests,
     skipIfTorchDynamo,
