@@ -478,15 +478,31 @@ class TestStatelessRNGDistribution(TestCase):
         self.assertTrue(result.max().item() <= 5.0)
 
 
-    @parametrize("gen_fn_name", ["normal", "uniform"])
-    @dtypes(torch.float32, torch.float64)
+    @dtypes(*all_floating_dtypes)
     @onlyCUDA
-    def test_cross_device_consistency(self, device, dtype, gen_fn_name):
-        key_cpu = random.key(42)
-        key_cuda = random.key(42, device=device)
+    def test_cross_device_uniform_consistency(self, device, dtype):
+        key_cpu = random.fold_in(random.key(42), 7)
+        key_cuda = random.fold_in(random.key(42, device=device), 7)
+        # Uniform generation uses no transcendentals, so results must be bitwise identical.
         self.assertEqual(
-            self._gen(gen_fn_name, key_cpu, (1000,), dtype=dtype),
-            self._gen(gen_fn_name, key_cuda, (1000,), dtype=dtype).cpu(),
+            self._gen("uniform", key_cpu, (1000,), dtype=dtype),
+            self._gen("uniform", key_cuda, (1000,), dtype=dtype).cpu(),
+            atol=0,
+            rtol=0,
+        )
+
+    @dtypes(*all_floating_dtypes)
+    @onlyCUDA
+    def test_cross_device_normal_consistency(self, device, dtype):
+        key_cpu = random.fold_in(random.key(42), 7)
+        key_cuda = random.fold_in(random.key(42, device=device), 7)
+        # Normal generation uses Box-Muller (log, sin, cos), and CUDA uses fast-math
+        # intrinsics (__logf, __sincosf) that differ slightly from CPU std::log / std::sin /
+        # std::cos. Results are approximately but not bitwise equal. assertEqual() by default
+        # allows for some tolerance in the comparisons.
+        self.assertEqual(
+            self._gen("normal", key_cpu, (1000,), dtype=dtype),
+            self._gen("normal", key_cuda, (1000,), dtype=dtype).cpu(),
         )
 
     @parametrize("gen_fn_name", ["normal", "uniform"])
