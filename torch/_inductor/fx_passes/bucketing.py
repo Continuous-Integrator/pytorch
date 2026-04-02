@@ -16,6 +16,7 @@ from torch._inductor.comm_analysis import (
     get_collective_type_from_kernel_name,
     NCCL_COLL,
 )
+from torch._inductor.comm_lowering import _should_pg_alloc
 from torch._inductor.runtime.runtime_utils import dynamo_timed
 from torch._logging import trace_structured
 from torch.distributed.distributed_c10d import _resolve_process_group
@@ -240,9 +241,9 @@ def is_all_gather_into_tensor(node: torch.fx.Node) -> bool:  # type: ignore[arg-
 
 
 def is_reduce_scatter_tensor(node: torch.fx.Node) -> bool:
-    return (
-        node.op == "call_function"
-        and node.target is torch.ops._c10d_functional.reduce_scatter_tensor.default
+    return node.op == "call_function" and (
+        node.target is torch.ops._c10d_functional.reduce_scatter_tensor.default
+        or node.target is torch.ops._c10d_functional.reduce_scatter_tensor_out.default
     )
 
 
@@ -1103,27 +1104,6 @@ def process_collective_bucket(
             g.erase_node(pre_node)
 
     return new_nodes, replacements
-
-
-def _should_pg_alloc(collective_type: str, buffer_role: str) -> bool:
-    """Check if pg_alloc should be used for this collective/buffer combination."""
-    if not torch._inductor.config.comms_use_pg_alloc:
-        return False
-    strategy = torch._inductor.config.comms_use_pg_alloc_strategy
-    if strategy is None:
-        return True
-    if "only_all_gather" in strategy and collective_type != "all_gather":
-        return False
-    if "only_reduce" in strategy and collective_type not in (
-        "reduce_scatter",
-        "all_reduce",
-    ):
-        return False
-    if "only_inputs" in strategy and buffer_role != "input":
-        return False
-    if "only_outputs" in strategy and buffer_role != "output":
-        return False
-    return True
 
 
 def _annotate_pg_alloc(

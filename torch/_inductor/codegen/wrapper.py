@@ -13,7 +13,7 @@ import os
 import random
 import re
 import tempfile
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from itertools import chain, count
 from typing import Any, TYPE_CHECKING
 
@@ -47,7 +47,7 @@ from ..codecache import output_code_log
 from ..ir import IRNode, ReinterpretView
 from ..runtime import triton_heuristics
 from ..runtime.hints import DeviceProperties
-from ..stream_constants import DEFAULT_STREAM, STREAM_NAME_TEMPLATE
+from ..stream_constants import DEFAULT_STREAM, DEFAULT_STREAM_IDX, STREAM_NAME_TEMPLATE
 from ..stream_utils import get_stream_name
 from ..utils import (
     cache_on_self,
@@ -95,6 +95,8 @@ pexpr = PythonPrinter().doprint
 
 ReuseKey = tuple[torch.device, torch.dtype, str, bool]
 CommBufferReuseKey = tuple[torch.device, torch.dtype, str, "ir.CommBufferType", str]
+# Key for matching regular buffers to comm buffers: (device, dtype, size_str)
+BorrowMatchKey = tuple[torch.device, torch.dtype, str]
 BufferLike = ir.Buffer | WorkspaceArg
 FxConversionFunc = Callable[["WrapperLine"], None]
 
@@ -449,6 +451,29 @@ class MemoryPlanningState:
         self.total_allocated_buffer_size: int = 0
         self.total_pg_alloc_bytes: int = 0
 
+        # Cross-pool borrowing state:
+        # Maps buffer name -> original CommBufferReuseKey for buffers that
+        # borrowed from the comm pool. When freed, they return to comm pool.
+        self.borrowed_comm_keys: dict[str, CommBufferReuseKey] = {}
+        # Index: BorrowMatchKey -> list of CommBufferReuseKeys in the comm pool
+        # Updated on comm_buffer_push/pop to enable fast cross-pool lookup.
+        self.comm_pool_by_match_key: dict[BorrowMatchKey, list[CommBufferReuseKey]] = (
+            collections.defaultdict(list)
+        )
+        # Pre-computed: comm demand schedule (comm_key -> sorted sni list of allocs)
+        self.comm_demand_schedule: dict[CommBufferReuseKey, list[int]] = {}
+        # Pre-computed: comm free schedule (comm_key -> sorted sni list of frees)
+        self.comm_free_schedule: dict[CommBufferReuseKey, list[int]] = {}
+        # Pre-computed: buffer free schedule (buffer_name -> sni of free)
+        self.buffer_free_sni: dict[str, int] = {}
+        # Pre-computed: regular alloc schedule (reuse_key -> sorted sni list)
+        # Used to avoid borrowing when it would break a regular reuse chain.
+        self.regular_alloc_schedule: dict[ReuseKey, list[int]] = {}
+        # Set of buffer names live at peak (for peak_aware strategy)
+        self.peak_live_buffers: OrderedSet[str] | None = None
+        # Pre-computed borrow plan: buf_name -> comm_key (for greedy_matching strategy)
+        self.borrow_plan: dict[str, CommBufferReuseKey] | None = None
+
     def __contains__(self, key: ReuseKey) -> bool:
         return bool(self.reuse_pool.get(key, None))
 
@@ -467,6 +492,11 @@ class MemoryPlanningState:
     def comm_buffer_pop(self, key: CommBufferReuseKey) -> FreeIfNotReusedLine:
         item = self.comm_buffer_reuse_pool[key].pop()
         assert not item.is_reused
+        # Update match key index
+        match_key: BorrowMatchKey = (key[0], key[1], key[2])
+        keys_list = self.comm_pool_by_match_key[match_key]
+        if key in keys_list:
+            keys_list.remove(key)
         return item
 
     def comm_buffer_push(
@@ -474,6 +504,9 @@ class MemoryPlanningState:
     ) -> None:
         assert not item.is_reused
         self.comm_buffer_reuse_pool[key].append(item)
+        # Update match key index
+        match_key: BorrowMatchKey = (key[0], key[1], key[2])
+        self.comm_pool_by_match_key[match_key].append(key)
 
 
 class WrapperLine:
@@ -697,6 +730,7 @@ class KernelCallLine(WrapperLine):
     device: torch.device
     graph_name: str
     original_fxnode_name: str
+    current_stream_idx: int | None = None
 
     def codegen(self, code: IndentedBuffer) -> None:
         self.wrapper._generate_kernel_call_helper(
@@ -711,6 +745,7 @@ class KernelCallLine(WrapperLine):
             device=self.device,
             graph_name=self.graph_name,
             original_fxnode_name=self.original_fxnode_name,
+            current_stream_idx=self.current_stream_idx,
         )
 
     def codegen_fx(self, converter: FxConverter) -> FxConversionFunc:
@@ -921,7 +956,7 @@ class AllocateLine(MemoryPlanningLine):
             if layout.comm_buffer_type != ir.CommBufferType.PG_ALLOC:
                 return self
 
-            exceeds, alloc_bytes = self._pg_alloc_exceeds_budget(state, layout)
+            exceeds, alloc_bytes = self._pg_alloc_exceeds_budget(state)
             if not exceeds:
                 state.total_pg_alloc_bytes += alloc_bytes
                 log.debug(
@@ -947,6 +982,23 @@ class AllocateLine(MemoryPlanningLine):
         key = buffer_reuse_key(self.node)
         if config.allow_buffer_reuse and key in state:
             free_line = state.pop(key)
+            # In multi-stream graphs, only reuse buffers from the same stream
+            # to avoid races where a stream is still reading a buffer whose
+            # memory slot gets reused by a different stream.
+            if V.graph.scheduler._has_multi_stream_nodes():
+                alloc_stream = V.graph.scheduler.buff_to_stream.get(
+                    self.node.get_name()
+                )
+                free_stream = V.graph.scheduler.buff_to_stream.get(
+                    free_line.node.get_name()
+                )
+                if (
+                    alloc_stream is not None
+                    and free_stream is not None
+                    and alloc_stream != free_stream
+                ):
+                    state.push(key, free_line)
+                    return self
             size = V.graph.sizevars.optimization_hint(
                 V.graph.get_allocation_storage_size(self.node), fallback=0
             ) * get_dtype_size(self.node.get_dtype())
@@ -958,6 +1010,16 @@ class AllocateLine(MemoryPlanningLine):
                 state.push(key, free_line)
                 return self
 
+        # Try borrowing from pg_alloc comm pool if enabled
+        if (
+            config.comms_pg_alloc_allow_borrow
+            and config.allow_buffer_reuse
+            and not self.comm_buffer
+        ):
+            borrowed = self._try_borrow_from_comm_pool(state)
+            if borrowed is not None:
+                return borrowed
+
         if self.node.get_device_or_error().type == "cpu":
             static_shape = self.wrapper.static_shape_for_buffer_or_none(self.node)
             if static_shape is not None:
@@ -968,18 +1030,119 @@ class AllocateLine(MemoryPlanningLine):
         return self
 
     def _pg_alloc_exceeds_budget(
-        self, state: MemoryPlanningState, layout: ir.CommBufferLayout
+        self, state: MemoryPlanningState
     ) -> tuple[bool, int]:
         # Check if pg_alloc allocation would exceed budget.
 
         alloc_bytes = V.graph.sizevars.optimization_hint(
-            V.graph.get_allocation_storage_size(self.node)
+            V.graph.get_allocation_storage_size(self.node), fallback=0
         ) * get_dtype_size(self.node.get_dtype())
         max_gb = config.comms_pg_alloc_max_gb
         exceeds = max_gb is not None and (
             state.total_pg_alloc_bytes + alloc_bytes > int(max_gb * (1024**3))
         )
         return exceeds, alloc_bytes
+
+    def _try_borrow_from_comm_pool(
+        self, state: MemoryPlanningState
+    ) -> MemoryPlanningLine | None:
+        """Try to borrow an idle pg_alloc buffer for a regular (non-comm) op.
+
+        Returns a ReuseLine if borrowing is safe, None otherwise.
+        Safety: (1) the buffer must be freed before the next comm op needs it,
+        and (2) borrowing must not break a regular reuse chain — if a future
+        regular allocation with the same reuse key exists after this buffer
+        is freed, we skip (the freed buffer would return to the comm pool
+        instead of the regular pool, starving the future allocation).
+        """
+        import bisect
+
+        buf_name = self.node.get_name()
+        free_sni = state.buffer_free_sni.get(buf_name)
+        if free_sni is None:
+            return None
+
+        strategy = config.comms_pg_alloc_borrow_strategy
+
+        # Peak-aware: only borrow buffers live at peak
+        if strategy == "peak_aware" and state.peak_live_buffers is not None:
+            if buf_name not in state.peak_live_buffers:
+                return None
+
+        # Min-cost flow: use pre-computed plan
+        if strategy == "greedy_matching" and state.borrow_plan is not None:
+            planned_comm_key = state.borrow_plan.get(buf_name)
+            if planned_comm_key is None:
+                return None
+            if not state.comm_buffer_contains(planned_comm_key):
+                return None
+            free_line = state.comm_buffer_pop(planned_comm_key)
+            free_line.is_reused = True
+            state.borrowed_comm_keys[buf_name] = planned_comm_key
+            log.debug(
+                "pg_alloc borrow (greedy_matching): %s borrows comm buffer %s",
+                buf_name,
+                planned_comm_key,
+            )
+            return ReuseLine(self.wrapper, free_line.node, self.node)
+
+        # Check reuse chain: if a future regular allocation with the same key
+        # exists after this buffer is freed, borrowing would break the chain
+        # (freed buffer returns to comm pool, not regular pool).
+        regular_key = buffer_reuse_key(self.node)
+        future_allocs = state.regular_alloc_schedule.get(regular_key, [])
+        idx = bisect.bisect_right(future_allocs, free_sni)
+        if idx < len(future_allocs):
+            return None
+
+        # Build match key: (device, dtype, size_str) — ignoring alignment
+        storage_size = V.graph.get_allocation_storage_size(self.node)
+        match_key: BorrowMatchKey = (
+            self.node.get_device_or_error(),
+            self.node.get_dtype(),
+            sympy_str(V.graph.sizevars.simplify(storage_size)),
+        )
+
+        # Find matching comm buffers in the pool
+        comm_keys = state.comm_pool_by_match_key.get(match_key)
+        if not comm_keys:
+            return None
+
+        # Try each matching comm key
+        for comm_key in list(comm_keys):
+            if not state.comm_buffer_contains(comm_key):
+                continue
+
+            # Only borrow PG_ALLOC buffers (not SYMM_MEM)
+            if comm_key[3] != ir.CommBufferType.PG_ALLOC:
+                continue
+
+            # Lookahead: find next comm demand for this key
+            demand_snis = state.comm_demand_schedule.get(comm_key, [])
+            idx = bisect.bisect_right(demand_snis, self.scheduler_node_index)
+            next_comm_sni = demand_snis[idx] if idx < len(demand_snis) else None
+
+            # Safe to borrow if buffer is freed before next comm demand
+            if next_comm_sni is not None and free_sni >= next_comm_sni:
+                continue  # Not safe — buffer would still be held when comm needs it
+
+            # Borrow: pop from comm pool, track for return
+            free_line = state.comm_buffer_pop(comm_key)
+            free_line.is_reused = True
+            state.borrowed_comm_keys[buf_name] = comm_key
+
+            log.debug(
+                "pg_alloc borrow: %s borrows comm buffer %s (key=%s), "
+                "free_sni=%d, next_comm_sni=%s",
+                buf_name,
+                free_line.node.get_name(),
+                comm_key,
+                free_sni,
+                next_comm_sni,
+            )
+            return ReuseLine(self.wrapper, free_line.node, self.node)
+
+        return None
 
     def codegen(self, code: IndentedBuffer) -> None:
         assert self.node.get_name() not in V.graph.removed_buffers
@@ -1061,8 +1224,17 @@ class FreeIfNotReusedLine(MemoryPlanningLine):
         if self.node.get_name() in V.graph.removed_buffers:
             return NullLine(self.wrapper)
         if config.allow_buffer_reuse:
-            layout = self.node.get_output_spec()
-            if isinstance(layout, ir.CommBufferLayout):
+            buf_name = self.node.get_name()
+            # Check if this buffer borrowed from comm pool — return it there
+            borrowed_key = state.borrowed_comm_keys.pop(buf_name, None)
+            if borrowed_key is not None:
+                state.comm_buffer_push(borrowed_key, self)
+                log.debug(
+                    "pg_alloc borrow return: %s -> comm pool (key=%s)",
+                    buf_name,
+                    borrowed_key,
+                )
+            elif isinstance(self.node.get_output_spec(), ir.CommBufferLayout):
                 key = comm_buffer_reuse_key(self.node)
                 state.comm_buffer_push(key, self)
             else:
@@ -1256,6 +1428,20 @@ class UnbackedSymbolDefsLine(WrapperLine):
         return converter._generate_unbacked_symbol_defs
 
 
+@dataclasses.dataclass
+class AssertSizeStrideLine(WrapperLine):
+    name: str
+    size: str
+    stride: str
+
+    def codegen(self, code: IndentedBuffer) -> None:
+        code.writeline(f"assert_size_stride({self.name}, {self.size}, {self.stride})")
+
+    @staticmethod
+    def codegen_fx(converter: FxConverter) -> FxConversionFunc:
+        return converter._generate_assert_size_stride
+
+
 BufferName = str
 Line = MemoryPlanningLine | LineContext
 
@@ -1269,6 +1455,7 @@ class PythonWrapperCodegen(CodeGen):
 
     def __init__(self):
         super().__init__()
+        self._pending_input_asserts: dict[str, tuple[str, str]] = {}
         self._names_iter: Iterator[int] = count()
         self.args_to_buffers: dict[
             str, None | ir.TensorBox | ir.Buffer | ir.TorchBindObject
@@ -1616,13 +1803,19 @@ class PythonWrapperCodegen(CodeGen):
 
     def codegen_input_size_asserts(self) -> None:
         for name, buf in self.get_graph_inputs().items():
-            if isinstance(buf, (sympy.Expr, ir.TorchBindObject)):
+            if isinstance(
+                buf,
+                (
+                    sympy.Expr,
+                    ir.TorchBindObject,
+                    ir.GeneratorState,
+                    ir.OpaqueObjectState,
+                ),
+            ):
                 continue
 
             # a graph partition may take an IRNode output from a previous partition
-            if name not in V.graph.graph_input_names or isinstance(
-                buf, ir.GeneratorState
-            ):
+            if name not in V.graph.graph_input_names:
                 continue
 
             # comparing strides for 0 size tensor is tricky. Ignore them for now.
@@ -1630,7 +1823,7 @@ class PythonWrapperCodegen(CodeGen):
                 continue
             size = self.codegen_python_shape_tuple(buf.get_size())
             stride = self.codegen_python_shape_tuple(buf.get_stride())
-            self.prefix.writeline(f"assert_size_stride({name}, {size}, {stride})")
+            self._pending_input_asserts[name] = (size, stride)
 
     def codegen_input_nan_asserts(self) -> None:
         self.prefix.writeline("# make sure graph inputs are not nan/inf")
@@ -1722,6 +1915,16 @@ class PythonWrapperCodegen(CodeGen):
             self.codegen_input_size_asserts()
         if config.nan_asserts:
             self.codegen_input_nan_asserts()
+
+    # Input size/stride assertions are deferred from the top of call() to just
+    # before the first kernel that uses each input. This avoids a block of N
+    # sequential assert calls (~1 us each) on the critical path before the first
+    # GPU kernel launch. Called from the scheduler codegen loop.
+    def codegen_deferred_input_asserts(self, input_names: Iterable[str]) -> None:
+        for name in input_names:
+            if name in self._pending_input_asserts:
+                size, stride = self._pending_input_asserts.pop(name)
+                self.writeline(AssertSizeStrideLine(name, size, stride))
 
     # this function (and below) takes the graph name as input so
     # that stream caching happens per graph instance. this
@@ -2208,6 +2411,214 @@ class PythonWrapperCodegen(CodeGen):
 
         self.lines = MemoryPlanner(self).plan(self.lines)
 
+    def _prescan_borrow_schedules(self, state: MemoryPlanningState) -> None:
+        """Pre-scan lines to build comm demand schedule, buffer free schedule,
+        and regular alloc schedule.
+
+        This enables the lookahead needed for safe cross-pool borrowing:
+        we need to know (a) when each regular buffer will be freed,
+        (b) when the next comm allocation of a given key occurs, and
+        (c) when each regular reuse key will next be allocated (to avoid
+        breaking regular reuse chains).
+        """
+        for line in self.lines:
+            if isinstance(line, AllocateLine) and line.comm_buffer:
+                layout = line.node.get_output_spec()
+                if isinstance(layout, ir.CommBufferLayout):
+                    key = comm_buffer_reuse_key(line.node)
+                    state.comm_demand_schedule.setdefault(key, []).append(
+                        line.scheduler_node_index
+                    )
+            elif isinstance(line, AllocateLine) and not line.comm_buffer:
+                key = buffer_reuse_key(line.node)
+                state.regular_alloc_schedule.setdefault(key, []).append(
+                    line.scheduler_node_index
+                )
+            elif isinstance(line, FreeIfNotReusedLine) and line.comm_buffer:
+                layout = line.node.get_output_spec()
+                if isinstance(layout, ir.CommBufferLayout):
+                    key = comm_buffer_reuse_key(line.node)
+                    state.comm_free_schedule.setdefault(key, []).append(
+                        line.scheduler_node_index
+                    )
+            elif isinstance(line, FreeIfNotReusedLine) and not line.comm_buffer:
+                state.buffer_free_sni[line.node.get_name()] = line.scheduler_node_index
+
+        # Sort schedules for binary search
+        for key in state.comm_demand_schedule:
+            state.comm_demand_schedule[key].sort()
+        for key in state.comm_free_schedule:
+            state.comm_free_schedule[key].sort()
+        for key in state.regular_alloc_schedule:
+            state.regular_alloc_schedule[key].sort()
+
+    def _simulate_peak_without_borrow(self) -> OrderedSet[str]:
+        """Simulate memory planning without BOR to find buffers live at peak.
+
+        Read-only pass: tracks simulated regular reuse pool and running memory
+        total. Returns set of buffer names live at the peak memory point.
+        """
+        sim_pool: dict[ReuseKey, list[str]] = collections.defaultdict(list)
+        live_bufs: dict[str, int] = {}  # buf_name -> size_bytes
+        current_mem = 0
+        peak_mem = 0
+        peak_live: OrderedSet[str] = OrderedSet()
+
+        for line in self.lines:
+            if isinstance(line, AllocateLine) and not line.comm_buffer:
+                if line.node.get_name() in V.graph.removed_buffers:
+                    continue
+                key = buffer_reuse_key(line.node)
+                buf_name = line.node.get_name()
+                size = V.graph.sizevars.optimization_hint(
+                    V.graph.get_allocation_storage_size(line.node), fallback=0
+                ) * get_dtype_size(line.node.get_dtype())
+                if sim_pool.get(key):
+                    # Reuse from pool — no memory cost
+                    sim_pool[key].pop()
+                    live_bufs[buf_name] = size
+                else:
+                    # Fresh alloc
+                    current_mem += size
+                    live_bufs[buf_name] = size
+                if current_mem > peak_mem:
+                    peak_mem = current_mem
+                    peak_live = OrderedSet(live_bufs.keys())
+            elif isinstance(line, FreeIfNotReusedLine) and not line.comm_buffer:
+                buf_name = line.node.get_name()
+                if buf_name in live_bufs:
+                    key = buffer_reuse_key(line.node)
+                    sim_pool[key].append(buf_name)
+                    current_mem -= live_bufs.pop(buf_name)
+
+        return peak_live
+
+    def _plan_borrow_greedy_matching(
+        self, state: MemoryPlanningState
+    ) -> dict[str, CommBufferReuseKey]:
+        """Compute borrow assignments via greedy maximum-weight bipartite matching.
+
+        Phase 1: Get peak live buffers via simulation.
+        Phase 2: Build bipartite graph of borrowable buffers to idle comm windows.
+        Phase 3: Greedy matching (sort edges by weight desc, take non-conflicting).
+        Returns {buf_name: comm_key} for matched pairs.
+        """
+        import bisect
+
+        peak_live = self._simulate_peak_without_borrow()
+        if not peak_live:
+            return {}
+
+        # Collect borrowable candidates: regular buffers live at peak with
+        # a matching comm buffer size and safe timing.
+        candidates: list[
+            tuple[str, BorrowMatchKey, int, int, int]
+        ] = []  # (name, match_key, alloc_sni, free_sni, size_bytes)
+        for line in self.lines:
+            if not isinstance(line, AllocateLine) or line.comm_buffer:
+                continue
+            buf_name = line.node.get_name()
+            if buf_name not in peak_live:
+                continue
+            if buf_name in V.graph.removed_buffers:
+                continue
+            free_sni = state.buffer_free_sni.get(buf_name)
+            if free_sni is None:
+                continue
+            # Check reuse chain guard
+            regular_key = buffer_reuse_key(line.node)
+            future_allocs = state.regular_alloc_schedule.get(regular_key, [])
+            idx = bisect.bisect_right(future_allocs, free_sni)
+            if idx < len(future_allocs):
+                continue
+            storage_size = V.graph.get_allocation_storage_size(line.node)
+            match_key: BorrowMatchKey = (
+                line.node.get_device_or_error(),
+                line.node.get_dtype(),
+                sympy_str(V.graph.sizevars.simplify(storage_size)),
+            )
+            size = V.graph.sizevars.optimization_hint(
+                storage_size, fallback=0
+            ) * get_dtype_size(line.node.get_dtype())
+            if size <= 0:
+                continue
+            candidates.append(
+                (buf_name, match_key, line.scheduler_node_index, free_sni, size)
+            )
+
+        if not candidates:
+            return {}
+
+        # Build idle windows from comm free/demand schedules:
+        # A comm buffer is idle from its free SNI until the next alloc SNI.
+        # Window [idle_start, idle_end) means the comm buffer is available for borrowing.
+        _INF_SNI = 2**31
+        idle_windows: list[
+            tuple[CommBufferReuseKey, int, int]
+        ] = []  # (comm_key, idle_start, idle_end)
+        for comm_key, demand_snis in state.comm_demand_schedule.items():
+            if comm_key[3] != ir.CommBufferType.PG_ALLOC:
+                continue
+            free_snis = state.comm_free_schedule.get(comm_key, [])
+            for i in range(len(free_snis)):
+                idle_start = free_snis[i]
+                # Next demand after this free marks end of idle window
+                idx = bisect.bisect_right(demand_snis, idle_start)
+                idle_end = demand_snis[idx] if idx < len(demand_snis) else _INF_SNI
+                idle_windows.append((comm_key, idle_start, idle_end))
+
+        if not idle_windows:
+            return {}
+
+        # Build match key for each comm_key
+        comm_key_match: dict[CommBufferReuseKey, BorrowMatchKey] = {}
+        for line in self.lines:
+            if isinstance(line, AllocateLine) and line.comm_buffer:
+                layout = line.node.get_output_spec()
+                if isinstance(layout, ir.CommBufferLayout):
+                    ck = comm_buffer_reuse_key(line.node)
+                    if ck not in comm_key_match:
+                        storage_size = V.graph.get_allocation_storage_size(line.node)
+                        comm_key_match[ck] = (
+                            line.node.get_device_or_error(),
+                            line.node.get_dtype(),
+                            sympy_str(V.graph.sizevars.simplify(storage_size)),
+                        )
+
+        # Build bipartite adjacency: candidate_idx -> list of (window_idx, weight)
+        adj: dict[int, list[tuple[int, int]]] = collections.defaultdict(list)
+        for ci, (buf_name, mk, alloc_sni, free_sni, size) in enumerate(candidates):
+            for wi, (comm_key, idle_start, idle_end) in enumerate(idle_windows):
+                cmk = comm_key_match.get(comm_key)
+                if cmk != mk:
+                    continue
+                # Buffer lifetime [alloc_sni, free_sni] must fit in [idle_start, idle_end)
+                if alloc_sni >= idle_start and free_sni < idle_end:
+                    adj[ci].append((wi, size))
+
+        # Greedy maximum-weight matching: sort edges by weight desc, greedily pick
+        # non-conflicting edges. Not optimal but effective for typical graph sizes.
+        edges: list[tuple[int, int, int]] = []  # (weight, candidate_idx, window_idx)
+        for ci, neighbors in adj.items():
+            for wi, weight in neighbors:
+                edges.append((weight, ci, wi))
+        edges.sort(reverse=True)
+
+        matched_candidates: OrderedSet[int] = OrderedSet()
+        matched_windows: OrderedSet[int] = OrderedSet()
+        plan: dict[str, CommBufferReuseKey] = {}
+
+        for weight, ci, wi in edges:
+            if ci in matched_candidates or wi in matched_windows:
+                continue
+            matched_candidates.add(ci)
+            matched_windows.add(wi)
+            buf_name = candidates[ci][0]
+            comm_key = idle_windows[wi][0]
+            plan[buf_name] = comm_key
+
+        return plan
+
     def memory_plan_reuse(self):
         outputs = self.get_graph_outputs()
         out_names = V.graph._get_output_names(outputs)
@@ -2224,6 +2635,20 @@ class PythonWrapperCodegen(CodeGen):
         # codegen allocations in two passes
         planning_states = [MemoryPlanningState()]
         past_planning_states = []
+
+        # Pre-scan for cross-pool borrowing if enabled
+        if config.comms_pg_alloc_allow_borrow and config.comms_use_pg_alloc:
+            self._prescan_borrow_schedules(planning_states[-1])
+            strategy = config.comms_pg_alloc_borrow_strategy
+            if strategy == "peak_aware":
+                planning_states[
+                    -1
+                ].peak_live_buffers = self._simulate_peak_without_borrow()
+            elif strategy == "greedy_matching":
+                planning_states[-1].borrow_plan = self._plan_borrow_greedy_matching(
+                    planning_states[-1]
+                )
+
         for i in range(len(self.lines)):
             line = self.lines[i]
             if isinstance(line, MemoryPlanningLine):
@@ -2283,9 +2708,9 @@ class PythonWrapperCodegen(CodeGen):
                 if isinstance(stride, sympy.Symbol) and stride not in bound_vars:
                     code.writeline(f"{stride} = {strideof(name)}[{dim}]")
                     bound_vars.add(stride)
-        elif isinstance(value, ir.TorchBindObject):
-            return
-        elif isinstance(value, ir.GeneratorState):
+        elif isinstance(
+            value, (ir.TorchBindObject, ir.GeneratorState, ir.OpaqueObjectState)
+        ):
             return
         else:
             if torch._inductor.config.graph_partition:
@@ -2576,11 +3001,7 @@ class PythonWrapperCodegen(CodeGen):
                     # the subclass.
                     continue
                 if isinstance(value, ir.TorchBindObject):
-                    if len(V.graph.torchbind_constants) == 0:
-                        # otherwise we have already imported the pickle package
-                        output.writeline("import pickle")
-                    output.writeline(f"global {name}")
-                    add_torchbind_input(name, value.get_real_obj())
+                    output.writeline(f"{name} = None")
                 elif isinstance(value, sympy.Expr):  # Don't need to add symbolic
                     # TODO: this fallback and those below actually will generate possibly
                     # invalid benchmark code, because it's not guaranteed 42
@@ -2594,6 +3015,8 @@ class PythonWrapperCodegen(CodeGen):
                         name,
                         f"torch.cuda.default_generators[{value.device.index}].graphsafe_get_state()",
                     )
+                elif isinstance(value, ir.OpaqueObjectState):
+                    output.writeline(f"{name} = None")
                 else:
                     shape = V.graph.sizevars.optimization_hints(
                         value.get_size(), fallback=42
@@ -3246,6 +3669,7 @@ class PythonWrapperCodegen(CodeGen):
         )
 
         device = device or V.graph.get_current_device_or_throw()
+        current_stream_idx = V.graph.scheduler.current_stream_idx
         self.writeline(
             KernelCallLine(
                 self,
@@ -3265,6 +3689,7 @@ class PythonWrapperCodegen(CodeGen):
                 graph_name=V.graph.name,
                 # pyrefly: ignore [bad-argument-type]
                 original_fxnode_name=original_fxnode_name,
+                current_stream_idx=current_stream_idx,
             )
         )
 
@@ -3282,6 +3707,7 @@ class PythonWrapperCodegen(CodeGen):
         inductor_meta=None,
         graph_name="",
         original_fxnode_name=None,
+        current_stream_idx=None,
     ):
         device = device or V.graph.get_current_device_or_throw()
         if not triton and device.type != "cuda":
@@ -3298,9 +3724,17 @@ class PythonWrapperCodegen(CodeGen):
 
         call_args_str = self.prepare_triton_kernel_call(call_args)
         call_args_str = ", ".join(call_args_str)
-        stream_name = PythonWrapperCodegen.write_get_raw_stream(
-            self, device.index, graph_name
-        )
+        if current_stream_idx is not None and current_stream_idx != DEFAULT_STREAM_IDX:
+            # Inside a user stream context: emit a fresh get_raw_stream call so
+            # it picks up the active stream at runtime, rather than reusing the
+            # LRU-cached stream0 variable which captured the default stream.
+            self.write_get_raw_stream_header()
+            stream_name = "raw_stream"
+            self.writeline(f"{stream_name} = get_raw_stream({device.index})")
+        else:
+            stream_name = PythonWrapperCodegen.write_get_raw_stream(
+                self, device.index, graph_name
+            )
         if not triton:
             stream_ptr = f"c_void_p({stream_name})"
             self.writeline(
@@ -3495,7 +3929,7 @@ class PythonWrapperCodegen(CodeGen):
             return s.codegen_reference()
         elif has_triton_package() and isinstance(s, triton.language.dtype):  # type: ignore[possibly-undefined]
             return repr(s)
-        elif isinstance(s, ir.GeneratorState):
+        elif isinstance(s, (ir.GeneratorState, ir.OpaqueObjectState)):
             return s.codegen_reference()
         elif is_opaque_value_type(type(s)):
             obj_repr, opaque_types = get_opaque_obj_repr(s)
