@@ -908,8 +908,10 @@ class TestFP8Lowering(TestCase):
             k_padded = ceil_div(k_dim, 4) * 4
             if k_dim < k_padded:
                 padding = torch.zeros(
-                    k_padded - k_dim, scale_t.size(1),
-                    device=scale.device, dtype=scale.dtype,
+                    k_padded - k_dim,
+                    scale_t.size(1),
+                    device=scale.device,
+                    dtype=scale.dtype,
                 )
                 scale_t = torch.cat([scale_t, padding], dim=0)
             return scale_t.t().contiguous().t()
@@ -927,8 +929,16 @@ class TestFP8Lowering(TestCase):
         )
         x_inverse_scale = _to_v2_scale(x_inverse_scale, am)
 
-        recipe_x = ScalingType.BlockWise1x128 if (am, ak) == (1, 128) else ScalingType.BlockWise128x128
-        recipe_w = ScalingType.BlockWise1x128 if (bn, bk) == (1, 128) else ScalingType.BlockWise128x128
+        recipe_x = (
+            ScalingType.BlockWise1x128
+            if (am, ak) == (1, 128)
+            else ScalingType.BlockWise128x128
+        )
+        recipe_w = (
+            ScalingType.BlockWise1x128
+            if (bn, bk) == (1, 128)
+            else ScalingType.BlockWise128x128
+        )
 
         def linear(x_fp8, x_inverse_scale, w_t_fp8, w_inverse_scale, bias):
             y = torch.nn.functional.scaled_mm(
@@ -1395,6 +1405,75 @@ class TestFP8Lowering(TestCase):
             )
         self.assertEqual(y_eager.dtype, dtype)
         self.assertEqual(y_compiled.dtype, dtype)
+        torch.testing.assert_close(y_eager, y_compiled, rtol=1e-2, atol=0.07)
+
+    @unittest.skipIf(not PLATFORM_SUPPORTS_FP8, f8_msg)
+    @onlyCUDA
+    def test_contraction_dim_falls_back(self, device):
+        """Non-empty contraction_dim falls back to native _scaled_mm_v2."""
+        M, K, N = 32, 64, 32
+        dtype_float8 = torch.float8_e4m3fn
+
+        mat_a = torch.randn(M, K, device=device, dtype=torch.bfloat16).to(dtype_float8)
+        mat_b = (
+            torch.randn(N, K, device=device, dtype=torch.bfloat16).to(dtype_float8).t()
+        )
+        scale_a = torch.tensor(1.0, device=device, dtype=torch.float32)
+        scale_b = torch.tensor(1.0, device=device, dtype=torch.float32)
+
+        def fn(mat_a, mat_b, scale_a, scale_b):
+            return torch._scaled_mm_v2(
+                mat_a,
+                mat_b,
+                [scale_a],
+                [ScalingType.TensorWise.value],
+                [],
+                [scale_b],
+                [ScalingType.TensorWise.value],
+                [],
+                None,
+                torch.bfloat16,
+                [1, 0],
+                False,
+            )
+
+        y_eager = fn(mat_a, mat_b, scale_a, scale_b)
+        fn_compiled = torch.compile(fn, backend="inductor")
+        y_compiled = fn_compiled(mat_a, mat_b, scale_a, scale_b)
+        torch.testing.assert_close(y_eager, y_compiled, rtol=1e-2, atol=0.05)
+
+    @unittest.skipIf(not PLATFORM_SUPPORTS_MX_GEMM, "MXFP8 requires B200+")
+    @onlyCUDA
+    def test_mxfp8_single_level_v2_fallback(self, device):
+        """MXFP8 with e8m0fnu scales should not use v1 ATen fallback."""
+        M, K, N = 128, 32, 128
+        BLOCK_SIZE = 32
+
+        A = torch.eye(M, device=device, dtype=torch.bfloat16).to(torch.float8_e4m3fn)
+        B = torch.eye(N, device=device, dtype=torch.bfloat16).to(torch.float8_e4m3fn)
+        A_scale = torch.full(
+            (M, ceil_div(K, BLOCK_SIZE)), 1.0, device=device, dtype=torch.float8_e8m0fnu
+        )
+        B_scale = torch.full(
+            (N, ceil_div(K, BLOCK_SIZE)), 1.0, device=device, dtype=torch.float8_e8m0fnu
+        )
+        A_scale = to_blocked(A_scale)
+        B_scale = to_blocked(B_scale)
+
+        def fn(A, B, A_scale, B_scale):
+            return torch.nn.functional.scaled_mm(
+                A,
+                B.t(),
+                A_scale,
+                ScalingType.BlockWise1x32,
+                B_scale,
+                ScalingType.BlockWise1x32,
+                output_dtype=torch.bfloat16,
+            )
+
+        y_eager = fn(A, B, A_scale, B_scale)
+        fn_compiled = torch.compile(fn, backend="inductor", mode="max-autotune")
+        y_compiled = fn_compiled(A, B, A_scale, B_scale)
         torch.testing.assert_close(y_eager, y_compiled, rtol=1e-2, atol=0.07)
 
     @onlyOn(["cuda", "xpu", "cpu"])
