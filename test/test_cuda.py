@@ -89,6 +89,7 @@ from torch.testing._internal.common_utils import (
     TEST_CUDA,
     TEST_CUDA_GRAPH,
     TEST_CUDA_PYTHON_BINDINGS,
+    TEST_CUDAMALLOCASYNC,
     TEST_NUMPY,
     TEST_WITH_ROCM,
     TestCase,
@@ -115,9 +116,6 @@ except ImportError:
     HAS_TORCHVISION = False
 skipIfNoTorchVision = unittest.skipIf(not HAS_TORCHVISION, "no torchvision")
 
-TEST_CUDAMALLOCASYNC = TEST_CUDA and (
-    torch.cuda.get_allocator_backend() == "cudaMallocAsync"
-)
 TEST_LARGE_TENSOR = TEST_CUDA
 TEST_MEDIUM_TENSOR = TEST_CUDA
 TEST_BF16 = False
@@ -2176,8 +2174,10 @@ torch.cuda.synchronize()
             with torch.cuda.stream(s):
                 g = torch.cuda.CUDAGraph()
                 self.assertFalse(torch.cuda.is_current_stream_capturing())
+                self.assertFalse(s.is_capturing())
                 g.capture_begin()
                 self.assertTrue(torch.cuda.is_current_stream_capturing())
+                self.assertTrue(s.is_capturing())
                 g.capture_end()
 
     @unittest.skipIf(
@@ -5927,13 +5927,16 @@ class TestMemPool(TestCase):
     def test_mempool_id(self):
         pool1 = torch.cuda.graph_pool_handle()
         pool2 = torch.cuda.MemPool().id
+        pool3 = torch.accelerator.generate_graph_pool_handle()
 
         # first value of id in a user created pool is always zero
         self.assertEqual(pool1[0] == 0, pool2[0] == 0)
+        self.assertEqual(pool1[0] == 0, pool3[0] == 0)
 
-        # each call to torch.cuda.graph_pool_handle() or torch.cuda.MemPool()
-        # increments the id
-        self.assertTrue(abs(pool2[1] - pool1[1]) > 0)
+        # each call to torch.cuda.graph_pool_handle(), torch.cuda.MemPool()
+        # or torch.accelerator.generate_graph_pool_handle() increments the id
+        self.assertTrue((pool2[1] - pool1[1]) > 0)
+        self.assertTrue((pool3[1] - pool2[1]) > 0)
 
     @unittest.skipIf(
         TEST_CUDAMALLOCASYNC, "setContextRecorder not supported by CUDAMallocAsync"
