@@ -594,7 +594,7 @@ class UserDefinedClassVariable(UserDefinedVariable):
                 # In the case the argument is a builtin, then we can take the callable as the factory method.
                 # Otherwise, it must be a ConstantVariable holding None.
                 if not DefaultDictVariable.is_supported_arg(args[0]):
-                    type_error(tx, args=[args[0]])
+                    raise_observed_exception(TypeError, tx, args=[args[0]])
                 default_factory = args[0]
                 args = []
             else:
@@ -710,7 +710,7 @@ class UserDefinedClassVariable(UserDefinedVariable):
         elif self.value is torch.cuda.device and not kwargs and len(args) == 1:
             if not args[0].is_python_constant():
                 type_error(
-                    tx, args=["torch.cuda.device() requires a constant argument"]
+                    tx, "torch.cuda.device() requires a constant argument"
                 )
             return variables.CUDADeviceVariable.create(tx, args[0].as_python_constant())
         elif (

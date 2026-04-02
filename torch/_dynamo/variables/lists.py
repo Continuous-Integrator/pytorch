@@ -33,7 +33,7 @@ from ..bytecode_transformation import (
     create_instruction,
     create_rot_n,
 )
-from ..exc import raise_observed_exception, type_error, unimplemented
+from ..exc import raise_observed_exception, unimplemented
 from ..source import AttrSource, NamedTupleFieldsSource
 from ..utils import (
     cmp_name_to_op_mapping,
@@ -906,7 +906,7 @@ class CommonListMethodsVariable(BaseListVariable):
                     )
             else:
                 msg = f"list indices must be integers or slices, not {args[0].python_type_name()}"
-                type_error(tx, args=[msg])
+                raise_observed_exception(TypeError, tx, args=[msg])
             return CONSTANT_VARIABLE_NONE
         elif name == "copy":
             # List copy() doesn't have args and kwargs

@@ -509,7 +509,7 @@ class TracebackVariable(VariableTracker):
         name = name_var.as_python_constant()
         if name == "tb_next":
             if not self.is_valid_traceback(val):
-                type_error(tx)
+                raise_observed_exception(TypeError, tx)
             assert isinstance(val, (TracebackVariable, ConstantVariable))
             if self.has_reference_cycle(val) or (
                 istype(val, TracebackVariable) and val.has_reference_cycle(self)
@@ -617,9 +617,6 @@ class ExceptionVariable(VariableTracker):
         name_var: VariableTracker,
         val: VariableTracker,
     ) -> VariableTracker:
-        def raise_error(msg: str) -> NoReturn:
-            type_error(tx, args=[msg])
-
         name = name_var.as_python_constant()
         if name == "__context__":
             # Constant can be either an Exceptior or None
@@ -638,19 +635,15 @@ class ExceptionVariable(VariableTracker):
                 self.__cause__ = val
                 self.__suppress_context__ = variables.CONSTANT_VARIABLE_TRUE
             else:
-                raise_error("exception cause must be None or derive from BaseException")
+                type_error(tx, "exception cause must be None or derive from BaseException")
         elif name == "__suppress_context__":
             if val.is_constant_match(True, False):
                 self.__suppress_context__ = val
             else:
-                raise_error("exception cause must be None or derive from BaseException")
+                typ_error(tx,"exception cause must be None or derive from BaseException")
         elif name == "__traceback__":
             if not TracebackVariable.is_valid_traceback(val):
-                raise_observed_exception(
-                    TypeError,
-                    tx,
-                    args=["__traceback__ must be a traceback object or None"],
-                )
+                type_error(tx, "__traceback__ must be a traceback object or None")
             self.__traceback__ = val
         else:
             unimplemented(
@@ -773,7 +766,7 @@ class ComptimeVariable(VariableTracker):
             if fn.closure:
                 type_error(
                     tx,
-                    args=[f"comptime function must not have free variables, but these variables were free: {code.co_freevars}"],
+                    f"comptime function must not have free variables, but these variables were free: {code.co_freevars}"
                 )
             func = types.FunctionType(
                 code,
@@ -1166,7 +1159,7 @@ class AutogradFunctionContextVariable(UserDefinedObjectVariable):
         if not self.inference:
             if kwargs or not self.source:
                 type_error(
-                    tx, args=["save_for_backward() requires a source and no keyword arguments"]
+                    tx, "save_for_backward() requires a source and no keyword arguments"
                 )
             tx.output.side_effects.track_save_for_backward(self, args)
 
@@ -1351,7 +1344,7 @@ class MethodWrapperVariable(VariableTracker):
         ):
             if not (len(args) == 1 and len(kwargs) == 0):
                 type_error(
-                    tx, args=["tensor attribute getter takes exactly one argument"]
+                    tx, "tensor attribute getter takes exactly one argument"
                 )
             # type: ignore[arg-type, attr-defined]
             return args[0].var_getattr(tx, self.method_wrapper.__self__.__name__)

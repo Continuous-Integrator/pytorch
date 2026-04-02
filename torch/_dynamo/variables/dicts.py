@@ -36,7 +36,7 @@ from ..bytecode_transformation import (
     create_dup_top,
     create_instruction,
 )
-from ..exc import raise_observed_exception, type_error, unimplemented
+from ..exc import raise_observed_exception, unimplemented
 from ..guards import GuardBuilder, install_guard
 from ..source import (
     AttrSource,
@@ -662,7 +662,7 @@ class ConstDictVariable(VariableTracker):
             if self.source:
                 tx.output.guard_on_key_order.add(self.source)
             if args or kwargs:
-                type_error(tx)
+                raise_observed_exception(TypeError, tx)
             return DictValuesVariable(self)
         elif name == "copy":
             self.install_dict_keys_match_guard()

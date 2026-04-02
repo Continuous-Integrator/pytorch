@@ -1748,7 +1748,7 @@ class TorchInGraphFunctionVariable(BaseTorchVariable):
             if len(args) != 1 or kwargs:
                 type_error(
                     tx,
-                    args=[f"push_torch_function takes exactly one argument ({len(args)} given)"],
+                    f"push_torch_function takes exactly one argument ({len(args)} given)"
                 )
             TorchFunctionModeStackVariable.register_mutation(tx)
             # type: ignore[arg-type]
@@ -1763,7 +1763,7 @@ class TorchInGraphFunctionVariable(BaseTorchVariable):
             **kwargs: VariableTracker,
         ) -> VariableTracker:
             if args or kwargs:
-                type_error(tx, args=["len_torch_function_stack takes no arguments"])
+                type_error(tx, "len_torch_function_stack takes no arguments")
             return VariableTracker.build(
                 tx, len(tx.symbolic_torch_function_state.mode_stack)
             )
@@ -1778,7 +1778,7 @@ class TorchInGraphFunctionVariable(BaseTorchVariable):
             if len(args) != 1 or kwargs:
                 type_error(
                     tx,
-                    args=[f"get_function_stack_at takes exactly one argument ({len(args)} given)"],
+                    f"get_function_stack_at takes exactly one argument ({len(args)} given)",
                 )
             ind = args[0].as_python_constant()
             assert ind >= 0 and ind < len(tx.symbolic_torch_function_state.mode_stack)
@@ -2037,7 +2037,7 @@ class TorchInGraphFunctionVariable(BaseTorchVariable):
             if len(args) != 1 or kwargs:
                 type_error(
                     tx,
-                    args=[f"{fn.__name__} takes exactly one argument ({len(args)} given)"],
+                    f"{fn.__name__} takes exactly one argument ({len(args)} given)",
                 )
             current_device_source = CallFunctionNoArgsSource(
                 AttrSource(AttrSource(ImportSource("torch"), "cuda"), "current_device")

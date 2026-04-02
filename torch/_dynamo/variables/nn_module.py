@@ -637,12 +637,12 @@ class NNModuleVariable(VariableTracker):
             if not args[1].is_python_constant():
                 type_error(
                     tx,
-                    args=[f"``nn.Module`` {module}'s call method {name} requires a constant index argument"],
+                    f"``nn.Module`` {module}'s call method {name} requires a constant index argument",
                 )
             if not isinstance(args[0], TupleVariable):
                 type_error(
                     tx,
-                    args=[f"``nn.Module`` {module}'s call method {name} requires a tuple as first argument"],
+                    f"``nn.Module`` {module}'s call method {name} requires a tuple as first argument"
                 )
             mod_var = args[0].items[args[1].value]  # type: ignore[attr-defined]
             if isinstance(mod_var, UnspecializedNNModuleVariable):

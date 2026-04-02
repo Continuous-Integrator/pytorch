@@ -1254,7 +1254,7 @@ class LocalGeneratorObjectVariable(VariableTracker):
                 # can't send non-None value to a just-started generator
                 # Test: GeneratorCPythonTests.test_send_non_none_to_new_gen
                 if not all(arg.is_constant_none() for arg in args):
-                    type_error(tx)
+                    raise_observed_exception(TypeError, tx)
             tracer = self.inline_tracer
             tracer.push_many(args)
             return self.next_variable(tx)
@@ -2954,7 +2954,7 @@ class PolyfilledFunctionVariable(VariableTracker):
 
         method = getattr(self.fn, name, None)
         if not (method or is_function(method)):
-            type_error(tx, args=[f"Cannot find callable {name} in {self.fn}"])
+            type_error(tx, f"Cannot find callable {name} in {self.fn}")
         options = {}
         if self.source:
             options["source"] = AttrSource(self.source, name)
@@ -3353,7 +3353,7 @@ class CreateTMADescriptorExperimentalVariable(VariableTracker):
             if len(args) + len(kwargs) != 4:
                 type_error(
                     tx,
-                    args=[f"TMA metadata rank=1 requires exactly 4 arguments, got {len(args) + len(kwargs)}"],
+                    f"TMA metadata rank=1 requires exactly 4 arguments, got {len(args) + len(kwargs)}"
                 )
             dims = [
                 kwargs["dim"] if "dim" in kwargs else args[1],
@@ -3365,7 +3365,7 @@ class CreateTMADescriptorExperimentalVariable(VariableTracker):
             if len(args) + len(kwargs) != 6:
                 type_error(
                     tx,
-                    args=[f"TMA metadata rank=2 requires exactly 6 arguments, got {len(args) + len(kwargs)}"],
+                    f"TMA metadata rank=2 requires exactly 6 arguments, got {len(args) + len(kwargs)}"
                 )
             dims = [
                 kwargs["dim1"] if "dim1" in kwargs else args[1],
@@ -3428,7 +3428,7 @@ class PyTreeGetNodeTypeFunctionVariable(UserFunctionVariable):
         if len(args) != 1:
             type_error(
                 tx,
-                args=[f"pytree_get_node_type requires exactly 1 argument, got {len(args)}"],
+                f"pytree_get_node_type requires exactly 1 argument, got {len(args)}"
             )
         type_source = None
         if args[0].source:
@@ -3467,7 +3467,7 @@ class PyTreeTreeIsLeafFunctionVariable(UserFunctionVariable):
         if len(args) < 1 or len(args) > 2:
             type_error(
                 tx,
-                args=[f"tree_is_leaf requires 1 or 2 arguments, got {len(args)}"],
+                f"tree_is_leaf requires 1 or 2 arguments, got {len(args)}"
             )
 
         # Check if is_leaf parameter is provided
