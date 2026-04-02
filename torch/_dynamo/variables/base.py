@@ -400,9 +400,7 @@ class VariableTracker(metaclass=VariableTrackerMeta):
         except NotImplementedError:
             return False
 
-    def bool_impl(
-        self, tx: "InstructionTranslator"
-    ) -> "ConstantVariable | None":
+    def bool_impl(self, tx: "InstructionTranslator") -> "ConstantVariable | None":
         """nb_bool slot — per-type boolean conversion.
 
         Returns a ConstantVariable(True/False), a SymNodeVariable, or None.

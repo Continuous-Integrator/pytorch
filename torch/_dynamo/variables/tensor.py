@@ -272,9 +272,7 @@ class TensorVariable(VariableTracker):
     def is_tensor(self) -> bool:
         return True
 
-    def bool_impl(
-        self, tx: "InstructionTranslator"
-    ) -> VariableTracker:
+    def bool_impl(self, tx: "InstructionTranslator") -> VariableTracker:
         """nb_bool for tensors — calls .item() then converts to bool.
 
         CPython tensors implement nb_bool via THPVariable_bool which calls

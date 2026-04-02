@@ -221,9 +221,7 @@ class NNModuleVariable(VariableTracker):
     def get_real_python_backed_value(self) -> object:
         return self.value
 
-    def bool_impl(
-        self, tx: "InstructionTranslator"
-    ) -> "VariableTracker":
+    def bool_impl(self, tx: "InstructionTranslator") -> "VariableTracker":
         """nb_bool for nn.Module.
 
         nn.Module itself has no __bool__ or __len__, so bare modules are always

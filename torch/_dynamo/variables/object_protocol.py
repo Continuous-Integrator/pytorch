@@ -13,6 +13,7 @@ from ..utils import istype
 from .base import NO_SUCH_SUBOBJ, VariableTracker
 from .constant import CONSTANT_VARIABLE_FALSE, CONSTANT_VARIABLE_TRUE
 
+
 if TYPE_CHECKING:
     from ..symbolic_convert import InstructionTranslator
 
@@ -71,9 +72,7 @@ def vt_identity_compare(
     return None
 
 
-def generic_bool(
-    tx: "InstructionTranslator", obj: VariableTracker
-) -> VariableTracker:
+def generic_bool(tx: "InstructionTranslator", obj: VariableTracker) -> VariableTracker:
     """Mirrors PyObject_IsTrue (Objects/object.c:2135-2158).
 
     Resolution order:
