@@ -346,7 +346,7 @@ class TestStatelessRNGDistribution(TestCase):
     @parametrize("gen_fn_name", ["normal", "uniform"])
     def test_error_wrong_key_dtype(self, device, gen_fn_name):
         key = torch.tensor([42, 0], dtype=torch.float32, device=device)
-        with self.assertRaises(RuntimeError):
+        with self.assertRaisesRegex(RuntimeError, "key must have dtype uint64"):
             self._gen(gen_fn_name, key, (100,))
 
     @parametrize("gen_fn_name", ["normal", "uniform"])
@@ -354,16 +354,24 @@ class TestStatelessRNGDistribution(TestCase):
         key = random.key(42, device=device)
         # Last dim must be 2.
         bad_key = torch.tensor([42, 0, 1], dtype=torch.uint64, device=device)
-        with self.assertRaises(RuntimeError):
+        with self.assertRaisesRegex(
+            RuntimeError, r"key must have shape \(2,\) or \(\*batch, 2\)"
+        ):
             self._gen(gen_fn_name, bad_key, (100,))
         # Key batch ndim must equal output ndim (too few).
-        with self.assertRaises(RuntimeError):
+        with self.assertRaisesRegex(
+            RuntimeError, "batched key must have ndim == output ndim \\+ 1"
+        ):
             self._gen(gen_fn_name, random.split(key, 3), (3, 4, 100))
         # Key batch ndim must equal output ndim (too many).
-        with self.assertRaises(RuntimeError):
+        with self.assertRaisesRegex(
+            RuntimeError, "batched key must have ndim == output ndim \\+ 1"
+        ):
             self._gen(gen_fn_name, random.split(key, 3).view(3, 1, 1, 2), (3, 100))
         # Key batch dims must be broadcastable with output.
-        with self.assertRaises(RuntimeError):
+        with self.assertRaisesRegex(
+            RuntimeError, "is not broadcastable with output shape"
+        ):
             self._gen(gen_fn_name, random.split(key, 5).unsqueeze(-2), (3, 100))
 
     @parametrize("gen_fn_name", ["normal", "uniform"])
