@@ -2791,6 +2791,14 @@ Call this whenever a new thread is created in order to propagate values from
     return at::globalContext().getROCmFAPreferredBackend();
   });
 
+  py_module.def("_is_ck_sdpa_available", []() {
+#ifdef USE_ROCM
+    return at::globalContext().ckSupported() && at::globalContext().hasCKSDPA();
+#else
+    return false;
+#endif
+  });
+
   py_module.def(
       "_set_sm_carveout_experimental", [](std::optional<int32_t> val) {
         at::globalContext()._setSMCarveout_EXPERIMENTAL(val);
@@ -2830,6 +2838,7 @@ Call this whenever a new thread is created in order to propagate values from
 
   py_module.def(
       "_stash_obj_in_tls", [](const std::string& key, py::handle arg) {
+        Py_INCREF(arg.ptr());
         at::impl::ThreadLocalPythonObjects::get_state().set(
             key,
             std::make_shared<c10::SafePyObject>(arg.ptr(), getPyInterpreter()));
