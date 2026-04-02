@@ -784,58 +784,26 @@ class CustomOpDef:
         )
 
         disabled_kernel = self._disabled_kernel
-        # c10::default_included_set — the TLS local include keyset in normal
-        # eager mode. The fast path also accepts subsets of this set so that
-        # inference_mode still works after ADInplaceOrView is removed.
-        default_included_raw = (
-            _C.DispatchKeySet(_C.DispatchKey.BackendSelect)
-            | _C.DispatchKeySet(_C.DispatchKey.ADInplaceOrView)
-        ).raw_repr()
+        check_multi_device = raw_fns.get(None) is None and len(raw_fns) > 1
 
         def fast_call(*args, **kwargs):
-            # Dynamo needs the fake impl and dispatcher
+            # Dynamo needs the fake impl and dispatcher.
             if torch.compiler.is_compiling():
                 return NotImplemented
-
-            # Schema-level fast path only handles positional tensor args.
             if not args or kwargs:
                 return NotImplemented
 
-            # Reject tensor subclasses — they need __torch_function__ /
-            # __torch_dispatch__ handling from the dispatcher.
-            first_tensor = args[0]
-            if type(first_tensor) is not Tensor:
+            # Single C++ call that checks: TorchFunctionMode, TLS dispatch
+            # keys (autocast, functorch, etc. via one-dispatch-key-computation),
+            # tensor subclasses, mixed devices, and requires_grad.
+            check = _C._custom_op_fast_path_check(args, check_multi_device)
+            if check is None:
                 return NotImplemented
 
-            if any(type(arg) is not Tensor for arg in args if isinstance(arg, Tensor)):
-                return NotImplemented
-            # Active TorchFunctionMode or autocast require dispatcher routing.
-            if _C._is_torch_function_mode_enabled():
-                return NotImplemented
-            if _C._is_any_autocast_enabled():
-                return NotImplemented
+            device_type, any_requires_grad = check
 
-            device_type = first_tensor.device.type
-            # Meta tensors and disabled kernels need the dispatcher.
             if device_type == "meta" or device_type in disabled_kernel:
                 return NotImplemented
-            # Mixed-device args without a catch-all kernel need BackendSelect.
-            if raw_fns.get(None) is None and len(raw_fns) > 1:
-                if any(
-                    isinstance(arg, Tensor) and arg.device.type != device_type
-                    for arg in args[1:]
-                ):
-                    return NotImplemented
-            # Bail if TLS has extra dispatch keys beyond the normal eager set.
-            # (e.g. Functionalize, FuncTorchBatched, ProxyTorchDispatchMode)
-            # inference_mode only *removes* ADInplaceOrView, which is a
-            # subset, so it still passes this check.
-            if (
-                _C._dispatch_tls_local_include_set().raw_repr() | default_included_raw
-                != default_included_raw
-            ):
-                return NotImplemented
-
             fn = raw_fns.get(device_type) or raw_fns.get(None)
             if fn is None:
                 return NotImplemented
@@ -845,7 +813,7 @@ class CustomOpDef:
                     if not args[idx].is_inference():
                         increment_version(args[idx])
 
-            if torch.is_grad_enabled() and _C._any_requires_grad(*args):
+            if torch.is_grad_enabled() and any_requires_grad:
                 return Generated.apply(*args)  # type: ignore[attr-defined]
 
             result = fn(*args)
