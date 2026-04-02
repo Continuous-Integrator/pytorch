@@ -13,7 +13,7 @@ import os
 import random
 import re
 import tempfile
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from itertools import chain, count
 from typing import Any, TYPE_CHECKING
 
@@ -47,7 +47,7 @@ from ..codecache import output_code_log
 from ..ir import IRNode, ReinterpretView
 from ..runtime import triton_heuristics
 from ..runtime.hints import DeviceProperties
-from ..stream_constants import DEFAULT_STREAM, STREAM_NAME_TEMPLATE
+from ..stream_constants import DEFAULT_STREAM, DEFAULT_STREAM_IDX, STREAM_NAME_TEMPLATE
 from ..stream_utils import get_stream_name
 from ..utils import (
     cache_on_self,
@@ -460,8 +460,10 @@ class MemoryPlanningState:
         self.comm_pool_by_match_key: dict[BorrowMatchKey, list[CommBufferReuseKey]] = (
             collections.defaultdict(list)
         )
-        # Pre-computed: comm demand schedule (comm_key -> sorted sni list)
+        # Pre-computed: comm demand schedule (comm_key -> sorted sni list of allocs)
         self.comm_demand_schedule: dict[CommBufferReuseKey, list[int]] = {}
+        # Pre-computed: comm free schedule (comm_key -> sorted sni list of frees)
+        self.comm_free_schedule: dict[CommBufferReuseKey, list[int]] = {}
         # Pre-computed: buffer free schedule (buffer_name -> sni of free)
         self.buffer_free_sni: dict[str, int] = {}
         # Pre-computed: regular alloc schedule (reuse_key -> sorted sni list)
@@ -469,7 +471,7 @@ class MemoryPlanningState:
         self.regular_alloc_schedule: dict[ReuseKey, list[int]] = {}
         # Set of buffer names live at peak (for peak_aware strategy)
         self.peak_live_buffers: OrderedSet[str] | None = None
-        # Pre-computed borrow plan: buf_name -> comm_key (for min_cost_flow strategy)
+        # Pre-computed borrow plan: buf_name -> comm_key (for greedy_matching strategy)
         self.borrow_plan: dict[str, CommBufferReuseKey] | None = None
 
     def __contains__(self, key: ReuseKey) -> bool:
@@ -491,10 +493,10 @@ class MemoryPlanningState:
         item = self.comm_buffer_reuse_pool[key].pop()
         assert not item.is_reused
         # Update match key index
-        match_key = (key[0], key[1], key[2])
-        idx = self.comm_pool_by_match_key.get(match_key, [])
-        if key in idx:
-            idx.remove(key)
+        match_key: BorrowMatchKey = (key[0], key[1], key[2])
+        keys_list = self.comm_pool_by_match_key[match_key]
+        if key in keys_list:
+            keys_list.remove(key)
         return item
 
     def comm_buffer_push(
@@ -503,7 +505,7 @@ class MemoryPlanningState:
         assert not item.is_reused
         self.comm_buffer_reuse_pool[key].append(item)
         # Update match key index
-        match_key = (key[0], key[1], key[2])
+        match_key: BorrowMatchKey = (key[0], key[1], key[2])
         self.comm_pool_by_match_key[match_key].append(key)
 
 
@@ -728,6 +730,7 @@ class KernelCallLine(WrapperLine):
     device: torch.device
     graph_name: str
     original_fxnode_name: str
+    current_stream_idx: int | None = None
 
     def codegen(self, code: IndentedBuffer) -> None:
         self.wrapper._generate_kernel_call_helper(
@@ -742,6 +745,7 @@ class KernelCallLine(WrapperLine):
             device=self.device,
             graph_name=self.graph_name,
             original_fxnode_name=self.original_fxnode_name,
+            current_stream_idx=self.current_stream_idx,
         )
 
     def codegen_fx(self, converter: FxConverter) -> FxConversionFunc:
@@ -952,7 +956,7 @@ class AllocateLine(MemoryPlanningLine):
             if layout.comm_buffer_type != ir.CommBufferType.PG_ALLOC:
                 return self
 
-            exceeds, alloc_bytes = self._pg_alloc_exceeds_budget(state, layout)
+            exceeds, alloc_bytes = self._pg_alloc_exceeds_budget(state)
             if not exceeds:
                 state.total_pg_alloc_bytes += alloc_bytes
                 log.debug(
@@ -978,6 +982,23 @@ class AllocateLine(MemoryPlanningLine):
         key = buffer_reuse_key(self.node)
         if config.allow_buffer_reuse and key in state:
             free_line = state.pop(key)
+            # In multi-stream graphs, only reuse buffers from the same stream
+            # to avoid races where a stream is still reading a buffer whose
+            # memory slot gets reused by a different stream.
+            if V.graph.scheduler._has_multi_stream_nodes():
+                alloc_stream = V.graph.scheduler.buff_to_stream.get(
+                    self.node.get_name()
+                )
+                free_stream = V.graph.scheduler.buff_to_stream.get(
+                    free_line.node.get_name()
+                )
+                if (
+                    alloc_stream is not None
+                    and free_stream is not None
+                    and alloc_stream != free_stream
+                ):
+                    state.push(key, free_line)
+                    return self
             size = V.graph.sizevars.optimization_hint(
                 V.graph.get_allocation_storage_size(self.node), fallback=0
             ) * get_dtype_size(self.node.get_dtype())
@@ -1009,12 +1030,12 @@ class AllocateLine(MemoryPlanningLine):
         return self
 
     def _pg_alloc_exceeds_budget(
-        self, state: MemoryPlanningState, layout: ir.CommBufferLayout
+        self, state: MemoryPlanningState
     ) -> tuple[bool, int]:
         # Check if pg_alloc allocation would exceed budget.
 
         alloc_bytes = V.graph.sizevars.optimization_hint(
-            V.graph.get_allocation_storage_size(self.node)
+            V.graph.get_allocation_storage_size(self.node), fallback=0
         ) * get_dtype_size(self.node.get_dtype())
         max_gb = config.comms_pg_alloc_max_gb
         exceeds = max_gb is not None and (
@@ -1049,7 +1070,7 @@ class AllocateLine(MemoryPlanningLine):
                 return None
 
         # Min-cost flow: use pre-computed plan
-        if strategy == "min_cost_flow" and state.borrow_plan is not None:
+        if strategy == "greedy_matching" and state.borrow_plan is not None:
             planned_comm_key = state.borrow_plan.get(buf_name)
             if planned_comm_key is None:
                 return None
@@ -1059,7 +1080,7 @@ class AllocateLine(MemoryPlanningLine):
             free_line.is_reused = True
             state.borrowed_comm_keys[buf_name] = planned_comm_key
             log.debug(
-                "pg_alloc borrow (min_cost_flow): %s borrows comm buffer %s",
+                "pg_alloc borrow (greedy_matching): %s borrows comm buffer %s",
                 buf_name,
                 planned_comm_key,
             )
@@ -1407,6 +1428,20 @@ class UnbackedSymbolDefsLine(WrapperLine):
         return converter._generate_unbacked_symbol_defs
 
 
+@dataclasses.dataclass
+class AssertSizeStrideLine(WrapperLine):
+    name: str
+    size: str
+    stride: str
+
+    def codegen(self, code: IndentedBuffer) -> None:
+        code.writeline(f"assert_size_stride({self.name}, {self.size}, {self.stride})")
+
+    @staticmethod
+    def codegen_fx(converter: FxConverter) -> FxConversionFunc:
+        return converter._generate_assert_size_stride
+
+
 BufferName = str
 Line = MemoryPlanningLine | LineContext
 
@@ -1420,6 +1455,7 @@ class PythonWrapperCodegen(CodeGen):
 
     def __init__(self):
         super().__init__()
+        self._pending_input_asserts: dict[str, tuple[str, str]] = {}
         self._names_iter: Iterator[int] = count()
         self.args_to_buffers: dict[
             str, None | ir.TensorBox | ir.Buffer | ir.TorchBindObject
@@ -1767,13 +1803,19 @@ class PythonWrapperCodegen(CodeGen):
 
     def codegen_input_size_asserts(self) -> None:
         for name, buf in self.get_graph_inputs().items():
-            if isinstance(buf, (sympy.Expr, ir.TorchBindObject)):
+            if isinstance(
+                buf,
+                (
+                    sympy.Expr,
+                    ir.TorchBindObject,
+                    ir.GeneratorState,
+                    ir.OpaqueObjectState,
+                ),
+            ):
                 continue
 
             # a graph partition may take an IRNode output from a previous partition
-            if name not in V.graph.graph_input_names or isinstance(
-                buf, ir.GeneratorState
-            ):
+            if name not in V.graph.graph_input_names:
                 continue
 
             # comparing strides for 0 size tensor is tricky. Ignore them for now.
@@ -1781,7 +1823,7 @@ class PythonWrapperCodegen(CodeGen):
                 continue
             size = self.codegen_python_shape_tuple(buf.get_size())
             stride = self.codegen_python_shape_tuple(buf.get_stride())
-            self.prefix.writeline(f"assert_size_stride({name}, {size}, {stride})")
+            self._pending_input_asserts[name] = (size, stride)
 
     def codegen_input_nan_asserts(self) -> None:
         self.prefix.writeline("# make sure graph inputs are not nan/inf")
@@ -1873,6 +1915,16 @@ class PythonWrapperCodegen(CodeGen):
             self.codegen_input_size_asserts()
         if config.nan_asserts:
             self.codegen_input_nan_asserts()
+
+    # Input size/stride assertions are deferred from the top of call() to just
+    # before the first kernel that uses each input. This avoids a block of N
+    # sequential assert calls (~1 us each) on the critical path before the first
+    # GPU kernel launch. Called from the scheduler codegen loop.
+    def codegen_deferred_input_asserts(self, input_names: Iterable[str]) -> None:
+        for name in input_names:
+            if name in self._pending_input_asserts:
+                size, stride = self._pending_input_asserts.pop(name)
+                self.writeline(AssertSizeStrideLine(name, size, stride))
 
     # this function (and below) takes the graph name as input so
     # that stream caching happens per graph instance. this
@@ -2382,12 +2434,21 @@ class PythonWrapperCodegen(CodeGen):
                 state.regular_alloc_schedule.setdefault(key, []).append(
                     line.scheduler_node_index
                 )
+            elif isinstance(line, FreeIfNotReusedLine) and line.comm_buffer:
+                layout = line.node.get_output_spec()
+                if isinstance(layout, ir.CommBufferLayout):
+                    key = comm_buffer_reuse_key(line.node)
+                    state.comm_free_schedule.setdefault(key, []).append(
+                        line.scheduler_node_index
+                    )
             elif isinstance(line, FreeIfNotReusedLine) and not line.comm_buffer:
                 state.buffer_free_sni[line.node.get_name()] = line.scheduler_node_index
 
         # Sort schedules for binary search
         for key in state.comm_demand_schedule:
             state.comm_demand_schedule[key].sort()
+        for key in state.comm_free_schedule:
+            state.comm_free_schedule[key].sort()
         for key in state.regular_alloc_schedule:
             state.regular_alloc_schedule[key].sort()
 
@@ -2432,14 +2493,14 @@ class PythonWrapperCodegen(CodeGen):
 
         return peak_live
 
-    def _plan_borrow_min_cost_flow(
+    def _plan_borrow_greedy_matching(
         self, state: MemoryPlanningState
     ) -> dict[str, CommBufferReuseKey]:
-        """Compute optimal borrow assignments via bipartite matching.
+        """Compute borrow assignments via greedy maximum-weight bipartite matching.
 
         Phase 1: Get peak live buffers via simulation.
         Phase 2: Build bipartite graph of borrowable buffers to idle comm windows.
-        Phase 3: Maximum-weight matching via augmenting paths.
+        Phase 3: Greedy matching (sort edges by weight desc, take non-conflicting).
         Returns {buf_name: comm_key} for matched pairs.
         """
         import bisect
@@ -2488,9 +2549,9 @@ class PythonWrapperCodegen(CodeGen):
         if not candidates:
             return {}
 
-        # Build idle windows from comm demand schedule:
-        # For each comm_key, idle windows are gaps between consecutive demands.
-        # An idle window [start, end] means the comm buffer is free during that range.
+        # Build idle windows from comm free/demand schedules:
+        # A comm buffer is idle from its free SNI until the next alloc SNI.
+        # Window [idle_start, idle_end) means the comm buffer is available for borrowing.
         _INF_SNI = 2**31
         idle_windows: list[
             tuple[CommBufferReuseKey, int, int]
@@ -2498,9 +2559,12 @@ class PythonWrapperCodegen(CodeGen):
         for comm_key, demand_snis in state.comm_demand_schedule.items():
             if comm_key[3] != ir.CommBufferType.PG_ALLOC:
                 continue
-            for i in range(len(demand_snis)):
-                idle_start = demand_snis[i]
-                idle_end = demand_snis[i + 1] if i + 1 < len(demand_snis) else _INF_SNI
+            free_snis = state.comm_free_schedule.get(comm_key, [])
+            for i in range(len(free_snis)):
+                idle_start = free_snis[i]
+                # Next demand after this free marks end of idle window
+                idx = bisect.bisect_right(demand_snis, idle_start)
+                idle_end = demand_snis[idx] if idx < len(demand_snis) else _INF_SNI
                 idle_windows.append((comm_key, idle_start, idle_end))
 
         if not idle_windows:
@@ -2532,8 +2596,8 @@ class PythonWrapperCodegen(CodeGen):
                 if alloc_sni >= idle_start and free_sni < idle_end:
                     adj[ci].append((wi, size))
 
-        # Maximum-weight bipartite matching via greedy (sort by weight desc)
-        # For typical graph sizes this is effective and fast.
+        # Greedy maximum-weight matching: sort edges by weight desc, greedily pick
+        # non-conflicting edges. Not optimal but effective for typical graph sizes.
         edges: list[tuple[int, int, int]] = []  # (weight, candidate_idx, window_idx)
         for ci, neighbors in adj.items():
             for wi, weight in neighbors:
@@ -2580,8 +2644,8 @@ class PythonWrapperCodegen(CodeGen):
                 planning_states[
                     -1
                 ].peak_live_buffers = self._simulate_peak_without_borrow()
-            elif strategy == "min_cost_flow":
-                planning_states[-1].borrow_plan = self._plan_borrow_min_cost_flow(
+            elif strategy == "greedy_matching":
+                planning_states[-1].borrow_plan = self._plan_borrow_greedy_matching(
                     planning_states[-1]
                 )
 
@@ -2644,9 +2708,9 @@ class PythonWrapperCodegen(CodeGen):
                 if isinstance(stride, sympy.Symbol) and stride not in bound_vars:
                     code.writeline(f"{stride} = {strideof(name)}[{dim}]")
                     bound_vars.add(stride)
-        elif isinstance(value, ir.TorchBindObject):
-            return
-        elif isinstance(value, ir.GeneratorState):
+        elif isinstance(
+            value, (ir.TorchBindObject, ir.GeneratorState, ir.OpaqueObjectState)
+        ):
             return
         else:
             if torch._inductor.config.graph_partition:
@@ -2937,11 +3001,7 @@ class PythonWrapperCodegen(CodeGen):
                     # the subclass.
                     continue
                 if isinstance(value, ir.TorchBindObject):
-                    if len(V.graph.torchbind_constants) == 0:
-                        # otherwise we have already imported the pickle package
-                        output.writeline("import pickle")
-                    output.writeline(f"global {name}")
-                    add_torchbind_input(name, value.get_real_obj())
+                    output.writeline(f"{name} = None")
                 elif isinstance(value, sympy.Expr):  # Don't need to add symbolic
                     # TODO: this fallback and those below actually will generate possibly
                     # invalid benchmark code, because it's not guaranteed 42
@@ -2955,6 +3015,8 @@ class PythonWrapperCodegen(CodeGen):
                         name,
                         f"torch.cuda.default_generators[{value.device.index}].graphsafe_get_state()",
                     )
+                elif isinstance(value, ir.OpaqueObjectState):
+                    output.writeline(f"{name} = None")
                 else:
                     shape = V.graph.sizevars.optimization_hints(
                         value.get_size(), fallback=42
@@ -3607,6 +3669,7 @@ class PythonWrapperCodegen(CodeGen):
         )
 
         device = device or V.graph.get_current_device_or_throw()
+        current_stream_idx = V.graph.scheduler.current_stream_idx
         self.writeline(
             KernelCallLine(
                 self,
@@ -3626,6 +3689,7 @@ class PythonWrapperCodegen(CodeGen):
                 graph_name=V.graph.name,
                 # pyrefly: ignore [bad-argument-type]
                 original_fxnode_name=original_fxnode_name,
+                current_stream_idx=current_stream_idx,
             )
         )
 
@@ -3643,6 +3707,7 @@ class PythonWrapperCodegen(CodeGen):
         inductor_meta=None,
         graph_name="",
         original_fxnode_name=None,
+        current_stream_idx=None,
     ):
         device = device or V.graph.get_current_device_or_throw()
         if not triton and device.type != "cuda":
@@ -3659,9 +3724,17 @@ class PythonWrapperCodegen(CodeGen):
 
         call_args_str = self.prepare_triton_kernel_call(call_args)
         call_args_str = ", ".join(call_args_str)
-        stream_name = PythonWrapperCodegen.write_get_raw_stream(
-            self, device.index, graph_name
-        )
+        if current_stream_idx is not None and current_stream_idx != DEFAULT_STREAM_IDX:
+            # Inside a user stream context: emit a fresh get_raw_stream call so
+            # it picks up the active stream at runtime, rather than reusing the
+            # LRU-cached stream0 variable which captured the default stream.
+            self.write_get_raw_stream_header()
+            stream_name = "raw_stream"
+            self.writeline(f"{stream_name} = get_raw_stream({device.index})")
+        else:
+            stream_name = PythonWrapperCodegen.write_get_raw_stream(
+                self, device.index, graph_name
+            )
         if not triton:
             stream_ptr = f"c_void_p({stream_name})"
             self.writeline(
@@ -3856,7 +3929,7 @@ class PythonWrapperCodegen(CodeGen):
             return s.codegen_reference()
         elif has_triton_package() and isinstance(s, triton.language.dtype):  # type: ignore[possibly-undefined]
             return repr(s)
-        elif isinstance(s, ir.GeneratorState):
+        elif isinstance(s, (ir.GeneratorState, ir.OpaqueObjectState)):
             return s.codegen_reference()
         elif is_opaque_value_type(type(s)):
             obj_repr, opaque_types = get_opaque_obj_repr(s)

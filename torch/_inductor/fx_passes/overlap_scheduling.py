@@ -14,6 +14,7 @@ from torch._dynamo.utils import counters, dynamo_timed
 from torch._inductor import config
 from torch._inductor.comm_analysis import estimate_fx_collective_memory_footprint
 from torch._inductor.fx_passes.bucketing import (
+    _default_bucket_mode,
     _schedulable_wait_node,
     bucket_key,
     BucketMode,
@@ -389,7 +390,7 @@ class OverlapScheduler:
         bucket_exposed_first: bool | None = None,
         enable_fusion_regions: bool = False,
         bucket_only_internode_comms: bool = False,
-        bucket_mode: BucketMode = "custom_ops_multidtype",
+        bucket_mode: BucketMode | None = None,
         max_off_bucket_gb: float | None = 0.5,
         prioritize_bucketing_during_scheduling: bool = True,
     ):
@@ -412,7 +413,7 @@ class OverlapScheduler:
         self.log_final_collectives_estimations = log_final_collectives_estimations
         self.bucket_exposed_first = bucket_exposed_first
         self.bucket_only_internode_comms = bucket_only_internode_comms
-        self.bucket_mode = bucket_mode
+        self.bucket_mode = bucket_mode or _default_bucket_mode()
         self.max_off_bucket_bytes: int | None = (
             gb_to_bytes(max_off_bucket_gb) if max_off_bucket_gb is not None else None
         )
@@ -1001,6 +1002,7 @@ class OverlapScheduler:
             region_of=self.region_of,
             bucket_exposed_first=self.bucket_exposed_first,
             bucket_only_internode_comms=self.bucket_only_internode_comms,
+            bucket_mode=self.bucket_mode,
         )
 
         if self.log_final_collectives_estimations:
@@ -1422,12 +1424,12 @@ class OverlapScheduler:
         if not torch._inductor.config.test_configs.assume_bucketing_reduces_latency:
             return False
 
-        key = bucket_key(node, mode="custom_ops_multidtype")
+        key = bucket_key(node, mode=self.bucket_mode)
         if key is None:
             return False
 
         for in_flight_coll in self.in_flight:
-            if bucket_key(in_flight_coll, mode="custom_ops_multidtype") == key:
+            if bucket_key(in_flight_coll, mode=self.bucket_mode) == key:
                 return True
 
         return False
