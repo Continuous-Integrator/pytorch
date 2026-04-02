@@ -185,61 +185,23 @@ _TRACKED_META_FIELDS = OrderedSet(torch.fx.proxy._COPY_META_FIELDS) | OrderedSet
 )
 
 
-def _snapshot_meta(graph: torch.fx.Graph) -> dict[int, tuple[str, OrderedSet[str]]]:
-    """Snapshot which tracked metadata fields exist on each call_function node.
-
-    Returns ``{id(node): (node.name, {field, ...})}``.  Keyed by ``id()``
-    because node names may be recycled during replacement.
-    """
-    result: dict[int, tuple[str, OrderedSet[str]]] = {}
-    for node in graph.nodes:
-        if node.op == "call_function":
-            result[id(node)] = (
-                node.name,
-                OrderedSet([f for f in _TRACKED_META_FIELDS if f in node.meta]),
-            )
-    return result
-
-
-def _check_meta_is_preserved(
-    graph: torch.fx.Graph,
-    pre_snapshot: dict[int, tuple[str, OrderedSet[str]]],
-) -> None:
-    """Raise if tracked metadata fields vanished from the graph after a pass.
-
-    Compares the union of tracked fields across all ``call_function`` nodes
-    before and after.  Any field present on some node before but on no node
-    after is reported.  This is conservative — per-node losses masked by
-    other surviving nodes will not be caught — but it reliably detects fields
-    that disappear entirely.
-
-    For per-node checking, see ``_check_replacement_meta`` which runs inside
-    ``replace_with_graph`` where the exact old→new mapping is known.
-    """
-    pre_fields: OrderedSet[str] = OrderedSet()
-    for _, fields in pre_snapshot.values():
-        pre_fields |= fields
-
-    post_fields: OrderedSet[str] = OrderedSet()
-    for node in graph.nodes:
-        if node.op == "call_function":
-            post_fields |= OrderedSet(
-                [f for f in _TRACKED_META_FIELDS if f in node.meta]
-            )
-
-    lost = pre_fields - post_fields
-    if lost:
-        raise RuntimeError(
-            f"Pattern matching lost metadata fields: {lost}. "
-            "Replacement nodes must inherit metadata from matched nodes."
-        )
-
-
 def _check_replacement_meta(old: torch.fx.Node, new: torch.fx.Node) -> None:
     """Verify a replacement node has the tracked metadata fields that the
-    matched node had.  Called from replacement paths where the exact old→new
+    matched node had.  Called from ``LoweringPatternEntry.apply`` and
+    ``ReplacementPatternEntry.replace_with_graph`` where the exact old→new
     mapping is known.  Raises on any loss so that metadata regressions are
     caught immediately.
+
+    Known limitations:
+
+    - ``GraphPatternEntry`` handlers that manipulate the graph directly
+      (e.g. ``graph.call_function`` + ``node.replace_all_uses_with``) bypass
+      this check entirely.  Only handlers that go through
+      ``replace_by_example`` or ``replace_with_graph`` are covered.
+    - This checks field *existence* only, not content correctness.  For
+      example, ``from_node`` may require appending a ``NodeSource`` rather
+      than overwriting (see ``_transfer_meta`` provenance tracking), but
+      that is not validated here.
     """
     old_fields = OrderedSet([f for f in _TRACKED_META_FIELDS if f in old.meta])
     new_fields = OrderedSet([f for f in _TRACKED_META_FIELDS if f in new.meta])

@@ -2196,7 +2196,8 @@ class TestPatternMatcher(TestCase):
 
         def custom_pass(graph: torch.fx.Graph):
             self._inject_test_metadata(graph)
-            # apply() automatically snapshots meta before and checks after
+            # _check_replacement_meta runs inside replace_with_graph for
+            # each old->new pair and raises on any lost metadata fields
             my_patterns.apply(graph)
 
         def fn(x, y):
@@ -2273,6 +2274,91 @@ class TestPatternMatcher(TestCase):
             fn, options={"post_grad_custom_post_pass": custom_pass}
         )
         compiled_fn(x, y)
+
+    def test_metadata_propagation_replace_by_example_multinode(self):
+        """Verify metadata propagation for replace_by_example with a multi-node
+        match.  The output node should inherit metadata from the matched output
+        node via replace_with_graph's replace() inner function."""
+
+        test_pass = PatternMatcherPass()
+
+        @register_graph_pattern(
+            CallFunction(
+                aten.mul.Tensor,
+                CallFunction(aten.add.Tensor, KeywordArg("x"), KeywordArg("y")),
+                KeywordArg("z"),
+            ),
+            pass_dict=test_pass,
+        )
+        def add_mul_to_sub(match: Match, x, y, z):
+            def repl(a, b, c):
+                return (a - b) * c
+
+            with V.fake_mode:
+                match.replace_by_example(repl, [x, y, z])
+
+        def custom_pass(graph: torch.fx.Graph):
+            self._inject_test_metadata(graph)
+            test_pass.apply(graph)
+
+        def fn(x, y, z):
+            return (x + y) * z
+
+        x = torch.randn(4, 4, device=GPU_TYPE)
+        y = torch.randn(4, 4, device=GPU_TYPE)
+        z = torch.randn(4, 4, device=GPU_TYPE)
+
+        compiled_fn = torch.compile(
+            fn, options={"post_grad_custom_post_pass": custom_pass}
+        )
+        compiled_fn(x, y, z)
+
+    def test_metadata_propagation_lowering_pattern(self):
+        """Verify metadata propagation for LoweringPatternEntry.apply.
+
+        LoweringPatternEntry does replacement.meta.update(node.meta) which
+        is a full copy, so _check_replacement_meta should always pass.
+        This test ensures the safety net remains intact.
+        """
+        from torch._inductor.pattern_matcher import _check_replacement_meta
+
+        test_pass = PatternMatcherPass()
+
+        counter = 0
+
+        @register_graph_pattern(
+            CallFunction(aten.add.Tensor, KeywordArg("x"), KeywordArg("y")),
+            pass_dict=test_pass,
+        )
+        def manual_lowering(match: Match, x, y):
+            nonlocal counter
+            # Manually exercise the LoweringPatternEntry code path:
+            # create a replacement node, copy meta, and check
+            node = match.output_node()
+            graph = match.graph
+            with graph.inserting_before(node):
+                replacement = graph.call_function(aten.mul.Tensor, (x, y))
+                replacement.meta.update(node.meta)
+                _check_replacement_meta(node, replacement)
+                node.replace_all_uses_with(replacement)
+            match.erase_nodes()
+            counter += 1
+
+        def custom_pass(graph: torch.fx.Graph):
+            self._inject_test_metadata(graph)
+            test_pass.apply(graph)
+
+        def fn(x, y):
+            return x + y
+
+        x = torch.randn(4, 4, device=GPU_TYPE)
+        y = torch.randn(4, 4, device=GPU_TYPE)
+
+        compiled_fn = torch.compile(
+            fn, options={"post_grad_custom_post_pass": custom_pass}
+        )
+        compiled_fn(x, y)
+        self.assertEqual(counter, 1)
 
 
 class TestPatternMatcherLogging(LoggingTestCase):
