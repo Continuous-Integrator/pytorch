@@ -499,13 +499,15 @@ def extract_tensor_metadata_for_cache_key(t: Tensor) -> TensorMetadata:
 # __reduce_ex__ may raise TypeError. We must not treat these as unpicklable in
 # reducer_override to avoid infinite recursion.
 _PICKLE_NATIVE_TYPES = frozenset(
-    {
-        FunctionType,
-        BuiltinFunctionType,
-        BuiltinMethodType,
-        MethodType,
-        type,
-    }
+    OrderedSet(
+        [
+            FunctionType,
+            BuiltinFunctionType,
+            BuiltinMethodType,
+            MethodType,
+            type,
+        ]
+    )
 )
 
 
