@@ -2855,7 +2855,13 @@ class UserDefinedDictVariable(UserDefinedObjectVariable):
                 "dict_vt must be constructed by builder.py when source is present"
             )
             self._dict_vt = ConstDictVariable(
-                {}, dict, mutation_type=ValueMutationNew()
+                {},
+                user_cls=(
+                    collections.OrderedDict
+                    if isinstance(value, collections.OrderedDict)
+                    else dict
+                ),
+                mutation_type=ValueMutationNew(),
             )
         else:
             self._dict_vt = dict_vt
@@ -2921,6 +2927,10 @@ class UserDefinedDictVariable(UserDefinedObjectVariable):
         if self._maybe_get_baseclass_method("__len__") in self._dict_methods:
             return self._dict_vt.mp_length(tx)
         return super().mp_length(tx)
+
+    def sq_length(self, tx: "InstructionTranslator") -> VariableTracker:
+        # User defined classes implements both sq_length and mp_length
+        return self.mp_length(tx)
 
 
 class UserDefinedSetVariable(UserDefinedObjectVariable):
@@ -3231,7 +3241,7 @@ class MutableMappingVariable(UserDefinedObjectVariable):
 
     def mp_length(self, tx: "InstructionTranslator") -> VariableTracker:
         if self._maybe_get_baseclass_method("__len__") in dict_methods:
-            return VariableTracker.build(tx, len(self.value))
+            return VariableTracker.build(tx, len(self.value))  # type: ignore[bad-argument-type]
         return super().mp_length(tx)
 
 
