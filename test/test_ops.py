@@ -27,6 +27,7 @@ from torch.testing._internal.common_device_type import (
     instantiate_device_type_tests,
     onlyAccelerator,
     onlyCPU,
+    onlyCUDA,
     onlyNativeDeviceTypesAnd,
     OpDTypes,
     ops,
@@ -760,8 +761,7 @@ class TestCommon(TestCase):
             )
         self._ref_test_helper(contextlib.nullcontext, device, dtype, op)
 
-    @skipXPU
-    @onlyAccelerator
+    @onlyCUDA
     @ops(python_ref_db)
     @parametrize("executor", ["aten"])
     @skipIfTorchInductor("Takes too long for inductor")

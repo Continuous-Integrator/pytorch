@@ -12662,8 +12662,6 @@ op_db: list[OpInfo] = [
                # Exception: Jacobian computed with forward mode mismatch for output 0 with respect to input 1
                DecorateInfo(unittest.expectedFailure, 'TestFwdGradients', 'test_forward_mode_AD',
                             dtypes=(torch.float64,), device_type='xpu'),
-               DecorateInfo(unittest.expectedFailure, 'TestFwdGradients', 'test_inplace_forward_mode_AD',
-                            dtypes=(torch.float64,), device_type='xpu'),
                DecorateInfo(unittest.expectedFailure, 'TestBwdGradients', 'test_fn_grad',
                             dtypes=(torch.float64,), device_type='xpu'),
                DecorateInfo(unittest.expectedFailure, 'TestBwdGradients', 'test_inplace_grad',
@@ -12735,8 +12733,6 @@ op_db: list[OpInfo] = [
                DecorateInfo(unittest.expectedFailure, 'TestBwdGradients', 'test_fn_gradgrad',
                             dtypes=(torch.float64,), device_type='xpu'),
                DecorateInfo(unittest.expectedFailure, 'TestBwdGradients', 'test_inplace_grad',
-                            dtypes=(torch.float64,), device_type='xpu'),
-               DecorateInfo(unittest.expectedFailure, 'TestBwdGradients', 'test_inplace_gradgrad',
                             dtypes=(torch.float64,), device_type='xpu'),
                # https://github.com/intel/torch-xpu-ops/issues/1893
                DecorateInfo(unittest.skip('Skipped!'), 'TestMathBits', 'test_neg_view',
@@ -26901,7 +26897,7 @@ python_ref_db = [
             DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_dtypes', device_type='mps'),
             DecorateInfo(
                 unittest.expectedFailure, 'TestCommon', 'test_python_ref_meta',
-                device_type='mps', dtypes=(torch.float16,)
+                device_type=('mps', 'xpu'), dtypes=(torch.float16,)
             ),
             DecorateInfo(
                 unittest.expectedFailure, 'TestCommon', 'test_python_ref_torch_fallback',
@@ -26910,7 +26906,6 @@ python_ref_db = [
             # The dtyeps of _refs.stft is not aligned to stft
             # # https://github.com/intel/torch-xpu-ops/issues/3238
             DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_dtypes', device_type='xpu'),
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_python_ref_meta', device_type='xpu'),
         ],
     ),
     PythonRefInfo(
