@@ -2,7 +2,7 @@
 
 import functools
 import logging
-from typing import Protocol, runtime_checkable
+from typing import Protocol
 
 from packaging.version import Version
 
@@ -12,7 +12,6 @@ from .registry import _OpFn
 log = logging.getLogger(__name__)
 
 
-@runtime_checkable
 class DSLModuleProtocol(Protocol):
     """Complete interface for DSL utility modules"""
 
@@ -53,8 +52,19 @@ class DSLRegistry:
         self._validate_dsl_name(name)
 
         # Validate that module implements the protocol
-        if not isinstance(dsl_module, DSLModuleProtocol):
-            raise TypeError(f"DSL module '{name}' does not implement DSLModuleProtocol interface")
+        required_methods = [
+            "runtime_available",
+            "runtime_version",
+            "register_op_override",
+            "deregister_op_overrides",
+        ]
+        missing_methods = [
+            method for method in required_methods if not hasattr(dsl_module, method)
+        ]
+        if missing_methods:
+            raise TypeError(
+                f"DSL module '{name}' missing required methods: {missing_methods}"
+            )
 
         # Handle duplicate registration case
         if name in self._dsl_modules:

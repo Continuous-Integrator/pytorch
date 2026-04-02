@@ -127,7 +127,9 @@ class TestNativeDSLOps(TestCase):
         if len(api_sets) > 1:
             for i, api_set in enumerate(api_sets[1:], 1):
                 self.assertEqual(
-                    api_sets[0], api_set, f"Module {i} should have identical public API to module 0"
+                    api_sets[0],
+                    api_set,
+                    f"Module {i} should have identical public API to module 0",
                 )
 
         # Test runtime functions return expected types
@@ -434,7 +436,7 @@ class TestNativeDSLOps(TestCase):
         mock_dsl_1.runtime_version.return_value = None
 
         mock_dsl_2 = Mock()
-        mock_dsl_2.runtime_available.return_value = True   # Available
+        mock_dsl_2.runtime_available.return_value = True  # Available
         mock_dsl_2.runtime_version.return_value = None
 
         # Register first DSL and cache results
@@ -452,8 +454,14 @@ class TestNativeDSLOps(TestCase):
         new_available = registry.is_dsl_available("test_cache_dsl")
         new_list = registry.list_available_dsls()
 
-        self.assertTrue(new_available, "Cache should be invalidated and return new result")
-        self.assertIn("test_cache_dsl", new_list, "Available DSLs list should reflect new registration")
+        self.assertTrue(
+            new_available, "Cache should be invalidated and return new result"
+        )
+        self.assertIn(
+            "test_cache_dsl",
+            new_list,
+            "Available DSLs list should reflect new registration",
+        )
 
     def test_incomplete_protocol_implementation(self):
         """Test that registration fails when module doesn't implement required protocol methods"""
@@ -466,15 +474,18 @@ class TestNativeDSLOps(TestCase):
         class IncompleteModule:
             def runtime_available(self):
                 return True
+
             # Missing: runtime_version, register_op_override, deregister_op_overrides
 
         incomplete_module = IncompleteModule()
 
-        # Attempt to register should raise TypeError due to isinstance check
+        # Attempt to register should raise TypeError due to missing methods
         with self.assertRaises(TypeError) as cm:
             registry.register_dsl("incomplete_dsl", incomplete_module)
 
-        self.assertIn("does not implement DSLModuleProtocol interface", str(cm.exception))
+        self.assertIn("missing required methods", str(cm.exception))
+        self.assertIn("runtime_version", str(cm.exception))
+        self.assertIn("register_op_override", str(cm.exception))
 
         # Verify DSL was not registered
         self.assertNotIn("incomplete_dsl", registry.list_all_dsls())
