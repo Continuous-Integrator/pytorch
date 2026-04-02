@@ -2373,6 +2373,56 @@ TORCH_LIBRARY(test_autograd_function_backed_op, m) {
         ):
             torch.ops.load_library("libnoexist.so")
 
+    def test_list_scalar_type(self):
+        lib = self.lib()
+        lib.define("scalar_list(Tensor x, ScalarType[] dts) -> Tensor")
+
+        received = None
+
+        @torch.library.impl(lib, "scalar_list", "CPU")
+        def _(x, dts):
+            nonlocal received
+            received = dts
+            return x.clone()
+
+        x = torch.randn(3)
+        torch.ops._test_custom_op.scalar_list(x, [torch.float32, torch.bfloat16])
+        self.assertEqual(received, [torch.float32, torch.bfloat16])
+
+    def test_list_layout(self):
+        lib = self.lib()
+        lib.define("layout_list(Tensor x, Layout[] layouts) -> Tensor")
+
+        received = None
+
+        @torch.library.impl(lib, "layout_list", "CPU")
+        def _(x, layouts):
+            nonlocal received
+            received = layouts
+            return x.clone()
+
+        x = torch.randn(3)
+        torch.ops._test_custom_op.layout_list(x, [torch.strided, torch.sparse_coo])
+        self.assertEqual(received, [torch.strided, torch.sparse_coo])
+
+    def test_list_memory_format(self):
+        lib = self.lib()
+        lib.define("memfmt_list(Tensor x, MemoryFormat[] fmts) -> Tensor")
+
+        received = None
+
+        @torch.library.impl(lib, "memfmt_list", "CPU")
+        def _(x, fmts):
+            nonlocal received
+            received = fmts
+            return x.clone()
+
+        x = torch.randn(3)
+        torch.ops._test_custom_op.memfmt_list(
+            x, [torch.contiguous_format, torch.channels_last]
+        )
+        self.assertEqual(received, [torch.contiguous_format, torch.channels_last])
+
 
 def op_with_incorrect_schema(testcase, name):
     lib = testcase.lib()
@@ -4748,6 +4798,53 @@ class TestCustomOpFastPath(TestCase):
 
         x = torch.randn(3)
         self.assertEqual(fp_chain(x), x)
+
+    def test_fast_path_falls_back_for_functorch(self):
+        @torch.library.custom_op("_torch_testing::fp_functorch", mutates_args=())
+        def fp_functorch(x: Tensor) -> Tensor:
+            return x.clone()
+
+        @fp_functorch.register_fake
+        def _(x):
+            return torch.empty_like(x)
+
+        x = torch.randn(3)
+        self.assertEqual(fp_functorch(x), x)
+
+        result = torch.vmap(fp_functorch)(x.unsqueeze(0))
+        self.assertEqual(result, x.unsqueeze(0))
+
+    def test_fast_path_falls_back_for_kwargs(self):
+        @torch.library.custom_op("_torch_testing::fp_kw", mutates_args=())
+        def fp_kw(x: Tensor, y: Tensor) -> Tensor:
+            return x + y
+
+        x, y = torch.randn(3), torch.randn(3)
+        self.assertEqual(fp_kw(x, y=y), x + y)
+        self.assertEqual(torch.ops._torch_testing.fp_kw(x, y=y), x + y)
+
+    def test_custom_op_fast_path_check_c_api(self):
+        args = (torch.randn(4), torch.randn(4))
+        result = torch._C._custom_op_fast_path_check(args, False)
+        self.assertIsNotNone(result)
+        self.assertEqual(result[0], "cpu")
+        self.assertEqual(result[1], False)
+
+        args_grad = (torch.randn(4, requires_grad=True),)
+        result = torch._C._custom_op_fast_path_check(args_grad, False)
+        self.assertEqual(result[1], True)
+
+        with torch.autocast("cpu"):
+            result = torch._C._custom_op_fast_path_check(args, False)
+            self.assertIsNone(result)
+
+        class MyMode(torch.overrides.TorchFunctionMode):
+            def __torch_function__(self, func, types, args=(), kwargs=None):
+                return func(*args, **(kwargs or {}))
+
+        with MyMode():
+            result = torch._C._custom_op_fast_path_check(args, False)
+            self.assertIsNone(result)
 
 
 class TestLibrarySourceLocation(TestCase):

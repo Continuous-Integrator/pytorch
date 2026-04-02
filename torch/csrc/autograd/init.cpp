@@ -1157,6 +1157,86 @@ static PyObject* any_output_is_alias_to_input_or_output(
   END_HANDLE_TH_ERRORS
 }
 
+// Consolidated fast-path eligibility check for custom_op.
+// Combines torch_function_mode, dispatch-key TLS (autocast, functorch, etc.),
+// tensor subclass, device, and requires_grad checks in one C++ call.
+//
+// Args: (args_tuple, check_multi_device: bool)
+//   args_tuple:         Python tuple of positional args to the custom op
+//   check_multi_device: if true, bail when tensor args span multiple devices
+//
+// Returns None when any guard fails (caller should fall back to the
+// C++ dispatcher). Otherwise returns (device_type: str, any_requires_grad:
+// bool).
+static PyObject* custom_op_fast_path_check(PyObject* _unused, PyObject* args) {
+  HANDLE_TH_ERRORS
+
+  TORCH_INTERNAL_ASSERT(
+      PyTuple_GET_SIZE(args) == 2,
+      "_custom_op_fast_path_check expects exactly 2 args");
+  PyObject* py_args = PyTuple_GET_ITEM(args, 0);
+  int check_multi_device = PyObject_IsTrue(PyTuple_GET_ITEM(args, 1));
+  TORCH_CHECK(check_multi_device != -1, "check_multi_device must be a bool");
+  TORCH_CHECK(PyTuple_Check(py_args), "first arg must be a tuple");
+
+  if (at::impl::torch_function_mode_enabled()) {
+    Py_RETURN_NONE;
+  }
+
+  // One-dispatch-key-computation: detect TLS deviation from normal eager.
+  // Normal eager: included = {BackendSelect, ADInplaceOrView},
+  //               excluded = {all autocast keys}.
+  // Extra included keys => functorch, ProxyTorchDispatchMode, etc.
+  // Missing excluded keys => autocast enabled.
+  auto tls = c10::impl::tls_local_dispatch_key_set();
+  c10::DispatchKeySet extra_included =
+      tls.included_ - c10::default_included_set;
+  c10::DispatchKeySet missing_excluded =
+      c10::default_excluded_set - tls.excluded_;
+  if (extra_included.raw_repr() != 0 || missing_excluded.raw_repr() != 0) {
+    Py_RETURN_NONE;
+  }
+
+  Py_ssize_t n = PyTuple_GET_SIZE(py_args);
+  if (n == 0) {
+    Py_RETURN_NONE;
+  }
+
+  c10::DeviceType first_device = c10::DeviceType::CPU;
+  bool seen_tensor = false;
+  bool any_requires_grad = false;
+
+  for (Py_ssize_t i = 0; i < n; i++) {
+    PyObject* obj = PyTuple_GET_ITEM(py_args, i);
+    if (!THPVariable_Check(obj))
+      continue;
+    if (Py_TYPE(obj) != (PyTypeObject*)THPVariableClass) {
+      Py_RETURN_NONE;
+    }
+    const auto& t = THPVariable_Unpack(obj);
+    auto dev = t.device().type();
+    if (!seen_tensor) {
+      first_device = dev;
+      seen_tensor = true;
+    } else if (check_multi_device && dev != first_device) {
+      Py_RETURN_NONE;
+    }
+    if (t.requires_grad()) {
+      any_requires_grad = true;
+    }
+  }
+
+  if (!seen_tensor) {
+    Py_RETURN_NONE;
+  }
+
+  std::string device_name =
+      c10::DeviceTypeName(first_device, /*lower_case=*/true);
+  return Py_BuildValue(
+      "(sO)", device_name.c_str(), any_requires_grad ? Py_True : Py_False);
+  END_HANDLE_TH_ERRORS
+}
+
 static PyObject* set_multithreading_enabled(
     PyObject* self,
     PyObject* args,
@@ -1687,6 +1767,10 @@ static PyMethodDef methods[] = {
     {"_len_torch_dispatch_stack",
      len_torch_dispatch_stack,
      METH_NOARGS,
+     nullptr},
+    {"_custom_op_fast_path_check",
+     custom_op_fast_path_check,
+     METH_VARARGS,
      nullptr},
     {"_set_dispatch_mode", set_dispatch_mode, METH_O, nullptr},
     {"_get_dispatch_mode", get_dispatch_mode, METH_O, nullptr},
