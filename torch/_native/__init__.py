@@ -6,6 +6,10 @@ from typing import cast
 # Need to import DSL utils to make sure registration is ok
 from . import cutedsl_utils, dsl_registry, ops, registry, triton_utils
 
+# Import DSL utility modules to trigger their registration
+# Note: These imports ensure DSL modules are registered at package import time
+from . import cutedsl_utils, triton_utils
+
 
 @cache
 def get_user_ordering_fn() -> registry.UserOrderingFn | None:

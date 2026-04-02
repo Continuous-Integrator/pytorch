@@ -2,7 +2,7 @@
 
 import functools
 import logging
-from typing import Protocol
+from typing import Protocol, runtime_checkable
 
 from packaging.version import Version
 
@@ -12,6 +12,7 @@ from .registry import _OpFn
 log = logging.getLogger(__name__)
 
 
+@runtime_checkable
 class DSLModuleProtocol(Protocol):
     """Complete interface for DSL utility modules"""
 
@@ -48,8 +49,12 @@ class DSLRegistry:
 
     def register_dsl(self, name: str, dsl_module: DSLModuleProtocol) -> None:
         """Register a DSL module with required interface"""
-        # Runtime validation for name only (type system handles module validation)
+        # Runtime validation for name and module interface
         self._validate_dsl_name(name)
+
+        # Validate that module implements the protocol
+        if not isinstance(dsl_module, DSLModuleProtocol):
+            raise TypeError(f"DSL module '{name}' does not implement DSLModuleProtocol interface")
 
         # Handle duplicate registration case
         if name in self._dsl_modules:
@@ -72,6 +77,12 @@ class DSLRegistry:
 
         # No cast needed - already properly typed
         self._dsl_modules[name] = dsl_module
+
+        # Clear caches to prevent stale results after registration
+        self.is_dsl_available.cache_clear()
+        self.get_dsl_version.cache_clear()
+        self.list_available_dsls.cache_clear()
+        self.list_all_dsls.cache_clear()
 
         log.info("Successfully registered DSL: %s", name)
 
@@ -103,17 +114,18 @@ class DSLRegistry:
             return None
 
     @functools.cache  # noqa: B019
-    def list_available_dsls(self) -> list[str]:
+    def list_available_dsls(self) -> tuple[str, ...]:
         """Get names of currently available DSLs"""
         available = []
         for name in self._dsl_modules:
             if self.is_dsl_available(name):  # Use cached method
                 available.append(name)
-        return available
+        return tuple(available)
 
-    def list_all_dsls(self) -> list[str]:
+    @functools.cache  # noqa: B019
+    def list_all_dsls(self) -> tuple[str, ...]:
         """Get all registered DSL names (available or not)"""
-        return list(self._dsl_modules.keys())
+        return tuple(self._dsl_modules.keys())
 
 
 # Global registry instance
