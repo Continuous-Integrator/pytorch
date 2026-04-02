@@ -208,7 +208,12 @@ fx_wrapper: bool = os.environ.get("TORCHINDUCTOR_FX_WRAPPER", "0") == "1"
 # Controls automatic precompiling of common include files for codecache.CppCodeCache
 # (i.e. for cpp_wrapper mode and for cpp kernels on CPU).  AOTI header precompiling is
 # controlled by a separate flag.
-cpp_cache_precompile_headers: bool = not is_fbcode()
+cpp_cache_precompile_headers: bool = (
+    os.environ.get(
+        "TORCHINDUCTOR_CPP_CACHE_PRECOMPILE_HEADERS", "0" if is_fbcode() else "1"
+    )
+    == "1"
+)
 
 online_softmax = os.environ.get("TORCHINDUCTOR_ONLINE_SOFTMAX", "1") == "1"
 
@@ -472,6 +477,19 @@ comms_pg_alloc_max_gb: float | None = (
 # Tokens: "only_all_gather", "only_reduce", "only_inputs", "only_outputs"
 # Combine with comma: "only_all_gather,only_outputs"
 comms_use_pg_alloc_strategy: str | None = os.environ.get("USE_PG_ALLOC_STRATEGY", None)
+
+# Allow non-comm ops to borrow idle pg_alloc buffers. Reduces CUDA caching
+# allocator fragmentation by reusing NCCL-registered memory for compute when
+# the buffer won't be needed for comms. Requires comms_use_pg_alloc=True.
+comms_pg_alloc_allow_borrow: bool = os.environ.get("USE_PG_ALLOC_BORROW", "0") == "1"
+
+# Strategy for cross-pool borrowing. Requires comms_pg_alloc_allow_borrow=True.
+# "greedy": single-pass, borrow first safe match (with reuse chain guard).
+# "peak_aware": two-pass — simulate to find peak, only borrow buffers live at peak.
+# "greedy_matching": greedy bipartite matching for borrow assignment minimizing peak.
+comms_pg_alloc_borrow_strategy: str = os.environ.get(
+    "USE_PG_ALLOC_BORROW_STRATEGY", "greedy"
+)
 
 # runtime estimation function for ops
 # for built-in estimation function, pass in "default"; for user-defined estimation function, pass in the function handle
@@ -822,6 +840,9 @@ delay_realize_cheap_outputs: bool = Config(
 # fallback to eager for random/dropout, this is slow but useful for debugging
 fallback_random = False
 
+# align random/dropout as eager mode(aten) behavior, maintaining fused possibility and faster gpu kernel
+align_random_eager = False
+
 # fallback embedding_bag_byte_unpack to eager
 fallback_embedding_bag_byte_unpack = False
 
@@ -937,6 +958,9 @@ always_keep_tensor_constants = False
 
 # assert that indirect indexing does not read / write out of bounds
 assert_indirect_indexing = True
+
+# skip emitting runtime assertions for unbacked symbols in generated code
+do_not_emit_runtime_assertions = False
 
 # compute CSE bounds on variables that do not appear in the FX graph
 compute_all_bounds = False
@@ -1150,11 +1174,20 @@ class aten_distributed_optimizations:
     # TODO(ivankobzarev): change default to "error" after real-world testing.
     spmd_mismatch: Literal["warn", "error"] = "warn"
 
-    # Bucket mode for collective bucketing.
-    # "default": plain torch.cat (visible to Inductor for fusion)
-    # "custom_ops": opaque custom op (FallbackKernel, no fusion)
-    # "custom_ops_multidtype": custom op with multi-dtype support
-    bucket_mode: str | None = None
+    # Default bucketing mode for auto and manual overlap scheduling
+    # "default": traced bucketing, fully lowered by inductor during compilation
+    # "custom_ops": temporary bucketing using custom ops to hide parts from inductor
+    # "custom_ops_multidtype": same as custom_ops but buckets multiple dtypes
+    # "coalesced": zero-copy batching via reduce_scatter_tensor_coalesced
+    #     (reduce_scatter only; all_gather falls back to default)
+    bucket_mode: Literal[
+        "default", "custom_ops", "custom_ops_multidtype", "coalesced"
+    ] = "custom_ops_multidtype"
+
+    # When True, automatically remove extra deps that create cycles instead of
+    # raising an error.  Set this to True as a workaround if overlap scheduling
+    # fails with a cycle error, and file a bug so the root cause can be fixed.
+    overlap_scheduling_autofix_cycles: bool = False
 
 
 def parallel_compile_enabled_internally() -> bool:
@@ -1195,11 +1228,7 @@ def decide_compile_threads() -> int:
         compile_threads = 1
         log.info("compile_threads set to 1 in fbcode")
     else:
-        cpu_count = (
-            len(os.sched_getaffinity(0))
-            if hasattr(os, "sched_getaffinity")
-            else os.cpu_count()
-        )
+        cpu_count = torch._utils.cpu_count()
         assert cpu_count
         compile_threads = min(32, cpu_count)
         log.info("compile_threads set to %d", compile_threads)
