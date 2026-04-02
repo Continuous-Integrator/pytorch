@@ -261,6 +261,14 @@ dtensor_multi_threaded_fails = {
 # Ops that fail to compile with DTensor + torch.compile(fullgraph=True).
 # These are compile-time failures, NOT numeric correctness issues.
 dtensor_compiled_fails = {
+    xfail("cartesian_prod"),
+    xfail("flatten"),
+    xfail("kron"),
+    xfail("nn.functional.instance_norm"),
+    xfail("ravel"),
+    xfail("reshape_as"),
+    xfail("take_along_dim"),
+    xfail("view_as"),
     # View-type ops that decompose into as_strided (at autograd level).
     # DTensor doesn't have a sharding strategy for as_strided.
     xfail("atleast_1d"),
