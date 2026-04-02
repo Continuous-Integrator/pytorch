@@ -1402,15 +1402,11 @@ class _CachingTorchDispatchMode(TorchDispatchMode):
         kwargs = {} if kwargs is None else kwargs
         is_compiling = _is_compiling(func, args, kwargs)
 
-        # SAC_IGNORED_OPS are not user-visible ops (e.g. detach), always
-        # recomputable. During compile, mark them explicitly so the remat
-        # chain isn't broken.
         if func in SAC_IGNORED_OPS:
             if is_compiling:
                 fx_traceback.current_meta["recompute"] = CheckpointPolicy.PREFER_RECOMPUTE
             return func(*args, **kwargs)
 
-        # Snapshot graph length before the op so we can tag new nodes after.
         if is_compiling:
             from torch.fx.experimental.proxy_tensor import get_proxy_mode
             proxy_mode = get_proxy_mode()
@@ -1437,19 +1433,14 @@ class _CachingTorchDispatchMode(TorchDispatchMode):
                 if isinstance(o, torch.Tensor):
                     self.tensor_tracker[o] = (func, idx, any_ret_has_alias_info)
 
-        # Call policy after the op so inner modes (e.g. a naming mode) have
-        # had a chance to annotate outputs before the policy inspects them.
         policy = self.policy_fn(SelectiveCheckpointContext(is_recompute=False, op_output=out),
                                 func, *args, **kwargs)
         if isinstance(policy, bool):
             policy = _policy_from_bool(policy)
 
         if is_compiling:
-            # Tag all FX nodes added by this op with the policy.
             if proxy_mode is not None:
                 graph = proxy_mode.tracer.graph
-                # Iterate the last N nodes in reverse to avoid
-                # materializing the full node list.
                 num_new = len(graph.nodes) - graph_len_before
                 for node, _ in zip(reversed(graph.nodes), range(num_new)):
                     node.meta["recompute"] = policy
