@@ -14927,32 +14927,35 @@ class TestNestedCheckpoint(TestCase):
         self.assertEqual(counter[0], 1)
 
 
-def _make_counter_op(name):
+@contextlib.contextmanager
+def _counter_op(name):
+    """Yields (op, counts) where op is a custom op that counts invocations."""
     counts = [0]
+    with torch.library._scoped_library("test_ckpt", "FRAGMENT"):
 
-    @torch.library.custom_op(f"test_ckpt::{name}", mutates_args=())
-    def op(x: torch.Tensor) -> torch.Tensor:
-        counts[0] += 1
-        return x.sin()
+        @torch.library.custom_op(f"test_ckpt::{name}", mutates_args=())
+        def op(x: torch.Tensor) -> torch.Tensor:
+            counts[0] += 1
+            return x.sin()
 
-    @op.register_fake
-    def _(x):
-        return torch.empty_like(x)
+        @op.register_fake
+        def _(x):
+            return torch.empty_like(x)
 
-    def setup_context(ctx, inputs, output):
-        ctx.save_for_backward(inputs[0])
+        def setup_context(ctx, inputs, output):
+            ctx.save_for_backward(inputs[0])
 
-    def backward(ctx, grad):
-        (x,) = ctx.saved_tensors
-        return grad * x.cos()
+        def backward(ctx, grad):
+            (x,) = ctx.saved_tensors
+            return grad * x.cos()
 
-    op.register_autograd(backward, setup_context=setup_context)
+        op.register_autograd(backward, setup_context=setup_context)
 
-    return op, counts
+        yield op, counts
 
 
 class _AutoNamingMode(TorchDispatchMode):
-    """Test helper: names output tensors as (fqn, op_name, count, output_idx)."""
+    """Test helper: names output tensors as ``fqn_op_count[_outputidx]``."""
 
     def __init__(self):
         from torch.utils.module_tracker import ModuleTracker
@@ -14978,12 +14981,18 @@ class _AutoNamingMode(TorchDispatchMode):
         key = (fqn, func)
         count = self._func_counter[key]
         self._func_counter[key] += 1
+        multi_output = isinstance(out, (tuple, list)) and sum(
+            isinstance(o, torch.Tensor) for o in out
+        ) > 1
         if isinstance(out, torch.Tensor):
-            self.names[out] = (fqn, op_name, count, 0)
+            self.names[out] = f"{fqn}_{op_name}_{count}"
         elif isinstance(out, (tuple, list)):
             for i, o in enumerate(out):
                 if isinstance(o, torch.Tensor):
-                    self.names[o] = (fqn, op_name, count, i)
+                    name = f"{fqn}_{op_name}_{count}"
+                    if multi_output:
+                        name += f"_{i}"
+                    self.names[o] = name
         return out
 
 
@@ -15386,6 +15395,9 @@ class TestSelectiveActivationCheckpoint(TestCase):
 
     @skipIfTorchDynamo("compile tested in test/dynamo/test_activation_checkpointing.py")
     def test_can_only_trigger_recompute_once(self):
+        # We don't support this to avoid adding extra complexity for now.
+        # If there's a need, we could probably do some kind of use_count tracking.
+        # TODO: have a nice error message here.
         def policy_fn(ctx, op, *args, **kwargs):
             if op == torch.ops.aten.sin.default:
                 return CheckpointPolicy.MUST_SAVE
@@ -15406,121 +15418,166 @@ class TestSelectiveActivationCheckpoint(TestCase):
     @skipIfTorchDynamo("compile tested in test/dynamo/test_activation_checkpointing.py")
     def test_auto_naming_mode_with_sac(self):
         # AutoNamingMode + SAC: policy checks ctx.op_output in naming.names
-        expensive_op, expensive_count = _make_counter_op("expensive")
-        cheap_op, cheap_count = _make_counter_op("cheap")
+        with _counter_op("expensive") as (expensive_op, expensive_count), \
+             _counter_op("cheap") as (cheap_op, cheap_count):
 
-        class Block(torch.nn.Module):
-            def forward(self, x):
-                y = expensive_op(x)
-                return cheap_op(y)
+            class Block(torch.nn.Module):
+                def forward(self, x):
+                    y = expensive_op(x)
+                    return cheap_op(y)
 
-        class Model(torch.nn.Module):
-            def __init__(self):
-                super().__init__()
-                self.layers = torch.nn.ModuleList([Block(), Block()])
+            class Model(torch.nn.Module):
+                def __init__(self):
+                    super().__init__()
+                    self.layers = torch.nn.ModuleList([Block(), Block()])
 
-            def forward(self, x):
-                for layer in self.layers:
-                    x = layer(x)
-                return x
+                def forward(self, x):
+                    for layer in self.layers:
+                        x = layer(x)
+                    return x
 
-        mod = Model()
-        naming = _AutoNamingMode()
+            mod = Model()
+            naming = _AutoNamingMode()
 
-        def policy_fn(ctx, op, *args, **kwargs):
-            if ctx.is_recompute:
+            def policy_fn(ctx, op, *args, **kwargs):
+                out = ctx.op_output
+                if isinstance(out, torch.Tensor):
+                    name = naming.names.get(out)
+                    if name == "Model.layers.1_expensive_0":
+                        return CheckpointPolicy.MUST_SAVE
                 return CheckpointPolicy.PREFER_RECOMPUTE
-            out = ctx.op_output
-            if isinstance(out, torch.Tensor):
-                name = naming.names.get(out)
-                if name == ("Model.layers.1", "expensive", 0, 0):
-                    return CheckpointPolicy.MUST_SAVE
-            return CheckpointPolicy.PREFER_RECOMPUTE
 
-        x = torch.randn(4, requires_grad=True)
-        context_fn = functools.partial(create_selective_checkpoint_contexts, policy_fn)
+            x = torch.randn(4, requires_grad=True)
+            context_fn = functools.partial(create_selective_checkpoint_contexts, policy_fn)
 
-        with naming:
-            out = checkpoint(lambda x: mod(x), x, use_reentrant=False, context_fn=context_fn)
-            out.sum().backward()
+            with naming:
+                out = checkpoint(lambda x: mod(x), x, use_reentrant=False, context_fn=context_fn)
+                out.sum().backward()
 
-        # expensive_op runs twice in forward (layers.0 + layers.1),
-        # layers.1 is saved so only layers.0 is recomputed: 2 + 1 = 3
-        self.assertEqual(expensive_count[0], 3)
-        # cheap_op: neither layer matched, both recomputed: 2 + 2 = 4
-        self.assertEqual(cheap_count[0], 4)
+            # expensive_op runs twice in forward (layers.0 + layers.1),
+            # layers.1 is saved so only layers.0 is recomputed: 2 + 1 = 3
+            self.assertEqual(expensive_count[0], 3)
+            # cheap_op: neither layer matched, both recomputed: 2 + 2 = 4
+            self.assertEqual(cheap_count[0], 4)
 
-    @skipIfTorchDynamo("compile tested in test/dynamo/test_activation_checkpointing.py")
+    @skipIfTorchDynamo("torch dispatch modes don't support compile")
     def test_auto_naming_mode_names(self):
-        class SubMod(torch.nn.Module):
-            def forward(self, x):
-                return torch.mm(x, x)
+        # Use AutoNamingMode names to selectively save expensive ops.
+        # The policy records decisions during forward and replays them
+        # during recompute so the same ops are fetched from storage.
+        with _counter_op("expensive") as (expensive_op, expensive_count), \
+             _counter_op("cheap") as (cheap_op, cheap_count):
 
-        class TopMod(torch.nn.Module):
-            def __init__(self):
-                super().__init__()
-                self.linear = SubMod()
+            class Block(torch.nn.Module):
+                def forward(self, x):
+                    return cheap_op(expensive_op(x))
 
-            def forward(self, x):
-                return self.linear(x)
+            class Model(torch.nn.Module):
+                def __init__(self):
+                    super().__init__()
+                    self.layers = torch.nn.ModuleList([Block(), Block()])
 
-        mod = TopMod()
-        x = torch.randn(4, 4)
+                def forward(self, x):
+                    for layer in self.layers:
+                        x = layer(x)
+                    return x
 
-        naming = _AutoNamingMode()
-        with naming:
-            out = mod(x)
+            mod = Model()
+            naming = _AutoNamingMode()
 
-        name = naming.names.get(out)
-        self.assertIsNotNone(name)
-        fqn, op, count, output_idx = name
-        self.assertIn("linear", fqn)
-        self.assertEqual(op, "mm")
-        self.assertEqual(count, 0)
-        self.assertEqual(output_idx, 0)
+            save_names = {
+                "Model.layers.0_expensive_0",
+                "Model.layers.1_expensive_0",
+            }
 
-    @skipIfTorchDynamo("compile tested in test/dynamo/test_activation_checkpointing.py")
+            fwd_decisions: list = []
+            fwd_idx = [0]
+
+            def policy_fn(ctx, op, *args, **kwargs):
+                if ctx.is_recompute:
+                    decision = fwd_decisions[fwd_idx[0]]
+                    fwd_idx[0] += 1
+                    return decision
+                out = ctx.op_output
+                decision = CheckpointPolicy.PREFER_RECOMPUTE
+                if isinstance(out, torch.Tensor):
+                    name = naming.names.get(out)
+                    if name in save_names:
+                        decision = CheckpointPolicy.MUST_SAVE
+                fwd_decisions.append(decision)
+                return decision
+
+            x = torch.randn(4, requires_grad=True)
+            context_fn = functools.partial(
+                create_selective_checkpoint_contexts, policy_fn
+            )
+            with naming:
+                out = checkpoint(
+                    lambda x: mod(x), x,
+                    use_reentrant=False, context_fn=context_fn,
+                )
+                out.sum().backward()
+
+            # expensive_op: 2 fwd, both saved so 0 recomputed = 2
+            self.assertEqual(expensive_count[0], 2)
+            # cheap_op: 2 fwd, not saved, both recomputed = 4
+            self.assertEqual(cheap_count[0], 4)
+
+    @skipIfTorchDynamo("torch dispatch modes don't support compile")
     def test_auto_naming_mode_per_module_counter(self):
-        # Counters are per (fqn, op), so two modules calling the same op
-        # get independent counts
-        intermediates = []
+        # Use AutoNamingMode names to save an expensive op in one block
+        # but not the other, verifying per-module fqn differentiation.
+        with _counter_op("expensive") as (expensive_op, expensive_count), \
+             _counter_op("cheap") as (cheap_op, cheap_count):
 
-        class Block(torch.nn.Module):
-            def forward(self, x):
-                y = torch.sin(x)
-                intermediates.append(y)
-                z = torch.sin(y)
-                intermediates.append(z)
-                return z
+            class Block(torch.nn.Module):
+                def forward(self, x):
+                    return cheap_op(expensive_op(x))
 
-        class TopMod(torch.nn.Module):
-            def __init__(self):
-                super().__init__()
-                self.a = Block()
-                self.b = Block()
+            class Model(torch.nn.Module):
+                def __init__(self):
+                    super().__init__()
+                    self.a = Block()
+                    self.b = Block()
 
-            def forward(self, x):
-                return self.a(x) + self.b(x)
+                def forward(self, x):
+                    return self.a(x) + self.b(x)
 
-        mod = TopMod()
-        x = torch.randn(4, 4)
+            mod = Model()
+            naming = _AutoNamingMode()
 
-        naming = _AutoNamingMode()
-        with naming:
-            mod(x)
+            fwd_decisions: list = []
+            fwd_idx = [0]
 
-        # Collect names for all intermediates that are still alive
-        recorded = [(naming.names[t], t) for t in intermediates if t in naming.names]
-        a_sin = [n for n, _ in recorded if n[0].endswith(".a") and n[1] == "sin"]
-        b_sin = [n for n, _ in recorded if n[0].endswith(".b") and n[1] == "sin"]
-        self.assertEqual(len(a_sin), 2, f"Expected 2 sins for block a, got: {a_sin}")
-        self.assertEqual(len(b_sin), 2, f"Expected 2 sins for block b, got: {b_sin}")
+            def policy_fn(ctx, op, *args, **kwargs):
+                if ctx.is_recompute:
+                    decision = fwd_decisions[fwd_idx[0]]
+                    fwd_idx[0] += 1
+                    return decision
+                out = ctx.op_output
+                decision = CheckpointPolicy.PREFER_RECOMPUTE
+                if isinstance(out, torch.Tensor):
+                    name = naming.names.get(out)
+                    if name == "Model.b_expensive_0":
+                        decision = CheckpointPolicy.MUST_SAVE
+                fwd_decisions.append(decision)
+                return decision
 
-        # Counters should be 0 and 1 for each block independently
-        a_counts = sorted(n[2] for n in a_sin)
-        b_counts = sorted(n[2] for n in b_sin)
-        self.assertEqual(a_counts, [0, 1])
-        self.assertEqual(b_counts, [0, 1])
+            x = torch.randn(4, requires_grad=True)
+            context_fn = functools.partial(
+                create_selective_checkpoint_contexts, policy_fn
+            )
+            with naming:
+                out = checkpoint(
+                    lambda x: mod(x), x,
+                    use_reentrant=False, context_fn=context_fn,
+                )
+                out.sum().backward()
+
+            # expensive_op: 2 fwd, block b saved so block a recomputed = 3
+            self.assertEqual(expensive_count[0], 3)
+            # cheap_op: 2 fwd, not saved, both recomputed = 4
+            self.assertEqual(cheap_count[0], 4)
 
 
 class TestAutogradMultipleDispatch(TestCase):
