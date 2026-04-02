@@ -303,6 +303,62 @@ class TestNVUniversalGemm(TestCase):
 
         torch.testing.assert_close(result, expected)
 
+    @parametrize(
+        "m,n,k",
+        (
+            (16, 512, 1024),
+            (32, 256, 512),
+            (64, 512, 1024),
+        ),
+    )
+    def test_scaled_gemm_nvf4_padded_scales(self, m, n, k):
+        """Test NVF4 with padded scales (M < 128).
+
+        torch._scaled_mm creates scales with block_size_mn=128 padding,
+        producing more elements than the kernel expects. The kernel's
+        _supports() must accept both padded and unpadded scale numels.
+        """
+        packed_k = k // 2
+        block_size = 16
+
+        def scaled_mm(a, b, scale_a, scale_b):
+            return torch._scaled_mm(
+                a, b, scale_a=scale_a, scale_b=scale_b, out_dtype=torch.bfloat16
+            )
+
+        a_fp4 = _create_tensor_with_layout(
+            "contiguous", m, packed_k, torch.float4_e2m1fn_x2
+        )
+        b_fp4 = torch.randint(
+            0, 256, (n, packed_k), device="cuda", dtype=torch.uint8
+        ).view(torch.float4_e2m1fn_x2)
+        b_fp4_t = b_fp4.T
+
+        num_k_blocks = ceildiv(k, block_size)
+        padded_k_blocks = _round_up(num_k_blocks, 4)
+        block_size_mn = 128
+        # Padded scale numel: round_up(M, 128) * K_blocks
+        # For M < 128, this is larger than M * K_blocks
+        scale_a_numel = block_size_mn * ceildiv(m, block_size_mn) * padded_k_blocks
+        scale_b_numel = block_size_mn * ceildiv(n, block_size_mn) * padded_k_blocks
+
+        scale_a = torch.rand(scale_a_numel, device="cuda").to(torch.float8_e4m3fn)
+        scale_b = torch.rand(scale_b_numel, device="cuda").to(torch.float8_e4m3fn)
+
+        expected = scaled_mm(a_fp4, b_fp4_t, scale_a, scale_b)
+
+        torch._dynamo.reset()
+
+        with config.patch(
+            _nvgemm_config(
+                **{"test_configs.autotune_choice_desc_regex": "inductor_vendored"}
+            )
+        ):
+            compiled_fn = torch.compile(scaled_mm)
+            result = compiled_fn(a_fp4, b_fp4_t, scale_a, scale_b)
+
+        torch.testing.assert_close(result, expected)
+
     @parametrize("out_dtype", (torch.float32, torch.bfloat16))
     @parametrize(
         "layout_a",
@@ -663,6 +719,150 @@ class TestNVUniversalGemmDynamicShapes(TestCase):
                 else:
                     result = compiled_fn(a, b)
                     torch.testing.assert_close(result, a @ b)
+
+
+    def test_fast_path_cached_args_mm(self):
+        """Test that the fast path (cached args) works for dense MM.
+
+        The fast path caches kernel, args, and artifact on the first call
+        and reuses them. Verifies correctness across multiple invocations
+        with the same compiled function.
+        """
+        m, n, k = 256, 512, 512
+
+        def matmul(a, b):
+            return a @ b
+
+        a = torch.randn(m, k, device="cuda", dtype=torch.bfloat16)
+        b = torch.randn(k, n, device="cuda", dtype=torch.bfloat16)
+        expected = matmul(a, b)
+
+        torch._dynamo.reset()
+
+        with config.patch(_nvgemm_config()):
+            compiled_fn = torch.compile(matmul)
+            # First call — triggers compilation + caching
+            result1 = compiled_fn(a, b)
+            torch.testing.assert_close(result1, expected)
+
+            # Second call — uses cached args/artifact
+            result2 = compiled_fn(a, b)
+            torch.testing.assert_close(result2, expected)
+
+            # Third call with different data (same buffers)
+            a.fill_(1.0)
+            b.fill_(1.0)
+            result3 = compiled_fn(a, b)
+            expected3 = matmul(a, b)
+            torch.testing.assert_close(result3, expected3)
+
+    def test_fast_path_cached_args_scaled_mm(self):
+        """Test the fast path for scaled MM (NVFP4)."""
+        m, n, k = 256, 512, 1024
+        packed_k = k // 2
+        block_size = 16
+
+        def scaled_mm(a, b, scale_a, scale_b):
+            return torch._scaled_mm(
+                a, b, scale_a=scale_a, scale_b=scale_b, out_dtype=torch.bfloat16
+            )
+
+        a_fp4 = _create_tensor_with_layout(
+            "contiguous", m, packed_k, torch.float4_e2m1fn_x2
+        )
+        b_fp4 = torch.randint(
+            0, 256, (n, packed_k), device="cuda", dtype=torch.uint8
+        ).view(torch.float4_e2m1fn_x2)
+        b_fp4_t = b_fp4.T
+
+        num_k_blocks = ceildiv(k, block_size)
+        padded_k_blocks = _round_up(num_k_blocks, 4)
+        block_size_mn = 128
+        scale_a_numel = block_size_mn * ceildiv(m, block_size_mn) * padded_k_blocks
+        scale_b_numel = block_size_mn * ceildiv(n, block_size_mn) * padded_k_blocks
+
+        scale_a = torch.rand(scale_a_numel, device="cuda").to(torch.float8_e4m3fn)
+        scale_b = torch.rand(scale_b_numel, device="cuda").to(torch.float8_e4m3fn)
+
+        expected = scaled_mm(a_fp4, b_fp4_t, scale_a, scale_b)
+
+        torch._dynamo.reset()
+
+        with config.patch(
+            _nvgemm_config(
+                **{"test_configs.autotune_choice_desc_regex": "inductor_vendored"}
+            )
+        ):
+            compiled_fn = torch.compile(scaled_mm)
+            result1 = compiled_fn(a_fp4, b_fp4_t, scale_a, scale_b)
+            torch.testing.assert_close(result1, expected)
+
+            # Second call — cached path
+            result2 = compiled_fn(a_fp4, b_fp4_t, scale_a, scale_b)
+            torch.testing.assert_close(result2, expected)
+
+    def test_fast_path_cached_args_grouped_mm(self):
+        """Test the fast path for grouped MM."""
+        g, k, n = 4, 256, 256
+        dtype = torch.bfloat16
+
+        def grouped_mm(a, b, offsets):
+            return torch._grouped_mm(a, b, offs=offsets)
+
+        b = torch.randn(g, n, k, device="cuda", dtype=dtype).permute(0, 2, 1)
+        m_per_group = [64, 64, 64, 64]
+        total_m = sum(m_per_group)
+        offsets = torch.tensor(
+            [sum(m_per_group[: i + 1]) for i in range(g)],
+            device="cuda",
+            dtype=torch.int32,
+        )
+        a = torch.randn(total_m, k, device="cuda", dtype=dtype)
+
+        expected = grouped_mm(a, b, offsets)
+
+        torch._dynamo.reset()
+
+        with config.patch(_nvgemm_config()):
+            compiled_fn = torch.compile(grouped_mm)
+            result1 = compiled_fn(a, b, offsets)
+            torch.testing.assert_close(result1, expected)
+
+            # Second call — cached path
+            result2 = compiled_fn(a, b, offsets)
+            torch.testing.assert_close(result2, expected)
+
+    def test_fast_path_multiple_calls_different_data(self):
+        """Test the fast path produces correct results when tensor data changes.
+
+        The cached args hold tensor references. When the data in those
+        tensors changes (same buffer, different values), kernel.run must
+        still read the updated data.
+        """
+        m, n, k = 256, 512, 512
+
+        def matmul(a, b):
+            return a @ b
+
+        a = torch.randn(m, k, device="cuda", dtype=torch.bfloat16)
+        b = torch.randn(k, n, device="cuda", dtype=torch.bfloat16)
+
+        torch._dynamo.reset()
+
+        with config.patch(_nvgemm_config()):
+            compiled_fn = torch.compile(matmul)
+
+            # First call
+            result1 = compiled_fn(a, b)
+            torch.testing.assert_close(result1, matmul(a, b))
+
+            # Change data in-place (same buffers)
+            a.copy_(torch.randn_like(a))
+            b.copy_(torch.randn_like(b))
+
+            # Second call — must use updated data
+            result2 = compiled_fn(a, b)
+            torch.testing.assert_close(result2, matmul(a, b))
 
 
 if __name__ == "__main__":
