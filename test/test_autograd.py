@@ -15415,62 +15415,17 @@ class TestSelectiveActivationCheckpoint(TestCase):
         with self.assertRaisesRegex(RuntimeError, "Trying to backward an extra time"):
             out.sum().backward(retain_graph=True)
 
-    @skipIfTorchDynamo("compile tested in test/dynamo/test_activation_checkpointing.py")
-    def test_auto_naming_mode_with_sac(self):
-        # AutoNamingMode + SAC: policy checks ctx.op_output in naming.names
-        with _counter_op("expensive") as (expensive_op, expensive_count), \
-             _counter_op("cheap") as (cheap_op, cheap_count):
-
-            class Block(torch.nn.Module):
-                def forward(self, x):
-                    y = expensive_op(x)
-                    return cheap_op(y)
-
-            class Model(torch.nn.Module):
-                def __init__(self):
-                    super().__init__()
-                    self.layers = torch.nn.ModuleList([Block(), Block()])
-
-                def forward(self, x):
-                    for layer in self.layers:
-                        x = layer(x)
-                    return x
-
-            mod = Model()
-            naming = _AutoNamingMode()
-
-            def policy_fn(ctx, op, *args, **kwargs):
-                out = ctx.op_output
-                if isinstance(out, torch.Tensor):
-                    name = naming.names.get(out)
-                    if name == "Model.layers.1_expensive_0":
-                        return CheckpointPolicy.MUST_SAVE
-                return CheckpointPolicy.PREFER_RECOMPUTE
-
-            x = torch.randn(4, requires_grad=True)
-            context_fn = functools.partial(create_selective_checkpoint_contexts, policy_fn)
-
-            with naming:
-                out = checkpoint(lambda x: mod(x), x, use_reentrant=False, context_fn=context_fn)
-                out.sum().backward()
-
-            # expensive_op runs twice in forward (layers.0 + layers.1),
-            # layers.1 is saved so only layers.0 is recomputed: 2 + 1 = 3
-            self.assertEqual(expensive_count[0], 3)
-            # cheap_op: neither layer matched, both recomputed: 2 + 2 = 4
-            self.assertEqual(cheap_count[0], 4)
-
     @skipIfTorchDynamo("torch dispatch modes don't support compile")
     def test_auto_naming_mode_names(self):
-        # Use AutoNamingMode names to selectively save expensive ops.
-        # The policy records decisions during forward and replays them
-        # during recompute so the same ops are fetched from storage.
-        with _counter_op("expensive") as (expensive_op, expensive_count), \
-             _counter_op("cheap") as (cheap_op, cheap_count):
+        # Use AutoNamingMode names to selectively save specific invocations
+        # of the same op across a multi-layer module hierarchy. The policy
+        # records decisions during forward and replays them during recompute.
+        with _counter_op("my_op") as (my_op, my_count):
 
             class Block(torch.nn.Module):
                 def forward(self, x):
-                    return cheap_op(expensive_op(x))
+                    # Three calls per block: counts 0, 1, 2
+                    return my_op(my_op(my_op(x)))
 
             class Model(torch.nn.Module):
                 def __init__(self):
@@ -15486,26 +15441,19 @@ class TestSelectiveActivationCheckpoint(TestCase):
             naming = _AutoNamingMode()
 
             save_names = {
-                "Model.layers.0_expensive_0",
-                "Model.layers.1_expensive_0",
+                # Save the 1st call in layer 0 and the 0th and 2nd in layer 1
+                "Model.layers.0_my_op_1",
+                "Model.layers.1_my_op_0",
+                "Model.layers.1_my_op_2",
             }
 
-            fwd_decisions: list = []
-            fwd_idx = [0]
-
             def policy_fn(ctx, op, *args, **kwargs):
-                if ctx.is_recompute:
-                    decision = fwd_decisions[fwd_idx[0]]
-                    fwd_idx[0] += 1
-                    return decision
                 out = ctx.op_output
-                decision = CheckpointPolicy.PREFER_RECOMPUTE
                 if isinstance(out, torch.Tensor):
                     name = naming.names.get(out)
                     if name in save_names:
-                        decision = CheckpointPolicy.MUST_SAVE
-                fwd_decisions.append(decision)
-                return decision
+                        return CheckpointPolicy.MUST_SAVE
+                return CheckpointPolicy.PREFER_RECOMPUTE
 
             x = torch.randn(4, requires_grad=True)
             context_fn = functools.partial(
@@ -15518,21 +15466,18 @@ class TestSelectiveActivationCheckpoint(TestCase):
                 )
                 out.sum().backward()
 
-            # expensive_op: 2 fwd, both saved so 0 recomputed = 2
-            self.assertEqual(expensive_count[0], 2)
-            # cheap_op: 2 fwd, not saved, both recomputed = 4
-            self.assertEqual(cheap_count[0], 4)
+            # 6 forward calls + 3 recomputed (the 3 not in save_names) = 9
+            self.assertEqual(my_count[0], 9)
 
     @skipIfTorchDynamo("torch dispatch modes don't support compile")
     def test_auto_naming_mode_per_module_counter(self):
-        # Use AutoNamingMode names to save an expensive op in one block
-        # but not the other, verifying per-module fqn differentiation.
-        with _counter_op("expensive") as (expensive_op, expensive_count), \
-             _counter_op("cheap") as (cheap_op, cheap_count):
+        # Two blocks each call the same op twice. Use the per-module counter
+        # from AutoNamingMode to save only the second call in block b.
+        with _counter_op("my_op") as (my_op, my_count):
 
             class Block(torch.nn.Module):
                 def forward(self, x):
-                    return cheap_op(expensive_op(x))
+                    return my_op(my_op(x))
 
             class Model(torch.nn.Module):
                 def __init__(self):
@@ -15546,22 +15491,14 @@ class TestSelectiveActivationCheckpoint(TestCase):
             mod = Model()
             naming = _AutoNamingMode()
 
-            fwd_decisions: list = []
-            fwd_idx = [0]
-
             def policy_fn(ctx, op, *args, **kwargs):
-                if ctx.is_recompute:
-                    decision = fwd_decisions[fwd_idx[0]]
-                    fwd_idx[0] += 1
-                    return decision
                 out = ctx.op_output
-                decision = CheckpointPolicy.PREFER_RECOMPUTE
                 if isinstance(out, torch.Tensor):
                     name = naming.names.get(out)
-                    if name == "Model.b_expensive_0":
-                        decision = CheckpointPolicy.MUST_SAVE
-                fwd_decisions.append(decision)
-                return decision
+                    # Save only the second call (count=1) in block b
+                    if name == "Model.b_my_op_1":
+                        return CheckpointPolicy.MUST_SAVE
+                return CheckpointPolicy.PREFER_RECOMPUTE
 
             x = torch.randn(4, requires_grad=True)
             context_fn = functools.partial(
@@ -15574,10 +15511,8 @@ class TestSelectiveActivationCheckpoint(TestCase):
                 )
                 out.sum().backward()
 
-            # expensive_op: 2 fwd, block b saved so block a recomputed = 3
-            self.assertEqual(expensive_count[0], 3)
-            # cheap_op: 2 fwd, not saved, both recomputed = 4
-            self.assertEqual(cheap_count[0], 4)
+            # 4 forward calls (2 per block) + 3 recomputed (all except b's second)
+            self.assertEqual(my_count[0], 7)
 
 
 class TestAutogradMultipleDispatch(TestCase):
