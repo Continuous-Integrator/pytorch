@@ -42,12 +42,7 @@ import torch.fx
 import torch.nn
 import torch.utils._pytree as _pytree
 from torch._C import DispatchKeySet
-from torch._dynamo.variables.constant import (
-    CONSTANT_VARIABLE_FALSE,
-    CONSTANT_VARIABLE_NONE,
-    CONSTANT_VARIABLE_TRUE,
-    ConstantVariable,
-)
+from torch._dynamo.variables.constant import ConstantVariable
 from torch._dynamo.variables.streams import StreamVariable
 from torch._dynamo.variables.torch_function import TorchFunctionModeVariable
 from torch._guards import Guard, Source, TracingContext
@@ -843,9 +838,9 @@ class TorchInGraphFunctionVariable(BaseTorchVariable):
                 and isinstance(arg, UserDefinedObjectVariable)
                 and hasattr(arg.value, "__torch_function__")
             ):
-                return CONSTANT_VARIABLE_TRUE
+                return ConstantVariable.create(True)
             else:
-                return CONSTANT_VARIABLE_FALSE
+                return ConstantVariable.create(False)
 
         @register(
             torch.is_floating_point,
@@ -967,7 +962,7 @@ class TorchInGraphFunctionVariable(BaseTorchVariable):
                 "call_function", torch._C._set_deterministic_algorithms, (value,), {}
             )
             torch._C._set_deterministic_algorithms(value)
-            return CONSTANT_VARIABLE_NONE
+            return ConstantVariable.create(None)
 
         @register(torch.autocast_increment_nesting)
         def handle_autocast_increment_nesting(
@@ -1009,7 +1004,7 @@ class TorchInGraphFunctionVariable(BaseTorchVariable):
             tx.output.add_cleanup_hook(
                 lambda: torch.set_autocast_enabled(dev_py_const, prev)
             )
-            return CONSTANT_VARIABLE_NONE
+            return ConstantVariable.create(None)
 
         @register(torch.set_autocast_cache_enabled)
         def handle_set_autocast_cache_enabled(
@@ -1021,7 +1016,7 @@ class TorchInGraphFunctionVariable(BaseTorchVariable):
             prev = torch.is_autocast_cache_enabled()
             torch.set_autocast_cache_enabled(enabled.as_python_constant())
             tx.output.add_cleanup_hook(lambda: torch.set_autocast_cache_enabled(prev))
-            return CONSTANT_VARIABLE_NONE
+            return ConstantVariable.create(None)
 
         @register(torch.are_deterministic_algorithms_enabled)
         def handle_are_deterministic_algorithms_enabled(
@@ -1293,7 +1288,7 @@ class TorchInGraphFunctionVariable(BaseTorchVariable):
                 isinstance(condition, variables.SymNodeVariable)
                 and condition.evaluate_expr()
             ):
-                return CONSTANT_VARIABLE_NONE
+                return ConstantVariable.create(None)
             return None
 
         @register(SDPAParams)
@@ -1751,7 +1746,7 @@ class TorchInGraphFunctionVariable(BaseTorchVariable):
             TorchFunctionModeStackVariable.register_mutation(tx)
             # type: ignore[arg-type]
             tx.symbolic_torch_function_state.push_torch_function_mode(args[0])
-            return CONSTANT_VARIABLE_NONE
+            return ConstantVariable.create(None)
 
         @register(torch._C._len_torch_function_stack)
         def handle_len_torch_function(
@@ -1892,7 +1887,7 @@ class TorchInGraphFunctionVariable(BaseTorchVariable):
             else:
                 TorchFunctionModeStackVariable.register_device_context_insertion(tx)
 
-            return CONSTANT_VARIABLE_NONE
+            return ConstantVariable.create(None)
 
         @register(torch._check)
         def handle_check(
@@ -1959,7 +1954,7 @@ class TorchInGraphFunctionVariable(BaseTorchVariable):
 
             if predicate_vt.is_python_constant():
                 self.value(predicate_vt.as_python_constant(), message_eager)
-                return CONSTANT_VARIABLE_NONE
+                return ConstantVariable.create(None)
 
             predicate_proxy = predicate_vt.as_proxy()
 

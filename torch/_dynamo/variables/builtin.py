@@ -88,8 +88,6 @@ from .base import (
     VariableTracker,
 )
 from .constant import (
-    CONSTANT_VARIABLE_FALSE,
-    CONSTANT_VARIABLE_NONE,
     ConstantVariable,
     EnumVariable,
     FakeIdVariable,
@@ -1495,7 +1493,7 @@ class BuiltinVariable(VariableTracker):
 
         if self.fn is object and name == "__init__":
             # object.__init__ is a no-op
-            return variables.CONSTANT_VARIABLE_NONE
+            return variables.ConstantVariable.create(None)
 
         if self.fn is dict and name == "fromkeys":
             return BuiltinVariable.call_custom_dict_fromkeys(tx, dict, *args, **kwargs)
@@ -2065,7 +2063,7 @@ class BuiltinVariable(VariableTracker):
                 NNModuleVariable,
             ),
         ):
-            return variables.CONSTANT_VARIABLE_TRUE
+            return variables.ConstantVariable.create(True)
         elif isinstance(arg, UserDefinedVariable):
             return VariableTracker.build(tx, callable(arg.value))
         elif isinstance(
@@ -2079,7 +2077,7 @@ class BuiltinVariable(VariableTracker):
                 ListIteratorVariable,
             ),
         ):
-            return variables.CONSTANT_VARIABLE_FALSE
+            return variables.ConstantVariable.create(False)
         else:
             return None
 
@@ -2180,7 +2178,7 @@ class BuiltinVariable(VariableTracker):
                 f"{len(args)} args",
             )
         if len(args) == 1:
-            args = (*args, CONSTANT_VARIABLE_NONE)
+            args = (*args, ConstantVariable.create(None))
         if len(args) != 2:
             raise_args_mismatch(
                 tx,
@@ -2314,7 +2312,7 @@ class BuiltinVariable(VariableTracker):
                     "1 kwargs (`strict`)",
                     f"{len(kwargs)} kwargs",
                 )
-        strict = kwargs.pop("strict", CONSTANT_VARIABLE_FALSE)
+        strict = kwargs.pop("strict", ConstantVariable.create(False))
         iter_args = [
             SourcelessBuilder.create(tx, iter).call_function(tx, [arg], {})
             for arg in args
@@ -2515,7 +2513,7 @@ class BuiltinVariable(VariableTracker):
         *seqs: VariableTracker,
         **kwargs: VariableTracker,
     ) -> VariableTracker:
-        strict = CONSTANT_VARIABLE_FALSE
+        strict = ConstantVariable.create(False)
         if kwargs:
             if sys.version_info >= (3, 14):
                 if not (len(kwargs) == 1 and "strict" in kwargs):
@@ -2525,7 +2523,7 @@ class BuiltinVariable(VariableTracker):
                         "1 kwargs (`strict`)",
                         f"{len(kwargs)} kwargs",
                     )
-                strict = kwargs.pop("strict", CONSTANT_VARIABLE_FALSE)
+                strict = kwargs.pop("strict", ConstantVariable.create(False))
             else:
                 raise_args_mismatch(
                     tx,
