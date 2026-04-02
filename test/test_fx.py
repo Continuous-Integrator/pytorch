@@ -75,6 +75,7 @@ from torch.testing._internal.common_utils import (
     IS_WINDOWS,
     run_tests,
     skipIfTorchDynamo,
+    xfailIf,
 )
 from torch.testing._internal.jit_utils import JitTestCase
 
