@@ -138,24 +138,31 @@ class BaseListVariable(VariableTracker):
         # being called, which would realize lazy constants and install guards
         return can_peek and not is_unrealized
 
-    def try_peek_constant(self) -> tuple[bool, bool, Any]:
-        """Peek at the constant value without triggering realization.
+    def _try_peek_items(
+        self,
+    ) -> tuple[bool, bool, list[Any]]:
+        """Peek at items without triggering realization.
 
-        For container types, we recursively peek at all items. If any item
-        cannot be peeked, we return (False, False, None). If any item is
-        unrealized (lazy), we return (True, True, value).
+        Returns (can_peek, any_unrealized, values). Subclasses use this
+        in try_peek_constant() and apply their own constructor.
         """
         values = []
         any_unrealized = False
         for item in self.items:
             if item is self:
-                return (False, False, None)
+                return (False, False, [])
             can_peek, is_unrealized, value = item.try_peek_constant()
             if not can_peek:
-                return (False, False, None)
+                return (False, False, [])
             if is_unrealized:
                 any_unrealized = True
             values.append(value)
+        return (True, any_unrealized, values)
+
+    def try_peek_constant(self) -> tuple[bool, bool, Any]:
+        can_peek, any_unrealized, values = self._try_peek_items()
+        if not can_peek:
+            return (False, False, None)
         return (True, any_unrealized, self.python_type()(values))
 
     def as_proxy(self) -> Any:
@@ -665,16 +672,9 @@ class RangeVariable(BaseListVariable):
         return range(*[x.as_python_constant() for x in self.items])
 
     def try_peek_constant(self) -> tuple[bool, bool, Any]:
-        """Override to use range(*values) instead of range(values)."""
-        values = []
-        any_unrealized = False
-        for item in self.items:
-            can_peek, is_unrealized, value = item.try_peek_constant()
-            if not can_peek:
-                return (False, False, None)
-            if is_unrealized:
-                any_unrealized = True
-            values.append(value)
+        can_peek, any_unrealized, values = self._try_peek_items()
+        if not can_peek:
+            return (False, False, None)
         return (True, any_unrealized, range(*values))
 
     def getitem_const(
@@ -1340,18 +1340,9 @@ class DequeVariable(CommonListMethodsVariable):
         )
 
     def try_peek_constant(self) -> tuple[bool, bool, Any]:
-        """Override to include maxlen parameter."""
-        values = []
-        any_unrealized = False
-        for item in self.items:
-            if item is self:
-                return (False, False, None)
-            can_peek, is_unrealized, value = item.try_peek_constant()
-            if not can_peek:
-                return (False, False, None)
-            if is_unrealized:
-                any_unrealized = True
-            values.append(value)
+        can_peek, any_unrealized, values = self._try_peek_items()
+        if not can_peek:
+            return (False, False, None)
         # Also check maxlen
         can_peek_maxlen, is_unrealized_maxlen, maxlen_value = (
             self.maxlen.try_peek_constant()
@@ -1795,20 +1786,11 @@ class NamedTupleVariable(UserDefinedTupleVariable):
         return result
 
     def try_peek_constant(self) -> tuple[bool, bool, Any]:
-        """Override to handle namedtuple vs structseq constructor differences."""
-        values = []
-        any_unrealized = False
-        for item in self.items:
-            can_peek, is_unrealized, value = item.try_peek_constant()
-            if not can_peek:
-                return (False, False, None)
-            if is_unrealized:
-                any_unrealized = True
-            values.append(value)
+        can_peek, any_unrealized, values = self._tuple_vt._try_peek_items()
+        if not can_peek:
+            return (False, False, None)
         if self.is_structseq():
-            # StructSequenceType(iterable)
             return (True, any_unrealized, self.python_type()(values))
-        # NamedTupleType(*iterable)
         return (True, any_unrealized, self.python_type()(*values))
 
     def as_proxy(self) -> Any:
