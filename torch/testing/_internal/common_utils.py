@@ -1549,12 +1549,12 @@ class LazyDSLCheck:
     def list_available(self) -> list[str]:
         """Get list of available DSLs"""
         registry = self._get_registry()
-        return registry.list_available_dsls() if registry is not None else []
+        return list(registry.list_available_dsls()) if registry is not None else []
 
     def list_all(self) -> list[str]:
         """Get list of all registered DSLs"""
         registry = self._get_registry()
-        return registry.list_all_dsls() if registry is not None else []
+        return list(registry.list_all_dsls()) if registry is not None else []
 
 _dsl_checker = LazyDSLCheck()
 
