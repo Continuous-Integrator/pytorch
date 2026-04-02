@@ -25,7 +25,7 @@
 #if CUB_VERSION >= 300400
 #define CUB_V3_4_PLUS() true
 #define CUB_V3_PLUS() false
-#if CUB_VERSION >= 200800
+#elif CUB_VERSION >= 200800
 #define CUB_V3_4_PLUS() false
 #define CUB_V3_PLUS() true
 #else
