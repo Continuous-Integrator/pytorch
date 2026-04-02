@@ -1998,6 +1998,8 @@ class UserDefinedObjectVariable(UserDefinedVariable):
             if name in cmp_name_to_op_mapping:
                 return variables.GetAttrVariable(self, name)
             member = getattr(self.value, name)
+            if isinstance(member, types.MethodType):
+                return variables.UserMethodVariable(member.__func__, self, source=source)
             return VariableTracker.build(tx, member, source)
 
         if self._object_has_getattribute:
