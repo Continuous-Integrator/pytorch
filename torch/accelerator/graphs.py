@@ -140,26 +140,34 @@ class Graph(_acceleratorGraph):
         super().replay()
 
     def reset(self) -> None:
-        r"""Delete the graph currently held by this instance."""
+        r"""
+        Delete the graph currently held by this instance.
+
+        After this call, the graph can be recaptured. Set :attr:`graph_pool` beforehand
+        to use a different memory pool on the next capture.
+        """
         super().reset()
 
     def pool(self) -> tuple[int, int]:
         r"""
         Return an opaque token representing the id of this graph's memory pool.
 
-        This id can optionally be passed to another graph's ``capture_begin``,
-        which hints the other graph may share the same memory pool.
+        Only valid after :meth:`capture_end`. The returned id can be passed to another
+        :class:`Graph`'s constructor to share the same memory pool.
+
+        .. note::
+            The ``pool`` argument at construction is a hint only. The actual pool id
+            assigned by the backend may differ and is only available via this method
+            after :meth:`capture_end`.
 
         Example::
             >>> # xdoctest: +SKIP
             >>> g1 = torch.accelerator.Graph()
-            >>> g1.capture_begin()
-            >>> # ... operations ...
-            >>> g1.capture_end()
+            >>> with g1:
+            ...     pass  # ... operations ...
 
             >>> # Share g1's memory pool with a new graph
-            >>> pool_id = g1.pool()
-            >>> g2 = torch.accelerator.Graph(pool=pool_id)
+            >>> g2 = torch.accelerator.Graph(pool=g1.pool())
         """
         return super().pool()
 
