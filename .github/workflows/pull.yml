@@ -89,7 +89,7 @@ jobs:
           { config: "docs_test", shard: 1, num_shards: 1,  runner: "${{ needs.get-label-type.outputs.label-type }}linux.2xlarge" },
           { config: "jit_legacy", shard: 1, num_shards: 1, runner: "${{ needs.get-label-type.outputs.label-type }}linux.2xlarge" },
           { config: "backwards_compat", shard: 1, num_shards: 1, runner: "${{ needs.get-label-type.outputs.label-type }}linux.c7i.2xlarge" },
-          # Map to m7i isntead of m7a to match the existing (Intel Xeon) numerics. DTensor crossref tests like linalg.multi_dot have tight
+          # Map to m7i instead of m7a to match the existing (Intel Xeon) numerics. DTensor crossref tests like linalg.multi_dot have tight
           # float32 tolerances sensitive to different FMA/reduction order across CPU vendors.
           { config: "distributed", shard: 1, num_shards: 3, runner: "${{ needs.get-label-type.outputs.label-type }}linux.2xlarge.amx" },
           { config: "distributed", shard: 2, num_shards: 3, runner: "${{ needs.get-label-type.outputs.label-type }}linux.2xlarge.amx" },
@@ -266,50 +266,6 @@ jobs:
       # sync-tag: asan-test
     secrets: inherit
 
-  # ╠══════════════════════════════════════════════════════════════════════════╣
-  # ║ linux-jammy-py3.10-clang18-onnx (build + test) (TODO (huydhn): EC2-only) ║
-  # ╠══════════════════════════════════════════════════════════════════════════╣
-
-  linux-jammy-py3_10-clang18-onnx-build:
-    if: ${{ (needs.job-filter.outputs.jobs == '' || contains(needs.job-filter.outputs.jobs, ' linux-jammy-py3.10-clang18-onnx ')) && needs.get-label-type.outputs.use-arc != 'true' }}
-    name: linux-jammy-py3.10-clang18-onnx
-    uses: ./.github/workflows/_linux-build.yml
-    needs:
-      - get-label-type
-      - job-filter
-    with:
-      runner_prefix: "${{ needs.get-label-type.outputs.label-type }}"
-      build-environment: linux-jammy-py3.10-clang18-onnx
-      docker-image-name: ci-image:pytorch-linux-jammy-py3.10-clang18
-      test-matrix: |
-        { include: [
-          { config: "default", shard: 1, num_shards: 2, runner: "${{ needs.get-label-type.outputs.label-type }}linux.c7i.2xlarge" },
-          { config: "default", shard: 2, num_shards: 2, runner: "${{ needs.get-label-type.outputs.label-type }}linux.c7i.2xlarge" },
-        ]}
-      use-arc: ${{ needs.get-label-type.outputs.use-arc == 'true' }}
-      python-version: "3.10"
-      compiler: clang18
-    secrets: inherit
-
-  linux-jammy-py3_10-clang18-onnx-test:
-    if: ${{ (needs.job-filter.outputs.jobs == '' || contains(needs.job-filter.outputs.jobs, ' linux-jammy-py3.10-clang18-onnx ')) && needs.get-label-type.outputs.use-arc != 'true' }}
-    name: linux-jammy-py3.10-clang18-onnx
-    uses: ./.github/workflows/_linux-test.yml
-    needs:
-      - linux-jammy-py3_10-clang18-onnx-build
-      - target-determination
-      - job-filter
-      - get-label-type
-    with:
-      build-environment: ${{ needs.linux-jammy-py3_10-clang18-onnx-build.outputs.build-environment }}
-      docker-image: ${{ needs.linux-jammy-py3_10-clang18-onnx-build.outputs.docker-image }}
-      test-matrix: ${{ needs.linux-jammy-py3_10-clang18-onnx-build.outputs.test-matrix }}
-      tests-to-include: ${{ github.event.inputs.tests-to-include || '' }}
-      use-arc: ${{ needs.get-label-type.outputs.use-arc == 'true' }}
-      python-version: "3.10"
-      compiler: clang18
-    secrets: inherit
-
   # ╠══════════════════════════════════════════════════════════════════════╣
   # ║ linux-jammy-py3.10-clang18 (build + test)                            ║
   # ╠══════════════════════════════════════════════════════════════════════╣
@@ -339,6 +295,7 @@ jobs:
           { config: "dynamo_wrapped", shard: 3, num_shards: 3, runner: "${{ needs.get-label-type.outputs.label-type }}linux.2xlarge" },
           { config: "einops", shard: 1, num_shards: 1, runner: "${{ needs.get-label-type.outputs.label-type }}linux.2xlarge" },
           { config: "openreg", shard: 1, num_shards: 1, runner: "${{ needs.get-label-type.outputs.label-type }}linux.2xlarge" },
+          { config: "onnx", shard: 1, num_shards: 1, runner: "${{ needs.get-label-type.outputs.label-type }}linux.c7i.2xlarge" },
         ]}
       use-arc: ${{ needs.get-label-type.outputs.use-arc == 'true' }}
       python-version: "3.10"
