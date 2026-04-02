@@ -929,7 +929,7 @@ class ConstDictVariable(VariableTracker):
                     to_cpy = self
                 else:
                     user_cls = other.user_cls
-                    to_cpy = self
+                    to_cpy = other
 
                 to_cpy.install_dict_keys_match_guard()
                 new_dict_vt = to_cpy.clone(
