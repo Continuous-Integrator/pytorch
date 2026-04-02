@@ -14953,22 +14953,28 @@ def _make_counter_op(name):
 
 class _AutoNamingMode(TorchDispatchMode):
     """Test helper: names output tensors as (fqn, op_name, count, output_idx)."""
+
     def __init__(self):
         from torch.utils.module_tracker import ModuleTracker
         self._tracker = ModuleTracker()
         self._func_counter: dict = defaultdict(int)
         self.names = WeakTensorKeyDictionary()
+
     def __enter__(self):
         self._tracker.__enter__()
         return super().__enter__()
+
     def __exit__(self, *args):
         self._tracker.__exit__(*args)
         return super().__exit__(*args)
+
     def __torch_dispatch__(self, func, types, args=(), kwargs=None):
         out = func(*args, **(kwargs or {}))
         parents = self._tracker.parents - {"Global"}
         fqn = max(parents, key=len) if parents else "Global"
-        op_name = func.__name__.split(".")[0] if hasattr(func, "__name__") else str(func)
+        op_name = (
+            func.__name__.split(".")[0] if hasattr(func, "__name__") else str(func)
+        )
         key = (fqn, func)
         count = self._func_counter[key]
         self._func_counter[key] += 1
