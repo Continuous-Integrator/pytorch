@@ -158,19 +158,16 @@ class ManualOverlapScheduler(OverlapScheduler):
             collective_estimator="analytical",
             max_memory_increase_gb=None,
             max_memory_increase_ratio=None,
-            bucket_mode=bucket_mode or "custom_ops_multidtype",
+            bucket_mode=bucket_mode,
         )
         self.module_bucket_plans = module_bucket_plans
         self.nodes_in_subgraph: list[list[fx.Node]] = []
 
-        bucketer_kwargs: dict[str, object] = {}
-        if bucket_mode is not None:
-            bucketer_kwargs["bucket_mode"] = bucket_mode
         self.bucketer = ManualOverlapPreservingBucketer(
             graph=self.graph,
             collective_info=self.collective_info,
             scheduled=OrderedSet(self.graph.nodes),
-            **bucketer_kwargs,
+            bucket_mode=bucket_mode,
         )
         self.insert_overlap_deps = insert_overlap_deps
 

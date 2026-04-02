@@ -518,7 +518,7 @@ def bucket_reduce_scatter_by_mb(
     """
     mode = mode or _default_bucket_mode()
 
-    assert "multidtype" not in mode, (
+    assert mode is None or "multidtype" not in mode, (
         "reduce scatter bucketing does not support multidtype"
     )
 
@@ -835,9 +835,11 @@ def all_gather_merge_fn_to_trace(
     device = ag_ins[0].device
     new_ag_out = torch.empty(ag_input_numel * group_size, dtype=dtype, device=device)
     new_ag_in = new_ag_out.narrow(0, ag_input_numel * rank, ag_input_numel)
-    foreach_copy_dsts = torch.split(new_ag_in, ins_split_sizes)
     ag_ins_flattened = [ag_in.reshape(-1) for ag_in in ag_ins]
-    torch._foreach_copy_(foreach_copy_dsts, ag_ins_flattened)
+    # Inductor fuses copy_(cat(...)) into 1 Triton kernel with no allocation for cat.
+    # _foreach_copy_(..., ag_ins_flattened) emits separate kernel per item,
+    # resulting in large number of small triton kernels to launch.
+    new_ag_in.copy_(torch.cat(ag_ins_flattened))
     wait_tensor = torch.ops.c10d_functional.wait_tensor(
         torch.ops._c10d_functional.all_gather_into_tensor_out.default(
             new_ag_in, group_size, group_name, out=new_ag_out
