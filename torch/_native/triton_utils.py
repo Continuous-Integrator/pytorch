@@ -124,7 +124,4 @@ def register_op_override(
 
 # Register this DSL module with the registry
 # Note: Import-time registration ensures DSL is available when module is loaded
-_current_module = sys.modules[__name__]
-if not isinstance(_current_module, DSLModuleProtocol):
-    raise TypeError("triton_utils module does not implement required DSLModuleProtocol interface")
-dsl_registry.register_dsl("triton", _current_module)
+dsl_registry.register_dsl("triton", cast(DSLModuleProtocol, sys.modules[__name__]))
