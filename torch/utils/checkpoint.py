@@ -1324,9 +1324,10 @@ class _CachingTorchDispatchMode(TorchDispatchMode):
             return func(*args, **kwargs)
 
         # Snapshot graph length before the op so we can tag new nodes after.
-        from torch.fx.experimental.proxy_tensor import get_proxy_mode
-        proxy_mode = get_proxy_mode()
-        graph_len_before = len(proxy_mode.tracer.graph.nodes) if proxy_mode is not None else None
+        if is_compiling:
+            from torch.fx.experimental.proxy_tensor import get_proxy_mode
+            proxy_mode = get_proxy_mode()
+            graph_len_before = len(proxy_mode.tracer.graph.nodes) if proxy_mode is not None else None
 
         out = func(*args, **kwargs)
 
@@ -1347,7 +1348,7 @@ class _CachingTorchDispatchMode(TorchDispatchMode):
 
         if is_compiling:
             # Tag all FX nodes added by this op with the policy.
-            if proxy_mode is not None and graph_len_before is not None:
+            if proxy_mode is not None:
                 graph = proxy_mode.tracer.graph
                 # Iterate the last N nodes in reverse to avoid
                 # materializing the full node list.
