@@ -2855,7 +2855,7 @@ class UserDefinedDictVariable(UserDefinedObjectVariable):
                 "dict_vt must be constructed by builder.py when source is present"
             )
             self._dict_vt = ConstDictVariable(
-                {}, type(value), mutation_type=ValueMutationNew()
+                {}, dict, mutation_type=ValueMutationNew()
             )
         else:
             self._dict_vt = dict_vt

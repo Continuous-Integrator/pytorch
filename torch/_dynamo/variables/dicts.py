@@ -1550,6 +1550,9 @@ class SetVariable(ConstDictVariable):
         # Already EQUALS_MATCH guarded
         pass
 
+    def sq_length(self, tx: "InstructionTranslator") -> VariableTracker:
+        return VariableTracker.build(tx, len(self.set_items))
+
 
 class OrderedSetClassVariable(VariableTracker):
     def __init__(self, **kwargs: Any) -> None:
@@ -1843,9 +1846,9 @@ class DictViewVariable(VariableTracker):
             return VariableTracker.build(tx, self.debug_repr())
         return super().call_method(tx, name, args, kwargs)
 
-    def mp_length(self, tx: "InstructionTranslator") -> VariableTracker:
-        """Mapping length for dict view objects."""
-        return self.dv_dict.mp_length(tx)
+    def sq_length(self, tx: "InstructionTranslator") -> VariableTracker:
+        """Sequence length for dict view objects."""
+        return VariableTracker.build(tx, len(self.view_items))
 
 
 class DictKeysVariable(DictViewVariable):

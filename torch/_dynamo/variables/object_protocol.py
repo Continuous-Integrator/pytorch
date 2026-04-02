@@ -6,8 +6,12 @@ comparison dispatch machinery that is independent of any specific type.
 Per-type richcompare_impl hooks live in their respective VT files.
 """
 
+from functools import lru_cache
 from typing import TYPE_CHECKING
 
+from torch._C._dynamo import get_type_slots
+
+from .._type_slots import has_slot, PyMappingSlots, PySequenceSlots
 from ..utils import istype
 from .base import NO_SUCH_SUBOBJ, raise_type_error_exc, VariableTracker
 from .constant import CONSTANT_VARIABLE_FALSE, CONSTANT_VARIABLE_TRUE
@@ -74,49 +78,32 @@ def vt_identity_compare(
     return None
 
 
-def vt_implements_slot(
-    obj: "VariableTracker",
-    dunder: str,
-    impl_method: str,
-) -> bool:
-    """
-    Check whether obj implements a CPython slot, identified by both its Python
-    dunder name and the corresponding VT impl method name.
-
-    - UserDefinedObjectVariable: check whether the underlying class defines dunder.
-    - ConstantVariable: check hasattr on the wrapped value.
-    - All other VTs: check whether the subclass overrides impl_method.
-    """
-    from .base import VariableTracker
-    from .constant import ConstantVariable
-    from .user_defined import UserDefinedObjectVariable
-
-    if istype(obj, UserDefinedObjectVariable):
-        return obj._maybe_get_baseclass_method(dunder) is not None
-    elif istype(obj, ConstantVariable):
-        return hasattr(obj.value, dunder)
-    else:
-        m1 = getattr(obj.__class__, impl_method)
-        m2 = getattr(VariableTracker, impl_method)
-        return m1 is not m2
+@lru_cache(maxsize=256)
+def _get_cached_slots(obj_type: type) -> tuple[int, int, int, int]:
+    """Get all type slots for a type (cached)."""
+    return get_type_slots(obj_type)
 
 
-def vt_implements_sq_length(obj: "VariableTracker") -> bool:
-    return vt_implements_slot(obj, "__len__", "sq_length")
+def type_implements_sq_length(obj_type: type) -> bool:
+    """Check whether obj_type implements __len__ as sequence protocol"""
+    seq_slots, _, _, _ = _get_cached_slots(obj_type)
+    return has_slot(seq_slots, PySequenceSlots.SQ_LENGTH)
 
 
-def vt_implements_mp_length(obj: "VariableTracker") -> bool:
-    return vt_implements_slot(obj, "__len__", "mp_length")
+def type_implements_mp_length(obj_type: type) -> bool:
+    """Check whether obj_type implements __len__ as mapping protocol"""
+    _, map_slots, _, _ = _get_cached_slots(obj_type)
+    return has_slot(map_slots, PyMappingSlots.MP_LENGTH)
 
 
 def vt_mapping_size(
     tx: "InstructionTranslator", obj: "VariableTracker"
 ) -> "VariableTracker":
     # ref: https://github.com/python/cpython/blob/v3.13.3/Objects/abstract.c#L2308-L2330
-    if vt_implements_mp_length(obj):
+    if type_implements_mp_length(obj.python_type()):
         return obj.mp_length(tx)
 
-    if vt_implements_sq_length(obj):
+    if type_implements_sq_length(obj.python_type()):
         type_error(tx, f"{obj.python_type_name()} is not a mapping")
 
     type_error(tx, f"object of type {obj.python_type_name()} has no len()")
@@ -131,6 +118,6 @@ def generic_len(
     Dispatches to sq_length (sequences) or mp_length (mappings) depending on the VT type.
     """
 
-    if vt_implements_sq_length(obj):
+    if type_implements_sq_length(obj.python_type()):
         return obj.sq_length(tx)
     return vt_mapping_size(tx, obj)

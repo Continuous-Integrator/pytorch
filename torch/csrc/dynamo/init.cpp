@@ -158,10 +158,247 @@ PyObject* _is_valid_var_name(
   return result.release();
 }
 
+// Slot bit position definitions (each int64_t has independent bit positions)
+
+enum class PySequenceSlotBit : int64_t {
+  SQ_LENGTH = 0,
+  SQ_CONCAT = 1,
+  SQ_REPEAT = 2,
+  SQ_ITEM = 3,
+  SQ_CONTAINS = 4,
+  SQ_ASS_ITEM = 5,
+  SQ_INPLACE_CONCAT = 6,
+  SQ_INPLACE_REPEAT = 7,
+};
+
+enum class PyMappingSlotBit : int64_t {
+  MP_LENGTH = 0,
+  MP_SUBSCRIPT = 1,
+  MP_ASS_SUBSCRIPT = 2,
+};
+
+enum class PyNumberSlotBit : int64_t {
+  NB_ADD = 0,
+  NB_SUBTRACT = 1,
+  NB_MULTIPLY = 2,
+  NB_REMAINDER = 3,
+  NB_POWER = 4,
+  NB_NEGATIVE = 5,
+  NB_POSITIVE = 6,
+  NB_ABSOLUTE = 7,
+  NB_BOOL = 8,
+  NB_INVERT = 9,
+  NB_LSHIFT = 10,
+  NB_RSHIFT = 11,
+  NB_AND = 12,
+  NB_XOR = 13,
+  NB_OR = 14,
+  NB_INT = 15,
+  NB_FLOAT = 16,
+  NB_INPLACE_ADD = 17,
+  NB_INPLACE_SUBTRACT = 18,
+  NB_INPLACE_MULTIPLY = 19,
+  NB_INPLACE_REMAINDER = 20,
+  NB_INPLACE_POWER = 21,
+  NB_INPLACE_LSHIFT = 22,
+  NB_INPLACE_RSHIFT = 23,
+  NB_INPLACE_AND = 24,
+  NB_INPLACE_XOR = 25,
+  NB_INPLACE_OR = 26,
+  NB_FLOOR_DIVIDE = 27,
+  NB_TRUE_DIVIDE = 28,
+  NB_INPLACE_FLOOR_DIVIDE = 29,
+  NB_INPLACE_TRUE_DIVIDE = 30,
+  NB_INDEX = 31,
+  NB_MATRIX_MULTIPLY = 32,
+  NB_INPLACE_MATRIX_MULTIPLY = 33,
+};
+
+enum class PyTypeSlotBit : int64_t {
+  TP_HASH = 0,
+  TP_ITER = 1,
+  TP_ITERNEXT = 2,
+  TP_CALL = 3,
+  TP_REPR = 4,
+  TP_RICHCOMPARE = 5,
+  TP_GETATTRO = 6,
+  TP_SETATTRO = 7,
+  TP_DESCR_GET = 8,
+  TP_DESCR_SET = 9,
+};
+
+int64_t get_pysequence_slots(PyTypeObject* type) {
+  int64_t slots = 0;
+  if (type->tp_as_sequence == nullptr) {
+    return slots;
+  }
+  if (type->tp_as_sequence->sq_length != nullptr)
+    slots |= (1LL << static_cast<int>(PySequenceSlotBit::SQ_LENGTH));
+  if (type->tp_as_sequence->sq_concat != nullptr)
+    slots |= (1LL << static_cast<int>(PySequenceSlotBit::SQ_CONCAT));
+  if (type->tp_as_sequence->sq_repeat != nullptr)
+    slots |= (1LL << static_cast<int>(PySequenceSlotBit::SQ_REPEAT));
+  if (type->tp_as_sequence->sq_item != nullptr)
+    slots |= (1LL << static_cast<int>(PySequenceSlotBit::SQ_ITEM));
+  if (type->tp_as_sequence->sq_contains != nullptr)
+    slots |= (1LL << static_cast<int>(PySequenceSlotBit::SQ_CONTAINS));
+  if (type->tp_as_sequence->sq_ass_item != nullptr)
+    slots |= (1LL << static_cast<int>(PySequenceSlotBit::SQ_ASS_ITEM));
+  if (type->tp_as_sequence->sq_inplace_concat != nullptr)
+    slots |= (1LL << static_cast<int>(PySequenceSlotBit::SQ_INPLACE_CONCAT));
+  if (type->tp_as_sequence->sq_inplace_repeat != nullptr)
+    slots |= (1LL << static_cast<int>(PySequenceSlotBit::SQ_INPLACE_REPEAT));
+  return slots;
+}
+
+int64_t get_pymapping_slots(PyTypeObject* type) {
+  int64_t slots = 0;
+  if (type->tp_as_mapping == nullptr) {
+    return slots;
+  }
+  if (type->tp_as_mapping->mp_length != nullptr)
+    slots |= (1LL << static_cast<int>(PyMappingSlotBit::MP_LENGTH));
+  if (type->tp_as_mapping->mp_subscript != nullptr)
+    slots |= (1LL << static_cast<int>(PyMappingSlotBit::MP_SUBSCRIPT));
+  if (type->tp_as_mapping->mp_ass_subscript != nullptr)
+    slots |= (1LL << static_cast<int>(PyMappingSlotBit::MP_ASS_SUBSCRIPT));
+  return slots;
+}
+
+int64_t get_pynumber_slots(PyTypeObject* type) {
+  int64_t slots = 0;
+  if (type->tp_as_number == nullptr) {
+    return slots;
+  }
+  if (type->tp_as_number->nb_add != nullptr)
+    slots |= (1LL << static_cast<int>(PyNumberSlotBit::NB_ADD));
+  if (type->tp_as_number->nb_subtract != nullptr)
+    slots |= (1LL << static_cast<int>(PyNumberSlotBit::NB_SUBTRACT));
+  if (type->tp_as_number->nb_multiply != nullptr)
+    slots |= (1LL << static_cast<int>(PyNumberSlotBit::NB_MULTIPLY));
+  if (type->tp_as_number->nb_remainder != nullptr)
+    slots |= (1LL << static_cast<int>(PyNumberSlotBit::NB_REMAINDER));
+  if (type->tp_as_number->nb_power != nullptr)
+    slots |= (1LL << static_cast<int>(PyNumberSlotBit::NB_POWER));
+  if (type->tp_as_number->nb_negative != nullptr)
+    slots |= (1LL << static_cast<int>(PyNumberSlotBit::NB_NEGATIVE));
+  if (type->tp_as_number->nb_positive != nullptr)
+    slots |= (1LL << static_cast<int>(PyNumberSlotBit::NB_POSITIVE));
+  if (type->tp_as_number->nb_absolute != nullptr)
+    slots |= (1LL << static_cast<int>(PyNumberSlotBit::NB_ABSOLUTE));
+  if (type->tp_as_number->nb_bool != nullptr)
+    slots |= (1LL << static_cast<int>(PyNumberSlotBit::NB_BOOL));
+  if (type->tp_as_number->nb_invert != nullptr)
+    slots |= (1LL << static_cast<int>(PyNumberSlotBit::NB_INVERT));
+  if (type->tp_as_number->nb_lshift != nullptr)
+    slots |= (1LL << static_cast<int>(PyNumberSlotBit::NB_LSHIFT));
+  if (type->tp_as_number->nb_rshift != nullptr)
+    slots |= (1LL << static_cast<int>(PyNumberSlotBit::NB_RSHIFT));
+  if (type->tp_as_number->nb_and != nullptr)
+    slots |= (1LL << static_cast<int>(PyNumberSlotBit::NB_AND));
+  if (type->tp_as_number->nb_xor != nullptr)
+    slots |= (1LL << static_cast<int>(PyNumberSlotBit::NB_XOR));
+  if (type->tp_as_number->nb_or != nullptr)
+    slots |= (1LL << static_cast<int>(PyNumberSlotBit::NB_OR));
+  if (type->tp_as_number->nb_int != nullptr)
+    slots |= (1LL << static_cast<int>(PyNumberSlotBit::NB_INT));
+  if (type->tp_as_number->nb_float != nullptr)
+    slots |= (1LL << static_cast<int>(PyNumberSlotBit::NB_FLOAT));
+  if (type->tp_as_number->nb_inplace_add != nullptr)
+    slots |= (1LL << static_cast<int>(PyNumberSlotBit::NB_INPLACE_ADD));
+  if (type->tp_as_number->nb_inplace_subtract != nullptr)
+    slots |= (1LL << static_cast<int>(PyNumberSlotBit::NB_INPLACE_SUBTRACT));
+  if (type->tp_as_number->nb_inplace_multiply != nullptr)
+    slots |= (1LL << static_cast<int>(PyNumberSlotBit::NB_INPLACE_MULTIPLY));
+  if (type->tp_as_number->nb_inplace_remainder != nullptr)
+    slots |= (1LL << static_cast<int>(PyNumberSlotBit::NB_INPLACE_REMAINDER));
+  if (type->tp_as_number->nb_inplace_power != nullptr)
+    slots |= (1LL << static_cast<int>(PyNumberSlotBit::NB_INPLACE_POWER));
+  if (type->tp_as_number->nb_inplace_lshift != nullptr)
+    slots |= (1LL << static_cast<int>(PyNumberSlotBit::NB_INPLACE_LSHIFT));
+  if (type->tp_as_number->nb_inplace_rshift != nullptr)
+    slots |= (1LL << static_cast<int>(PyNumberSlotBit::NB_INPLACE_RSHIFT));
+  if (type->tp_as_number->nb_inplace_and != nullptr)
+    slots |= (1LL << static_cast<int>(PyNumberSlotBit::NB_INPLACE_AND));
+  if (type->tp_as_number->nb_inplace_xor != nullptr)
+    slots |= (1LL << static_cast<int>(PyNumberSlotBit::NB_INPLACE_XOR));
+  if (type->tp_as_number->nb_inplace_or != nullptr)
+    slots |= (1LL << static_cast<int>(PyNumberSlotBit::NB_INPLACE_OR));
+  if (type->tp_as_number->nb_floor_divide != nullptr)
+    slots |= (1LL << static_cast<int>(PyNumberSlotBit::NB_FLOOR_DIVIDE));
+  if (type->tp_as_number->nb_true_divide != nullptr)
+    slots |= (1LL << static_cast<int>(PyNumberSlotBit::NB_TRUE_DIVIDE));
+  if (type->tp_as_number->nb_inplace_floor_divide != nullptr)
+    slots |=
+        (1LL << static_cast<int>(PyNumberSlotBit::NB_INPLACE_FLOOR_DIVIDE));
+  if (type->tp_as_number->nb_inplace_true_divide != nullptr)
+    slots |= (1LL << static_cast<int>(PyNumberSlotBit::NB_INPLACE_TRUE_DIVIDE));
+  if (type->tp_as_number->nb_index != nullptr)
+    slots |= (1LL << static_cast<int>(PyNumberSlotBit::NB_INDEX));
+  if (type->tp_as_number->nb_matrix_multiply != nullptr)
+    slots |= (1LL << static_cast<int>(PyNumberSlotBit::NB_MATRIX_MULTIPLY));
+  if (type->tp_as_number->nb_inplace_matrix_multiply != nullptr)
+    slots |=
+        (1LL << static_cast<int>(PyNumberSlotBit::NB_INPLACE_MATRIX_MULTIPLY));
+  return slots;
+}
+
+int64_t get_pytype_slots(PyTypeObject* type) {
+  int64_t slots = 0;
+  if (type->tp_hash != nullptr)
+    slots |= (1LL << static_cast<int>(PyTypeSlotBit::TP_HASH));
+  if (type->tp_iter != nullptr)
+    slots |= (1LL << static_cast<int>(PyTypeSlotBit::TP_ITER));
+  if (type->tp_iternext != nullptr)
+    slots |= (1LL << static_cast<int>(PyTypeSlotBit::TP_ITERNEXT));
+  if (type->tp_call != nullptr)
+    slots |= (1LL << static_cast<int>(PyTypeSlotBit::TP_CALL));
+  if (type->tp_repr != nullptr)
+    slots |= (1LL << static_cast<int>(PyTypeSlotBit::TP_REPR));
+  if (type->tp_richcompare != nullptr)
+    slots |= (1LL << static_cast<int>(PyTypeSlotBit::TP_RICHCOMPARE));
+  if (type->tp_getattro != nullptr)
+    slots |= (1LL << static_cast<int>(PyTypeSlotBit::TP_GETATTRO));
+  if (type->tp_setattro != nullptr)
+    slots |= (1LL << static_cast<int>(PyTypeSlotBit::TP_SETATTRO));
+  if (type->tp_descr_get != nullptr)
+    slots |= (1LL << static_cast<int>(PyTypeSlotBit::TP_DESCR_GET));
+  if (type->tp_descr_set != nullptr)
+    slots |= (1LL << static_cast<int>(PyTypeSlotBit::TP_DESCR_SET));
+  return slots;
+}
+
+PyObject* _get_type_slots(
+    PyObject* self,
+    PyObject* const* args,
+    Py_ssize_t nargs) {
+  if (!_checkParamCount(nargs, 1)) {
+    return nullptr;
+  }
+
+  PyObject* arg = args[0];
+  PyTypeObject* type = PyType_Check(arg) ? (PyTypeObject*)arg : Py_TYPE(arg);
+
+  int64_t seq_slots = get_pysequence_slots(type);
+  int64_t map_slots = get_pymapping_slots(type);
+  int64_t num_slots = get_pynumber_slots(type);
+  int64_t type_slots = get_pytype_slots(type);
+
+  PyObject* tuple = PyTuple_New(4);
+  if (tuple == nullptr) {
+    return nullptr;
+  }
+  PyTuple_SetItem(tuple, 0, PyLong_FromLongLong(seq_slots));
+  PyTuple_SetItem(tuple, 1, PyLong_FromLongLong(map_slots));
+  PyTuple_SetItem(tuple, 2, PyLong_FromLongLong(num_slots));
+  PyTuple_SetItem(tuple, 3, PyLong_FromLongLong(type_slots));
+  return tuple;
+}
+
 #define PYC_FN(x) ((PyCFunction)(void (*)()) & x)
 
 void _register_functions(PyObject* mod) {
-  static std::array<PyMethodDef, 3> fns = {
+  static std::array<PyMethodDef, 4> fns = {
       PyMethodDef{
           "strip_function_call",
           PYC_FN(_strip_function_call),
@@ -172,6 +409,8 @@ void _register_functions(PyObject* mod) {
           PYC_FN(_is_valid_var_name),
           METH_FASTCALL,
           nullptr},
+      PyMethodDef{
+          "get_type_slots", PYC_FN(_get_type_slots), METH_FASTCALL, nullptr},
       PyMethodDef{nullptr, nullptr, 0, nullptr},
   };
   PyModule_AddFunctions(mod, fns.data());
