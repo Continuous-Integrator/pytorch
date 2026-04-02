@@ -31,11 +31,10 @@ class TestStatelessRNGKey(TestCase):
         self.assertEqual(key1, key2)
 
     def test_error_unsupported_impl(self, device):
-        with self.assertRaises(NotImplementedError):
+        with self.assertRaisesRegex(
+            NotImplementedError, "does not support PRNG impl 'unsupported'"
+        ):
             random.key(42, impl="unsupported", device=device)
-
-
-instantiate_device_type_tests(TestStatelessRNGKey, globals(), only_for=("cuda"))
 
 
 class TestStatelessRNGKeySplit(TestCase):
@@ -114,33 +113,46 @@ class TestStatelessRNGKeySplit(TestCase):
 
     def test_error_wrong_shape(self, device):
         key = torch.tensor([42, 0, 1], dtype=torch.uint64, device=device)
-        with self.assertRaises(RuntimeError):
+        with self.assertRaisesRegex(
+            RuntimeError, r"key must have shape \(\*batch, 2\)"
+        ):
             random.split(key, 4)
 
     def test_error_wrong_dtype(self, device):
         key = torch.tensor([42, 0], dtype=torch.float32, device=device)
-        with self.assertRaises(RuntimeError):
+        with self.assertRaisesRegex(RuntimeError, "key must have dtype uint64"):
             random.split(key, 4)
 
     def test_error_wrong_device(self, device):
         key = random.key(42)  # CPU key
-        with self.assertRaises(RuntimeError):
+        with self.assertRaisesRegex(
+            NotImplementedError,
+            "Could not run .* with arguments from the 'CPU' backend",
+        ):
             random.split(key, 4)
 
     def test_error_invalid_num_splits(self, device):
         key = random.key(42, device=device)
-        with self.assertRaises(RuntimeError):
+        with self.assertRaisesRegex(RuntimeError, "num_splits must be positive"):
             random.split(key, 0)
-        with self.assertRaises(RuntimeError):
+        with self.assertRaisesRegex(RuntimeError, "num_splits must be positive"):
             random.split(key, -1)
 
     def test_error_batched_last_dim_not_2(self, device):
         key = torch.tensor([[42, 0, 1], [43, 0, 1]], dtype=torch.uint64, device=device)
-        with self.assertRaises(RuntimeError):
+        with self.assertRaisesRegex(
+            RuntimeError, r"key must have shape \(\*batch, 2\)"
+        ):
             random.split(key, 4)
 
-
-instantiate_device_type_tests(TestStatelessRNGKeySplit, globals(), only_for=("cuda"))
+    def test_offset_overflow(self, device):
+        near_max = (1 << 64) - 1
+        key = torch.tensor([42, near_max], dtype=torch.uint64, device=device)
+        splits = random.split(key, 3)
+        # split_idx=1 wraps offset to 0, split_idx=2 wraps to 1
+        key0 = torch.tensor([42, 0], dtype=torch.uint64, device=device)
+        self.assertEqual(splits[1], random.fold_in(key0, 0))
+        self.assertEqual(splits[2], random.fold_in(key0, 1))
 
 
 class TestStatelessRNGKeyFoldIn(TestCase):
@@ -198,26 +210,39 @@ class TestStatelessRNGKeyFoldIn(TestCase):
 
     def test_error_wrong_shape(self, device):
         key = torch.tensor([42, 0, 1], dtype=torch.uint64, device=device)
-        with self.assertRaises(RuntimeError):
+        with self.assertRaisesRegex(
+            RuntimeError, r"key must have shape \(\*batch, 2\)"
+        ):
             random.fold_in(key, 0)
 
     def test_error_wrong_dtype(self, device):
         key = torch.tensor([42, 0], dtype=torch.float32, device=device)
-        with self.assertRaises(RuntimeError):
+        with self.assertRaisesRegex(RuntimeError, "key must have dtype uint64"):
             random.fold_in(key, 0)
 
     def test_error_wrong_device(self, device):
         key = random.key(42)  # CPU key
-        with self.assertRaises(RuntimeError):
+        with self.assertRaisesRegex(
+            NotImplementedError,
+            "Could not run .* with arguments from the 'CPU' backend",
+        ):
             random.fold_in(key, 0)
 
     def test_error_batched_last_dim_not_2(self, device):
         key = torch.tensor([[42, 0, 1], [43, 0, 1]], dtype=torch.uint64, device=device)
-        with self.assertRaises(RuntimeError):
+        with self.assertRaisesRegex(
+            RuntimeError, r"key must have shape \(\*batch, 2\)"
+        ):
             random.fold_in(key, 0)
 
-
-instantiate_device_type_tests(TestStatelessRNGKeyFoldIn, globals(), only_for=("cuda"))
+    def test_offset_overflow(self, device):
+        near_max = (1 << 64) - 1
+        key = torch.tensor([42, near_max], dtype=torch.uint64, device=device)
+        # fold_in(data=1) wraps offset to 0, so it should match fold_in on
+        # a key with offset=0 and data=0.
+        result = random.fold_in(key, 1)
+        key0 = torch.tensor([42, 0], dtype=torch.uint64, device=device)
+        self.assertEqual(result, random.fold_in(key0, 0))
 
 
 class TestStatelessRNGDistribution(TestCase):
@@ -444,11 +469,6 @@ class TestStatelessRNGDistribution(TestCase):
         self.assertTrue(result.max().item() <= 5.0)
 
 
-instantiate_device_type_tests(
-    TestStatelessRNGDistribution, globals(), only_for=("cuda")
-)
-
-
 class TestStatelessRNGCompile(TestCase):
     def test_split_fullgraph(self, device):
         key = random.key(42, device=device)
@@ -519,7 +539,13 @@ class TestStatelessRNGCompile(TestCase):
         self.assertEqual(f(key), random.uniform(random.fold_in(key, 3), (100,)))
 
 
-instantiate_device_type_tests(TestStatelessRNGCompile, globals(), only_for=("cuda"))
+instantiate_device_type_tests(TestStatelessRNGKey, globals(), only_for=("cuda",))
+instantiate_device_type_tests(TestStatelessRNGKeySplit, globals(), only_for=("cuda",))
+instantiate_device_type_tests(TestStatelessRNGKeyFoldIn, globals(), only_for=("cuda",))
+instantiate_device_type_tests(
+    TestStatelessRNGDistribution, globals(), only_for=("cuda",)
+)
+instantiate_device_type_tests(TestStatelessRNGCompile, globals(), only_for=("cuda",))
 
 
 if __name__ == "__main__":
