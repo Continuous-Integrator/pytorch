@@ -500,13 +500,14 @@ def _patch_autograd_grad():
 
     @functools.wraps(_orig_grad)
     def _patched_grad(outputs, inputs, *args, **kwargs):
-        roots = [
-            t.grad_fn
-            for t in (outputs if isinstance(outputs, (list, tuple)) else (outputs,))
-            if isinstance(t, torch.Tensor) and t.grad_fn is not None
-        ]
-        if roots:
-            setup_stacktrace_preservation_hooks(roots)
+        if _is_non_strict_tracing():
+            roots = [
+                t.grad_fn
+                for t in (outputs if isinstance(outputs, (list, tuple)) else (outputs,))
+                if isinstance(t, torch.Tensor) and t.grad_fn is not None
+            ]
+            if roots:
+                setup_stacktrace_preservation_hooks(roots)
 
         with fx_traceback.annotate({"autograd_backward": True}):
             return _orig_grad(outputs, inputs, *args, **kwargs)
