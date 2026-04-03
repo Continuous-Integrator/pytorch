@@ -670,14 +670,10 @@ def is_reusable(
             value = new_source.get_value(resolve_globals, resolve_locals, resolve_cache)
         except Exception:
             hc_log.debug(
-                "subgraph_reuse: reuse failed -- cannot resolve source\n"
-                "  guard type: %s\n"
-                "  guard source: %s\n"
-                "  guard source name: %s\n"
-                "  user stack:\n%s",
-                guard.create_fn_name(),
-                new_source,
+                "subgraph_reuse: reuse failed -- cannot resolve source '%s' "
+                "(guard type: %s, user stack:\n%s)",
                 new_source.name,
+                guard.create_fn_name(),
                 "".join(guard.user_stack.format())
                 if guard.user_stack
                 else "<no stack>",
@@ -686,18 +682,11 @@ def is_reusable(
 
         if not handler.eval_fn(value, expected):
             hc_log.debug(
-                "subgraph_reuse: reuse failed --\n"
-                "  guard type: %s\n"
-                "  guard source: %s\n"
-                "  guard source name: %s\n"
-                "  expected: %s\n"
-                "  got: %s\n"
-                "  user stack:\n%s",
-                guard.create_fn_name(),
-                new_source,
+                "subgraph_reuse: reuse failed -- guard on '%s': expected %s, got mismatch "
+                "(guard type: %s, user stack:\n%s)",
                 new_source.name,
                 expected,
-                value,
+                guard.create_fn_name(),
                 "".join(guard.user_stack.format())
                 if guard.user_stack
                 else "<no stack>",

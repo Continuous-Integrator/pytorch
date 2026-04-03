@@ -18,8 +18,7 @@ install_ubuntu() {
   cp target/release/sccache-dist /opt/cache/bin
   echo "Cleaning up"
   cd ..
-  rm -rf sccache
-  rustup self uninstall -y
+  rm -rf sccache .cargo
   apt-get remove -y pkg-config libssl-dev
   apt-get autoclean && apt-get clean
 

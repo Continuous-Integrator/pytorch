@@ -13,11 +13,9 @@ from torch.nn.attention import (
 from torch.nn.attention.varlen import varlen_attn, varlen_attn_out
 from torch.testing._internal.common_cuda import (
     IS_SM90,
-    PLATFORM_SUPPORTS_CK_SDPA,
     PLATFORM_SUPPORTS_FLASH_ATTENTION,
     SM100OrLater,
     SM120OrLater,
-    SM90OrLater,
 )
 from torch.testing._internal.common_device_type import instantiate_device_type_tests
 from torch.testing._internal.common_nn import NNTestCase
@@ -58,13 +56,6 @@ def use_fa4():
 
 def _use_backend(backend):
     return {"fa2": nullcontext, "fa3": use_fa3, "fa4": use_fa4}[backend]()
-
-
-def _varlen_backends(*, include_fa4_paged_kv: bool) -> list[str]:
-    fa4_supported = (
-        SM100OrLater if include_fa4_paged_kv else SM90OrLater
-    ) and not SM120OrLater
-    return ["fa2"] + (["fa3"] if IS_SM90 else []) + (["fa4"] if fa4_supported else [])
 
 
 VarlenShape = namedtuple(
@@ -251,17 +242,12 @@ class TestVarlenAttention(NNTestCase):
     )
     @parametrize("dtype", [torch.bfloat16, torch.float16])
     @parametrize(
-        "sdpa_backend",
-        ["aotriton", "ck"] if PLATFORM_SUPPORTS_CK_SDPA else ["aotriton"],
-    )
-    @parametrize(
         "backend",
-        _varlen_backends(include_fa4_paged_kv=False),
+        ["fa2"]
+        + (["fa3"] if IS_SM90 else [])
+        + (["fa4"] if SM100OrLater and not SM120OrLater else []),
     )
-    def test_basic_functionality(self, device, dtype, backend, sdpa_backend=None):
-        if TEST_WITH_ROCM:
-            torch.backends.cuda.preferred_rocm_fa_library(sdpa_backend)
-
+    def test_basic_functionality(self, device, dtype, backend):
         torch.manual_seed(42)
 
         shape = VarlenShape(batch_size=2, max_seq_len=512, embed_dim=1024, num_heads=16)
@@ -327,14 +313,8 @@ class TestVarlenAttention(NNTestCase):
     @unittest.skipIf(
         not PLATFORM_SUPPORTS_FLASH_ATTENTION, "Flash Attention not supported"
     )
-    @parametrize(
-        "sdpa_backend",
-        ["aotriton", "ck"] if PLATFORM_SUPPORTS_CK_SDPA else ["aotriton"],
-    )
     @parametrize("dtype", [torch.bfloat16, torch.float16])
-    def test_custom_op_compliance(self, device, dtype, sdpa_backend=None):
-        if TEST_WITH_ROCM:
-            torch.backends.cuda.preferred_rocm_fa_library(sdpa_backend)
+    def test_custom_op_compliance(self, device, dtype):
         torch.manual_seed(42)
 
         shape = VarlenShape(batch_size=2, max_seq_len=512, embed_dim=1024, num_heads=16)
@@ -408,14 +388,8 @@ class TestVarlenAttention(NNTestCase):
     @unittest.skipIf(
         not PLATFORM_SUPPORTS_FLASH_ATTENTION, "Flash Attention not supported"
     )
-    @parametrize(
-        "sdpa_backend",
-        ["aotriton", "ck"] if PLATFORM_SUPPORTS_CK_SDPA else ["aotriton"],
-    )
     @parametrize("dtype", [torch.bfloat16, torch.float16])
-    def test_custom_op_registration(self, device, dtype, sdpa_backend=None):
-        if TEST_WITH_ROCM:
-            torch.backends.cuda.preferred_rocm_fa_library(sdpa_backend)
+    def test_custom_op_registration(self, device, dtype):
         torch.manual_seed(42)
 
         shape = VarlenShape(batch_size=2, max_seq_len=512, embed_dim=1024, num_heads=16)
@@ -478,10 +452,6 @@ class TestVarlenAttention(NNTestCase):
     @unittest.skipIf(
         not PLATFORM_SUPPORTS_FLASH_ATTENTION, "Flash Attention not supported"
     )
-    @parametrize(
-        "sdpa_backend",
-        ["aotriton", "ck"] if PLATFORM_SUPPORTS_CK_SDPA else ["aotriton"],
-    )
     @parametrize("dtype", [torch.bfloat16, torch.float16])
     @parametrize("scale", [None, 0.1])
     @parametrize(
@@ -502,14 +472,11 @@ class TestVarlenAttention(NNTestCase):
     )
     @parametrize(
         "backend",
-        _varlen_backends(include_fa4_paged_kv=False),
+        ["fa2"]
+        + (["fa3"] if IS_SM90 else [])
+        + (["fa4"] if SM100OrLater and not SM120OrLater else []),
     )
-    def test_varlen_vs_sdpa(
-        self, device, dtype, scale, window_size, backend, sdpa_backend=None
-    ):
-        if TEST_WITH_ROCM:
-            torch.backends.cuda.preferred_rocm_fa_library(sdpa_backend)
-
+    def test_varlen_vs_sdpa(self, device, dtype, scale, window_size, backend):
         torch.manual_seed(42)
 
         shape = VarlenShape(
@@ -776,10 +743,6 @@ class TestVarlenAttention(NNTestCase):
         lambda params: params["backend"] != "fa2"
         and any(kv_len < 128 for kv_len in params["actual_kv_lens"]),
     )
-    @parametrize(
-        "sdpa_backend",
-        ["aotriton", "ck"] if PLATFORM_SUPPORTS_CK_SDPA else ["aotriton"],
-    )
     @parametrize("dtype", [torch.bfloat16, torch.float16])
     @parametrize(
         "actual_kv_lens",
@@ -791,13 +754,13 @@ class TestVarlenAttention(NNTestCase):
             [127, 63, 33, 17],
         ],
     )
-    @parametrize("backend", _varlen_backends(include_fa4_paged_kv=False))
-    def test_seqused_k_kv_cache(
-        self, device, dtype, actual_kv_lens, backend, sdpa_backend=None
-    ):
-        if TEST_WITH_ROCM:
-            torch.backends.cuda.preferred_rocm_fa_library(sdpa_backend)
-
+    @parametrize(
+        "backend",
+        ["fa2"]
+        + (["fa3"] if IS_SM90 else [])
+        + (["fa4"] if SM100OrLater and not SM120OrLater else []),
+    )
+    def test_seqused_k_kv_cache(self, device, dtype, actual_kv_lens, backend):
         torch.manual_seed(42)
 
         batch_size = 4
@@ -916,7 +879,9 @@ class TestVarlenAttention(NNTestCase):
     )
     @parametrize(
         "backend",
-        _varlen_backends(include_fa4_paged_kv=True),
+        ["fa2"]
+        + (["fa3"] if IS_SM90 else [])
+        + (["fa4"] if SM100OrLater and not SM120OrLater else []),
     )
     def test_block_table_kv_cache(
         self, device, dtype, page_size, compile, actual_kv_lens, backend

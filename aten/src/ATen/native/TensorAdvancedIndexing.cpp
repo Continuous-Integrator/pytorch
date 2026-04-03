@@ -988,8 +988,7 @@ Tensor& _index_put_impl_(
     }
   }
   if ((self.device().type() == DeviceType::CUDA ||
-       self.device().type() == DeviceType::XPU ||
-       self.device().type() == DeviceType::PrivateUse1) &&
+       self.device().type() == DeviceType::XPU) &&
       (accumulate ||
        (globalContext().deterministicAlgorithms() && value_.numel() > 1))) {
     TORCH_CHECK(

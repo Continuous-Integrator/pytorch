@@ -43,7 +43,6 @@ from torch.testing._internal.common_utils import (
     markDynamoStrictTest,
     parametrize,
     run_tests,
-    serialTest,
     TEST_WITH_TORCHDYNAMO,
     TestCase,
 )
@@ -965,7 +964,6 @@ class TestOptimRenewed(TestCase):
 
     @onlyCUDA
     @largeTensorTest("72GB", "cuda")
-    @serialTest()
     @optims(
         [optim for optim in optim_db if "foreach" in optim.supported_impls],
         dtypes=[torch.float16],
@@ -1131,7 +1129,6 @@ class TestOptimRenewed(TestCase):
 
     @onlyNativeDeviceTypes
     @largeTensorTest("64GB")
-    @serialTest()
     @optims(
         [optim for optim in optim_db if "fused" in optim.supported_impls],
         dtypes=[torch.float16],

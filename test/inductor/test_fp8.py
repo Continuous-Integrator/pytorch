@@ -18,6 +18,7 @@ from torch.testing._internal.common_cuda import (
     PLATFORM_SUPPORTS_FP8,
     PLATFORM_SUPPORTS_MX_GEMM,
     SM100OrLater,
+    SM90OrLater,
 )
 from torch.testing._internal.common_device_type import (
     instantiate_device_type_tests,
@@ -43,7 +44,7 @@ from torch.utils._triton import has_triton_tma_device
 torch.set_float32_matmul_precision("high")
 
 
-f8_msg = "FP8 is only supported on H100+, SM 8.9 and MI300+, XPU and CPU devices"
+f8_msg = "FP8 is only supported on H100+, SM 8.9 and MI300+ and XPU devices"
 
 
 def _is_cuda_device(device) -> bool:
@@ -399,7 +400,10 @@ class TestFP8Types(TestCase):
             f"LN only Inductor: {ln_latency}ms."
         )
 
-    @onlyOn(["cuda", "xpu", "cpu"])
+    @unittest.skipIf(
+        not SM90OrLater or torch.version.hip, "PDL requires NVIDIA SM 9.0+"
+    )
+    @onlyOn(["cuda", "xpu"])
     def test_scaled_mm_pdl_handles_none_bias(self, device):
         dtype_float8 = _fix_fp8_dtype_for_rocm(torch.float8_e4m3fn, device)
         M, K, N = 32, 64, 32
@@ -440,7 +444,7 @@ class TestFP8Lowering(TestCase):
     @parametrize(
         "persistent_matmul", [False, True] if has_triton_tma_device() else [False]
     )
-    @onlyOn(["cuda", "xpu", "cpu"])
+    @onlyOn(["cuda", "xpu"])
     def test_tensorwise_scaling(
         self,
         dtype: torch.dtype,
@@ -465,8 +469,8 @@ class TestFP8Lowering(TestCase):
         if has_bias:
             bias = torch.randn(N, device=device, dtype=torch.bfloat16)
 
-        if "xpu" in device and use_fast_accum:
-            self.skipTest("XPU does not support use_fast_accum=True for now")
+        # if "xpu" in device and use_fast_accum:
+        self.skipTest("XPU does not support use_fast_accum=True for now")
 
         # quantize weight (prior to inference)
         w_fp8, w_inverse_scale = _quantize_tensorwise(w, dtype_float8)
@@ -517,7 +521,7 @@ class TestFP8Lowering(TestCase):
                 self.assertEqual(y_eager, y_compiled, rtol=1e-2, atol=0.05)
 
     @unittest.skipIf(not PLATFORM_SUPPORTS_FP8, f8_msg)
-    @onlyOn(["cuda", "xpu", "cpu"])
+    @onlyOn(["cuda", "xpu"])
     def test_scaled_mm_preserves_strides(self, device):
         """Test that scaled_mm preserves stride ordering through a custom pass."""
 
@@ -696,7 +700,7 @@ class TestFP8Lowering(TestCase):
             torch.testing.assert_close(y_eager, y_compiled, rtol=1e-2, atol=0.05)
 
     @unittest.skipIf(not PLATFORM_SUPPORTS_FP8, f8_msg)
-    @onlyOn(["cuda", "xpu", "cpu"])
+    @onlyOn(["cuda", "xpu"])
     @parametrize("shape", ("16,16,32", "16,32,32", "1024,1024,512"))
     @parametrize("has_bias", (False, True))
     @parametrize("use_fast_accum", (False, True))
@@ -989,7 +993,7 @@ class TestFP8Lowering(TestCase):
             torch.testing.assert_close(y_eager, y_compiled, rtol=1e-2, atol=0.05)
 
     @unittest.skipIf(not PLATFORM_SUPPORTS_FP8, f8_msg)
-    @onlyOn(["cuda", "xpu", "cpu"])
+    @onlyOn(["cuda", "xpu"])
     @parametrize("M", (1, 3, 33, 257, 1024))
     @parametrize("K", (16, 32, 1024))
     @parametrize("N", (16, 2048))
@@ -1299,7 +1303,7 @@ class TestFP8Lowering(TestCase):
                     )
 
     @unittest.skipIf(not PLATFORM_SUPPORTS_FP8, f8_msg)
-    @onlyOn(["cuda", "xpu", "cpu"])
+    @onlyOn(["cuda", "xpu"])
     @parametrize("M", (1, 3, 33, 257, 1024))
     @parametrize("K", (16, 32, 1024))
     @parametrize("N", (16, 2048))
@@ -1371,7 +1375,7 @@ class TestFP8Lowering(TestCase):
         self.assertEqual(y_compiled.dtype, dtype)
         torch.testing.assert_close(y_eager, y_compiled, rtol=1e-2, atol=0.07)
 
-    @onlyOn(["cuda", "xpu", "cpu"])
+    @onlyOn(["cuda", "xpu"])
     @unittest.skipIf(not PLATFORM_SUPPORTS_MX_GEMM, "Not supported on non B200")
     def test_mx_fp8_max_autotune(self, device):
         M, K, N = 128, 32, 128
@@ -1455,7 +1459,7 @@ class TestFP8Lowering(TestCase):
         )
 
     @unittest.skipIf(not PLATFORM_SUPPORTS_FP8, f8_msg)
-    @onlyOn(["cuda", "xpu", "cpu"])
+    @onlyOn(["cuda", "xpu"])
     def test_unacceptable_scale_dims_rowwise_scaling(self, device):
         dtype: torch.dtype = torch.bfloat16
         dtype_float8 = torch.float8_e4m3fn

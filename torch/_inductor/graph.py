@@ -663,12 +663,6 @@ class GraphLowering(torch.fx.Interpreter):
         """
         if (dep, count_bytes) not in self.dep_size_hint_cache:
             res = 0
-            # Non-tensor graph inputs (TorchBindObject, OpaqueObjectState)
-            # have no meaningful size — skip the size computation entirely.
-            inp = self.graph_inputs.get(dep.name)
-            if isinstance(inp, ir.NonTensorObj):
-                self.dep_size_hint_cache[(dep, count_bytes)] = 0
-                return 0
             try:
                 if (
                     not dep.has_unbacked_symbols()
@@ -1523,7 +1517,7 @@ class GraphLowering(torch.fx.Interpreter):
                     value=value.item(), dtype=value.dtype, device=value.device
                 )
             if self.can_inline_constant(value):
-                log.debug("Inlining constant: %s ", target)
+                log.debug("Inlining constant: %s ", str(target))
                 # tensor lowering has constant inlining logic
                 from .lowering import tensor
 
@@ -1569,7 +1563,6 @@ class GraphLowering(torch.fx.Interpreter):
                     TorchBindObject,
                     ir.OpaqueMultiOutput,
                     ir.OpaqueValueTypeConstant,
-                    ir.OpaqueObjectState,
                 ),
             )
             for x in result

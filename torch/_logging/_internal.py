@@ -1024,7 +1024,11 @@ class TorchLogsFormatter(logging.Formatter):
         if self._is_trace:
             if s != "":
                 raise AssertionError(f"expected empty string for trace, got {s!r}")
-            r = f"{prefix} {json.dumps(record.metadata, default=repr)}"
+            try:
+                r = f"{prefix} {json.dumps(record.metadata)}"
+            except TypeError:
+                log.warning("failing metadata: %r", record.metadata)
+                raise
             if record.payload is not None:
                 r += "".join(f"\n\t{l}" for l in record.payload.split("\n"))
             return r

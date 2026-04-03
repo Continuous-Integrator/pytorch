@@ -6,7 +6,6 @@
 #define PY_SSIZE_T_CLEAN
 #include <ATen/EmptyTensor.h>
 #include <ATen/SparseCsrTensorUtils.h>
-#include <c10/util/Synchronized.h>
 #include <c10/util/flat_hash_map.h>
 #include <fmt/format.h>
 #include <torch/csrc/autograd/grad_mode.h>
@@ -875,26 +874,20 @@ static PyObject* check_obj_id(PyObject* dummy, PyObject* args) {
 
 #if IS_PYTHON_3_12_PLUS
 
-struct DictVersionState {
-  std::unordered_map<PyObject*, uint64_t> map;
-  uint64_t next_id = 1;
-};
-
-static c10::Synchronized<DictVersionState> dict_version_state;
+static std::unordered_map<PyObject*, uint64_t> dict_version_map;
 static int dict_version_watcher_id;
 static int dict_recursive_tag_watcher_id;
+static uint64_t global_dict_version_id = 1;
 static int dict_version_watch_callback(
     PyDict_WatchEvent event,
     PyObject* dict,
     PyObject* key,
     PyObject* new_value) noexcept {
-  dict_version_state.withLock([&](DictVersionState& state) {
-    if (event == PyDict_EVENT_DEALLOCATED) {
-      state.map.erase(dict);
-    } else if (event != PyDict_EVENT_CLONED) {
-      state.map[dict] = state.next_id++;
-    }
-  });
+  if (event == PyDict_EVENT_DEALLOCATED) {
+    dict_version_map.erase(dict);
+  } else if (event != PyDict_EVENT_CLONED) {
+    dict_version_map[dict] = global_dict_version_id++;
+  }
   return 0;
 }
 
@@ -906,13 +899,10 @@ static uint64_t get_dict_version_unchecked(PyObject* dict) {
   TORCH_CHECK(
       !PyDict_Watch(dict_version_watcher_id, dict),
       "failed to add version watcher to dict!");
-  return dict_version_state.withLock([&](DictVersionState& state) -> uint64_t {
-    auto [it, inserted] = state.map.try_emplace(dict, state.next_id);
-    if (inserted) {
-      state.next_id++;
-    }
-    return it->second;
-  });
+  if (!dict_version_map.count(dict)) {
+    dict_version_map[dict] = global_dict_version_id++;
+  }
+  return dict_version_map[dict];
 
 #else
 
@@ -921,11 +911,16 @@ static uint64_t get_dict_version_unchecked(PyObject* dict) {
 #endif
 }
 
-static PyObject* dict_version(PyObject* dummy, PyObject* obj) {
-  HANDLE_TH_ERRORS
-  TORCH_CHECK(PyDict_Check(obj), "dict_version expects a dict");
+static PyObject* dict_version(PyObject* dummy, PyObject* args) {
+  // Retrieves the version of a dictionary.
+  PyObject* obj = nullptr;
+  if (!PyArg_ParseTuple(args, "O", &obj)) {
+    return nullptr;
+  }
+  if (!PyDict_Check(obj)) {
+    return nullptr;
+  }
   return THPUtils_packUInt64(get_dict_version_unchecked(obj));
-  END_HANDLE_TH_ERRORS
 }
 
 static PyObject* assert_size_stride(PyObject* dummy, PyObject* args) {
@@ -1181,7 +1176,7 @@ static PyMethodDef _methods[] = {
     {"check_obj_id", check_obj_id, METH_VARARGS, nullptr},
     {"assert_size_stride", assert_size_stride, METH_VARARGS, nullptr},
     {"assert_alignment", assert_alignment, METH_VARARGS, nullptr},
-    {"dict_version", dict_version, METH_O, nullptr},
+    {"dict_version", dict_version, METH_VARARGS, nullptr},
     {"_empty_strided_cpu", _empty_strided_cpu, METH_VARARGS, nullptr},
     {"_empty_strided_cpu_pinned",
      _empty_strided_cpu_pinned,
@@ -1642,9 +1637,7 @@ class DictGuardManager;
 // the container can grow large over the lifetime of the process.  That’s
 // acceptable: lookup is by pointer (hash/equals = identity) and each entry
 // stores only lightweight pointers.
-using DictToGuardManagersMap =
-    std::unordered_map<PyObject*, std::list<GuardManager*>>;
-c10::Synchronized<DictToGuardManagersMap> dict_to_guard_managers;
+std::unordered_map<PyObject*, std::list<GuardManager*>> dict_to_guard_managers;
 
 /**
  * Base class for the leaf guard in the GuardManager hierarchy.
@@ -3065,14 +3058,7 @@ class GuardManager {
   }
 
   void disable_recursive_dict_tag_optimization() {
-    dict_to_guard_managers.withLock([&](DictToGuardManagersMap& map) {
-      disable_recursive_dict_tag_optimization(map);
-    });
-  }
-
-  // Caller must hold dict_to_guard_managers lock.
-  void disable_recursive_dict_tag_optimization(DictToGuardManagersMap& map) {
-    unwatch_all_saved_dict_pointers(map);
+    unwatch_all_saved_dict_pointers();
     _disable_dict_tag_matching = true;
   }
 
@@ -3438,16 +3424,26 @@ class GuardManager {
         PyErr_Clear();
         return false;
       }
-      dict_to_guard_managers.withLock([&](DictToGuardManagersMap& map) {
-        map[dict_pointer].push_back(this);
-      });
+      dict_to_guard_managers[dict_pointer].push_back(this);
     }
 #endif
     return true;
   }
 
-  // Caller must hold dict_to_guard_managers lock.
-  void unwatch_all_saved_dict_pointers(DictToGuardManagersMap& map) {
+  void unwatch_all_saved_dict_pointers() {
+    /*
+    We may have recorded hundreds/thousands of dict pointers for the recursive
+    dict-tag optimisation. If any of those dicts mutates, we want to disable the
+    optimisation and then unwatch as many dict pointers as we can.
+
+    Be careful: the same dict pointer can be recorded by multiple GuardManagers.
+    So the flow is:
+
+      1) Remove *this* GuardManager from dict_to_guard_managers[dict_pointer].
+      2) If the list for that dict becomes empty, then:
+          - PyDict_Unwatch(dict_recursive_tag_watcher_id, dict_pointer)
+          - erase the dict_pointer entry from dict_to_guard_managers.
+    */
 #if IS_PYTHON_3_12_PLUS
     if (!_disable_dict_tag_matching) {
       for (auto& value_stashed_pointers : _dict_pointers) {
@@ -3456,15 +3452,20 @@ class GuardManager {
         for (auto& stashed_pointer : stashed_pointers) {
           PyObject* dict_pointer = stashed_pointer.first;
 
+          // Delete the guard manager from the dict_to_guard_managers
           auto it = std::find(
-              map[dict_pointer].begin(), map[dict_pointer].end(), this);
-          if (it != map[dict_pointer].end()) {
-            map[dict_pointer].erase(it);
+              dict_to_guard_managers[dict_pointer].begin(),
+              dict_to_guard_managers[dict_pointer].end(),
+              this);
+          if (it != dict_to_guard_managers[dict_pointer].end()) {
+            dict_to_guard_managers[dict_pointer].erase(it);
           }
 
-          if (map[dict_pointer].empty()) {
+          // Unwatch the dict pointer if this was the last guard manager
+          // watching it.
+          if (dict_to_guard_managers[dict_pointer].empty()) {
             PyDict_Unwatch(dict_recursive_tag_watcher_id, dict_pointer);
-            map.erase(dict_pointer);
+            dict_to_guard_managers.erase(dict_pointer);
           }
         }
       }
@@ -4439,18 +4440,15 @@ static int dict_recursive_tag_watch_callback(
     PyObject* key,
     PyObject* new_value) noexcept {
   if (event != PyDict_EVENT_CLONED) {
-    dict_to_guard_managers.withLock([&](DictToGuardManagersMap& map) {
-      auto it = map.find(dict);
-      if (it != map.end()) {
-        // Copy the list — unwatch_all_saved_dict_pointers may mutate it.
-        auto guard_managers = it->second;
-        for (auto& guard_manager : guard_managers) {
-          if (guard_manager) {
-            guard_manager->disable_recursive_dict_tag_optimization(map);
-          }
+    auto it = dict_to_guard_managers.find(dict);
+    if (it != dict_to_guard_managers.end()) {
+      auto guard_managers = it->second;
+      for (auto& guard_manager : guard_managers) {
+        if (guard_manager) {
+          guard_manager->disable_recursive_dict_tag_optimization();
         }
       }
-    });
+    }
   }
   return 0; // keep watching
 }
@@ -8225,7 +8223,7 @@ PyObject* torch_c_dynamo_guards_init() {
   py_m.def("install_symbolic_shape_guard", install_symbolic_shape_guard);
   py_m.def("profile_guard_manager", profile_guard_manager);
 
-// initialize dict version watcher for 3.12
+// initialize dict_version_map watcher for 3.12
 #if IS_PYTHON_3_12_PLUS
 
   dict_version_watcher_id = PyDict_AddWatcher(dict_version_watch_callback);

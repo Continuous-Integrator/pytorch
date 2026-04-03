@@ -80,7 +80,6 @@ if TYPE_CHECKING:
     from torch._dynamo.symbolic_convert import InstructionTranslator
 
     from .constant import ConstantVariable
-    from .dicts import DunderDictVariable
 
 
 def initialize_lazy_module(
@@ -115,12 +114,15 @@ def initialize_lazy_module(
         fake_kwargs = {k: convert_to_fake(v) for k, v in proxy_kwargs.items()}
         try:
             mod._infer_parameters(mod, fake_args, fake_kwargs)  # type: ignore[operator]
-        except AttributeError:
+        except AttributeError as e:
             # Re-raise with the original error message from the AttributeError
+            error_message = VariableTracker.build(
+                tx, str(e) or "AttributeError during lazy module initialization"
+            )
             raise_observed_exception(
                 AttributeError,
                 tx,
-                args=["AttributeError during lazy module initialization"],
+                args=[error_message],
             )
 
 
@@ -202,11 +204,6 @@ class NNModuleVariable(VariableTracker):
         self.source: Source = self.source
         self.nn_module_stack_source = self.source
 
-    def get_dict_vt(self, tx: "InstructionTranslator") -> "DunderDictVariable":
-        if not hasattr(self, "dict_vt"):
-            self.dict_vt = variables.DunderDictVariable.create(tx, self)
-        return self.dict_vt
-
     def get_nn_module_stack_source(self) -> Source:
         res = self.nn_module_stack_source or self.source
         assert res
@@ -284,6 +281,18 @@ class NNModuleVariable(VariableTracker):
         if tx.f_code.co_name != "__init__":
             GenerationTracker.mark_class_dynamic(type(mod))
         raise UnspecializeRestartAnalysis
+
+    def has_key_in_generic_dict(self, tx: "InstructionTranslator", key: str) -> bool:
+        base = tx.output.get_submodule(self.module_key)
+
+        if tx.output.side_effects.has_pending_mutation_of_attr(self, key):
+            mutated_attr = tx.output.side_effects.load_attr(self, key, deleted_ok=True)
+            return not isinstance(mutated_attr, variables.DeletedVariable)
+
+        # Use object.__getattribute__ to access __dict__ directly,
+        # bypassing any custom __getattribute__ on the module.
+        base_dict = object.__getattribute__(base, "__dict__")
+        return key in base_dict
 
     def _custom_getattr_fallback(
         self,
@@ -372,7 +381,7 @@ class NNModuleVariable(VariableTracker):
             )
 
         if name == "__dict__":
-            return self.get_dict_vt(tx)
+            return variables.GetAttrVariable(self, name, source=source)
 
         subobj = None
         if name in base_dict:
@@ -399,10 +408,13 @@ class NNModuleVariable(VariableTracker):
                 if result is not None:
                     return result
                 # if we can't find a __getattr__, we can't parse this, raise attribute error
+                error_message = VariableTracker.build(
+                    tx, f"'{type(base).__name__}' object has no attribute '{name}'"
+                )
                 raise_observed_exception(
                     AttributeError,
                     tx,
-                    args=[f"'{type(base).__name__}' object has no attribute '{name}'"],
+                    args=[error_message],
                 )
 
         if name == "forward":
@@ -1330,12 +1342,14 @@ class UnspecializedNNModuleVariable(UserDefinedObjectVariable):
         if out is None:
             out = self.getattr_helper(tx, "_buffers", name_vt)
         if out is None:
+            error_message = VariableTracker.build(
+                tx,
+                f"'{type(self.value).__name__}' object has no attribute '{name}'",
+            )
             raise_observed_exception(
                 AttributeError,
                 tx,
-                args=[
-                    f"'{type(self.value).__name__}' object has no attribute '{name}'"
-                ],
+                args=[error_message],
             )
         assert out is not None
         return out

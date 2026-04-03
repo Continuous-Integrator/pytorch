@@ -1,5 +1,6 @@
 #include <ATen/Functions.h>
 #include <ATen/core/CachingHostAllocator.h>
+#include <ATen/xpu/XPUGeneratorImpl.h>
 #include <ATen/xpu/XPUGraph.h>
 #include <c10/xpu/XPUFunctions.h>
 
@@ -15,43 +16,23 @@ MempoolId_t graph_pool_handle() {
   return c10::xpu::MemPool::graph_pool_handle();
 }
 
-XPUGraphImpl::XPUGraphImpl(const GraphImplArgs& args)
+XPUGraph::XPUGraph(bool keep_graph)
     : capture_stream_(at::xpu::getCurrentXPUStream()),
-      keep_graph_(args.keep_graph) {}
+      keep_graph_(keep_graph) {}
 
-void XPUGraphImpl::register_generator_state(
+void XPUGraph::register_generator_state(
     c10::intrusive_ptr<at::XPUGeneratorState> state) {
   captured_generator_states_[std::move(state)] = 0;
 }
 
-void XPUGraphImpl::register_generator_state(const at::Generator& generator) {
+void XPUGraph::register_generator_state(const at::Generator& generator) {
   c10::intrusive_ptr<XPUGeneratorImpl> xpu_gen =
       dynamic_intrusive_pointer_cast<XPUGeneratorImpl>(
           generator.getIntrusivePtr());
   xpu_gen->register_graph(this);
 }
 
-void XPUGraphImpl::capture_begin(
-    MempoolId_t pool /*={0,0}*/,
-    GraphCaptureMode capture_mode) {
-  switch (capture_mode) {
-    case GraphCaptureMode::Default:
-      break;
-
-    case GraphCaptureMode::Global:
-    case GraphCaptureMode::ThreadLocal:
-    case GraphCaptureMode::Relaxed:
-      TORCH_WARN(
-          "XPUGraph currently only support default GraphCaptureMode. "
-          "Falling back to default capture behavior.");
-      break;
-
-    default:
-      TORCH_CHECK(
-          false,
-          "Invalid GraphCaptureMode value: ",
-          static_cast<int>(capture_mode));
-  }
+void XPUGraph::capture_begin(MempoolId_t pool) {
   TORCH_CHECK(
       !has_graph_exec_,
       "This XPUGraph instance already owns a captured graph. "
@@ -109,7 +90,7 @@ void XPUGraphImpl::capture_begin(
       capture_stream_.queue().ext_oneapi_get_state() == queue_state::recording);
 }
 
-void XPUGraphImpl::capture_end() {
+void XPUGraph::capture_end() {
   auto stream = at::xpu::getCurrentXPUStream();
 
   TORCH_CHECK(
@@ -144,7 +125,7 @@ void XPUGraphImpl::capture_end() {
   }
 }
 
-void XPUGraphImpl::instantiate() {
+void XPUGraph::instantiate() {
   TORCH_CHECK(
       capture_ended_,
       "capture_end() must have been called before calling instantiate");
@@ -160,7 +141,7 @@ void XPUGraphImpl::instantiate() {
   has_graph_exec_ = true;
 }
 
-void XPUGraphImpl::replay() {
+void XPUGraph::replay() {
   TORCH_CHECK(
       capture_ended_,
       "Called XPUGraph::replay without a preceding successful capture.");
@@ -183,7 +164,7 @@ void XPUGraphImpl::replay() {
   queue.ext_oneapi_graph(*graph_exec_);
 }
 
-void XPUGraphImpl::reset() {
+void XPUGraph::reset() {
   if (capture_ended_) {
     c10::xpu::XPUCachingAllocator::releasePool(capture_dev_, mempool_id_);
     at::getHostAllocator(at::kXPU)->release_pool(mempool_id_);
@@ -199,11 +180,11 @@ void XPUGraphImpl::reset() {
   }
 }
 
-void XPUGraphImpl::enable_debug_mode() {
+void XPUGraph::enable_debug_mode() {
   _xpu_graphs_debug = true;
 }
 
-void XPUGraphImpl::debug_dump(const std::string& debug_path) {
+void XPUGraph::debug_dump(const std::string& debug_path) {
   TORCH_CHECK(
       debug_path.size() >= 4 &&
           debug_path.substr(debug_path.size() - 4) == ".dot",
@@ -226,7 +207,7 @@ void XPUGraphImpl::debug_dump(const std::string& debug_path) {
   }
 }
 
-xpuGraph_t* XPUGraphImpl::raw_xpu_graph() {
+xpuGraph_t* XPUGraph::raw_xpu_graph() {
   TORCH_CHECK(
       keep_graph_,
       "You cannot access the raw xpuGraph_t instance unless XPUGraph was initialized with keep_graph=true");
@@ -236,7 +217,7 @@ xpuGraph_t* XPUGraphImpl::raw_xpu_graph() {
   return graph_.get();
 }
 
-xpuGraphExec_t* XPUGraphImpl::raw_xpu_graph_exec() {
+xpuGraphExec_t* XPUGraph::raw_xpu_graph_exec() {
   TORCH_CHECK(
       has_graph_exec_,
       "You cannot access the raw xpuGraphExec_t instance until instantiate() has been called");
@@ -245,21 +226,19 @@ xpuGraphExec_t* XPUGraphImpl::raw_xpu_graph_exec() {
 
 // Returns an id another graph's capture_begin can use to share the same memory
 // pool as this graph.
-MempoolId_t XPUGraphImpl::pool() const {
+MempoolId_t XPUGraph::pool() {
   TORCH_CHECK(
       capture_ended_,
       "Called XPUGraph::pool() without a preceding successful capture.");
   return mempool_id_;
 }
 
-XPUGraphImpl::~XPUGraphImpl() {
+XPUGraph::~XPUGraph() {
   for (auto& [generator_state, wholegraph_increments] :
        captured_generator_states_) {
     generator_state->unregister_graph(this);
   }
   reset();
 }
-
-REGISTER_GRAPH_IMPL(XPU, XPUGraphImpl)
 
 } // namespace at::xpu

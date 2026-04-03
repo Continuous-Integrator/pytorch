@@ -39,8 +39,10 @@ from torch._subclasses.fake_tensor import FakeTensorMode
 from torch.fx._graph_pickler import GraphPickler
 from torch.fx.passes.regional_inductor import regional_inductor
 from torch.nn.attention.flex_attention import create_block_mask, flex_attention
-from torch.testing._internal.common_utils import instantiate_parametrized_tests
-from torch.testing._internal.inductor_utils import GPU_TYPE, HAS_GPU
+from torch.testing._internal.common_utils import (
+    instantiate_parametrized_tests,
+    TEST_CUDA,
+)
 from torch.utils.checkpoint import checkpoint
 
 
@@ -1082,9 +1084,9 @@ from user code:
         actual = compiled_fn(*inputs)
         self.assertEqual(expected, actual)
 
-    @unittest.skipIf(not HAS_GPU, "requires gpu")
+    @unittest.skipIf(not TEST_CUDA, "requires cuda")
     def test_aot_compile_with_aoti(self):
-        with torch.device(GPU_TYPE):
+        with torch.device("cuda"):
             from torch._dynamo.hooks import Hooks
 
             def fn(x, y):
@@ -1110,9 +1112,9 @@ from user code:
             actual = compiled_fn(*test_inputs)
             self.assertEqual(expected, actual)
 
-    @unittest.skipIf(not HAS_GPU, "requires gpu")
+    @unittest.skipIf(not TEST_CUDA, "requires cuda")
     def test_aot_compile_with_aoti_module(self):
-        with torch.device(GPU_TYPE):
+        with torch.device("cuda"):
             from torch._dynamo.hooks import Hooks
 
             mod = SimpleLinearModule()
@@ -1144,9 +1146,9 @@ from user code:
             actual.sum().backward()
             self.assertEqual(get_grads(original_mod), expected_grads)
 
-    @unittest.skipIf(not HAS_GPU, "requires gpu")
+    @unittest.skipIf(not TEST_CUDA, "requires cuda")
     def test_aot_compile_with_aoti_torch_compile(self):
-        with torch.device(GPU_TYPE):
+        with torch.device("cuda"):
 
             def fn(x, y):
                 return x + y
@@ -1354,9 +1356,9 @@ from user code:
         self.assertEqual(expected[0], actual[0])
         self.assertEqual(expected[1], actual[1])
 
-    @unittest.skipIf(not HAS_GPU, "requires gpu")
+    @unittest.skipIf(not TEST_CUDA, "requires cuda")
     def test_cross_aot_compile(self):
-        """Test cross-compilation using fake tensors and backward correctness"""
+        """Test cross-compilation using fake cuda tensors and backward correctness"""
         from torch._subclasses.fake_tensor import FakeTensorMode
 
         def fn(x, y):
@@ -1364,8 +1366,8 @@ from user code:
 
         with FakeTensorMode(allow_non_fake_inputs=True):
             fake_inputs = (
-                torch.randn(3, 4, device=GPU_TYPE, requires_grad=True),
-                torch.randn(3, 4, device=GPU_TYPE, requires_grad=True),
+                torch.randn(3, 4, device="cuda", requires_grad=True),
+                torch.randn(3, 4, device="cuda", requires_grad=True),
             )
         compiled_fn = torch.compile(
             fn,
@@ -1379,8 +1381,8 @@ from user code:
             loaded_fn = torch.compiler.load_compiled_function(f)
 
         inputs = (
-            torch.randn(3, 4, device=GPU_TYPE, requires_grad=True),
-            torch.randn(3, 4, device=GPU_TYPE, requires_grad=True),
+            torch.randn(3, 4, device="cuda", requires_grad=True),
+            torch.randn(3, 4, device="cuda", requires_grad=True),
         )
         expected = fn(*inputs)
         actual = loaded_fn(*inputs)
@@ -1404,7 +1406,7 @@ from user code:
             self.assertEqual(eg, cg)
 
     @unittest.skipIf(not c10d.is_available(), "requires c10d")
-    @unittest.skipIf(not HAS_GPU, "requires gpu")
+    @unittest.skipIf(not TEST_CUDA, "requires cuda")
     def test_cross_compile_realistic_transformer_model(self):
         """
         Test cross-compilation with transformer model with DTensors,
@@ -1456,7 +1458,7 @@ from user code:
             This ensures reproducible results across eager and compiled runs.
             """
             torch.manual_seed(seed)
-            getattr(torch, GPU_TYPE).manual_seed(seed)
+            torch.cuda.manual_seed(seed)
             for name, param in module.named_parameters():
                 if param.requires_grad:
                     local_param = (
@@ -1472,7 +1474,7 @@ from user code:
 
         try:
             rank = c10d.get_rank()
-            device = torch.device(f"{GPU_TYPE}:{rank}")
+            device = torch.device(f"cuda:{rank}")
             vocab_size = 1000
             embed_dim = 256
             num_heads = 8
@@ -1483,7 +1485,7 @@ from user code:
             seq_len = 16
 
             device_mesh = init_device_mesh(
-                GPU_TYPE,
+                "cuda",
                 (1,),
                 mesh_dim_names=("dp",),
             )

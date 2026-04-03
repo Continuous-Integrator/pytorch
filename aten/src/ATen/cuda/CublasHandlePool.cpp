@@ -11,10 +11,6 @@
 #include <string>
 #include <tuple>
 
-#if defined(USE_ROCM)
-#include <rocblas/rocblas.h>
-#endif
-
 /**
  * Note [hipblaslt handles]
  * ~~~~~~~~~~~~~~~~~~~~~~~~
@@ -58,6 +54,8 @@ void destroyCublasLtHandle(cublasLtHandle_t handle) {
 using CuBlasLtPoolType = DeviceThreadHandlePool<cublasLtHandle_t, createCublasLtHandle, destroyCublasLtHandle>;
 
 // ugly hack until hipblasSetWorkspace exists
+#include <rocblas/rocblas.h>
+
 static hipblasStatus_t rocBLASStatusToHIPStatus(rocblas_status error) {
     switch(error) {
     case rocblas_status_size_unchanged:

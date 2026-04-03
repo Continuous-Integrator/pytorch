@@ -6131,6 +6131,7 @@ class TestLinalg(TestCase):
     @onlyCUDA
     @skipCUDAIfNotRocm
     # Fails with triton 3.7
+    @skipIfRocmArch(NAVI_ARCH)
     @dtypes(torch.float)
     def test_mm_submatrix_offline_tunableop(self, device, dtype):
         import os

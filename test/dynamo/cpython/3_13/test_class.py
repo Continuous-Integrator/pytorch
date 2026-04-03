@@ -898,10 +898,7 @@ class ClassTests(CPythonTestCase):
                 pass
 
 
-try:
-    from _testinternalcapi import has_inline_values
-except ImportError:
-    has_inline_values = None
+from _testinternalcapi import has_inline_values
 
 Py_TPFLAGS_MANAGED_DICT = (1 << 2)
 
