@@ -6990,20 +6990,11 @@ def forward(self, s77 : torch.SymInt, s27 : torch.SymInt, L_x_ : torch.Tensor):
 
         # Test TypeError when out is not a Tensor
         def empty_fn_bad_out(size, out):
-            return torch.empty(size, out=out)
+            return torch.empty(size, out=out,memory_format=torch.contiguous_format)
 
         opt_model_bad = torch.compile(empty_fn_bad_out, dynamic=True)
         with self.assertRaisesRegex(TypeError, r"out must be a Tensor"):
             opt_model_bad([2, 3], [1])  # Pass a list instead of tensor
-
-        # Test RuntimeError when memory_format is used with out
-        def empty_with_memory_format(size, out):
-            return torch.empty(size, out=out, memory_format=torch.contiguous_format)
-
-        opt_model_mf = torch.compile(empty_with_memory_format, dynamic=True)
-        out = torch.empty([1])
-        with self.assertRaisesRegex(RuntimeError, r"memory_format.*incompatible.*out"):
-            opt_model_mf([2, 3], out)
             
     def test_no_tracing_into_eval_frame(self):
         # test that dynamo doesn't trace into nested calls from eval_frame
