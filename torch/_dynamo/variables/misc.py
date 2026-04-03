@@ -686,7 +686,9 @@ class ExceptionVariable(VariableTracker):
             return super().call_method(tx, name, args, kwargs)
 
     def var_getattr(self, tx: "InstructionTranslator", name: str) -> VariableTracker:
-        if name == "__context__":
+        if name == "__class__":
+            return VariableTracker.build(tx, self.exc_type)
+        elif name == "__context__":
             return self.__context__
         elif name == "__cause__":
             return self.__cause__
@@ -696,7 +698,9 @@ class ExceptionVariable(VariableTracker):
             return self.__traceback__
         elif name == "args":
             return VariableTracker.build(
-                tx, self.args, source=self.source and AttrSource(self.source, "args")
+                tx,
+                tuple(self.args),
+                source=self.source and AttrSource(self.source, "args"),
             )
         return super().var_getattr(tx, name)
 
@@ -704,6 +708,17 @@ class ExceptionVariable(VariableTracker):
         return f"{self.__class__.__name__}({self.exc_type})"
 
     __repr__ = __str__
+
+    @staticmethod
+    def _debug_format_arg(arg: VariableTracker) -> str:
+        try:
+            return repr(arg.as_python_constant())
+        except Exception:
+            return arg.debug_repr()
+
+    def debug_repr(self) -> str:
+        args = ", ".join(self._debug_format_arg(arg) for arg in self.args)
+        return f"{self.python_type_name()}({args})"
 
 
 class UnknownVariable(VariableTracker):
@@ -1907,6 +1922,26 @@ class StringFormatVariable(VariableTracker):
 
     def __repr__(self) -> str:
         return f"{self.__class__.__name__}({self.format_string!r}, {self.sym_args!r}, {self.sym_kwargs!r})"
+
+    @staticmethod
+    def _debug_format_arg(arg: VariableTracker) -> object:
+        try:
+            return arg.as_python_constant()
+        except Exception:
+            return arg.debug_repr()
+
+    def debug_repr(self) -> str:
+        try:
+            rendered = self.format_string.format(
+                *[self._debug_format_arg(arg) for arg in self.sym_args],
+                **{
+                    key: self._debug_format_arg(value)
+                    for key, value in self.sym_kwargs.items()
+                },
+            )
+        except Exception:
+            return repr(self)
+        return repr(rendered)
 
     def reconstruct(self, codegen: "PyCodegen") -> None:
         codegen.add_push_null(
