@@ -6974,6 +6974,37 @@ def forward(self, s77 : torch.SymInt, s27 : torch.SymInt, L_x_ : torch.Tensor):
         actual = compiled_model(inputs)
         self.assertEqual(actual, expected)
 
+    def test_empty_out_resizing_with_dynamic_shapes(self):
+        # Test that torch.empty with out= parameter correctly resizes
+        # the output tensor when the shape differs from size parameter
+        def empty_fn(size, out):
+            return torch.empty(size, out=out)
+
+        opt_model = torch.compile(empty_fn, dynamic=True)
+
+        # Test resizing: out has shape [1], but we want [2, 3]
+        out = torch.empty([1])
+        result = opt_model([2, 3], out)
+        self.assertEqual(result.shape, torch.Size([2, 3]))
+        self.assertTrue(result is out)  # Should return the same tensor
+
+        # Test TypeError when out is not a Tensor
+        def empty_fn_bad_out(size, out):
+            return torch.empty(size, out=out)
+
+        opt_model_bad = torch.compile(empty_fn_bad_out, dynamic=True)
+        with self.assertRaisesRegex(TypeError, r"out must be a Tensor"):
+            opt_model_bad([2, 3], [1])  # Pass a list instead of tensor
+
+        # Test RuntimeError when memory_format is used with out
+        def empty_with_memory_format(size, out):
+            return torch.empty(size, out=out, memory_format=torch.contiguous_format)
+
+        opt_model_mf = torch.compile(empty_with_memory_format, dynamic=True)
+        out = torch.empty([1])
+        with self.assertRaisesRegex(RuntimeError, r"memory_format.*incompatible.*out"):
+            opt_model_mf([2, 3], out)
+            
     def test_no_tracing_into_eval_frame(self):
         # test that dynamo doesn't trace into nested calls from eval_frame
         @torch.compile(backend="eager", fullgraph=True)

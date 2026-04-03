@@ -5270,6 +5270,16 @@ def empty_out(
     out: TensorLikeType,
     memory_format: torch.memory_format | None = None,
 ) -> TensorLikeType:
+    if memory_format is not None and not isinstance(out, torch.Tensor):
+        raise TypeError(
+            f"out must be a Tensor, got {type(out).__name__}"
+        )
+    # if memory_format is not None:
+    #     raise RuntimeError(
+    #         "'memory_format' argument is incompatible with 'out' tensor argument"
+    #     )
+    if out.shape != torch.Size(size):
+        out.resize_(size)
     return out
 
 
