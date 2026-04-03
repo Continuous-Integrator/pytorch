@@ -1,4 +1,5 @@
 import functools
+import importlib.util
 
 import torch
 
@@ -34,6 +35,9 @@ def _bmm_outer_product_impl(
 
 
 def register_to_dispatch() -> None:
+    if importlib.util.find_spec("triton") is None:
+        return
+
     fallback_kernel = torch.library.get_kernel("aten::bmm", "CUDA")
     tu.register_op_override(
         "aten",
