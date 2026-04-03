@@ -11,10 +11,6 @@ from torch.utils._dtype_abbrs import dtype_abbrs
 from torch.utils._pytree import tree_map, tree_map_only, tree_flatten, tree_unflatten
 from torch.utils import _pytree as pytree
 from torch._subclasses.meta_utils import MetaConverter, assert_metadata_eq, is_sparse_any
-from torch._subclasses.fake_tensor import FakeTensorMode
-from torch._decomp import decompositions
-from torch._refs.nn.functional import prelu as prelu_decomp
-from torch.fx.experimental.symbolic_shapes import ShapeEnv
 import torch.utils._python_dispatch
 from torch._dispatch.python import enable_python_dispatcher
 from torch._ops import OpOverload, OpOverloadPacket
@@ -1962,12 +1958,12 @@ class TestMetaKernelRegistrations(TestCase):
 
     @skipIfTorchDynamo("tests raw meta kernel, not dynamo")
     def test_rrelu_backward_small_range(self):
+        from torch._decomp.decompositions import rrelu_with_noise_backward
         x = torch.randn(5, requires_grad=True)
         lower, upper = 0.125, 0.125 + 1e-7
         noise = torch.rand(5)
         grad = torch.ones(5)
         expected = noise * grad
-        from torch._decomp.decompositions import rrelu_with_noise_backward
         result = rrelu_with_noise_backward(grad, x, noise, lower, upper, True, False)
         self.assertEqual(result, expected)
 
