@@ -145,6 +145,53 @@ class TestGpuWrapper(InductorTestCase):
 
         self.assertEqual(wrapper.scratch_spaces, {"global_scratch": 256 * 8})
 
+    def test_lazy_compile_combo_kernel_default_config(self):
+        """Lazy compile should use default_config from combo_grid_meta for XBLOCK."""
+        if not RUN_GPU:
+            self.skipTest("GPU not available")
+
+        from unittest.mock import patch
+
+        from torch._inductor.codegen.triton_combo_kernel import (
+            DEFAULT_COMBO_BLOCK_SIZE_1D,
+        )
+        from torch._inductor.runtime import triton_lazy_compile as tlc
+
+        expected_xblock = DEFAULT_COMBO_BLOCK_SIZE_1D
+
+        captured = {}
+        original = tlc.run_triton_kernel_with_autotune
+
+        def capture(pending_kernels, kernel_name, stream, args):
+            result = original(pending_kernels, kernel_name, stream, args)
+            if "triton_for_fused" in kernel_name:
+                captured[kernel_name] = result.xblock
+            return result
+
+        with patch.object(tlc, "run_triton_kernel_with_autotune", side_effect=capture):
+            params = [torch.randn(1024, device=self.device) for _ in range(4)]
+            grads = [torch.randn_like(p) for p in params]
+
+            @torch.compile(
+                options={
+                    "cpp_wrapper": True,
+                    "triton.autotune_at_compile_time": False,
+                    "combo_kernels": True,
+                }
+            )
+            def fn(params, grads):
+                torch._foreach_add_(params, grads, alpha=-0.1)
+
+            fn(params, grads)
+
+        self.assertTrue(len(captured) > 0, "No combo kernels were lazy-compiled")
+        for name, xblock in captured.items():
+            self.assertEqual(
+                xblock,
+                expected_xblock,
+                f"{name} got XBLOCK={xblock}, expected {expected_xblock} from combo_grid_meta",
+            )
+
 
 # Helper script for test_lazy_compile_kernel_name_collision_across_modules.
 # Run as a subprocess so dlopen truly re-runs .so static initializers.
