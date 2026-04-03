@@ -38,6 +38,9 @@ def _check_runtime_available() -> tuple[bool, Version | None]:
 
     NOTE: Doesn't import at this point
     """
+    # Skip all checks if running on CPU-only binary
+    if not torch.backends.cuda.is_built():
+        return False
     deps = [
         ("nvidia_cutlass_dsl", "cutlass"),
         ("apache_tvm_ffi", "tvm_ffi"),
