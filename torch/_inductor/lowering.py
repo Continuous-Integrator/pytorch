@@ -958,6 +958,9 @@ def to_dtype_bitcast(x: TensorBox, dtype: torch.dtype, *, copy=False):
     def _get_primitive_bitwidth(dtype):
         if dtype.is_floating_point:
             return torch.finfo(dtype).bits
+        elif dtype == torch.bool:
+            # torch.iinfo doesn't support bool; bools are stored as uint8 (8 bits)
+            return 8
         else:
             return torch.iinfo(dtype).bits
 
@@ -1432,6 +1435,9 @@ def slice_(x, dim=0, start=0, end=sys.maxsize, step=1, clamp=True):
             return size
         elif fn(sympy.Lt(index, -size)):
             return 0
+        elif fn(sympy.Ge(index, 0)):
+            # If index >= 0, the resolved index is at most min(index, size).
+            return sympy.Min(index, size)
         return None
 
     start_index, end_index = None, None
