@@ -458,8 +458,14 @@ def gen_slice_strategy(op_schema: OpSchema) -> StrategyType:
 
     for arg_strategy in input_strategy.strategies:
         arg_spec = arg_strategy.output_spec
+        # is_tensor_dim_sharded uses is_shard() which misses _StridedShard
+        strided_shard_on_slice_dim = any(
+            isinstance(p, _StridedShard) and p.dim == slice_dim
+            for p in arg_spec.placements
+        )
         if (
             not is_tensor_dim_sharded(arg_spec, dim=slice_dim)
+            and not strided_shard_on_slice_dim
             or statically_redundant_slice
         ):
             # only add the strategy if the slice dim is not sharded
@@ -506,7 +512,7 @@ def slice_backward_rules(op_schema: OpSchema) -> OpStrategy:
         new_placements: list[Placement] = []
         for placement in output_spec.placements:
             # Redistribute to replicate only if the dim is sharded and matches the slice dim
-            if isinstance(placement, Shard) and placement.dim == dim:
+            if isinstance(placement, (Shard, _StridedShard)) and placement.dim == dim:
                 new_placements.append(Replicate())
             else:
                 new_placements.append(placement)
@@ -538,7 +544,9 @@ def replicate_tensor_dim(
     # Not using p.is_shard() to avoid mypy complain about Placement not having
     # attribute dim.
     return tuple(
-        Replicate() if p.is_partial() or isinstance(p, Shard) and p.dim == dim else p
+        Replicate()
+        if p.is_partial() or isinstance(p, (Shard, _StridedShard)) and p.dim == dim
+        else p
         for p in placements
     )
 
@@ -569,8 +577,14 @@ def gen_slice_scatter_strategy(op_schema: OpSchema) -> StrategyType:
     # by default follow the input strategy for both input and src
     for arg_strategy in input_strategy.strategies:
         arg_spec = arg_strategy.output_spec
+        # is_tensor_dim_sharded uses is_shard() which misses _StridedShard
+        strided_shard_on_dim = any(
+            isinstance(p, _StridedShard) and p.dim == slice_dim
+            for p in arg_spec.placements
+        )
         if not (
             is_tensor_dim_sharded(arg_spec, dim=slice_dim)
+            or strided_shard_on_dim
             or is_tensor_partial(arg_spec)
         ):
             input_spec = DTensorSpec(mesh, arg_spec.placements, arg_spec.tensor_meta)

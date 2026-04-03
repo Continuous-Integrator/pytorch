@@ -2040,6 +2040,90 @@ class TestViewOps(DTensorContinuousTestBase):
         self.assertEqual(result2.placements[0].split_factor, orig_split_factor)
         self.assertEqual(result2.full_tensor(), expected2)
 
+    def test_flatten_then_slice(self):
+        """Verify _StridedShard correctness through slice.
+
+        aten.slice.Tensor goes through gen_slice_strategy which uses
+        is_tensor_dim_sharded (misses _StridedShard). When the slice dim
+        matches the _StridedShard dim, the strategy should redistribute
+        to Replicate first, otherwise results are silently wrong.
+        """
+        mesh = init_device_mesh(self.device_type, (self.world_size,))
+        shape = (4, self.world_size * 2, 6)
+        full = torch.randn(*shape, device=self.device_type)
+        dt = distribute_tensor(full, mesh, [Shard(1)])
+        dt_flat = dt.flatten(0, 1)
+        flat_full = full.flatten(0, 1)
+
+        self.assertIsInstance(dt_flat.placements[0], _StridedShard)
+
+        # slice on the _StridedShard dim (dim 0)
+        result = dt_flat[: dt_flat.shape[0] // 2]
+        expected = flat_full[: flat_full.shape[0] // 2]
+        self.assertEqual(result.full_tensor(), expected)
+
+        # slice on non-shard dim
+        result2 = dt_flat[:, :3]
+        expected2 = flat_full[:, :3]
+        self.assertEqual(result2.full_tensor(), expected2)
+
+    def test_flatten_then_slice_scatter(self):
+        """Verify _StridedShard correctness through slice_scatter.
+
+        gen_slice_scatter_strategy uses replicate_tensor_dim which only
+        checks isinstance(p, Shard), missing _StridedShard. When the
+        scatter dim matches the _StridedShard dim and all strategies are
+        filtered, replicate_tensor_dim should replicate it but doesn't.
+        """
+        mesh = init_device_mesh(self.device_type, (self.world_size,))
+        shape = (4, self.world_size * 2, 6)
+        full = torch.randn(*shape, device=self.device_type)
+        dt = distribute_tensor(full, mesh, [Shard(1)])
+        dt_flat = dt.flatten(0, 1)
+        flat_full = full.flatten(0, 1)
+
+        self.assertIsInstance(dt_flat.placements[0], _StridedShard)
+
+        # slice_scatter on the _StridedShard dim (dim 0)
+        half = dt_flat.shape[0] // 2
+        src = dt_flat[:half] * 2
+        src_full = flat_full[:half] * 2
+        result = dt_flat.slice_scatter(src, dim=0, start=0, end=half)
+        expected = flat_full.slice_scatter(src_full, dim=0, start=0, end=half)
+        self.assertEqual(result.full_tensor(), expected)
+
+        # slice_scatter on non-shard dim
+        src2 = dt_flat[:, :3] * 2
+        src2_full = flat_full[:, :3] * 2
+        result2 = dt_flat.slice_scatter(src2, dim=1, start=0, end=3)
+        expected2 = flat_full.slice_scatter(src2_full, dim=1, start=0, end=3)
+        self.assertEqual(result2.full_tensor(), expected2)
+
+    def test_flatten_then_slice_backward(self):
+        """Verify _StridedShard correctness through slice backward.
+
+        slice_backward_rules only checks isinstance(p, Shard), missing
+        _StridedShard. When the slice dim matches the _StridedShard dim,
+        gradients are computed on the wrong local shards.
+        """
+        mesh = init_device_mesh(self.device_type, (self.world_size,))
+        shape = (4, self.world_size * 2, 6)
+        full = torch.randn(*shape, device=self.device_type)
+        full_req = full.clone().requires_grad_(True)
+
+        dt = distribute_tensor(full, mesh, [Shard(1)])
+        dt_flat = dt.flatten(0, 1).requires_grad_(True)
+
+        self.assertIsInstance(dt_flat.placements[0], _StridedShard)
+
+        flat_full = full_req.flatten(0, 1)
+        half = dt_flat.shape[0] // 2
+
+        # backward through slice on the _StridedShard dim
+        (dt_flat[:half].sum()).backward()
+        (flat_full[:half].sum()).backward()
+        self.assertEqual(dt_flat.grad.full_tensor(), full_req.grad.flatten(0, 1))
+
     def test_view_redistribution(self):
         """
         This test is added to demonstrate "incorrect" view ops behavior if redistribution happens.
