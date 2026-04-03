@@ -916,41 +916,9 @@ class BaseSchedulerNode:
                         for x in input_buf.users
                         if x.node.get_name() not in inconsequential_nodes
                     ]
-                    # In multi-stream graphs, don't reuse a buffer if:
-                    # 1. The producer is on a different stream (it may
-                    #    still be writing when the consumer starts), or
-                    # 2. Completed (codegen'd) users on other streams may
-                    #    still be reading it on the GPU.
-                    has_cross_stream_hazard = False
-                    if self.scheduler._has_multi_stream_nodes():
-                        my_stream = self.scheduler.node_to_stream.get(self)
-                        producer = input_buf.defining_op
-                        if isinstance(producer, BaseSchedulerNode):
-                            producer_stream = self.scheduler.node_to_stream.get(
-                                producer
-                            )
-                            if (
-                                producer_stream is not None
-                                and producer_stream != my_stream
-                            ):
-                                has_cross_stream_hazard = True
-                        if not has_cross_stream_hazard:
-                            for user in input_buf.users:
-                                unode = user.node
-                                if (
-                                    isinstance(unode, BaseSchedulerNode)
-                                    and unode is not self
-                                    and unode.get_name() in inconsequential_nodes
-                                ):
-                                    user_stream = self.scheduler.node_to_stream.get(
-                                        unode
-                                    )
-                                    if (
-                                        user_stream is not None
-                                        and user_stream != my_stream
-                                    ):
-                                        has_cross_stream_hazard = True
-                                        break
+                    has_cross_stream_hazard = self.scheduler.has_cross_stream_hazard(
+                        read.name, self
+                    )
 
                     if (
                         not has_cross_stream_hazard
@@ -1621,10 +1589,17 @@ class SchedulerNode(BaseSchedulerNode):
         extra_indexing_constraints: tuple[dict[Any, Any], list[Any]] | None = None,
         recompute_sizes_body_func: Callable[..., Any] | None = None,
     ) -> None:
+        fake_deps: OrderedSet[Dep] = OrderedSet(
+            dep for dep in self.read_writes.reads if isinstance(dep, (WeakDep, StarDep))
+        )
         self._compute_attrs(
             extra_indexing_constraints=extra_indexing_constraints,
             recompute_sizes_body_func=recompute_sizes_body_func,
         )
+        if fake_deps:
+            self.set_read_writes(
+                self.read_writes.with_read(fake_deps).rename(self.mutation_renames)
+            )
 
     def refresh_dependencies(
         self, normalize: bool, need_clear_tiling_cache: bool
@@ -3371,7 +3346,8 @@ class Scheduler:
 
             self.node_to_stream[node] = stream_idx
 
-            # Also populate buff_to_stream for all buffers produced by this node
+            # Also populate buff_to_stream for all buffers produced by this node.
+            # Mutation renames are resolved at lookup time via get_buf_stream.
             for buf in node.get_buffer_names():
                 self.buff_to_stream[buf] = stream_idx
 
@@ -3402,6 +3378,21 @@ class Scheduler:
     def _has_multi_stream_nodes(self) -> bool:
         """Check if any nodes are assigned to non-default streams."""
         return self._multi_stream_nodes
+
+    def get_buf_stream(self, buf_name: str) -> int:
+        """Return the stream index for a buffer, resolving mutation renames."""
+        real = self.mutation_renames.get(buf_name, buf_name)
+        return self.buff_to_stream.get(real, self.buff_to_stream.get(buf_name, 0))
+
+    def has_cross_stream_hazard(self, buf_name: str, node: BaseSchedulerNode) -> bool:
+        """True if buf_name was produced on a different stream than node.
+
+        Resolves mutation renames so that mutated buffers inherit the
+        stream of their original definition.
+        """
+        if not self._has_multi_stream_nodes():
+            return False
+        return self.get_buf_stream(buf_name) != self.node_to_stream.get(node, 0)
 
     @property
     def current_device(self) -> torch.device | None:
@@ -7521,6 +7512,12 @@ class Scheduler:
                     )
 
             self.enter_context(node)
+
+            # pyrefly: ignore [unbound-name]
+            if config.size_asserts:
+                V.graph.wrapper_code.codegen_deferred_input_asserts(
+                    dep.name for dep in node.read_writes.reads
+                )
 
             if device := node.get_device():
                 if (
