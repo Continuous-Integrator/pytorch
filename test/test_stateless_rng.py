@@ -424,10 +424,17 @@ class TestStatelessRNGDistribution(TestCase):
                 self.assertEqual(result, large[:n])
 
     @parametrize("gen_fn_name", ["normal", "uniform"])
+    @parametrize("layout", ["contiguous", "noncontiguous", "unaligned"])
     @dtypes(*all_floating_dtypes)
-    def test_inplace(self, device, dtype, gen_fn_name):
+    def test_inplace(self, device, dtype, gen_fn_name, layout):
         key = random.key(42, device=device)
-        result = torch.empty(1000, dtype=dtype, device=device)
+        if layout == "contiguous":
+            result = torch.empty(1000, dtype=dtype, device=device)
+        elif layout == "noncontiguous":
+            result = torch.empty(2000, dtype=dtype, device=device)[::2]
+        else:
+            # Contiguous but data pointer is not aligned to vectorized write width.
+            result = torch.empty(1001, dtype=dtype, device=device)[1:]
         inplace_fn = getattr(random, gen_fn_name + "_")
         out = inplace_fn(key, result)
         self.assertIs(out, result)
