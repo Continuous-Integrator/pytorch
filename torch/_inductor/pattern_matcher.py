@@ -157,11 +157,9 @@ def _transfer_meta(
 ) -> None:
     from torch.fx.traceback import NodeSource, NodeSourceAction
 
-    # transfer metadata after pattern matching occurs.
-    # skip "val" and "tensor_meta" because this info is too specific; it's unlikely
-    # to remain accurate after pattern matching has occurred.
+    # Transfer metadata after pattern matching occurs.
+    # Copies _COPY_META_FIELDS, stack_trace, and (if missing) val/tensor_meta.
     if config.trace.provenance_tracking_level == 1:
-        # We handle "from_node" field of the node meta specially to record that the new node comes from the old_node.
         new_from_node = new_meta.get("from_node", []).copy()
         new_from_node.append(NodeSource(old_node, pass_name, NodeSourceAction.REPLACE))
         new_meta.update(
@@ -178,6 +176,13 @@ def _transfer_meta(
         )
     if "stack_trace" in old_node.meta:
         new_meta["stack_trace"] = old_node.meta["stack_trace"]
+    # Copy val/tensor_meta only when the new node doesn't already have them
+    # (e.g. from tracing the replacement graph). Don't overwrite if present
+    # since the replacement's own val is more accurate.
+    if "val" not in new_meta and "val" in old_node.meta:
+        new_meta["val"] = old_node.meta["val"]
+    if "tensor_meta" not in new_meta and "tensor_meta" in old_node.meta:
+        new_meta["tensor_meta"] = old_node.meta["tensor_meta"]
 
 
 class Match:
@@ -1220,11 +1225,6 @@ class ReplacementPatternEntry(PatternEntry):
                     # or val/tensor_meta, we propagate those over.
                     if "eager_input_vals" in node.meta:
                         result.meta["eager_input_vals"] = node.meta["eager_input_vals"]
-                    if "val" in node.meta and "val" not in result.meta:
-                        result.meta["val"] = node.meta["val"]
-                        if isinstance(node.meta["val"], torch.Tensor):
-                            assert "tensor_meta" in node.meta
-                            result.meta["tensor_meta"] = node.meta["tensor_meta"]
                     return result
                 if node.op == "get_attr":
                     # If the replacement graph contains a HOP, the subgraphs of the HOP are "get_attr" nodes.
@@ -1331,10 +1331,6 @@ class ReplacementPatternEntry(PatternEntry):
                     return
                 if isinstance(new, torch.fx.Node):
                     _transfer_meta(new.meta, old, pass_name=pass_name or "")
-                    if "val" not in new.meta and "val" in old.meta:
-                        new.meta["val"] = old.meta["val"]
-                        if "tensor_meta" in old.meta:
-                            new.meta["tensor_meta"] = old.meta["tensor_meta"]
 
                     # Preserve the recompute tags in the replacement graph. We
                     # look at the recompute tags of the original output node to
