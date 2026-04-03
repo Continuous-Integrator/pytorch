@@ -11,10 +11,6 @@ from torch.utils._dtype_abbrs import dtype_abbrs
 from torch.utils._pytree import tree_map, tree_map_only, tree_flatten, tree_unflatten
 from torch.utils import _pytree as pytree
 from torch._subclasses.meta_utils import MetaConverter, assert_metadata_eq, is_sparse_any
-from torch._subclasses.fake_tensor import FakeTensorMode
-from torch._decomp import decompositions
-from torch._refs.nn.functional import prelu as prelu_decomp
-from torch.fx.experimental.symbolic_shapes import ShapeEnv
 import torch.utils._python_dispatch
 from torch._dispatch.python import enable_python_dispatcher
 from torch._ops import OpOverload, OpOverloadPacket
@@ -1962,12 +1958,12 @@ class TestMetaKernelRegistrations(TestCase):
 
     @skipIfTorchDynamo("tests raw meta kernel, not dynamo")
     def test_rrelu_backward_small_range(self):
+        from torch._decomp.decompositions import rrelu_with_noise_backward
         x = torch.randn(5, requires_grad=True)
         lower, upper = 0.125, 0.125 + 1e-7
         noise = torch.rand(5)
         grad = torch.ones(5)
         expected = noise * grad
-        from torch._decomp.decompositions import rrelu_with_noise_backward
         result = rrelu_with_noise_backward(grad, x, noise, lower, upper, True, False)
         self.assertEqual(result, expected)
 
@@ -1995,6 +1991,7 @@ class TestMetaKernelRegistrations(TestCase):
 
     @skipIfTorchDynamo("tests raw meta kernel, not dynamo")
     def test_prelu_decomp_dtype_mismatch_error(self):
+        from torch._refs.nn.functional import prelu as prelu_decomp
         x = torch.randn(3, 4, device="meta", dtype=torch.float32)
         weight = torch.randn(4, device="meta", dtype=torch.float16)
         with self.assertRaisesRegex(RuntimeError, "Type promoting not supported"):
@@ -2002,6 +1999,7 @@ class TestMetaKernelRegistrations(TestCase):
 
     @skipIfTorchDynamo("tests raw meta kernel, not dynamo")
     def test_prelu_decomp_same_dtype_ok(self):
+        from torch._refs.nn.functional import prelu as prelu_decomp
         x = torch.randn(3, 4, device="meta", dtype=torch.float32)
         weight = torch.randn(4, device="meta", dtype=torch.float32)
         result = prelu_decomp(x, weight)
@@ -2010,6 +2008,7 @@ class TestMetaKernelRegistrations(TestCase):
 
     @skipIfTorchDynamo("tests raw meta kernel, not dynamo")
     def test_pad_sequence_decomp_left(self):
+        from torch._decomp import decompositions
         a = torch.tensor([1, 2, 3])
         b = torch.tensor([4, 5])
         result = decompositions.pad_sequence(
@@ -2027,6 +2026,7 @@ class TestMetaKernelRegistrations(TestCase):
 
     @skipIfTorchDynamo("tests raw meta kernel, not dynamo")
     def test_pad_sequence_decomp_left_not_batch_first(self):
+        from torch._decomp import decompositions
         a = torch.tensor([1, 2, 3])
         b = torch.tensor([4, 5])
         result = decompositions.pad_sequence(
@@ -2037,6 +2037,7 @@ class TestMetaKernelRegistrations(TestCase):
 
     @skipIfTorchDynamo("tests raw meta kernel, not dynamo")
     def test_padded_dense_to_jagged_total_L_zero(self):
+        from torch._subclasses.fake_tensor import FakeTensorMode
         with FakeTensorMode():
             padded = torch.randn(2, 3, 4)
             offsets = [torch.tensor([0, 0, 0])]
@@ -2047,6 +2048,8 @@ class TestMetaKernelRegistrations(TestCase):
 
     @skipIfTorchDynamo("tests raw meta kernel, not dynamo")
     def test_padded_dense_to_jagged_total_L_none(self):
+        from torch._subclasses.fake_tensor import FakeTensorMode
+        from torch.fx.experimental.symbolic_shapes import ShapeEnv
         shape_env = ShapeEnv(allow_dynamic_output_shape_ops=True)
         with FakeTensorMode(shape_env=shape_env):
             padded = torch.randn(2, 3, 4)
