@@ -78,8 +78,8 @@ endif()
 message(STATUS "PyTorch: CUDA detected: " ${CUDA_VERSION})
 message(STATUS "PyTorch: CUDA nvcc is: " ${CUDA_NVCC_EXECUTABLE})
 message(STATUS "PyTorch: CUDA toolkit directory: " ${CUDA_TOOLKIT_ROOT_DIR})
-if(CUDA_VERSION VERSION_LESS 12.0)
-  message(FATAL_ERROR "PyTorch requires CUDA 12.0 or above.")
+if(CUDA_VERSION VERSION_LESS 12.1)
+  message(FATAL_ERROR "PyTorch requires CUDA 12.1 or above.")
 endif()
 
 if(CUDA_FOUND)
@@ -328,7 +328,7 @@ endif()
 # setting nvcc arch flags
 torch_cuda_get_nvcc_gencode_flag(NVCC_FLAGS_EXTRA)
 # CMake 3.18 adds integrated support for architecture selection, but we can't rely on it
-if(DEFINED CMAKE_CUDA_ARCHITECTURES)
+if(DEFINED CMAKE_CUDA_ARCHITECTURES AND NOT TORCH_CUDA_ARCH_LIST)
   message(WARNING
           "pytorch is not compatible with `CMAKE_CUDA_ARCHITECTURES` and will ignore its value. "
           "Please configure `TORCH_CUDA_ARCH_LIST` instead.")
