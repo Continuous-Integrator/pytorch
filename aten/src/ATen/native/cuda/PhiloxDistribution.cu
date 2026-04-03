@@ -111,7 +111,7 @@ __global__ void philox_single_key_kernel(
 }
 
 // Multi-key kernel: one thread per (key_idx, chunk) pair, where each chunk
-// comes from a single Philox 4x32 call. Uses vectorized writes for full
+// comes from a single Philox 4x32 call. Uses vectorized stores for full
 // chunks and scalar writes for the tail.
 template <typename scalar_t, typename sample_t, typename param_t>
 __global__ void philox_multi_key_kernel(
@@ -190,9 +190,13 @@ void philox_distribution_kernel(
     return;
   }
 
-  // Enforce contiguous output for simplicity. Since this is an in-place kernel,
-  // we require copying back into self afterwards for the non-contiguous case.
+  // Ensure contiguous, aligned output for vectorized stores. Clone if needed
+  // to ensure alignment; the result is copied back into self afterwards.
+  constexpr int vec_bytes = elems_per_call<scalar_t> * sizeof(scalar_t);
   auto output = self.contiguous();
+  if (reinterpret_cast<uintptr_t>(output.data_ptr()) % vec_bytes != 0) {
+    output = output.clone();
+  }
 
   constexpr int block_size = 256;
 

@@ -237,18 +237,19 @@ def normal_(
     std: float = 1.0,
     portable: bool = True,
 ) -> torch.Tensor:
-    r"""Fill ``result`` in-place with normal random values from a stateless PRNG key.
+    r"""Fill ``result`` in-place with normal random values from a PRNG key.
 
     The values are drawn from a normal distribution with the specified ``mean``
     and ``std``. The output is fully determined by the key, so calling with the
     same key always produces the same result.
 
-    Supports batched keys: if ``key`` has shape ``(*batch, 2)``, the leading
+    Supports batched keys: if ``key`` has shape ``(*batch, K)``, the leading
     dimensions of ``result`` must be broadcastable with ``*batch`` and each key
     independently generates its slice of the output.
 
     Args:
-        key (Tensor): A PRNG key of shape ``(..., 2)`` with dtype ``torch.uint64``.
+        key (Tensor): A PRNG key returned by :func:`key`, :func:`split`, or
+            :func:`fold_in`.
         result (Tensor): The output tensor to fill in-place.
         mean (float): Mean of the normal distribution. Default: ``0.0``.
         std (float): Standard deviation of the normal distribution. Default: ``1.0``.
@@ -258,7 +259,7 @@ def normal_(
             performance.
 
     Returns:
-        Tensor: ``result``, filled with normal random values.
+        ``result``, filled with normal random values.
 
     Example::
 
@@ -277,19 +278,20 @@ def normal(
     dtype: torch.dtype | None = None,
     portable: bool = True,
 ) -> torch.Tensor:
-    r"""Generate normally distributed random values from a stateless PRNG key.
+    r"""Generate normally distributed random values from a PRNG key.
 
     Produces a tensor of the given shape filled with values drawn from a normal
     distribution with the specified ``mean`` and ``std``. The output is fully
     determined by the key, so calling with the same key always returns the same
     result. The output is placed on the same device as ``key``.
 
-    Supports batched keys: if ``key`` has shape ``(*batch, 2)``, the leading
+    Supports batched keys: if ``key`` has shape ``(*batch, K)``, the leading
     dimensions of ``shape`` must be broadcastable with ``*batch`` and each key
     independently generates its slice of the output.
 
     Args:
-        key (Tensor): A PRNG key of shape ``(..., 2)`` with dtype ``torch.uint64``.
+        key (Tensor): A PRNG key returned by :func:`key`, :func:`split`, or
+            :func:`fold_in`.
         *shape (int): The desired output shape.
         mean (float): Mean of the normal distribution. Default: ``0.0``.
         std (float): Standard deviation of the normal distribution. Default: ``1.0``.
@@ -303,7 +305,7 @@ def normal(
             better performance.
 
     Returns:
-        Tensor: A tensor of the given shape filled with normal random values.
+        A tensor of the given shape filled with normal random values.
 
     Example::
 
@@ -328,18 +330,19 @@ def uniform_(
     high: float = 1.0,
     portable: bool = True,
 ) -> torch.Tensor:
-    r"""Fill ``result`` in-place with uniform random values from a stateless PRNG key.
+    r"""Fill ``result`` in-place with uniform random values from a PRNG key.
 
     The values are drawn uniformly from the interval ``[low, high)``. The output
     is fully determined by the key, so calling with the same key always produces
     the same result.
 
-    Supports batched keys: if ``key`` has shape ``(*batch, 2)``, the leading
+    Supports batched keys: if ``key`` has shape ``(*batch, K)``, the leading
     dimensions of ``result`` must be broadcastable with ``*batch`` and each key
     independently generates its slice of the output.
 
     Args:
-        key (Tensor): A PRNG key of shape ``(..., 2)`` with dtype ``torch.uint64``.
+        key (Tensor): A PRNG key returned by :func:`key`, :func:`split`, or
+            :func:`fold_in`.
         result (Tensor): The output tensor to fill in-place.
         low (float): Lower bound (inclusive) of the uniform distribution. Default: ``0.0``.
         high (float): Upper bound (exclusive) of the uniform distribution. Default: ``1.0``.
@@ -349,7 +352,7 @@ def uniform_(
             values across devices but may offer better performance.
 
     Returns:
-        Tensor: ``result``, filled with uniform random values.
+        ``result``, filled with uniform random values.
 
     Example::
 
@@ -368,19 +371,20 @@ def uniform(
     dtype: torch.dtype | None = None,
     portable: bool = True,
 ) -> torch.Tensor:
-    r"""Generate uniformly distributed random values from a stateless PRNG key.
+    r"""Generate uniformly distributed random values from a PRNG key.
 
     Produces a tensor of the given shape filled with values drawn uniformly
     from the interval ``[low, high)``. The output is fully determined by the
     key, so calling with the same key always returns the same result. The output
     is placed on the same device as ``key``.
 
-    Supports batched keys: if ``key`` has shape ``(*batch, 2)``, the leading
+    Supports batched keys: if ``key`` has shape ``(*batch, K)``, the leading
     dimensions of ``shape`` must be broadcastable with ``*batch`` and each key
     independently generates its slice of the output.
 
     Args:
-        key (Tensor): A PRNG key of shape ``(..., 2)`` with dtype ``torch.uint64``.
+        key (Tensor): A PRNG key returned by :func:`key`, :func:`split`, or
+            :func:`fold_in`.
         *shape (int): The desired output shape.
         low (float): Lower bound (inclusive) of the uniform distribution. Default: ``0.0``.
         high (float): Upper bound (exclusive) of the uniform distribution. Default: ``1.0``.
@@ -391,7 +395,7 @@ def uniform(
             values across devices but may offer better performance.
 
     Returns:
-        Tensor: A tensor of the given shape filled with uniform random values.
+        A tensor of the given shape filled with uniform random values.
 
     Example::
 
