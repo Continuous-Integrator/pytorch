@@ -9,7 +9,10 @@ the closure-based zip + filter over keep_arg_mask.
 
 Strategy 2 (the dedup post_compile path) is triggered when duplicate args
 have mutations, so strategy 1 (leafification) can't handle them. Dynamo
-already deduplicates inputs, so these tests use aot_function directly.
+deduplicates user-level inputs, but AOT autograd can reintroduce duplicates
+via its own input transformations (e.g. synthetic bases for aliased views,
+subclass unwrapping). These tests use aot_function directly as the simplest
+way to trigger strategy 2 deterministically.
 
 Tests verify that a "dedup_wrapper" artifact is emitted via trace_structured.
 """
