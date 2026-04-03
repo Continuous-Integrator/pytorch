@@ -2472,11 +2472,16 @@ torch.cuda.synchronize()
         spin_wait_kernel = get_wait_for_cpu_kernel()
         flag_cpu = torch.zeros(1, dtype=torch.int32, device="cpu").pin_memory()
 
+        # Use small_pool stats to avoid interference from cuBLAS workspace
+        # blocks (large pool) that preceding tests may create and that get
+        # freed during g.reset() → clearCublasWorkspacesForStream.
+        _stat = "active.small_pool.current"
+
         # Clean baseline
         torch.cuda.synchronize()
         gc.collect()
         torch.cuda.empty_cache()
-        baseline = torch.cuda.memory_stats()["active.all.current"]
+        baseline = torch.cuda.memory_stats()[_stat]
 
         s = torch.cuda.Stream()
         g = torch.cuda.CUDAGraph()
@@ -2489,8 +2494,8 @@ torch.cuda.synchronize()
             g.capture_end()
         torch.cuda.current_stream().wait_stream(s)
 
-        # After capture: buf + 2 RNG tensors = 3 new blocks
-        after_capture = torch.cuda.memory_stats()["active.all.current"]
+        # After capture: buf + 2 RNG tensors = 3 new small-pool blocks
+        after_capture = torch.cuda.memory_stats()[_stat]
         self.assertEqual(after_capture - baseline, 3)
 
         # Reference replay
@@ -2511,7 +2516,7 @@ torch.cuda.synchronize()
         # After reset: buf is freed (active decreases by 1).
         # The 2 RNG tensors should still be active because recordStream
         # defers their recycling until the replay stream finishes.
-        after_reset = torch.cuda.memory_stats()["active.all.current"]
+        after_reset = torch.cuda.memory_stats()[_stat]
         self.assertEqual(
             after_reset - baseline,
             2,
@@ -2525,7 +2530,7 @@ torch.cuda.synchronize()
         gc.collect()
         torch.cuda.empty_cache()
 
-        after_cleanup = torch.cuda.memory_stats()["active.all.current"]
+        after_cleanup = torch.cuda.memory_stats()[_stat]
         self.assertEqual(
             after_cleanup,
             baseline,
@@ -3249,12 +3254,9 @@ exit(2)
         elem = 4
 
         # this was annoying to write but stresses the expectations pretty rigorously
-        # For small_pool cases, delta_cudaMallocs and delta_cudaMalloc_bytes include
-        # an extra kSmallBuffer segment for the per-capture RNG state tensors, which
-        # are allocated on the default stream (separate from stream s).
         cases = (
-            (512 // elem, 2, 2 * kSmallBuffer, kSmallBuffer, "small_pool"),
-            (kSmallSize // elem, 3, 3 * kSmallBuffer, kSmallBuffer, "small_pool"),
+            (512 // elem, 1, 1 * kSmallBuffer, kSmallBuffer, "small_pool"),
+            (kSmallSize // elem, 2, 2 * kSmallBuffer, kSmallBuffer, "small_pool"),
             ((kSmallSize + 512) // elem, 1, kLargeBuffer, kLargeBuffer, "large_pool"),
             (
                 (kMinLargeAlloc - 512) // elem,
@@ -3291,10 +3293,8 @@ exit(2)
             pool_string,
         ) in cases:
             if pool_string == "small_pool":
-                delta_active_blocks = 3  # one from "b" plus a sneaky two from CUDAGraph's one-element rng seed and offset holders
-                delta_active_bytes = (
-                    numel * elem + 1024
-                )  # + 1024 for CUDAGraph's rng seed and offset holders each
+                delta_active_blocks = 1
+                delta_active_bytes = numel * elem
             else:
                 delta_active_blocks = 1  # We only check the large pool, which isn't affected by rng offset holder
                 delta_active_bytes = numel * elem
@@ -3302,9 +3302,6 @@ exit(2)
             g = torch.cuda.CUDAGraph()
             s.wait_stream(torch.cuda.current_stream())
             with torch.cuda.stream(s):
-                # Per-capture RNG state tensors are allocated on the default stream
-                # (not the capture stream), so they occupy a separate segment from
-                # user tensors created here on stream s.
                 a = torch.ones((numel,), device="cuda")
 
                 precapture_stats = torch.cuda.memory_stats()
