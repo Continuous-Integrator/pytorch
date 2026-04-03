@@ -7,9 +7,6 @@ The key classes are:
 - UserDefinedObjectVariable: Fallback class for instance objects, with support for method calls,
   attribute access, and other Python object behaviors.
 - Specialized subclasses for common patterns:
-  - UserDefinedDictVariable: For dict subclasses
-  - UserDefinedSetVariable: For set subclasses
-  - UserDefinedTupleVariable: For tuple subclasses
   - UserDefinedExceptionObjectVariable: For exception subclasses
   - FrozenDataClassVariable: Special handling of frozen dataclasses
   - MutableMappingVariable: For collections.abc.MutableMapping subclasses
@@ -284,6 +281,7 @@ class UserDefinedClassVariable(UserDefinedVariable):
             frozenset.__new__,
             tuple.__new__,
             list.__new__,
+            str.__new__,
         }
         return c_new_fns.union(exceptions)
 
@@ -1342,6 +1340,8 @@ class UserDefinedObjectVariable(UserDefinedVariable):
     _nonvar_fields = {
         "value",
         "value_type",
+        "_solid_base",
+        "_base_methods",
         *UserDefinedVariable._nonvar_fields,
     }
 
@@ -1353,6 +1353,7 @@ class UserDefinedObjectVariable(UserDefinedVariable):
         cls_source: TypeSource | None = None,
         base_cls_vt: VariableTracker | None = None,
         init_args: Sequence[VariableTracker] | None = None,
+        base_vt: "VariableTracker | None" = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
@@ -1370,6 +1371,29 @@ class UserDefinedObjectVariable(UserDefinedVariable):
         #   obj = base_cls.__new__(user_cls, *args)
         self.base_cls_vt = base_cls_vt
         self.init_args = init_args
+
+        # Analogous to CPython's tp_base / solid_base: holds the VT for the
+        # builtin base type's data (e.g. ConstDictVariable for dict subclasses).
+        # Methods inherited from the builtin base are delegated to this VT.
+        self.base_vt = base_vt
+
+        # The solid base type (e.g. dict, list, set) whose methods are
+        # delegated to base_vt. Computed by walking __base__ like CPython's
+        # solid_base(). None if the solid base is object.
+        from ..side_effects import SideEffects
+
+        self._solid_base = SideEffects._find_solid_base(self.value_type)
+        if self._solid_base is None:
+            self._base_methods: set[object] | None = None
+        elif self._solid_base in (dict, collections.OrderedDict):
+            # dict includes OrderedDict methods for compatibility
+            self._base_methods = dict_methods
+        else:
+            self._base_methods = {
+                method
+                for method in self._solid_base.__dict__.values()
+                if callable(method)
+            }
 
         # This records the attributes that were modified via instance
         # `__dict__` directly, rather than the normal setattr path.
@@ -1411,7 +1435,53 @@ class UserDefinedObjectVariable(UserDefinedVariable):
         return self.dict_vt
 
     def is_underlying_vt_modified(self, side_effects: "SideEffects") -> bool:
+        if self.base_vt is not None:
+            return side_effects.is_modified(self.base_vt)
         return False
+
+    def unpack_var_sequence(
+        self, tx: "InstructionTranslator"
+    ) -> list[VariableTracker]:
+        if self._solid_base is not None and self.base_vt is not None:
+            # Check that __iter__ hasn't been overridden by the subclass
+            iter_fn = inspect.getattr_static(self.value, "__iter__")
+            if iter_fn is self._solid_base.__iter__:  # type: ignore[union-attr]
+                return self.base_vt.unpack_var_sequence(tx)
+        return super().unpack_var_sequence(tx)
+
+    @property
+    def set_items(self) -> set[Any]:
+        if self._solid_base in (set, frozenset) and self.base_vt is not None:
+            return self.base_vt.set_items
+        raise AttributeError("set_items")
+
+    def install_dict_keys_match_guard(self) -> None:
+        if self._solid_base is not None and self.base_vt is not None:
+            return self.base_vt.install_dict_keys_match_guard()
+        raise NotImplementedError
+
+    def install_dict_contains_guard(
+        self, tx: "InstructionTranslator", args: list[VariableTracker]
+    ) -> None:
+        if self._solid_base is not None and self.base_vt is not None:
+            return self.base_vt.install_dict_contains_guard(tx, args)
+        raise NotImplementedError
+
+    def is_python_hashable(self) -> bool:
+        if self._solid_base is not None and self.base_vt is not None:
+            raise_on_overridden_hash(self.value, self)
+            # If the solid base defines __hash__ as None (e.g. dict, list, set),
+            # the type is unhashable. Otherwise delegate to base_vt.
+            if self._solid_base.__hash__ is None:
+                return False
+            return self.base_vt.is_python_hashable()
+        return super().is_python_hashable()
+
+    def get_python_hash(self) -> int:
+        if self._solid_base is not None and self.base_vt is not None:
+            return self.base_vt.get_python_hash()
+        return super().get_python_hash()
+
 
     def python_type(self) -> type:
         return self.value_type  # type: ignore[return-value]
@@ -1420,6 +1490,9 @@ class UserDefinedObjectVariable(UserDefinedVariable):
         return self.value
 
     def as_python_constant(self) -> object:
+        if self._solid_base in (set, frozenset) and self.base_vt is not None:
+            return self.base_vt.as_python_constant()
+
         if self.is_pytree_constant_class and self.source:
             # NOTE pytree constants created in the torch.compile region will
             # NOT be guarded (even though they have a source set)
@@ -1530,6 +1603,29 @@ class UserDefinedObjectVariable(UserDefinedVariable):
         from . import CONSTANT_VARIABLE_NONE, UserMethodVariable
 
         method = self._maybe_get_baseclass_method(name)
+
+        # Delegate to base_vt for methods inherited from the builtin base type
+        if self.base_vt is not None and method is not None:
+            # Tuple __eq__/__ne__ use is_python_equal for constant folding
+            if self._solid_base is tuple and name in ("__eq__", "__ne__"):
+                if len(args) != 1 or kwargs:
+                    raise ValueError("Improper arguments for method.")
+                eq = self.is_python_equal(args[0])
+                return VariableTracker.build(tx, eq if name == "__eq__" else not eq)
+
+            base_methods = self._base_methods
+            if base_methods is not None and method in base_methods:
+                try:
+                    return self.base_vt.call_method(tx, name, args, kwargs)
+                except ObservedKeyError:
+                    if (
+                        name == "__getitem__"
+                        and issubclass(self.python_type(), dict)
+                        and self._maybe_get_baseclass_method("__missing__")
+                    ):
+                        return self.call_method(tx, "__missing__", args, kwargs)
+                    raise
+
         if method is not None:
             if method is object.__init__:
                 return CONSTANT_VARIABLE_NONE
@@ -2173,6 +2269,13 @@ class UserDefinedObjectVariable(UserDefinedVariable):
         source: Source | None,
     ) -> VariableTracker:
         """Handle data descriptors found on the type MRO (property, _tuplegetter, etc.)."""
+        # namedtuple fields are _tuplegetter descriptors implemented in C.
+        # Emulate _tuplegetter.__get__ by indexing into the tracked tuple items.
+        if isinstance(type_attr, _collections._tuplegetter):
+            if self._solid_base is tuple and self.base_vt is not None:
+                _, (idx, _) = type_attr.__reduce__()
+                return self.base_vt.items[idx]
+
         if isinstance(type_attr, property) and not self._is_c_defined_property(
             type_attr
         ):
@@ -2367,6 +2470,15 @@ class UserDefinedObjectVariable(UserDefinedVariable):
         return hash(self.value)
 
     def is_python_equal(self, other: object) -> bool:
+        if self._solid_base is not None and self.base_vt is not None:
+            other_vt = (
+                other.base_vt
+                if isinstance(other, UserDefinedObjectVariable)
+                and other._solid_base == self._solid_base
+                else other
+            )
+            return self.base_vt.is_python_equal(other_vt)
+
         # id check
         if not isinstance(other, UserDefinedVariable):
             return False
@@ -2937,325 +3049,6 @@ class RemovableHandleVariable(VariableTracker):
 
     def python_type(self) -> type[object]:
         return RemovableHandleClass
-
-
-class UserDefinedDictVariable(UserDefinedObjectVariable):
-    """
-    Represents user defined objects that are subclasses of dict/OrderedDict.
-
-    Internally, it uses a ConstDictVariable to represent the dict part of the
-    variable tracker. For everything else, it falls back to
-    UserDefinedObjectVariable.
-    """
-
-    def __init__(
-        self,
-        value: object,
-        dict_vt: ConstDictVariable | None = None,
-        **kwargs: Any,
-    ) -> None:
-        super().__init__(value, **kwargs)
-        if dict_vt is None:
-            assert self.source is None, (
-                "dict_vt must be constructed by builder.py when source is present"
-            )
-            self._dict_vt = ConstDictVariable(
-                {}, type(value), mutation_type=ValueMutationNew()
-            )
-        else:
-            self._dict_vt = dict_vt
-        self._dict_methods = dict_methods
-
-    def call_method(
-        self,
-        tx: "InstructionTranslator",
-        name: str,
-        args: list[VariableTracker],
-        kwargs: dict[str, VariableTracker],
-    ) -> VariableTracker:
-        method = self._maybe_get_baseclass_method(name)
-        if method in self._dict_methods:
-            # Dict subclasses can override __missing__ to provide fallback
-            # behavior instead of raising a KeyError. This is used, for example,
-            # by collections.Counter.
-            try:
-                return self._dict_vt.call_method(tx, name, args, kwargs)
-            except ObservedKeyError:
-                if (
-                    name == "__getitem__"
-                    and issubclass(self.python_type(), dict)
-                    and self._maybe_get_baseclass_method("__missing__")
-                ):
-                    return self.call_method(tx, "__missing__", args, kwargs)
-                else:
-                    raise
-        return super().call_method(tx, name, args, kwargs)
-
-    def unpack_var_sequence(self, tx: "InstructionTranslator") -> list[VariableTracker]:
-        if type(self.value).__iter__ in (  # type: ignore[attr-defined]
-            dict.__iter__,
-            collections.OrderedDict.__iter__,
-        ):
-            return self._dict_vt.unpack_var_sequence(tx)
-        raise NotImplementedError
-
-    def is_underlying_vt_modified(self, side_effects: "SideEffects") -> bool:
-        return side_effects.is_modified(self._dict_vt)
-
-    @property
-    def user_cls(self) -> type[object]:
-        return self._dict_vt.user_cls
-
-    @property
-    def items(self) -> dict[VariableTracker, VariableTracker]:
-        return self._dict_vt.items
-
-    def install_dict_keys_match_guard(self) -> None:
-        return self._dict_vt.install_dict_keys_match_guard()
-
-    def install_dict_contains_guard(
-        self, tx: "InstructionTranslator", args: list[VariableTracker]
-    ) -> None:
-        return self._dict_vt.install_dict_contains_guard(tx, args)
-
-    def is_python_hashable(self) -> Literal[False]:
-        raise_on_overridden_hash(self.value, self)
-        return False
-
-
-class UserDefinedSetVariable(UserDefinedObjectVariable):
-    """
-    Represents user defined objects that are subclasses of set.
-
-    Internally, it uses a SetVariable to represent the set part of the
-    variable tracker. For everything else, it falls back to
-    UserDefinedObjectVariable.
-    """
-
-    def __init__(
-        self, value: object, set_vt: SetVariable | None = None, **kwargs: Any
-    ) -> None:
-        from .builder import SourcelessBuilder
-
-        tx = kwargs.pop("tx", None)
-        super().__init__(value, **kwargs)
-
-        python_type = set if isinstance(value, set) else frozenset
-        self._set_methods = set_methods if python_type is set else frozenset_methods
-
-        if set_vt is None:
-            assert self.source is None, (
-                "set_vt must be constructed by builder.py when source is present"
-            )
-            if python_type is set:
-                # set is initialized later
-                self._set_vt = variables.SetVariable(
-                    set(),
-                    mutation_type=ValueMutationNew(),
-                )
-            else:
-                init_args = kwargs.get("init_args", {})
-                if tx is None:
-                    tx = torch._dynamo.symbolic_convert.InstructionTranslator.current_tx()
-                self._set_vt = SourcelessBuilder.create(tx, python_type).call_function(  # type: ignore[assignment]
-                    tx, init_args, {}
-                )
-        else:
-            self._set_vt = set_vt
-
-    def call_method(
-        self,
-        tx: "InstructionTranslator",
-        name: str,
-        args: list[VariableTracker],
-        kwargs: dict[str, VariableTracker],
-    ) -> VariableTracker:
-        method = self._maybe_get_baseclass_method(name)
-        if method in self._set_methods:
-            return self._set_vt.call_method(tx, name, args, kwargs)
-        return super().call_method(tx, name, args, kwargs)
-
-    def as_python_constant(self) -> object:
-        return self._set_vt.as_python_constant()
-
-    def unpack_var_sequence(self, tx: "InstructionTranslator") -> list[VariableTracker]:
-        if inspect.getattr_static(self.value, "__iter__") in (
-            set.__iter__,
-            frozenset.__iter__,
-        ):
-            return self._set_vt.unpack_var_sequence(tx)
-        raise NotImplementedError
-
-    @property
-    def set_items(self) -> set[Any]:
-        return self._set_vt.set_items
-
-    @property
-    def items(self) -> list[VariableTracker]:
-        return self._set_vt.items
-
-    def is_underlying_vt_modified(self, side_effects: "SideEffects") -> bool:
-        return side_effects.is_modified(self._set_vt)
-
-    def install_dict_keys_match_guard(self) -> None:
-        return self._set_vt.install_dict_keys_match_guard()
-
-    def install_dict_contains_guard(
-        self, tx: "InstructionTranslator", args: list[VariableTracker]
-    ) -> None:
-        return self._set_vt.install_dict_contains_guard(tx, args)
-
-    def is_python_hashable(self) -> bool:
-        raise_on_overridden_hash(self.value, self)
-        return self._set_vt.is_python_hashable()
-
-    def get_python_hash(self) -> int:
-        return self._set_vt.get_python_hash()
-
-    def is_python_equal(self, other: object) -> bool:
-        return isinstance(
-            other, UserDefinedSetVariable
-        ) and self._set_vt.is_python_equal(other._set_vt)
-
-
-class UserDefinedListVariable(UserDefinedObjectVariable):
-    """
-    Represents user defined objects that are subclasses of lists.
-
-    Internally, it uses a ListVariable to represent the list part of the
-    variable tracker. For everything else, it falls back to
-    UserDefinedObjectVariable.
-    """
-
-    def __init__(
-        self, value: object, list_vt: Union["ListVariable", None] = None, **kwargs: Any
-    ) -> None:
-        from .lists import ListVariable
-
-        super().__init__(value, **kwargs)
-        if list_vt is None:
-            assert self.source is None, (
-                "list_vt must be constructed by builder.py when source is present"
-            )
-            self._list_vt = ListVariable([], mutation_type=ValueMutationNew())
-        else:
-            self._list_vt = list_vt
-
-    def call_method(
-        self,
-        tx: "InstructionTranslator",
-        name: str,
-        args: list[VariableTracker],
-        kwargs: dict[str, VariableTracker],
-    ) -> VariableTracker:
-        assert self._list_vt is not None
-        method = self._maybe_get_baseclass_method(name)
-        if method in list_methods:
-            return self._list_vt.call_method(tx, name, args, kwargs)
-        return super().call_method(tx, name, args, kwargs)
-
-    def unpack_var_sequence(self, tx: "InstructionTranslator") -> list[VariableTracker]:
-        assert self._list_vt is not None
-        if type(self.value).__iter__ is list.__iter__:  # type: ignore[attr-defined]
-            return self._list_vt.unpack_var_sequence(tx)
-        raise NotImplementedError
-
-    def is_underlying_vt_modified(self, side_effects: "SideEffects") -> bool:
-        return side_effects.is_modified(self._list_vt)
-
-    def is_python_hashable(self) -> Literal[False]:
-        raise_on_overridden_hash(self.value, self)
-        return False
-
-
-class UserDefinedTupleVariable(UserDefinedObjectVariable):
-    """
-    Represents user defined objects that are subclasses of tuple.
-
-    Internally, it uses a TupleVariable to represent the tuple part of the
-    variable tracker. For everything else, it falls back to
-    UserDefinedObjectVariable.
-    """
-
-    _nonvar_fields = UserDefinedObjectVariable._nonvar_fields
-
-    def __init__(self, value, tuple_vt=None, init_args=None, **kwargs):  # type: ignore[all]
-        from .lists import TupleVariable
-
-        tx = kwargs.pop("tx", None)
-        super().__init__(value, init_args=init_args, **kwargs)
-        if tuple_vt is None:
-            assert self.source is None, (
-                "tuple_vt must be constructed by builder.py when source is present"
-            )
-            assert init_args, "init_args must be provided when tuple_vt is None"
-            # Emulate `tuple.__new__`
-            # https://github.com/python/cpython/blob/3.11/Objects/tupleobject.c#L697-L710
-            #
-            # TODO this duplicates the logic in `BuiltinVariable(tuple)`
-            if tx is None:
-                from torch._dynamo.symbolic_convert import InstructionTranslator
-
-                tx = InstructionTranslator.current_tx()
-            elems = init_args[0].force_unpack_var_sequence(tx)
-            self._tuple_vt = TupleVariable(elems, mutation_type=ValueMutationNew())
-        else:
-            self._tuple_vt = tuple_vt
-
-    def resolve_data_descriptor(
-        self,
-        tx: "InstructionTranslator",
-        name: str,
-        type_attr: object,
-        source: Source | None,
-    ) -> VariableTracker:
-        if isinstance(type_attr, _collections._tuplegetter):
-            # namedtuple fields are _tuplegetter descriptors implemented in C.
-            # We emulate _tuplegetter.__get__ by indexing into the tracked
-            # tuple items, because self.value may not hold actual runtime values.
-            _, (idx, _) = type_attr.__reduce__()
-            return self._tuple_vt.items[idx]  # type: ignore[union-attr]
-        return super().resolve_data_descriptor(tx, name, type_attr, source)
-
-    def call_method(
-        self,
-        tx: "InstructionTranslator",
-        name: str,
-        args: list[VariableTracker],
-        kwargs: dict[str, VariableTracker],
-    ) -> VariableTracker:
-        assert self._tuple_vt is not None
-        if name == "__eq__":
-            if len(args) != 1 or kwargs:
-                raise ValueError("Improper arguments for method.")
-            return VariableTracker.build(tx, self.is_python_equal(args[0]))
-        elif name == "__ne__":
-            if len(args) != 1 or kwargs:
-                raise ValueError("Improper arguments for method.")
-            return VariableTracker.build(tx, not self.is_python_equal(args[0]))
-        method = self._maybe_get_baseclass_method(name)
-        if method in tuple_methods:
-            return self._tuple_vt.call_method(tx, name, args, kwargs)
-        return super().call_method(tx, name, args, kwargs)
-
-    def unpack_var_sequence(self, tx: "InstructionTranslator") -> list[VariableTracker]:
-        assert self._tuple_vt is not None
-        if type(self.value).__iter__ is tuple.__iter__:  # type: ignore[attr-defined]
-            return self._tuple_vt.unpack_var_sequence(tx)
-        raise NotImplementedError
-
-    def is_python_hashable(self) -> bool:
-        raise_on_overridden_hash(self.value, self)
-        return self._tuple_vt.is_python_hashable()
-
-    def get_python_hash(self) -> int:
-        return self._tuple_vt.get_python_hash()
-
-    def is_python_equal(self, other: object) -> bool:
-        other = (
-            other._tuple_vt if isinstance(other, UserDefinedTupleVariable) else other
-        )
-        return self._tuple_vt.is_python_equal(other)
 
 
 class MutableMappingVariable(UserDefinedObjectVariable):

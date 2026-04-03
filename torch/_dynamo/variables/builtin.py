@@ -124,7 +124,6 @@ from .tensor import (
 )
 from .user_defined import (
     MutableMappingVariable,
-    UserDefinedDictVariable,
     UserDefinedObjectVariable,
     UserDefinedVariable,
 )
@@ -1516,6 +1515,26 @@ class BuiltinVariable(BaseBuiltinVariable):
                     args[1:],
                 )
 
+            if self.fn is set:
+                set_vt = variables.SetVariable(set(), mutation_type=ValueMutationNew())
+                if len(args) == 1 and isinstance(args[0], BuiltinVariable) and args[0].fn is set:
+                    return set_vt
+                if len(args) >= 1:
+                    return tx.output.side_effects.track_new_user_defined_object(
+                        self,
+                        args[0],
+                        args[1:],
+                    )
+
+            if self.fn is str and len(args) >= 1:
+                if len(args) == 1 and isinstance(args[0], BuiltinVariable) and args[0].fn is str:
+                    return ConstantVariable.create("")
+                return tx.output.side_effects.track_new_user_defined_object(
+                    self,
+                    args[0],
+                    args[1:],
+                )
+
         if name in _BUILTIN_CONSTANT_FOLDABLE_METHODS.get(self.fn, ()):
             if all(a.is_python_constant() for a in args) and all(
                 v.is_python_constant() for v in kwargs.values()
@@ -1541,8 +1560,11 @@ class BuiltinVariable(BaseBuiltinVariable):
         if self.fn is set:
             resolved_fn = getattr(self.fn, name)
             if resolved_fn in set_methods:
-                if isinstance(args[0], variables.UserDefinedSetVariable):
-                    return args[0]._set_vt.call_method(tx, name, args[1:], kwargs)
+                if (
+                    isinstance(args[0], variables.UserDefinedObjectVariable)
+                    and isinstance(args[0].base_vt, variables.SetVariable)
+                ):
+                    return args[0].base_vt.call_method(tx, name, args[1:], kwargs)
                 elif isinstance(args[0], variables.SetVariable):
                     return args[0].call_method(tx, name, args[1:], kwargs)
 
@@ -3100,8 +3122,10 @@ class BuiltinVariable(BaseBuiltinVariable):
                 *_SET_LIKE_OP_SUPPORT,
                 ConstDictVariable,
                 MutableMappingVariable,
-                UserDefinedDictVariable,
             ),
+        ) or (
+            isinstance(a, UserDefinedObjectVariable)
+            and isinstance(a.base_vt, ConstDictVariable)
         ):
             # TODO(guilhermeleobas): forward the call to b.__ror__(a) if
             # a.__ror__(b) returns NotImplemented
@@ -3223,8 +3247,11 @@ class DictBuiltinVariable(BaseBuiltinVariable):
 
         resolved_fn = getattr(dict, name, None)
         if resolved_fn is not None and resolved_fn in dict_methods:
-            if isinstance(args[0], variables.UserDefinedDictVariable):
-                return args[0]._dict_vt.call_method(tx, name, args[1:], kwargs)
+            if (
+                isinstance(args[0], variables.UserDefinedObjectVariable)
+                and isinstance(args[0].base_vt, ConstDictVariable)
+            ):
+                return args[0].base_vt.call_method(tx, name, args[1:], kwargs)
             elif isinstance(args[0], ConstDictVariable):
                 return args[0].call_method(tx, name, args[1:], kwargs)
 

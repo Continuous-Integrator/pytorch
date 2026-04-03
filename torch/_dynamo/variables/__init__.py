@@ -173,13 +173,9 @@ from .user_defined import (
     MutableMappingVariable,
     RemovableHandleVariable,
     UserDefinedClassVariable,
-    UserDefinedDictVariable,
     UserDefinedExceptionClassVariable,
     UserDefinedExceptionObjectVariable,
-    UserDefinedListVariable,
     UserDefinedObjectVariable,
-    UserDefinedSetVariable,
-    UserDefinedTupleVariable,
     UserDefinedVariable,
 )
 
@@ -255,7 +251,6 @@ __all__ = [
     "UnspecializedPythonVariable",
     "UntypedStorageVariable",
     "UserDefinedClassVariable",
-    "UserDefinedTupleVariable",
     "UserDefinedObjectVariable",
     "UserFunctionVariable",
     "UserMethodVariable",

@@ -341,25 +341,12 @@ class SuperVariable(VariableTracker):
             )
             return variables.CONSTANT_VARIABLE_NONE
         elif (
-            isinstance(self.objvar, variables.UserDefinedDictVariable)
-            and inner_fn in self.objvar._dict_methods
+            isinstance(self.objvar, variables.UserDefinedObjectVariable)
+            and self.objvar.base_vt is not None
+            and self.objvar._base_methods is not None
+            and inner_fn in self.objvar._base_methods
         ):
-            return self.objvar._dict_vt.call_method(tx, name, args, kwargs)
-        elif (
-            isinstance(self.objvar, variables.UserDefinedSetVariable)
-            and inner_fn in self.objvar._set_methods
-        ):
-            return self.objvar._set_vt.call_method(tx, name, args, kwargs)
-        elif (
-            isinstance(self.objvar, variables.UserDefinedTupleVariable)
-            and inner_fn in tuple_methods
-        ):
-            return self.objvar._tuple_vt.call_method(tx, name, args, kwargs)
-        elif (
-            isinstance(self.objvar, variables.UserDefinedListVariable)
-            and inner_fn in list_methods
-        ):
-            return self.objvar._list_vt.call_method(tx, name, args, kwargs)
+            return self.objvar.base_vt.call_method(tx, name, args, kwargs)
         elif inner_fn is object.__getattribute__:
             # object.__getattribute__ has no side-effects. We can directly call
             # __getattribute__ to access the attribute.

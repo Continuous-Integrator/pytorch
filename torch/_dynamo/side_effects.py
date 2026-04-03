@@ -525,14 +525,8 @@ class SideEffects:
             variable_cls = GenericContextWrappingVariable
         elif issubclass(user_cls, torch.nn.Module):
             variable_cls = variables.UnspecializedNNModuleVariable
-        elif issubclass(user_cls, (dict, collections.OrderedDict)):
-            variable_cls = variables.UserDefinedDictVariable
-        elif issubclass(user_cls, (set, frozenset)):
-            variable_cls = variables.UserDefinedSetVariable
-        elif issubclass(user_cls, tuple):
-            variable_cls = variables.UserDefinedTupleVariable
-        elif issubclass(user_cls, list):
-            variable_cls = variables.UserDefinedListVariable
+        elif self._find_solid_base(user_cls) is not None:
+            variable_cls = variables.UserDefinedObjectVariable
         elif issubclass(user_cls, MutableMapping):
             variable_cls = variables.MutableMappingVariable
         elif is_frozen_dataclass(user_cls):
@@ -577,6 +571,63 @@ class SideEffects:
             obj = base_cls.__new__(user_cls)
         return obj
 
+    @staticmethod
+    def _find_solid_base(user_cls: type) -> type | None:
+        """Walk __base__ (tp_base) to find the builtin type that provides data layout.
+
+        Like CPython's solid_base(), walks the single-inheritance chain until
+        finding a builtin type with its own C data layout (dict, list, set, etc.).
+        Returns None if the solid base is object (no special data layout).
+        """
+        # Known builtin types that have their own data layout (tp_basicsize
+        # differs from object). Add new entries here to support more types.
+        _SOLID_BASES: set[type] = {dict, collections.OrderedDict, set, frozenset, list, tuple, str}
+        base = user_cls
+        while base is not object:
+            if base in _SOLID_BASES:
+                return base
+            base = base.__base__  # type: ignore[assignment]
+        return None
+
+    @staticmethod
+    def _make_sourceless_base_vt(
+        user_cls: type,
+        obj: object,
+        init_args: list[VariableTracker],
+    ) -> VariableTracker | None:
+        """Create a sourceless base_vt for a given solid base type."""
+        from .variables.dicts import ConstDictVariable
+        from .variables.lists import ListVariable, TupleVariable
+
+        solid_base = SideEffects._find_solid_base(user_cls)
+        if solid_base is None:
+            return None
+        if solid_base in (dict, collections.OrderedDict):
+            return ConstDictVariable({}, type(obj), mutation_type=ValueMutationNew())
+        if solid_base is set:
+            return variables.SetVariable(set(), mutation_type=ValueMutationNew())
+        if solid_base is frozenset:
+            # frozenset sourceless case uses SourcelessBuilder at init time
+            return None
+        if solid_base is list:
+            return ListVariable([], mutation_type=ValueMutationNew())
+        if solid_base is tuple:
+            if init_args:
+                from torch._dynamo.symbolic_convert import InstructionTranslator
+
+                tx = InstructionTranslator.current_tx()
+                elems = init_args[0].force_unpack_var_sequence(tx)
+                return TupleVariable(elems, mutation_type=ValueMutationNew())
+            return TupleVariable([], mutation_type=ValueMutationNew())
+        if solid_base is str:
+            # str is immutable — value is set at __new__ time via init_args
+            from .variables.constant import ConstantVariable
+
+            if init_args and init_args[0].is_python_constant():
+                return ConstantVariable.create(str(init_args[0].as_python_constant()))
+            return ConstantVariable.create("")
+        return None
+
     def track_new_user_defined_object(
         self,
         base_cls_vt: VariableTracker,
@@ -596,12 +647,21 @@ class SideEffects:
         variable_cls = self.get_variable_cls(user_cls)
         obj = self.get_example_value(base_cls_vt, cls_vt, init_args)
 
+        # Walk __base__ (CPython's tp_base) to find the "solid base" — the
+        # first builtin type with its own data layout. Create a base_vt to
+        # track that type's data.
+        base_vt = self._make_sourceless_base_vt(user_cls, obj, init_args)
+        base_vt_kwargs: dict[str, Any] = {}
+        if base_vt is not None:
+            base_vt_kwargs["base_vt"] = base_vt
+
         variable = variable_cls(
             obj,
             cls_source=cls_vt.source,
             base_cls_vt=base_cls_vt,
             init_args=init_args,
             mutation_type=AttributeMutationNew(cls_source),
+            **base_vt_kwargs,
         )
         self.id_to_variable[id(obj)] = variable
         self.keepalive.append(obj)
@@ -1186,10 +1246,11 @@ class SideEffects:
                     # These frozen attribute initializations are handled in codegen_save_tempvars
                     # and don't need to be reset in the suffix.
                     continue
-                elif isinstance(
-                    var,
-                    variables.UserDefinedDictVariable,
-                ) and self.is_modified(var._dict_vt):
+                elif (
+                    isinstance(var, variables.UserDefinedObjectVariable)
+                    and isinstance(var.base_vt, variables.ConstDictVariable)
+                    and self.is_modified(var.base_vt)
+                ):
                     # Do dict related update manually here. The store_attr
                     # mutations will be applied later.
                     varname_map = {}
@@ -1221,7 +1282,7 @@ class SideEffects:
                         ]
                     )
 
-                    cg(var._dict_vt, allow_cache=False)  # Don't codegen via source
+                    cg(var.base_vt, allow_cache=False)  # Don't codegen via source
                     cg.extend_output(
                         [
                             create_instruction(
@@ -1240,12 +1301,13 @@ class SideEffects:
                             create_instruction("POP_TOP"),
                         ]
                     )
-                    _maybe_log_side_effect(var._dict_vt)
-                elif isinstance(
-                    var,
-                    variables.UserDefinedListVariable,
-                ) and self.is_modified(var._list_vt):
-                    if not _codegen_direct_list_replay(var._list_vt, var.source):
+                    _maybe_log_side_effect(var.base_vt)
+                elif (
+                    isinstance(var, variables.UserDefinedObjectVariable)
+                    and isinstance(var.base_vt, variables.ListVariable)
+                    and self.is_modified(var.base_vt)
+                ):
+                    if not _codegen_direct_list_replay(var.base_vt, var.source):
                         # Update the list to the updated items. Be careful in
                         # calling the list methods and not the overridden methods.
                         varname_map = {}
@@ -1261,7 +1323,7 @@ class SideEffects:
                             ]
                         )
 
-                        cg(var._list_vt, allow_cache=False)  # Don't codegen via source
+                        cg(var.base_vt, allow_cache=False)  # Don't codegen via source
                         cg.extend_output(
                             [
                                 create_instruction(
@@ -1280,7 +1342,7 @@ class SideEffects:
                                 create_instruction("POP_TOP"),
                             ]
                         )
-                        _maybe_log_side_effect(var._list_vt)
+                        _maybe_log_side_effect(var.base_vt)
 
                 # Applying mutations involves two steps: 1) Push all
                 # reconstructed objects onto the stack.  2) Call STORE_ATTR to

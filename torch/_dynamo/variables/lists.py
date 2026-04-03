@@ -57,7 +57,7 @@ from .base import (
 from .constant import CONSTANT_VARIABLE_FALSE, CONSTANT_VARIABLE_NONE, ConstantVariable
 from .functions import UserFunctionVariable
 from .iter import IteratorVariable
-from .user_defined import UserDefinedTupleVariable
+from .user_defined import UserDefinedObjectVariable
 
 
 if TYPE_CHECKING:
@@ -1644,11 +1644,11 @@ class SizeVariable(TupleVariable):
         return VariableTracker.build(tx, hasattr(torch.Size, name))
 
 
-class NamedTupleVariable(UserDefinedTupleVariable):
+class NamedTupleVariable(UserDefinedObjectVariable):
     _nonvar_fields = {
         "tuple_cls",
         "dynamic_attributes",
-        *UserDefinedTupleVariable._nonvar_fields,
+        *UserDefinedObjectVariable._nonvar_fields,
     }
 
     def __init__(
@@ -1675,7 +1675,7 @@ class NamedTupleVariable(UserDefinedTupleVariable):
 
         super().__init__(
             value=dummy_value,
-            tuple_vt=tuple_vt,
+            base_vt=tuple_vt,
             init_args=items,
             **kwargs,
         )
@@ -1686,7 +1686,7 @@ class NamedTupleVariable(UserDefinedTupleVariable):
 
     @property
     def items(self) -> list[VariableTracker]:
-        return self._tuple_vt.items
+        return self.base_vt.items
 
     def is_namedtuple(self) -> bool:
         return isinstance(getattr(self.tuple_cls, "_fields", None), tuple) and callable(
@@ -1723,8 +1723,8 @@ class NamedTupleVariable(UserDefinedTupleVariable):
 
     def as_proxy(self) -> Any:
         if self.is_structseq():
-            return self.python_type()([x.as_proxy() for x in self._tuple_vt.items])
-        return self.python_type()(*[x.as_proxy() for x in self._tuple_vt.items])
+            return self.python_type()([x.as_proxy() for x in self.base_vt.items])
+        return self.python_type()(*[x.as_proxy() for x in self.base_vt.items])
 
     def call_tree_map(
         self,
@@ -1880,10 +1880,10 @@ class NamedTupleVariable(UserDefinedTupleVariable):
                 codegen.create_load_const_unchecked(create_fn)
             )
         )
-        codegen.foreach(self._tuple_vt.items)
+        codegen.foreach(self.base_vt.items)
         codegen.extend_output(
             [
-                create_build_tuple(len(self._tuple_vt.items)),
+                create_build_tuple(len(self.base_vt.items)),
             ]
             + create_call_function(1, False)
         )
@@ -1913,7 +1913,7 @@ class NamedTupleVariable(UserDefinedTupleVariable):
         kwargs: dict[str, VariableTracker],
     ) -> VariableTracker:
         if self._is_method_overridden(name):
-            # Fall back to UserDefinedTupleVariable
+            # Fall back to UserDefinedObjectVariable
             return super().call_method(tx, name, args, kwargs)
         elif name == "__setattr__":
             if kwargs or len(args) != 2:
@@ -1956,7 +1956,7 @@ class NamedTupleVariable(UserDefinedTupleVariable):
         fields = self.fields()
         if name in fields:
             field_index = fields.index(name)
-            return self._tuple_vt.items[field_index]
+            return self.base_vt.items[field_index]
 
         return super().var_getattr(tx, name)
 

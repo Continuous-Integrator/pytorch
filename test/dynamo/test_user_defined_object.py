@@ -691,5 +691,80 @@ class TestUserDefinedClassDict(TestCase):
         self.assertEqual(cnt.frame_count, 2)
 
 
+class TestStrSubclass(TestCase):
+    def test_str_subclass_basic(self):
+        class MyStr(str):
+            pass
+
+        @torch.compile(backend="eager", fullgraph=True)
+        def fn(x):
+            s = MyStr("hello")
+            return x + len(s)
+
+        self.assertEqual(fn(torch.tensor(1.0)), torch.tensor(6.0))
+
+    def test_str_subclass_method_delegation(self):
+        class MyStr(str):
+            pass
+
+        @torch.compile(backend="eager", fullgraph=True)
+        def fn(x):
+            s = MyStr("hello")
+            return x + len(s.upper())
+
+        self.assertEqual(fn(torch.tensor(1.0)), torch.tensor(6.0))
+
+    def test_str_subclass_custom_method(self):
+        class MyStr(str):
+            def shout(self):
+                return self.upper() + "!"
+
+        @torch.compile(backend="eager", fullgraph=True)
+        def fn(x):
+            s = MyStr("hello")
+            return x + len(s.shout())
+
+        # "HELLO!" = 6 chars
+        self.assertEqual(fn(torch.tensor(1.0)), torch.tensor(7.0))
+
+    def test_str_subclass_as_input(self):
+        class MyStr(str):
+            pass
+
+        @torch.compile(backend="eager", fullgraph=True)
+        def fn(x, s):
+            return x + len(s)
+
+        s = MyStr("world")
+        self.assertEqual(fn(torch.tensor(1.0), s), torch.tensor(6.0))
+
+    def test_str_subclass_multi_level_inheritance(self):
+        class MyStr(str):
+            pass
+
+        class MyStr2(MyStr):
+            pass
+
+        @torch.compile(backend="eager", fullgraph=True)
+        def fn(x):
+            s = MyStr2("test")
+            return x + len(s)
+
+        self.assertEqual(fn(torch.tensor(1.0)), torch.tensor(5.0))
+
+    def test_str_subclass_as_dict_key(self):
+        class MyStr(str):
+            pass
+
+        @torch.compile(backend="eager", fullgraph=True)
+        def fn(x):
+            s1 = MyStr("key")
+            d = {s1: 42}
+            s2 = MyStr("key")
+            return x + d[s2]
+
+        self.assertEqual(fn(torch.tensor(1.0)), torch.tensor(43.0))
+
+
 if __name__ == "__main__":
     run_tests()

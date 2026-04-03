@@ -299,13 +299,9 @@ from .user_defined import (
     MutableMappingVariable,
     SourcelessGraphModuleVariable,
     UserDefinedClassVariable,
-    UserDefinedDictVariable,
     UserDefinedEnumClassVariable,
     UserDefinedExceptionClassVariable,
-    UserDefinedListVariable,
     UserDefinedObjectVariable,
-    UserDefinedSetVariable,
-    UserDefinedTupleVariable,
 )
 
 
@@ -1659,7 +1655,7 @@ class VariableBuilder:
             isinstance(value, (dict, collections.OrderedDict))
             and type(value).__new__ is dict.__new__
         ):
-            # Construct a dict_vt that will reside inside the UserDefinedDictVariable
+            # Construct a dict_vt that will reside inside UserDefinedObjectVariable as base_vt
             self.install_guards(GuardBuilder.TYPE_MATCH)
             self.install_guards(GuardBuilder.SEQUENCE_LENGTH)
 
@@ -1703,7 +1699,7 @@ class VariableBuilder:
             # bytecode simple
             dict_vt.should_reconstruct_all = True
 
-            result = UserDefinedDictVariable(value, dict_vt=dict_vt, source=self.source)
+            result = UserDefinedObjectVariable(value, base_vt=dict_vt, source=self.source)
             return self.tx.output.side_effects.track_object_existing(value, result)
         elif isinstance(value, tuple):
             self.install_guards(GuardBuilder.TYPE_MATCH)
@@ -1724,8 +1720,8 @@ class VariableBuilder:
                 source=self.source,
                 mutation_type=ValueMutationExisting(),
             )
-            result = UserDefinedTupleVariable(
-                value, tuple_vt=tuple_vt, source=self.source
+            result = UserDefinedObjectVariable(
+                value, base_vt=tuple_vt, source=self.source
             )
             return self.tx.output.side_effects.track_object_existing(value, result)
         elif isinstance(value, list):
@@ -1746,7 +1742,7 @@ class VariableBuilder:
                 source=self.source,
                 mutation_type=ValueMutationExisting(),
             )
-            result = UserDefinedListVariable(value, list_vt=list_vt, source=self.source)
+            result = UserDefinedObjectVariable(value, base_vt=list_vt, source=self.source)
             return self.tx.output.side_effects.track_object_existing(value, result)
         elif isinstance(value, (set, frozenset)):
             self.install_guards(GuardBuilder.TYPE_MATCH)
@@ -1769,7 +1765,14 @@ class VariableBuilder:
             set_vt = set_vt_cls(
                 output, source=self.source, mutation_type=ValueMutationExisting()
             )
-            result = UserDefinedSetVariable(value, set_vt=set_vt, source=self.source)
+            result = UserDefinedObjectVariable(value, base_vt=set_vt, source=self.source)
+            return self.tx.output.side_effects.track_object_existing(value, result)
+        elif isinstance(value, str):
+            self.install_guards(GuardBuilder.EQUALS_MATCH)
+            str_vt = ConstantVariable.create(
+                str(value), source=self.source
+            )
+            result = UserDefinedObjectVariable(value, base_vt=str_vt, source=self.source)
             return self.tx.output.side_effects.track_object_existing(value, result)
         elif issubclass(type(value), MutableMapping):
             self.install_guards(GuardBuilder.TYPE_MATCH)

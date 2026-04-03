@@ -173,7 +173,8 @@ from .variables.tensor import (
     UnspecializedPythonVariable,
 )
 from .variables.torch_function import TensorWithTFOverrideVariable
-from .variables.user_defined import UserDefinedDictVariable
+from .variables.dicts import ConstDictVariable
+from .variables.user_defined import UserDefinedObjectVariable
 
 
 if TYPE_CHECKING:
@@ -2184,10 +2185,12 @@ class OutputGraph(OutputGraphCommon):
                     if isinstance(
                         mut_type, (AttributeMutationExisting, ValueMutationExisting)
                     ):
-                        if isinstance(var, UserDefinedDictVariable) and isinstance(
-                            var.value, _ExportModuleSpecTrackerDict
+                        if (
+                            isinstance(var, UserDefinedObjectVariable)
+                            and isinstance(var.base_vt, ConstDictVariable)
+                            and isinstance(var.value, _ExportModuleSpecTrackerDict)
                         ):
-                            for k, v in var.items.items():
+                            for k, v in var.base_vt.items.items():
                                 # pyrefly: ignore [implicit-any]
                                 specs = {}
                                 # pyrefly: ignore[missing-attribute]
@@ -2203,7 +2206,8 @@ class OutputGraph(OutputGraphCommon):
                         # export uses tracepoint pass to dump submodule inp/out spec
                         # into global state, so we filter it here
                         if not (
-                            isinstance(var, UserDefinedDictVariable)
+                            isinstance(var, UserDefinedObjectVariable)
+                            and isinstance(var.base_vt, ConstDictVariable)
                             and isinstance(var.value, _ExportModuleSpecTrackerDict)
                         ):
                             potential_side_effects.append(var)

@@ -63,7 +63,7 @@ FakeTensor(..., size=(s77,))
 {'foo': FakeTensor(..., size=(s77,))}
 range(1, 3)
 Employee(name='foo', id=2)
-UserDefinedListVariable(mylist)
+UserDefinedObjectVariable(mylist)
 set()
 {'a','b'}
 s77""",

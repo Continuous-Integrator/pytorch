@@ -915,9 +915,6 @@ class ConstDictVariable(VariableTracker):
             # Let's not forward the call to __ror__ yet because __ror__ can be
             # implemented in C (i.e. OrderedDict subclass) which Dynamo cannot
             # trace
-            # if istype(other, variables.UserDefinedDictVariable):
-            #     if other.call_obj_hasattr(tx, "__ror__").value:
-            #         return other.call_method(tx, "__ror__", [self], kwargs)
 
             # The three dict types Dynamo can handle are dict, OrderedDict and
             # defaultdict.
@@ -927,10 +924,20 @@ class ConstDictVariable(VariableTracker):
                 other,
                 (
                     ConstDictVariable,
-                    variables.UserDefinedDictVariable,
                     variables.DefaultDictVariable,
                 ),
+            ) or (
+                isinstance(other, variables.UserDefinedObjectVariable)
+                and isinstance(other.base_vt, ConstDictVariable)
             ):
+                # Unwrap UDOV with dict base_vt for the or operation
+                other_dict = (
+                    other.base_vt
+                    if isinstance(other, variables.UserDefinedObjectVariable)
+                    and isinstance(other.base_vt, ConstDictVariable)
+                    else other
+                )
+
                 # Always return the specialized dictionary, and in the case
                 # both are specialized, take the first to be the type of the
                 # new dictionary
@@ -938,9 +945,9 @@ class ConstDictVariable(VariableTracker):
                     user_cls = self.user_cls
                     to_cpy = self
                 else:
-                    assert isinstance(other, ConstDictVariable)
-                    user_cls = other.user_cls
-                    to_cpy = other
+                    assert isinstance(other_dict, ConstDictVariable)
+                    user_cls = other_dict.user_cls
+                    to_cpy = other_dict
 
                 to_cpy.install_dict_keys_match_guard()
                 new_dict_vt = to_cpy.clone(
@@ -952,8 +959,8 @@ class ConstDictVariable(VariableTracker):
 
                 # NB - Guard on all the keys of the other dict to ensure
                 # correctness.
-                args[0].install_dict_keys_match_guard()  # type: ignore[attr-defined]
-                new_dict_vt.items.update(args[0].items)  # type: ignore[attr-defined]
+                other_dict.install_dict_keys_match_guard()
+                new_dict_vt.items.update(other_dict.items)
                 return new_dict_vt
             else:
                 raise_observed_exception(
@@ -1235,6 +1242,16 @@ class DefaultDictVariable(ConstDictVariable):
 
 
 # TODO: Implementing this via inheritance rather than composition is a
+def _is_set_like(var: VariableTracker) -> bool:
+    """Check if var is a set-like variable (SetVariable, DictItems/Keys, or UDOV wrapping a set)."""
+    if isinstance(var, (SetVariable, FrozensetVariable, DictItemsVariable, DictKeysVariable)):
+        return True
+    return (
+        isinstance(var, variables.UserDefinedObjectVariable)
+        and isinstance(var.base_vt, (SetVariable, FrozensetVariable))
+    )
+
+
 # footgun, because self method calls in dict will route back to the set
 # implementation, which is almost assuredly wrong
 class SetVariable(ConstDictVariable):
@@ -1498,15 +1515,7 @@ class SetVariable(ConstDictVariable):
                 "__xor__": "symmetric_difference",
                 "__sub__": "difference",
             }.get(name)
-            if not isinstance(
-                args[0],
-                (
-                    SetVariable,
-                    variables.UserDefinedSetVariable,
-                    DictItemsVariable,
-                    DictKeysVariable,
-                ),
-            ):
+            if not _is_set_like(args[0]):
                 raise_observed_exception(
                     TypeError,
                     tx,
@@ -1523,15 +1532,7 @@ class SetVariable(ConstDictVariable):
                 "__rxor__": "__xor__",
                 "__rsub__": "__sub__",
             }.get(name)
-            if not isinstance(
-                args[0],
-                (
-                    SetVariable,
-                    variables.UserDefinedSetVariable,
-                    DictItemsVariable,
-                    DictKeysVariable,
-                ),
-            ):
+            if not _is_set_like(args[0]):
                 raise_observed_exception(
                     TypeError,
                     tx,
@@ -1542,15 +1543,7 @@ class SetVariable(ConstDictVariable):
             assert m is not None
             return args[0].call_method(tx, m, [self], kwargs)
         elif name in ("__iand__", "__ior__", "__ixor__", "__isub__"):
-            if not isinstance(
-                args[0],
-                (
-                    SetVariable,
-                    variables.UserDefinedSetVariable,
-                    DictItemsVariable,
-                    DictKeysVariable,
-                ),
-            ):
+            if not _is_set_like(args[0]):
                 raise_observed_exception(
                     TypeError,
                     tx,
@@ -1568,28 +1561,12 @@ class SetVariable(ConstDictVariable):
             self.call_method(tx, m, args, kwargs)
             return self
         elif name == "__eq__":
-            if not isinstance(
-                args[0],
-                (
-                    SetVariable,
-                    variables.UserDefinedSetVariable,
-                    DictItemsVariable,
-                    DictKeysVariable,
-                ),
-            ):
+            if not _is_set_like(args[0]):
                 return CONSTANT_VARIABLE_FALSE
             r = self.call_method(tx, "symmetric_difference", args, kwargs)
             return VariableTracker.build(tx, len(r.set_items) == 0)  # type: ignore[attr-defined]
         elif name in cmp_name_to_op_mapping:
-            if not isinstance(
-                args[0],
-                (
-                    SetVariable,
-                    variables.UserDefinedSetVariable,
-                    DictItemsVariable,
-                    DictKeysVariable,
-                ),
-            ):
+            if not _is_set_like(args[0]):
                 return VariableTracker.build(tx, NotImplemented)
             return VariableTracker.build(
                 tx,
@@ -1956,15 +1933,7 @@ class DictKeysVariable(DictViewVariable):
             r = m(args[0].set_items)  # type: ignore[attr-defined]
             return SetVariable(r)
         elif name in cmp_name_to_op_mapping:
-            if not isinstance(
-                args[0],
-                (
-                    SetVariable,
-                    variables.UserDefinedSetVariable,
-                    DictItemsVariable,
-                    DictKeysVariable,
-                ),
-            ):
+            if not _is_set_like(args[0]):
                 return VariableTracker.build(tx, NotImplemented)
             return VariableTracker.build(
                 tx,
@@ -2044,7 +2013,6 @@ class DictItemsVariable(DictViewVariable):
                 args[0],
                 (
                     SetVariable,
-                    variables.UserDefinedSetVariable,
                     DictItemsVariable,
                     DictKeysVariable,
                 ),
@@ -2075,15 +2043,7 @@ class DictItemsVariable(DictViewVariable):
             ret_val = fn_hdl(args[0].set_items)  # type: ignore[attr-defined]
             return SetVariable(ret_val)
         elif name in cmp_name_to_op_mapping:
-            if not isinstance(
-                args[0],
-                (
-                    SetVariable,
-                    variables.UserDefinedSetVariable,
-                    DictItemsVariable,
-                    DictKeysVariable,
-                ),
-            ):
+            if not _is_set_like(args[0]):
                 return VariableTracker.build(tx, NotImplemented)
             return VariableTracker.build(
                 tx,
