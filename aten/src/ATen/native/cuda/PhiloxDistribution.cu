@@ -61,9 +61,9 @@ __device__ __forceinline__ double2 box_muller_double(uint4 r) {
   double u2 = fma(static_cast<double>(r.z), M,
                   static_cast<double>(r.w) * M * M + M * M * 0.5);
 
-  double radius = sqrt(-2.0 * log(u1));
+  double radius = ::sqrt(-2.0 * ::log(u1));
   double s, c;
-  sincos(TWO_PI * u2, &s, &c);
+  ::sincos(TWO_PI * u2, &s, &c);
   return {radius * c, radius * s};
 }
 
