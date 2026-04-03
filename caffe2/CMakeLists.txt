@@ -53,6 +53,9 @@ if(INTERN_BUILD_ATEN_OPS)
 
   # Add source, includes, and libs to lists
   list(APPEND Caffe2_CPU_SRCS ${ATen_CPU_SRCS})
+  if(USE_MTIA)
+    list(APPEND Caffe2_CPU_SRCS ${ATen_MTIA_SRCS})
+  endif()
   list(APPEND Caffe2_GPU_SRCS ${ATen_CUDA_CPP_SRCS})
   list(APPEND Caffe2_XPU_SRCS ${ATen_XPU_SRCS})
   list(APPEND Caffe2_XPU_INCLUDE ${ATen_XPU_INCLUDE})
@@ -587,6 +590,7 @@ if(USE_CUDA)
         ${TORCH_SRC_DIR}/csrc/distributed/c10d/symm_mem/CUDASymmetricMemoryUtils.cpp
         ${TORCH_SRC_DIR}/csrc/distributed/c10d/symm_mem/NCCLSymmetricMemory.cu
         ${TORCH_SRC_DIR}/csrc/distributed/c10d/symm_mem/nccl_extension.cu
+        ${TORCH_SRC_DIR}/csrc/distributed/c10d/symm_mem/ops/nccl_reduce_scatter_offset.cu
         ${TORCH_SRC_DIR}/csrc/distributed/c10d/symm_mem/cuda_mem_pool.cpp
         PROPERTIES COMPILE_FLAGS "-DPYTORCH_C10_DRIVER_API_SUPPORTED=1"
       )
