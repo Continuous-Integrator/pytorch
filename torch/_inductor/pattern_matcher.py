@@ -90,6 +90,36 @@ NodeOrConstant = Constant | torch.fx.Node
 backend = os.environ.get("TORCHINDUCTOR_PATTERN_MATCH_BACKEND", "inductor")
 
 
+_debug_nodes_cache: bool | OrderedSet[str] | None = None
+_debug_nodes_env_value_cache: str | None = None
+
+
+def _should_debug_node(node_name: str) -> bool:
+    def _get_debug_nodes() -> bool | OrderedSet[str]:
+        global _debug_nodes_cache, _debug_nodes_env_value_cache
+
+        def parse_debug_env(env_value: str | None) -> bool | OrderedSet[str]:
+            if not env_value:
+                return False
+            if env_value == "all":
+                return True
+            return OrderedSet(env_value.split(","))
+
+        current_env = os.environ.get("TORCHINDUCTOR_PATTERN_MATCH_DEBUG")
+
+        # Recompute only if env changed
+        if current_env != _debug_nodes_env_value_cache or _debug_nodes_cache is None:
+            _debug_nodes_cache = parse_debug_env(current_env)
+            _debug_nodes_env_value_cache = current_env
+
+        return _debug_nodes_cache
+
+    debug_nodes = _get_debug_nodes()
+    if isinstance(debug_nodes, bool):
+        return debug_nodes
+    return node_name in debug_nodes
+
+
 class SearchFn(Protocol):
     __name__: str
 
@@ -1150,6 +1180,7 @@ class ReplacementPatternEntry(PatternEntry):
     """
 
     normalize_args: Callable[..., list[Any]]
+    pattern_name: str | None = None  # Unique identifier for per-pattern telemetry
 
     @staticmethod
     def replace_with_graph(
@@ -1446,7 +1477,7 @@ def check_and_add_duplicate_pattern(
 def register_replacement(
     search_fn: SearchFn,
     replace_fn: ReplaceFn,
-    example_inputs: Iterable[Any],
+    example_inputs: list[Any] | tuple[Any, ...],
     trace_fn: TraceFn,
     pass_dicts: _PassDictsType | Sequence[_PassDictsType],
     extra_check: Callable[[Match], bool] = _return_true,
@@ -1454,6 +1485,7 @@ def register_replacement(
     exclusive_arg_names: Sequence[str] = (),
     search_fn_pattern: PatternExpr | None = None,
     skip_duplicates: bool = False,
+    pattern_name: str | None = None,
     get_decomp_fn: Callable[..., dict[Any, Callable[..., Any]]] = select_decomp_table,
 ) -> bool:
     """
@@ -1477,6 +1509,11 @@ def register_replacement(
     if inspect.ismethod(replace_fn):
         replace_argnames = [*inspect.signature(replace_fn).parameters.keys()]
         replace_fn = _wrap_bound_method(replace_fn, replace_argnames)
+
+    if not isinstance(example_inputs, (list, tuple)):
+        raise TypeError(
+            f"example_inputs must be a list or tuple, got {type(example_inputs)}"
+        )
 
     def check_fn(match: Match) -> bool:
         """
@@ -1593,7 +1630,7 @@ def register_replacement(
             assert node is not None
             specific_pattern_match = specific_pattern.match(node)
 
-            if os.environ.get("TORCHINDUCTOR_PATTERN_MATCH_DEBUG") == node.name:
+            if _should_debug_node(node.name):
                 log.warning(
                     "Specific pattern match: %s%s %s %s",
                     node,
@@ -1666,6 +1703,7 @@ def register_replacement(
             pattern=pattern,
             extra_check=check_fn,
             normalize_args=normalize_args,
+            pattern_name=pattern_name,
         )
         pattern.register(pass_dicts)
         return pattern.pattern  # type: ignore[return-value]
@@ -1824,6 +1862,7 @@ def gen_register_replacement(
         exclusive_arg_names,
         search_fn_pattern=pat,
         skip_duplicates=skip_duplicates,
+        pattern_name=unique_name,
         get_decomp_fn=get_decomp_fn,
     )
 
@@ -2012,6 +2051,10 @@ def _wrap_bound_method(fn: Any, argnames: list[str]) -> Any:
 
 
 class PatternMatcherPass:
+    """
+    Registry of patterns to match and replace in FX graphs.
+    """
+
     def __init__(
         self,
         pass_name: str | None = None,
@@ -2088,7 +2131,7 @@ class PatternMatcherPass:
                         != 1
                     ):
                         continue
-                    if os.environ.get("TORCHINDUCTOR_PATTERN_MATCH_DEBUG") == node.name:
+                    if _should_debug_node(node.name):
                         log.warning("%s%s %s %s", node, node.args, m, entry.pattern)
 
                     if is_match(m) and guard_or_false(entry.extra_check(m)):
@@ -2096,6 +2139,19 @@ class PatternMatcherPass:
                         entry.apply(m, graph, node)
                         counters[backend]["pattern_matcher_count"] += 1
                         counters[backend]["pattern_matcher_nodes"] += len(m.nodes)
+
+                        # Track per-pattern counts when debug mode is active
+                        if os.environ.get("TORCHINDUCTOR_PATTERN_MATCH_DEBUG"):
+                            if getattr(entry, "pattern_name", None):
+                                pattern_name = entry.pattern_name
+                            else:
+                                # Fallback: use pattern class name + operation target
+                                pattern_class = entry.pattern.__class__.__name__
+                                target = str(node.target)
+                                pattern_name = f"{pattern_class}_{target}"
+
+                            pattern_key = f"{backend}_pattern_matcher_per_pattern"
+                            counters[pattern_key][pattern_name] += 1
         return count
 
     def clear(self) -> None:
