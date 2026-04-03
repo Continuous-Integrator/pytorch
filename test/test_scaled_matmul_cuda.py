@@ -658,6 +658,9 @@ class TestFP8Matmul(TestCase):
     @parametrize(
         "test_case",
         [
+            # test_case tuple schema:
+            # (case_name, x_dtype, y_dtype, out_dtype, size)
+            # "default" in case_name means out_dtype=None (backend default output dtype path).
             ("e4m3_e4m3_default", e4m3_type, e4m3_type, None, 16),
             ("e5m2_e5m2_default", e5m2_type, e5m2_type, None, 16),
             ("e5m2_e5m2_f32", e5m2_type, e5m2_type, torch.float32, 16),
@@ -1401,19 +1404,22 @@ class TestFP8Matmul(TestCase):
         # Inputs (as generated are):
         #   A: [M, K]
         #   B: [N, K]
+        #
+        # then scales are, for the 3 combinations:
         # Scale shapes are the same for CUDA and XPU (only strides differ).
         # For CUDA, scales use column-major strides;
-        # XPU accepts any stride, but prefers row-major.
-        #
-        # 1x128 x 1x128:
-        #   As: [M, K // 128]
-        #   Bs: [N, K // 128]
-        # 1x128 x 128x128:
-        #   As: [M, K // 128]
-        #   Bs: [K // 128, N // 128]  (CUDA uses L4=round_up(K//128, 4) padding)
-        # 128x128 x 1x128:
-        #   As: [K // 128, M // 128]  (CUDA uses L4 padding)
-        #   Bs: [N, K // 128]
+        # XPU accepts any stride, but prefers row-major. XPU doesn't do L4 padding
+        #   1x128 x 1x128:
+        #     As: [M, K // 128], stride: [1, M] -> scale.t().contiguous().t()
+        #     Bs: [N, K // 128], stride: [1, N] -> scale.t().contiguous().t()
+        #   1x128 x 128x128
+        #     L4 = round_up(K // 128, 4)
+        #     As: [M, K // 128], stride: [1, M]   -> scale.t().contiguous().t()
+        #     Bs: [L4, N // 128], stride: [1, L4] -> scale.t()
+        #   128x128 x 1x128
+        #     L4 = round_up(K // 128, 4)
+        #     As: [L4, M // 128], stride: [1, L4]
+        #     Bs: [N, K // 128], stride: [1, N]
         """
         if not _device_supports_scaled_mm_fp8(device):
             raise unittest.SkipTest(f8_msg)
@@ -1424,6 +1430,7 @@ class TestFP8Matmul(TestCase):
         def _adjust_lhs_scale(x_fp8, x_scales, lhs_block):
             M, K = x_fp8.shape
             x_scales_original = x_scales.clone()
+            # 1x128 blocks need scales to be outer-dim-major
             if lhs_block == 1:
                 lhs_recipe = ScalingType.BlockWise1x128
                 x_hp = hp_from_1x128(x_fp8, x_scales_original)
@@ -1645,6 +1652,7 @@ class TestFP8Matmul(TestCase):
 
         x_scales_original = x_scales
         y_scales_original = y_scales
+        # 1x128 blocks need scales to be outer-dim-major
 
         is_xpu = "xpu" in str(device)
 
