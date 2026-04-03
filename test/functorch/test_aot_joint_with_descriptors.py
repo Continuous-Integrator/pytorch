@@ -1116,7 +1116,9 @@ class inner_f(torch.nn.Module):
         self.assertEqual(len(add_nodes), 1)
         gradient_acc_node = add_nodes[0]
         self.assertTrue(gradient_acc_node.meta["is_gradient_acc"])
-        self.assertEqual(gradient_acc_node.meta.get("custom", {}), {})
+        self.assertEqual(
+            gradient_acc_node.meta.get("custom", {}), {"autograd_backward": True}
+        )
         custom_metadata = fx_traceback._get_custom_metadata(graph_module)
         self.assertExpectedInline(
             str(custom_metadata),
@@ -1142,6 +1144,7 @@ class inner_f(torch.nn.Module):
 ('call_function', 't_8', {'test': 1})
 ('call_function', 'sum_2', {'test': 1})
 ('call_function', 'view_1', {'test': 1})
+('call_function', 'add', {'autograd_backward': True})
 ('call_function', 't_9', {'test': 1})""",
         )
 
