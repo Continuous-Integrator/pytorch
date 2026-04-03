@@ -367,9 +367,9 @@ def normal_(
 
     Example::
 
-        >>> key = torch.func._random.key(42, device="cuda")
-        >>> result = torch.empty(1000, device="cuda")
-        >>> torch.func._random.normal_(key, result)
+        >>> key = torch.func._random.key(42, device="cuda")  # doctest: +SKIP
+        >>> result = torch.empty(1000, device="cuda")  # doctest: +SKIP
+        >>> torch.func._random.normal_(key, result)  # doctest: +SKIP
     """
     if isinstance(key, PRNGKey):
         return key._normal(result, mean, std, portable)
@@ -415,8 +415,8 @@ def normal(
 
     Example::
 
-        >>> key = torch.func._random.key(42, device="cuda")
-        >>> torch.func._random.normal(key, (1000,))
+        >>> key = torch.func._random.key(42, device="cuda")  # doctest: +SKIP
+        >>> torch.func._random.normal(key, (1000,))  # doctest: +SKIP
     """
     if len(shape) == 1 and isinstance(shape[0], Sequence):
         # pyrefly: ignore [bad-argument-type]
@@ -462,9 +462,9 @@ def uniform_(
 
     Example::
 
-        >>> key = torch.func._random.key(42, device="cuda")
-        >>> result = torch.empty(1000, device="cuda")
-        >>> torch.func._random.uniform_(key, result)
+        >>> key = torch.func._random.key(42, device="cuda")  # doctest: +SKIP
+        >>> result = torch.empty(1000, device="cuda")  # doctest: +SKIP
+        >>> torch.func._random.uniform_(key, result)  # doctest: +SKIP
     """
     if isinstance(key, PRNGKey):
         return key._uniform(result, low, high, portable)
@@ -507,8 +507,8 @@ def uniform(
 
     Example::
 
-        >>> key = torch.func._random.key(42, device="cuda")
-        >>> torch.func._random.uniform(key, (1000,))
+        >>> key = torch.func._random.key(42, device="cuda")  # doctest: +SKIP
+        >>> torch.func._random.uniform(key, (1000,))  # doctest: +SKIP
     """
     if len(shape) == 1 and isinstance(shape[0], Sequence):
         # pyrefly: ignore [bad-argument-type]
