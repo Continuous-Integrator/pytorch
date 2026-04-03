@@ -353,9 +353,7 @@ def _reduction_single_dim_strategy(
                 out_d = d
             else:
                 out_d = d - sum(1 for rd in reduce_dims if rd < d)
-            strategies.append(
-                [_ShardingPlaceholder(out_d), _ShardingPlaceholder(d)]
-            )
+            strategies.append([_ShardingPlaceholder(out_d), _ShardingPlaceholder(d)])
 
     # Partial propagation: Partial(reduction_op) input -> Partial(reduction_op) output.
     # Skip for NormReduction: the old common_reduction_strategy doesn't propagate
@@ -425,7 +423,8 @@ NON_LINEAR_BOOL_REDUCTION_OPS = [
 
 
 @register_single_dim_strategy(
-    list(LINEAR_REDUCTION_OP_MAP.keys()), schema_info=RuntimeSchemaInfo(1),
+    list(LINEAR_REDUCTION_OP_MAP.keys()),
+    schema_info=RuntimeSchemaInfo(1),
     allow_uneven_sharding=True,
 )
 def linear_reduction_single_dim_strategy(
@@ -462,7 +461,8 @@ def linear_reduction_single_dim_strategy(
 
 
 @register_single_dim_strategy(
-    NON_LINEAR_BOOL_REDUCTION_OPS, schema_info=RuntimeSchemaInfo(1),
+    NON_LINEAR_BOOL_REDUCTION_OPS,
+    schema_info=RuntimeSchemaInfo(1),
     allow_uneven_sharding=True,
 )
 def bool_reduction_single_dim_strategy(
@@ -545,7 +545,8 @@ def _shard_non_reduction_dim(
             continue
         out_d = d if keep_dim or d < dim else d - 1
         strategies.append(
-            [_ShardingPlaceholder(out_d)] * n_outputs + [_ShardingPlaceholder(d)]  # pyrefly: ignore[bad-argument-type]
+            [_ShardingPlaceholder(out_d)] * n_outputs
+            + [_ShardingPlaceholder(d)]  # pyrefly: ignore[bad-argument-type]
         )
     return strategies
 
@@ -691,9 +692,14 @@ def scan_single_dim_strategy(
     dim = args_schema[1]
     if not isinstance(dim, int):
         raise AssertionError(f"Expected int, got {type(dim)}")
-    return _shard_except_dim_strategy(
+    strategies = _shard_except_dim_strategy(
         _SCAN_N_PLACEMENTS, op, args_schema, kwargs_schema, active_dim=dim
     )
+    # cumsum is linear for sum/avg: partial sums/avgs propagate through
+    if op == aten.cumsum.default:
+        strategies.append([Partial("sum"), Partial("sum")])
+        strategies.append([Partial("avg"), Partial("avg")])
+    return strategies
 
 
 @register_op_strategy(
@@ -974,7 +980,8 @@ def foreach_norm_strategy(op_schema: OpSchema) -> TupleStrategy:
 
 
 @register_single_dim_strategy(
-    [aten.linalg__powsum.default], schema_info=RuntimeSchemaInfo(1),
+    [aten.linalg__powsum.default],
+    schema_info=RuntimeSchemaInfo(1),
     allow_uneven_sharding=True,
 )
 def powsum_single_dim_strategy(
