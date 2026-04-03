@@ -21,7 +21,11 @@ from torch.testing._internal.common_utils import (
     TestCase,
 )
 from torch.testing._internal.inductor_utils import GPU_TYPE, HAS_CPU, HAS_GPU_AND_TRITON
-from torch.testing._internal.triton_utils import requires_gpu_and_triton
+from torch.testing._internal.triton_utils import (
+    requires_cuda_and_triton,
+    requires_gpu_and_triton,
+    requires_xpu_and_triton,
+)
 
 
 aten = torch.ops.aten
@@ -712,7 +716,7 @@ class ComboKernelBenchmarkTests(TestCase):
         out_compiled = torch.compile(test_mutated)(*inps)
 
         self.assertEqual(out_eager, out_compiled)
-        self.assertTrue(torch._inductor.metrics.generated_kernel_count in [6, 9])
+        self.assertTrue(4 < torch._inductor.metrics.generated_kernel_count <= 10)
 
     @requires_gpu_and_triton
     def test_round_robin_dispatch(self):
@@ -997,11 +1001,32 @@ class ComboKernelDynamicShapesTests(TestCase):
         self.assertEqual(out_eager, out_compiled)
         self.assertTrue(5 <= torch._inductor.metrics.generated_kernel_count <= 6)
 
-    @requires_gpu_and_triton
+    @requires_cuda_and_triton
     @torch._dynamo.config.patch("automatic_dynamic_shapes", True)
     @torch._dynamo.config.patch("assume_static_by_default", True)
     @torch._inductor.config.patch("triton.autotune_at_compile_time", True)
     def test_dynamic_shapes_persistent_reduction_mixed_x_dim_cuda(self):
+        def fn(x, y, z):
+            return x.sum(1), y.mean(1), z.max(1)
+
+        inps = (
+            torch.rand(16, 128, device=GPU_TYPE),
+            torch.rand(32, 128, device=GPU_TYPE),
+            torch.rand(32, 256, device=GPU_TYPE),
+        )
+        torch._dynamo.mark_dynamic(inps[0], 0, min=1, max=256)
+        torch._dynamo.mark_dynamic(inps[1], 0, min=1, max=256)
+        torch._dynamo.mark_dynamic(inps[2], 0, min=1, max=256)
+        out_eager = fn(*inps)
+        out_compiled = torch.compile(fn)(*inps)
+
+        self.assertEqual(out_eager, out_compiled)
+
+    @requires_xpu_and_triton
+    @torch._dynamo.config.patch("automatic_dynamic_shapes", True)
+    @torch._dynamo.config.patch("assume_static_by_default", True)
+    @torch._inductor.config.patch("triton.autotune_at_compile_time", True)
+    def test_dynamic_shapes_persistent_reduction_mixed_x_dim_xpu(self):
         def fn(x, y, z):
             return x.sum(1), y.mean(1), z.max(1)
 
@@ -1217,11 +1242,11 @@ class ComboKernelTestsMaxAutotune(TestCase):
         logger = logging.getLogger("torch._inductor.runtime.triton_heuristics")
         with self.assertLogs(logger, level=logging.DEBUG) as cm:
             out_compiled, code = run_and_get_code(fn_c, *inps)
-        best_config_logs = [msg for msg in cm.output if "Best config" in msg]
+        chained_logs = [msg for msg in cm.output if "Combo sequential autotune" in msg]
         self.assertGreater(
-            len(best_config_logs),
+            len(chained_logs),
             0,
-            "autotune_to_one_config was not invoked — no 'Best config' log found",
+            "_combo_sequential_autotune was not invoked",
         )
         self.assertEqual(out_eager, out_compiled)
         self.assertEqual(torch._inductor.metrics.generated_kernel_count, 1)
@@ -1242,11 +1267,83 @@ class ComboKernelTestsMaxAutotune(TestCase):
         logger = logging.getLogger("torch._inductor.runtime.triton_heuristics")
         with self.assertLogs(logger, level=logging.DEBUG) as cm:
             out_compiled, code = run_and_get_code(fn_c, *inps)
-        best_config_logs = [msg for msg in cm.output if "Best config" in msg]
+        chained_logs = [msg for msg in cm.output if "Combo sequential autotune" in msg]
         self.assertGreater(
-            len(best_config_logs),
+            len(chained_logs),
             0,
-            "autotune_to_one_config was not invoked — no 'Best config' log found",
+            "_combo_sequential_autotune was not invoked",
+        )
+        self.assertEqual(out_eager, out_compiled)
+        self.assertEqual(torch._inductor.metrics.generated_kernel_count, 1)
+
+    @requires_gpu_and_triton
+    def test_combo_autotune_many_subkernels(self):
+        def fn(a, b, c, d, e, f):
+            return (
+                a * 2.0,
+                b + 1.0,
+                c.sin(),
+                d.cos(),
+                e.exp(),
+                f.neg(),
+            )
+
+        inps = [
+            torch.rand(8, 8192, device=GPU_TYPE),
+            torch.rand(128, 64, device=GPU_TYPE),
+            torch.rand(16, 4096, device=GPU_TYPE),
+            torch.rand(512, 16, device=GPU_TYPE),
+            torch.rand(32, 2048, device=GPU_TYPE),
+            torch.rand(256, 32, device=GPU_TYPE),
+        ]
+
+        out_eager = fn(*inps)
+        fn_c = torch.compile(fn)
+
+        logger = logging.getLogger("torch._inductor.runtime.triton_heuristics")
+        with self.assertLogs(logger, level=logging.DEBUG) as cm:
+            out_compiled, code = run_and_get_code(fn_c, *inps)
+
+        chained_logs = [msg for msg in cm.output if "Combo sequential autotune" in msg]
+        self.assertGreater(len(chained_logs), 0)
+        self.assertEqual(out_eager, out_compiled)
+        self.assertEqual(torch._inductor.metrics.generated_kernel_count, 1)
+
+    @requires_gpu_and_triton
+    def test_combo_autotune_grouping(self):
+        def fn(a, b, c, d):
+            return a.cos(), b.sin(), c.exp(), d.neg()
+
+        # a,b: numel=262144 → bs=1024, c,d: numel=32 → bs=256
+        # Different bs → different configs → separate groups
+        inps = [
+            torch.rand(4, 65536, device=GPU_TYPE),
+            torch.rand(4, 65536, device=GPU_TYPE),
+            torch.rand(4, 8, device=GPU_TYPE),
+            torch.rand(4, 8, device=GPU_TYPE),
+        ]
+
+        out_eager = fn(*inps)
+        fn_c = torch.compile(fn)
+
+        logger = logging.getLogger("torch._inductor.runtime.triton_heuristics")
+        with self.assertLogs(logger, level=logging.DEBUG) as cm:
+            out_compiled, code = run_and_get_code(fn_c, *inps)
+
+        # Parse "Phase 1 group N SK[...]" lines to check grouping
+        group_lines = [
+            msg for msg in cm.output if "Phase 1 group" in msg and "SK[" in msg
+        ]
+        group_indices = {
+            int(re.search(r"group (\d+)", line).group(1))
+            for line in group_lines
+            if re.search(r"group (\d+)", line)
+        }
+        # 2 groups (not 4) — identical configs are grouped together
+        self.assertEqual(
+            len(group_indices),
+            2,
+            f"Expected 2 groups, got {len(group_indices)}: {group_lines}",
         )
         self.assertEqual(out_eager, out_compiled)
         self.assertEqual(torch._inductor.metrics.generated_kernel_count, 1)

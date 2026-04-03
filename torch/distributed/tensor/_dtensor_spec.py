@@ -1,3 +1,4 @@
+import hashlib
 import itertools
 import math
 from collections import defaultdict
@@ -16,6 +17,13 @@ from torch.distributed.tensor.placement_types import (
 )
 from torch.utils._debug_mode import _stringify_shape
 from torch.utils._dtype_abbrs import dtype_abbrs
+
+
+# Defined here (not in placement_types.py) because decoding split_factor into
+# a shard order is a DTensorSpec concern — placement_types doesn't know about
+# shard orders.
+class _StridedShardNotDecodableError(ValueError):
+    """Raised when _StridedShard split_factor cannot be decoded into a shard order."""
 
 
 class ShardOrderEntry(NamedTuple):
@@ -129,10 +137,9 @@ class DTensorSpec:
                 placements, mesh
             )
             if shard_order is None:
-                raise ValueError(
-                    "use_strided_shard_as_shard_order is True, but placements: "
-                    f"{placements} is unable to be interpreted into a corresponding "
-                    "shard_order"
+                raise _StridedShardNotDecodableError(
+                    f"_StridedShard placements {placements} cannot be decoded "
+                    "into a corresponding shard_order"
                 )
             normalized_placements = tuple(
                 [
@@ -415,24 +422,26 @@ class DTensorSpec:
             if not isinstance(value, TensorMeta | TensorMetadata):
                 raise AssertionError(repr(value))
 
+    def _hash_key(self) -> tuple[Any, ...]:
+        """Return the tuple used for hashing. Used by both __hash__ and _stable_hash."""
+        if self.tensor_meta is not None:
+            return (
+                self.mesh,
+                self.placements,
+                self.shard_order,
+                self.tensor_meta.shape,
+                self.tensor_meta.stride,
+                self.tensor_meta.dtype,
+            )
+        return (self.mesh, self.placements, self.shard_order)
+
     def _hash_impl(self) -> int:
         # hashing and equality check for DTensorSpec are used to cache the sharding
         # propagation results. We only need to consider the mesh, placements, shape
         # dtype and stride.
         # Caveat: we need to keep this in mind and sync hash and eq if we add more
         # fields to them.
-        if self.tensor_meta is not None:
-            return hash(
-                (
-                    self.mesh,
-                    self.placements,
-                    self.shard_order,
-                    self.tensor_meta.shape,
-                    self.tensor_meta.stride,
-                    self.tensor_meta.dtype,
-                )
-            )
-        return hash((self.mesh, self.placements, self.shard_order))
+        return hash(self._hash_key())
 
     def __hash__(self) -> int:
         # We lazily cache the spec to avoid recomputing the hash upon each
@@ -442,6 +451,17 @@ class DTensorSpec:
         if self._hash is None:
             self._hash = self._hash_impl()
         return self._hash
+
+    def _stable_hash(self) -> str:
+        """
+        Return a stable hash for AOT autograd caching.
+        [See note: Tensor subclass stable hashing for AOT autograd cache]
+        """
+        # Get hash key, but replace mesh with its stable hash
+        key = self._hash_key()
+        # First element is mesh, replace with its stable hash
+        stable_key = (self.mesh._stable_hash(),) + key[1:]
+        return hashlib.blake2b(repr(stable_key).encode(), digest_size=16).hexdigest()
 
     def _check_equals(self, other: object, skip_shapes: bool = False) -> bool:
         if not (

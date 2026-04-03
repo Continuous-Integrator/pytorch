@@ -146,7 +146,10 @@ class CoordescTuner:
         if last_underscore == -1:
             return None
         base = name[:last_underscore]
-        return base if base.endswith("BLOCK") else None
+        suffix = name[last_underscore + 1 :]
+        if suffix.isdigit() and base.endswith("BLOCK"):
+            return base
+        return None
 
     def value_too_large(self, name: str, val: int) -> bool:
         base_name = self._parse_suffixed_block(name) or name
