@@ -855,6 +855,27 @@ class TestUnbackedSymints(InductorTestCase):
         expected = fn(*example_inputs)
         torch.testing.assert_close(actual, expected)
 
+    @skipGPUIf(not HAS_GPU, "requires gpu and triton")
+    @dynamo_config.patch({"capture_scalar_outputs": True})
+    def test_grid2d_yz_overflow_zero_ynumel(self, device):
+        # Grid2DWithYZOverflow used to divide by zero when ynumel=0.
+        # repeat_interleave with all-zero counts produces an empty tensor
+        # whose size is an unbacked symint. A 2D pointwise kernel then gets
+        # ynumel=0, causing ceildiv(0, 0) in the grid computation.
+        def fn(x, counts):
+            idx = torch.arange(counts.shape[0], device=x.device).repeat_interleave(
+                counts
+            )
+            gathered = x[idx]
+            return gathered + 1
+
+        x = torch.randn(8, 64, device=device)
+        counts = torch.zeros(8, dtype=torch.long, device=device)
+
+        expected = fn(x, counts)
+        actual = torch.compile(fn, fullgraph=True)(x, counts)
+        torch.testing.assert_close(actual, expected)
+
 
 instantiate_device_type_tests(TestUnbackedSymints, globals(), allow_xpu=True)
 
