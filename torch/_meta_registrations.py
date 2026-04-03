@@ -919,7 +919,7 @@ def make_dep_token(
     pin_memory=None,
     memory_format=None,
 ):
-    return torch.empty(0, device="meta")
+    return torch.empty((), device="meta")
 
 
 @register_meta(aten.sym_constrain_range.default)
@@ -1125,9 +1125,8 @@ def meta_linalg_eig(input: Tensor):
     )
     values = input.new_empty(input.shape[:-1], dtype=complex_dtype)
     vectors = input.new_empty(input.shape, dtype=complex_dtype)
-    is_cuda = device_hint(input) == "cuda"
     vectors.as_strided_(
-        input.shape, make_contiguous_strides_for(input.shape, row_major=is_cuda)
+        input.shape, make_contiguous_strides_for(input.shape, row_major=False)
     )
     return values, vectors
 
@@ -3739,7 +3738,14 @@ def meta_addbmm(self, batch1, batch2, *, beta=1, alpha=1):
 
 @register_meta([aten.randint_like.Tensor])
 def meta_randint_like(self, high, **kwargs):
-    return self.new_empty(self.size())
+    return aten.empty_like.default(
+        self,
+        dtype=kwargs.get("dtype"),
+        layout=kwargs.get("layout"),
+        device=kwargs.get("device"),
+        pin_memory=kwargs.get("pin_memory"),
+        memory_format=kwargs.get("memory_format"),
+    )
 
 
 @register_meta([aten._fused_adam_.default, aten._fused_adamw_.default])
