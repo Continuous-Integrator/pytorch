@@ -67,10 +67,10 @@ __device__ __forceinline__ double2 box_muller_double(uint4 r) {
   return {radius * c, radius * s};
 }
 
-// Single-key kernel: vectorized grid-stride loop over chunks of elements,
-// where each chunk comes from a single Philox 4x32 call.
+// Single-key kernel: one thread per chunk of elements, where each chunk
+// comes from a single Philox 4x32 call. Uses vectorized stores for full
+// chunks and scalar writes for the tail.
 template <typename scalar_t, typename sample_t, typename param_t>
-C10_LAUNCH_BOUNDS_2(256, 4)
 __global__ void philox_single_key_kernel(
     scalar_t* __restrict__ output,
     const uint64_t* __restrict__ key,
@@ -78,17 +78,17 @@ __global__ void philox_single_key_kernel(
     sample_t sample_func,
     param_t param_func) {
 
-  uint64_t seed = key[0];
-  uint64_t offset = key[1];
+  // Use vectorized load to get (seed, offset)
+  auto key_vec = memory::ld_vec<16>(key);
+  auto* key_vals = reinterpret_cast<const uint64_t*>(&key_vec);
+  uint64_t seed = key_vals[0];
+  uint64_t offset = key_vals[1];
 
-  int64_t tid = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
-  int64_t stride = static_cast<int64_t>(gridDim.x) * blockDim.x;
-
+  // Use vectorized stores for full chunks since they're aligned.
   constexpr int epc = elems_per_call<scalar_t>;
   int64_t num_full_chunks = num_elems / epc;
-
-  // Vectorized writes for full chunks.
-  for (int64_t chunk = tid; chunk < num_full_chunks; chunk += stride) {
+  int64_t chunk = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  if (chunk < num_full_chunks) {
     auto sample = sample_func(seed, offset + static_cast<uint64_t>(chunk));
     constexpr int vec_bytes = epc * sizeof(scalar_t);
     memory::Vec<vec_bytes> v;
@@ -101,20 +101,18 @@ __global__ void philox_single_key_kernel(
   }
 
   // Scalar tail for remaining elements.
-  if (tid == 0) {
+  if (chunk == num_full_chunks) {
     int64_t tail_start = num_full_chunks * epc;
-    if (tail_start < num_elems) {
-      auto sample = sample_func(seed, offset + static_cast<uint64_t>(num_full_chunks));
-      for (int j = 0; j < num_elems - tail_start; j++) {
-        output[tail_start + j] = param_func((&sample.x)[j]);
-      }
+    auto sample = sample_func(seed, offset + static_cast<uint64_t>(num_full_chunks));
+    for (int j = 0; j < num_elems - tail_start; j++) {
+      output[tail_start + j] = param_func((&sample.x)[j]);
     }
   }
 }
 
-// Multi-key kernel: grid-stride loop over (key_idx, chunk) pairs,
-// where each chunk comes from a single Philox 4x32 call. Uses vectorized
-// writes for full chunks and scalar writes for the tail.
+// Multi-key kernel: one thread per (key_idx, chunk) pair, where each chunk
+// comes from a single Philox 4x32 call. Uses vectorized writes for full
+// chunks and scalar writes for the tail.
 template <typename scalar_t, typename sample_t, typename param_t>
 __global__ void philox_multi_key_kernel(
     scalar_t* __restrict__ output,
@@ -124,43 +122,38 @@ __global__ void philox_multi_key_kernel(
     sample_t sample_func,
     param_t param_func,
     OffsetCalculator<1> key_offset_calc) {
-
   constexpr int epc = elems_per_call<scalar_t>;
+  int64_t chunks_per_key = (elems_per_key + epc - 1) / epc;
+  int64_t total_threads = num_keys * chunks_per_key;
+  int64_t tid = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  if (tid >= total_threads) return;
+
+  // Determine correct (seed, offset) to use and sample.
+  int64_t key_idx = tid / chunks_per_key;
+  int64_t chunk = tid % chunks_per_key;
+  auto elem_offset = key_offset_calc.get(key_idx)[0];
+  uint64_t seed = keys[elem_offset];
+  uint64_t offset = keys[elem_offset + 1];
+  auto sample = sample_func(seed, offset + static_cast<uint64_t>(chunk));
+
   // Vectorized writes require aligned base addresses. This is guaranteed
   // when elems_per_key is a multiple of epc, since
   // base = key_idx * elems_per_key + chunk * epc.
-  bool aligned = elems_per_key % epc == 0;
   int64_t full_chunks_per_key = elems_per_key / epc;
-  int64_t chunks_per_key = (elems_per_key + epc - 1) / epc;
-  int64_t total_work = num_keys * chunks_per_key;
-
-  for (int64_t work_idx =
-           static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
-       work_idx < total_work;
-       work_idx += static_cast<int64_t>(gridDim.x) * blockDim.x) {
-    int64_t key_idx = work_idx / chunks_per_key;
-    int64_t chunk = work_idx % chunks_per_key;
-
-    auto elem_offset = key_offset_calc.get(key_idx)[0];
-    uint64_t seed = keys[elem_offset];
-    uint64_t offset = keys[elem_offset + 1];
-
-    auto sample = sample_func(seed, offset + static_cast<uint64_t>(chunk));
-    int64_t base = key_idx * elems_per_key + chunk * epc;
-
-    if (aligned && chunk < full_chunks_per_key) {
-      constexpr int vec_bytes = epc * sizeof(scalar_t);
-      memory::Vec<vec_bytes> v;
-      auto* vals = reinterpret_cast<scalar_t*>(&v);
-      #pragma unroll
-      for (int j = 0; j < epc; j++) {
-        vals[j] = param_func((&sample.x)[j]);
-      }
-      memory::st_vec<vec_bytes>(output + base, v);
-    } else {
-      for (int j = 0; j < epc && chunk * epc + j < elems_per_key; j++) {
-        output[base + j] = param_func((&sample.x)[j]);
-      }
+  bool aligned = elems_per_key % epc == 0;
+  int64_t base = key_idx * elems_per_key + chunk * epc;
+  if (aligned && chunk < full_chunks_per_key) {
+    constexpr int vec_bytes = epc * sizeof(scalar_t);
+    memory::Vec<vec_bytes> v;
+    auto* vals = reinterpret_cast<scalar_t*>(&v);
+    #pragma unroll
+    for (int j = 0; j < epc; j++) {
+      vals[j] = param_func((&sample.x)[j]);
+    }
+    memory::st_vec<vec_bytes>(output + base, v);
+  } else {
+    for (int j = 0; j < epc && chunk * epc + j < elems_per_key; j++) {
+      output[base + j] = param_func((&sample.x)[j]);
     }
   }
 }
@@ -202,24 +195,19 @@ void philox_distribution_kernel(
   auto output = self.contiguous();
 
   constexpr int block_size = 256;
-  int max_blocks =
-      at::cuda::getCurrentDeviceProperties()->multiProcessorCount *
-      (at::cuda::getCurrentDeviceProperties()->maxThreadsPerMultiProcessor /
-       block_size);
 
   if (key.dim() == 1) {
     // === Launch single key kernel ===
-    int64_t elems_per_key = self.numel();
-    int num_blocks = std::min(
-        static_cast<int>((elems_per_key + block_size - 1) / block_size),
-        max_blocks);
+    constexpr int epc = elems_per_call<scalar_t>;
+    int64_t num_chunks = (self.numel() + epc - 1) / epc;
+    int num_blocks = static_cast<int>((num_chunks + block_size - 1) / block_size);
 
     auto key_contig = key.contiguous();
     philox_single_key_kernel<scalar_t>
         <<<num_blocks, block_size, 0, at::cuda::getCurrentCUDAStream()>>>(
         output.mutable_data_ptr<scalar_t>(),
         key_contig.data_ptr<uint64_t>(),
-        elems_per_key, sample_func, param_func);
+        self.numel(), sample_func, param_func);
   } else {
     // === Launch batched (multiple) key kernel ===
     // The kernel writes each key's output as a contiguous block of
@@ -250,10 +238,8 @@ void philox_distribution_kernel(
 
     int64_t chunks_per_key =
         (elems_per_key + elems_per_call<scalar_t> - 1) / elems_per_call<scalar_t>;
-    int64_t total_work = num_keys * chunks_per_key;
-    int num_blocks = std::min(
-        static_cast<int>((total_work + block_size - 1) / block_size),
-        max_blocks);
+    int64_t total_threads = num_keys * chunks_per_key;
+    int num_blocks = static_cast<int>((total_threads + block_size - 1) / block_size);
 
     philox_multi_key_kernel<scalar_t>
         <<<num_blocks, block_size, 0, at::cuda::getCurrentCUDAStream()>>>(
