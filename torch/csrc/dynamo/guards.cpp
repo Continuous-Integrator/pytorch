@@ -1639,6 +1639,22 @@ class DictGuardManager;
 // stores only lightweight pointers.
 std::unordered_map<PyObject*, std::list<GuardManager*>> dict_to_guard_managers;
 
+// Compare two Python objects for equality. Returns true if equal, false
+// otherwise. If false_on_error is true, any Python exception raised
+// during comparison is cleared — this is the right behavior for guard checks
+// where an exception just means "these don't match" and we want guard failure
+// (recompile), not a crash. Set false_on_error to false if the caller wants to
+// handle exceptions themselves.
+static inline bool py_equals(
+    PyObject* a,
+    PyObject* b,
+    bool false_on_error) {
+  int eq = PyObject_RichCompareBool(a, b, Py_EQ);
+  if (false_on_error && eq == -1)
+    PyErr_Clear();
+  return eq == 1;
+}
+
 /**
  * Base class for the leaf guard in the GuardManager hierarchy.
  */
@@ -2629,22 +2645,6 @@ class SYMBOLIC_SHAPE_GUARD : public RelationalGuard {
 //
 // See [Note: Dimension Marking Guards] in torch/_dynamo/guards.py.
 
-// Compare two Python objects for equality. Returns true if equal, false
-// otherwise. If false_on_error is true (default), any Python exception raised
-// during comparison is cleared — this is the right behavior for guard checks
-// where an exception just means "these don't match" and we want guard failure
-// (recompile), not a crash. Set false_on_error to false if the caller wants to
-// handle exceptions themselves.
-static inline bool py_equals(
-    PyObject* a,
-    PyObject* b,
-    bool false_on_error = true) {
-  int eq = PyObject_RichCompareBool(a, b, Py_EQ);
-  if (eq == -1 && false_on_error)
-    PyErr_Clear();
-  return eq == 1;
-}
-
 class DIMENSION_MARKING_GUARD : public LeafGuard {
  public:
   // expected_attrs: dict {attr_name: expected_value} - attrs present at compile
@@ -2685,9 +2685,26 @@ class DIMENSION_MARKING_GUARD : public LeafGuard {
       _dependent_attrs.emplace_back(
           attr_key, py::reinterpret_borrow<py::object>(val[0]), gate_key);
     }
+    // Fast path: when compiled without any markings (all absent, no expected
+    // or dependent), we only need to check _has_dynamo_dim_marking.
+    _all_absent = _expected_attrs.empty() && _dependent_attrs.empty();
   }
 
   bool check_nopybind(PyObject* value) override {
+    // Fast path for the common case: tensor compiled without any markings.
+    // Just check the single flag — if absent, no markings were added at
+    // runtime either, so the guard passes. If present, recompile.
+    if (_all_absent) {
+      return !PyObject_HasAttr(value, _has_marking_str);
+    }
+
+    // Compiled with markings. If runtime tensor has no markings at all,
+    // that means "unspecified = don't care" — the guard passes.
+    if (!PyObject_HasAttr(value, _has_marking_str)) {
+      return true;
+    }
+
+    // Both compiled and runtime have markings — need exact match.
     // Check expected attrs: if runtime has attr -> exact match required;
     // if runtime doesn't have attr -> pass (unspecified = don't care).
     for (auto& [attr_str, expected] : _expected_attrs) {
@@ -2735,7 +2752,24 @@ class DIMENSION_MARKING_GUARD : public LeafGuard {
   }
 
   GuardDebugInfo check_verbose_nopybind(PyObject* value) override {
-    // Check expected attrs
+    // Fast path: no markings at compile time.
+    if (_all_absent) {
+      if (PyObject_HasAttr(value, _has_marking_str)) {
+        return GuardDebugInfo(
+            false,
+            "_has_dynamo_dim_marking is present on runtime tensor but was "
+            "absent at compile time",
+            0);
+      }
+      return GuardDebugInfo(true, 0);
+    }
+
+    // Compiled with markings, runtime has none -> pass (unspecified = don't care).
+    if (!PyObject_HasAttr(value, _has_marking_str)) {
+      return GuardDebugInfo(true, 0);
+    }
+
+    // Both have markings — check expected attrs
     for (auto& [attr_str, expected] : _expected_attrs) {
       PyObject* actual = PyObject_GetAttr(value, attr_str);
       if (actual == nullptr) {
@@ -2807,6 +2841,11 @@ class DIMENSION_MARKING_GUARD : public LeafGuard {
   std::vector<PyObject*> _absent_attrs;
   // (attr_name, expected_value, gate_attr_name)
   std::vector<std::tuple<PyObject*, py::object, PyObject*>> _dependent_attrs;
+  // True when compiled without any markings (common case fast path).
+  bool _all_absent;
+  // Pre-interned string for the single flag attribute.
+  static inline PyObject* _has_marking_str =
+      PyUnicode_InternFromString("_has_dynamo_dim_marking");
 };
 
 class DICT_VERSION : public LeafGuard {
