@@ -57,7 +57,6 @@ if TYPE_CHECKING:
     from types import TracebackType
 
     from torch._guards import Source
-    from torch._library.opaque_object import OpaqueType
     from torch._ops import OpOverload
     from torch.fx.experimental.symbolic_shapes import ShapeEnv, SymbolicContext
 
@@ -183,8 +182,8 @@ def disable_fake_tensor_cache(fake_mode: FakeTensorMode) -> Generator[None, None
 
 
 def get_plain_tensors(
-    subclass: Tensor, *, out: list[Tensor | int | SymInt | OpaqueType]
-) -> list[Tensor | int | SymInt | OpaqueType]:
+    subclass: Tensor, *, out: list[Tensor | int | SymInt | OpaqueBase]
+) -> list[Tensor | int | SymInt | OpaqueBase]:
     # This function is used in Runtime, do not add redundant asserts
     todo = [subclass]
     while todo:
@@ -2741,9 +2740,7 @@ class FakeTensorMode(TorchDispatchMode):
                                 "self.shape_env must not be None for symbolic Eq"
                             )
 
-                        self.shape_env.set_real_tensor_prop_unbacked_vals(
-                            s, int(real_t)
-                        )
+                        self.shape_env.set_real_tensor_prop_unbacked_vals(s, real_t)
 
             if real_out is not nil:
                 # cross check fake/real outputs, and optionally override fake kernel mismatches
