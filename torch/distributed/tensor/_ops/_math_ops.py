@@ -690,9 +690,14 @@ def scan_single_dim_strategy(
     dim = args_schema[1]
     if not isinstance(dim, int):
         raise AssertionError(f"Expected int, got {type(dim)}")
-    return _shard_except_dim_strategy(
+    strategies = _shard_except_dim_strategy(
         _SCAN_N_PLACEMENTS, op, args_schema, kwargs_schema, active_dim=dim
     )
+    # cumsum is linear for sum/avg: partial sums/avgs propagate through
+    if op == aten.cumsum.default:
+        strategies.append([Partial("sum"), Partial("sum")])
+        strategies.append([Partial("avg"), Partial("avg")])
+    return strategies
 
 
 @register_op_strategy(
