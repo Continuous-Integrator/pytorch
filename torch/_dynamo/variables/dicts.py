@@ -1086,6 +1086,9 @@ class MappingProxyVariable(VariableTracker):
             )
         return self.dv_dict.call_method(tx, name, args, kwargs)
 
+    def tp_iter(self, tx: "InstructionTranslator") -> VariableTracker:
+        return self.dv_dict.tp_iter(tx)
+
     def mp_length(self, tx: "InstructionTranslator") -> VariableTracker:
         return self.dv_dict.mp_length(tx)
 
@@ -1899,13 +1902,7 @@ class DictViewVariable(VariableTracker):
         args: list[VariableTracker],
         kwargs: dict[str, VariableTracker],
     ) -> VariableTracker:
-        if name == "__iter__":
-            from .lists import ListIteratorVariable
-
-            return ListIteratorVariable(
-                self.view_items_vt, mutation_type=ValueMutationNew()
-            )
-        elif name == "__len__":
+        if name == "__len__":
             return self.dv_dict.call_method(tx, name, args, kwargs)
         elif name == "__repr__":
             return VariableTracker.build(tx, self.debug_repr())

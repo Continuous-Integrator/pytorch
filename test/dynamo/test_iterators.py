@@ -1,6 +1,7 @@
 # Owner(s): ["module: dynamo"]
 
 import enum
+import types
 import unittest
 
 import torch
@@ -99,6 +100,19 @@ class TestIterators(torch._dynamo.test_case.TestCase):
         for item in s.__iter__():
             result.append(item * 2)
         self.assertEqual(sorted(result), [2, 4, 6, 8, 10])
+
+    @make_dynamo_test
+    def test_mappingproxy_iteration(self):
+        m = types.MappingProxyType({"a": 1, "b": 2, "c": 3})
+        result = []
+        for key in m.__iter__():
+            result.append(key)  # noqa: PERF402
+        self.assertEqual(sorted(result), ["a", "b", "c"])
+
+        result = []
+        for key in iter(m):
+            result.append(key)
+        self.assertEqual(sorted(result), ["a", "b", "c"])
 
     @make_dynamo_test
     def test_dict_keys_iteration(self):
