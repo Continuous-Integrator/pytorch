@@ -23,7 +23,6 @@ from .constant import (
     CONSTANT_VARIABLE_NONE,
     CONSTANT_VARIABLE_TRUE,
     ConstantVariable,
-    EnumVariable,
 )
 from .ctx_manager import (
     CatchWarningsCtxManagerVariable,
@@ -203,7 +202,6 @@ __all__ = [
     "DeletedVariable",
     "DictKeySetVariable",
     "DynamoConfigPatchVariable",
-    "EnumVariable",
     "FakeItemVariable",
     "GetAttrVariable",
     "GradModeVariable",
