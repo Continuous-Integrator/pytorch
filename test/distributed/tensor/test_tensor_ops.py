@@ -740,6 +740,22 @@ class DistTensorOpsTest(DTensorContinuousTestBase):
             #     torch.randint(5, (12, 8, 12)),
             # )
 
+    def test_select_does_not_mutate_input_spec(self):
+        mesh = self.build_device_mesh()
+        local_tensor = torch.randn(4, 32, 64)
+        dt = distribute_tensor(local_tensor, mesh, [Replicate()])
+        original_shape = dt.shape
+        original_ndim = dt.dim()
+
+        _ = dt[1]
+        self.assertEqual(dt.shape, original_shape)
+        self.assertEqual(dt.dim(), original_ndim)
+
+        _ = dt[0]
+        _ = dt[2]
+        self.assertEqual(dt.shape, original_shape)
+        self.assertEqual(dt.dim(), original_ndim)
+
     def test_index_put_scalar(self):
         device_mesh = init_device_mesh(self.device_type, (2, self.world_size // 2))
         global_input = torch.randn(2, 4, 8, device=self.device_type)

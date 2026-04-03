@@ -1,6 +1,7 @@
 # mypy: allow-untyped-defs
 # Copyright (c) Meta Platforms, Inc. and affiliates
 from collections.abc import Sequence, Sized
+from dataclasses import replace
 from typing import cast
 
 import torch
@@ -365,7 +366,7 @@ def select_int_strategy(op_schema: OpSchema) -> StrategyType:
             input_specs = DTensorSpec(arg_spec.mesh, arg_target_placements)  # R
 
         # determine output spec
-        output_specs = input_specs
+        output_specs = replace(input_specs)
         if input_specs.is_sharded():
             # handle cases with sharded_dim != selected_dim
             output_placements = shift_shard_dims_after_remove(
