@@ -427,9 +427,9 @@ These backends include:
 .. automodule:: torch.backends.python_native
 ```
 
-The `torch.backends.python_native` module provides user control over DSL (Domain Specific Language)
-operation overrides defined in `torch._native`. This allows users to selectively enable or disable
-high-performance implementations from various DSLs like Triton and CuteDSL.
+The `torch.backends.python_native` module provides user control over native operators implemented in python
+via. DSLs (Domain Specific Languages) that are defined in `torch._native`. This allows users to selectively
+enable or disable high-performance implementations from various DSLs like Triton and CuteDSL.
 
 ### Module-level Functions
 
