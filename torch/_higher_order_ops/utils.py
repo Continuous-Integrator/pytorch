@@ -988,6 +988,14 @@ def diff_tensor_meta(
 #      to support int arguments. In the eager run case, we re-trace the subgraph in AutogradKey, so inner
 #      hops may receive int inputs from the shape of outer tensor inputs.
 #      However, CompositeExplicitAutograd won't receive SymInt inputs because it only accepts real tensor inputs.
+#   3. Proxy objects appear when the FX graph cache deserialises a CompiledFxGraph
+#      whose code contains flex_attention / flex_attention_backward HOPs with
+#      mask_mod_other_buffers (BlockMask tensor closures).  The deserialisation
+#      path is: pickle.loads → reduce_graph_module → _deserialize_graph_module →
+#      KeepModules().trace(forward_code).  During that FX symbolic trace every
+#      graph input becomes a Proxy, so mask_mod_other_buffers entries (e.g.
+#      primals_6) are Proxy objects when FlexAttentionHOP.__call__ /
+#      FlexAttentionBackwardHOP.__call__ invoke this validation.
 def validate_subgraph_args_types(lifted_args: tuple[Any, ...] | list[Any]):
     from torch.fx.proxy import Proxy
 

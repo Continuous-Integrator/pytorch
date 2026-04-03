@@ -478,10 +478,19 @@ def _extract_closure_pytree(fn):
 
     Skipped under Dynamo tracing (torch.compiler.is_compiling) because Dynamo
     can't trace through closure cell introspection and handles freevars via its
-    own lifting mechanism.  Also skipped under make_fx tracing (AOT Autograd)
-    because Dynamo has already lifted the closure tensors; re-extracting them
-    here would produce a different pytree leaf count and cause Proxy objects to
-    leak into mask_mod_other_buffers.
+    own lifting mechanism.
+
+    Also skipped under make_fx tracing (AOT Autograd).  The path that triggers
+    this is: torch.compile(model) → Dynamo traces the graph and lifts closure
+    tensors via its own mechanism → AOT Autograd calls make_fx on the joint
+    forward/backward graph → make_fx re-invokes FlexAttentionHOP.__call__ →
+    BlockMask pytree flattening calls _extract_closure_pytree on the mask_mod.
+    At this point Dynamo has already lifted the closure tensors as graph inputs;
+    re-extracting them here would produce a different pytree leaf count than
+    the Dynamo trace and cause Proxy objects to leak into
+    mask_mod_other_buffers, which then fail validate_subgraph_args_types.
+    This manifests in torchtitan when using flex_attention with BlockMask
+    tensor closures + wrap_inductor_compiled_regions + activation checkpointing.
     """
     from torch.fx.experimental.proxy_tensor import _CURRENT_MAKE_FX_TRACER
 

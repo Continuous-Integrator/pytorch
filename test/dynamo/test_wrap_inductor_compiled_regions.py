@@ -9,7 +9,12 @@ from torch._dynamo.backends.common import aot_autograd
 from torch._dynamo.utils import counters
 from torch._functorch import config as functorch_config
 from torch._inductor import config as inductor_config
-from torch.nn.attention.flex_attention import flex_attention, flex_attention_hop
+from torch.nn.attention.flex_attention import (
+    BlockMask,
+    create_block_mask,
+    flex_attention,
+    flex_attention_hop,
+)
 from torch.testing._internal.triton_utils import requires_cuda_and_triton
 from torch.utils._debug_mode import DebugMode
 from torch.utils.checkpoint import (
@@ -1067,6 +1072,64 @@ class TestWrapInductorCompiledRegions(torch._dynamo.test_case.TestCase):
         torch.testing.assert_close(q.grad, q2.grad, rtol=1e-3, atol=1e-3)
         torch.testing.assert_close(k.grad, k2.grad, rtol=1e-3, atol=1e-3)
         torch.testing.assert_close(v.grad, v2.grad, rtol=1e-3, atol=1e-3)
+
+    @requires_cuda_and_triton
+    def test_compile_flex_attention_blockmask_tensor_closure_cache_reload(self):
+        """
+        compile(flex_attention) with BlockMask tensor closure + FX graph cache.
+
+        On cache reload, pickle.loads triggers FX symbolic tracing of the
+        cached graph that contains flex_attention_backward.  The
+        mask_mod_other_buffers become Proxy objects during this trace.
+        Without allowing Proxy in validate_subgraph_args_types, the cache
+        reload fails with AssertionError and falls back to recompilation,
+        emitting a "fx graph cache unable to load compiled graph" warning.
+        """
+        import logging
+
+        B, H, S, D = 2, 4, 128, 64
+
+        def run_once():
+            torch._dynamo.reset()
+            q = torch.randn(
+                B, H, S, D, device="cuda", dtype=torch.float16, requires_grad=True
+            )
+            k = torch.randn(
+                B, H, S, D, device="cuda", dtype=torch.float16, requires_grad=True
+            )
+            v = torch.randn(
+                B, H, S, D, device="cuda", dtype=torch.float16, requires_grad=True
+            )
+            document_id = torch.zeros(B, S, device="cuda", dtype=torch.int32)
+            document_id[:, S // 2 :] = 1
+
+            def mask_mod(b, h, q_idx, k_idx):
+                return document_id[b, q_idx] == document_id[b, k_idx]
+
+            bm = create_block_mask(mask_mod, B=B, H=None, Q_LEN=S, KV_LEN=S)
+
+            @torch.compile(
+                backend="inductor",
+                options={"wrap_inductor_compiled_regions": True},
+                fullgraph=True,
+            )
+            def fn(q, k, v):
+                return flex_attention(q, k, v, block_mask=bm)
+
+            output = fn(q, k, v)
+            loss = output.sum()
+            loss.backward()
+            return q.grad is not None
+
+        # Run 1: populates FX graph cache
+        self.assertTrue(run_once())
+
+        # Run 2: should load from cache without errors.
+        # Without fix, pickle.loads triggers FX tracing that passes Proxy to
+        # validate_subgraph_args_types, causing "fx graph cache unable to load"
+        logger = logging.getLogger("torch._inductor.codecache")
+        with self.assertNoLogs(logger, level="WARNING"):
+            self.assertTrue(run_once())
 
     def test_fake_tensor_mode_works(self):
         """Test that running compiled code inside FakeTensorMode works with FX graph fallback"""
