@@ -105,6 +105,12 @@ from .utils import (
 )
 
 
+def _unwrap_tensor_subclasses_no_symints(
+    args: list[Any],
+) -> list[Any]:
+    return runtime_unwrap_tensor_subclasses(args, append_symints=False)  # type: ignore[arg-type]
+
+
 zip = strict_zip
 
 aot_graphs_log = getArtifactLogger(__name__, "aot_graphs")
@@ -2132,10 +2138,7 @@ def _backward_prologue_functional(
         if codegen_unwrap_fn is not None:
             unwrap = codegen_unwrap_fn
         else:
-            unwrap = lambda args: runtime_unwrap_tensor_subclasses(  # noqa: E731
-                args,
-                append_symints=False,
-            )
+            unwrap = _unwrap_tensor_subclasses_no_symints
         all_args = (
             unwrap(all_args[:tangents_start_idx])
             + flat_processed_tangents
@@ -2851,6 +2854,12 @@ class _AOTDispatchAutogradFunctionFactory:
                         out,
                         codegen_wrap_fn=CompiledFunction._bw_epilogue_wrap_fn,
                     )
+
+                if (
+                    torch._C._is_key_in_tls("context")
+                    and (config_ctx := torch._C._get_obj_in_tls("context")) is not None
+                ):
+                    impl_fn = functools.partial(config_ctx.run, impl_fn)
 
                 needs_grad = torch.is_grad_enabled() and any(
                     t.requires_grad for t in all_args if isinstance(t, torch.Tensor)
