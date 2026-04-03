@@ -1860,7 +1860,7 @@ class StaticTritonCompileResult(CompileResult[_T]):
             result = check_can_launch()
             return result
         except CannotStaticallyLaunchKernel as e:
-            log.info("Bypassing StaticallyLaunchedCudaKernel due to %s", str(e))  # noqa: G200
+            log.info("Bypassing StaticallyLaunchedCudaKernel due to %s", e)  # noqa: G200
             if torch._inductor.config.strict_static_triton_launcher:
                 raise e
             return None
@@ -3234,7 +3234,6 @@ def _reduction_configs(
     )
 
     register_intensive = False
-    MAX_R0_BLOCK = 2048
     loads_and_red = inductor_meta.get("num_load", 0) + inductor_meta.get(
         "num_reduction", 0
     )
@@ -3717,9 +3716,7 @@ def cooperative_reduction(
     # the GPU, we want to create as many CTAs as possible, while keeping things
     # in powers of 2.
     target = last_power_of_2(triton_meta["device"].multi_processor_count)
-    split = max(1, min(target // xnumel, TRITON_MAX_RSPLIT))
-    assert rnumel >= split
-    assert split <= TRITON_MAX_RSPLIT
+    split = max(1, min((rnumel, target // xnumel, TRITON_MAX_RSPLIT)))
     if inductor_meta["persistent_reduction"]:
         configs = _persistent_reduction_configs(
             {"x": xnumel, "r0_": rnumel // split},
@@ -4345,7 +4342,11 @@ class Grid2DWithYZOverflow(GridExpr):
                 ),
             ]
         )
-        self.y_grid = self.ceildiv("y_grid_raw_", "y_grid_div_")
+        ceildiv_expr = self.ceildiv("y_grid_raw_", "y_grid_div_")
+        if self.mode == "python":
+            self.y_grid = f"(0 if y_grid_div_ == 0 else {ceildiv_expr})"
+        else:
+            self.y_grid = f"(y_grid_div_ == 0 ? 0 : {ceildiv_expr})"
         self.z_grid = "y_grid_div_"
 
 
@@ -4432,7 +4433,11 @@ class ComboKernelGrid(GridExpr):
                     ),
                 ]
             )
-            self.y_grid = self.ceildiv("y_grid_raw_", "y_grid_div_")
+            ceildiv_expr = self.ceildiv("y_grid_raw_", "y_grid_div_")
+            if self.mode == "python":
+                self.y_grid = f"(0 if y_grid_div_ == 0 else {ceildiv_expr})"
+            else:
+                self.y_grid = f"(y_grid_div_ == 0 ? 0 : {ceildiv_expr})"
             self.z_grid = "y_grid_div_"
 
     def combo_x_grid(
