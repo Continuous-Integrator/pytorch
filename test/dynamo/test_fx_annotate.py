@@ -291,6 +291,7 @@ class AnnotateTests(torch._dynamo.test_case.TestCase):
         self.assertExpectedInline(
             str(bw_metadata),
             """\
+('call_function', 'div_1', {'autograd_backward': True})
 ('call_function', 'mul_1', {'pp_stage': 0})
 ('call_function', 'cos', {'pp_stage': 0, 'fdsp_bucket': 0})
 ('call_function', 'mul_2', {'pp_stage': 0, 'fdsp_bucket': 0})""",  # noqa: B950
