@@ -4849,11 +4849,13 @@ class ReproTests(torch._dynamo.test_case.TestCase):
         model = SimpleModel().eval()
         input_tensor = torch.randn(1, 10, dtype=torch.float32)
         opt = torch.compile(model.eval(), backend="eager", fullgraph=True)
-        actual = opt(input_tensor)
         try:
             expected = model(input_tensor)
         except Exception as e:
-            raise unittest.SkipTest("eager failed, requires Python>=3.12") from e
+            raise unittest.SkipTest(
+                "eager failed, requires Python between 3.9 and 3.12"
+            ) from e
+        actual = opt(input_tensor)
         self.assertEqual(actual, expected)
 
     def test_invalid_seq_unpack(self):
@@ -8040,7 +8042,7 @@ class ReproTestsDevice(torch._dynamo.test_case.TestCase):
 
     @skipIfHpu
     @unittest.skipIf(
-        TEST_WITH_ROCM or not PLATFORM_SUPPORTS_FLASH_ATTENTION,
+        not PLATFORM_SUPPORTS_FLASH_ATTENTION,
         "flash attention not supported",
     )
     def test_flash_attn_backward_mixed_strides(self, device):
