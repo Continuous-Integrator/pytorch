@@ -105,9 +105,10 @@ def _get_dsl_module(dsl_name: str):
     """
     registry = _get_dsl_registry()
 
-    # Access the registered DSL module from the registry
-    if dsl_name in registry._dsl_modules:
-        return registry._dsl_modules[dsl_name]
+    # Use the public API to get the DSL module
+    dsl_module = registry.get_dsl_module(dsl_name)
+    if dsl_module is not None:
+        return dsl_module
     else:
         raise ValueError(
             f"Unknown DSL: {dsl_name}. Available DSLs: {registry.list_all_dsls()}"
@@ -202,7 +203,6 @@ class PythonNativeModule(PropModule):
         result = registry.list_all_dsls()
         return list(result) if not isinstance(result, list) else result
 
-    @functools.lru_cache(maxsize=32)  # noqa: B019
     def get_dsl_operations(self, dsl_name: str) -> list[str]:
         """Get list of operations registered by a specific DSL.
 
@@ -217,16 +217,9 @@ class PythonNativeModule(PropModule):
             ops = torch.backends.python_native.get_dsl_operations("triton")
             print(ops)  # ['triton_to_mxfp8_dim0', ...]
         """
-        graphs = _get_registry_functions()[2]
-        operations = set()
+        from torch._native.registry import get_dsl_operations
 
-        for (op_symbol, dispatch_key), nodes in graphs.items():
-            for node in nodes:
-                if node.dsl_name == dsl_name:
-                    operations.add(op_symbol)
-                    break
-
-        return sorted(operations)
+        return get_dsl_operations(dsl_name)
 
     def disable_operations(self, *op_symbols: str):
         """Disable specific operations across all DSLs.

@@ -459,51 +459,26 @@ For each registered DSL (e.g., `triton`, `cutedsl`), auto-populated controller m
 
 #### DSL Properties
 
-Each DSL controller (e.g., `torch.backends.python_native.triton`) provides:
+Each DSL controller (e.g., `torch.backends.python_native.triton`) provides the following properties:
 
-```{eval-rst}
-.. attribute:: {dsl}.name
-
-    A :class:`str` containing the name of the DSL.
-```
-
-```{eval-rst}
-.. attribute:: {dsl}.available
-
-    A :class:`bool` indicating whether the DSL's runtime dependencies are available.
-```
-
-```{eval-rst}
-.. attribute:: {dsl}.enabled
-
-    A :class:`bool` that controls whether all operations from this DSL are enabled.
-    Setting this to ``False`` disables all operations from the DSL, while ``True``
-    re-enables them.
-```
-
-```{eval-rst}
-.. attribute:: {dsl}.version
-
-    The version of the DSL runtime, if available. Returns ``None`` if the DSL is not available.
-```
+| Property | Type | Description |
+|----------|------|-------------|
+| `name` | `str` | The name of the DSL |
+| `available` | `bool` | Whether the DSL's runtime dependencies are available |
+| `enabled` | `bool` | Controls whether all operations from this DSL are enabled. Setting to `False` disables all operations from the DSL, while `True` re-enables them |
+| `version` | `Version` or `None` | The version of the DSL runtime, if available. Returns `None` if the DSL is not available |
 
 #### DSL Methods
 
-```{eval-rst}
-.. method:: {dsl}.disable()
+Each DSL controller provides the following methods:
 
+**disable()**
     Disable all operations from this DSL.
-```
 
-```{eval-rst}
-.. method:: {dsl}.enable()
-
+**enable()**
     Re-enable all operations from this DSL.
-```
 
-```{eval-rst}
-.. method:: {dsl}.disabled()
-
+**disabled()**
     Context manager that temporarily disables all operations from this DSL.
     Operations are automatically re-enabled when exiting the context.
 
@@ -513,7 +488,6 @@ Each DSL controller (e.g., `torch.backends.python_native.triton`) provides:
             # Triton operations are disabled here
             result = model(input)
         # Triton operations restored here
-```
 
 ### Usage Examples
 

@@ -206,8 +206,14 @@ class TestTorchBackendsPythonNative(RegistryTestMixin, TestCase):
 
             finally:
                 # Restore original states
-                dsl1._enabled_state = original_state1
-                dsl2._enabled_state = original_state2
+                if original_state1:
+                    dsl1.enable()
+                else:
+                    dsl1.disable()
+                if original_state2:
+                    dsl2.enable()
+                else:
+                    dsl2.disable()
 
     def test_operation_discovery(self):
         """Test operation discovery functionality."""
