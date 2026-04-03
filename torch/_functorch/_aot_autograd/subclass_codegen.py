@@ -339,27 +339,6 @@ def _compile_and_exec_source(
     return fn  # type: ignore[return-value]
 
 
-def _codegen_subclass_unwrap_source(
-    inp_metas: list[PlainTensorMeta | SubclassCreationMeta],
-    include_symints: bool = False,
-) -> tuple[str, dict[str, object]]:
-    """Generate source for unwrapping subclass inputs into flat tensors.
-
-    Shares input-unwrapping logic with _codegen_subclass_wrapper_source
-    via _emit_input_unwrapping. Used for the backward prologue.
-    Returns (source, globals_dict).
-    """
-    state = _CodegenState()
-
-    state.emit("def unwrap_fn(args):", indent=0)
-    state.emit("unwrapped_args = []")
-    _emit_input_unwrapping(state, inp_metas, include_symints=include_symints)
-    state.emit("return unwrapped_args")
-
-    source = "\n".join(state.lines)
-    return source, state.globals
-
-
 def codegen_backward_subclass_fns(
     grad_input_metas: list[PlainTensorMeta | SubclassCreationMeta] | None = None,
 ) -> tuple[Callable[..., object], Callable[..., object] | None]:
