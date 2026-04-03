@@ -30,7 +30,9 @@ def vt_identity_compare(
 
     if left_known and right_known:
         return (
-            ConstantVariable.create(True) if left_val is right_val else ConstantVariable.create(False)
+            ConstantVariable.create(True)
+            if left_val is right_val
+            else ConstantVariable.create(False)
         )
 
     # One side has a concrete backing object, the other doesn't — they can't

@@ -2784,7 +2784,7 @@ class UserDefinedExceptionObjectVariable(UserDefinedObjectVariable):
             and inspect.ismethoddescriptor(method)
             and len(kwargs) == 0
         ):
-            self.exc_vt.args = tuple(args)
+            self.exc_vt.args = list(args)
             # pyrefly: ignore[missing-attribute]
             self.value.args = args
             return variables.ConstantVariable.create(None)

@@ -88,11 +88,7 @@ from .base import (
     ValueMutationNew,
     VariableTracker,
 )
-from .constant import (
-    ConstantVariable,
-    EnumVariable,
-    FakeIdVariable,
-)
+from .constant import ConstantVariable, EnumVariable, FakeIdVariable
 from .dicts import (
     ConstDictVariable,
     DefaultDictVariable,

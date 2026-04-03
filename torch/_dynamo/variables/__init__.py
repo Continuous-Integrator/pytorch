@@ -23,10 +23,7 @@ from .builtin import (
     DictBuiltinVariable,
     IterBuiltinVariable,
 )
-from .constant import (
-    ConstantVariable,
-    EnumVariable,
-)
+from .constant import ConstantVariable, EnumVariable
 from .ctx_manager import (
     CatchWarningsCtxManagerVariable,
     ContextWrappingVariable,
