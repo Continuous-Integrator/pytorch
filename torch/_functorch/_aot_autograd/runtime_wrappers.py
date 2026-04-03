@@ -1334,6 +1334,10 @@ class AOTDedupeWrapper(CompilerWrapper):
         if not self.needs_post_compile:
             return compiled_fn
 
+        # keep_indices is guaranteed non-empty: post_compile only runs when
+        # needs_post_compile is True, meaning strategy 1 failed due to a
+        # duplicate mutated arg, so flat_args is non-empty and at least the
+        # first arg is always kept (enforced by remove_dupe_metadata).
         keep_indices = [i for i, keep in enumerate(self.keep_arg_mask) if keep]
         idx_list = ", ".join(f"args[{i}]" for i in keep_indices)
         source = (
