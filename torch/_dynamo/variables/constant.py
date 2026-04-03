@@ -6,6 +6,8 @@ values during compilation, ensuring proper handling of Python literals and
 maintaining type safety through the compilation process.
 """
 
+from __future__ import annotations
+
 import enum
 import operator
 from collections.abc import Sequence
@@ -45,11 +47,11 @@ class ConstantVariable(VariableTracker):
 
     @overload
     @staticmethod
-    def create(value: None) -> "ConstantVariable": ...
+    def create(value: None) -> ConstantVariable: ...
 
     @overload
     @staticmethod
-    def create(value: bool) -> "ConstantVariable": ...
+    def create(value: bool) -> ConstantVariable: ...
 
     # TODO: Refactor to make these return ConstantVariable
     @overload
@@ -68,13 +70,14 @@ class ConstantVariable(VariableTracker):
         """
         # Return pre-allocated sentinels for None/True/False when there are
         # no extra kwargs (source, etc.) that would differentiate the instance.
-        if not kwargs and isinstance(value, (bool, type(None))):
-            if value is None:
-                return CONSTANT_VARIABLE_NONE
-            if value is True:
-                return CONSTANT_VARIABLE_TRUE
-            if value is False:
-                return CONSTANT_VARIABLE_FALSE
+        if not kwargs:
+            match value:
+                case None:
+                    return CONSTANT_VARIABLE_NONE
+                case True:
+                    return CONSTANT_VARIABLE_TRUE
+                case False:
+                    return CONSTANT_VARIABLE_FALSE
 
         source = kwargs.get("source")
 
