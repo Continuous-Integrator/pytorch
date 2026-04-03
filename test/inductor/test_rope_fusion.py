@@ -1,9 +1,9 @@
 # Owner(s): ["module: inductor"]
 
 import torch
+import torch._inductor.config as config
 import torch.nn as nn
 import torch.nn.functional as F
-import torch._inductor.config as config
 from torch._inductor.test_case import run_tests, TestCase
 from torch._inductor.utils import run_and_get_triton_code
 from torch.testing._internal.common_utils import IS_LINUX
@@ -76,5 +76,8 @@ if HAS_CUDA_AND_TRITON:
 
 
 if IS_LINUX and HAS_CUDA_AND_TRITON:
-    if __name__ == "__main__":
-        run_tests()
+    pass
+
+
+if __name__ == "__main__":
+    run_tests()
