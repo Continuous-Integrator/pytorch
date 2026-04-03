@@ -15,7 +15,6 @@ Tests cover:
 import collections
 import dataclasses
 import types
-import unittest
 
 import torch
 import torch._dynamo.test_case
