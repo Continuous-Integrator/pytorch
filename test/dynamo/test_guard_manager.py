@@ -369,6 +369,60 @@ user_stack=None)
         x._dynamo_static_indices = {0}
         self.assertFalse(guard(x))
 
+    def test_dimension_marking_guard_dependent_attrs(self):
+        root = RootGuardManager()
+
+        # Test dependent_attrs: _dynamo_shape_ids is checked only when
+        # _dynamo_unbacked_indices (gate) is present.
+        expected_attrs = {"_dynamo_unbacked_indices": {0}}
+        absent_attrs = []  # type: ignore[var-annotated]
+        dependent_attrs = {
+            "_dynamo_shape_ids": ({0: "batch"}, "_dynamo_unbacked_indices"),
+        }
+        guard = guards.DIMENSION_MARKING_GUARD(
+            root,
+            expected_attrs,
+            absent_attrs,
+            dependent_attrs,
+            ["dimension marking guard dependent"],
+            None,
+        )
+
+        # No gate attr -> pass (don't care)
+        x = torch.randn(4)
+        self.assertTrue(guard(x))
+
+        # Gate present + dependent attr matches -> pass
+        x._dynamo_unbacked_indices = {0}
+        x._dynamo_shape_ids = {0: "batch"}
+        self.assertTrue(guard(x))
+
+        # Gate present + dependent attr mismatch -> fail
+        x._dynamo_shape_ids = {0: "other"}
+        self.assertFalse(guard(x))
+
+        # Gate present + dependent attr absent + expected non-None -> fail
+        del x._dynamo_shape_ids
+        self.assertFalse(guard(x))
+
+        # Test with expected=None for dependent attr (compile-time also absent)
+        dependent_attrs_none = {
+            "_dynamo_shape_ids": (None, "_dynamo_unbacked_indices"),
+        }
+        guard2 = guards.DIMENSION_MARKING_GUARD(
+            root,
+            expected_attrs,
+            absent_attrs,
+            dependent_attrs_none,
+            ["dimension marking guard dependent none"],
+            None,
+        )
+
+        # Gate present + dependent attr absent + expected None -> pass
+        y = torch.randn(4)
+        y._dynamo_unbacked_indices = {0}
+        self.assertTrue(guard2(y))
+
     def test_tensor_match_guard(self):
         guard_manager = RootGuardManager()
         x = torch.randn(4, 4)

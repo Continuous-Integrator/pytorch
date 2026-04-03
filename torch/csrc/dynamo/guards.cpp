@@ -2750,7 +2750,7 @@ class DIMENSION_MARKING_GUARD : public LeafGuard {
             false,
             attr_name + " mismatch: expected " +
                 py::repr(expected).cast<std::string>() + ", got " +
-                py::repr(py::reinterpret_borrow<py::object>(
+                py::repr(py::reinterpret_steal<py::object>(
                              PyObject_GetAttr(value, attr_str)))
                     .cast<std::string>(),
             0);
