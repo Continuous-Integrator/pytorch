@@ -1645,10 +1645,7 @@ std::unordered_map<PyObject*, std::list<GuardManager*>> dict_to_guard_managers;
 // where an exception just means "these don't match" and we want guard failure
 // (recompile), not a crash. Set false_on_error to false if the caller wants to
 // handle exceptions themselves.
-static inline bool py_equals(
-    PyObject* a,
-    PyObject* b,
-    bool false_on_error) {
+static inline bool py_equals(PyObject* a, PyObject* b, bool false_on_error) {
   int eq = PyObject_RichCompareBool(a, b, Py_EQ);
   if (false_on_error && eq == -1)
     PyErr_Clear();
@@ -2637,15 +2634,33 @@ class SYMBOLIC_SHAPE_GUARD : public RelationalGuard {
   std::function<int8_t(int64_t*, double*)> _guard_check_fn;
 };
 
-// Unified guard for all dimension marking attributes set by
-// mark_dynamic, mark_static, mark_unbacked, and maybe_mark_dynamic.
-// Checks expected_attrs (exact match), absent_attrs (must not exist),
-// and dependent_attrs (checked only when a gate attribute is present)
-// in a single pass over the tensor.
+// DIMENSION_DYNAMIC_MARKING_GUARD: A unified C++ guard for all dimension
+// marking attributes set by mark_dynamic, mark_static, mark_unbacked, and
+// maybe_mark_dynamic. Instead of installing separate Python lambda guards for
+// each marking attribute on every input tensor, this guard consolidates all
+// checks into a single C++ call — eliminating Python interpreter round-trips
+// on the hot path.
+//
+// The guard receives three categories of compile-time marking info:
+//   - expected_attrs: attributes present at compile time (exact match required
+//     at runtime; absent at runtime means "unspecified = don't care", passes)
+//   - absent_attrs: attributes absent at compile time (must remain absent)
+//   - dependent_attrs: attributes gated on another attribute (e.g.,
+//     _dynamo_shape_ids is only checked when _dynamo_unbacked_indices exists)
+//
+// For the common case where no marking APIs were called (the vast majority of
+// tensors), a fast path checks only the single _has_dynamo_dim_marking flag.
+// This flag is set by the marking APIs when actual dimensions are marked, so
+// its absence means no markings exist and the guard passes with a single
+// PyObject_HasAttr call — instead of checking 4+ individual attributes.
+//
+// When the compiled tensor has markings but the runtime tensor does not (flag
+// absent), the guard also passes immediately — "unspecified = don't care" means
+// the runtime tensor is happy to reuse whatever compiled graph is available.
 //
 // See [Note: Dimension Marking Guards] in torch/_dynamo/guards.py.
 
-class DIMENSION_MARKING_GUARD : public LeafGuard {
+class DIMENSION_DYNAMIC_MARKING_GUARD : public LeafGuard {
  public:
   // expected_attrs: dict {attr_name: expected_value} - attrs present at compile
   //   time. Runtime: if attr present -> exact match; if absent -> pass.
@@ -2653,7 +2668,7 @@ class DIMENSION_MARKING_GUARD : public LeafGuard {
   //   Runtime: must NOT have attr.
   // dependent_attrs: dict {attr_name: (expected_value, gate_attr_name)} -
   //   checked only when gate attribute is present on runtime tensor.
-  DIMENSION_MARKING_GUARD(
+  DIMENSION_DYNAMIC_MARKING_GUARD(
       RootGuardManager* root_guard_manager,
       py::dict expected_attrs,
       py::list absent_attrs,
@@ -2764,7 +2779,8 @@ class DIMENSION_MARKING_GUARD : public LeafGuard {
       return GuardDebugInfo(true, 0);
     }
 
-    // Compiled with markings, runtime has none -> pass (unspecified = don't care).
+    // Compiled with markings, runtime has none -> pass (unspecified = don't
+    // care).
     if (!PyObject_HasAttr(value, _has_marking_str)) {
       return GuardDebugInfo(true, 0);
     }
@@ -2814,7 +2830,8 @@ class DIMENSION_MARKING_GUARD : public LeafGuard {
           std::string attr_name = PyUnicode_AsUTF8(attr_str);
           return GuardDebugInfo(
               false,
-              attr_name + " expected " + py::repr(expected).cast<std::string>() +
+              attr_name + " expected " +
+                  py::repr(expected).cast<std::string>() +
                   " but attribute is absent on runtime tensor",
               0);
         }
@@ -7298,9 +7315,9 @@ PyObject* torch_c_dynamo_guards_init() {
       .def(py::init<RootGuardManager*, py::list, py::object>())
       .def("__call__", &COMPLEX_IS_NAN::check);
   py::class_<
-      DIMENSION_MARKING_GUARD,
+      DIMENSION_DYNAMIC_MARKING_GUARD,
       LeafGuard,
-      std::shared_ptr<DIMENSION_MARKING_GUARD>>(py_m, "DIMENSION_MARKING_GUARD")
+      std::shared_ptr<DIMENSION_DYNAMIC_MARKING_GUARD>>(py_m, "DIMENSION_DYNAMIC_MARKING_GUARD")
       .def(py::init<
            RootGuardManager*,
            py::dict,
@@ -7308,7 +7325,7 @@ PyObject* torch_c_dynamo_guards_init() {
            py::dict,
            py::list,
            py::object>())
-      .def("__call__", &DIMENSION_MARKING_GUARD::check);
+      .def("__call__", &DIMENSION_DYNAMIC_MARKING_GUARD::check);
   py::class_<DICT_VERSION, LeafGuard, std::shared_ptr<DICT_VERSION>>(
       py_m, "DICT_VERSION")
       .def(py::init<RootGuardManager*, py::object, py::list, py::object>())
@@ -7807,7 +7824,7 @@ PyObject* torch_c_dynamo_guards_init() {
              py::dict dependent_attrs,
              py::object verbose_code_parts,
              py::object user_stack) -> void {
-            self.add_leaf_guard(std::make_shared<DIMENSION_MARKING_GUARD>(
+            self.add_leaf_guard(std::make_shared<DIMENSION_DYNAMIC_MARKING_GUARD>(
                 self.get_root(),
                 std::move(expected_attrs),
                 std::move(absent_attrs),

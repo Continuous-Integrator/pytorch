@@ -339,7 +339,7 @@ user_stack=None)
         expected_attrs = {"_dynamo_dynamic_indices": {0, 1}}
         absent_attrs = ["_dynamo_static_indices"]
         dependent_attrs = {}  # type: ignore[var-annotated]
-        guard = guards.DIMENSION_MARKING_GUARD(
+        guard = guards.DIMENSION_DYNAMIC_MARKING_GUARD(
             root,
             expected_attrs,
             absent_attrs,
@@ -354,19 +354,23 @@ user_stack=None)
 
         # Exact match -> pass
         x._dynamo_dynamic_indices = {0, 1}
+        x._has_dynamo_dim_marking = True
         self.assertTrue(guard(x))
 
         # Subset -> fail (exact match required, not issubset)
         x._dynamo_dynamic_indices = {0}
+        x._has_dynamo_dim_marking = True
         self.assertFalse(guard(x))
 
         # Different set -> fail
         x._dynamo_dynamic_indices = {2}
+        x._has_dynamo_dim_marking = True
         self.assertFalse(guard(x))
 
         # Absent attr present -> fail
         x._dynamo_dynamic_indices = {0, 1}
         x._dynamo_static_indices = {0}
+        x._has_dynamo_dim_marking = True
         self.assertFalse(guard(x))
 
     def test_dimension_marking_guard_dependent_attrs(self):
@@ -379,7 +383,7 @@ user_stack=None)
         dependent_attrs = {
             "_dynamo_shape_ids": ({0: "batch"}, "_dynamo_unbacked_indices"),
         }
-        guard = guards.DIMENSION_MARKING_GUARD(
+        guard = guards.DIMENSION_DYNAMIC_MARKING_GUARD(
             root,
             expected_attrs,
             absent_attrs,
@@ -395,6 +399,7 @@ user_stack=None)
         # Gate present + dependent attr matches -> pass
         x._dynamo_unbacked_indices = {0}
         x._dynamo_shape_ids = {0: "batch"}
+        x._has_dynamo_dim_marking = True
         self.assertTrue(guard(x))
 
         # Gate present + dependent attr mismatch -> fail
@@ -409,7 +414,7 @@ user_stack=None)
         dependent_attrs_none = {
             "_dynamo_shape_ids": (None, "_dynamo_unbacked_indices"),
         }
-        guard2 = guards.DIMENSION_MARKING_GUARD(
+        guard2 = guards.DIMENSION_DYNAMIC_MARKING_GUARD(
             root,
             expected_attrs,
             absent_attrs,
@@ -421,6 +426,7 @@ user_stack=None)
         # Gate present + dependent attr absent + expected None -> pass
         y = torch.randn(4)
         y._dynamo_unbacked_indices = {0}
+        y._has_dynamo_dim_marking = True
         self.assertTrue(guard2(y))
 
     def test_tensor_match_guard(self):
