@@ -24,9 +24,9 @@ def _bmm_outer_product_impl(
     *,
     fallback_kernel,
 ) -> torch.Tensor:
-    if _is_outer_product(a, b) and not (
-        torch._C._is_cow_tensor(a) or torch._C._is_cow_tensor(b)  # pyrefly: ignore[missing-attribute]
-    ):
+    a_is_cow = torch._C._is_cow_tensor(a)  # pyrefly: ignore[missing-attribute]
+    b_is_cow = torch._C._is_cow_tensor(b)  # pyrefly: ignore[missing-attribute]
+    if _is_outer_product(a, b) and not (a_is_cow or b_is_cow):
         from .triton_kernels import bmm_outer_product
 
         return bmm_outer_product(a, b)
