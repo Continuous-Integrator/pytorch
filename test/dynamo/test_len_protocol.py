@@ -1179,7 +1179,6 @@ class TestMetaclassLen(torch._dynamo.test_case.TestCase):
         """Test len() on a class with __len__ defined in metaclass"""
         self.assertEqual(len(SimpleMetaclassClass), 5)
 
-    @unittest.expectedFailure
     @make_dynamo_test
     def test_metaclass_len_direct_call(self):
         """Test direct call to __len__() on a class with metaclass-defined __len__"""
