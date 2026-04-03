@@ -1561,6 +1561,7 @@ def _optimize(
 
     if fullgraph:
         compile_options.fullgraph = True
+        compile_options.one_graph = True
         return _optimize_assert(
             rebuild_ctx,
             backend,
@@ -2465,6 +2466,7 @@ def _optimize_assert(
         compile_options = DynamoCompileOptions(
             dynamic=dynamic,
             fullgraph=True,
+            one_graph=True,
             export=export,
             export_constraints=export_constraints,
             recompile_limit=recompile_limit,

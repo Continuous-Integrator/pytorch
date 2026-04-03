@@ -22,7 +22,7 @@ class DynamoCompileOptions:
     error_on_graph_break: bool | None = None
     export: bool = False
     export_constraints: Any | None = None
-    one_graph: bool = True
+    one_graph: bool = False
     recompile_limit: int | None = None
     package: CompilePackage | None = None
     compiler_config: Any | None = None

@@ -591,9 +591,10 @@ class ConvertFrameAssert:
 
     @property
     def _clone_with_backend(self) -> Callable[[CompilerFn], ConvertFrameAssert]:
+        clone_options = dataclasses.replace(self._compile_options, package=None)
         return lambda backend: convert_frame_assert(
             backend,
-            self._compile_options,
+            clone_options,
         )
 
     def __call__(
@@ -2097,10 +2098,11 @@ class ConvertFrame:
 
     @property
     def _clone_with_backend(self) -> Callable[[WrapBackendDebug], ConvertFrame]:
+        clone_options = dataclasses.replace(self._compile_options, package=None)
         return lambda backend: convert_frame(
             backend,
             self._hooks,
-            self._compile_options,
+            clone_options,
         )
 
     def __call__(
