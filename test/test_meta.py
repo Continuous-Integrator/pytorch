@@ -11,6 +11,10 @@ from torch.utils._dtype_abbrs import dtype_abbrs
 from torch.utils._pytree import tree_map, tree_map_only, tree_flatten, tree_unflatten
 from torch.utils import _pytree as pytree
 from torch._subclasses.meta_utils import MetaConverter, assert_metadata_eq, is_sparse_any
+from torch._subclasses.fake_tensor import FakeTensorMode
+from torch._decomp import decompositions
+from torch._refs.nn.functional import prelu as prelu_decomp
+from torch.fx.experimental.symbolic_shapes import ShapeEnv
 import torch.utils._python_dispatch
 from torch._dispatch.python import enable_python_dispatcher
 from torch._ops import OpOverload, OpOverloadPacket
@@ -1945,6 +1949,16 @@ class TestMetaKernelConv(TestCase):
         )
         self.assertTrue(gi2.is_contiguous(memory_format=torch.channels_last))
         self.assertTrue(gw2.is_contiguous(memory_format=torch.channels_last))
+
+
+
+
+class TestMetaKernelRegistrations(TestCase):
+    @skipIfTorchDynamo("tests raw meta kernel, not dynamo")
+    def test_make_dep_token_shape(self):
+        result = torch.ops.aten._make_dep_token(device=torch.device("meta"))
+        self.assertEqual(result.dim(), 0)
+        self.assertEqual(result.shape, torch.Size([]))
 
 
 instantiate_device_type_tests(TestMeta, globals())
