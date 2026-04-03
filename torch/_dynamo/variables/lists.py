@@ -1447,6 +1447,9 @@ class DequeVariable(CommonListMethodsVariable):
             return VariableTracker.build(tx, name in collections.deque.__dict__)
         return super().call_obj_hasattr(tx, name)
 
+    def tp_iter(self, tx: "InstructionTranslator") -> VariableTracker:
+        return ListIteratorVariable(self.items, mutation_type=ValueMutationNew())
+
 
 class TupleVariable(BaseListVariable):
     def python_type(self) -> type[tuple]:  # type: ignore[type-arg]
