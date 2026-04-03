@@ -1319,7 +1319,9 @@ class CachingAutotuner(KernelInterface):
         base_num_warps = best_config.num_warps
         base_num_stages = best_config.num_stages
 
+        start_time = time.time_ns()
         best_time = self.bench(launcher, *args, **kwargs)
+        counters["inductor"]["combo_autotune_bench"] += 1
         log.debug(
             "  Phase 1 baseline: %s warps=%d time=%f",
             dict(current_kwargs),
@@ -1368,6 +1370,7 @@ class CachingAutotuner(KernelInterface):
                         trial_config
                     ).make_launcher()
                 trial_time = self.bench(trial_launcher, *args, **kwargs)
+                counters["inductor"]["combo_autotune_bench"] += 1
 
                 improved = trial_time < best_time
                 log.debug(
@@ -1415,6 +1418,7 @@ class CachingAutotuner(KernelInterface):
             with self.lock:
                 trial_launcher = self._precompile_config(trial_config).make_launcher()
             trial_time = self.bench(trial_launcher, *args, **kwargs)
+            counters["inductor"]["combo_autotune_bench"] += 1
 
             improved = trial_time < best_time
             log.debug(
@@ -1436,6 +1440,10 @@ class CachingAutotuner(KernelInterface):
             launcher.config,
             best_time,
         )
+        launcher.config.found_by_combo_autotune = True
+        self.autotune_time_taken_ns += time.time_ns() - start_time
+        if self.save_cache_hook:
+            self.save_cache_hook(launcher.config, self.autotune_time_taken_ns)
         return launcher
 
     def save_gpu_kernel(self, stream, launcher):
@@ -1689,10 +1697,22 @@ class CachingAutotuner(KernelInterface):
             if len(self.launchers) > 1:
                 self.autotune_to_one_config(*args, **kwargs)
 
-        if self.inductor_meta.get("combo_tuning_groups"):
-            self.launchers = [
-                self._combo_sequential_autotune(self.launchers[0], *args, **kwargs)
-            ]
+        if self.inductor_meta.get("combo_tuning_groups") and not getattr(
+            self.launchers[0].config, "found_by_combo_autotune", False
+        ):
+            with dynamo_timed(
+                "CachingAutotuner.combo_sequential_autotune",
+                log_pt2_compile_event=False,
+                metadata={"kernel_name": self.inductor_meta.get("kernel_name")},
+                dynamo_compile_column_us="runtime_triton_autotune_time_us",
+                compile_id=self.compile_id,
+                is_backward=self.is_backward,
+                log_waitcounter=True,
+                waitcounter_name_override="triton_autotuner",
+            ):
+                self.launchers = [
+                    self._combo_sequential_autotune(self.launchers[0], *args, **kwargs)
+                ]
 
         if not getattr(
             self.launchers[0].config, "found_by_coordesc", False
@@ -4479,7 +4499,11 @@ class Grid2DWithYZOverflow(GridExpr):
                 ),
             ]
         )
-        self.y_grid = self.ceildiv("y_grid_raw_", "y_grid_div_")
+        ceildiv_expr = self.ceildiv("y_grid_raw_", "y_grid_div_")
+        if self.mode == "python":
+            self.y_grid = f"(0 if y_grid_div_ == 0 else {ceildiv_expr})"
+        else:
+            self.y_grid = f"(y_grid_div_ == 0 ? 0 : {ceildiv_expr})"
         self.z_grid = "y_grid_div_"
 
 
@@ -4566,7 +4590,11 @@ class ComboKernelGrid(GridExpr):
                     ),
                 ]
             )
-            self.y_grid = self.ceildiv("y_grid_raw_", "y_grid_div_")
+            ceildiv_expr = self.ceildiv("y_grid_raw_", "y_grid_div_")
+            if self.mode == "python":
+                self.y_grid = f"(0 if y_grid_div_ == 0 else {ceildiv_expr})"
+            else:
+                self.y_grid = f"(y_grid_div_ == 0 ? 0 : {ceildiv_expr})"
             self.z_grid = "y_grid_div_"
 
     def combo_x_grid(
