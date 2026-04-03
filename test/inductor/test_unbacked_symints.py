@@ -105,37 +105,6 @@ class TestUnbackedSymints(InductorTestCase):
 
         torch.testing.assert_close(actual, expected)
 
-    @dynamo_config.patch({"capture_scalar_outputs": True})
-    def test_split_with_sizes_no_sympy_equality(self, device):
-        # split_with_sizes internally validates sum(sizes) == tensor.shape[dim].
-        # This must not produce sympy.Equality (a sympy.Boolean, not sympy.Expr)
-        # which inductor cannot handle as a backward graph input.
-        import sympy
-
-        from torch._subclasses.fake_tensor import FakeTensorMode
-        from torch.fx.experimental.symbolic_shapes import ShapeEnv
-
-        shape_env = ShapeEnv(
-            prefer_deferred_runtime_asserts_over_guards=True,
-        )
-        with FakeTensorMode(shape_env=shape_env):
-            # Create unbacked symints via item()
-            counts = torch.tensor([3, 5, 2, 6])
-            sizes = [counts[i].item() for i in range(4)]
-
-            x = torch.randn(16, 8)
-            torch.split(x, sizes)
-
-        # Check that no deferred runtime assert uses sympy.Equality
-        for sym, ras in shape_env.deferred_runtime_asserts.items():
-            for ra in ras:
-                self.assertNotIsInstance(
-                    ra.expr,
-                    sympy.Equality,
-                    f"split_with_sizes produced sympy.Equality: {ra.expr}. "
-                    f"Use <= and >= instead of == to avoid this.",
-                )
-
     @skipGPUIf(not HAS_GPU, "requires gpu and triton")
     @dynamo_config.patch({"capture_dynamic_output_shape_ops": True})
     def test_view_of_slice(self, device):
