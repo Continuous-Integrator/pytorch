@@ -139,7 +139,5 @@ if(Python_EXECUTABLE)
       list(APPEND CMAKE_PREFIX_PATH ${_env_prefix})
     endif()
     list(REMOVE_DUPLICATES CMAKE_PREFIX_PATH)
-
-    include(cmake/RpathLink.cmake)
   endif()
 endif()
