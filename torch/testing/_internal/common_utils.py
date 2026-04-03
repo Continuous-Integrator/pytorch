@@ -1240,6 +1240,17 @@ def get_pytest_test_cases(argv: list[str]) -> list[str]:
 
 def run_tests(argv=None):
     parse_cmd_line_args()
+
+    # Set interop threads based on cgroup-aware CPU count.
+    # By default, cpuinfo sees all host CPUs (e.g., 192 on k8s),
+    # but the container may only have a fraction allocated.
+    try:
+        cpu_count = torch._utils.cpu_count()
+        if cpu_count is not None:
+            torch.set_num_interop_threads(cpu_count)
+    except RuntimeError:
+        pass  # Already set or parallel work already started
+
     if argv is None:
         argv = UNITTEST_ARGS
 
