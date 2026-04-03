@@ -826,22 +826,22 @@ def meta_segment_reduce(
             "segment_reduce(): indices based reduction is not supported yet."
         )
 
-    def segment_reduce_lengths_tensor(lengths_shape):
+    def segment_reduce_output(segment_count):
+        output_shape = list(data.shape)
+        output_shape[axis] = segment_count
         return torch.empty(
-            lengths_shape + data.shape[axis + 1 :],
+            output_shape,
             dtype=data.dtype,
             device="meta",
             memory_format=torch.contiguous_format,
         )
 
     if lengths is not None:
-        return segment_reduce_lengths_tensor(lengths.shape)
+        return segment_reduce_output(lengths.shape[axis])
     # FIXME should probably check that lengths and offset aren't both set, but
     # the ATen implementation neglects this too
     if offsets is not None:
-        # lengths == torch.diff(offsets)
-        lengths_shape = offsets.shape[:-1] + (offsets.shape[-1] - 1,)
-        return segment_reduce_lengths_tensor(lengths_shape)
+        return segment_reduce_output(offsets.shape[axis] - 1)
     raise RuntimeError("segment_reduce(): Either lengths or offsets must be defined.")
 
 
@@ -919,7 +919,7 @@ def make_dep_token(
     pin_memory=None,
     memory_format=None,
 ):
-    return torch.empty(0, device="meta")
+    return torch.empty((), device="meta")
 
 
 @register_meta(aten.sym_constrain_range.default)
@@ -1125,9 +1125,8 @@ def meta_linalg_eig(input: Tensor):
     )
     values = input.new_empty(input.shape[:-1], dtype=complex_dtype)
     vectors = input.new_empty(input.shape, dtype=complex_dtype)
-    is_cuda = device_hint(input) == "cuda"
     vectors.as_strided_(
-        input.shape, make_contiguous_strides_for(input.shape, row_major=is_cuda)
+        input.shape, make_contiguous_strides_for(input.shape, row_major=False)
     )
     return values, vectors
 
@@ -2579,11 +2578,11 @@ def meta_miopen_batch_norm(
     out = input_tensor.new_empty(out_shape).to(memory_format=pick_memory_format())
 
     if training:
-        save_mean = input_tensor.new_empty(save_mean_shape)
-        save_var = input_tensor.new_empty(save_var_shape)
+        save_mean = weight.new_empty(save_mean_shape)
+        save_var = weight.new_empty(save_var_shape)
     else:
-        save_mean = input_tensor.new_empty((0,))
-        save_var = input_tensor.new_empty((0,))
+        save_mean = weight.new_empty((0,))
+        save_var = weight.new_empty((0,))
 
     return out, save_mean, save_var
 
@@ -3159,7 +3158,7 @@ def meta_avg_pool3d(
     )
 
     torch._check(
-        not divisor_override or divisor_override != 0,
+        divisor_override is None or divisor_override != 0,
         lambda: "divisor must be not zero",
     )
 
@@ -3246,7 +3245,7 @@ def meta_avg_pool3d_backward(
     )
 
     torch._check(
-        not divisor_override or divisor_override != 0,
+        divisor_override is None or divisor_override != 0,
         lambda: "divisor must be not zero",
     )
 
@@ -3739,7 +3738,14 @@ def meta_addbmm(self, batch1, batch2, *, beta=1, alpha=1):
 
 @register_meta([aten.randint_like.Tensor])
 def meta_randint_like(self, high, **kwargs):
-    return self.new_empty(self.size())
+    return aten.empty_like.default(
+        self,
+        dtype=kwargs.get("dtype"),
+        layout=kwargs.get("layout"),
+        device=kwargs.get("device"),
+        pin_memory=kwargs.get("pin_memory"),
+        memory_format=kwargs.get("memory_format"),
+    )
 
 
 @register_meta([aten._fused_adam_.default, aten._fused_adamw_.default])
@@ -4104,6 +4110,14 @@ def meta__weight_int8pack_mm(x, w, q_scales):
     torch._check(
         w.dtype is torch.int8,
         lambda: f"expected w to be int8, got {w.dtype}",
+    )
+    torch._check(
+        w.size(1) == x.size(1),
+        lambda: f"expected w.size(1) ({w.size(1)}) == x.size(1) ({x.size(1)})",
+    )
+    torch._check(
+        q_scales.dim() == 1 and q_scales.size(0) == w.size(0),
+        lambda: f"expected q_scales to be 1D with size {w.size(0)}, got shape {q_scales.shape}",
     )
     return x.new_empty(x.size(0), w.size(0), dtype=x.dtype)
 
@@ -4488,11 +4502,21 @@ def meta_zero(self):
 
 @register_meta([aten.fill_.Tensor, aten.fill_.Scalar])
 def meta_fill_(self, val):
+    if isinstance(val, torch.Tensor):
+        torch._check(
+            val.dim() == 0,
+            lambda: f"fill_ only supports 0-dimension value tensor but got tensor with {val.dim()} dimensions.",
+        )
     return self
 
 
 @register_meta([aten.fill.Tensor, aten.fill.Scalar])
 def meta_fill(self, val):
+    if isinstance(val, torch.Tensor):
+        torch._check(
+            val.dim() == 0,
+            lambda: f"fill_ only supports 0-dimension value tensor but got tensor with {val.dim()} dimensions.",
+        )
     return torch.empty_like(self)
 
 
