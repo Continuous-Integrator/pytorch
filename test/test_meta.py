@@ -11,6 +11,10 @@ from torch.utils._dtype_abbrs import dtype_abbrs
 from torch.utils._pytree import tree_map, tree_map_only, tree_flatten, tree_unflatten
 from torch.utils import _pytree as pytree
 from torch._subclasses.meta_utils import MetaConverter, assert_metadata_eq, is_sparse_any
+from torch._subclasses.fake_tensor import FakeTensorMode
+from torch._decomp import decompositions
+from torch._refs.nn.functional import prelu as prelu_decomp
+from torch.fx.experimental.symbolic_shapes import ShapeEnv
 import torch.utils._python_dispatch
 from torch._dispatch.python import enable_python_dispatcher
 from torch._ops import OpOverload, OpOverloadPacket
@@ -1945,6 +1949,64 @@ class TestMetaKernelConv(TestCase):
         )
         self.assertTrue(gi2.is_contiguous(memory_format=torch.channels_last))
         self.assertTrue(gw2.is_contiguous(memory_format=torch.channels_last))
+
+
+
+
+class TestMetaKernelRegistrations(TestCase):
+    @skipIfTorchDynamo("tests raw meta kernel, not dynamo")
+    def test_make_dep_token_shape(self):
+        result = torch.ops.aten._make_dep_token(device=torch.device("meta"))
+        self.assertEqual(result.dim(), 0)
+        self.assertEqual(result.shape, torch.Size([]))
+
+    @skipIfTorchDynamo("tests raw meta kernel, not dynamo")
+    def test_rrelu_backward_small_range(self):
+        x = torch.randn(5, requires_grad=True)
+        lower, upper = 0.125, 0.125 + 1e-7
+        noise = torch.rand(5)
+        grad = torch.ones(5)
+        expected = noise * grad
+        from torch._decomp.decompositions import rrelu_with_noise_backward
+        result = rrelu_with_noise_backward(grad, x, noise, lower, upper, True, False)
+        self.assertEqual(result, expected)
+
+    @skipIfTorchDynamo("tests raw meta kernel, not dynamo")
+    def test_linalg_eig_strides_meta(self):
+        A = torch.randn(3, 3, device='meta')
+        eigenvalues, eigenvectors = torch.linalg.eig(A)
+        self.assertEqual(eigenvectors.stride(-2), 1)
+        self.assertEqual(eigenvectors.stride(-1), 3)
+
+    @skipIfTorchDynamo("tests raw meta kernel, not dynamo")
+    def test_randint_like_tensor_overload_dtype_kwarg(self):
+        x = torch.randn(3, 4, device="meta")
+        high = torch.tensor(10, device="meta")
+        y = torch.ops.aten.randint_like.Tensor(x, high, dtype=torch.int32)
+        self.assertEqual(y.dtype, torch.int32)
+
+    @skipIfTorchDynamo("tests raw meta kernel, not dynamo")
+    def test_randint_like_tensor_overload_preserves_default(self):
+        x = torch.randn(3, 4, device="meta", dtype=torch.float16)
+        high = torch.tensor(10, device="meta")
+        y = torch.ops.aten.randint_like.Tensor(x, high)
+        self.assertEqual(y.dtype, torch.float16)
+        self.assertEqual(y.shape, (3, 4))
+
+    @skipIfTorchDynamo("tests raw meta kernel, not dynamo")
+    def test_prelu_decomp_dtype_mismatch_error(self):
+        x = torch.randn(3, 4, device="meta", dtype=torch.float32)
+        weight = torch.randn(4, device="meta", dtype=torch.float16)
+        with self.assertRaisesRegex(RuntimeError, "Type promoting not supported"):
+            prelu_decomp(x, weight)
+
+    @skipIfTorchDynamo("tests raw meta kernel, not dynamo")
+    def test_prelu_decomp_same_dtype_ok(self):
+        x = torch.randn(3, 4, device="meta", dtype=torch.float32)
+        weight = torch.randn(4, device="meta", dtype=torch.float32)
+        result = prelu_decomp(x, weight)
+        self.assertEqual(result.shape, (3, 4))
+        self.assertEqual(result.dtype, torch.float32)
 
 
 instantiate_device_type_tests(TestMeta, globals())
