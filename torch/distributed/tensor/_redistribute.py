@@ -26,8 +26,8 @@ from torch.distributed.tensor._dtensor_spec import (
 from torch.distributed.tensor._utils import assert_no_mixed_partial_types
 from torch.distributed.tensor.device_mesh import DeviceMesh
 from torch.distributed.tensor.placement_types import (
+    _is_shard_like,
     _StridedShard,
-    is_shard_like,
     Partial,
     Placement,
     Replicate,
@@ -167,11 +167,11 @@ class _TransformInfo:
         src, dst = self.src_dst_placements
         if src.is_partial() and dst.is_replicate():
             return "all_reduce"
-        elif src.is_partial() and is_shard_like(dst):
+        elif src.is_partial() and _is_shard_like(dst):
             return "reduce_scatter"
-        elif is_shard_like(src) and dst.is_replicate():
+        elif _is_shard_like(src) and dst.is_replicate():
             return "all_gather"
-        elif is_shard_like(src) and is_shard_like(dst):
+        elif _is_shard_like(src) and _is_shard_like(dst):
             return "all_to_all"
         else:
             # Local ops (Replicate->Shard, Replicate->Partial, noop, etc.)
@@ -1676,7 +1676,7 @@ def redistribute_local_tensor(
                     new_local_tensor = partial_spec._partition_value(
                         local_tensor, mesh_to_use, i
                     )
-                elif is_shard_like(current):
+                elif _is_shard_like(current):
                     raise RuntimeError(
                         f"redistribute from {current} to {target} not supported yet"
                     )
@@ -1786,11 +1786,11 @@ def _redistribute_backward(
 
     # for backward shard -> partial, we just do shard -> replicate
     # for backward replicate -> partial, we skip the transformation
-    # NOTE: is_shard_like covers _StridedShard defensively; currently
+    # NOTE: _is_shard_like covers _StridedShard defensively; currently
     # unreachable because Partial -> _StridedShard is not implemented.
     normalized_placements: list[Placement] = []
     for current, target in zip(current_spec.placements, previous_spec.placements):
-        if (is_shard_like(current) or current.is_replicate()) and target.is_partial():
+        if (_is_shard_like(current) or current.is_replicate()) and target.is_partial():
             normalized_placements.append(Replicate())
         else:
             normalized_placements.append(target)

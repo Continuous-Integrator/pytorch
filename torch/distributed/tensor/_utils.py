@@ -15,8 +15,8 @@ from torch.distributed.tensor._collective_utils import redistribute_cost
 from torch.distributed.tensor._dtensor_spec import DTensorSpec
 from torch.distributed.tensor._op_schema import OpSchema
 from torch.distributed.tensor.placement_types import (
+    _is_shard_like,
     _StridedShard,
-    is_shard_like,
     Partial,
     Placement,
     Replicate,
@@ -315,7 +315,7 @@ def compute_local_tensor_info(
 
     for idx, placement in enumerate(placements):
         mesh_dim_size = mesh.size(idx)
-        if is_shard_like(placement):
+        if _is_shard_like(placement):
             if placement.dim < 0:
                 raise AssertionError(
                     "Shard placements should have negative dims normalized in "
@@ -385,7 +385,7 @@ def compute_global_tensor_shape(
 
     if isinstance(placements[0], Replicate):
         return shape
-    # NOTE: isinstance(_, Shard) does not match _StridedShard; see is_shard_like().
+    # NOTE: isinstance(_, Shard) does not match _StridedShard; see _is_shard_like().
     elif isinstance(placements[0], Shard):
 
         @maybe_run_for_local_tensor

@@ -8,9 +8,9 @@ from typing import Any, cast, NamedTuple
 import torch
 from torch.distributed.device_mesh import DeviceMesh
 from torch.distributed.tensor.placement_types import (
+    _is_shard_like,
     _MaskPartial,
     _StridedShard,
-    is_shard_like,
     Partial,
     Placement,
     Replicate,
@@ -170,7 +170,7 @@ class DTensorSpec:
         tensor_dim_to_mesh_dims: defaultdict[int, list[int]] = defaultdict(list)
         mesh_ndim = len(placements)
         for mesh_dim in range(mesh_ndim):
-            if is_shard_like(placements[mesh_dim]):
+            if _is_shard_like(placements[mesh_dim]):
                 placement = placements[mesh_dim]
                 shard_dim = placement.dim  # pyrefly: ignore [missing-attribute]
                 if shard_dim < 0:
@@ -321,7 +321,7 @@ class DTensorSpec:
         """
         if not any(isinstance(p, _StridedShard) for p in placements):
             return DTensorSpec.compute_default_shard_order(placements)
-        max_tensor_dim = max([i.dim for i in placements if is_shard_like(i)]) + 1
+        max_tensor_dim = max([i.dim for i in placements if _is_shard_like(i)]) + 1
         shard_order = []
 
         tensor_dim_to_mesh_dims_order: list[list[int]] = [
@@ -329,7 +329,7 @@ class DTensorSpec:
         ]
         for mesh_dim in reversed(range(len(placements))):
             cur_placement = placements[mesh_dim]
-            if is_shard_like(cur_placement):
+            if _is_shard_like(cur_placement):
                 tensor_dim = cur_placement.dim
                 mesh_dims_order = tensor_dim_to_mesh_dims_order[tensor_dim]
                 cur_sf = 1
@@ -564,7 +564,7 @@ class DTensorSpec:
         # native dtensor-style sharding representation: map from mesh
         # dim to tensor dim
         for mesh_dim, placement in enumerate(placements):
-            if is_shard_like(placement):
+            if _is_shard_like(placement):
                 if shard_order is not None:
                     for entry in shard_order:
                         tensor_dim = entry.tensor_dim
@@ -608,7 +608,7 @@ class DTensorSpec:
     def num_shards(self) -> int:
         num_shards = 1
         for i, placement in enumerate(self.placements):
-            if is_shard_like(placement):
+            if _is_shard_like(placement):
                 num_shards *= self.mesh.size(i)
         return num_shards
 
@@ -644,7 +644,7 @@ class DTensorSpec:
         # and int >=0 represent shard on that device mesh dim
         r = [-1] * self.ndim
         for i, placement in enumerate(self.placements):
-            if is_shard_like(placement):
+            if _is_shard_like(placement):
                 shard_dim = placement.dim
                 if r[shard_dim] > -1:
                     raise ValueError(
@@ -672,7 +672,7 @@ class DTensorSpec:
         """
         r = [1] * self.ndim
         for i, placement in enumerate(self.placements):
-            if is_shard_like(placement):
+            if _is_shard_like(placement):
                 r[placement.dim] *= self.mesh.size(i)
 
         return r
@@ -745,7 +745,7 @@ class DTensorSpec:
         """
         return True if the current DTensorSpec uses Shard() or _StridedShard() placement on any mesh dims (devices)
         """
-        return any(is_shard_like(placement) for placement in self.placements)
+        return any(_is_shard_like(placement) for placement in self.placements)
 
     def shallow_copy_with_tensor_meta(
         self, tensor_meta: TensorMeta | None

@@ -64,7 +64,7 @@ class Shard(torch._C._distributed.Shard):
         evenly divisible on a DeviceMesh dimension is currently experimental and subject to change.
 
     .. note:: When checking whether a placement is shard-like, use
-        :func:`is_shard_like` instead of ``isinstance(p, Shard)`` to also
+        :func:`_is_shard_like` instead of ``isinstance(p, Shard)`` to also
         match :class:`_StridedShard`.
     """
 
@@ -1178,7 +1178,7 @@ class _StridedShard(torch._C._distributed.StridedShard):
         return local_shard_size, offsets
 
 
-def is_shard_like(p: "Placement") -> TypeGuard[Shard | _StridedShard]:
+def _is_shard_like(p: "Placement") -> TypeGuard[Shard | _StridedShard]:
     """Check if a placement is Shard or _StridedShard.
 
     Use this instead of ``isinstance(p, Shard)`` to avoid silently missing

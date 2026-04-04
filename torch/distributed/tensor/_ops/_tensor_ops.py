@@ -34,8 +34,8 @@ from torch.distributed.tensor._ops.utils import (
     shift_shard_dims_after_remove,
 )
 from torch.distributed.tensor.placement_types import (
+    _is_shard_like,
     _MaskPartial,
-    is_shard_like,
     Partial,
     Placement,
     Replicate,
@@ -499,7 +499,7 @@ def slice_backward_rules(op_schema: OpSchema) -> OpStrategy:
         new_placements: list[Placement] = []
         for placement in output_spec.placements:
             # Redistribute to replicate only if the dim is sharded and matches the slice dim
-            if is_shard_like(placement) and placement.dim == dim:
+            if _is_shard_like(placement) and placement.dim == dim:
                 new_placements.append(Replicate())
             else:
                 new_placements.append(placement)
@@ -517,7 +517,8 @@ def unshard_tensor_dim(
 ) -> tuple[Placement, ...]:
     """Disallow the given tensor dimension to be sharded."""
     return tuple(
-        p if (not is_shard_like(p) or p.dim != dim) else Replicate() for p in placements
+        p if (not _is_shard_like(p) or p.dim != dim) else Replicate()
+        for p in placements
     )
 
 
@@ -526,7 +527,7 @@ def replicate_tensor_dim(
 ) -> tuple[Placement, ...]:
     """Force the given tensor dimension to be replicated."""
     return tuple(
-        Replicate() if p.is_partial() or (is_shard_like(p) and p.dim == dim) else p
+        Replicate() if p.is_partial() or (_is_shard_like(p) and p.dim == dim) else p
         for p in placements
     )
 
@@ -744,7 +745,7 @@ def _derive_follow_placements_from_tuple_strategy(
             return cur_placement
 
         if cur_placement.is_partial():
-            if is_shard_like(new_placement):
+            if _is_shard_like(new_placement):
                 # follow new placement
                 return new_placement
             elif new_placement.is_partial():
@@ -753,8 +754,8 @@ def _derive_follow_placements_from_tuple_strategy(
             else:
                 # follow partial
                 return cur_placement
-        elif is_shard_like(cur_placement):
-            if is_shard_like(new_placement):
+        elif _is_shard_like(cur_placement):
+            if _is_shard_like(new_placement):
                 # cur/new placement are different sharding (i.e. different shard dim)
                 # currently fallback to replicate all args
                 return Replicate()
