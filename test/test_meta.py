@@ -1951,28 +1951,37 @@ class TestMetaKernelConv(TestCase):
 
 class TestMetaKernelRegistrations(TestCase):
     @skipIfTorchDynamo("tests raw meta kernel, not dynamo")
-    def test_make_dep_token_shape(self):
-        result = torch.ops.aten._make_dep_token(device=torch.device("meta"))
-        self.assertEqual(result.dim(), 0)
-        self.assertEqual(result.shape, torch.Size([]))
+    def test_make_dep_token(self):
+        cpu_result = torch.ops.aten._make_dep_token(device=torch.device("cpu"))
+        meta_result = torch.ops.aten._make_dep_token(device=torch.device("meta"))
+        self.assertEqual(cpu_result.shape, meta_result.shape)
+        self.assertEqual(cpu_result.dtype, meta_result.dtype)
 
     @skipIfTorchDynamo("tests raw meta kernel, not dynamo")
     def test_rrelu_backward_small_range(self):
         from torch._decomp.decompositions import rrelu_with_noise_backward
+
         x = torch.randn(5, requires_grad=True)
         lower, upper = 0.125, 0.125 + 1e-7
         noise = torch.rand(5)
         grad = torch.ones(5)
-        expected = noise * grad
-        result = rrelu_with_noise_backward(grad, x, noise, lower, upper, True, False)
-        self.assertEqual(result, expected)
+        cpp_result = torch.ops.aten.rrelu_with_noise_backward(
+            grad, x, noise, lower, upper, True, False
+        )
+        decomp_result = rrelu_with_noise_backward(
+            grad, x, noise, lower, upper, True, False
+        )
+        self.assertEqual(cpp_result, decomp_result)
 
     @skipIfTorchDynamo("tests raw meta kernel, not dynamo")
-    def test_linalg_eig_strides_meta(self):
-        A = torch.randn(3, 3, device='meta')
-        eigenvalues, eigenvectors = torch.linalg.eig(A)
-        self.assertEqual(eigenvectors.stride(-2), 1)
-        self.assertEqual(eigenvectors.stride(-1), 3)
+    def test_linalg_eig_strides(self):
+        A_cpu = torch.randn(3, 3)
+        A_meta = torch.randn(3, 3, device="meta")
+        _, eigvecs_cpu = torch.linalg.eig(A_cpu)
+        _, eigvecs_meta = torch.linalg.eig(A_meta)
+        self.assertEqual(eigvecs_cpu.stride(), eigvecs_meta.stride())
+        self.assertEqual(eigvecs_cpu.shape, eigvecs_meta.shape)
+        self.assertEqual(eigvecs_cpu.dtype, eigvecs_meta.dtype)
 
 
 instantiate_device_type_tests(TestMeta, globals())
