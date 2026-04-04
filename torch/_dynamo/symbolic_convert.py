@@ -1739,6 +1739,9 @@ class InstructionTranslatorBase(
                         exc=e,
                     )
 
+                if not isinstance(e, exc.RestartAnalysis):
+                    self.output.side_effects.log_side_effects_summary()
+
                 if hasattr(e, "msg") and "Data-dependent" in e.msg:
                     readable_graph = torch.fx.GraphModule(
                         self.output.nn_modules, self.output.graph
@@ -1752,6 +1755,8 @@ class InstructionTranslatorBase(
             except Exception as e:
                 if self.exec_recorder:
                     e.exec_record = self.exec_recorder.get_record()  # type: ignore[attr-defined]
+                if not isinstance(e, exc.RestartAnalysis):
+                    self.output.side_effects.log_side_effects_summary()
 
                 raise
             finally:
@@ -4322,7 +4327,8 @@ class InstructionTranslatorBase(
         self.push(fn)
 
     def CONVERT_VALUE(self, inst: Instruction) -> None:
-        self.push(self._convert_value(self.pop(), inst.argval))
+        assert inst.arg is not None
+        self.push(self._convert_value(self.pop(), inst.arg))
 
     def FORMAT_SIMPLE(self, inst: Instruction) -> None:
         self._format_value(VariableTracker.build(self, ""), 0)
