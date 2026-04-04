@@ -18,6 +18,7 @@ from torch.distributed.tensor import (
     Shard,
 )
 from torch.distributed.tensor._ops._matrix_ops import (
+    _scaled_mm_scale_placement,
     gen_single_dim_einsum_strategies,
     mm_single_dim_strategy,
 )
@@ -1139,16 +1140,12 @@ class TestScaledMMScalePlacement(TestCase):
 
     def test_strided_shard_contracting(self):
         """_StridedShard on contracting dim should be rejected (return None)."""
-        from torch.distributed.tensor._ops._matrix_ops import _scaled_mm_scale_placement
-
         ss = _StridedShard(1, split_factor=2)
         result = _scaled_mm_scale_placement(ss, contracting_dim=1, scale_shape=(4,))
         self.assertIsNone(result)
 
     def test_strided_shard_non_contracting(self):
         """_StridedShard on non-contracting dim should map to Shard(0) for 1D scale."""
-        from torch.distributed.tensor._ops._matrix_ops import _scaled_mm_scale_placement
-
         ss = _StridedShard(0, split_factor=2)
         result = _scaled_mm_scale_placement(ss, contracting_dim=1, scale_shape=(4,))
         self.assertIsInstance(result, Shard)

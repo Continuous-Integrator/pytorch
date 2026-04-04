@@ -390,32 +390,37 @@ def _compute_placement_transition_cost(
     if current_placement == target_placement:
         return 0.0, comm_bytes_gb
 
+    from torch.distributed.tensor.placement_types import is_shard_like
+
     num_devices_on_mesh_dim = mesh_topo.mesh_dim_devices[mesh_dim]
 
-    if current_placement.is_shard() and target_placement.is_replicate():
+    current_is_shard = is_shard_like(current_placement)
+    target_is_shard = is_shard_like(target_placement)
+
+    if current_is_shard and target_placement.is_replicate():
         # allgather gives larger comm bytes
         comm_bytes_gb *= num_devices_on_mesh_dim
         return allgather_cost(comm_bytes_gb, mesh_topo, mesh_dim), comm_bytes_gb
-    elif current_placement.is_shard() and target_placement.is_shard():
+    elif current_is_shard and target_is_shard:
         # should be alltoall comm, since we haven't implement it yet, add 1.0 as penalty
         # to favor allgather instead
         # TODO: add alltoall_cost
         return allgather_cost(comm_bytes_gb, mesh_topo, mesh_dim) + 1.0, comm_bytes_gb
     elif current_placement.is_partial() and target_placement.is_replicate():
         return allreduce_cost(comm_bytes_gb, mesh_topo, mesh_dim), comm_bytes_gb
-    elif current_placement.is_partial() and target_placement.is_shard():
+    elif current_placement.is_partial() and target_is_shard:
         cost = reduce_scatter_cost(comm_bytes_gb, mesh_topo, mesh_dim)
         # after reduce_scatter the comm bytes for further collectives halved.
         comm_bytes_gb /= num_devices_on_mesh_dim
         return cost, comm_bytes_gb
-    elif current_placement.is_shard() and target_placement.is_partial():
+    elif current_is_shard and target_placement.is_partial():
         # ban shard -> partial as it does not make sense to perform
         # this redistribute
         return float("inf"), comm_bytes_gb
     elif current_placement.is_partial() and target_placement.is_partial():
         # we already handled the == case at the top, and we ban converting between partial types.
         return float("inf"), comm_bytes_gb
-    elif current_placement.is_replicate() and target_placement.is_shard():
+    elif current_placement.is_replicate() and target_is_shard:
         comm_bytes_gb /= num_devices_on_mesh_dim
         return 0.0, comm_bytes_gb
 
@@ -528,10 +533,18 @@ def redistribute_cost(
         _gen_transform_infos_non_cached,
     )
 
-    # TODO(zpcore): Support _StridedShard redistribution. Remove the temporary
-    # fix, which is to prevent StridedShard erroring out.
+    # shard_order is None for _StridedShard specs (expected) and for truly
+    # unsupported configurations.  Only bail out when neither spec contains
+    # _StridedShard — those are the truly unsupported cases.
+    from torch.distributed.tensor.placement_types import _StridedShard
+
     if current_spec.shard_order is None or target_spec.shard_order is None:
-        return float("inf")
+        has_strided = any(
+            isinstance(p, _StridedShard)
+            for p in (*current_spec.placements, *target_spec.placements)
+        )
+        if not has_strided:
+            return float("inf")
 
     # No redistribution needed when placements are already identical.
     # This also prevents potential failures in _gen_transform_infos for certain configurations

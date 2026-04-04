@@ -32,6 +32,7 @@ from torch.distributed.tensor._ops._einsum_strategy import (
 )
 from torch.distributed.tensor._ops.utils import replicate_op_strategy
 from torch.distributed.tensor.debug import CommDebugMode
+from torch.distributed.tensor.placement_types import _StridedShard
 from torch.testing._internal.common_utils import run_tests, TestCase
 from torch.testing._internal.distributed._tensor.common_dtensor import (
     create_local_tensor_test_class,
@@ -205,6 +206,38 @@ class TestCostModel(DTensorOpTestBase):
         # shard to partial
         cost = redistribute_cost(shard_spec, partial_spec)
         self.assertEqual(cost, float("inf"))
+
+    def test_redistribute_cost_strided_shard(self):
+        """_StridedShard transitions must have the same cost as Shard transitions."""
+        mesh_1d = self.build_device_mesh()
+
+        global_tensor_meta = extract_tensor_meta(torch.randn(10, 10))
+
+        shard_spec = DTensorSpec(mesh_1d, (Shard(0),), global_tensor_meta)
+        strided_shard_spec = DTensorSpec(
+            mesh_1d, (_StridedShard(0, split_factor=2),), global_tensor_meta
+        )
+        replica_spec = DTensorSpec(mesh_1d, (Replicate(),), global_tensor_meta)
+        partial_spec = DTensorSpec(mesh_1d, (Partial(),), global_tensor_meta)
+
+        # _StridedShard -> Replicate should cost the same as Shard -> Replicate
+        shard_to_rep = redistribute_cost(shard_spec, replica_spec)
+        strided_to_rep = redistribute_cost(strided_shard_spec, replica_spec)
+        self.assertEqual(strided_to_rep, shard_to_rep)
+
+        # Replicate -> _StridedShard should cost the same as Replicate -> Shard
+        rep_to_shard = redistribute_cost(replica_spec, shard_spec)
+        rep_to_strided = redistribute_cost(replica_spec, strided_shard_spec)
+        self.assertEqual(rep_to_strided, rep_to_shard)
+
+        # Partial -> _StridedShard should cost the same as Partial -> Shard
+        partial_to_shard = redistribute_cost(partial_spec, shard_spec)
+        partial_to_strided = redistribute_cost(partial_spec, strided_shard_spec)
+        self.assertEqual(partial_to_strided, partial_to_shard)
+
+        # _StridedShard -> Partial should be banned (inf), same as Shard -> Partial
+        strided_to_partial = redistribute_cost(strided_shard_spec, partial_spec)
+        self.assertEqual(strided_to_partial, float("inf"))
 
     def test_redistribute_cost_latency(self):
         # test cost model on addmm op

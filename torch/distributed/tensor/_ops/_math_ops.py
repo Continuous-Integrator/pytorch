@@ -224,14 +224,14 @@ def map_placements_after_reduction(
                 # (i.e. for the case where keepdims=True), we generate partial
                 new_placements.append(get_placement_from_reduction_op(reduction_op))
             else:
-                if isinstance(placement, Shard):
-                    new_placements.append(Shard(new_shard_dim))
-                else:
+                if isinstance(placement, _StridedShard):
                     new_placements.append(
                         _StridedShard(
                             new_shard_dim, split_factor=placement.split_factor
                         )
                     )
+                elif isinstance(placement, Shard):
+                    new_placements.append(Shard(new_shard_dim))
     return tuple(new_placements)
 
 
