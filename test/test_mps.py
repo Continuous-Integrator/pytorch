@@ -982,7 +982,7 @@ class TestMPS(TestCaseMPS):
             x_cpu = x_mps.cpu()
             # Every other row — non-contiguous view
             for t in (x_mps, x_cpu):
-              t[::2].fill_(1)
+                t[::2].fill_(1)
             self.assertEqual(x_mps, x_cpu)
 
     def test_fill_storage_offset(self):
