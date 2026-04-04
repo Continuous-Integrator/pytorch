@@ -371,8 +371,8 @@ op_db: list[OpInfo] = [
         dtypes=all_types_and(torch.bool),
         # CUDA supports Half/ComplexHalf Precision FFT only on SM53 or later archs
         dtypesIfCUDA=all_types_and(torch.bool, torch.half),
-        dtypesIfXPU=all_types_and(torch.bool),
-        backward_dtypesIfXPU=all_types_and(torch.bool),
+        dtypesIfXPU=all_types_and(torch.bool, torch.float16),
+        backward_dtypesIfXPU=all_types_and(torch.bool, torch.float16),
         sample_inputs_func=partial(sample_inputs_fft_with_min, min_size=(1, 1)),
         error_inputs_func=error_inputs_fftn,
         # https://github.com/pytorch/pytorch/issues/80411
