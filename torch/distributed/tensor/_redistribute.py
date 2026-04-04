@@ -1636,7 +1636,7 @@ def redistribute_local_tensor(
                     new_local_tensor = partial_spec._partition_value(
                         local_tensor, mesh_to_use, i
                     )
-                elif current.is_shard() or isinstance(current, _StridedShard):
+                elif is_shard_like(current):
                     raise RuntimeError(
                         f"redistribute from {current} to {target} not supported yet"
                     )
