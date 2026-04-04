@@ -18,7 +18,6 @@ from torch.distributed.tensor import (
     Shard,
 )
 from torch.distributed.tensor._ops._matrix_ops import (
-    _scaled_mm_scale_placement,
     gen_single_dim_einsum_strategies,
     mm_single_dim_strategy,
 )
@@ -36,7 +35,6 @@ from torch.testing._internal.common_utils import (
     parametrize,
     run_tests,
     TEST_WITH_ROCM,
-    TestCase,
 )
 from torch.testing._internal.distributed._tensor.common_dtensor import (
     create_local_tensor_test_class,
@@ -1133,23 +1131,6 @@ class DistMatrixOpsTest(DTensorTestBase):
         result = torch.nn.functional.pad(dt, pad, value=1.0)
         self.assertNotEqual(result.placements, (Partial(),))
         self.assertEqual(result.full_tensor(), expected_nz)
-
-
-class TestScaledMMScalePlacement(TestCase):
-    """Unit tests for _scaled_mm_scale_placement with _StridedShard."""
-
-    def test_strided_shard_contracting(self):
-        """_StridedShard on contracting dim should be rejected (return None)."""
-        ss = _StridedShard(1, split_factor=2)
-        result = _scaled_mm_scale_placement(ss, contracting_dim=1, scale_shape=(4,))
-        self.assertIsNone(result)
-
-    def test_strided_shard_non_contracting(self):
-        """_StridedShard on non-contracting dim should map to Shard(0) for 1D scale."""
-        ss = _StridedShard(0, split_factor=2)
-        result = _scaled_mm_scale_placement(ss, contracting_dim=1, scale_shape=(4,))
-        self.assertIsInstance(result, Shard)
-        self.assertEqual(result.dim, 0)
 
 
 instantiate_parametrized_tests(DistMatrixOpsTest)
