@@ -70,13 +70,6 @@ ENV NCCL_LIB_DIR="/usr/local/cuda/lib64/"
 
 ARG CUDA_VERSION
 
-# (optional) Install vision packages like OpenCV
-ARG VISION
-COPY ./common/install_vision.sh ./common/cache_vision_models.sh ./common/common_utils.sh ./
-RUN if [ -n "${VISION}" ]; then bash ./install_vision.sh; fi
-RUN rm install_vision.sh cache_vision_models.sh common_utils.sh
-ENV INSTALLED_VISION ${VISION}
-
 # (optional) Install non-default Ninja version
 ARG NINJA_VERSION
 COPY ./common/install_ninja.sh install_ninja.sh
@@ -196,11 +189,6 @@ RUN rm install_openmpi.sh
 # Include BUILD_ENVIRONMENT environment variable in image
 ARG BUILD_ENVIRONMENT
 ENV BUILD_ENVIRONMENT ${BUILD_ENVIRONMENT}
-
-# Install LLVM dev version (Defined in the pytorch/builder github repository)
-ARG SKIP_LLVM_SRC_BUILD_INSTALL
-COPY --from=pytorch/llvm:9.0.1 /opt/llvm /opt/llvm
-RUN if [ -n "${SKIP_LLVM_SRC_BUILD_INSTALL}" ]; then set -eu; rm -rf /opt/llvm; fi
 
 # AWS specific CUDA build guidance
 ENV TORCH_NVCC_FLAGS "-Xfatbin -compress-all"
