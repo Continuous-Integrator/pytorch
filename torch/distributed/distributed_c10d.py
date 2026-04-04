@@ -143,11 +143,15 @@ _UCC_AVAILABLE = True
 _XCCL_AVAILABLE = True
 
 try:
-    # pyrefly: ignore [missing-import]
-    from torchcomms._backend_wrapper import _BackendWrapper
+    try:
+        # pyrefly: ignore [missing-import]
+        from torchcomms._comms import _BackendWrapper
+    except ImportError:
+        # pyrefly: ignore [missing-import]
+        from torchcomms._backend_wrapper import _BackendWrapper
 
     # pyrefly: ignore [missing-import]
-    from torchcomms._comms import new_comm
+    from torchcomms import new_comm
 
     # pyrefly: ignore [missing-import]
     from torchcomms.hooks import FlightRecorderHook
@@ -5161,6 +5165,7 @@ def barrier(
     group: ProcessGroup | None = GroupMember.WORLD,
     async_op: bool = False,
     device_ids=None,
+    timeout: timedelta | None = None,
 ):
     """
     Synchronize all processes.
@@ -5173,6 +5178,8 @@ def barrier(
             the default process group will be used.
         async_op (bool, optional): Whether this op should be an async op
         device_ids ([int], optional): List of device/GPU ids. Only one id is expected.
+        timeout (datetime.timedelta, optional): Timeout for barrier.
+            If ``None``, the default process group timeout will be used.
 
     Returns:
         Async work handle, if async_op is set to True.
@@ -5193,6 +5200,8 @@ def barrier(
 
     opts = BarrierOptions()
     opts.asyncOp = async_op
+    if timeout is not None:
+        opts.timeout = timeout
     # Detect the accelerator on the machine. If no accelerator is available, it
     # returns CPU.
     device = torch._C._get_accelerator()
