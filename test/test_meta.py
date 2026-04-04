@@ -1951,10 +1951,11 @@ class TestMetaKernelConv(TestCase):
 
 class TestMetaKernelRegistrations(TestCase):
     @skipIfTorchDynamo("tests raw meta kernel, not dynamo")
-    def test_make_dep_token_shape(self):
-        result = torch.ops.aten._make_dep_token(device=torch.device("meta"))
-        self.assertEqual(result.dim(), 0)
-        self.assertEqual(result.shape, torch.Size([]))
+    def test_make_dep_token(self):
+        cpu_result = torch.ops.aten._make_dep_token(device=torch.device("cpu"))
+        meta_result = torch.ops.aten._make_dep_token(device=torch.device("meta"))
+        self.assertEqual(cpu_result.shape, meta_result.shape)
+        self.assertEqual(cpu_result.dtype, meta_result.dtype)
 
 
 instantiate_device_type_tests(TestMeta, globals())
