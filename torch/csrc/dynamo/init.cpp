@@ -339,20 +339,7 @@ int64_t get_pynumber_slots(PyTypeObject* type) {
 // Helper function to check if a type has a specific method defined in its MRO
 static bool type_has_method(PyTypeObject* type, const char* method_name) {
   // Check if the method is defined in the type or any of its base classes
-  PyObject* name = PyUnicode_FromString(method_name);
-  if (name == nullptr) {
-    return false;
-  }
-
-  // Use _PyType_LookupRef to look up the method in the type's MRO
-  PyObject* method = _PyType_LookupRef(type, name);
-  Py_DECREF(name);
-
-  if (method != nullptr) {
-    Py_DECREF(method);
-    return true;
-  }
-  return false;
+  return PyObject_HasAttrString((PyObject*)type, method_name);
 }
 
 int64_t get_pytype_slots(PyTypeObject* type) {

@@ -1815,7 +1815,14 @@ class UserDefinedObjectVariable(UserDefinedVariable):
         return result
 
     def tp_iternext(self, tx: "InstructionTranslator") -> VariableTracker:
-        return self.call_method(tx, "__next__", [], {})
+        iter_fn = self._maybe_get_baseclass_method("__next__")
+        if iter_fn:
+            return variables.UserMethodVariable(
+                iter_fn,
+                self,
+                source=self.source and AttrSource(self.source, "__next__"),
+            ).call_function(tx, [], {})
+        return super().tp_iternext(tx)
 
     def is_supported_random(self) -> bool:
         try:
