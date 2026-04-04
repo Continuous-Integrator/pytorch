@@ -1309,6 +1309,7 @@ class ComboKernelTestsMaxAutotune(TestCase):
         self.assertEqual(out_eager, out_compiled)
         self.assertEqual(torch._inductor.metrics.generated_kernel_count, 1)
 
+    @requires_gpu_and_triton
     def test_combo_kernel_per_subkernel_reduction_hint(self):
         def fn(x, y):
             return x.sum(dim=-1), y.sum(dim=0)
