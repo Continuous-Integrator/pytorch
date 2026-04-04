@@ -499,7 +499,7 @@ def slice_backward_rules(op_schema: OpSchema) -> OpStrategy:
         new_placements: list[Placement] = []
         for placement in output_spec.placements:
             # Redistribute to replicate only if the dim is sharded and matches the slice dim
-            if isinstance(placement, (Shard, _StridedShard)) and placement.dim == dim:
+            if isinstance(placement, Shard | _StridedShard) and placement.dim == dim:
                 new_placements.append(Replicate())
             else:
                 new_placements.append(placement)
@@ -517,9 +517,7 @@ def unshard_tensor_dim(
 ) -> tuple[Placement, ...]:
     """Disallow the given tensor dimension to be sharded."""
     return tuple(
-        p
-        if (not isinstance(p, (Shard, _StridedShard)) or p.dim != dim)
-        else Replicate()
+        p if (not isinstance(p, Shard | _StridedShard) or p.dim != dim) else Replicate()
         for p in placements
     )
 
@@ -532,7 +530,7 @@ def replicate_tensor_dim(
     # attribute dim.
     return tuple(
         Replicate()
-        if p.is_partial() or isinstance(p, (Shard, _StridedShard)) and p.dim == dim
+        if p.is_partial() or (isinstance(p, Shard | _StridedShard) and p.dim == dim)
         else p
         for p in placements
     )

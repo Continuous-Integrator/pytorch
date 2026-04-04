@@ -4,7 +4,7 @@ import functools
 import itertools
 import operator
 from collections.abc import Callable, Iterable, Sequence
-from typing import cast, TypeAlias, TypeVar
+from typing import TypeAlias, TypeVar
 
 import torch
 from torch._prims_common import DimsSequenceType, DimsType
@@ -254,10 +254,11 @@ def is_tensor_evenly_shardable_on_dim(
 
     num_shards = 1
     for i, placement in enumerate(spec.placements):
-        if placement.is_shard() or isinstance(placement, _StridedShard):
-            shard_dim = cast(Shard | _StridedShard, placement).dim
-            if shard_dim == dim:
-                num_shards *= spec.mesh.size(i)
+        if isinstance(placement, Shard | _StridedShard) and placement.dim == dim:
+            num_shards *= spec.mesh.size(i)
+            if isinstance(placement, _StridedShard):
+                if shape[dim] % (placement.split_factor * num_shards) != 0:
+                    return False
 
     return shape[dim] % num_shards == 0
 
