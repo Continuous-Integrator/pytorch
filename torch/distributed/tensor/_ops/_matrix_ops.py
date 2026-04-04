@@ -216,6 +216,7 @@ def _scaled_mm_scale_placement(
     elif is_shard_like(data_placement):
         if data_placement.dim == contracting_dim:
             return None
+        # Scale is 1D so strided sharding doesn't apply; plain Shard suffices.
         return Shard(0)
     elif isinstance(data_placement, (Replicate, Partial)):
         return Replicate()
