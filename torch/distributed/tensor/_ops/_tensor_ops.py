@@ -744,7 +744,7 @@ def _derive_follow_placements_from_tuple_strategy(
             return cur_placement
 
         if cur_placement.is_partial():
-            if new_placement.is_shard():
+            if is_shard_like(new_placement):
                 # follow new placement
                 return new_placement
             elif new_placement.is_partial():
@@ -753,8 +753,8 @@ def _derive_follow_placements_from_tuple_strategy(
             else:
                 # follow partial
                 return cur_placement
-        elif cur_placement.is_shard():
-            if new_placement.is_shard():
+        elif is_shard_like(cur_placement):
+            if is_shard_like(new_placement):
                 # cur/new placement are different sharding (i.e. different shard dim)
                 # currently fallback to replicate all args
                 return Replicate()

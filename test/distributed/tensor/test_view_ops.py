@@ -2231,6 +2231,66 @@ class TestViewOps(DTensorContinuousTestBase):
         with self.assertRaises(RuntimeError):
             torch.unbind(dt_flat, dim=0)
 
+    def test_flatten_then_add_strided_shard_inputs(self):
+        """Verify _StridedShard is treated as shard in placement merge.
+
+        Binary ops (e.g. add) with two _StridedShard inputs go through
+        _derive_follow_placements_from_tuple_strategy → merge_placement.
+        merge_placement uses .is_shard() which misses _StridedShard,
+        causing it to fall through to the Replicate branch and triggering
+        an unnecessary all-gather before the elementwise op.
+        """
+        mesh = init_device_mesh(self.device_type, (self.world_size,))
+        shape = (4, self.world_size * 2, 6)
+        full_a = torch.randn(*shape, device=self.device_type)
+        full_b = torch.randn(*shape, device=self.device_type)
+
+        dt_a = distribute_tensor(full_a, mesh, [Shard(1)])
+        dt_b = distribute_tensor(full_b, mesh, [Shard(1)])
+        dt_a_flat = dt_a.flatten(0, 1)
+        dt_b_flat = dt_b.flatten(0, 1)
+
+        self.assertIsInstance(dt_a_flat.placements[0], _StridedShard)
+        self.assertIsInstance(dt_b_flat.placements[0], _StridedShard)
+
+        # add should work without redistribution
+        comm_mode = CommDebugMode()
+        with comm_mode:
+            result = dt_a_flat + dt_b_flat
+
+        expected = full_a.flatten(0, 1) + full_b.flatten(0, 1)
+        self.assertEqual(result.full_tensor(), expected)
+        # If merge_placement treats _StridedShard as Replicate, an
+        # all-gather would be emitted here.
+        self.assertEqual(comm_mode.get_total_counts(), 0)
+
+    def test_flatten_then_redistribute_backward_partial(self):
+        """Verify backward normalize handles _StridedShard → Partial.
+
+        In the backward pass of Redistribute, the code normalizes
+        Shard/Replicate → Partial to just Replicate (to avoid a useless
+        reduce). The check uses .is_shard() which misses _StridedShard,
+        so _StridedShard → Partial would keep the Partial placement
+        instead of normalizing to Replicate.
+        """
+        mesh = init_device_mesh(self.device_type, (self.world_size,))
+        shape = (4, self.world_size * 2, 6)
+        full = torch.randn(*shape, device=self.device_type)
+
+        dt = distribute_tensor(full, mesh, [Shard(1)])
+        dt_flat = dt.flatten(0, 1).requires_grad_(True)
+
+        self.assertIsInstance(dt_flat.placements[0], _StridedShard)
+
+        # redistribute _StridedShard → Replicate, then backward
+        dt_rep = dt_flat.redistribute(mesh, [Replicate()])
+        loss = dt_rep.sum()
+        loss.backward()
+
+        # grad should be all-ones with _StridedShard placement (same as input)
+        expected_grad = torch.ones_like(full.flatten(0, 1))
+        self.assertEqual(dt_flat.grad.full_tensor(), expected_grad)
+
     def test_view_redistribution(self):
         """
         This test is added to demonstrate "incorrect" view ops behavior if redistribution happens.

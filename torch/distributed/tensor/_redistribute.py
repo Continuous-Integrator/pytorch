@@ -27,6 +27,7 @@ from torch.distributed.tensor._utils import assert_no_mixed_partial_types
 from torch.distributed.tensor.device_mesh import DeviceMesh
 from torch.distributed.tensor.placement_types import (
     _StridedShard,
+    is_shard_like,
     Partial,
     Placement,
     Replicate,
@@ -166,11 +167,11 @@ class _TransformInfo:
         src, dst = self.src_dst_placements
         if src.is_partial() and dst.is_replicate():
             return "all_reduce"
-        elif src.is_partial() and dst.is_shard():
+        elif src.is_partial() and is_shard_like(dst):
             return "reduce_scatter"
-        elif src.is_shard() and dst.is_replicate():
+        elif is_shard_like(src) and dst.is_replicate():
             return "all_gather"
-        elif src.is_shard() and dst.is_shard():
+        elif is_shard_like(src) and is_shard_like(dst):
             return "all_to_all"
         else:
             # Local ops (Replicate->Shard, Replicate->Partial, noop, etc.)
@@ -1779,7 +1780,9 @@ class Redistribute(torch.autograd.Function):
         # for backward replicate -> partial, we skip the transformation
         normalized_placements: list[Placement] = []
         for current, target in zip(current_spec.placements, previous_spec.placements):
-            if (current.is_shard() or current.is_replicate()) and target.is_partial():
+            if (
+                is_shard_like(current) or current.is_replicate()
+            ) and target.is_partial():
                 normalized_placements.append(Replicate())
             else:
                 normalized_placements.append(target)
