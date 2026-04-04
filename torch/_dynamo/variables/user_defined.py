@@ -47,7 +47,11 @@ from torch._guards import Source, TracingContext
 from torch.utils._python_dispatch import is_traceable_wrapper_subclass_type
 
 from .. import config, graph_break_hints, polyfills, variables
-from ..bytecode_transformation import create_build_tuple, create_call_function
+from ..bytecode_transformation import (
+    create_build_tuple,
+    create_call_function,
+    create_rot_n,
+)
 from ..create_parameter_op import do_not_convert_to_tracable_parameter
 from ..exc import (
     handle_observed_exception,
@@ -1033,8 +1037,6 @@ class UserDefinedClassVariable(UserDefinedVariable):
                 tuple_vt=tuple_vt,
                 mutation_type=AttributeMutationNew(),
             )
-            tx.output.side_effects.id_to_variable[id(dummy_value)] = result
-            tx.output.side_effects.keepalive.append(dummy_value)
             return result
         elif self.value is torch.Size:
             # This simulates `THPSize_pynew`, the C impl for `Size.__new__`.
@@ -3252,6 +3254,24 @@ class NamedTupleVariable(UserDefinedTupleVariable):
     Type(*args) / Type._make(iterable) for construction.
     """
 
+    _nonvar_fields = {
+        "dynamic_attributes",
+        *UserDefinedTupleVariable._nonvar_fields,
+    }
+
+    def __init__(
+        self,
+        value: object,
+        tuple_vt: "TupleVariable | None" = None,
+        init_args: list[VariableTracker] | None = None,
+        dynamic_attributes: dict[str, VariableTracker] | None = None,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(value, tuple_vt=tuple_vt, init_args=init_args, **kwargs)
+        self.dynamic_attributes: dict[str, VariableTracker] = (
+            dynamic_attributes if dynamic_attributes else {}
+        )
+
     def resolve_data_descriptor(
         self,
         tx: "InstructionTranslator",
@@ -3289,6 +3309,41 @@ class NamedTupleVariable(UserDefinedTupleVariable):
             ]
             + create_call_function(1, False)
         )
+        for name, value in self.dynamic_attributes.items():
+            codegen.dup_top()
+            codegen(value)
+            codegen.extend_output(create_rot_n(2))
+            codegen.store_attr(name)
+
+    def call_method(
+        self,
+        tx: "InstructionTranslator",
+        name: str,
+        args: list[VariableTracker],
+        kwargs: dict[str, VariableTracker],
+    ) -> VariableTracker:
+        if name == "__setattr__":
+            if kwargs or len(args) != 2:
+                unimplemented(
+                    gb_type="NamedTupleVariable.__setattr__ bad args",
+                    context=f"{len(args)} args and {len(kwargs)} kwargs",
+                    explanation="Expected exactly 2 positional args for __setattr__.",
+                    hints=[],
+                )
+            attr_var, value = args
+            attr = attr_var.as_python_constant()
+            fields = namedtuple_fields(self.tuple_cls)
+            if self.tuple_cls.__bases__ == (tuple,) or attr in fields:
+                raise_observed_exception(AttributeError, tx)
+            result = self.method_setattr_standard(tx, attr_var, value)
+            self.dynamic_attributes[attr] = value
+            return result
+        return super().call_method(tx, name, args, kwargs)
+
+    def var_getattr(self, tx: "InstructionTranslator", name: str) -> VariableTracker:
+        if name in self.dynamic_attributes:
+            return self.dynamic_attributes[name]
+        return super().var_getattr(tx, name)
 
 
 class StructSequenceVariable(UserDefinedTupleVariable):
@@ -3296,6 +3351,22 @@ class StructSequenceVariable(UserDefinedTupleVariable):
 
     Structseqs use Type(iterable) calling convention and reject tuple.__new__.
     """
+
+    def resolve_data_descriptor(
+        self,
+        tx: "InstructionTranslator",
+        name: str,
+        type_attr: object,
+        source: Source | None,
+    ) -> VariableTracker:
+        if isinstance(type_attr, types.MemberDescriptorType):
+            # Structseq fields are member_descriptor objects. We emulate
+            # field access by looking up the field name in _fields and
+            # indexing into the tracked tuple items.
+            fields = namedtuple_fields(self.tuple_cls)
+            if name in fields:
+                return self._tuple_vt.items[fields.index(name)]
+        return super().resolve_data_descriptor(tx, name, type_attr, source)
 
     def as_python_constant(self) -> Any:
         items = [x.as_python_constant() for x in self._tuple_vt.items]
