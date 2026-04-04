@@ -2096,6 +2096,30 @@ class TestMetaKernelRegistrations(TestCase):
         self.assertEqual(len(cpu_result.shape), len(fake_result.shape))
         self.assertEqual(cpu_result.dtype, fake_result.dtype)
 
+    @skipIfTorchDynamo("tests raw meta kernel, not dynamo")
+    def test_segment_reduce_2d(self):
+        data_cpu = torch.randn(10, 5)
+        lengths = torch.tensor([3, 4, 3])
+        cpu_result = torch.segment_reduce(data_cpu, "sum", lengths=lengths, axis=0)
+        data_meta = torch.randn(10, 5, device="meta")
+        meta_result = torch.segment_reduce(
+            data_meta, "sum", lengths=lengths, axis=0
+        )
+        self.assertEqual(cpu_result.shape, meta_result.shape)
+        self.assertEqual(cpu_result.dtype, meta_result.dtype)
+
+    @skipIfTorchDynamo("tests raw meta kernel, not dynamo")
+    def test_segment_reduce_batched_shape(self):
+        # axis=1 with 2D lengths exercises the shape fix (using data.shape
+        # as base instead of lengths.shape). CPU segfaults for this case
+        # so we verify shape on meta only.
+        data = torch.randn(10, 5, device="meta")
+        lengths = torch.ones(2, 3, dtype=torch.long)
+        result = torch.segment_reduce(
+            data, "sum", lengths=lengths, axis=1, unsafe=True
+        )
+        self.assertEqual(result.shape, (10, 3))
+
 
 instantiate_device_type_tests(TestMeta, globals())
 
