@@ -1354,6 +1354,11 @@ class DTensorRedistributePlanner:
                 target = target_placements[mesh_dim]
                 # If target is not Shard, we can directly redistribute since we
                 # are traversing from inner to outer placements here
+                # TODO: extend nested sharding detection to _StridedShard
+                # (isinstance check and is_shard() below miss it).
+                # Safe today: strategies convert _StridedShard to Replicate
+                # on ALL mesh dims for a given reduction dim, so misaligned
+                # nested _StridedShard targets can't arise.
                 if isinstance(target, Shard):
                     # If target is Shard, check for nested sharding on the
                     # tensor dim BEFORE the current mesh_dim

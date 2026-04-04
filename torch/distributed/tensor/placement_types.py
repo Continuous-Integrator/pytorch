@@ -62,6 +62,10 @@ class Shard(torch._C._distributed.Shard):
 
     .. warning:: sharding on a tensor dimension where the tensor dimension size is not
         evenly divisible on a DeviceMesh dimension is currently experimental and subject to change.
+
+    .. note:: When checking whether a placement is shard-like, use
+        :func:`is_shard_like` instead of ``isinstance(p, Shard)`` to also
+        match :class:`_StridedShard`.
     """
 
     def _split_tensor(

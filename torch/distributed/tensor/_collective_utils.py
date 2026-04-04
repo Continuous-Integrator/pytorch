@@ -390,7 +390,7 @@ def _compute_placement_transition_cost(
     if current_placement == target_placement:
         return 0.0, comm_bytes_gb
 
-    from torch.distributed.tensor.placement_types import is_shard_like
+    from torch.distributed.tensor.placement_types import _StridedShard, is_shard_like
 
     num_devices_on_mesh_dim = mesh_topo.mesh_dim_devices[mesh_dim]
 
@@ -402,6 +402,11 @@ def _compute_placement_transition_cost(
         comm_bytes_gb *= num_devices_on_mesh_dim
         return allgather_cost(comm_bytes_gb, mesh_topo, mesh_dim), comm_bytes_gb
     elif current_is_shard and target_is_shard:
+        # _StridedShard <-> Shard cross-type not implemented yet
+        if isinstance(current_placement, _StridedShard) != isinstance(
+            target_placement, _StridedShard
+        ):
+            return float("inf"), comm_bytes_gb
         # should be alltoall comm, since we haven't implement it yet, add 1.0 as penalty
         # to favor allgather instead
         # TODO: add alltoall_cost
@@ -409,6 +414,9 @@ def _compute_placement_transition_cost(
     elif current_placement.is_partial() and target_placement.is_replicate():
         return allreduce_cost(comm_bytes_gb, mesh_topo, mesh_dim), comm_bytes_gb
     elif current_placement.is_partial() and target_is_shard:
+        if isinstance(target_placement, _StridedShard):
+            # reduce_scatter to _StridedShard not implemented yet
+            return float("inf"), comm_bytes_gb
         cost = reduce_scatter_cost(comm_bytes_gb, mesh_topo, mesh_dim)
         # after reduce_scatter the comm bytes for further collectives halved.
         comm_bytes_gb /= num_devices_on_mesh_dim
