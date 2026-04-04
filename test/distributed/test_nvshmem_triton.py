@@ -10,7 +10,7 @@ from torch.testing._internal.common_utils import TEST_WITH_ROCM
 
 # Skip entire module on ROCm before importing NVSHMEM-specific modules
 # NVSHMEM is NVIDIA-specific and can cause crashes during import on ROCm
-if TEST_WITH_ROCM:
+if TEST_WITH_ROCM or not torch.backends.cuda.is_built():
     print("NVSHMEM not available on ROCm, skipping tests")
     sys.exit(0)
 
