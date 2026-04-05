@@ -861,11 +861,21 @@ class SideEffects:
                 cg.add_cache(var)
                 var.source = TempLocalSource(cg.tempvars[var])
 
-                if isinstance(var, variables.FrozenDataClassVariable):
-                    for name, value in self.store_attr_mutations.get(var, {}).items():
+                # For frozen dataclasses (and other objects with custom
+                # __setattr__), we must emit object.__setattr__ immediately
+                # after __new__ — before any other code can access the object.
+                # The suffix-based codegen in codegen_update_mutated runs too
+                # late: if intervening code calls __repr__ (e.g. f-strings),
+                # the attributes won't be set yet.
+                if (
+                    isinstance(var, variables.UserDefinedObjectVariable)
+                    and var.needs_slow_setattr()
+                    and var in self.store_attr_mutations
+                ):
+                    for name, value in self.store_attr_mutations[var].items():
                         cg.load_import_from("builtins", "object")
                         cg.load_method("__setattr__")
-                        cg(var.source)  # type: ignore[attr-defined]
+                        cg(var.source)
                         cg(variables.ConstantVariable(name))
                         cg(value)
                         cg.extend_output(
@@ -1196,13 +1206,17 @@ class SideEffects:
                     _maybe_log_side_effect(var)
 
             elif self.is_attribute_mutation(var):
-                if isinstance(var.mutation_type, AttributeMutationNew) and isinstance(
-                    var, variables.FrozenDataClassVariable
+                # AttributeMutationNew objects with needs_slow_setattr() had
+                # their attributes emitted in codegen_save_tempvars right after
+                # __new__. Skip the suffix here to avoid double-emitting.
+                if (
+                    isinstance(var.mutation_type, AttributeMutationNew)
+                    and isinstance(var, variables.UserDefinedObjectVariable)
+                    and var.needs_slow_setattr()
                 ):
-                    # These frozen attribute initializations are handled in codegen_save_tempvars
-                    # and don't need to be reset in the suffix.
                     continue
-                elif isinstance(
+
+                if isinstance(
                     var,
                     variables.UserDefinedDictVariable,
                 ) and self.is_modified(var._dict_vt):
