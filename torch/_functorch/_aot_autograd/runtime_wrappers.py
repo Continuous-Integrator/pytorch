@@ -601,7 +601,7 @@ class _RuntimeForwardEpilogue:
             for t, o in zip(ret_outs, self.runtime_metadata.output_info):
                 if o.dynamic_dims is None:
                     continue
-                maybe_mark_dynamic_helper(t, o.dynamic_dims)
+                mark_dynamo_propagated_dynamic_indices(t, o.dynamic_dims)
         if self.runtime_metadata.grad_enabled_mutation is not None:
             torch._C._set_grad_enabled(self.runtime_metadata.grad_enabled_mutation)
         return ret_outs
@@ -2433,9 +2433,11 @@ class _AutogradSavedState:
         # (vc_check + no_vc_check combined). Mark dynamics on the detached tensors.
         for idx, dims in self.metadata.dynamic_saved_tensors_idxs.items():
             if idx < num_vc_check:
-                maybe_mark_dynamic_helper(tensors_to_save[idx], dims)
+                mark_dynamo_propagated_dynamic_indices(tensors_to_save[idx], dims)
             else:
-                maybe_mark_dynamic_helper(tensors_no_vc_check[idx - num_vc_check], dims)
+                mark_dynamo_propagated_dynamic_indices(
+                    tensors_no_vc_check[idx - num_vc_check], dims
+                )
 
         ctx.save_for_backward(*tensors_to_save)
         ctx._tensors_no_vc_check = tensors_no_vc_check

@@ -1806,7 +1806,7 @@ class LAMBDA_GUARD : public LeafGuard {
     return result;
   }
 
-  GuardDebugInfo C(PyObject* value) override {
+  GuardDebugInfo check_verbose_nopybind(PyObject* value) override {
     PyObject* x = PyObject_CallOneArg(_guard_check_fn.ptr(), value); // new ref
     if (x == nullptr) {
       // An exception is caught in the lambda function.
@@ -2855,18 +2855,19 @@ class DIMENSION_DYNAMIC_MARKING_GUARD : public LeafGuard {
         continue;
       }
       bool match = py_equals(actual, expected.ptr(), /*false_on_error=*/false);
-      Py_DECREF(actual);
       if (!match) {
         std::string attr_name = PyUnicode_AsUTF8(attr_str);
+        std::string actual_str =
+            py::repr(py::reinterpret_borrow<py::object>(actual))
+                .cast<std::string>();
+        Py_DECREF(actual);
         return GuardDebugInfo(
             false,
             attr_name + " mismatch: expected " +
-                py::repr(expected).cast<std::string>() + ", got " +
-                py::repr(py::reinterpret_steal<py::object>(
-                             PyObject_GetAttr(value, attr_str)))
-                    .cast<std::string>(),
+                py::repr(expected).cast<std::string>() + ", got " + actual_str,
             0);
       }
+      Py_DECREF(actual);
     }
 
     // Check absent attrs
@@ -2902,15 +2903,16 @@ class DIMENSION_DYNAMIC_MARKING_GUARD : public LeafGuard {
         continue;
       }
       bool match = py_equals(actual, expected.ptr(), /*false_on_error=*/false);
-      Py_DECREF(actual);
       if (!match) {
         std::string attr_name = PyUnicode_AsUTF8(attr_str);
+        Py_DECREF(actual);
         return GuardDebugInfo(
             false,
             attr_name + " mismatch: expected " +
                 py::repr(expected).cast<std::string>(),
             0);
       }
+      Py_DECREF(actual);
     }
 
     return GuardDebugInfo(true, 0);
