@@ -24,6 +24,7 @@ while enabling optimizations where safe.
 import collections
 import contextlib
 import inspect
+import logging
 import textwrap
 import traceback
 import warnings
@@ -85,6 +86,14 @@ def _manual_dict_setitem(
 def _manual_list_update(list_from: list[Any], list_to: list[Any]) -> None:
     list.clear(list_to)
     list.extend(list_to, list_from)
+
+
+def _manual_list_replay(
+    list_to: list[Any], appended_items: list[Any], clear_first: bool
+) -> None:
+    if clear_first:
+        list.clear(list_to)
+    list.extend(list_to, appended_items)
 
 
 class SideEffects:
@@ -549,6 +558,8 @@ class SideEffects:
         else:
             if isinstance(base_cls_vt, variables.BuiltinVariable):
                 base_cls = base_cls_vt.fn
+            elif isinstance(base_cls_vt, variables.DictBuiltinVariable):
+                base_cls = dict
             elif isinstance(base_cls_vt, variables.UserDefinedClassVariable):
                 base_cls = base_cls_vt.value
             else:
@@ -835,6 +846,17 @@ class SideEffects:
                 cg.add_cache(var)
                 var.source = TempLocalSource(cg.tempvars[var])
 
+                if isinstance(var, variables.FrozenDataClassVariable):
+                    for name, value in self.store_attr_mutations.get(var, {}).items():
+                        cg.load_import_from("builtins", "object")
+                        cg.load_method("__setattr__")
+                        cg(var.source)  # type: ignore[attr-defined]
+                        cg(variables.ConstantVariable(name))
+                        cg(value)
+                        cg.extend_output(
+                            [*create_call_method(3), create_instruction("POP_TOP")]
+                        )
+
         for ctx, args in self.save_for_backward:
             cg(ctx.source)
             cg.load_method("save_for_backward")
@@ -1004,6 +1026,31 @@ class SideEffects:
                 # Log individual side effects for granular debugging
                 side_effects_log.debug(msg)
 
+        def _codegen_direct_list_replay(
+            list_vt: "ListVariable", source: Source | None
+        ) -> bool:
+            if source is None or not list_vt.has_direct_list_replay():
+                return False
+            appended_items = list_vt.direct_list_replay_appends()
+
+            cg.add_push_null(
+                lambda: cg.load_import_from(__name__, "_manual_list_replay")
+            )
+            cg(source)
+            cg.foreach(appended_items)
+            cg.append_output(create_instruction("BUILD_LIST", arg=len(appended_items)))
+            cg.append_output(
+                cg.create_load_const(list_vt.direct_list_replay_should_clear())
+            )
+            suffixes.append(
+                [
+                    *create_call_function(3, False),
+                    create_instruction("POP_TOP"),
+                ]
+            )
+            _maybe_log_side_effect(list_vt)
+            return True
+
         suffixes = []
         for var in self._get_modified_vars():
             # When replay_side_effects=False, only update variables with TempLocalSource
@@ -1012,6 +1059,8 @@ class SideEffects:
             ):
                 continue
             if isinstance(var, variables.ListVariable):
+                if _codegen_direct_list_replay(var, var.source):
+                    continue
                 # old[:] = new
                 cg(var, allow_cache=False)  # Don't codegen via source
                 cg(var.source)  # type: ignore[attr-defined]
@@ -1132,7 +1181,13 @@ class SideEffects:
                     _maybe_log_side_effect(var)
 
             elif self.is_attribute_mutation(var):
-                if isinstance(
+                if isinstance(var.mutation_type, AttributeMutationNew) and isinstance(
+                    var, variables.FrozenDataClassVariable
+                ):
+                    # These frozen attribute initializations are handled in codegen_save_tempvars
+                    # and don't need to be reset in the suffix.
+                    continue
+                elif isinstance(
                     var,
                     variables.UserDefinedDictVariable,
                 ) and self.is_modified(var._dict_vt):
@@ -1191,41 +1246,42 @@ class SideEffects:
                     var,
                     variables.UserDefinedListVariable,
                 ) and self.is_modified(var._list_vt):
-                    # Update the list to the updated items. Be careful in
-                    # calling the list methods and not the overridden methods.
-                    varname_map = {}
-                    for name in _manual_list_update.__code__.co_varnames:
-                        varname_map[name] = cg.tx.output.new_var()
+                    if not _codegen_direct_list_replay(var._list_vt, var.source):
+                        # Update the list to the updated items. Be careful in
+                        # calling the list methods and not the overridden methods.
+                        varname_map = {}
+                        for name in _manual_list_update.__code__.co_varnames:
+                            varname_map[name] = cg.tx.output.new_var()
 
-                    cg(var.source)  # type: ignore[attr-defined]
-                    cg.extend_output(
-                        [
-                            create_instruction(
-                                "STORE_FAST", argval=varname_map["list_to"]
-                            )
-                        ]
-                    )
+                        cg(var.source)  # type: ignore[attr-defined]
+                        cg.extend_output(
+                            [
+                                create_instruction(
+                                    "STORE_FAST", argval=varname_map["list_to"]
+                                )
+                            ]
+                        )
 
-                    cg(var._list_vt, allow_cache=False)  # Don't codegen via source
-                    cg.extend_output(
-                        [
-                            create_instruction(
-                                "STORE_FAST", argval=varname_map["list_from"]
-                            )
-                        ]
-                    )
+                        cg(var._list_vt, allow_cache=False)  # Don't codegen via source
+                        cg.extend_output(
+                            [
+                                create_instruction(
+                                    "STORE_FAST", argval=varname_map["list_from"]
+                                )
+                            ]
+                        )
 
-                    list_update_insts = bytecode_from_template(
-                        _manual_list_update, varname_map=varname_map
-                    )
+                        list_update_insts = bytecode_from_template(
+                            _manual_list_update, varname_map=varname_map
+                        )
 
-                    suffixes.append(
-                        [
-                            *list_update_insts,
-                            create_instruction("POP_TOP"),
-                        ]
-                    )
-                    _maybe_log_side_effect(var._list_vt)
+                        suffixes.append(
+                            [
+                                *list_update_insts,
+                                create_instruction("POP_TOP"),
+                            ]
+                        )
+                        _maybe_log_side_effect(var._list_vt)
 
                 # Applying mutations involves two steps: 1) Push all
                 # reconstructed objects onto the stack.  2) Call STORE_ATTR to
@@ -1315,6 +1371,15 @@ class SideEffects:
                     cg.call_function(1, False)
                     cg.pop_top()
                 _maybe_log_side_effect(var)
+            elif isinstance(var, variables.CountIteratorVariable):
+                for _ in range(var.advance_count):
+                    cg.add_push_null(
+                        lambda: cg.load_import_from(utils.__name__, "iter_next")
+                    )
+                    cg(var.source)  # type: ignore[attr-defined]
+                    cg.call_function(1, False)
+                    cg.pop_top()
+                _maybe_log_side_effect(var)
             elif isinstance(var, variables.RandomVariable):
                 # set correct random seed state
                 def gen_fn() -> None:
@@ -1351,6 +1416,15 @@ class SideEffects:
                 },
                 payload_fn=lambda: combined_msg,
             )
+
+    def log_side_effects_summary(self) -> None:
+        if config.side_effect_replay_policy == "silent":
+            return
+        if not side_effects_log.isEnabledFor(logging.DEBUG):
+            return
+        for var in self._get_modified_vars():
+            msg = self._format_side_effect_message(var)
+            side_effects_log.debug(msg)
 
     def is_empty(self) -> bool:
         return not (
