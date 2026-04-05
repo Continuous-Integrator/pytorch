@@ -45,7 +45,7 @@ import torch._dynamo.config
 import torch.nn
 from torch._guards import Source, TracingContext
 from torch.utils._python_dispatch import is_traceable_wrapper_subclass_type
-from torch.utils._pytree import is_structseq_class
+from torch.utils._pytree import GetAttrKey, is_structseq_class
 
 from .. import config, graph_break_hints, polyfills, variables
 from ..bytecode_transformation import create_call_function
@@ -3228,6 +3228,103 @@ class UserDefinedTupleVariable(UserDefinedObjectVariable):
 
     def get_construct_fn(self) -> Callable[..., Any]:
         raise NotImplementedError
+
+    def _validate_rest_for_tree_map(
+        self, rest: "collections.abc.Sequence[VariableTracker]"
+    ) -> list["UserDefinedTupleVariable"] | None:
+        """Validate that rest args are compatible for tree_map fast-path."""
+        others: list[UserDefinedTupleVariable] = []
+        n = len(self._tuple_vt.items)
+        for candidate in rest:
+            if (
+                not isinstance(candidate, UserDefinedTupleVariable)
+                or len(candidate._tuple_vt.items) != n
+                or candidate.tuple_cls is not self.tuple_cls
+            ):
+                return None
+            others.append(candidate)
+        return others
+
+    def _make_tree_map_result(
+        self, new_items: list[VariableTracker]
+    ) -> "UserDefinedTupleVariable":
+        from .lists import TupleVariable
+
+        tuple_vt = TupleVariable(new_items, mutation_type=ValueMutationNew())
+        return type(self)(
+            self.value,
+            tuple_vt=tuple_vt,
+            mutation_type=ValueMutationNew(),
+        )
+
+    def _is_pytree_node(self) -> bool:
+        from torch.utils._pytree import is_namedtuple_class
+
+        return is_namedtuple_class(self.tuple_cls) or is_structseq_class(
+            self.tuple_cls
+        )
+
+    def call_tree_map_branch(
+        self,
+        tx: "InstructionTranslator",
+        tree_map_fn: "variables.functions.UserFunctionVariable",
+        map_fn: "VariableTracker",
+        rest: "collections.abc.Sequence[VariableTracker]",
+        tree_map_kwargs: "dict[str, VariableTracker]",
+    ) -> "VariableTracker":
+        if not self._is_pytree_node():
+            return super().call_tree_map_branch(
+                tx, tree_map_fn, map_fn, rest, tree_map_kwargs
+            )
+        others = self._validate_rest_for_tree_map(rest)
+        if others is None:
+            return self._tree_map_fallback(
+                tx, tree_map_fn, map_fn, rest, tree_map_kwargs
+            )
+
+        new_items: list[VariableTracker] = []
+        for idx, item in enumerate(self._tuple_vt.items):
+            sibling_leaves = [o._tuple_vt.items[idx] for o in others]
+            new_items.append(
+                item.call_tree_map(
+                    tx, tree_map_fn, map_fn, sibling_leaves, tree_map_kwargs
+                )
+            )
+
+        return self._make_tree_map_result(new_items)
+
+    def call_tree_map_with_path_branch(
+        self,
+        tx: "InstructionTranslator",
+        tree_map_fn: "variables.functions.UserFunctionVariable",
+        map_fn: "VariableTracker",
+        rest: "collections.abc.Sequence[VariableTracker]",
+        tree_map_kwargs: "dict[str, VariableTracker]",
+        keypath: "tuple[Any, ...]",
+    ) -> "VariableTracker":
+        if not self._is_pytree_node():
+            return super().call_tree_map_with_path_branch(
+                tx, tree_map_fn, map_fn, rest, tree_map_kwargs, keypath
+            )
+        others = self._validate_rest_for_tree_map(rest)
+        if others is None:
+            return self._tree_map_with_path_fallback(
+                tx, tree_map_fn, map_fn, rest, tree_map_kwargs, keypath
+            )
+
+        fields = namedtuple_fields(self.tuple_cls)
+        new_items: list[VariableTracker] = []
+        for idx, item in enumerate(self._tuple_vt.items):
+            sibling_leaves = [o._tuple_vt.items[idx] for o in others]
+            child_keypath = keypath + (GetAttrKey(fields[idx]),)
+            new_items.append(
+                item.call_tree_map_with_path(
+                    tx, tree_map_fn, map_fn, sibling_leaves, tree_map_kwargs,
+                    child_keypath,
+                )
+            )
+
+        return self._make_tree_map_result(new_items)
 
     def unpack_var_sequence(self, tx: "InstructionTranslator") -> list[VariableTracker]:
         assert self._tuple_vt is not None

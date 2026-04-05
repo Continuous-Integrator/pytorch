@@ -698,12 +698,3 @@ def group_tensors_by_device_and_dtype(
             indices.append(idx)
 
     return result
-
-
-def _prepend_keypath(prefix: tuple[Any, ...], fn: Callable[..., T]) -> Callable[..., T]:
-    """Wrap a tree_map_with_path mapper to prepend a keypath prefix."""
-
-    def wrapped(kp: tuple[Any, ...], *args: Any) -> T:
-        return fn((*prefix, *kp), *args)
-
-    return wrapped

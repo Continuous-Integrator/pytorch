@@ -783,19 +783,6 @@ class VariableTracker(metaclass=VariableTrackerMeta):
             tree_map_kwargs,
             keypath,
         )
-        # Wrap map_fn to prepend the accumulated keypath prefix. The fallback
-        # traces tree_map_with_path from scratch on this subtree, which starts
-        # with an empty keypath. Without wrapping, the prefix from ancestor
-        # nodes (e.g. MappingKey from a parent dict) would be lost.
-        if keypath:
-            from ..polyfills import _prepend_keypath
-
-            keypath_var = variables.TupleVariable(
-                [VariableTracker.build(tx, k) for k in keypath]
-            )
-            prepend_fn = VariableTracker.build(tx, _prepend_keypath)
-            map_fn = prepend_fn.call_function(tx, [keypath_var, map_fn], {})
-
         return tree_map_fn_copy.call_function(
             tx,
             [map_fn, self, *rest],
