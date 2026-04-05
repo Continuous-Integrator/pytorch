@@ -2572,6 +2572,14 @@ class FrozenDataClassVariable(UserDefinedObjectVariable):
 
         return self.python_type()(*args, **kwargs)
 
+    def reconstruct(self, codegen: "PyCodegen") -> None:
+        if self.source is not None:
+            codegen(self.source)
+            return
+        codegen.append_output(
+            codegen.create_load_const_unchecked(self.as_python_constant())
+        )
+
     def __repr__(self) -> str:
         return f"{self.__class__.__name__}({self.value_type.__name__})"
 
