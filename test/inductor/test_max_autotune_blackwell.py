@@ -367,7 +367,11 @@ class TestBlackwellTMAStoreFusion(TestCase):
 
         torch.testing.assert_close(actual, expected, atol=1e-1, rtol=1e-1)
 
+<<<<<<< HEAD
         FileCheck().check("triton_tem_fused_mm").check("tma_descriptor").check(".store").run(code[0])
+=======
+        FileCheck().check("triton_tem_fused_mm").check(".store").run(code[0])
+>>>>>>> d3724278abe (TMA store within pointwise epilogue fusion, Inductor codegen)
 
     @unittest.skipIf(
         not has_datacenter_blackwell_tma_device(),
