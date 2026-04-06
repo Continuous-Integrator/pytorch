@@ -1114,7 +1114,7 @@ function create_trace_view(
   if (include_private_inactive) {
     dst.append('div')
       .attr('style', 'padding: 4px 8px; background: #fff3cd; border: 1px solid #ffc107; font-size: 13px; margin-bottom: 4px;')
-      .text('Note: Private pool memory is shown as allocated until the pool\'s segment is freed. '
+      .text('Note: Private pool memory (the gray bar) is shown as allocated until the pool\'s segment is freed. '
           + 'This view requires that MemPools are not deleted before torch.cuda.memory._snapshot() is called.');
   }
   const d = dst.append('div');

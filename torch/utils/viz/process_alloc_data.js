@@ -230,7 +230,9 @@ function format_frames(frames) {
       `This block has no frames. Potential causes:\n` +
       `1) This block was allocated before _record_memory_history was enabled.\n` +
       `2) The context or stacks passed to _record_memory_history does not include this block. Consider changing context to 'state', 'alloc', or 'all', or changing stacks to 'all'.\n` +
-      `3) This event occurred during backward, which has no python frames, and memory history did not include C++ frames. Use stacks='all' to record both C++ and python frames.`
+      `3) This event occurred during backward, which has no python frames, and memory history did not include C++ frames. Use stacks='all' to record both C++ and python frames.\n` +
+      `4) This block was reconstructed from the allocator's segment snapshot (not from a trace event). The snapshot records which blocks exist at the moment _snapshot() is called, but does not carry stack frames. This typically happens for blocks that were allocated before tracing started and never freed, or for inactive blocks in private memory pools.\n` +
+      `5) The original alloc event was evicted from the trace ring buffer (older entries are overwritten when the buffer is full). Increase the max_entries argument to _record_memory_history to retain more events.`
     );
   }
   const frame_strings = frames
@@ -291,6 +293,10 @@ function format_frames(frames) {
  *    height is the pool's high-water mark. Active blocks within the pool are
  *    rendered as colored stripes inside the envelope. The envelope only grows
  *    (never shrinks), representing reserved capacity.
+ *
+ *    Initially-allocated private pool blocks are PRE-LOADED into pool state
+ *    so that when their free event appears in the trace, they are correctly
+ *    recognized as frees (not misinterpreted as new allocations).
  *
  * NOTE ON FREE EVENT MATCHING: The C++ allocator emits 'free_requested' and
  * 'free_completed' for each deallocation. This function matches against 'free'
@@ -596,8 +602,46 @@ function process_alloc_data(snapshot, device, plot_segments, max_entries, includ
 
   // --- Process initially_allocated elements ---
   for (const elem of initially_allocated) {
-    // Skip private pool blocks — they're handled by the pool envelope
     if (include_private_inactive && get_pool_key(elem)) {
+      // Pre-load private pool blocks into pool state so that when they
+      // appear in the actions list (as a free-without-matching-alloc),
+      // they are correctly recognized as frees rather than new allocs.
+      const pk = get_pool_key(elem);
+      const size = elements[elem].size;
+      const pool = get_or_create_pool(pk);
+      pool_active_elems[elem] = pk;
+
+      if (pool.envelope_data === null) {
+        const env = {
+          elem: `pool:${pk}`,
+          timesteps: [timestep],
+          offsets: [total_mem],
+          size: [0],
+          color: 9,
+        };
+        pool.envelope_data = env;
+        current.push(`pool:${pk}`);
+        current_data.push(env);
+        data.push(env);
+      }
+
+      const inner_offset = pool.active;
+      pool.active += size;
+
+      if (pool.active > pool.max) {
+        grow_pool_envelope(pool, pk, pool.active);
+      }
+
+      const stripe = {
+        elem,
+        timesteps: [timestep],
+        offsets: [pool.envelope_data.offsets.at(-1) + inner_offset],
+        size,
+        color: elem_color(elem),
+        opacity: 0.5,
+      };
+      pool.block_stack.push({elem, size, inner_offset, stripe_data: stripe});
+      data.push(stripe);
       continue;
     }
     if (elem in draw_elem) {
