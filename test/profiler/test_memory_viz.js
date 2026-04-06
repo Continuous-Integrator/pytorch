@@ -544,6 +544,55 @@ function test_post177717_mixed_events_with_and_without_pool_id() {
 
 
 // ============================================================
+// Segment snapshot tests
+// ============================================================
+
+function test_segment_snapshot_with_trace_history() {
+  console.log('test_segment_snapshot_with_trace_history');
+  const poolId = [1, 42];
+  const snapshot = makeSnapshot({
+    traces: [
+      { action: 'alloc', addr: 5000, size: 1000, frames: [], stream: 0 },
+      { action: 'free_completed', addr: 5000, size: 1000, frames: [], stream: 0 },
+    ],
+    segments: [{
+      device: 0, address: 4096, total_size: 8192, segment_pool_id: poolId,
+      stream: 0, blocks: [
+        { addr: 5000, size: 1000, requested_size: 1000, state: 'inactive',
+          frames: [], version: 0 },
+      ],
+    }],
+  });
+
+  const result = process_alloc_data(snapshot, 0, false, 15000, true);
+  assertEqual(result.elements_length, 1,
+    'only trace element present, snapshot block not duplicated');
+}
+
+function test_segment_snapshot_no_trace() {
+  console.log('test_segment_snapshot_no_trace');
+  const poolId = [1, 42];
+  const snapshot = makeSnapshot({
+    traces: [],
+    segments: [{
+      device: 0, address: 4096, total_size: 8192, segment_pool_id: poolId,
+      stream: 0, blocks: [
+        { addr: 5000, size: 1000, requested_size: 1000, state: 'inactive',
+          frames: [], version: 0 },
+      ],
+    }],
+  });
+
+  const result = process_alloc_data(snapshot, 0, false, 15000, true);
+  assertEqual(result.elements_length, 0,
+    'snapshot-only block should not be added (include_private_inactive=true)');
+
+  const result2 = process_alloc_data(snapshot, 0, false, 15000, false);
+  assertEqual(result2.elements_length, 0,
+    'snapshot-only block should not be added (include_private_inactive=false)');
+}
+
+// ============================================================
 // Run all tests
 // ============================================================
 
@@ -573,6 +622,7 @@ test_context_for_id_free_without_alloc();
 test_post177717_pool_id_from_trace_event();
 test_post177717_pool_free_without_alloc_no_segment();
 test_post177717_mixed_events_with_and_without_pool_id();
-
+test_segment_snapshot_with_trace_history();
+test_segment_snapshot_no_trace();
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed > 0 ? 1 : 0);
