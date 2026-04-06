@@ -1902,9 +1902,7 @@ class DictViewVariable(VariableTracker):
         args: list[VariableTracker],
         kwargs: dict[str, VariableTracker],
     ) -> VariableTracker:
-        if name == "__len__":
-            return self.dv_dict.call_method(tx, name, args, kwargs)
-        elif name == "__repr__":
+        if name == "__repr__":
             return VariableTracker.build(tx, self.debug_repr())
         return super().call_method(tx, name, args, kwargs)
 
