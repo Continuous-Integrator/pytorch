@@ -1332,9 +1332,11 @@ class _CachingTorchDispatchMode(TorchDispatchMode):
         kwargs = {} if kwargs is None else kwargs
         is_compiling = _is_compiling(func, args, kwargs)
 
+        if is_compiling:
+            fx_traceback.current_meta["ac_graph_id"] = self.ac_graph_id
+            fx_traceback.current_meta["recompute"] = CheckpointPolicy.PREFER_RECOMPUTE
+
         if func in SAC_IGNORED_OPS:
-            if is_compiling:
-                fx_traceback.current_meta["recompute"] = CheckpointPolicy.PREFER_RECOMPUTE
             return func(*args, **kwargs)
 
         proxy_mode = None
@@ -1368,7 +1370,6 @@ class _CachingTorchDispatchMode(TorchDispatchMode):
                 num_new = len(graph.nodes) - graph_len_before
                 for node, _ in zip(reversed(graph.nodes), range(num_new)):
                     node.meta["recompute"] = policy
-                    node.meta["ac_graph_id"] = self.ac_graph_id
 
         if policy in (CheckpointPolicy.MUST_SAVE, CheckpointPolicy.PREFER_SAVE) or is_compiling:
             self.storage[func][idx] = tree_map(lambda x: _VersionWrapper(_maybe_detach(x, any_ret_has_alias_info)), out)
