@@ -126,7 +126,6 @@ def _create_graph(
     with (
         enable_python_dispatcher(),
         ctx,
-        torch.fx.traceback.preserve_node_meta(),
     ):
         fx_g = make_fx(
             inner_f,
