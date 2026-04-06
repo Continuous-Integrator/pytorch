@@ -15201,17 +15201,20 @@ class TestNestedCheckpoint(TestCase):
 
 @contextlib.contextmanager
 def _counter_op(name):
-    """Yields (op, counts) where op is a custom op that counts invocations."""
+    """Yields (op, counts, idx_log) where op is a custom op that counts
+    invocations. idx_log maps call_idx (passed by caller) to replay count."""
     counts = [0]
+    idx_log: dict = {}
     with torch.library._scoped_library("test_ckpt", "FRAGMENT"):
 
         @torch.library.custom_op(f"test_ckpt::{name}", mutates_args=())
-        def op(x: torch.Tensor) -> torch.Tensor:
+        def op(x: torch.Tensor, call_idx: int) -> torch.Tensor:
             counts[0] += 1
+            idx_log[call_idx] = idx_log.get(call_idx, 0) + 1
             return x.sin()
 
         @op.register_fake
-        def _(x):
+        def _(x, call_idx):
             return torch.empty_like(x)
 
         def setup_context(ctx, inputs, output):
@@ -15219,11 +15222,11 @@ def _counter_op(name):
 
         def backward(ctx, grad):
             (x,) = ctx.saved_tensors
-            return grad * x.cos()
+            return grad * x.cos(), None
 
         op.register_autograd(backward, setup_context=setup_context)
 
-        yield op, counts
+        yield op, counts, idx_log
 
 
 class _AutoNamingMode(TorchDispatchMode):
@@ -15691,8 +15694,8 @@ class TestSelectiveActivationCheckpoint(TestCase):
     def test_checkpoint_name_skips_recomputation(self):
         from torch.utils.checkpoint import checkpoint_name
 
-        with _counter_op("name_a") as (op_a, counts_a), \
-             _counter_op("name_b") as (op_b, counts_b):
+        with _counter_op("name_a") as (op_a, counts_a, _), \
+             _counter_op("name_b") as (op_b, counts_b, _):
 
             def policy_fn(ctx, op, *args, **kwargs):
                 if ctx.tensor_name == "keep_this":
@@ -15700,9 +15703,9 @@ class TestSelectiveActivationCheckpoint(TestCase):
                 return CheckpointPolicy.PREFER_RECOMPUTE
 
             def fn(x):
-                y = op_a(x)
+                y = op_a(x, 0)
                 checkpoint_name(y, "keep_this")
-                return op_b(y)
+                return op_b(y, 0)
 
             x = torch.randn(4, requires_grad=True)
             context_fn = functools.partial(create_selective_checkpoint_contexts, policy_fn)
@@ -15725,15 +15728,14 @@ class TestSelectiveActivationCheckpoint(TestCase):
 
     @skipIfTorchDynamo("torch dispatch modes don't support compile")
     def test_auto_naming_mode_names(self):
-        # Use AutoNamingMode names to selectively save specific invocations
-        # of the same op across a multi-layer module hierarchy. The policy
-        # records decisions during forward and replays them during recompute.
-        with _counter_op("my_op") as (my_op, my_count):
+        with _counter_op("my_op") as (my_op, my_count, idx_log):
 
             class Block(torch.nn.Module):
-                def forward(self, x):
-                    # Three calls per block: counts 0, 1, 2
-                    return my_op(my_op(my_op(x)))
+                def forward(self, x, counter):
+                    x = my_op(x, counter[0]); counter[0] += 1
+                    x = my_op(x, counter[0]); counter[0] += 1
+                    x = my_op(x, counter[0]); counter[0] += 1
+                    return x
 
             class Model(torch.nn.Module):
                 def __init__(self):
@@ -15741,15 +15743,15 @@ class TestSelectiveActivationCheckpoint(TestCase):
                     self.layers = torch.nn.ModuleList([Block(), Block()])
 
                 def forward(self, x):
+                    counter = [0]
                     for layer in self.layers:
-                        x = layer(x)
+                        x = layer(x, counter)
                     return x
 
             mod = Model()
             naming = _AutoNamingMode()
 
             save_names = {
-                # Save the 1st call in layer 0 and the 0th and 2nd in layer 1
                 "Model.layers.0_my_op_1",
                 "Model.layers.1_my_op_0",
                 "Model.layers.1_my_op_2",
@@ -15774,7 +15776,14 @@ class TestSelectiveActivationCheckpoint(TestCase):
                 )
                 out.sum().backward()
 
-            # 6 forward calls + 3 recomputed (the 3 not in save_names) = 9
+            self.assertEqual(idx_log, {
+                0: 2,  # Model.layers.0_my_op_0 -> recomputed
+                1: 1,  # Model.layers.0_my_op_1 -> saved
+                2: 2,  # Model.layers.0_my_op_2 -> recomputed
+                3: 1,  # Model.layers.1_my_op_0 -> saved
+                4: 2,  # Model.layers.1_my_op_1 -> recomputed
+                5: 1,  # Model.layers.1_my_op_2 -> saved
+            })
             self.assertEqual(my_count[0], 9)
 
 
