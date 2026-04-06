@@ -110,11 +110,6 @@ endforeach()
 
 # Ensure Python's purelib is on CMAKE_PREFIX_PATH so CMake can find
 # packages installed there (e.g., pybind11, numpy).
-# When built via scikit-build-core, Python_EXECUTABLE is already set.
-# For standalone cmake invocations, find it via find_package.
-if(NOT Python_EXECUTABLE)
-  find_package(Python COMPONENTS Interpreter REQUIRED)
-endif()
 if(Python_EXECUTABLE)
   execute_process(
     COMMAND "${Python_EXECUTABLE}" -c "import sysconfig; print(sysconfig.get_path('purelib'))"

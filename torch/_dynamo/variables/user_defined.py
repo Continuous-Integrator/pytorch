@@ -56,6 +56,7 @@ from ..exc import (
     ObservedTypeError,
     ObservedUserStopIteration,
     raise_observed_exception,
+    raise_type_error,
     unimplemented,
 )
 from ..graph_bytecode_inputs import get_external_object_by_index
@@ -95,13 +96,7 @@ from ..utils import (
     tuple_methods,
     unpatched_nn_module_getattr,
 )
-from .base import (
-    MutationType,
-    NO_SUCH_SUBOBJ,
-    raise_type_error_exc,
-    ValueMutationNew,
-    VariableTracker,
-)
+from .base import MutationType, NO_SUCH_SUBOBJ, ValueMutationNew, VariableTracker
 from .dicts import ConstDictVariable, DefaultDictVariable, SetVariable
 
 
@@ -538,6 +533,21 @@ class UserDefinedClassVariable(UserDefinedVariable):
             source=descriptor_get_source,
         ).call_function(tx, [none_var, self], {})
 
+    def len_impl(self, tx: "InstructionTranslator") -> VariableTracker:
+        m = self._maybe_get_baseclass_method("__len__")
+        if m:
+            source = self.source and AttrSource(self.source, "__len__")
+            return variables.UserMethodVariable(
+                m, self, source_fn=source
+            ).call_function(tx, [], {})
+        raise_type_error(tx, f"object of type {self.python_type_name()} has no length")
+
+    def sq_length(self, tx: "InstructionTranslator") -> VariableTracker:
+        return self.len_impl(tx)
+
+    def mp_length(self, tx: "InstructionTranslator") -> VariableTracker:
+        return self.len_impl(tx)
+
     def _call_cross_entropy_loss(
         self,
         tx: "InstructionTranslator",
@@ -638,6 +648,10 @@ class UserDefinedClassVariable(UserDefinedVariable):
             )
         elif self.value is collections.OrderedDict and name == "move_to_end":
             return args[0].call_method(tx, name, [*args[1:]], kwargs)
+        elif name == "__len__" and len(args) == 1 and not kwargs:
+            from .object_protocol import generic_len
+
+            return generic_len(tx, args[0])
         elif name == "__eq__" and len(args) == 1 and hasattr(args[0], "value"):
             return VariableTracker.build(tx, self.value == args[0].value)
         elif name == "__ne__" and len(args) == 1 and hasattr(args[0], "value"):
@@ -888,9 +902,7 @@ class UserDefinedClassVariable(UserDefinedVariable):
             return variables.CatchWarningsCtxManagerVariable.create(tx, kwargs)
         elif self.value is torch.cuda.device and not kwargs and len(args) == 1:
             if not args[0].is_python_constant():
-                raise_type_error_exc(
-                    tx, "torch.cuda.device() requires a constant argument"
-                )
+                raise_type_error(tx, "torch.cuda.device() requires a constant argument")
             return variables.CUDADeviceVariable.create(tx, args[0].as_python_constant())
         elif (
             issubclass(type(self.value), type)
@@ -1583,6 +1595,34 @@ class UserDefinedObjectVariable(UserDefinedVariable):
                 return VariableTracker.build(tx, len(self.value))  # type: ignore[arg-type]
 
         return super().call_method(tx, name, args, kwargs)
+
+    def len_impl(self, tx: "InstructionTranslator") -> VariableTracker:
+        method = self._maybe_get_baseclass_method("__len__")
+        if method is not None:
+            type_attr = self.lookup_class_mro_attr("__len__")
+            source = self.source and self.get_source_by_walking_mro(tx, "__len__")
+            method_var = self.resolve_type_attr(tx, "__len__", type_attr, source)
+            if not isinstance(method_var, variables.GetAttrVariable):
+                return method_var.call_function(tx, [], {})
+
+        unimplemented(
+            gb_type="Cannot trace user-defined __len__",
+            context=f"{self.python_type_name()}.__len__()",
+            explanation=(
+                f"Dynamo cannot trace len() on {self.python_type_name()} because the __len__ "
+                "method is either not traceable (e.g., defined in C or built-in) or returns a "
+                "non-constant value."
+            ),
+            hints=[
+                *graph_break_hints.SUPPORTABLE,
+            ],
+        )
+
+    def sq_length(self, tx: "InstructionTranslator") -> VariableTracker:
+        return self.len_impl(tx)
+
+    def mp_length(self, tx: "InstructionTranslator") -> VariableTracker:
+        return self.len_impl(tx)
 
     def method_setattr_standard(
         self,
@@ -2952,7 +2992,13 @@ class UserDefinedDictVariable(UserDefinedObjectVariable):
                 "dict_vt must be constructed by builder.py when source is present"
             )
             self._dict_vt = ConstDictVariable(
-                {}, type(value), mutation_type=ValueMutationNew()
+                {},
+                user_cls=(
+                    collections.OrderedDict
+                    if isinstance(value, collections.OrderedDict)
+                    else dict
+                ),
+                mutation_type=ValueMutationNew(),
             )
         else:
             self._dict_vt = dict_vt
@@ -3013,6 +3059,15 @@ class UserDefinedDictVariable(UserDefinedObjectVariable):
     def is_python_hashable(self) -> Literal[False]:
         raise_on_overridden_hash(self.value, self)
         return False
+
+    def mp_length(self, tx: "InstructionTranslator") -> VariableTracker:
+        if self._maybe_get_baseclass_method("__len__") in self._dict_methods:
+            return self._dict_vt.mp_length(tx)
+        return super().mp_length(tx)
+
+    def sq_length(self, tx: "InstructionTranslator") -> VariableTracker:
+        # User defined classes implements both sq_length and mp_length
+        return self.mp_length(tx)
 
 
 class UserDefinedSetVariable(UserDefinedObjectVariable):
@@ -3086,6 +3141,11 @@ class UserDefinedSetVariable(UserDefinedObjectVariable):
     def items(self) -> list[VariableTracker]:
         return self._set_vt.items
 
+    def sq_length(self, tx: "InstructionTranslator") -> VariableTracker:
+        if self._maybe_get_baseclass_method("__len__") in self._set_methods:
+            return self._set_vt.sq_length(tx)
+        return super().sq_length(tx)
+
     def is_underlying_vt_modified(self, side_effects: "SideEffects") -> bool:
         return side_effects.is_modified(self._set_vt)
 
@@ -3158,6 +3218,12 @@ class UserDefinedListVariable(UserDefinedObjectVariable):
     def is_python_hashable(self) -> Literal[False]:
         raise_on_overridden_hash(self.value, self)
         return False
+
+    def sq_length(self, tx: "InstructionTranslator") -> VariableTracker:
+        assert self._list_vt is not None
+        if self._maybe_get_baseclass_method("__len__") in list_methods:
+            return self._list_vt.sq_length(tx)
+        return super().sq_length(tx)
 
 
 class UserDefinedTupleVariable(UserDefinedObjectVariable):
@@ -3240,6 +3306,11 @@ class UserDefinedTupleVariable(UserDefinedObjectVariable):
         raise_on_overridden_hash(self.value, self)
         return self._tuple_vt.is_python_hashable()
 
+    def sq_length(self, tx: "InstructionTranslator") -> VariableTracker:
+        if self._maybe_get_baseclass_method("__len__") in tuple_methods:
+            return self._tuple_vt.sq_length(tx)
+        return super().sq_length(tx)
+
     def get_python_hash(self) -> int:
         return self._tuple_vt.get_python_hash()
 
@@ -3304,6 +3375,11 @@ class MutableMappingVariable(UserDefinedObjectVariable):
             return variables.UserMethodVariable(polyfills.mapping_get, self)
         else:
             return super().var_getattr(tx, name)
+
+    def mp_length(self, tx: "InstructionTranslator") -> VariableTracker:
+        if self._maybe_get_baseclass_method("__len__") in dict_methods:
+            return VariableTracker.build(tx, len(self.value))  # type: ignore[bad-argument-type]
+        return super().mp_length(tx)
 
 
 class RandomVariable(UserDefinedObjectVariable):
