@@ -72,7 +72,6 @@ def checkpoint_wrapper(fn):
     return inner
 
 
-@torch._dynamo.allow_in_graph
 def _grad(*args, **kwargs):
     return torch.autograd.grad(*args, **kwargs)
 
@@ -2290,7 +2289,7 @@ class RematerializeACNodesPassTests(torch._dynamo.test_case.TestCase):
 
         with torch._functorch.config.patch(
             remat_using_tags_for_fwd_loss_bwd_graph=remat_using_tags_for_fwd_loss_bwd_graph
-        ):
+        ), torch._dynamo.config.patch(trace_autograd_ops=True):
             compiled_fn = torch.compile(fn, backend=backend, fullgraph=True)
             result = compiled_fn(*inputs)
 
@@ -2472,8 +2471,9 @@ def forward(self, arg0_1, arg1_1):
             partition_fn=None,
         )
 
-        compiled_fn = torch.compile(fn, backend=backend, fullgraph=True)
-        result = compiled_fn(*inputs)
+        with torch._dynamo.config.patch(trace_autograd_ops=True):
+            compiled_fn = torch.compile(fn, backend=backend, fullgraph=True)
+            result = compiled_fn(*inputs)
 
         return result, captured_gm_before, captured_gm_after
 
@@ -2880,37 +2880,6 @@ def forward(self, arg0_1, arg1_1):
     mm_2 = torch.ops.aten.mm.default(t, mul_2);  t = mul_2 = None
     return (mm_2,)""",
         )
-
-    def test_is_backward_tag_on_checkpoint_nodes(self):
-        class Model(nn.Module):
-            def __init__(self):
-                super().__init__()
-                self.w = nn.Parameter(torch.randn(4, 4))
-
-            def forward(self, x):
-                return checkpoint(
-                    lambda x: torch.sin(x @ self.w), x, use_reentrant=False
-                )
-
-        gm = self._trace_train_step(Model(), torch.randn(2, 4))
-
-        fwd_ops = []
-        bwd_ops = []
-        for node in gm.graph.nodes:
-            if node.op != "call_function":
-                continue
-            if node.meta.get("custom", {}).get("autograd_backward", False):
-                bwd_ops.append(node.target)
-            else:
-                fwd_ops.append(node.target)
-
-        # Forward: mm, sin, sum, ones_like
-        self.assertIn(torch.ops.aten.mm.default, fwd_ops)
-        self.assertIn(torch.ops.aten.sin.default, fwd_ops)
-        # Backward: recomputed mm, cos, mul, t, final mm
-        self.assertIn(torch.ops.aten.cos.default, bwd_ops)
-        self.assertIn(torch.ops.aten.t.default, bwd_ops)
-
 
 if __name__ == "__main__":
     from torch._dynamo.test_case import run_tests

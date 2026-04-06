@@ -38,8 +38,8 @@ def _is_backward_node(node: fx.Node, use_phase_only: bool = False) -> bool:
     """Check if node is in backward region.
 
     If use_phase_only is True, only checks custom["phase"] == "backward"
-    (user annotation). Otherwise falls back to custom["autograd_backward"]
-    (set by _patch_autograd_grad).
+    (user annotation). Otherwise falls back to custom["autograd_backward"],
+    which Dynamo adds when tracing torch.autograd.grad.
     """
     custom = node.meta.get("custom", {})
     if use_phase_only:
@@ -72,7 +72,8 @@ def remat_using_tags_for_fwd_loss_bwd_graph(gm: fx.GraphModule) -> fx.GraphModul
     Duplicate recompute nodes for backward use. DCE removes unused forward versions.
 
     Backward nodes are identified by custom["phase"] == "backward" (user annotation)
-    or custom["autograd_backward"] == True (set automatically by _patch_autograd_grad).
+    or custom["autograd_backward"] == True (set automatically when Dynamo traces
+    torch.autograd.grad).
     When the user provides phase annotations, only those are used.
 
     Only a single contiguous backward region is supported. If multiple backward

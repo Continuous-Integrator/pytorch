@@ -480,13 +480,13 @@ def _non_strict_tracing_context():
 
 @contextlib.contextmanager
 def _patch_autograd_grad():
-    """Patch autograd.grad to propagate seq_nr and tag backward nodes.
+    """Patch autograd.grad for non-strict make_fx tracing.
 
-    Under make_fx tracing, the autograd engine doesn't automatically call
-    setup_stacktrace_preservation_hooks, so backward FX nodes end up without
-    seq_nr metadata. This patches autograd.grad to install those hooks
-    and set custom["autograd_backward"]=True on all backward nodes via
-    fx_traceback annotation.
+    Under non-strict make_fx tracing, the autograd engine does not automatically
+    install the hooks that preserve backward stack traces / seq_nr metadata.
+    This patch installs those hooks and annotates the traced backward region
+    with custom["autograd_backward"] before delegating to the real
+    torch.autograd.grad.
     """
     import functools
 
