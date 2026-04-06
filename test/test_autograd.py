@@ -15173,10 +15173,6 @@ def _counter_op(name):
             idx_log[call_idx] = idx_log.get(call_idx, 0) + 1
             return x.sin()
 
-        @op.register_fake
-        def _(x, call_idx):
-            return torch.empty_like(x)
-
         def setup_context(ctx, inputs, output):
             ctx.save_for_backward(inputs[0])
 
