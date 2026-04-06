@@ -695,11 +695,13 @@ class _ViewShardingPropagator:
                 # Flatten+Split example: view([2, 3], [3, 2])
                 #   rule = (Split(Flatten(InputDim(0), InputDim(1)), (3,2), 0),
                 #           Split(Flatten(InputDim(0), InputDim(1)), (3,2), 1))
-                #   output_dim=0 (split_id=0): same as Split example above.
-                #     Result: {0: [0]}
-                #   output_dim=1 (split_id=1): same as Split example, but
-                #     the chase unwraps the inner Flatten to find InputDim(0).
-                #     Result: {0: [0, 1]}
+                #   output_dim=0 (split_id=0): _analyze_split returns all
+                #     sharded InputDims from the inner Flatten.  If only
+                #     InputDim(0) is sharded: {0: [0]}.  If both are sharded:
+                #     {0: [0], 1: [0]}.
+                #   output_dim=1 (split_id=1): chases the root input dim
+                #     used as key by split_id=0 and appends output_dim 1.
+                #     E.g. {0: [0, 1]} (or {0: [0, 1], 1: [0]} if both sharded).
                 root_spec = cmd.input_dim
                 while isinstance(root_spec, (Flatten, Split)):
                     if isinstance(root_spec, Flatten):
@@ -1145,6 +1147,11 @@ class _ViewShardingPropagator:
             # Non-first flatten dim: compute _StridedShard through the split.
             sf_flat = math.prod(local_tensor_shapes[input_start : p.dim])
             total = math.prod(cmd.group_shape)
+            if sf_flat == 0 or total % sf_flat != 0:
+                raise AssertionError(
+                    f"Flatten stride {sf_flat} does not evenly divide "
+                    f"split total {total} for Shard(dim={p.dim})"
+                )
             period = total // sf_flat
             target_split_id = None
             sf_output = None
@@ -1156,6 +1163,7 @@ class _ViewShardingPropagator:
                         k <= cmd.group_shape[d]
                         and cmd.group_shape[d] % k == 0
                         and k >= self.mesh_sizes[mesh_dim]
+                        and k % self.mesh_sizes[mesh_dim] == 0
                     ):
                         target_split_id = d
                         sf_output = cmd.group_shape[d] // k
