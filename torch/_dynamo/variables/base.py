@@ -1084,10 +1084,6 @@ class VariableTracker(metaclass=VariableTrackerMeta):
         setattr(cls, method, guarded_method)
 
 
-def raise_type_error_exc(tx: Any, msg_str: str) -> NoReturn:
-    raise_observed_exception(TypeError, tx, args=[msg_str])
-
-
 def typestr(*objs: object) -> str:
     if len(objs) == 1:
         (obj,) = objs
