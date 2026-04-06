@@ -3,7 +3,9 @@ import inspect
 import itertools
 import logging
 import weakref
+from collections.abc import Callable
 from typing import Any
+from typing_extensions import ParamSpec, TypeVar
 
 import torch
 import torch.utils._pytree as pytree
@@ -22,6 +24,10 @@ from torch.utils._debug_mode import DebugMode
 from torch.utils.checkpoint import _CachedTorchDispatchMode, _CachingTorchDispatchMode
 
 
+_P = ParamSpec("_P")
+_R = TypeVar("_R")
+
+
 log = logging.getLogger(__name__)
 
 
@@ -33,7 +39,9 @@ class Wrap(HigherOrderOperator):
     def __init__(self) -> None:
         super().__init__("wrap")
 
-    def __call__(self, func, *args, **kwargs):
+    def __call__(
+        self, func: Callable[_P, _R], *args: _P.args, **kwargs: _P.kwargs
+    ) -> _R:
         # Dynamo already traces the body of HigherOrderOp beforehand when it
         # so no need to trace into it.
         import torch._dynamo  # noqa: F401
@@ -60,9 +68,9 @@ class InductorCompiledCode(HigherOrderOperator):
     def __init__(self) -> None:
         super().__init__("inductor_compiled_code")
 
-    def __call__(self, func, *args, **kwargs):
+    def __call__(self, func, inputs, *, name: str | None = None):
         # pyrefly: ignore [missing-attribute]
-        return super().__call__(func, *args, **kwargs)
+        return super().__call__(func, inputs, name=name)
 
 
 inductor_compiled_code = InductorCompiledCode()
@@ -80,10 +88,16 @@ class InductorCompiledCallable:
     Each instance gets a globally unique idx at creation (via atomic itertools.count).
     """
 
-    def __init__(self, compiled_callable, original_gm=None):
+    def __init__(
+        self,
+        compiled_callable,
+        original_gm=None,
+        compile_region_name: str | None = None,
+    ):
         self.idx = next(_inductor_compiled_callable_id)
         self.compiled_callable = compiled_callable
         self.original_gm = original_gm
+        self.compile_region_name = compile_region_name
         # AOT autograd needs this to know inputs are passed as a list
         self._boxed_call = True
 
@@ -134,7 +148,9 @@ class InductorCodeSideTable:
 inductor_code_side_table = InductorCodeSideTable()
 
 
-def _resolve_inductor_callable(func) -> InductorCompiledCallable:
+def _resolve_inductor_callable(
+    func: int | InductorCompiledCallable,
+) -> InductorCompiledCallable:
     """
     Resolve func to an InductorCompiledCallable.
 
@@ -150,7 +166,7 @@ def _resolve_inductor_callable(func) -> InductorCompiledCallable:
 
 
 @inductor_compiled_code.py_impl(DispatchKey.CompositeExplicitAutograd)
-def inductor_compiled_code_impl(func, inputs):
+def inductor_compiled_code_impl(func, inputs, *, name=None):
     resolved = _resolve_inductor_callable(func)
     return resolved.compiled_callable(inputs)
 
@@ -161,7 +177,7 @@ redirect_to_mode(inductor_compiled_code, _CachedTorchDispatchMode)
 
 
 @register_fake(inductor_compiled_code)
-def inductor_compiled_code_fake(func, inputs):
+def inductor_compiled_code_fake(func, inputs, *, name=None):
     resolved = _resolve_inductor_callable(func)
     if resolved.original_gm is None:
         raise RuntimeError(
@@ -174,22 +190,24 @@ def inductor_compiled_code_fake(func, inputs):
 
 
 @inductor_compiled_code.py_functionalize_impl
-def inductor_compiled_code_functionalize(ctx, func, inputs):
+def inductor_compiled_code_functionalize(ctx, func, inputs, *, name=None):
     # Unwrap the functional tensors to get the underlying tensors
     unwrapped_inputs = ctx.unwrap_tensors(inputs)
 
     # Redispatch to the next handler in the dispatch chain
     with ctx.redispatch_to_next():
-        result = inductor_compiled_code(func, unwrapped_inputs)
+        kwargs = {"name": name} if name is not None else {}
+        result = inductor_compiled_code(func, unwrapped_inputs, **kwargs)
         return ctx.wrap_tensors(result)
 
 
 @inductor_compiled_code.py_impl(ProxyTorchDispatchMode)
-def inductor_compiled_code_proxy(mode, func, inputs):
+def inductor_compiled_code_proxy(mode, func, inputs, *, name=None):
     resolved = _resolve_inductor_callable(func)
 
     # Run the fake impl to get example outputs for tracing
-    example_out = inductor_compiled_code(func, inputs)
+    kwargs = {"name": name} if name is not None else {}
+    example_out = inductor_compiled_code(func, inputs, **kwargs)
 
     # Register in side table so the FX node stores a serializable int
     callable_idx = inductor_code_side_table.add_callable(resolved)
@@ -200,7 +218,7 @@ def inductor_compiled_code_proxy(mode, func, inputs):
         "call_function",
         inductor_compiled_code,
         (callable_idx, proxy_inputs),
-        {},
+        kwargs,
     )
 
     return track_tensor_tree(example_out, out_proxy, constant=None, tracer=mode.tracer)
@@ -210,7 +228,13 @@ class WrapWithSetGradEnabled(HigherOrderOperator):
     def __init__(self) -> None:
         super().__init__("wrap_with_set_grad_enabled")
 
-    def __call__(self, enable_grad, wrapped_func, *args, **kwargs):
+    def __call__(
+        self,
+        enable_grad: bool,
+        wrapped_func: Callable[_P, _R],
+        *args: _P.args,
+        **kwargs: _P.kwargs,
+    ) -> _R:
         # Dynamo already traces the body of HigherOrderOp beforehand when it
         # so no need to trace into it.
         import torch._dynamo  # noqa: F401
@@ -240,10 +264,10 @@ class WrapWithAutocast(HigherOrderOperator):
         dtype: _dtype | None,
         enabled: bool,
         cache_enabled: bool | None,
-        wrapped_func,
-        *args,
-        **kwargs,
-    ):
+        wrapped_func: Callable[_P, _R],
+        *args: _P.args,
+        **kwargs: _P.kwargs,
+    ) -> _R:
         # Dynamo already traces the body of HigherOrderOp beforehand when it
         # so no need to trace into it.
         import torch._dynamo  # noqa: F401
@@ -323,7 +347,7 @@ class WrapActivationCheckpoint(HigherOrderOperator):
     def __init__(self) -> None:
         super().__init__("wrap_activation_checkpoint", cacheable=False)
 
-    def __call__(self, function, *args, **kwargs):
+    def __call__(self, function: GraphModule, *args: Any, **kwargs: Any) -> Any:
         # use_reentrant is set to False because this op is going to be traced.
         # And we ensure that AOT Autograd traces through the non reentrant
         # version of checkpointing.
@@ -474,6 +498,7 @@ Please make sure the checkpointed region does not contain in-place ops (e.g. tor
     # checkpoint's recompute_fn captures the function in a closure. A bound method
     # reference would keep the Interpreter alive, whose env dict retains the output
     # tensors and prevents the autograd graph from being freed.
+
     def run_with_interpreter(*args):
         return Interpreter(gmod).run(*args)
 
