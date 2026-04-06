@@ -15,7 +15,7 @@ static_assert(
     std::is_trivially_destructible_v<decltype(comm_profiling_name)>,
     "comm_profiling_name must be trivially destructible — a non-trivial "
     "destructor (e.g. std::string) causes deadlocks after fork() in "
-    "dlopen'd libraries via __cxa_thread_atexit. See S641781.");
+    "dlopen'd libraries via __cxa_thread_atexit.");
 } // namespace
 
 void set_comm_profiling_name(const std::string& name) {

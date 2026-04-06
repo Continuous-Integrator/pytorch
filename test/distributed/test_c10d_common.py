@@ -2357,7 +2357,7 @@ class RecordCommTest(TestCase):
 # Trivially-destructible types safe for thread_local.
 # Non-trivial destructors (std::string, std::vector, std::map, etc.)
 # register via __cxa_thread_atexit_impl which holds a mutex — if fork()
-# happens while that mutex is held, the child deadlocks.  See S641781.
+# happens while that mutex is held, the child deadlocks.
 _SAFE_TLS_TYPE_RE = re.compile(
     r"""
     (?:
@@ -2404,7 +2404,7 @@ class ThreadLocalSafetyLintTest(TestCase):
     std::vector, std::map, c10::intrusive_ptr, ...) register destructors
     via __cxa_thread_atexit_impl, which holds an internal glibc mutex.
     If fork() happens while that mutex is held the child process inherits
-    a locked mutex and deadlocks on the next TLS access.  See S641781.
+    a locked mutex and deadlocks on the next TLS access.
 
     Use raw pointers (T*) with lazy heap-allocation instead.
     """
@@ -2489,7 +2489,7 @@ class ThreadLocalSafetyLintTest(TestCase):
             violations,
             [],
             "Non-trivially-destructible thread_local variable(s) found in c10d.\n"
-            "These cause fork-deadlocks via __cxa_thread_atexit (see S641781).\n"
+            "These cause fork-deadlocks via __cxa_thread_atexit.\n"
             "Use a raw pointer (T*) with lazy heap-allocation instead.\n\n"
             "Violations:\n" + "\n".join(violations),
         )
