@@ -331,10 +331,7 @@ class VariableTracker(metaclass=VariableTrackerMeta):
             for key, subvalue in value.__dict__.items():
                 if key not in nonvars:
                     cls.visit(fn, subvalue, cache, side_effects)
-            if (
-                side_effects is not None
-                and value in side_effects.store_attr_mutations
-            ):
+            if side_effects is not None and value in side_effects.store_attr_mutations:
                 for attr_vt in side_effects.store_attr_mutations[value].values():
                     cls.visit(fn, attr_vt, cache, side_effects)
         elif istype(value, (list, tuple)):
