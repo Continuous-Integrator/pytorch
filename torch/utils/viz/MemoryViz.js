@@ -967,20 +967,11 @@ function MemoryPlot(
 function ContextViewer(text, data) {
   let current_selected = null;
 
-  function restore_search_highlight(d) {
-    if (d && d.attr('data-search-match') === 'true') {
-      d.attr('stroke', 'red')
-        .attr('stroke-width', 2)
-        .attr('vector-effect', 'non-scaling-stroke');
-    }
-  }
-
   return {
     default_selected: null,
     set_selected: d => {
       if (current_selected !== null) {
         current_selected.attr('stroke', null).attr('stroke-width', null);
-        restore_search_highlight(current_selected);
       }
       if (d === null) {
         text.text('');
@@ -1103,14 +1094,6 @@ function create_trace_view(
   dst.selectAll('div').remove();
 
   max_entries = Math.min(max_entries, data.elements_length);
-  if (snapshot.allocator_settings?.trace_alloc_overflowed === true) {
-    const maxEntries = snapshot.allocator_settings.trace_alloc_max_entries;
-    dst.append('div')
-      .attr('style', 'padding: 4px 8px; background: #f8d7da; border: 1px solid #f5c6cb; color: #721c24; font-size: 13px; margin-bottom: 4px;')
-      .text(`Warning: The trace ring buffer overflowed (max_entries=${maxEntries}). `
-          + 'Some allocation events were lost, so the timeline may undercount peak memory. '
-          + 'Increase the max_entries argument to _record_memory_history() to capture more events.');
-  }
   if (include_private_inactive) {
     dst.append('div')
       .attr('style', 'padding: 4px 8px; background: #fff3cd; border: 1px solid #ffc107; font-size: 13px; margin-bottom: 4px;')
@@ -1129,14 +1112,6 @@ function create_trace_view(
   d.append('label').text(
     `Detail: ${max_entries} of ${data.elements_length} entries`,
   );
-
-  d.append('span').text('  |  ');
-  const search_input = d.append('input')
-    .attr('type', 'text')
-    .attr('placeholder', 'Search address (hex)...')
-    .attr('style', 'width: 180px; margin-left: 4px; font-family: monospace;');
-  const search_label = d.append('label')
-    .attr('style', 'margin-left: 4px;');
 
   const grid_container = dst
     .append('div')
@@ -1174,42 +1149,6 @@ function create_trace_view(
     );
   const delegate = ContextViewer(context_div.append('pre').text('none'), data);
   plot.set_delegate(delegate);
-
-  search_input.on('input', function () {
-    const query = this.value.toLowerCase().trim();
-    const polygons = plot_svg.selectAll('polygon');
-    if (!query) {
-      polygons
-        .attr('data-search-match', null)
-        .attr('stroke', null)
-        .attr('stroke-width', null);
-      search_label.text('');
-      return;
-    }
-    let matches = 0;
-    polygons.each(function () {
-      const dd = d3.select(this).datum();
-      if (typeof dd.elem !== 'number') {
-        d3.select(this).attr('data-search-match', null);
-        return;
-      }
-      const ctx = data.context_for_id(dd.elem);
-      if (ctx.toLowerCase().includes(query)) {
-        d3.select(this)
-          .attr('data-search-match', 'true')
-          .attr('stroke', 'red')
-          .attr('stroke-width', 2)
-          .attr('vector-effect', 'non-scaling-stroke');
-        matches++;
-      } else {
-        d3.select(this)
-          .attr('data-search-match', null)
-          .attr('stroke', null)
-          .attr('stroke-width', null);
-      }
-    });
-    search_label.text(`${matches} match${matches !== 1 ? 'es' : ''}`);
-  });
 }
 
 function create_settings_view(dst, snapshot, device) {
@@ -1536,8 +1475,6 @@ const kinds = {
   'Allocator State History': create_segment_view,
   'Active Cached Segment Timeline': (dst, snapshot, device) =>
     create_trace_view(dst, snapshot, device, true),
-  'Mapped Pages Timeline (Expandable Segments)': (dst, snapshot, device) =>
-    create_trace_view(dst, snapshot, device, 'segment_map'),
   'Allocator Settings': create_settings_view,
 };
 
