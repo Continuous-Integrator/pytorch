@@ -1135,8 +1135,7 @@ class DuplicateGuardTest(torch._dynamo.test_case.TestCase):
 
         def hook(guard_wrapper, f_locals, builder):
             guard_str = str(guard_wrapper)
-            # One for tensor and one for y
-            self.assertEqual(guard_str.count("NO_HASATTR"), 5)
+            self.assertEqual(guard_str.count("NO_HASATTR"), 1)
 
         opt_fn = torch.compile(fn, backend="eager", fullgraph=True)
         with install_guard_manager_testing_hook(hook):
