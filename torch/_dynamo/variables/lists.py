@@ -33,7 +33,7 @@ from ..bytecode_transformation import (
     create_instruction,
     create_rot_n,
 )
-from ..exc import raise_observed_exception, unimplemented
+from ..exc import raise_observed_exception, raise_type_error, unimplemented
 from ..guards import GuardBuilder, install_guard
 from ..source import AttrSource, NamedTupleFieldsSource
 from ..utils import (
@@ -165,6 +165,11 @@ class BaseListVariable(VariableTracker):
         self._install_list_length_guard()
         return list(self.items)
 
+    def sq_length(self, tx: "InstructionTranslator") -> VariableTracker:
+        """Sequence length for lists, tuples, and range objects."""
+        self._install_list_length_guard()
+        return VariableTracker.build(tx, len(self.items))
+
     def call_tree_map_branch(
         self,
         tx: "InstructionTranslator",
@@ -271,10 +276,7 @@ class BaseListVariable(VariableTracker):
     ) -> VariableTracker:
         from .builder import SourcelessBuilder
 
-        if name == "__len__":
-            self._install_list_length_guard()
-            return ConstantVariable.create(len(self.items))
-        elif name == "__getitem__":
+        if name == "__getitem__":
             if kwargs or len(args) != 1:
                 raise_args_mismatch(
                     tx,
@@ -654,6 +656,13 @@ class RangeVariable(BaseListVariable):
     ) -> list[VariableTracker]:
         return [variables.ConstantVariable.create(x) for x in self.as_python_constant()]
 
+    def sq_length(self, tx: "InstructionTranslator") -> VariableTracker:
+        """Sequence length for range objects."""
+        length = self.range_length()
+        if length > sys.maxsize:
+            raise_observed_exception(OverflowError, tx)
+        return VariableTracker.build(tx, length)
+
     def reconstruct(self, codegen: "PyCodegen") -> None:
         assert "range" not in codegen.tx.f_globals
         codegen.add_push_null(
@@ -720,11 +729,6 @@ class RangeVariable(BaseListVariable):
             return RangeIteratorVariable(
                 self.start(), self.stop(), self.step(), self.range_length()
             )
-        elif name == "__len__":
-            length = self.range_length()
-            if length > sys.maxsize:
-                raise_observed_exception(OverflowError, tx)
-            return VariableTracker.build(tx, self.range_length())
         elif name in ("count", "__contains__"):
             return SourcelessBuilder.create(tx, self.range_count(*args))
         elif name == "index":
@@ -969,7 +973,7 @@ class CommonListMethodsVariable(BaseListVariable):
                     )
             else:
                 msg = f"list indices must be integers or slices, not {args[0].python_type_name()}"
-                raise_observed_exception(TypeError, tx, args=[msg])
+                raise_type_error(tx, msg)
             return CONSTANT_VARIABLE_NONE
         elif name == "copy":
             # List copy() doesn't have args and kwargs

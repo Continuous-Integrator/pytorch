@@ -958,6 +958,9 @@ def to_dtype_bitcast(x: TensorBox, dtype: torch.dtype, *, copy=False):
     def _get_primitive_bitwidth(dtype):
         if dtype.is_floating_point:
             return torch.finfo(dtype).bits
+        elif dtype == torch.bool:
+            # torch.iinfo doesn't support bool; bools are stored as uint8 (8 bits)
+            return 8
         else:
             return torch.iinfo(dtype).bits
 
@@ -3676,7 +3679,7 @@ def _unwrap(x):
     return x
 
 
-@register_lowering([torch.tensor, aten.scalar_tensor])
+@register_lowering([torch.tensor, aten.scalar_tensor, prims.scalar_tensor])
 def tensor(data, *, dtype=None, device=None, layout=None, pin_memory=False):
     assert_nyi(layout in (None, torch.strided), f"layout={layout}")
     assert_nyi(not pin_memory, "pin_memory")
