@@ -670,43 +670,50 @@ function test_ghost_blocks() {
     ],
   });
 
-  for (const include_private of [false, true]) {
-    const label = `include_private_inactive=${include_private}`;
-    const result = process_alloc_data(snapshot, 0, false, 15000, include_private);
+  // Ghost blocks are only collected when include_private_inactive=true
+  // (private pool tab). The regular tab should have no ghosts.
+  {
+    const result = process_alloc_data(snapshot, 0, false, 15000, false);
+    assertEqual(result.elements_length, 3, 'regular tab: 3 trace elements, no ghosts');
+    const ghosts = result.allocations_over_time.filter(d => d.ghost === true);
+    assertEqual(ghosts.length, 0, 'regular tab: no ghost block entries');
+  }
+
+  {
+    const result = process_alloc_data(snapshot, 0, false, 15000, true);
 
     // Trace creates 2 elements from alloc events + 1 from unmatched free.
     // Ghost blocks add 2 more from the segment snapshot.
     assertEqual(result.elements_length, 5,
-      `${label}: 3 trace elements + 2 ghost blocks`);
+      'private pool tab: 3 trace elements + 2 ghost blocks');
 
     const aot = result.allocations_over_time;
     const ghosts = aot.filter(d => d.ghost === true);
-    assertEqual(ghosts.length, 2, `${label}: should have 2 ghost block entries`);
+    assertEqual(ghosts.length, 2, 'private pool tab: should have 2 ghost block entries');
 
     // Ghost blocks span the full timeline [0, final_timestep]
     for (const g of ghosts) {
-      assertEqual(g.timesteps[0], 0, `${label}: ghost starts at timestep 0`);
-      assertEqual(g.timesteps.length, 2, `${label}: ghost has 2 timesteps (start + end)`);
-      assertEqual(g.timesteps[1], g.timesteps[1], `${label}: ghost has end timestep`);
-      assert(g.timesteps[1] > 0, `${label}: ghost end timestep > 0`);
-      assertEqual(g.opacity, 0.3, `${label}: ghost opacity is 0.3`);
+      assertEqual(g.timesteps[0], 0, 'ghost starts at timestep 0');
+      assertEqual(g.timesteps.length, 2, 'ghost has 2 timesteps (start + end)');
+      assert(g.timesteps[1] > 0, 'ghost end timestep > 0');
+      assertEqual(g.opacity, 0.3, 'ghost opacity is 0.3');
     }
     // All ghost blocks should have the same end timestep (the final timestep)
     const end_timesteps = ghosts.map(g => g.timesteps[1]);
     assertEqual(end_timesteps[0], end_timesteps[1],
-      `${label}: both ghosts share the same end timestep`);
+      'both ghosts share the same end timestep');
 
     // Ghost block sizes match segment snapshot blocks
     const ghost_sizes = ghosts.map(g => g.size).sort();
-    assertEqual(ghost_sizes[0], 1048576, `${label}: ghost block 1 MiB (pre_record)`);
-    assertEqual(ghost_sizes[1], 2097152, `${label}: ghost block 2 MiB (ring buffer overflow)`);
+    assertEqual(ghost_sizes[0], 1048576, 'ghost block 1 MiB (pre_record)');
+    assertEqual(ghost_sizes[1], 2097152, 'ghost block 2 MiB (ring buffer overflow)');
 
     // context_for_id shows ghost explanation
     const ghost_elem_ids = ghosts.map(g => g.elem);
     for (const id of ghost_elem_ids) {
       const ctx = result.context_for_id(id);
-      assertContains(ctx, '[Ghost block]', `${label}: context contains ghost label`);
-      assertContains(ctx, 'segment snapshot', `${label}: context explains source`);
+      assertContains(ctx, '[Ghost block]', 'context contains ghost label');
+      assertContains(ctx, 'segment snapshot', 'context explains source');
     }
   }
 }
@@ -728,11 +735,50 @@ function test_ghost_blocks_not_created_for_traced_addrs() {
     }],
   });
 
-  const result = process_alloc_data(snapshot, 0, false, 15000, false);
+  const result = process_alloc_data(snapshot, 0, false, 15000, true);
   const aot = result.allocations_over_time;
   const ghosts = aot.filter(d => d.ghost === true);
   assertEqual(ghosts.length, 0, 'no ghost blocks when addr is in trace');
   assertEqual(result.elements_length, 1, 'only the trace element');
+}
+
+function test_ghost_blocks_default_pool_collected() {
+  console.log('test_ghost_blocks_default_pool_collected');
+  // Ghost blocks from default pool [0,0] should be collected when
+  // include_private_inactive=true, even though they're not in a private pool.
+  const snapshot = makeSnapshot({
+    traces: [],
+    segments: [{
+      device: 0, address: 0x1000, total_size: 8192, segment_pool_id: [0, 0],
+      stream: 0, blocks: [
+        { address: 0x1000, size: 2048, requested_size: 2048,
+          state: 'active_allocated', frames: [] },
+        { address: 0x1800, size: 1024, requested_size: 1024,
+          state: 'active_allocated', frames: [] },
+      ],
+    }],
+  });
+
+  const result = process_alloc_data(snapshot, 0, false, 15000, true);
+  const ghosts = result.allocations_over_time.filter(d => d.ghost === true);
+  assertEqual(ghosts.length, 2, '2 ghost blocks from default pool');
+  const sizes = ghosts.map(g => g.size).sort();
+  assertEqual(sizes[0], 1024, 'ghost 1024 bytes');
+  assertEqual(sizes[1], 2048, 'ghost 2048 bytes');
+
+  // Default pool ghosts are at the global bottom, not in an envelope
+  const envelopes = result.allocations_over_time.filter(
+    d => typeof d.elem === 'string' && d.elem.startsWith('pool:'));
+  assertEqual(envelopes.length, 0, 'no pool envelopes for default pool ghosts');
+  for (const g of ghosts) {
+    assertEqual(g.timesteps[0], 0, 'ghost starts at timestep 0');
+    assertEqual(g.timesteps.length, 2, 'ghost has 2 timesteps');
+  }
+
+  // Not collected on the regular tab
+  const result_false = process_alloc_data(snapshot, 0, false, 15000, false);
+  const ghosts_false = result_false.allocations_over_time.filter(d => d.ghost === true);
+  assertEqual(ghosts_false.length, 0, 'no ghost blocks on regular tab');
 }
 
 function test_ghost_blocks_not_in_segment_mode() {
@@ -756,6 +802,11 @@ function test_ghost_blocks_not_in_segment_mode() {
   const result_map = process_alloc_data(snapshot, 0, 'segment_map', 15000, false);
   const ghosts_map = result_map.allocations_over_time.filter(d => d.ghost === true);
   assertEqual(ghosts_map.length, 0, 'no ghost blocks in segment_map mode');
+
+  // Even with include_private_inactive=true, segment modes should not create ghosts
+  const result_seg2 = process_alloc_data(snapshot, 0, true, 15000, true);
+  const ghosts_seg2 = result_seg2.allocations_over_time.filter(d => d.ghost === true);
+  assertEqual(ghosts_seg2.length, 0, 'no ghost blocks in segment_alloc mode (private pool tab)');
 }
 
 function test_ghost_blocks_private_pool() {
@@ -798,15 +849,16 @@ function test_ghost_blocks_private_pool() {
     ],
   });
 
-  // With include_private_inactive=true, the pool ghost (1 MiB in pool 0,1)
-  // should be inside the pool envelope, not at the global bottom.
+  // With include_private_inactive=true, ghost blocks from BOTH pools are
+  // collected. Private pool ghosts go inside their pool envelope; default
+  // pool ghosts are rendered at the global bottom of the stacked area.
   const result = process_alloc_data(snapshot, 0, false, 15000, true);
 
   const aot = result.allocations_over_time;
   const ghosts = aot.filter(d => d.ghost === true);
-  assertEqual(ghosts.length, 2, '2 ghost blocks total');
+  assertEqual(ghosts.length, 2, '2 ghost blocks (one from each pool)');
 
-  // Default pool ghost: at global bottom (offset 0), spans full timeline
+  // Default pool ghost (2 MiB): at global bottom, spans full timeline
   const default_ghost = ghosts.find(g => g.size === 2097152);
   assert(default_ghost !== undefined, 'default pool ghost (2 MiB) exists');
   assertEqual(default_ghost.offsets[0], 0, 'default ghost at offset 0');
@@ -815,9 +867,9 @@ function test_ghost_blocks_private_pool() {
   assertEqual(default_ghost.timesteps.length, 2, 'default ghost has 2 timesteps');
   assert(default_ghost.timesteps[1] > 0, 'default ghost ends after timestep 0');
 
-  // Private pool ghost: inside the pool envelope, spans full timeline
+  // Private pool ghost (1 MiB): inside the pool (0,1) envelope
   const pool_ghost = ghosts.find(g => g.size === 1048576);
-  assert(pool_ghost !== undefined, 'pool ghost (1 MiB) exists');
+  assert(pool_ghost !== undefined, 'private pool ghost (1 MiB) exists');
   assertEqual(pool_ghost.opacity, 0.3, 'pool ghost opacity 0.3');
   assertEqual(pool_ghost.timesteps[0], 0, 'pool ghost starts at timestep 0');
   assert(pool_ghost.timesteps.at(-1) > 0, 'pool ghost ends after timestep 0');
@@ -826,7 +878,7 @@ function test_ghost_blocks_private_pool() {
   assertEqual(default_ghost.timesteps[1], pool_ghost.timesteps.at(-1),
     'both ghosts end at the same final timestep');
 
-  // Pool envelope should exist for pool (0,1)
+  // Pool envelope only for (0,1) — default pool ghosts are at global bottom
   const envelopes = aot.filter(d => typeof d.elem === 'string' && d.elem.startsWith('pool:'));
   assertEqual(envelopes.length, 1, '1 pool envelope');
   assertContains(envelopes[0].elem, '0,1', 'envelope for pool (0,1)');
@@ -836,32 +888,23 @@ function test_ghost_blocks_private_pool() {
   assertEqual(env.timesteps[0], 0, 'envelope starts at timestep 0');
   assertEqual(env.size[0], 1048576, 'envelope initial size = ghost (1 MiB)');
 
-  // Ghost stripe should fit within the envelope from the start:
-  // ghost offset >= envelope offset, ghost offset + ghost size <= envelope offset + envelope size
+  // Ghost stripe should fit within the envelope
   const env_offset = env.offsets[0];
   const ghost_offset = pool_ghost.offsets[0];
-  assert(ghost_offset >= env_offset,
-    'ghost stripe offset >= envelope offset');
+  assert(ghost_offset >= env_offset, 'ghost stripe offset >= envelope offset');
   assert(ghost_offset + 1048576 <= env_offset + env.size[0],
     'ghost stripe fits within envelope at timestep 0');
 
-  // Pool envelope max size should include both ghost (1 MiB) and traced (3 MiB) = 4 MiB
+  // Pool envelope max size should include both ghost (1 MiB) + traced (3 MiB) = 4 MiB
   const env_max_size = Array.isArray(env.size)
     ? Math.max(...env.size)
     : env.size;
   assertEqual(env_max_size, 1048576 + 3145728, 'pool envelope max = ghost + traced');
 
-  // With include_private_inactive=false, all ghosts go to global bottom
+  // With include_private_inactive=false, no ghosts at all
   const result_false = process_alloc_data(snapshot, 0, false, 15000, false);
   const ghosts_false = result_false.allocations_over_time.filter(d => d.ghost === true);
-  assertEqual(ghosts_false.length, 2, '2 ghost blocks (no pool mode)');
-  // Both at global bottom, no pool envelope
-  for (const g of ghosts_false) {
-    assert(g.offsets[0] >= 0, 'ghost at bottom');
-  }
-  const envs_false = result_false.allocations_over_time.filter(
-    d => typeof d.elem === 'string' && d.elem.startsWith('pool:'));
-  assertEqual(envs_false.length, 0, 'no pool envelopes when include_private_inactive=false');
+  assertEqual(ghosts_false.length, 0, 'no ghost blocks on regular tab');
 }
 
 // ============================================================
@@ -1141,6 +1184,7 @@ test_segment_snapshot_with_trace_history();
 test_segment_snapshot_no_trace();
 test_ghost_blocks();
 test_ghost_blocks_not_created_for_traced_addrs();
+test_ghost_blocks_default_pool_collected();
 test_ghost_blocks_not_in_segment_mode();
 test_ghost_blocks_private_pool();
 test_full_snapshot_private_pools();
