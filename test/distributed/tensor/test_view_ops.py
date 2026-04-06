@@ -730,7 +730,7 @@ class TestViewOps(DTensorContinuousTestBase):
             view_shapes.extend(trailing_dims)
         return tuple(view_shapes)
 
-    def _test_flatten_split_case(self, in_shape, out_shape, placements, mesh):
+    def _test_dtensor_flatten_split_case(self, in_shape, out_shape, placements, mesh):
         """Test a single Split(Flatten) view case.
 
         Representable cases must produce zero communication and correct output.
@@ -754,7 +754,7 @@ class TestViewOps(DTensorContinuousTestBase):
         expected = global_tensor.view(list(out_shape))
         self.assertEqual(out_dt.full_tensor(), expected)
 
-    def test_dtensor_flatten_split(self):
+    def test_dtensor_flatten_split_multi_mesh(self):
         """Test views producing Split(Flatten) rules.
 
         Complements test_dtensor_flatten_multi_mesh (pure Flatten rules) and
@@ -800,7 +800,7 @@ class TestViewOps(DTensorContinuousTestBase):
                                 mesh_dim=shard_mesh_dim,
                                 mesh_shape=mesh_shape,
                             ):
-                                self._test_flatten_split_case(
+                                self._test_dtensor_flatten_split_case(
                                     in_shape,
                                     out_shape,
                                     placements,
@@ -2245,7 +2245,7 @@ TestViewOpsWithLocalTensor = create_local_tensor_test_class(
         "test_dtensor_flatten_1d",
         "test_dtensor_flatten_2d",
         "test_dtensor_flatten_multi_mesh",
-        "test_dtensor_flatten_split",
+        "test_dtensor_flatten_split_multi_mesh",
     ],
     base_class=LocalDTensorContinuousTestBase,
 )
