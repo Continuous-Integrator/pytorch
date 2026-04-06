@@ -1618,6 +1618,47 @@ class AOTInductorTestsTemplate:
             dynamic_shapes=dynamic_shapes,
         )
 
+    @unittest.skipIf(
+        not IS_BIG_GPU, "Skipping triton backend only since not big GPU (not enough SM)"
+    )
+    def test_bmm_large_batch_dynamic(self):
+        if self.device == "cpu":
+            raise unittest.SkipTest("using triton backend only is not supported on CPU")
+
+        class Model(torch.nn.Module):
+            def forward(self, a, b):
+                return torch.bmm(a, b)
+
+        M, K, N = 64, 64, 64
+        dtype = torch.float16
+        model = Model()
+
+        # Compile with small batch, then run with batch > 65535 (CUDA grid.y limit)
+        compile_batch = 100
+        a = torch.randn(compile_batch, M, K, device=self.device, dtype=dtype)
+        b = torch.randn(compile_batch, K, N, device=self.device, dtype=dtype)
+        dim0_a = Dim("dim0_a", min=1, max=2**17)
+        dynamic_shapes = {"a": {0: dim0_a}, "b": {0: dim0_a}}
+        list_example_inputs = [(a, b)]
+
+        # Large batch exceeding CUDA grid.y limit of 65535
+        large_batch = 70000
+        list_example_inputs.append(
+            (
+                torch.randn(large_batch, M, K, device=self.device, dtype=dtype),
+                torch.randn(large_batch, K, N, device=self.device, dtype=dtype),
+            ),
+        )
+        self.check_model_with_multiple_inputs(
+            model,
+            list_example_inputs,
+            options={
+                "max_autotune": True,
+                "max_autotune_gemm_backends": "TRITON",
+            },
+            dynamic_shapes=dynamic_shapes,
+        )
+
     @skipIfWindows(msg="TODO: (xuhancn) confirm, Crash: access violation")
     def test_foreach_multiple_dynamic(self):
         class Model(torch.nn.Module):
@@ -1919,6 +1960,43 @@ class AOTInductorTestsTemplate:
         }
         self.check_model(model, example_inputs, dynamic_shapes=spec)
         torch.cuda.caching_allocator_enable(True)
+
+    @skipIfMPS
+    @config.patch({"triton.autotune_at_compile_time": None})
+    @torch.fx.experimental._config.patch("backed_size_oblivious", True)
+    def test_slice_independent_backed_symints_no_unbacked(self):
+        # x[0:s1] where x.size(0) = s0-1 should produce Min(s1, s0-1),
+        # not an unbacked symint with a bad fallback value.
+        if self.device != GPU_TYPE:
+            raise unittest.SkipTest("requires triton")
+
+        INNER_DIM = 4224
+
+        class Repro(torch.nn.Module):
+            def forward(self, x, y):
+                x_trimmed = x[:-1]
+                sliced = x_trimmed[: y.size(0)]
+                reshaped = sliced.reshape(-1, 128, 33)
+                expanded = reshaped.unsqueeze(3).expand(-1, 128, 33, 8)
+                shifts = torch.arange(0, 64, 8, device=x.device, dtype=torch.int64)
+                return (expanded >> shifts) & 255
+
+        torch.cuda.caching_allocator_enable(False)
+        try:
+            model = Repro()
+            example_inputs = (
+                torch.randint(
+                    0, 256, (200, INNER_DIM), device=self.device, dtype=torch.int64
+                ),
+                torch.randn(50, 8, device=self.device),
+            )
+            spec = {
+                "x": (Dim.DYNAMIC, Dim.STATIC),
+                "y": (Dim.DYNAMIC, Dim.STATIC),
+            }
+            self.check_model(model, example_inputs, dynamic_shapes=spec)
+        finally:
+            torch.cuda.caching_allocator_enable(True)
 
     @config.patch({"triton.autotune_at_compile_time": None})
     def test_stride_with_unbacked_expr(self):
