@@ -1098,7 +1098,10 @@ function create_trace_view(
     dst.append('div')
       .attr('style', 'padding: 4px 8px; background: #fff3cd; border: 1px solid #ffc107; font-size: 13px; margin-bottom: 4px;')
       .text('Note: Private pool memory (the gray bar) is shown as allocated until the pool\'s segment is freed. '
-          + 'This view requires that MemPools are not deleted before torch.cuda.memory._snapshot() is called.');
+          + 'This view requires that MemPools are not deleted before torch.cuda.memory._snapshot() is called. '
+          + 'This tab also shows ghost blocks (faded, low-opacity) -- blocks that exist in the segment snapshot but have no trace events. '
+          + 'They were allocated before _record_memory_history() was called or their alloc event was evicted from the ring buffer. '
+          + 'Ghost blocks are not shown in the regular "Allocated Memory" tab.');
   }
   const d = dst.append('div');
   d.append('input')

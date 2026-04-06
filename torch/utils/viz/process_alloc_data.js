@@ -472,7 +472,7 @@ function process_alloc_data(snapshot, device, plot_segments, max_entries, includ
   // recording started or their alloc event was evicted from the ring buffer
   // and they were never freed.
   const ghost_blocks = [];
-  if (!plot_segments) {
+  if (!plot_segments && include_private_inactive) {
     for (const seg of snapshot.segments) {
       if (seg.device !== device) continue;
       for (const b of seg.blocks) {
@@ -515,10 +515,8 @@ function process_alloc_data(snapshot, device, plot_segments, max_entries, includ
   const data = [];         // all data objects (including completed ones)
   let max_size = 0;
 
-  // Ghost blocks occupy the bottom of the stack. When include_private_inactive
-  // is true, private pool ghosts go inside their pool envelope instead.
-  // Sort pool ghosts so the pool with the last trace alloc is processed last
-  // (rendered on top).
+  // Private pool ghosts go inside their pool envelope; default pool ghosts
+  // are rendered at the global bottom of the stacked area.
   let ghost_total = 0;
   const default_ghost_blocks = [];
   const pool_ghost_blocks = [];
