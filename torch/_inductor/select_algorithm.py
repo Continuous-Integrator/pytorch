@@ -1527,6 +1527,7 @@ class TritonTemplateKernel(TritonKernel):
             subgraph_name, self._make_codegen_hook(subgraph_name, indent_width)
         )
 
+
     def _register_hook(
         self,
         hook_name: str,
@@ -1785,8 +1786,29 @@ class TritonTemplateKernel(TritonKernel):
             for i in range(num_store_subgraphs):
                 subgraph_name = self._get_store_output_subgraph_name(i)
                 with self.set_subgraph_body(subgraph_name):
-                    for node in self._epilogue_nodes_by_subgraph[i]:
-                        node.codegen(self.split_and_set_ranges(node.get_ranges()))
+                    if self.tma_store and self._epilogue_nodes_by_subgraph[i]:
+                        # When TMA store is active, inject mode="tma" on
+                        # epilogue stores so they use TMA descriptors.
+                        # The template's own store to the intermediate buffer
+                        # is suppressed by DeferredLine (removed buffer).
+                        orig_store = self.store
+
+                        def _tma_epilogue_store(name, index, value, mode=None):
+                            orig_store(name, index, value, mode="tma")
+
+                        self.store = _tma_epilogue_store  # type: ignore[method-assign]
+                        try:
+                            for node in self._epilogue_nodes_by_subgraph[i]:
+                                node.codegen(
+                                    self.split_and_set_ranges(node.get_ranges())
+                                )
+                        finally:
+                            self.store = orig_store  # type: ignore[method-assign]
+                    else:
+                        for node in self._epilogue_nodes_by_subgraph[i]:
+                            node.codegen(
+                                self.split_and_set_ranges(node.get_ranges())
+                            )
                     self.cse.invalidate(OrderedSet())
 
             self.codegen_prologues_in_subgraphs(
