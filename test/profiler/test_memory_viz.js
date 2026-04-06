@@ -703,6 +703,488 @@ function test_segment_map_no_phantom_segments() {
 }
 
 // ============================================================
+// Ghost block tests
+// ============================================================
+
+function test_ghost_blocks() {
+  console.log('test_ghost_blocks');
+  // Snapshot produced by (agent_space/test_ring_buffer_overflow.py):
+  //   pre_record = torch.empty(1024 * 1024, device="cuda", dtype=torch.uint8)  # 1 MiB
+  //   torch.cuda.memory._record_memory_history(max_entries=10)
+  //   early = torch.empty(2 * 1024 * 1024, device="cuda", dtype=torch.uint8)   # 2 MiB
+  //   for _ in range(15):  # overflow the 10-entry ring buffer
+  //     t = torch.empty(4 * 1024 * 1024, device="cuda", dtype=torch.uint8)     # 4 MiB
+  //     del t
+  //   snap = torch.cuda.memory._snapshot()
+  //
+  // pre_record: allocated before recording → no trace event at all
+  // early: alloc event evicted from ring buffer by churn → no trace event
+  // Both are active_allocated in segment snapshot but invisible in trace.
+  const snapshot = makeSnapshot({
+    traces: [
+      { action: 'free_completed', addr: 0x6a00000, size: 4194304, frames: [], stream: 0 },
+      { action: 'alloc', addr: 0x6a00000, size: 4194304, frames: [], stream: 0 },
+      { action: 'free_completed', addr: 0x6a00000, size: 4194304, frames: [], stream: 0 },
+      { action: 'alloc', addr: 0x6a00000, size: 4194304, frames: [], stream: 0 },
+      { action: 'free_completed', addr: 0x6a00000, size: 4194304, frames: [], stream: 0 },
+    ],
+    segments: [
+      { device: 0, address: 0x1e00000, total_size: 2097152, segment_pool_id: [0, 0],
+        stream: 0, blocks: [
+          { address: 0x1e00000, size: 1048576, requested_size: 1048576,
+            state: 'active_allocated', frames: [] },
+          { address: 0x1f00000, size: 1048576, requested_size: 1048576,
+            state: 'inactive', frames: [] },
+        ]},
+      { device: 0, address: 0x6800000, total_size: 20971520, segment_pool_id: [0, 0],
+        stream: 0, blocks: [
+          { address: 0x6800000, size: 2097152, requested_size: 2097152,
+            state: 'active_allocated', frames: [
+              { filename: 'test.py', line: 10, name: 'early_alloc' },
+            ]},
+          { address: 0x6a00000, size: 18874368, requested_size: 18874368,
+            state: 'inactive', frames: [] },
+        ]},
+    ],
+  });
+
+  for (const include_private of [false, true]) {
+    const label = `include_private_inactive=${include_private}`;
+    const result = process_alloc_data(snapshot, 0, false, 15000, include_private);
+
+    // Trace creates 2 elements from alloc events + 1 from unmatched free.
+    // Ghost blocks add 2 more from the segment snapshot.
+    assertEqual(result.elements_length, 5,
+      `${label}: 3 trace elements + 2 ghost blocks`);
+
+    const aot = result.allocations_over_time;
+    const ghosts = aot.filter(d => d.ghost === true);
+    assertEqual(ghosts.length, 2, `${label}: should have 2 ghost block entries`);
+
+    // Ghost blocks span the full timeline [0, final_timestep]
+    for (const g of ghosts) {
+      assertEqual(g.timesteps[0], 0, `${label}: ghost starts at timestep 0`);
+      assertEqual(g.timesteps.length, 2, `${label}: ghost has 2 timesteps (start + end)`);
+      assertEqual(g.timesteps[1], g.timesteps[1], `${label}: ghost has end timestep`);
+      assert(g.timesteps[1] > 0, `${label}: ghost end timestep > 0`);
+      assertEqual(g.opacity, 0.3, `${label}: ghost opacity is 0.3`);
+    }
+    // All ghost blocks should have the same end timestep (the final timestep)
+    const end_timesteps = ghosts.map(g => g.timesteps[1]);
+    assertEqual(end_timesteps[0], end_timesteps[1],
+      `${label}: both ghosts share the same end timestep`);
+
+    // Ghost block sizes match segment snapshot blocks
+    const ghost_sizes = ghosts.map(g => g.size).sort();
+    assertEqual(ghost_sizes[0], 1048576, `${label}: ghost block 1 MiB (pre_record)`);
+    assertEqual(ghost_sizes[1], 2097152, `${label}: ghost block 2 MiB (ring buffer overflow)`);
+
+    // context_for_id shows ghost explanation
+    const ghost_elem_ids = ghosts.map(g => g.elem);
+    for (const id of ghost_elem_ids) {
+      const ctx = result.context_for_id(id);
+      assertContains(ctx, '[Ghost block]', `${label}: context contains ghost label`);
+      assertContains(ctx, 'segment snapshot', `${label}: context explains source`);
+    }
+  }
+}
+
+function test_ghost_blocks_not_created_for_traced_addrs() {
+  console.log('test_ghost_blocks_not_created_for_traced_addrs');
+  // A block in the segment snapshot whose address DID appear in trace events
+  // should NOT be a ghost block.
+  const snapshot = makeSnapshot({
+    traces: [
+      { action: 'alloc', addr: 1000, size: 512, frames: [], stream: 0 },
+    ],
+    segments: [{
+      device: 0, address: 0, total_size: 4096, segment_pool_id: [0, 0],
+      stream: 0, blocks: [
+        { address: 1000, size: 512, requested_size: 512,
+          state: 'active_allocated', frames: [] },
+      ],
+    }],
+  });
+
+  const result = process_alloc_data(snapshot, 0, false, 15000, false);
+  const aot = result.allocations_over_time;
+  const ghosts = aot.filter(d => d.ghost === true);
+  assertEqual(ghosts.length, 0, 'no ghost blocks when addr is in trace');
+  assertEqual(result.elements_length, 1, 'only the trace element');
+}
+
+function test_ghost_blocks_not_in_segment_mode() {
+  console.log('test_ghost_blocks_not_in_segment_mode');
+  // Ghost blocks should not be created in segment-level views
+  const snapshot = makeSnapshot({
+    traces: [],
+    segments: [{
+      device: 0, address: 0, total_size: 4096, segment_pool_id: [0, 0],
+      stream: 0, blocks: [
+        { address: 100, size: 512, requested_size: 512,
+          state: 'active_allocated', frames: [] },
+      ],
+    }],
+  });
+
+  const result_seg = process_alloc_data(snapshot, 0, true, 15000, false);
+  const ghosts_seg = result_seg.allocations_over_time.filter(d => d.ghost === true);
+  assertEqual(ghosts_seg.length, 0, 'no ghost blocks in segment_alloc mode');
+
+  const result_map = process_alloc_data(snapshot, 0, 'segment_map', 15000, false);
+  const ghosts_map = result_map.allocations_over_time.filter(d => d.ghost === true);
+  assertEqual(ghosts_map.length, 0, 'no ghost blocks in segment_map mode');
+}
+
+function test_ghost_blocks_private_pool() {
+  console.log('test_ghost_blocks_private_pool');
+  // Snapshot produced by (agent_space/test_ghost_blocks_private_pool.py):
+  //   pool = torch.cuda.MemPool()
+  //   with torch.cuda.use_mem_pool(pool):
+  //     pre_record_pool = torch.empty(1 MiB)     # ghost in private pool (0,1)
+  //   pre_record_default = torch.empty(2 MiB)     # ghost in default pool (0,0)
+  //   torch.cuda.memory._record_memory_history(max_entries=20)
+  //   with torch.cuda.use_mem_pool(pool):
+  //     traced_pool = torch.empty(3 MiB)          # traced in private pool (0,1)
+  //   traced_default = torch.empty(4 MiB)          # traced in default pool (0,0)
+  const snapshot = makeSnapshot({
+    traces: [
+      { action: 'alloc', addr: 0xe600000, size: 3145728, frames: [], stream: 0 },
+      { action: 'alloc', addr: 0x6a00000, size: 4194304, frames: [], stream: 0 },
+    ],
+    segments: [
+      // Private pool segment with ghost block
+      { device: 0, address: 0x1e00000, total_size: 2097152, segment_pool_id: [0, 1],
+        stream: 0, blocks: [
+          { address: 0x1e00000, size: 1048576, requested_size: 1048576,
+            state: 'active_allocated', frames: [] },
+        ]},
+      // Default pool segment with ghost block + traced block
+      { device: 0, address: 0x6800000, total_size: 20971520, segment_pool_id: [0, 0],
+        stream: 0, blocks: [
+          { address: 0x6800000, size: 2097152, requested_size: 2097152,
+            state: 'active_allocated', frames: [] },
+          { address: 0x6a00000, size: 4194304, requested_size: 4194304,
+            state: 'active_allocated', frames: [] },
+        ]},
+      // Private pool segment with traced block
+      { device: 0, address: 0xe600000, total_size: 20971520, segment_pool_id: [0, 1],
+        stream: 0, blocks: [
+          { address: 0xe600000, size: 3145728, requested_size: 3145728,
+            state: 'active_allocated', frames: [] },
+        ]},
+    ],
+  });
+
+  // With include_private_inactive=true, the pool ghost (1 MiB in pool 0,1)
+  // should be inside the pool envelope, not at the global bottom.
+  const result = process_alloc_data(snapshot, 0, false, 15000, true);
+
+  const aot = result.allocations_over_time;
+  const ghosts = aot.filter(d => d.ghost === true);
+  assertEqual(ghosts.length, 2, '2 ghost blocks total');
+
+  // Default pool ghost: at global bottom (offset 0), spans full timeline
+  const default_ghost = ghosts.find(g => g.size === 2097152);
+  assert(default_ghost !== undefined, 'default pool ghost (2 MiB) exists');
+  assertEqual(default_ghost.offsets[0], 0, 'default ghost at offset 0');
+  assertEqual(default_ghost.opacity, 0.3, 'default ghost opacity 0.3');
+  assertEqual(default_ghost.timesteps[0], 0, 'default ghost starts at timestep 0');
+  assertEqual(default_ghost.timesteps.length, 2, 'default ghost has 2 timesteps');
+  assert(default_ghost.timesteps[1] > 0, 'default ghost ends after timestep 0');
+
+  // Private pool ghost: inside the pool envelope, spans full timeline
+  const pool_ghost = ghosts.find(g => g.size === 1048576);
+  assert(pool_ghost !== undefined, 'pool ghost (1 MiB) exists');
+  assertEqual(pool_ghost.opacity, 0.3, 'pool ghost opacity 0.3');
+  assertEqual(pool_ghost.timesteps[0], 0, 'pool ghost starts at timestep 0');
+  assert(pool_ghost.timesteps.at(-1) > 0, 'pool ghost ends after timestep 0');
+
+  // Both ghosts should end at the same final timestep
+  assertEqual(default_ghost.timesteps[1], pool_ghost.timesteps.at(-1),
+    'both ghosts end at the same final timestep');
+
+  // Pool envelope should exist for pool (0,1)
+  const envelopes = aot.filter(d => typeof d.elem === 'string' && d.elem.startsWith('pool:'));
+  assertEqual(envelopes.length, 1, '1 pool envelope');
+  assertContains(envelopes[0].elem, '0,1', 'envelope for pool (0,1)');
+
+  // Envelope initial size at timestep 0 should already include the ghost block
+  const env = envelopes[0];
+  assertEqual(env.timesteps[0], 0, 'envelope starts at timestep 0');
+  assertEqual(env.size[0], 1048576, 'envelope initial size = ghost (1 MiB)');
+
+  // Ghost stripe should fit within the envelope from the start:
+  // ghost offset >= envelope offset, ghost offset + ghost size <= envelope offset + envelope size
+  const env_offset = env.offsets[0];
+  const ghost_offset = pool_ghost.offsets[0];
+  assert(ghost_offset >= env_offset,
+    'ghost stripe offset >= envelope offset');
+  assert(ghost_offset + 1048576 <= env_offset + env.size[0],
+    'ghost stripe fits within envelope at timestep 0');
+
+  // Pool envelope max size should include both ghost (1 MiB) and traced (3 MiB) = 4 MiB
+  const env_max_size = Array.isArray(env.size)
+    ? Math.max(...env.size)
+    : env.size;
+  assertEqual(env_max_size, 1048576 + 3145728, 'pool envelope max = ghost + traced');
+
+  // With include_private_inactive=false, all ghosts go to global bottom
+  const result_false = process_alloc_data(snapshot, 0, false, 15000, false);
+  const ghosts_false = result_false.allocations_over_time.filter(d => d.ghost === true);
+  assertEqual(ghosts_false.length, 2, '2 ghost blocks (no pool mode)');
+  // Both at global bottom, no pool envelope
+  for (const g of ghosts_false) {
+    assert(g.offsets[0] >= 0, 'ghost at bottom');
+  }
+  const envs_false = result_false.allocations_over_time.filter(
+    d => typeof d.elem === 'string' && d.elem.startsWith('pool:'));
+  assertEqual(envs_false.length, 0, 'no pool envelopes when include_private_inactive=false');
+}
+
+// ============================================================
+// Full snapshot integration test
+// ============================================================
+
+function test_full_snapshot_private_pools() {
+  console.log('test_full_snapshot_private_pools');
+  // Snapshot produced by:
+  //   torch.cuda.memory._record_memory_history()
+  //   x = torch.empty(1024, device="cuda", dtype=torch.uint8)          # default pool
+  //   m = torch.cuda.MemPool()
+  //   with torch.cuda.use_mem_pool(m):
+  //     y = torch.empty(1024, device="cuda", dtype=torch.uint8)        # private pool (0,1)
+  //   del x; del y
+  //   z = torch.empty(1024, device="cuda", dtype=torch.uint8)          # default pool re-alloc
+  //   with torch.cuda.use_mem_pool(m):
+  //     w = torch.empty(1024, device="cuda", dtype=torch.uint8)        # private pool re-alloc
+  //     w2 = torch.empty(1024, device="cuda", dtype=torch.uint8)       # private pool new addr
+  //   z2 = torch.empty(1024, device="cuda", dtype=torch.uint8)         # default pool new addr
+  //   torch.cuda.empty_cache()
+  const snapshot = makeSnapshot({
+    traces: [
+      { action: 'segment_alloc', addr: 0x7f08cde00000, size: 2097152, frames: [], stream: 0 },
+      { action: 'alloc', addr: 0x7f08cde00000, size: 1024, frames: [], stream: 0 },
+      { action: 'segment_alloc', addr: 0x7f08d2800000, size: 2097152, frames: [], stream: 0 },
+      { action: 'alloc', addr: 0x7f08d2800000, size: 1024, frames: [], stream: 0 },
+      { action: 'free_requested', addr: 0x7f08cde00000, size: 1024, frames: [], stream: 0 },
+      { action: 'free_completed', addr: 0x7f08cde00000, size: 1024, frames: [], stream: 0 },
+      { action: 'free_requested', addr: 0x7f08d2800000, size: 1024, frames: [], stream: 0 },
+      { action: 'free_completed', addr: 0x7f08d2800000, size: 1024, frames: [], stream: 0 },
+      { action: 'alloc', addr: 0x7f08cde00000, size: 1024, frames: [], stream: 0 },
+      { action: 'alloc', addr: 0x7f08d2800000, size: 1024, frames: [], stream: 0 },
+      { action: 'alloc', addr: 0x7f08d2800400, size: 1024, frames: [], stream: 0 },
+      { action: 'alloc', addr: 0x7f08cde00400, size: 1024, frames: [], stream: 0 },
+    ],
+    segments: [
+      { device: 0, address: 0x7f08cde00000, total_size: 2097152,
+        segment_pool_id: [0, 0], stream: 0, blocks: [] },
+      { device: 0, address: 0x7f08d2800000, total_size: 2097152,
+        segment_pool_id: [0, 1], stream: 0, blocks: [] },
+    ],
+  });
+
+  const result = process_alloc_data(snapshot, 0, false, 15000, true);
+
+  // --- Top-level metrics ---
+  assertEqual(result.elements_length, 6, 'should have 6 elements');
+  assertEqual(result.max_size, 4096, 'peak memory should be 4096');
+
+  // --- max_at_time progression ---
+  // Tracks total_mem + total_summarized_mem at each timestep
+  const expected_max_at_time = [
+    1024, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048,
+    1024, 2048, 2048, 3072, 3072, 3072, 3072, 4096,
+  ];
+  assertEqual(result.max_at_time.length, expected_max_at_time.length,
+    'max_at_time length');
+  for (let i = 0; i < expected_max_at_time.length; i++) {
+    assertEqual(result.max_at_time[i], expected_max_at_time[i],
+      `max_at_time[${i}]`);
+  }
+
+  // --- allocations_over_time structure ---
+  const aot = result.allocations_over_time;
+
+  // Element 0: first alloc in default pool (0,0) — appears, then freed, then re-alloced
+  assertEqual(aot[0].elem, 0, 'first entry is element 0');
+  assertEqual(aot[0].size, 1024, 'element 0 size');
+  assertEqual(aot[0].color, 0, 'element 0 color');
+
+  // Pool envelope for (0,1)
+  const envelopes = aot.filter(d => typeof d.elem === 'string' && d.elem.startsWith('pool:'));
+  assertEqual(envelopes.length, 1, 'should have 1 pool envelope');
+  assertEqual(envelopes[0].elem, 'pool:0,1,s0', 'envelope key matches pool (0,1) stream 0');
+  assertEqual(envelopes[0].color, 9, 'envelope uses color 9 (gray)');
+
+  // Pool stripes (elements inside the pool envelope, rendered with opacity 0.5)
+  const stripes = aot.filter(d => typeof d.elem === 'number' && d.opacity === 0.5);
+  assertEqual(stripes.length, 3, 'should have 3 pool stripes (elements 1, 3, 4)');
+  for (const s of stripes) {
+    assertEqual(s.size, 1024, 'pool stripe size is 1024');
+  }
+
+  // Non-pool elements (no opacity) — elements 0, 2, 5 are in default pool (0,0)
+  const non_pool = aot.filter(d => typeof d.elem === 'number' && d.opacity === undefined);
+  assertEqual(non_pool.length, 3, 'should have 3 non-pool elements (0, 2, 5)');
+  const non_pool_ids = non_pool.map(d => d.elem).sort();
+  assertEqual(non_pool_ids[0], 0, 'non-pool elem 0');
+  assertEqual(non_pool_ids[1], 2, 'non-pool elem 2');
+  assertEqual(non_pool_ids[2], 5, 'non-pool elem 5');
+
+  // Pool stripes — elements 1, 3, 4 are in private pool (0,1)
+  const stripe_ids = stripes.map(d => d.elem).sort();
+  assertEqual(stripe_ids[0], 1, 'pool stripe elem 1');
+  assertEqual(stripe_ids[1], 3, 'pool stripe elem 3');
+  assertEqual(stripe_ids[2], 4, 'pool stripe elem 4');
+
+  // Summarized band
+  const summarized = aot.filter(d => d.elem === 'summarized');
+  assertEqual(summarized.length, 1, 'should have 1 summarized band');
+
+  // --- context_for_id for all 6 elements ---
+  // elem 0: first alloc at 0x7f08cde00000 in default pool (0,0)
+  const ctx0 = result.context_for_id(0);
+  assertContains(ctx0, '7f08cde00000', 'element 0 addr');
+  assertContains(ctx0, '1.0KiB', 'element 0 size');
+  assertContains(ctx0, 'pool_id (0, 0)', 'element 0 pool');
+
+  // elem 1: first alloc at 0x7f08d2800000 in private pool (0,1)
+  const ctx1 = result.context_for_id(1);
+  assertContains(ctx1, '7f08d2800000', 'element 1 addr');
+  assertContains(ctx1, '1.0KiB', 'element 1 size');
+  assertContains(ctx1, 'pool_id (0, 1)', 'element 1 pool');
+
+  // elem 2: re-alloc at 0x7f08cde00000 in default pool (0,0)
+  const ctx2 = result.context_for_id(2);
+  assertContains(ctx2, '7f08cde00000', 'element 2 addr');
+  assertContains(ctx2, '1.0KiB', 'element 2 size');
+  assertContains(ctx2, 'pool_id (0, 0)', 'element 2 pool');
+
+  // elem 3: re-alloc at 0x7f08d2800000 in private pool (0,1)
+  const ctx3 = result.context_for_id(3);
+  assertContains(ctx3, '7f08d2800000', 'element 3 addr');
+  assertContains(ctx3, '1.0KiB', 'element 3 size');
+  assertContains(ctx3, 'pool_id (0, 1)', 'element 3 pool');
+
+  // elem 4: new alloc at 0x7f08d2800400 in private pool (0,1)
+  const ctx4 = result.context_for_id(4);
+  assertContains(ctx4, '7f08d2800400', 'element 4 addr');
+  assertContains(ctx4, '1.0KiB', 'element 4 size');
+  assertContains(ctx4, 'pool_id (0, 1)', 'element 4 pool');
+
+  // elem 5: new alloc at 0x7f08cde00400 in default pool (0,0)
+  const ctx5 = result.context_for_id(5);
+  assertContains(ctx5, '7f08cde00400', 'element 5 addr');
+  assertContains(ctx5, '1.0KiB', 'element 5 size');
+  assertContains(ctx5, 'pool_id (0, 0)', 'element 5 pool');
+}
+
+function test_full_snapshot_no_private_pools() {
+  console.log('test_full_snapshot_no_private_pools');
+  // Same snapshot as test_full_snapshot_private_pools (see that test for the
+  // Python code that produces it), but with include_private_inactive=false.
+  // Pool blocks are treated as regular alloc/free — no envelope, no stripes.
+  const snapshot = makeSnapshot({
+    traces: [
+      { action: 'segment_alloc', addr: 0x7f08cde00000, size: 2097152, frames: [], stream: 0 },
+      { action: 'alloc', addr: 0x7f08cde00000, size: 1024, frames: [], stream: 0 },
+      { action: 'segment_alloc', addr: 0x7f08d2800000, size: 2097152, frames: [], stream: 0 },
+      { action: 'alloc', addr: 0x7f08d2800000, size: 1024, frames: [], stream: 0 },
+      { action: 'free_requested', addr: 0x7f08cde00000, size: 1024, frames: [], stream: 0 },
+      { action: 'free_completed', addr: 0x7f08cde00000, size: 1024, frames: [], stream: 0 },
+      { action: 'free_requested', addr: 0x7f08d2800000, size: 1024, frames: [], stream: 0 },
+      { action: 'free_completed', addr: 0x7f08d2800000, size: 1024, frames: [], stream: 0 },
+      { action: 'alloc', addr: 0x7f08cde00000, size: 1024, frames: [], stream: 0 },
+      { action: 'alloc', addr: 0x7f08d2800000, size: 1024, frames: [], stream: 0 },
+      { action: 'alloc', addr: 0x7f08d2800400, size: 1024, frames: [], stream: 0 },
+      { action: 'alloc', addr: 0x7f08cde00400, size: 1024, frames: [], stream: 0 },
+    ],
+    segments: [
+      { device: 0, address: 0x7f08cde00000, total_size: 2097152,
+        segment_pool_id: [0, 0], stream: 0, blocks: [] },
+      { device: 0, address: 0x7f08d2800000, total_size: 2097152,
+        segment_pool_id: [0, 1], stream: 0, blocks: [] },
+    ],
+  });
+
+  const result = process_alloc_data(snapshot, 0, false, 15000, false);
+
+  // --- Top-level metrics ---
+  assertEqual(result.elements_length, 6, 'should have 6 elements');
+  assertEqual(result.max_size, 4096, 'peak memory should be 4096');
+
+  // --- max_at_time progression ---
+  // Without pool tracking, both allocs and frees directly change total_mem.
+  // Timeline: alloc(1024), alloc(2048), free+shift(back to 1024 after animation),
+  //           free+shift(back to 0), alloc(1024), alloc(2048), alloc(3072), alloc(4096)
+  const expected_max_at_time = [
+    1024, 2048, 2048, 2048, 2048, 2048,
+    1024, 1024, 2048, 3072, 4096,
+  ];
+  assertEqual(result.max_at_time.length, expected_max_at_time.length,
+    'max_at_time length');
+  for (let i = 0; i < expected_max_at_time.length; i++) {
+    assertEqual(result.max_at_time[i], expected_max_at_time[i],
+      `max_at_time[${i}]`);
+  }
+
+  // --- No pool envelopes or stripes ---
+  const aot = result.allocations_over_time;
+  const envelopes = aot.filter(d => typeof d.elem === 'string' && d.elem.startsWith('pool:'));
+  assertEqual(envelopes.length, 0, 'no pool envelopes');
+
+  const stripes = aot.filter(d => typeof d.elem === 'number' && d.opacity === 0.5);
+  assertEqual(stripes.length, 0, 'no pool stripes');
+
+  // All 6 elements are regular (no opacity)
+  const regular = aot.filter(d => typeof d.elem === 'number');
+  assertEqual(regular.length, 6, 'all 6 elements are regular');
+
+  // Summarized band
+  const summarized = aot.filter(d => d.elem === 'summarized');
+  assertEqual(summarized.length, 1, 'should have 1 summarized band');
+
+  // --- context_for_id: key difference is total memory ---
+  // elem 0: alloc 0xcde00000, total_mem=1024
+  const ctx0 = result.context_for_id(0);
+  assertContains(ctx0, '7f08cde00000', 'element 0 addr');
+  assertContains(ctx0, 'Total memory used after allocation: 1.0KiB', 'element 0 total');
+  assertContains(ctx0, 'pool_id (0, 0)', 'element 0 pool');
+
+  // elem 1: alloc 0xd2800000, total_mem=2048
+  const ctx1 = result.context_for_id(1);
+  assertContains(ctx1, '7f08d2800000', 'element 1 addr');
+  assertContains(ctx1, 'Total memory used after allocation: 2.0KiB', 'element 1 total');
+  assertContains(ctx1, 'pool_id (0, 1)', 'element 1 pool');
+
+  // elem 2: re-alloc 0xcde00000 — both pools were freed, total_mem=1024
+  // (this is the key difference from include_private_inactive=true where it's 2048)
+  const ctx2 = result.context_for_id(2);
+  assertContains(ctx2, '7f08cde00000', 'element 2 addr');
+  assertContains(ctx2, 'Total memory used after allocation: 1.0KiB', 'element 2 total (no pool envelope)');
+  assertContains(ctx2, 'pool_id (0, 0)', 'element 2 pool');
+
+  // elem 3: re-alloc 0xd2800000, total_mem=2048
+  const ctx3 = result.context_for_id(3);
+  assertContains(ctx3, '7f08d2800000', 'element 3 addr');
+  assertContains(ctx3, 'Total memory used after allocation: 2.0KiB', 'element 3 total');
+  assertContains(ctx3, 'pool_id (0, 1)', 'element 3 pool');
+
+  // elem 4: alloc 0xd2800400, total_mem=3072
+  const ctx4 = result.context_for_id(4);
+  assertContains(ctx4, '7f08d2800400', 'element 4 addr');
+  assertContains(ctx4, 'Total memory used after allocation: 3.0KiB', 'element 4 total');
+  assertContains(ctx4, 'pool_id (0, 1)', 'element 4 pool');
+
+  // elem 5: alloc 0xcde00400, total_mem=4096
+  const ctx5 = result.context_for_id(5);
+  assertContains(ctx5, '7f08cde00400', 'element 5 addr');
+  assertContains(ctx5, 'Total memory used after allocation: 4.0KiB', 'element 5 total');
+  assertContains(ctx5, 'pool_id (0, 0)', 'element 5 pool');
+}
+
+// ============================================================
 // Run all tests
 // ============================================================
 
@@ -739,6 +1221,12 @@ test_segment_map_basic();
 test_segment_map_ignores_alloc_free();
 test_segment_map_unmap_without_map();
 test_segment_map_no_phantom_segments();
+test_ghost_blocks();
+test_ghost_blocks_not_created_for_traced_addrs();
+test_ghost_blocks_not_in_segment_mode();
+test_ghost_blocks_private_pool();
+test_full_snapshot_private_pools();
+test_full_snapshot_no_private_pools();
 
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed > 0 ? 1 : 0);
