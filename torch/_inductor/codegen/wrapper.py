@@ -50,7 +50,6 @@ from ..runtime.hints import DeviceProperties
 from ..stream_constants import DEFAULT_STREAM, DEFAULT_STREAM_IDX, STREAM_NAME_TEMPLATE
 from ..stream_utils import get_stream_name
 from ..utils import (
-    ALIGNMENT,
     cache_on_self,
     DelayReplaceLine,
     get_benchmark_name,
@@ -1220,6 +1219,20 @@ class UnbackedSymbolDefsLine(WrapperLine):
         return converter._generate_unbacked_symbol_defs
 
 
+@dataclasses.dataclass
+class AssertSizeStrideLine(WrapperLine):
+    name: str
+    size: str
+    stride: str
+
+    def codegen(self, code: IndentedBuffer) -> None:
+        code.writeline(f"assert_size_stride({self.name}, {self.size}, {self.stride})")
+
+    @staticmethod
+    def codegen_fx(converter: FxConverter) -> FxConversionFunc:
+        return converter._generate_assert_size_stride
+
+
 BufferName = str
 Line = MemoryPlanningLine | LineContext
 
@@ -1233,6 +1246,7 @@ class PythonWrapperCodegen(CodeGen):
 
     def __init__(self):
         super().__init__()
+        self._pending_input_asserts: dict[str, tuple[str, str]] = {}
         self._pending_alignment_copies: OrderedSet[str] = OrderedSet()
         self._names_iter: Iterator[int] = count()
         self.args_to_buffers: dict[
@@ -1391,7 +1405,6 @@ class PythonWrapperCodegen(CodeGen):
                 _quantized = torch.ops._quantized
                 assert_size_stride = torch._C._dynamo.guards.assert_size_stride
                 assert_alignment = torch._C._dynamo.guards.assert_alignment
-                from torch._inductor.utils import clone_preserve_strides
                 empty_strided_cpu = torch._C._dynamo.guards._empty_strided_cpu
                 empty_strided_cpu_pinned = torch._C._dynamo.guards._empty_strided_cpu_pinned
                 empty_strided_cuda = torch._C._dynamo.guards._empty_strided_cuda
@@ -1582,14 +1595,13 @@ class PythonWrapperCodegen(CodeGen):
                 continue
             size = self.codegen_python_shape_tuple(buf.get_size())
             stride = self.codegen_python_shape_tuple(buf.get_stride())
-            self.prefix.writeline(f"assert_size_stride({name}, {size}, {stride})")
+            self._pending_input_asserts[name] = (size, stride)
 
     def codegen_input_nan_asserts(self) -> None:
         self.prefix.writeline("# make sure graph inputs are not nan/inf")
         for name, buf in self.get_graph_inputs().items():
             if isinstance(buf, (sympy.Expr, ir.TorchBindObject)):
                 continue
-
             line = f"assert not {name}.isnan().any().item()"
             self.prefix.writeline(line)
             line = f"assert not {name}.isinf().any().item()"
@@ -1675,6 +1687,16 @@ class PythonWrapperCodegen(CodeGen):
         if config.nan_asserts:
             self.codegen_input_nan_asserts()
 
+    # Input size/stride assertions are deferred from the top of call() to just
+    # before the first kernel that uses each input. This avoids a block of N
+    # sequential assert calls (~1 us each) on the critical path before the first
+    # GPU kernel launch. Called from the scheduler codegen loop.
+    def codegen_deferred_input_asserts(self, input_names: Iterable[str]) -> None:
+        for name in input_names:
+            if name in self._pending_input_asserts:
+                size, stride = self._pending_input_asserts.pop(name)
+                self.writeline(AssertSizeStrideLine(name, size, stride))
+
     def register_alignment_check_inputs(self) -> None:
         """Populate pending alignment copies for non-mutated inputs.
         Called from the scheduler after mutated_input_idxs is computed."""
@@ -1690,6 +1712,11 @@ class PythonWrapperCodegen(CodeGen):
             if idx not in mutated_idxs:
                 name = V.graph.graph_input_names[idx]
                 self._pending_alignment_copies.add(name)
+        if self._pending_alignment_copies:
+            V.graph._defers_input_alignment = True
+            self.imports.writeline(
+                "from torch._C._dynamo.guards import copy_misaligned"
+            )
 
     def codegen_deferred_alignment_copies(self, input_names: Iterable[str]) -> None:
         """Emit alignment check + clone just before the first kernel
@@ -1699,8 +1726,7 @@ class PythonWrapperCodegen(CodeGen):
         for name in input_names:
             if name in self._pending_alignment_copies:
                 self._pending_alignment_copies.discard(name)
-                self.writeline(f"if {name}.data_ptr() % {ALIGNMENT} != 0:")
-                self.writeline(f"    {name} = clone_preserve_strides({name})")
+                self.writeline(f"{name} = copy_misaligned({name})")
 
     # this function (and below) takes the graph name as input so
     # that stream caching happens per graph instance. this
@@ -2555,11 +2581,7 @@ class PythonWrapperCodegen(CodeGen):
                     # the subclass.
                     continue
                 if isinstance(value, ir.TorchBindObject):
-                    if len(V.graph.torchbind_constants) == 0:
-                        # otherwise we have already imported the pickle package
-                        output.writeline("import pickle")
-                    output.writeline(f"global {name}")
-                    add_torchbind_input(name, value.get_real_obj())
+                    output.writeline(f"{name} = None")
                 elif isinstance(value, sympy.Expr):  # Don't need to add symbolic
                     # TODO: this fallback and those below actually will generate possibly
                     # invalid benchmark code, because it's not guaranteed 42
