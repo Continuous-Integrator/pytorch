@@ -1340,7 +1340,7 @@ class _CachingTorchDispatchMode(TorchDispatchMode):
             return func(*args, **kwargs)
 
         proxy_mode = None
-        graph_len_before = None
+        graph_len_before = 0
         if is_compiling:
             from torch.fx.experimental.proxy_tensor import get_proxy_mode
             proxy_mode = get_proxy_mode()

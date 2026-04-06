@@ -15650,9 +15650,12 @@ class TestSelectiveActivationCheckpoint(TestCase):
 
             class Block(torch.nn.Module):
                 def forward(self, x, counter):
-                    x = my_op(x, counter[0]); counter[0] += 1
-                    x = my_op(x, counter[0]); counter[0] += 1
-                    x = my_op(x, counter[0]); counter[0] += 1
+                    x = my_op(x, counter[0])
+                    counter[0] += 1
+                    x = my_op(x, counter[0])
+                    counter[0] += 1
+                    x = my_op(x, counter[0])
+                    counter[0] += 1
                     return x
 
             class Model(torch.nn.Module):
