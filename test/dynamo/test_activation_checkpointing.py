@@ -2287,9 +2287,12 @@ class RematerializeACNodesPassTests(torch._dynamo.test_case.TestCase):
             partition_fn=None,
         )
 
-        with torch._functorch.config.patch(
-            remat_using_tags_for_fwd_loss_bwd_graph=remat_using_tags_for_fwd_loss_bwd_graph
-        ), torch._dynamo.config.patch(trace_autograd_ops=True):
+        with (
+            torch._functorch.config.patch(
+                remat_using_tags_for_fwd_loss_bwd_graph=remat_using_tags_for_fwd_loss_bwd_graph
+            ),
+            torch._dynamo.config.patch(trace_autograd_ops=True),
+        ):
             compiled_fn = torch.compile(fn, backend=backend, fullgraph=True)
             result = compiled_fn(*inputs)
 
@@ -2880,6 +2883,7 @@ def forward(self, arg0_1, arg1_1):
     mm_2 = torch.ops.aten.mm.default(t, mul_2);  t = mul_2 = None
     return (mm_2,)""",
         )
+
 
 if __name__ == "__main__":
     from torch._dynamo.test_case import run_tests
