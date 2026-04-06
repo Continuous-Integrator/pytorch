@@ -119,6 +119,7 @@ def is_hashable(x: VariableTracker) -> bool:
 class ConstDictVariable(VariableTracker):
     # PyDict_Type: https://github.com/python/cpython/blob/v3.13.0/Objects/dictobject.c#L4825
     _cpython_type = dict
+    _has_instance_dict = False
 
     CONTAINS_GUARD = GuardBuilder.DICT_CONTAINS
     NOT_CONTAINS_GUARD = GuardBuilder.DICT_NOT_CONTAINS
@@ -1023,6 +1024,7 @@ class ConstDictVariable(VariableTracker):
 class MappingProxyVariable(VariableTracker):
     # PyDictProxy_Type: https://github.com/python/cpython/blob/v3.13.0/Objects/descrobject.c#L1995
     _cpython_type = types.MappingProxyType
+    _has_instance_dict = False
 
     # proxies to the original dict_vt
     def __init__(self, dv_dict: ConstDictVariable, **kwargs: Any) -> None:
@@ -1116,6 +1118,7 @@ class NNModuleHooksDictVariable(ConstDictVariable):
 
 class DefaultDictVariable(ConstDictVariable):
     _cpython_type = collections.defaultdict
+    _has_instance_dict = False
 
     def __init__(
         self,
@@ -1247,6 +1250,7 @@ class SetVariable(ConstDictVariable):
 
     # PySet_Type: https://github.com/python/cpython/blob/v3.13.0/Objects/setobject.c#L2436
     _cpython_type = set
+    _has_instance_dict = False
 
     CONTAINS_GUARD = GuardBuilder.SET_CONTAINS
     NOT_CONTAINS_GUARD = GuardBuilder.SET_NOT_CONTAINS
@@ -1723,6 +1727,7 @@ class OrderedSetVariable(SetVariable):
 class FrozensetVariable(SetVariable):
     # PyFrozenSet_Type: https://github.com/python/cpython/blob/v3.13.0/Objects/setobject.c#L2526
     _cpython_type = frozenset
+    _has_instance_dict = False
 
     def debug_repr(self) -> str:
         if not self.items:
@@ -1924,6 +1929,7 @@ class DictViewVariable(VariableTracker):
 class DictKeysVariable(DictViewVariable):
     # PyDictKeys_Type: https://github.com/python/cpython/blob/v3.13.0/Objects/dictobject.c#L6365
     _cpython_type = dict_keys
+    _has_instance_dict = False
 
     kv = "keys"
 
@@ -1995,6 +2001,7 @@ class DictKeysVariable(DictViewVariable):
 class DictValuesVariable(DictViewVariable):
     # PyDictValues_Type: https://github.com/python/cpython/blob/v3.13.0/Objects/dictobject.c#L6567
     _cpython_type = dict_values
+    _has_instance_dict = False
 
     # DictValuesVariable is an iterable but cannot be compared.
     kv = "values"
@@ -2020,6 +2027,7 @@ class DictValuesVariable(DictViewVariable):
 class DictItemsVariable(DictViewVariable):
     # PyDictItems_Type: https://github.com/python/cpython/blob/v3.13.0/Objects/dictobject.c#L6477
     _cpython_type = dict_items
+    _has_instance_dict = False
 
     kv = "items"
 

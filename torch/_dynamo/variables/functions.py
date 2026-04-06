@@ -522,6 +522,7 @@ class UserFunctionVariable(BaseUserFunctionVariable):
 
     # PyFunction_Type: https://github.com/python/cpython/blob/v3.13.0/Objects/funcobject.c#L1046
     _cpython_type = types.FunctionType
+    _has_instance_dict = True  # tp_dictoffset = offsetof(PyFunctionObject, func_dict)
 
     _nonvar_fields = {
         "fn",
@@ -1096,6 +1097,7 @@ class BuiltinMethodVariable(BaseUserFunctionVariable):
 class LocalGeneratorObjectVariable(VariableTracker):
     # PyGen_Type: https://github.com/python/cpython/blob/v3.13.0/Objects/genobject.c#L814
     _cpython_type = types.GeneratorType
+    _has_instance_dict = False
 
     def __init__(
         self,
@@ -1562,6 +1564,7 @@ class UserMethodVariable(UserFunctionVariable):
 
     # PyMethod_Type: https://github.com/python/cpython/blob/v3.13.0/Objects/classobject.c#L332
     _cpython_type = types.MethodType
+    _has_instance_dict = False
 
     def __init__(
         self,
@@ -2719,6 +2722,7 @@ class CollectionsNamedTupleFunction(UserFunctionVariable):
 class FunctoolsPartialVariable(VariableTracker):
     # partial_type_spec: https://github.com/python/cpython/blob/v3.13.0/Modules/_functoolsmodule.c#L538
     _cpython_type = functools.partial
+    _has_instance_dict = True  # heap type with tp_dictoffset
 
     _nonvar_fields = {
         "original_cache_hash",

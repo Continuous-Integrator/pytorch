@@ -401,6 +401,7 @@ class ZipVariable(IteratorVariable):
 
     # PyZip_Type: https://github.com/python/cpython/blob/v3.13.0/Python/bltinmodule.c#L3011
     _cpython_type = zip
+    _has_instance_dict = False
 
     _nonvar_fields = {
         "index",
@@ -525,6 +526,7 @@ class MapVariable(ZipVariable):
 
     # PyMap_Type: https://github.com/python/cpython/blob/v3.13.0/Python/bltinmodule.c#L1484
     _cpython_type = map
+    _has_instance_dict = False
 
     def __init__(
         self,
@@ -575,6 +577,7 @@ class FilterVariable(IteratorVariable):
 
     # PyFilter_Type: https://github.com/python/cpython/blob/v3.13.0/Python/bltinmodule.c#L630
     _cpython_type = filter
+    _has_instance_dict = False
 
     _nonvar_fields = {
         "index",

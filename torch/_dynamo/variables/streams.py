@@ -335,7 +335,9 @@ class StreamContextVariable(FxTracebackAnnotateVariable):
 class StreamVariable(StreamContextVariable):
     """Represents the device-agnostic torch.Stream class"""
 
+    # THPStreamType: torch/csrc/Stream.cpp:492
     _cpython_type = torch.Stream
+    _has_instance_dict = False
 
     def __init__(
         self,
@@ -476,7 +478,9 @@ class StreamVariable(StreamContextVariable):
 class CudaStreamVariable(StreamVariable):
     """Represents torch.cuda.Stream, preserving device-specific type and attributes."""
 
+    # THCPStreamType: torch/csrc/cuda/Stream.cpp:159
     _cpython_type = torch.cuda.Stream
+    _has_instance_dict = False
 
     def python_type(self) -> type:
         return torch.cuda.Stream

@@ -82,6 +82,7 @@ if TYPE_CHECKING:
 class SuperVariable(VariableTracker):
     # PySuper_Type: https://github.com/python/cpython/blob/v3.13.0/Objects/typeobject.c#L11511
     _cpython_type = super
+    _has_instance_dict = False
 
     _nonvar_fields = {
         *VariableTracker._nonvar_fields,
@@ -549,6 +550,7 @@ class TracebackVariable(VariableTracker):
 class ExceptionVariable(VariableTracker):
     # _PyExc_BaseException: https://github.com/python/cpython/blob/v3.13.0/Objects/exceptions.c
     _cpython_type = BaseException
+    _has_instance_dict = True  # exceptions have __dict__
 
     # The ExceptionVariable corresponds to the BaseException class in Python
     def __init__(
@@ -819,6 +821,7 @@ class ComptimeVariable(VariableTracker):
 class CellVariable(VariableTracker):
     # PyCell_Type: https://github.com/python/cpython/blob/v3.13.0/Objects/cellobject.c#L151
     _cpython_type = types.CellType
+    _has_instance_dict = False
 
     # If the cell existed before Dynamo tracing started, this will be the
     # VariableTracker that represents the cell content.
@@ -1524,6 +1527,7 @@ class GetSetDescriptorVariable(VariableTracker):
 class PythonModuleVariable(VariableTracker):
     # PyModule_Type: https://github.com/python/cpython/blob/v3.13.0/Objects/moduleobject.c#L1203
     _cpython_type = types.ModuleType
+    _has_instance_dict = True  # tp_dictoffset = offsetof(PyModuleObject, md_dict)
 
     _nonvar_fields = {
         "value",
@@ -1968,6 +1972,7 @@ class StringFormatVariable(VariableTracker):
 class ObjectVariable(VariableTracker):
     # PyBaseObject_Type: https://github.com/python/cpython/blob/v3.13.0/Objects/typeobject.c#L7243
     _cpython_type = object
+    _has_instance_dict = False
 
     # placeholder for unknown / opaque values
     def __init__(self, value: object, **kwargs: Any) -> None:
@@ -2261,6 +2266,7 @@ class RandomVariable(VariableTracker):
     """
 
     _cpython_type = random.Random
+    _has_instance_dict = True  # heap type (Python class)
 
     _nonvar_fields = {
         "random",

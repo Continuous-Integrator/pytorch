@@ -287,6 +287,12 @@ class VariableTracker(metaclass=VariableTrackerMeta):
     # (e.g., dynamic types like UserDefinedObjectVariable, or Dynamo-internal VTs).
     _cpython_type: type | tuple[type, ...] | None = None
 
+    # Whether instances of the CPython type have a __dict__ (tp_dictoffset != 0).
+    # True means instances carry a per-object attribute dict (e.g., function, module).
+    # False means they don't (e.g., list, int, tuple).
+    # None means unknown or not applicable (dynamic/Dynamo-internal VTs).
+    _has_instance_dict: bool | None = None
+
     # fields to leave unmodified in apply()
     _nonvar_fields = {
         "value",

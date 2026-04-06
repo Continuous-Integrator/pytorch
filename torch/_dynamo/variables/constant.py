@@ -43,6 +43,7 @@ class ConstantVariable(VariableTracker):
     # PyComplex_Type: https://github.com/python/cpython/blob/v3.13.0/Objects/complexobject.c#L1099
     # _PyNone_Type: https://github.com/python/cpython/blob/v3.13.0/Objects/object.c#L2022
     _cpython_type = (int, float, str, bytes, bool, type(None), complex, type(...))
+    _has_instance_dict = False
 
     @overload
     @staticmethod
@@ -420,6 +421,7 @@ class FakeIdVariable(VariableTracker):
 
     # PyLong_Type: https://github.com/python/cpython/blob/v3.13.0/Objects/longobject.c#L6585
     _cpython_type = int
+    _has_instance_dict = False
 
     def __init__(self, value: int, **kwargs: Any) -> None:
         super().__init__(**kwargs)
