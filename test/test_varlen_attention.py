@@ -1001,6 +1001,62 @@ class TestVarlenAttention(NNTestCase):
                 )
             self.assertEqual(out_buf, output_reference)
 
+    @unittest.skipIf(
+        not PLATFORM_SUPPORTS_FLASH_ATTENTION, "Flash Attention not supported"
+    )
+    @parametrize("dtype", [torch.bfloat16, torch.float16])
+    @parametrize(
+        "backend",
+        ["fa2"] + (["fa3"] if IS_SM90 else []) + (["fa4"] if SM100OrLater else []),
+    )
+    def test_enable_gqa(self, device, dtype, backend):
+        torch.manual_seed(42)
+
+        head_dim = 64
+        seq_len = 512
+        num_heads_q, num_heads_k = 16, 4
+        total_tokens = 2 * seq_len
+
+        q = torch.randn(total_tokens, num_heads_q, head_dim, device=device, dtype=dtype)
+        k = torch.randn(total_tokens, num_heads_k, head_dim, device=device, dtype=dtype)
+        v = torch.randn(total_tokens, num_heads_k, head_dim, device=device, dtype=dtype)
+        cu_seq = torch.tensor(
+            [0, seq_len, total_tokens], device=device, dtype=torch.int32
+        )
+
+        # Mismatched heads without enable_gqa should raise
+        with self.assertRaisesRegex(ValueError, "enable_gqa=True"):
+            varlen_attn(q, k, v, cu_seq, cu_seq, seq_len, seq_len)
+
+        with self.assertRaisesRegex(ValueError, "enable_gqa=True"):
+            varlen_attn_out(
+                torch.empty_like(q), q, k, v, cu_seq, cu_seq, seq_len, seq_len
+            )
+
+        # Non-divisible heads with enable_gqa should raise
+        k_bad = torch.randn(total_tokens, 3, head_dim, device=device, dtype=dtype)
+        v_bad = torch.randn(total_tokens, 3, head_dim, device=device, dtype=dtype)
+        with self.assertRaisesRegex(ValueError, "multiple of kv heads"):
+            varlen_attn(
+                q, k_bad, v_bad, cu_seq, cu_seq, seq_len, seq_len, enable_gqa=True
+            )
+
+        # GQA forward should produce valid output
+        with _use_backend(backend), torch.no_grad():
+            out = varlen_attn(
+                q, k, v, cu_seq, cu_seq, seq_len, seq_len, enable_gqa=True
+            )
+        self.assertEqual(out.shape, q.shape)
+        self.assertFalse(out.isnan().any())
+
+        # varlen_attn_out should match
+        with _use_backend(backend), torch.no_grad():
+            out_buf = torch.empty_like(q)
+            varlen_attn_out(
+                out_buf, q, k, v, cu_seq, cu_seq, seq_len, seq_len, enable_gqa=True
+            )
+        self.assertEqual(out_buf, out)
+
 
 device_types = ("cuda",)
 
