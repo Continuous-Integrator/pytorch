@@ -52,6 +52,7 @@ install_ubuntu() {
     libjpeg-dev \
     libasound2-dev \
     libsndfile-dev \
+    libssl-dev \
     software-properties-common \
     wget \
     sudo \
