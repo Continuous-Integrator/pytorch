@@ -2347,7 +2347,9 @@ cos: aten.cos.default -> MUST_SAVE""",
             return x
 
         self.assertExpectedInline(
-            self._get_sac_annotations(fn, policy_fn, decompositions=select_decomp_table),
+            self._get_sac_annotations(
+                fn, policy_fn, decompositions=select_decomp_table
+            ),
             """\
 sin: aten.sin.default -> PREFER_RECOMPUTE
 neg: aten.neg.default -> MUST_SAVE
