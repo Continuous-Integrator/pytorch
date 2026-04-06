@@ -199,16 +199,26 @@ class AttentionBlock(nn.Module):
             1, 2
         )
 
-        # Expand KV heads to match Q heads for SDPA (which doesn't support GQA with attn_mask)
+        # Don't pass is_causal since we already incorporated it into attn_mask.
         if self.enable_gqa:
-            n_rep = self.num_heads // self.num_kv_heads
-            k = k.repeat_interleave(n_rep, dim=1)
-            v = v.repeat_interleave(n_rep, dim=1)
-
-        # Don't pass is_causal since we already incorporated it into attn_mask
-        attn_out = F.scaled_dot_product_attention(
-            q, k, v, attn_mask=attn_mask, scale=scale
-        )
+            # Force math backend for GQA
+            with torch.nn.attention.sdpa_kernel(torch.nn.attention.SDPBackend.MATH):
+                attn_out = F.scaled_dot_product_attention(
+                    q,
+                    k,
+                    v,
+                    attn_mask=attn_mask,
+                    scale=scale,
+                    enable_gqa=True,
+                )
+        else:
+            attn_out = F.scaled_dot_product_attention(
+                q,
+                k,
+                v,
+                attn_mask=attn_mask,
+                scale=scale,
+            )
 
         attn_out = (
             attn_out.transpose(1, 2)
