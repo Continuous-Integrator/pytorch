@@ -31,7 +31,7 @@ class _CacheEntry:
     # If we run into circular issues, just use object
     guard_manager: GuardManagerWrapper
     backend: Callable
-    next: _CacheEntry | None
+    isolate_recompiles_id: int
 
 class _PrecompileEntry:
     guard_manager: GuardManagerWrapper
@@ -71,6 +71,9 @@ class _PyInterpreterFrame:
     closure: tuple[types.CellType]
 
 def _debug_get_cache_entry_list(code: types.CodeType) -> list[_CacheEntry]: ...
+def _get_cache_entries_for_region(
+    code: types.CodeType, isolate_recompiles_id: int
+) -> list[_CacheEntry]: ...
 def _get_frame_value_stack_with_depth(
     frame: types.FrameType, depth: int
 ) -> list[object]: ...

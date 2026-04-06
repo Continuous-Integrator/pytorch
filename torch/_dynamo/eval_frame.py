@@ -279,7 +279,10 @@ def _callback_from_stance(callback: DynamoCallback) -> DynamoCallback:
             cache_entries = _debug_get_cache_entry_list(frame.f_code)
             if cache_entries:
                 reasons = get_and_maybe_log_recompilation_reasons(
-                    cache_entries[0], frame, innermost_fn(callback), skip_logging=True
+                    cache_entries,
+                    frame,
+                    innermost_fn(callback),  # pyrefly: ignore [bad-argument-type]
+                    skip_logging=True,
                 )
                 if reasons:
                     failures = textwrap.indent("\n".join(reasons), "- ")
@@ -383,6 +386,21 @@ def _debug_get_cache_entry_list(
     if callable(code):
         code = code.__code__
     return torch._C._dynamo.eval_frame._debug_get_cache_entry_list(code)
+
+
+def _get_cache_entries_for_region(
+    code: types.CodeType | Callable[..., Any],
+    isolate_recompiles_id: int,
+) -> list[CacheEntry]:
+    """
+    Given a code object or callable, retrieve the cache entries for a
+    specific isolate_recompiles region.
+    """
+    if callable(code):
+        code = code.__code__
+    return torch._C._dynamo.eval_frame._get_cache_entries_for_region(
+        code, isolate_recompiles_id
+    )
 
 
 class OptimizedModule(torch.nn.Module):
@@ -1547,6 +1565,11 @@ def _optimize(
         dynamic: If True, upfront compile as dynamic a kernel as possible.  If False,
             disable all dynamic shapes support (always specialize).  If None, automatically
             detect when sizes vary and generate dynamic kernels upon recompile.
+        recompile_limit: Maximum number of recompilations for this region.
+            If None, uses ``torch._dynamo.config.recompile_limit``.
+        isolate_recompiles: If True, this compile call gets its own isolated
+            cache so recompilations are tracked independently from other
+            compile calls on the same function.
 
     Example Usage::
 

@@ -28,7 +28,7 @@ typedef struct {
 // static int active_dynamo_threads = 0;
 
 static Py_tss_t eval_frame_callback_key = Py_tss_NEEDS_INIT;
-static Py_tss_t eval_frame_isolate_recompiles_id_key = Py_tss_NEEDS_INIT;
+static int64_t current_isolate_recompiles_id = -1;
 
 static PyObject* eval_frame_callback_get(void) {
   void* result = PyThread_tss_get(&eval_frame_callback_key);
@@ -43,18 +43,12 @@ void eval_frame_callback_set(PyObject* obj) {
   PyThread_tss_set(&eval_frame_callback_key, obj);
 }
 
-// Store isolate_recompiles_id + 1 so NULL (unset) maps to -1.
 int64_t get_current_isolate_recompiles_id(void) {
-  void* raw = PyThread_tss_get(&eval_frame_isolate_recompiles_id_key);
-  if (raw == NULL) {
-    return -1;
-  }
-  return (int64_t)((intptr_t)raw) - 1;
+  return current_isolate_recompiles_id;
 }
 
 static void set_current_isolate_recompiles_id(int64_t id) {
-  PyThread_tss_set(
-      &eval_frame_isolate_recompiles_id_key, (void*)((intptr_t)(id + 1)));
+  current_isolate_recompiles_id = id;
 }
 
 static PyObject* set_eval_frame_isolate_recompiles_id_py(
@@ -795,9 +789,6 @@ PyObject* torch_c_dynamo_eval_frame_init(void) {
   }
 
   int result = PyThread_tss_create(&eval_frame_callback_key);
-  CHECK(result == 0);
-
-  result = PyThread_tss_create(&eval_frame_isolate_recompiles_id_key);
   CHECK(result == 0);
 
   Py_INCREF(Py_None);

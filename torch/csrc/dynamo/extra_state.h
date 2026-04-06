@@ -64,12 +64,6 @@ typedef struct VISIBILITY_HIDDEN ExtraState {
   // Per-compile cache map: isolate_recompiles_id -> list of CacheEntry.
   // id -1 is the default (non-isolated) bucket. id >= 0 are isolated compiles.
   // All cache entries live in this map — there is no separate default list.
-  //
-  // IMPORTANT: CacheEntry::_owner_list holds raw pointers to the std::list
-  // values inside this map. The C++ standard guarantees that unordered_map
-  // insert/rehash does not invalidate pointers or references to elements,
-  // so these pointers remain valid. Do NOT erase entries from this map for
-  // the lifetime of this ExtraState.
   std::unordered_map<int64_t, std::list<CacheEntry>> cache_entry_map;
   // Total cache entries across all compile scopes (for O(1)
   // has_any_cache_entries)
@@ -214,6 +208,11 @@ PyObject* get_backend(PyObject* callback);
 // Returns the list of CacheEntry corresponding to code_obj.
 // Warning: returns references whose lifetimes are controlled by C++
 py::list _debug_get_cache_entry_list(const py::handle& code_obj);
+// Returns the list of CacheEntry for a given isolate_recompiles_id bucket.
+// Warning: returns references whose lifetimes are controlled by C++
+py::list _get_cache_entries_for_region(
+    const py::handle& code_obj,
+    int64_t isolate_recompiles_id);
 void _reset_precompile_entries(const py::handle& code_obj);
 void _load_precompile_entry(
     const py::handle& code_obj,

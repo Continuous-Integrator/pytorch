@@ -1,3 +1,6 @@
+#include <algorithm>
+#include <vector>
+
 #include <c10/util/Exception.h>
 #include <torch/csrc/dynamo/extra_state.h>
 
@@ -34,24 +37,16 @@ bool ExtraState::has_any_cache_entries() const {
 
 void ExtraState::move_to_front(CacheEntry* cache_entry) {
   CHECK(cache_entry->_owner == this);
-  CHECK(cache_entry->_owner_list != nullptr);
-  CHECK(!cache_entry->_owner_list->empty());
   CHECK(cache_entry == &*cache_entry->_owner_loc);
-  cache_entry->_owner_list->splice(
-      cache_entry->_owner_list->begin(),
-      *cache_entry->_owner_list,
-      cache_entry->_owner_loc);
+  auto& list = this->cache_entry_map[cache_entry->_isolate_recompiles_id];
+  list.splice(list.begin(), list, cache_entry->_owner_loc);
 }
 
 void ExtraState::move_to_back(CacheEntry* cache_entry) {
   CHECK(cache_entry->_owner == this);
-  CHECK(cache_entry->_owner_list != nullptr);
-  CHECK(!cache_entry->_owner_list->empty());
   CHECK(cache_entry == &*cache_entry->_owner_loc);
-  cache_entry->_owner_list->splice(
-      cache_entry->_owner_list->end(),
-      *cache_entry->_owner_list,
-      cache_entry->_owner_loc);
+  auto& list = this->cache_entry_map[cache_entry->_isolate_recompiles_id];
+  list.splice(list.end(), list, cache_entry->_owner_loc);
 }
 
 void ExtraState::invalidate(
@@ -66,8 +61,6 @@ void ExtraState::invalidate(
   Py_INCREF(this->orig_code);
 
   CHECK(cache_entry->_owner == this);
-  CHECK(cache_entry->_owner_list != nullptr);
-  CHECK(!cache_entry->_owner_list->empty());
   CHECK(cache_entry == &*cache_entry->_owner_loc);
   cache_entry->invalidate(std::move(deleted_guard_manager));
   // Move the cache entry to the end of the list because these will always
@@ -233,27 +226,6 @@ void lookup(
     }
   }
 
-  // Global fallback: if an isolated compile (id >= 0) has no hit in its own
-  // bucket, also check the default bucket (id -1). This allows isolated
-  // compiles to reuse compilations from non-isolated torch.compile() calls
-  // on the same code object, provided the backend and guards match.
-  if (found == nullptr && isolate_recompiles_id >= 0) {
-    auto default_it = extra_state->cache_entry_map.find(-1);
-    if (default_it != extra_state->cache_entry_map.end()) {
-      found = lookup_in_list(
-          default_it->second,
-          f_locals,
-          backend,
-          index,
-          is_skip_guard_eval_unsafe,
-          &guard_error,
-          maybe_cached_code);
-      if (guard_error) {
-        return;
-      }
-    }
-  }
-
   if (found) {
     if (use_lru) {
       extra_state->move_to_front(found);
@@ -281,7 +253,7 @@ CacheEntry* create_cache_entry(
   }
   new_iter->_owner = extra_state;
   new_iter->_owner_loc = new_iter;
-  new_iter->_owner_list = &entries;
+  new_iter->_isolate_recompiles_id = id;
   extra_state->total_cache_entry_count++;
   // Set guard_manager references to extra_state and CacheEntry
   // Warning: lifetime is controlled by C++!
@@ -294,15 +266,42 @@ CacheEntry* create_cache_entry(
 }
 
 py::list _debug_get_cache_entry_list(const py::handle& code_obj) {
-  if (!py::isinstance(code_obj, py::module::import("types").attr("CodeType"))) {
-    throw py::type_error("expected a code object!");
-  }
+  TORCH_CHECK_TYPE(
+      py::isinstance(code_obj, py::module::import("types").attr("CodeType")),
+      "expected a code object!");
   PyCodeObject* code = (PyCodeObject*)code_obj.ptr();
   ExtraState* extra = get_extra_state(code);
   py::list result;
   if (extra != nullptr) {
+    // Sort by isolate_recompiles_id for deterministic iteration order.
+    std::vector<int64_t> ids;
+    ids.reserve(extra->cache_entry_map.size());
     for (auto& kv : extra->cache_entry_map) {
-      for (CacheEntry& e : kv.second) {
+      ids.push_back(kv.first);
+    }
+    std::sort(ids.begin(), ids.end());
+    for (int64_t id : ids) {
+      for (CacheEntry& e : extra->cache_entry_map[id]) {
+        result.append(py::cast(e, py::return_value_policy::reference));
+      }
+    }
+  }
+  return result;
+}
+
+py::list _get_cache_entries_for_region(
+    const py::handle& code_obj,
+    int64_t isolate_recompiles_id) {
+  TORCH_CHECK(
+      py::isinstance(code_obj, py::module::import("types").attr("CodeType")),
+      "expected a code object!");
+  PyCodeObject* code = (PyCodeObject*)code_obj.ptr();
+  ExtraState* extra = get_extra_state(code);
+  py::list result;
+  if (extra != nullptr) {
+    auto it = extra->cache_entry_map.find(isolate_recompiles_id);
+    if (it != extra->cache_entry_map.end()) {
+      for (CacheEntry& e : it->second) {
         result.append(py::cast(e, py::return_value_policy::reference));
       }
     }
@@ -319,9 +318,9 @@ PrecompileEntry::PrecompileEntry(py::object gm, py::object c)
 }
 
 void _reset_precompile_entries(const py::handle& code_obj) {
-  if (!py::isinstance(code_obj, py::module::import("types").attr("CodeType"))) {
-    throw py::type_error("expected a code object!");
-  }
+  TORCH_CHECK_TYPE(
+      py::isinstance(code_obj, py::module::import("types").attr("CodeType")),
+      "expected a code object!");
   PyCodeObject* code = (PyCodeObject*)code_obj.ptr();
   ExtraState* extra = get_extra_state(code);
   py::list result;
@@ -334,9 +333,9 @@ void _load_precompile_entry(
     const py::handle& code_obj,
     py::object guard_manager,
     py::object dynamo_code) {
-  if (!py::isinstance(code_obj, py::module::import("types").attr("CodeType"))) {
-    throw py::type_error("expected a code object!");
-  }
+  TORCH_CHECK_TYPE(
+      py::isinstance(code_obj, py::module::import("types").attr("CodeType")),
+      "expected a code object!");
   PyCodeObject* code = (PyCodeObject*)code_obj.ptr();
   ExtraState* extra = get_extra_state(code);
   py::list result;
@@ -357,9 +356,9 @@ void _set_lru_cache(py::object boolean) {
 }
 
 py::list _debug_get_precompile_entries(const py::handle& code_obj) {
-  if (!py::isinstance(code_obj, py::module::import("types").attr("CodeType"))) {
-    throw py::type_error("expected a code object!");
-  }
+  TORCH_CHECK_TYPE(
+      py::isinstance(code_obj, py::module::import("types").attr("CodeType")),
+      "expected a code object!");
   PyCodeObject* code = (PyCodeObject*)code_obj.ptr();
   ExtraState* extra = get_extra_state(code);
   py::list result;
