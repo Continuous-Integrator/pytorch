@@ -18,14 +18,11 @@ from torch._C._dynamo import (
 )
 
 from .. import graph_break_hints, polyfills
-from ..exc import raise_observed_exception, unimplemented
+from ..exc import raise_type_error, unimplemented
 from ..utils import istype
-from .base import NO_SUCH_SUBOBJ, raise_type_error_exc, VariableTracker
+from .base import NO_SUCH_SUBOBJ, VariableTracker
 from .constant import CONSTANT_VARIABLE_FALSE, CONSTANT_VARIABLE_TRUE
 from .functions import UserFunctionVariable
-
-
-type_error = raise_type_error_exc
 
 
 if TYPE_CHECKING:
@@ -157,9 +154,9 @@ def vt_mapping_size(
         return obj.mp_length(tx)
 
     if type_implements_sq_length(T):
-        type_error(tx, f"{obj.python_type_name()} is not a mapping")
+        raise_type_error(tx, f"{obj.python_type_name()} is not a mapping")
 
-    type_error(tx, f"object of type {obj.python_type_name()} has no len()")
+    raise_type_error(tx, f"object of type {obj.python_type_name()} has no len()")
 
 
 def generic_len(
@@ -194,7 +191,6 @@ def generic_getiter(
     Implements PyObject_GetIter semantics for VariableTracker objects.
     Routes to obj.tp_iter(tx), the tp_iter slot on the object's type.
     """
-    from .base import VariableTracker
 
     # ref: https://github.com/python/cpython/blob/v3.13.0/Objects/abstract.c#2848
     # The algorithm for PyObject_GetIter is as follows: Steps:
@@ -213,11 +209,4 @@ def generic_getiter(
             tx, [obj], {}
         )
     else:
-        msg = VariableTracker.build(
-            tx, f"'{obj.python_type_name()}' object is not iterable"
-        )
-        raise_observed_exception(
-            TypeError,
-            tx,
-            args=[msg],
-        )
+        raise_type_error(tx, f"'{obj.python_type_name()}' object is not iterable")
