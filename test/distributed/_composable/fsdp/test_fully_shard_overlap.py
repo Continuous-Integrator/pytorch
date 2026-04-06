@@ -517,11 +517,20 @@ class TestFullyShardCPUOffloadOverlap(FSDPTest):
     @unittest.skipIf(TEST_HPU, "Not supported on HPU")
     def test_cpu_offload_h2d_prefetch_overlap(self):
         """Verify that H2D copies for CPU-offloaded params overlap with
-        compute in the world_size=1 code path."""
+        compute in the world_size=1 code path.
+
+        Uses a large batch so that per-layer compute time significantly
+        exceeds H2D time (params stay the same), making the overlap
+        savings large and the test robust.
+        """
         torch.manual_seed(42)
         dim = 4096
         num_layers = 8
         batch_size = 8192
+        # Disable TF32 so that matmul compute time exceeds H2D time,
+        # making the overlap savings large relative to total time.
+        orig_allow_tf32 = torch.backends.cuda.matmul.allow_tf32
+        torch.backends.cuda.matmul.allow_tf32 = False
 
         # --- FSDP model with CPU offload ---
         model = nn.Sequential(
@@ -567,6 +576,7 @@ class TestFullyShardCPUOffloadOverlap(FSDPTest):
         serialized_fwd()  # warmup
         ref_time = _time_fn(serialized_fwd)
 
+        torch.backends.cuda.matmul.allow_tf32 = orig_allow_tf32
         self.assertLess(fsdp_time, ref_time)
 
 
