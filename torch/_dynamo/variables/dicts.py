@@ -1912,9 +1912,7 @@ class DictViewVariable(VariableTracker):
         args: list[VariableTracker],
         kwargs: dict[str, VariableTracker],
     ) -> VariableTracker:
-        if name == "__len__":
-            return self.dv_dict.call_method(tx, name, args, kwargs)
-        elif name == "__repr__":
+        if name == "__repr__":
             return VariableTracker.build(tx, self.debug_repr())
         return super().call_method(tx, name, args, kwargs)
 
@@ -1925,11 +1923,6 @@ class DictViewVariable(VariableTracker):
 
 class DictKeysVariable(DictViewVariable):
     kv = "keys"
-
-    def sq_contains(
-        self, tx: "InstructionTranslator", item: VariableTracker
-    ) -> VariableTracker:
-        return self.dv_dict.sq_contains(tx, item)
 
     @property
     def set_items(self) -> set[VariableTracker]:
@@ -1954,6 +1947,11 @@ class DictKeysVariable(DictViewVariable):
                 )
                 items.append(key_str)
             return "dict_keys([" + ",".join(items) + "])"
+
+    def sq_contains(
+        self, tx: "InstructionTranslator", item: VariableTracker
+    ) -> VariableTracker:
+        return self.dv_dict.sq_contains(tx, item)
 
     def call_method(
         self,
@@ -1997,6 +1995,13 @@ class DictKeysVariable(DictViewVariable):
 class DictValuesVariable(DictViewVariable):
     # DictValuesVariable is an iterable but cannot be compared.
     kv = "values"
+
+    # oddly enough, dict_values do not implements sq_contains. Do not attempt to
+    # implement it as it will not be called by Dynamo
+    def sq_contains(
+        self, tx: "InstructionTranslator", item: VariableTracker
+    ) -> VariableTracker:
+        raise RuntimeError("dict_values does not implements sq_contains")
 
     @property
     def view_items_vt(self) -> list[VariableTracker]:
@@ -2046,6 +2051,17 @@ class DictItemsVariable(DictViewVariable):
                 val_str = repr(v.value) if hasattr(v, "value") else v.debug_repr()
                 items.append(f"({key_str}, {val_str})")
             return "dict_items([" + ",".join(items) + "])"
+
+    def sq_contains(
+        self, tx: "InstructionTranslator", item: VariableTracker
+    ) -> VariableTracker:
+        from ..utils import iter_contains
+
+        # TODO(guilhermeleobas): We can optimize this!
+
+        if not is_hashable(item):
+            raise_unhashable(item, tx)
+        return iter_contains(self.view_items_vt, item, tx)
 
     def tp_iter(self, tx: "InstructionTranslator") -> VariableTracker:
         from .lists import ListIteratorVariable

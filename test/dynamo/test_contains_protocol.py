@@ -16,9 +16,9 @@ Tests cover:
 """
 
 import operator
+import types
 import unittest
 
-import types
 import torch
 import torch._dynamo.test_case
 from torch.testing._internal.common_utils import make_dynamo_test
