@@ -610,8 +610,6 @@ torch._dynamo.disallow_in_graph(
     torch.ops.aten._flash_attention_forward_no_dropout_inplace
 )
 
-# Register flop counter formulas for varlen_attn ops.
-# This must happen after the custom ops are defined above.
 from torch.utils.flop_counter import (
     _varlen_attn_backward_flop,
     _varlen_attn_forward_flop,

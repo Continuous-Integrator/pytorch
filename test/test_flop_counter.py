@@ -1241,10 +1241,7 @@ class TestFlopCounter(TestCase):
             for s in seq_lens
         )
         self.assertEqual(fw_flops, expected_fw)
-        # Per sequence: 2 bmms of (h, s, d) @ (h, d, s) and (h, s, s) @ (h, s, d)
-        # Each bmm flops = 2*h*s*d*s = 2*8*s*64*s = 1024*s^2
-        # Two bmms per sequence = 2048*s^2
-        # Total = 2048*(128^2 + 64^2) = 2048*(16384 + 4096) = 2048*20480 = 41943040
+        # 2 bmms per sequence, each 2*h*s*d*s; total = 2048*(128^2 + 64^2) = 41943040
         self.assertExpectedInline(str(fw_flops), """41943040""")
 
         mode_bw = FlopCounterMode()
@@ -1261,8 +1258,7 @@ class TestFlopCounter(TestCase):
             )
             out.sum().backward()
         fw_bw_flops = int(get_total_flops(mode_bw))
-        # Forward = 2 bmms, backward = 5 bmms, so fw+bw = 7 bmms = fw * 7/2
-        # 41943040 * 7 // 2 = 146800640
+        # fw=2 bmms, bw=5 bmms (flash recomputes scores), fw+bw = fw * 7/2
         self.assertEqual(fw_bw_flops, fw_flops * 7 // 2)
         self.assertExpectedInline(str(fw_bw_flops), """146800640""")
 
