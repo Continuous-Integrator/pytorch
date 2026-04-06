@@ -823,9 +823,6 @@ class VariableTracker(metaclass=VariableTrackerMeta):
             tree_map_kwargs,
             keypath,
         )
-        # For fallback, we need to reconstruct the subtree rooted at this node
-        # and call tree_map_with_path on it. Since we're in the middle of the tree,
-        # we fall back to tracing the tree_map_with_path function.
         return tree_map_fn_copy.call_function(
             tx,
             [map_fn, self, *rest],
@@ -1074,10 +1071,6 @@ class VariableTracker(metaclass=VariableTrackerMeta):
 
         guarded_method._call_once_guarded = True  # pyrefly: ignore[missing-attribute]
         setattr(cls, method, guarded_method)
-
-
-def raise_type_error_exc(tx: Any, msg_str: str) -> NoReturn:
-    raise_observed_exception(TypeError, tx, args=[msg_str])
 
 
 def typestr(*objs: object) -> str:

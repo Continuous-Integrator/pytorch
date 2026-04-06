@@ -18,14 +18,11 @@ from torch._C._dynamo import (
 )
 
 from .. import graph_break_hints, polyfills
-from ..exc import unimplemented
+from ..exc import raise_type_error, unimplemented
 from ..utils import istype
-from .base import NO_SUCH_SUBOBJ, raise_type_error_exc, VariableTracker
+from .base import NO_SUCH_SUBOBJ, VariableTracker
 from .constant import CONSTANT_VARIABLE_FALSE, CONSTANT_VARIABLE_TRUE
 from .functions import UserFunctionVariable
-
-
-type_error = raise_type_error_exc
 
 
 if TYPE_CHECKING:
@@ -161,9 +158,9 @@ def vt_mapping_size(
         return obj.mp_length(tx)
 
     if type_implements_sq_length(T):
-        type_error(tx, f"{obj.python_type_name()} is not a mapping")
+        raise_type_error(tx, f"{obj.python_type_name()} is not a mapping")
 
-    type_error(tx, f"object of type {obj.python_type_name()} has no len()")
+    raise_type_error(tx, f"object of type {obj.python_type_name()} has no len()")
 
 
 def generic_len(
@@ -205,7 +202,7 @@ def generic_iternext(
 
     T = maybe_get_python_type(obj)
     if not type_implements_tp_iternext(T):
-        type_error(tx, f"'{obj.python_type_name()}' object is not an iterator")
+        raise_type_error(tx, f"'{obj.python_type_name()}' object is not an iterator")
 
     return obj.tp_iternext(tx)
 
@@ -233,7 +230,7 @@ def generic_getiter(
         res = obj.tp_iter(tx)
         res_T = maybe_get_python_type(res)
         if not type_implements_tp_iternext(res_T):
-            type_error(
+            raise_type_error(
                 tx,
                 f"{obj.python_type_name()}.__iter__() returned non-iterator {res.python_type_name()}",
             )
@@ -243,4 +240,4 @@ def generic_getiter(
             tx, [obj], {}
         )
     else:
-        type_error(tx, f"'{obj.python_type_name()}' object is not iterable")
+        raise_type_error(tx, f"'{obj.python_type_name()}' object is not iterable")
