@@ -542,6 +542,7 @@ function test_post177717_mixed_events_with_and_without_pool_id() {
   assertContains(ctx1, 'pool_id (2, 8)', 'private pool from event-level segment_pool_id');
 }
 
+
 // ============================================================
 // Pool grouping by (pool_id, stream) tests
 // ============================================================
@@ -580,8 +581,6 @@ function test_pool_grouped_by_stream() {
 
 function test_segment_snapshot_with_trace_history() {
   console.log('test_segment_snapshot_with_trace_history');
-  // Address has alloc+free in trace AND appears as inactive block in segment
-  // snapshot. Without dedup, the snapshot block creates a second element.
   const poolId = [1, 42];
   const snapshot = makeSnapshot({
     traces: [
@@ -598,14 +597,12 @@ function test_segment_snapshot_with_trace_history() {
   });
 
   const result = process_alloc_data(snapshot, 0, false, 15000, true);
-  // Only the trace element; snapshot block is not added separately
   assertEqual(result.elements_length, 1,
     'only trace element present, snapshot block not duplicated');
 }
 
 function test_segment_snapshot_no_trace() {
   console.log('test_segment_snapshot_no_trace');
-  // Address has NO trace events — only exists in the segment snapshot.
   const poolId = [1, 42];
   const snapshot = makeSnapshot({
     traces: [],
@@ -625,81 +622,6 @@ function test_segment_snapshot_no_trace() {
   const result2 = process_alloc_data(snapshot, 0, false, 15000, false);
   assertEqual(result2.elements_length, 0,
     'snapshot-only block should not be added (include_private_inactive=false)');
-}
-
-// ============================================================
-// segment_map mode tests
-// ============================================================
-
-function test_segment_map_basic() {
-  console.log('test_segment_map_basic');
-  // segment_map events should be matched as allocs, segment_unmap as frees
-  const snapshot = makeSnapshot({
-    traces: [
-      { action: 'segment_map', addr: 1000, size: 4096, frames: [], stream: 0 },
-      { action: 'segment_map', addr: 5096, size: 2048, frames: [], stream: 0 },
-      { action: 'segment_unmap', addr: 1000, size: 4096, frames: [], stream: 0 },
-    ],
-    segments: [],
-  });
-
-  const result = process_alloc_data(snapshot, 0, 'segment_map', 15000, false);
-  assertEqual(result.elements_length, 2, 'should have 2 elements (2 maps)');
-  assertEqual(result.max_size, 4096 + 2048, 'peak should be both maps combined');
-}
-
-function test_segment_map_ignores_alloc_free() {
-  console.log('test_segment_map_ignores_alloc_free');
-  // Regular alloc/free and segment_alloc/segment_free should be ignored
-  const snapshot = makeSnapshot({
-    traces: [
-      { action: 'alloc', addr: 100, size: 500, frames: [], stream: 0 },
-      { action: 'free_completed', addr: 100, size: 500, frames: [], stream: 0 },
-      { action: 'segment_alloc', addr: 200, size: 1000, frames: [], stream: 0 },
-      { action: 'segment_free', addr: 200, size: 1000, frames: [], stream: 0 },
-      { action: 'segment_map', addr: 300, size: 2000, frames: [], stream: 0 },
-    ],
-    segments: [],
-  });
-
-  const result = process_alloc_data(snapshot, 0, 'segment_map', 15000, false);
-  assertEqual(result.elements_length, 1, 'only segment_map event creates an element');
-  assertEqual(result.max_size, 2000, 'peak is only from segment_map');
-}
-
-function test_segment_map_unmap_without_map() {
-  console.log('test_segment_map_unmap_without_map');
-  // segment_unmap without matching segment_map → initially_allocated
-  const snapshot = makeSnapshot({
-    traces: [
-      { action: 'segment_unmap', addr: 5000, size: 1024, frames: [], stream: 0 },
-    ],
-    segments: [],
-  });
-
-  const result = process_alloc_data(snapshot, 0, 'segment_map', 15000, false);
-  assertEqual(result.elements_length, 1, 'unmatched unmap creates an element');
-}
-
-function test_segment_map_no_phantom_segments() {
-  console.log('test_segment_map_no_phantom_segments');
-  // With non-expandable segments (segment_alloc/segment_free, no segment_map),
-  // the segment_map mode should produce 0 elements — Phase 2 should not add
-  // segments from the snapshot.
-  const snapshot = makeSnapshot({
-    traces: [
-      { action: 'segment_alloc', addr: 1000, size: 4096, frames: [], stream: 0 },
-      { action: 'alloc', addr: 1000, size: 512, frames: [], stream: 0 },
-    ],
-    segments: [{
-      device: 0, address: 1000, total_size: 4096, segment_pool_id: [0, 0],
-      stream: 0, blocks: [],
-    }],
-  });
-
-  const result = process_alloc_data(snapshot, 0, 'segment_map', 15000, false);
-  assertEqual(result.elements_length, 0,
-    'segment_map mode should not pick up segments from snapshot');
 }
 
 // ============================================================
@@ -735,10 +657,5 @@ test_post177717_mixed_events_with_and_without_pool_id();
 test_pool_grouped_by_stream();
 test_segment_snapshot_with_trace_history();
 test_segment_snapshot_no_trace();
-test_segment_map_basic();
-test_segment_map_ignores_alloc_free();
-test_segment_map_unmap_without_map();
-test_segment_map_no_phantom_segments();
-
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed > 0 ? 1 : 0);

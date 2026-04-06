@@ -401,25 +401,10 @@ function process_alloc_data(snapshot, device, plot_segments, max_entries, includ
     return null;
   }
 
-  // --- Phase 1: Match alloc/free events from the trace ---
-  // The C++ allocator emits 'free_requested' then 'free_completed' for each
-  // deallocation. We match against 'free_completed' only ('free' is legacy/dead).
-  // plot_segments selects which event types to match:
-  //   false/'alloc'       → alloc / free_completed (sub-allocations)
-  //   true/'segment'      → segment_alloc / segment_free (cudaMalloc segments)
-  //   'segment_map'       → segment_map / segment_unmap (expandable segment pages)
-  let alloc, free, free_completed;
-  if (plot_segments === 'segment_map') {
-    alloc = 'segment_map';
-    free = free_completed = 'segment_unmap';
-  } else if (plot_segments) {
-    alloc = 'segment_alloc';
-    free = free_completed = 'segment_free';
-  } else {
-    alloc = 'alloc';
-    free = 'free';
-    free_completed = 'free_completed';
-  }
+  const alloc = plot_segments ? 'segment_alloc' : 'alloc';
+  const [free, free_completed] = plot_segments
+    ? ['segment_free', 'segment_free']
+    : ['free', 'free_completed'];
   for (const e of snapshot.device_traces[device]) {
     switch (e.action) {
       case alloc:
@@ -447,10 +432,9 @@ function process_alloc_data(snapshot, device, plot_segments, max_entries, includ
     }
   }
 
-  // --- Phase 2: Add segments from the snapshot (segment_alloc/segment_free view only) ---
-  // Only applies when matching segment_alloc/segment_free (plot_segments === true).
-  // Not for segment_map mode or block-level views.
-  if (plot_segments === true) {
+  // --- Phase 2: Add segments from the snapshot (segment-level view only) ---
+  // For the block-level view, only trace events produce elements.
+  if (plot_segments) {
     for (const seg of snapshot.segments) {
       if (seg.device !== device) {
         continue;
