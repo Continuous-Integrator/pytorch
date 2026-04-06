@@ -678,8 +678,6 @@ op_db: list[OpInfo] = [
         dtypes=all_types_and_complex_and(torch.bool),
         # CUDA supports Half/ComplexHalf Precision FFT only on SM53 or later archs
         dtypesIfCUDA=all_types_and_complex_and(torch.bool, torch.half, torch.complex32),
-        dtypesIfXPU=all_types_and_complex_and(torch.bool),
-        backward_dtypesIfXPU=all_types_and_complex_and(torch.bool),
         check_batched_gradgrad=False,
         decorators=[
             DecorateInfo(
