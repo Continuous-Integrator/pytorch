@@ -30,7 +30,7 @@ import weakref
 from collections.abc import Callable, Sequence
 from random import Random
 from types import BuiltinFunctionType
-from typing import Any, Literal, NoReturn, TYPE_CHECKING, TypeGuard, Union
+from typing import Any, Literal, TYPE_CHECKING, TypeGuard, Union
 
 import torch._C
 import torch._numpy as tnp
@@ -46,7 +46,7 @@ from ..bytecode_transformation import (
     create_instruction,
 )
 from ..create_parameter_op import do_not_convert_to_tracable_parameter
-from ..exc import raise_observed_exception, unimplemented
+from ..exc import raise_observed_exception, raise_type_error, unimplemented
 from ..guards import GuardBuilder, install_guard
 from ..mutation_guard import unpatched_nn_module_init
 from ..source import (
@@ -69,12 +69,7 @@ from ..utils import (
     raise_args_mismatch,
     tuple_methods,
 )
-from .base import (
-    AsPythonConstantNotImplementedError,
-    NO_SUCH_SUBOBJ,
-    raise_type_error_exc,
-    VariableTracker,
-)
+from .base import AsPythonConstantNotImplementedError, NO_SUCH_SUBOBJ, VariableTracker
 from .constant import CONSTANT_VARIABLE_FALSE, CONSTANT_VARIABLE_NONE, ConstantVariable
 from .functions import NestedUserFunctionVariable, UserFunctionVariable
 from .user_defined import call_random_fn, is_standard_setattr, UserDefinedObjectVariable
@@ -617,9 +612,6 @@ class ExceptionVariable(VariableTracker):
         name_var: VariableTracker,
         val: VariableTracker,
     ) -> VariableTracker:
-        def raise_error(msg: str) -> NoReturn:
-            raise_observed_exception(TypeError, tx, args=[msg])
-
         name = name_var.as_python_constant()
         if name == "__context__":
             # Constant can be either an Exceptior or None
@@ -645,19 +637,19 @@ class ExceptionVariable(VariableTracker):
                 self.__cause__ = val
                 self.__suppress_context__ = variables.CONSTANT_VARIABLE_TRUE
             else:
-                raise_error("exception cause must be None or derive from BaseException")
+                raise_type_error(
+                    tx, "exception cause must be None or derive from BaseException"
+                )
         elif name == "__suppress_context__":
             if val.is_constant_match(True, False):
                 self.__suppress_context__ = val
             else:
-                raise_error("exception cause must be None or derive from BaseException")
+                raise_type_error(
+                    tx, "exception cause must be None or derive from BaseException"
+                )
         elif name == "__traceback__":
             if not TracebackVariable.is_valid_traceback(val):
-                raise_observed_exception(
-                    TypeError,
-                    tx,
-                    args=["__traceback__ must be a traceback object or None"],
-                )
+                raise_type_error(tx, "__traceback__ must be a traceback object or None")
             self.__traceback__ = val
         else:
             unimplemented(
@@ -687,7 +679,9 @@ class ExceptionVariable(VariableTracker):
             return super().call_method(tx, name, args, kwargs)
 
     def var_getattr(self, tx: "InstructionTranslator", name: str) -> VariableTracker:
-        if name == "__context__":
+        if name == "__class__":
+            return VariableTracker.build(tx, self.exc_type)
+        elif name == "__context__":
             return self.__context__
         elif name == "__cause__":
             return self.__cause__
@@ -697,7 +691,9 @@ class ExceptionVariable(VariableTracker):
             return self.__traceback__
         elif name == "args":
             return VariableTracker.build(
-                tx, self.args, source=self.source and AttrSource(self.source, "args")
+                tx,
+                tuple(self.args),
+                source=self.source and AttrSource(self.source, "args"),
             )
         return super().var_getattr(tx, name)
 
@@ -791,7 +787,7 @@ class ComptimeVariable(VariableTracker):
             # We have to manually bind the freevars ourselves
             code = fn.get_code()
             if fn.closure:
-                raise_type_error_exc(
+                raise_type_error(
                     tx,
                     f"comptime function must not have free variables, but these variables were free: {code.co_freevars}",
                 )
@@ -1185,7 +1181,7 @@ class AutogradFunctionContextVariable(UserDefinedObjectVariable):
         assert self.saved_tensors is not None
         if not self.inference:
             if kwargs or not self.source:
-                raise_type_error_exc(
+                raise_type_error(
                     tx, "save_for_backward() requires a source and no keyword arguments"
                 )
             tx.output.side_effects.track_save_for_backward(self, args)
@@ -1484,7 +1480,7 @@ class MethodWrapperVariable(VariableTracker):
             args[0], variables.TensorVariable
         ):
             if not (len(args) == 1 and len(kwargs) == 0):
-                raise_type_error_exc(
+                raise_type_error(
                     tx, "tensor attribute getter takes exactly one argument"
                 )
             # type: ignore[arg-type, attr-defined]
@@ -2511,7 +2507,7 @@ class RandomVariable(VariableTracker):
 
 class WeakRefVariable(VariableTracker):
     @staticmethod
-    # pyrefly: ignore[bad-param-name-override]
+    # pyrefly: ignore [bad-override, bad-param-name-override]
     def build(
         tx: "InstructionTranslator",
         weakref_value: weakref.ReferenceType[Any],
