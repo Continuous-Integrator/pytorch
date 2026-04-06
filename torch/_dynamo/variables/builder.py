@@ -125,6 +125,7 @@ from ..source import (
     GradSource,
     is_constant_source,
     is_from_closure_source,
+    is_from_flatten_script_object_source,
     is_from_global_source,
     is_from_nonlocal_source,
     is_from_optimizer_source,
@@ -186,7 +187,7 @@ from .base import (
     VariableTrackerMeta,
 )
 from .builtin import BuiltinVariable
-from .constant import ConstantVariable, EnumVariable
+from .constant import ConstantVariable
 from .ctx_manager import (
     AutocastModeVariable,
     CudagraphOverrideVariable,
@@ -299,7 +300,6 @@ from .user_defined import (
     SourcelessGraphModuleVariable,
     UserDefinedClassVariable,
     UserDefinedDictVariable,
-    UserDefinedEnumClassVariable,
     UserDefinedExceptionClassVariable,
     UserDefinedListVariable,
     UserDefinedObjectVariable,
@@ -972,10 +972,11 @@ class VariableBuilder:
             self.install_guards(GuardBuilder.EQUALS_MATCH)
             return FrozensetVariable(items, source=self.source)
         elif isinstance(
-            value, (enum.Enum, torch.DispatchKey, torch._C._functorch.TransformType)
+            value,
+            (enum.Enum, torch.DispatchKey, torch._C._functorch.TransformType),
         ):
             self.install_guards(GuardBuilder.ID_MATCH)
-            return EnumVariable(value=value, source=self.source)
+            return UserDefinedObjectVariable(value, source=self.source)
         elif DebuggingVariable.is_reorderable_logging_function(value):
             # Put this above builtin_callable so that print() can be handled
             # along with other builtin debugging functions
@@ -1526,14 +1527,14 @@ class VariableBuilder:
                 # ID_MATCH even if its a global variable.
                 self.install_guards(GuardBuilder.CLASS_MATCH)
 
-            if is_opaque_type(value):
-                return OpaqueObjectClassVariable(
+            if isinstance(value, type) and issubclass(value, enum.Enum):
+                return UserDefinedClassVariable(
                     value,
                     source=self.source,
                 )
 
-            if isinstance(value, type) and issubclass(value, enum.Enum):
-                return UserDefinedEnumClassVariable(
+            if is_opaque_type(value):
+                return OpaqueObjectClassVariable(
                     value,
                     source=self.source,
                 )
@@ -1853,8 +1854,15 @@ class VariableBuilder:
             return ConstantVariable.create(value=value)
 
         # One can index a tensor with a list/tuple. Therefore, we need to
-        # have a stricter match.
-        self.install_guards(GuardBuilder.SEQUENCE_LENGTH)
+        # have a stricter match. Keep plain list length guards lazy so mutating
+        # methods like append()/clear() don't specialize on untouched contents.
+        # Flattened torchbind state still needs eager length guards because its
+        # size can be observed through fake-class methods outside list VT reads.
+        if type(value) is not list or (
+            self.source is not None
+            and is_from_flatten_script_object_source(self.source)
+        ):
+            self.install_guards(GuardBuilder.SEQUENCE_LENGTH)
 
         # Tuples are immutable objects, so we should mark its items static. This
         # avoids wrapping of tuple items as symints. This helps for nn module
@@ -1953,8 +1961,12 @@ class VariableBuilder:
             # https://github.com/pytorch/pytorch/issues/153701.
             for vt in output:
                 vt.realize()
+        list_options: dict[str, Any] = {"source": self.source}
+        if type(value) is list:
+            list_options["mutation_type"] = ValueMutationExisting()
+
         # type: ignore[arg-type]
-        result = BaseListVariable.cls_for_instance(value)(output, source=self.source)
+        result = BaseListVariable.cls_for_instance(value)(output, **list_options)
         if istype(value, (list, collections.deque)):
             return self.tx.output.side_effects.track_mutable(value, result)
         return result
@@ -4238,7 +4250,7 @@ class SourcelessBuilder:
         if isinstance(value, VariableTracker):
             # This is always valid to call, and useful for recursive calls.
             return value
-        elif is_opaque_value_type(type(value)):
+        elif is_opaque_value_type(type(value)) and not isinstance(value, enum.Enum):
             return TorchScriptObjectVariable.create(value, value)
         elif is_opaque_reference_type(type(value)):
             # This is for handling opaque objects in custom ops
@@ -4246,7 +4258,7 @@ class SourcelessBuilder:
                 tx.output.fake_mode, value
             )
             return TorchScriptObjectVariable.create(
-                value,
+                value,  # pyrefly: ignore[bad-argument-type]
                 fake_script_obj,
             )
         # type: ignore[attr-defined]
@@ -4270,13 +4282,12 @@ class SourcelessBuilder:
             # pyrefly: ignore[not-callable, bad-argument-count]
             return trace_rules.lookup(value)(value)
         elif isinstance(
-            value, (enum.Enum, torch.DispatchKey, torch._C._functorch.TransformType)
+            value,
+            (enum.Enum, torch.DispatchKey, torch._C._functorch.TransformType),
         ):
-            return EnumVariable(value)
+            return UserDefinedObjectVariable(value)
         elif isinstance(value, (type, abc.ABCMeta)):
-            if isinstance(value, type) and issubclass(value, enum.Enum):
-                return UserDefinedEnumClassVariable(value)
-            elif issubclass(type(value), type) and issubclass(value, BaseException):
+            if issubclass(type(value), type) and issubclass(value, BaseException):
                 return UserDefinedExceptionClassVariable(value)
             return UserDefinedClassVariable(value)
         elif isinstance(value, types.MethodWrapperType):
@@ -4333,6 +4344,12 @@ class SourcelessBuilder:
         ):
             proxy = tx.output.bound_symbols[value.node.expr]
             return SymNodeVariable.create(tx, proxy)
+        elif isinstance(value, slice):
+            items = [
+                SourcelessBuilder.create(tx, getattr(value, k))
+                for k in ("start", "stop", "step")
+            ]
+            return SliceVariable(items, tx)  # pyrefly: ignore[bad-argument-type]
         elif istype(value, object):
             return ObjectVariable(value)
         unimplemented(
