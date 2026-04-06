@@ -304,16 +304,25 @@ function format_frames(frames) {
  *    alloc was lost (e.g. ring buffer wrap) become "initially_allocated" —
  *    blocks assumed to exist at the start of the trace.
  *
- * 2. SEGMENT SNAPSHOT: Supplements trace data with the current segment state.
- *    Blocks marked active_allocated (or inactive in private pools, when
- *    include_private_inactive=true) that weren't seen in the trace are also
- *    added as initially_allocated.
+ * 2. SEGMENT SNAPSHOT: For segment-level views (plot_segments=true), adds
+ *    segments from the snapshot that weren't seen in trace events.
+ *    For block-level views, the segment snapshot is only used to resolve
+ *    pool_id via find_pool_id() and to identify ghost blocks.
  *
- * 3. DETAIL LIMITING: Only the largest max_entries elements get individual
+ * 3. GHOST BLOCKS: Identifies "ghost blocks" — active_allocated blocks in the
+ *    segment snapshot whose address never appeared in any trace event. These
+ *    are blocks allocated before _record_memory_history() was called, or whose
+ *    alloc event was evicted from the ring buffer and that were never freed.
+ *    Ghost blocks are rendered at the bottom of the stacked area with low
+ *    opacity (0.3), spanning the full timeline. They increase max_size to
+ *    reflect the true memory footprint. Clicking a ghost block shows the
+ *    "[Ghost block]" label with an explanation in the context panel.
+ *
+ * 4. DETAIL LIMITING: Only the largest max_entries elements get individual
  *    rectangles in the plot. Smaller elements are aggregated into a single
  *    "summarized" band to keep rendering fast.
  *
- * 4. STACKED AREA CONSTRUCTION: Replays alloc/free events in order, building
+ * 5. STACKED AREA CONSTRUCTION: Replays alloc/free events in order, building
  *    a stacked-area dataset where each element has timesteps, y-offsets, and
  *    a size. Elements are stacked bottom-to-top; frees remove from the stack
  *    and shift elements above downward.
@@ -374,6 +383,7 @@ function process_alloc_data(snapshot, device, plot_segments, max_entries, includ
   const initially_allocated = [];
   const actions = [];
   const addr_to_alloc = {};
+  const addr_seen_in_trace = {};
 
   const device_segments = snapshot.segments
     .filter(s => s.device === device)
@@ -410,10 +420,12 @@ function process_alloc_data(snapshot, device, plot_segments, max_entries, includ
       case alloc:
         elements.push(e);
         addr_to_alloc[e.addr] = elements.length - 1;
+        addr_seen_in_trace[e.addr] = true;
         actions.push(elements.length - 1);
         break;
       case free:
       case free_completed:
+        addr_seen_in_trace[e.addr] = true;
         if (e.addr in addr_to_alloc) {
           // Matched: reuse the element from the alloc event
           actions.push(addr_to_alloc[e.addr]);
@@ -454,6 +466,35 @@ function process_alloc_data(snapshot, device, plot_segments, max_entries, includ
     }
   }
 
+  // --- Collect ghost blocks from the segment snapshot ---
+  // Ghost blocks are active_allocated blocks in the segment snapshot whose
+  // address never appeared in any trace event. They were allocated before
+  // recording started or their alloc event was evicted from the ring buffer
+  // and they were never freed.
+  const ghost_blocks = [];
+  if (!plot_segments && include_private_inactive) {
+    for (const seg of snapshot.segments) {
+      if (seg.device !== device) continue;
+      for (const b of seg.blocks) {
+        const addr = b.addr ?? b.address;
+        if (b.state === 'active_allocated' && !(addr in addr_seen_in_trace) && !(addr in addr_to_alloc)) {
+          const elem_idx = elements.length;
+          elements.push({
+            action: 'alloc',
+            addr,
+            size: b.requested_size ?? b.size,
+            frames: b.frames || [],
+            stream: seg.stream,
+            version: b.version,
+            segment_pool_id: seg.segment_pool_id,
+            ghost: true,
+          });
+          ghost_blocks.push(elem_idx);
+        }
+      }
+    }
+  }
+
   // Resolve pool IDs for trace elements by looking up which segment they fall in
   for (const elem of elements) {
     if (!elem.segment_pool_id) {
@@ -474,7 +515,22 @@ function process_alloc_data(snapshot, device, plot_segments, max_entries, includ
   const data = [];         // all data objects (including completed ones)
   let max_size = 0;
 
-  let total_mem = 0;
+  // Private pool ghosts go inside their pool envelope; default pool ghosts
+  // are rendered at the global bottom of the stacked area.
+  let ghost_total = 0;
+  const default_ghost_blocks = [];
+  const pool_ghost_blocks = [];
+  for (const idx of ghost_blocks) {
+    const pid = elements[idx].segment_pool_id;
+    if (include_private_inactive && isPrivatePoolId(pid)) {
+      pool_ghost_blocks.push(idx);
+    } else {
+      default_ghost_blocks.push(idx);
+      ghost_total += elements[idx].size;
+    }
+  }
+
+  let total_mem = ghost_total;
   let total_summarized_mem = 0;
   let timestep = 0;
 
@@ -613,6 +669,66 @@ function process_alloc_data(snapshot, device, plot_segments, max_entries, includ
     }
     total_mem += delta;
     advance(3);
+  }
+
+  // --- Pre-seed pool ghost blocks into their pool envelopes ---
+  // These are ghost blocks in private pools. They get placed at the bottom
+  // of their pool's envelope, before any traced pool activity.
+  // We record their start at timestep 0 so they span the full timeline.
+  // The envelope is initialized with the ghost blocks' total size directly
+  // (no grow animation — they pre-exist).
+  for (const elem of pool_ghost_blocks) {
+    const pid = elements[elem].segment_pool_id;
+    const pk = `${pid[0]},${pid[1]},s${elements[elem].stream}`;
+    const size = elements[elem].size;
+    const pool = get_or_create_pool(pk);
+
+    if (pool.envelope_data === null) {
+      const env = {
+        elem: `pool:${pk}`,
+        timesteps: [0],
+        offsets: [total_mem],
+        size: [0],
+        color: 9,
+      };
+      pool.envelope_data = env;
+      current.push(`pool:${pk}`);
+      current_data.push(env);
+      data.push(env);
+    }
+
+    const inner_offset = pool.active;
+    pool.active += size;
+
+    // Grow envelope size directly without animation
+    if (pool.active > pool.max) {
+      const delta = pool.active - pool.max;
+      pool.max = pool.active;
+      const env = pool.envelope_data;
+      // Update the last size entry in-place (no new timestep needed)
+      env.size[env.size.length - 1] = pool.max;
+      total_mem += delta;
+      // Shift elements above the envelope
+      const pidx = current.indexOf(`pool:${pk}`);
+      if (pidx >= 0) {
+        for (let j = pidx + 1; j < current.length; j++) {
+          const e = current_data[j];
+          e.offsets[e.offsets.length - 1] += delta;
+        }
+      }
+    }
+
+    const stripe = {
+      elem,
+      timesteps: [0],
+      offsets: [pool.envelope_data.offsets.at(-1) + inner_offset],
+      size,
+      color: elem_color(elem),
+      opacity: 0.3,
+      ghost: true,
+    };
+    pool.block_stack.push({elem, size, inner_offset, stripe_data: stripe});
+    data.push(stripe);
   }
 
   // --- Process initially_allocated elements ---
@@ -802,6 +918,22 @@ function process_alloc_data(snapshot, device, plot_segments, max_entries, includ
   }
   data.push(summarized_mem);
 
+  // --- Add default-pool ghost blocks at the bottom ---
+  let ghost_offset = 0;
+  for (const elem_idx of default_ghost_blocks) {
+    const ghost_elem = elements[elem_idx];
+    data.push({
+      elem: elem_idx,
+      timesteps: [0, timestep],
+      offsets: [ghost_offset, ghost_offset],
+      size: ghost_elem.size,
+      color: elem_color(elem_idx),
+      opacity: 0.3,
+      ghost: true,
+    });
+    ghost_offset += ghost_elem.size;
+  }
+
   return {
     max_size,
     allocations_over_time: data,
@@ -831,6 +963,11 @@ function process_alloc_data(snapshot, device, plot_segments, max_entries, includ
       }
       if (!elem.action.includes('alloc')) {
         text = `${text}\nalloc not recorded, stack trace for free:`;
+      }
+      if (elem.ghost) {
+        text = `${text}\n[Ghost block] This block exists in the segment snapshot but has no trace events. ` +
+          `It was allocated before _record_memory_history() was called, or its alloc event was evicted ` +
+          `from the trace ring buffer. The block is still active (not freed) at snapshot time.`;
       }
       const user_metadata_str = format_user_metadata(elem.user_metadata);
       if (user_metadata_str) {
