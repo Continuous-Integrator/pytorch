@@ -681,12 +681,13 @@ class _ViewShardingPropagator:
                         )
                     input_to_output_tensor_dims[in_dim.input_dim] = [output_dim]
             elif len(in_dims) > 0:
-                # InputDim (identity) or Split(split_id=0).
-                in_dim = in_dims[0]
-                if in_dim.input_dim not in input_to_output_tensor_dims:
-                    input_to_output_tensor_dims[in_dim.input_dim] = [output_dim]
-                else:
-                    input_to_output_tensor_dims[in_dim.input_dim].append(output_dim)
+                # InputDim (identity), Split(split_id=0), or
+                # Split(Flatten(...), split_id=0) which returns multiple dims.
+                for in_dim in in_dims:
+                    if in_dim.input_dim not in input_to_output_tensor_dims:
+                        input_to_output_tensor_dims[in_dim.input_dim] = [output_dim]
+                    else:
+                        input_to_output_tensor_dims[in_dim.input_dim].append(output_dim)
             elif isinstance(cmd, Split):
                 # Split(split_id>0): _analyze_split returned [], so chase the
                 # root input dim and append this output dim to its existing entry.
@@ -954,10 +955,12 @@ class _ViewShardingPropagator:
                     guard_or_false(out_size % self.mesh_sizes[shard_mesh_dim] == 0)
                     or is_last_split_dim
                 )
-        # Only split_id==0 returns the input dim for input_to_output_tensor_dims.
+        # Only split_id==0 returns input dims for input_to_output_tensor_dims.
         # Later split_ids refine shard_allowed above but return [] — their
         # output dims are linked via the root-input-dim chase in analyze().
-        return [in_dim] if cmd.split_id == 0 else []
+        # Return all in_dims (not just the first) so that Split(Flatten(...))
+        # populates input_to_output_tensor_dims for every flattened input dim.
+        return in_dims if cmd.split_id == 0 else []
 
     def _analyze_dim(self, cmd: DimSpec) -> list[InputDim]:
         """Dispatch one DimSpec: update self.shard_allowed, return input dim(s) to shard on."""
@@ -1149,7 +1152,11 @@ class _ViewShardingPropagator:
                 suffix = math.prod(cmd.group_shape[d + 1 :])
                 if suffix > 0 and period % suffix == 0:
                     k = period // suffix
-                    if k <= cmd.group_shape[d] and cmd.group_shape[d] % k == 0:
+                    if (
+                        k <= cmd.group_shape[d]
+                        and cmd.group_shape[d] % k == 0
+                        and k >= self.mesh_sizes[mesh_dim]
+                    ):
                         target_split_id = d
                         sf_output = cmd.group_shape[d] // k
                         break

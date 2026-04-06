@@ -274,6 +274,15 @@ class TestViewOps(DTensorContinuousTestBase):
         with self.assertRaisesRegex(RuntimeError, "Sharding propagation failed"):
             shard.view(8, 2, -1)
 
+        # Split(Flatten) where the strided pattern is not representable
+        # in the output group_shape: (4,6)→(6,4) with Shard(1) has
+        # period=6 which doesn't fit into group_shape (6,4).
+        tensor = torch.randn(4, 6, device=self.device_type)
+        dtensor = distribute_tensor(tensor, device_mesh, [Replicate()])
+        shard = dtensor.redistribute(device_mesh=device_mesh, placements=[Shard(dim=1)])
+        with self.assertRaisesRegex(RuntimeError, "Sharding propagation failed"):
+            shard.view(6, 4)
+
     def test_double_shard_split_validation(self):
         """[Shard(0), Shard(0)] through Split correctly validates divisibility."""
         # Compatible: reshape (24,)→(6,4) with [Shard(0), Shard(0)] on mesh (2,3)
@@ -577,6 +586,26 @@ class TestViewOps(DTensorContinuousTestBase):
             ),
         )
 
+        # Split(Flatten) where a non-first flatten dim produces _StridedShard.
+        # Dim sizes are multiples of all mesh dim sizes so every Shard
+        # placement is exercised by call_dt_test.
+        self.dimmap_test(
+            Tensor.view,
+            (randn(12, 12), (6, 24)),
+            (
+                Split(
+                    Flatten(input_dims=(InputDim(0), InputDim(1))),
+                    group_shape=(6, 24),
+                    split_id=0,
+                ),
+                Split(
+                    Flatten(input_dims=(InputDim(0), InputDim(1))),
+                    group_shape=(6, 24),
+                    split_id=1,
+                ),
+            ),
+        )
+
     # TODO: Currently functional collectives on complex numbers are not fully supported,
     # so we are having a standalone test for view_as_complex and view_as_real combined.
     # Once complex numbers are supported, we can add the following to the dim_map test.
@@ -729,6 +758,78 @@ class TestViewOps(DTensorContinuousTestBase):
         if len(trailing_dims) > 0:
             view_shapes.extend(trailing_dims)
         return tuple(view_shapes)
+
+    def _test_flatten_split_case(self, in_shape, out_shape, placements, mesh):
+        """Test a single Split(Flatten) view case.
+
+        Representable cases must produce zero communication and correct output.
+        Unrepresentable cases must raise RuntimeError with a specific message.
+        """
+        nelem = math.prod(in_shape)
+        global_tensor = torch.arange(nelem).view(in_shape)
+        in_dt = distribute_tensor(global_tensor, mesh, placements, src_data_rank=None)
+        comm_mode = CommDebugMode()
+        try:
+            with comm_mode:
+                out_dt = in_dt.view(list(out_shape))
+        except RuntimeError as e:
+            self.assertRegex(
+                str(e),
+                r"no valid output dimension for the strided pattern"
+                r"|is not evenly divisible by mesh dimension",
+            )
+            return
+        self.assertEqual(comm_mode.get_total_counts(), 0)
+        expected = global_tensor.view(list(out_shape))
+        self.assertEqual(out_dt.full_tensor(), expected)
+
+    def test_dtensor_flatten_split(self):
+        """Test views producing Split(Flatten) rules — flatten then split.
+
+        Uses {2*M-1, 2*M, 2*M+1} dim values (M = mesh size for the shard
+        mesh dim) to cover even/uneven divisibility, following the same
+        pattern as _run_flatten_single_shard.
+        """
+        for mesh_shape in [(self.world_size,), (3, 2)]:
+            if self.world_size < math.prod(mesh_shape):
+                continue
+            mesh = init_device_mesh(self.device_type, mesh_shape)
+            for shard_mesh_dim in range(mesh.ndim):
+                M = mesh.size(shard_mesh_dim)
+                dim_vals = [2 * M - 1, 2 * M, 2 * M + 1]
+                for a, b in itertools.product(dim_vals, repeat=2):
+                    in_shape = (a, b)
+                    total = a * b
+                    all_factors = self._get_all_factorizations(total)
+                    for out_shape in all_factors:
+                        if in_shape == out_shape:
+                            continue
+                        rules = view_groups(list(in_shape), list(out_shape))
+                        if not any(
+                            isinstance(r, Split) and isinstance(r.input_dim, Flatten)
+                            for r in rules
+                        ):
+                            continue
+                        for shard_dim in range(len(in_shape)):
+                            if in_shape[shard_dim] % M != 0:
+                                continue
+                            placements = tuple(
+                                Shard(shard_dim) if i == shard_mesh_dim else Replicate()
+                                for i in range(mesh.ndim)
+                            )
+                            with self.subTest(
+                                in_shape=in_shape,
+                                out_shape=out_shape,
+                                shard=shard_dim,
+                                mesh_dim=shard_mesh_dim,
+                                mesh_shape=mesh_shape,
+                            ):
+                                self._test_flatten_split_case(
+                                    in_shape,
+                                    out_shape,
+                                    placements,
+                                    mesh,
+                                )
 
     def test_dtensor_flatten_multi_mesh(self):
         """Test flatten operations across 1D and 2D meshes with all placement patterns.
@@ -2134,64 +2235,6 @@ class TestViewOps(DTensorContinuousTestBase):
         )
         self.assertEqual(out_plc, [Replicate(), Replicate()])
 
-    def test_view_flatten_split_strided_shard(self):
-        mesh = init_device_mesh(self.device_type, (2, self.world_size // 2))
-
-        # (input_shape, view_shape, expected_placements)
-        cases = [
-            # (4,4,4) → (8,8): strided along dim 0, same dim but missing stride
-            (
-                (4, 4, 4),
-                (8, 8),
-                (_StridedShard(dim=0, split_factor=4), Replicate()),
-            ),
-            # (8,4) → (4,4,2): strided along dim 1, wrong dim entirely
-            (
-                (8, 4),
-                (4, 4, 2),
-                (_StridedShard(dim=1, split_factor=2), Replicate()),
-            ),
-        ]
-
-        for input_shape, view_shape, expected_placements in cases:
-            with self.subTest(input=input_shape, view=view_shape):
-                nelem = math.prod(input_shape)
-                full = (
-                    torch.arange(nelem, device=self.device_type)
-                    .float()
-                    .view(input_shape)
-                )
-                dt = distribute_tensor(full, mesh, [Shard(1), Replicate()])
-
-                # Prove expected placements are correct:
-                # 1) full_tensor() round-trips to single-device ground truth
-                # 2) local tensor matches what the input actually holds
-                expected_dt = distribute_tensor(
-                    full.view(view_shape), mesh, expected_placements, src_data_rank=None
-                )
-                self.assertEqual(expected_dt.full_tensor(), full.view(view_shape))
-                self.assertEqual(
-                    expected_dt._local_tensor,
-                    dt._local_tensor.view(expected_dt._local_tensor.shape),
-                )
-
-                # Check the actual view op output
-                comm_mode = CommDebugMode()
-                with comm_mode:
-                    out = dt.view(view_shape)
-                self.assertEqual(comm_mode.get_total_counts(), 0)
-                self.assertEqual(out.placements, expected_placements)
-
-    def test_view_flatten_split_unrepresentable(self):
-        # (12,8) → (16,6) with Shard(1): the strided pattern (period=8)
-        # can't be represented in group_shape (16,6), so view() must error
-        # instead of silently producing wrong data.
-        mesh = init_device_mesh(self.device_type, (self.world_size,))
-        full = torch.randn(12, 8, device=self.device_type)
-        dt = distribute_tensor(full, mesh, [Shard(1)])
-        with self.assertRaises(RuntimeError):
-            dt.view(16, 6)
-
     def test_input_dim_rejects_int_comparison(self):
         """InputDim.__eq__ should raise TypeError when compared with int.
 
@@ -2226,6 +2269,7 @@ TestViewOpsWithLocalTensor = create_local_tensor_test_class(
         "test_dtensor_flatten_1d",
         "test_dtensor_flatten_2d",
         "test_dtensor_flatten_multi_mesh",
+        "test_dtensor_flatten_split",
     ],
     base_class=LocalDTensorContinuousTestBase,
 )
