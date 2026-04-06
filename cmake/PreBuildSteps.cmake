@@ -101,7 +101,7 @@ if(NOT USE_SYSTEM_NCCL)
 
   if(NOT _skip_nccl)
     set(_nccl_dir "${PROJECT_SOURCE_DIR}/third_party/nccl")
-    if(NOT EXISTS "${_nccl_dir}" AND GIT_FOUND)
+    if(NOT EXISTS "${_nccl_dir}")
       # Select pin file: CUDA 12.6 builds need a different NCCL version.
       # Matches tools/optional_submodules.py::read_nccl_pin().
       set(_nccl_pin_name "nccl.txt")
@@ -121,15 +121,15 @@ if(NOT USE_SYSTEM_NCCL)
         file(READ "${_nccl_pin_file}" _nccl_tag)
         string(STRIP "${_nccl_tag}" _nccl_tag)
         message(STATUS "Checking out NCCL release tag: ${_nccl_tag} (from ${_nccl_pin_name})")
-        execute_process(
-          COMMAND ${GIT_EXECUTABLE} clone --depth 1 --branch "${_nccl_tag}"
-                  https://github.com/NVIDIA/nccl
-          WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}/third_party"
-          RESULT_VARIABLE _nccl_result
+        include(FetchContent)
+        FetchContent_Declare(
+          nccl
+          GIT_REPOSITORY https://github.com/NVIDIA/nccl
+          GIT_TAG        "${_nccl_tag}"
+          GIT_SHALLOW    TRUE
+          SOURCE_DIR     "${_nccl_dir}"
         )
-        if(NOT _nccl_result EQUAL 0)
-          message(FATAL_ERROR "NCCL checkout failed (tag: ${_nccl_tag}).")
-        endif()
+        FetchContent_Populate(nccl)
       endif()
     endif()
   endif()
