@@ -39,8 +39,7 @@ RUN yum install -y \
   gcc-toolset-${GCCTOOLSET_VERSION}-gcc-c++ \
   gcc-toolset-${GCCTOOLSET_VERSION}-gcc-gfortran \
   gcc-toolset-${GCCTOOLSET_VERSION}-gdb
-
-RUN pip3 install ninja
+RUN yum install -y --enablerepo=powertools ninja-build
 
 # Ensure the expected devtoolset is used
 ENV PATH=/opt/rh/gcc-toolset-${GCCTOOLSET_VERSION}/root/usr/bin:$PATH
