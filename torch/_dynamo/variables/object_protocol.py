@@ -12,13 +12,10 @@ from typing import TYPE_CHECKING
 from torch._C._dynamo import get_type_slots, has_slot, PyMappingSlots, PySequenceSlots
 
 from .. import graph_break_hints
-from ..exc import unimplemented
+from ..exc import raise_type_error, unimplemented
 from ..utils import istype
-from .base import NO_SUCH_SUBOBJ, raise_type_error_exc, VariableTracker
+from .base import NO_SUCH_SUBOBJ, VariableTracker
 from .constant import CONSTANT_VARIABLE_FALSE, CONSTANT_VARIABLE_TRUE
-
-
-type_error = raise_type_error_exc
 
 
 if TYPE_CHECKING:
@@ -121,9 +118,9 @@ def vt_mapping_size(
         return obj.mp_length(tx)
 
     if type_implements_sq_length(T):
-        type_error(tx, f"{obj.python_type_name()} is not a mapping")
+        raise_type_error(tx, f"{obj.python_type_name()} is not a mapping")
 
-    type_error(tx, f"object of type {obj.python_type_name()} has no len()")
+    raise_type_error(tx, f"object of type {obj.python_type_name()} has no len()")
 
 
 def generic_len(
