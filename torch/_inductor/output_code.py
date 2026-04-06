@@ -380,11 +380,11 @@ def maybe_realign_inputs(
     """
     if not ran_cudagraphs:
         check_idxs = inputs_to_check
-        if not config.cpp_wrapper:
+        if compiled_graph._defers_input_alignment:
             # Non-mutated inputs are handled by deferred alignment copies
             # in the generated Python code. Only mutated inputs need the wrapper
-            # for writeback. cpp_wrapper skips deferred copies (emits C++ code),
-            # so it needs the full wrapper.
+            # for writeback. Backends that don't emit deferred copies (cpp_wrapper,
+            # FXIR) need the full wrapper.
             check_idxs = [i for i in inputs_to_check if i in mutated_inputs_idxs]
         if check_idxs:
             assert compiled_graph.current_callable is not None
@@ -488,6 +488,7 @@ class CompiledFxGraph(OutputCode):
     _boxed_call: bool | None = None
     _triton_bundle: TritonBundle | None = None
     _wrap_compiled_regions: bool = False
+    _defers_input_alignment: bool = False
     # Metadata-stripped copy of the FX graph for fake tensor propagation.
     # Running this graph under FakeTensorMode re-derives output shapes
     # (including aliasing) from the input shapes.
@@ -564,6 +565,7 @@ class CompiledFxGraph(OutputCode):
         self.extern_libs_key = None
         self.cudagraph_info = None
         self.partition_maps = graph.partition_maps
+        self._defers_input_alignment = getattr(graph, "_defers_input_alignment", False)
         self.fx_kwargs = {}
         self.inputs_to_check = ()
 
@@ -914,6 +916,15 @@ class CompiledAOTI(OutputCode):
                     self.device_type,
                     "",
                     True,
+                ).run  # type: ignore[attr-defined]
+            )  # type: ignore[attr-defined]
+        elif self.device_type.startswith("xpu"):
+            current_callable = (
+                torch._C._aoti.AOTIModelContainerRunnerXpu(  # type: ignore[call-arg]
+                    current_callable,
+                    1,
+                    self.device_type,
+                    "",
                 ).run  # type: ignore[attr-defined]
             )  # type: ignore[attr-defined]
         elif self.device_type == "cpu":

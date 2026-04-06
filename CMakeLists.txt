@@ -249,6 +249,7 @@ endif()
 option(USE_CUDA "Use CUDA" ON)
 
 option(USE_XPU "Use XPU" ON)
+option(USE_MTIA "Use MTIA" OFF)
 cmake_dependent_option(
   BUILD_LAZY_CUDA_LINALG "Build cuda linalg ops as separate library" ON
   "USE_CUDA AND LINUX AND BUILD_PYTHON" OFF)
@@ -590,7 +591,7 @@ if(MSVC)
   # https://learn.microsoft.com/en-us/cpp/build/reference/zc-cplusplus?view=msvc-170
   # * https://en.cppreference.com/w/cpp/preprocessor/replace#Predefined_macros
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /Zc:__cplusplus")
-  set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -Xcompiler  /Zc:__cplusplus")
+  set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -Xcompiler /Zc:__cplusplus -Xcompiler /Zc:preprocessor")
 
   set(CMAKE_NINJA_CMCLDEPS_RC OFF)
   if(MSVC_Z7_OVERRIDE)
