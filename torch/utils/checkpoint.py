@@ -84,8 +84,7 @@ def detach_variable(inputs: Tuple[Any, ...]) -> Tuple[torch.Tensor, ...]:
         return tuple(out)
     else:
         raise RuntimeError(
-            "Only tuple of tensors is supported. Got Unsupported input type: ",
-            type(inputs).__name__,
+            f"Only tuple of tensors is supported. Got Unsupported input type: {type(inputs).__name__}"
         )
 
 
@@ -937,6 +936,18 @@ Tip: To see a more detailed error message, either pass `debug=True` to
 `torch.utils.checkpoint.checkpoint(...)` or wrap the code block
 with `with torch.utils.checkpoint.set_checkpoint_debug_enabled(True):` to
 enable checkpoint‑debug mode globally.
+
+If this error occurs under torch.compile with automatic_dynamic_shapes enabled,
+it may be because the recomputation selected a different compiled graph than the
+forward pass (e.g., a dynamic graph instead of the original static graph).
+To fix this, either:
+  - Use torch._dynamo.mark_dynamic() to explicitly mark varying dimensions as
+    dynamic upfront, avoiding the static-to-dynamic transition.
+  - Call torch._C._dynamo.eval_frame._set_lru_cache(False) to disable LRU cache
+    reordering, which can change which graph is checked first between forward
+    and recompute.
+See https://github.com/pytorch/pytorch/issues/166926 for more details and
+workaround examples.
 """
 
 
@@ -1009,8 +1020,7 @@ def _get_debug_context_and_cb() -> Tuple[Callable[[], Any], Callable[[Checkpoint
     # checkpointing mechanism. error_cb is invoked when an error is detected
     # during unpack.
 
-    # record_context_cpp is not support on non-linux non-x86_64 platforms
-    cpp_tb = platform.machine() == 'x86_64' and platform.system() == 'Linux'
+    cpp_tb = platform.machine() in ('x86_64', 'aarch64', 'arm64') and platform.system() == 'Linux'
 
     class CaptureLogs:
         def __init__(self) -> None:
@@ -1085,6 +1095,10 @@ class _StopRecomputationError(Exception):
 
 class _recomputation_hook(torch.autograd.graph.saved_tensors_hooks):
     def __init__(self, target_frame_ref: ReferenceType, gid: GraphExecGroup | int) -> None:
+        # Dynamo guards on WeakKeyDictionary internals are unstable here
+        # (dict length/keys change every call), causing recompilation storms.
+        # with `.compile()` so we disable
+        @torch._dynamo.disable
         def pack_hook(x):
             x = x.detach() if x.requires_grad else x
             target_frame = target_frame_ref()
@@ -1212,8 +1226,10 @@ class _checkpoint_hook(torch.autograd.graph.saved_tensors_hooks):
 
 
 def _is_compiling(func, args, kwargs):
-    # Check if we are under AOTAutograd tracing
-    # Checking that a functional mode is active should always do what we want
+    # Check if we are under AOTAutograd tracing or export tracing
+    # Checking that a proxy mode is active should always do what we want
+    if torch.compiler._is_non_strict_tracing():
+        return False
     return torch._C._get_dispatch_mode(torch._C._TorchDispatchModeKey.PROXY) is not None
 
 
@@ -1407,6 +1423,8 @@ class _CachingTorchDispatchMode(TorchDispatchMode):
                 fx_traceback.current_meta["recompute"] = CheckpointPolicy.PREFER_RECOMPUTE
             return func(*args, **kwargs)
 
+        proxy_mode = None
+        graph_len_before = None
         if is_compiling:
             from torch.fx.experimental.proxy_tensor import get_proxy_mode
             proxy_mode = get_proxy_mode()
