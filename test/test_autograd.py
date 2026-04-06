@@ -15246,9 +15246,7 @@ class _AutoNamingMode(TorchDispatchMode):
         out = func(*args, **(kwargs or {}))
         parents = self._tracker.parents - {"Global"}
         fqn = max(parents, key=len) if parents else "Global"
-        op_name = (
-            func.__name__.split(".")[0] if hasattr(func, "__name__") else str(func)
-        )
+        op_name = func.__name__ if hasattr(func, "__name__") else str(func)
         key = (fqn, func)
         count = self._func_counter[key]
         self._func_counter[key] += 1
@@ -15748,9 +15746,9 @@ class TestSelectiveActivationCheckpoint(TestCase):
             naming = _AutoNamingMode()
 
             save_names = {
-                "Model.layers.0_my_op_1",
-                "Model.layers.1_my_op_0",
-                "Model.layers.1_my_op_2",
+                "Model.layers.0_my_op.default_1",
+                "Model.layers.1_my_op.default_0",
+                "Model.layers.1_my_op.default_2",
             }
 
             def policy_fn(ctx, op, *args, **kwargs):
@@ -15773,12 +15771,12 @@ class TestSelectiveActivationCheckpoint(TestCase):
                 out.sum().backward()
 
             self.assertEqual(idx_log, {
-                0: 2,  # Model.layers.0_my_op_0 -> recomputed
-                1: 1,  # Model.layers.0_my_op_1 -> saved
-                2: 2,  # Model.layers.0_my_op_2 -> recomputed
-                3: 1,  # Model.layers.1_my_op_0 -> saved
-                4: 2,  # Model.layers.1_my_op_1 -> recomputed
-                5: 1,  # Model.layers.1_my_op_2 -> saved
+                0: 2,  # Model.layers.0_my_op.default_0 -> recomputed
+                1: 1,  # Model.layers.0_my_op.default_1 -> saved
+                2: 2,  # Model.layers.0_my_op.default_2 -> recomputed
+                3: 1,  # Model.layers.1_my_op.default_0 -> saved
+                4: 2,  # Model.layers.1_my_op.default_1 -> recomputed
+                5: 1,  # Model.layers.1_my_op.default_2 -> saved
             })
             self.assertEqual(my_count[0], 9)
 
