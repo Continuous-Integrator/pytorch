@@ -675,6 +675,9 @@ def split_module(
             )  # noqa: B950
 
     ret = torch.fx.graph_module.GraphModule(base_mod_attrs, base_mod_graph)
+    # Record which children are partitions (vs hoisted attributes like HOP
+    # body subgraphs) so callers can distinguish them.
+    ret._partition_names = {p.submod_name for p in partitions.values()}  # type: ignore[attr-defined]
     log.debug(
         "%s",
         lazy_format_graph_code("post split_module", ret, colored=True),
