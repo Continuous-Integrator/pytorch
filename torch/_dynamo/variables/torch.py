@@ -63,7 +63,13 @@ from ..create_parameter_op import (
     tracable_create_parameter,
 )
 from ..device_interface import get_registered_device_interfaces
-from ..exc import raise_observed_exception, unimplemented, UserError, UserErrorType
+from ..exc import (
+    raise_observed_exception,
+    raise_type_error,
+    unimplemented,
+    UserError,
+    UserErrorType,
+)
 from ..guards import GuardBuilder, install_guard
 from ..source import (
     AttrSource,
@@ -82,7 +88,7 @@ from ..utils import (
     proxy_args_kwargs,
     unwrap_if_wrapper,
 )
-from .base import raise_type_error_exc, typestr, VariableTracker
+from .base import typestr, VariableTracker
 from .ctx_manager import (
     AutocastModeVariable,
     ProfilerContextVariable,
@@ -114,7 +120,7 @@ except ModuleNotFoundError:
 
 if TYPE_CHECKING:
     from torch._dynamo.symbolic_convert import InstructionTranslator
-    from torch._library.opaque_object import OpaqueType
+    from torch._opaque_base import OpaqueBase
     from torch.utils._pytree import TreeSpec
 
 
@@ -285,7 +291,7 @@ def _collect_all_grad_fns(tensor: torch.Tensor) -> set[torch.autograd.graph.Node
 
     grad_fns: set[torch.autograd.graph.Node] = set()
 
-    plain_tensors: list[torch.SymInt | torch.Tensor | int | OpaqueType] = []
+    plain_tensors: list[torch.SymInt | torch.Tensor | int | OpaqueBase] = []
     # Get all plain tensors (handles nested subclasses)
     if is_traceable_wrapper_subclass(tensor):
         get_plain_tensors(tensor, out=plain_tensors)
@@ -336,7 +342,9 @@ def _collect_tensors_with_sources(
                 out=plain,  # pyrefly: ignore[bad-argument-type]
             )
             assert all(
-                isinstance(t, torch._subclasses.fake_tensor.FakeTensor) for t in plain
+                isinstance(t, torch._subclasses.fake_tensor.FakeTensor)
+                for t in plain
+                if isinstance(t, torch.Tensor)
             ), (
                 f"Expected all plain tensors to be FakeTensors, got {[type(t) for t in plain]}"
             )
@@ -677,6 +685,7 @@ class TorchInGraphFunctionVariable(BaseTorchVariable):
     def _get_handlers() -> dict[Callable[..., Any], Callable[..., Any]]:
         """Build a dict from function -> method to handle it so that we are O(1)
         in terms of the number of function with special handling."""
+        # pyrefly: ignore [implicit-any]
         handlers = {}
 
         def register(
@@ -1021,6 +1030,46 @@ class TorchInGraphFunctionVariable(BaseTorchVariable):
             prev = torch.is_autocast_cache_enabled()
             torch.set_autocast_cache_enabled(enabled.as_python_constant())
             tx.output.add_cleanup_hook(lambda: torch.set_autocast_cache_enabled(prev))
+            return CONSTANT_VARIABLE_NONE
+
+        @register(torch._C._functorch._grad_increment_nesting)
+        def handle_grad_increment_nesting(
+            self, tx: "InstructionTranslator"
+        ) -> VariableTracker:
+            tx.output.create_node(
+                "call_function", torch._C._functorch._grad_increment_nesting
+            )
+            level = torch._C._functorch._grad_increment_nesting()
+            tx.output.add_cleanup_hook(torch._C._functorch._grad_decrement_nesting)
+            return VariableTracker.build(tx, level)
+
+        @register(torch._C._functorch._grad_decrement_nesting)
+        def handle_grad_decrement_nesting(
+            self, tx: "InstructionTranslator"
+        ) -> VariableTracker:
+            tx.output.create_node(
+                "call_function", torch._C._functorch._grad_decrement_nesting
+            )
+            level = torch._C._functorch._grad_decrement_nesting()
+            tx.output.add_cleanup_hook(torch._C._functorch._grad_increment_nesting)
+            return VariableTracker.build(tx, level)
+
+        @register(torch._C._functorch.set_inplace_requires_grad_allowed)
+        def handle_set_inplace_requires_grad_allowed(
+            self, tx: "InstructionTranslator", allowed: VariableTracker
+        ) -> VariableTracker:
+            tx.output.create_node(
+                "call_function",
+                torch._C._functorch.set_inplace_requires_grad_allowed,
+                (allowed.as_proxy(),),
+            )
+            prev = torch._C._functorch.get_inplace_requires_grad_allowed()
+            torch._C._functorch.set_inplace_requires_grad_allowed(
+                allowed.as_python_constant()
+            )
+            tx.output.add_cleanup_hook(
+                lambda: torch._C._functorch.set_inplace_requires_grad_allowed(prev)
+            )
             return CONSTANT_VARIABLE_NONE
 
         @register(torch.are_deterministic_algorithms_enabled)
@@ -1744,7 +1793,7 @@ class TorchInGraphFunctionVariable(BaseTorchVariable):
             **kwargs: VariableTracker,
         ) -> VariableTracker:
             if len(args) != 1 or kwargs:
-                raise_type_error_exc(
+                raise_type_error(
                     tx,
                     f"push_torch_function takes exactly one argument ({len(args)} given)",
                 )
@@ -1761,7 +1810,7 @@ class TorchInGraphFunctionVariable(BaseTorchVariable):
             **kwargs: VariableTracker,
         ) -> VariableTracker:
             if args or kwargs:
-                raise_type_error_exc(tx, "len_torch_function_stack takes no arguments")
+                raise_type_error(tx, "len_torch_function_stack takes no arguments")
             return VariableTracker.build(
                 tx, len(tx.symbolic_torch_function_state.mode_stack)
             )
@@ -1774,7 +1823,7 @@ class TorchInGraphFunctionVariable(BaseTorchVariable):
             **kwargs: VariableTracker,
         ) -> TorchFunctionModeVariable:
             if len(args) != 1 or kwargs:
-                raise_type_error_exc(
+                raise_type_error(
                     tx,
                     f"get_function_stack_at takes exactly one argument ({len(args)} given)",
                 )
@@ -1871,6 +1920,53 @@ class TorchInGraphFunctionVariable(BaseTorchVariable):
                     hints=[*graph_break_hints.USER_ERROR],
                     from_exc=e,
                 )
+
+        _synchronize_fn_to_device_type = {
+            torch.cuda.synchronize: "cuda",
+            torch.xpu.synchronize: "xpu",
+            torch.mps.synchronize: "mps",
+            torch.cpu.synchronize: "cpu",
+        }
+
+        @register(
+            torch.accelerator.synchronize,
+            torch.cuda.synchronize,
+            torch.xpu.synchronize,
+            torch.mps.synchronize,
+            torch.cpu.synchronize,
+        )
+        def handle_synchronize(
+            self,
+            tx: "InstructionTranslator",
+            *args: VariableTracker,
+            **kwargs: VariableTracker,
+        ) -> VariableTracker:
+            device = None
+            if kwargs and "device" in kwargs:
+                device = torch.device(kwargs["device"].as_python_constant())
+            elif args:
+                device = torch.device(args[0].as_python_constant())
+
+            if device is None:
+                device_type = _synchronize_fn_to_device_type.get(self.value)
+                if device_type is None:
+                    # torch.accelerator.synchronize with no args
+                    accelerator = torch.accelerator.current_accelerator()
+                    assert accelerator is not None
+                    device_type = accelerator.type
+                device = torch.device(device_type)
+
+            # CPU synchronize is a no-op, skip emitting the op
+            if device.type == "cpu":
+                return CONSTANT_VARIABLE_NONE
+
+            tx.output.create_proxy(
+                "call_function",
+                torch.ops.streams.synchronize_device,
+                (device.type, device.index or 0),
+                {},
+            )
+            return CONSTANT_VARIABLE_NONE
 
         @register(torch.set_default_device)
         def handle_set_default_device(
@@ -1986,7 +2082,7 @@ class TorchInGraphFunctionVariable(BaseTorchVariable):
             fn: Callable[[int], int | None],
         ) -> VariableTracker:
             if len(args) != 1 or kwargs:
-                raise_type_error_exc(
+                raise_type_error(
                     tx,
                     f"{fn.__name__} takes exactly one argument ({len(args)} given)",
                 )
@@ -2103,17 +2199,21 @@ class TorchInGraphFunctionVariable(BaseTorchVariable):
             # consumed grad_fns of returned tensors. This gives better compile
             # coverage than failing the entire compile.
             if tx.speculation_log.graph_break_on_autograd_grad:
+                leaked = tx.speculation_log.autograd_grad_leaked_tensors
+                leaked_str = ", ".join(leaked) if leaked else "unknown"
                 unimplemented(
                     gb_type="autograd.grad consumed returned tensor's grad_fn",
-                    context="",
+                    context=f"Leaked output tensors: {leaked_str}",
                     explanation=(
                         "torch.autograd.grad() consumes grad_fns that are needed by tensors "
                         "returned from this compiled function. This would cause 'backward "
-                        "through graph a second time' errors."
+                        "through graph a second time' errors.\n"
+                        f"  The following returned tensors have consumed grad_fns: {leaked_str}"
                     ),
                     hints=[
-                        "If you don't need to backward through the returned tensor, "
-                        "call .detach() before returning: `return loss.detach()`",
+                        f"Detach the problematic tensor(s) before returning: e.g. `{leaked[0]}.detach()`"
+                        if leaked
+                        else "Call .detach() on the tensor before returning.",
                         "If you need to backward through the returned tensor, use retain_graph=True in autograd.grad().",
                     ],
                 )
@@ -2317,7 +2417,7 @@ class TorchInGraphFunctionVariable(BaseTorchVariable):
                 raise_observed_exception(
                     type(exc),
                     tx,
-                    args=[VariableTracker.build(tx, a) for a in exc.args],
+                    args=list(exc.args),
                 )
 
         if self.is_tensor_method():
