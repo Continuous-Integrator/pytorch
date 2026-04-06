@@ -76,9 +76,10 @@ def remat_using_tags_for_fwd_loss_bwd_graph(gm: fx.GraphModule) -> fx.GraphModul
     torch.autograd.grad).
     When the user provides phase annotations, only those are used.
 
-    Only a single contiguous backward region is supported. If multiple backward
-    regions are detected (whether from multiple autograd.grad calls or multiple
-    user annotations), an error is raised.
+    Only a single contiguous backward region is supported. If multiple disjoint
+    backward regions are detected, an error is raised. Consecutive backward
+    operations without non-backward nodes between them are treated as a single
+    backward region.
     """
     if not has_recomputable_ops(gm):
         return gm
@@ -89,14 +90,14 @@ def remat_using_tags_for_fwd_loss_bwd_graph(gm: fx.GraphModule) -> fx.GraphModul
     if num_regions > 1:
         if use_phase_only:
             raise RuntimeError(
-                f"Detected {num_regions} backward regions annotated with "
+                f"Detected {num_regions} disjoint backward regions annotated with "
                 'phase: "backward" but remat only supports a single backward region. '
                 "Please ensure only one contiguous region is annotated."
             )
         raise RuntimeError(
-            f"Detected {num_regions} backward regions in the graph but remat only supports "
-            "a single backward region. This can happen when the traced function contains "
-            "multiple torch.autograd.grad calls. Please annotate the real backward with "
+            f"Detected {num_regions} disjoint backward regions in the graph but remat only supports "
+            "a single backward region. This can happen when non-backward computation appears "
+            "between backward sections. Please annotate the real backward with "
             'torch.fx.traceback.annotate({"phase": "backward"}).'
         )
 
