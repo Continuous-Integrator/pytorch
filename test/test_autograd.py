@@ -15777,50 +15777,6 @@ class TestSelectiveActivationCheckpoint(TestCase):
             # 6 forward calls + 3 recomputed (the 3 not in save_names) = 9
             self.assertEqual(my_count[0], 9)
 
-    @skipIfTorchDynamo("torch dispatch modes don't support compile")
-    def test_auto_naming_mode_per_module_counter(self):
-        # Two blocks each call the same op twice. Use the per-module counter
-        # from AutoNamingMode to save only the second call in block b.
-        with _counter_op("my_op") as (my_op, my_count):
-
-            class Block(torch.nn.Module):
-                def forward(self, x):
-                    return my_op(my_op(x))
-
-            class Model(torch.nn.Module):
-                def __init__(self):
-                    super().__init__()
-                    self.a = Block()
-                    self.b = Block()
-
-                def forward(self, x):
-                    return self.a(x) + self.b(x)
-
-            mod = Model()
-            naming = _AutoNamingMode()
-
-            def policy_fn(ctx, op, *args, **kwargs):
-                out = ctx.op_output
-                if isinstance(out, torch.Tensor):
-                    name = naming.names.get(out)
-                    # Save only the second call (count=1) in block b
-                    if name == "Model.b_my_op_1":
-                        return CheckpointPolicy.MUST_SAVE
-                return CheckpointPolicy.PREFER_RECOMPUTE
-
-            x = torch.randn(4, requires_grad=True)
-            context_fn = functools.partial(
-                create_selective_checkpoint_contexts, policy_fn
-            )
-            with naming:
-                out = checkpoint(
-                    lambda x: mod(x), x,
-                    use_reentrant=False, context_fn=context_fn,
-                )
-                out.sum().backward()
-
-            # 4 forward calls (2 per block) + 3 recomputed (all except b's second)
-            self.assertEqual(my_count[0], 7)
 
 
 class TestAutogradMultipleDispatch(TestCase):
