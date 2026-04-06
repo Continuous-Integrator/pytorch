@@ -38,6 +38,7 @@ from ..exc import (
     handle_observed_exception,
     ObservedAttributeError,
     raise_observed_exception,
+    raise_type_error,
     unimplemented,
     UnspecializeRestartAnalysis,
     Unsupported,
@@ -69,7 +70,7 @@ from ..utils import (
     unpatched_nn_module_call,
     unpatched_nn_module_call_impl,
 )
-from .base import raise_type_error_exc, typestr, ValueMutationNew, VariableTracker
+from .base import typestr, ValueMutationNew, VariableTracker
 from .functions import invoke_and_store_as_constant
 from .lazy import LazyVariableTracker
 from .lists import SliceVariable
@@ -634,12 +635,12 @@ class NNModuleVariable(VariableTracker):
 
         if name == "_get_item_by_idx":
             if not args[1].is_python_constant():
-                raise_type_error_exc(
+                raise_type_error(
                     tx,
                     f"``nn.Module`` {module}'s call method {name} requires a constant index argument",
                 )
             if not isinstance(args[0], TupleVariable):
-                raise_type_error_exc(
+                raise_type_error(
                     tx,
                     f"``nn.Module`` {module}'s call method {name} requires a tuple as first argument",
                 )
@@ -1300,7 +1301,8 @@ class UnspecializedNNModuleVariable(UserDefinedObjectVariable):
                 return key, value
 
             result = dict(
-                build_key_value(i, k, v) for i, (k, v) in enumerate(hooks_dict.items())
+                build_key_value(i, k, v)
+                for i, (k, v) in enumerate(dict.items(hooks_dict))
             )
 
             return variables.NNModuleHooksDictVariable(
