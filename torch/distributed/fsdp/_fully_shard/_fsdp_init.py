@@ -149,7 +149,7 @@ def _get_mesh_info_from_named_dims(
     )
 
 
-_post_forward_mesh_info_cache: dict[tuple, "FSDPMeshInfo"] = {}
+_post_forward_mesh_info_cache: dict[tuple[int, DeviceMesh], FSDPMeshInfo] = {}
 
 
 def _get_post_forward_mesh_info(
