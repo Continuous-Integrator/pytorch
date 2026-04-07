@@ -6,7 +6,6 @@ This operator is experimental and subject to change.
 
 import warnings
 from enum import IntEnum
-from typing import Optional
 
 import torch
 from torch import Tensor
@@ -27,7 +26,7 @@ class DescaleType(IntEnum):
 
 
 def _validate_descale(
-    descale: Optional[Tensor],
+    descale: Tensor | None,
     name: str,
     query: Tensor,
     key: Tensor,
@@ -92,10 +91,10 @@ def _scaled_dot_product_attention_quantized(
     key: Tensor,
     value: Tensor,
     is_causal: bool = False,
-    scale: Optional[float] = None,
-    q_descale: Optional[Tensor] = None,
-    k_descale: Optional[Tensor] = None,
-    v_descale: Optional[Tensor] = None,
+    scale: float | None = None,
+    q_descale: Tensor | None = None,
+    k_descale: Tensor | None = None,
+    v_descale: Tensor | None = None,
     q_descale_type: DescaleType = DescaleType.PER_HEAD,
     k_descale_type: DescaleType = DescaleType.PER_HEAD,
     v_descale_type: DescaleType = DescaleType.PER_HEAD,
@@ -139,16 +138,17 @@ def _scaled_dot_product_attention_quantized(
             UserWarning,
         )
     # Directly call the internal flash attention operator which has descale support
-    result = torch._scaled_dot_product_flash_attention(
+    # NOTE: This should be torch._scaled_dot_product_flash_attention, but it does not work with torch.compile
+    result = torch.ops.aten._scaled_dot_product_flash_attention.quantized(
         query,
         key,
         value,
         q_descale,
         k_descale,
         v_descale,
-        0.0,  # dropout_p is always 0.0 for FP8
+        0.0,
         is_causal,
-        False,  # return_debug_mask is always False for FP8
+        False,
         scale=scale,
     )
     return result[0]  # Return the output tensor, mirroring scaled_dot_product_attention
