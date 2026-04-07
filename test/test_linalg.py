@@ -4803,7 +4803,7 @@ class TestLinalg(TestCase):
             self.assertEqual(X @ A, B)
         out = B
         # B may be expanded
-        if not B.is_contiguous() and not B.transpose(-2, -1).is_contiguous():
+        if any(s == 0 for s in B.stride()):
             out = B.clone()
         torch.linalg.solve_triangular(A, B, upper=upper, left=left, unitriangular=uni, out=out)
         self.assertEqual(X, out)
@@ -4822,7 +4822,16 @@ class TestLinalg(TestCase):
 
         gen_inputs = self._gen_shape_inputs_linalg_triangular_solve
         for b, n, k in product(bs, ns, ks):
-            for A, B, left, upper, uni in gen_inputs((b, n, k), dtype, device, well_conditioned=True):
+            for A, B, left, upper, uni in gen_inputs((b + 1, n + 1, k + 1), dtype, device, well_conditioned=True):
+                # Testing dense BLAS-compliant inputs
+                A = A[..., :-1, :-1]
+                B = B[..., :-1, :-1]
+                self._test_linalg_solve_triangular(A, B, upper, left, uni)
+
+                # Testing non-dense BLAS-compliant inputs
+                # See https://github.com/pytorch/pytorch/issues/176274
+                A = A[..., 1:, 1:]
+                B = B[..., 1:, 1:]
                 self._test_linalg_solve_triangular(A, B, upper, left, uni)
 
     @slowTest

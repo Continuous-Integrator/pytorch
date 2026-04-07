@@ -3880,7 +3880,7 @@ Tensor& linalg_solve_triangular_out(
     // NOTE: mem overlaps are fine as long as either cols or rows are contiguous.
     // FIXME: batch overlaps are permissible, but the kernel loops over the batch dims,
     // so the batch dims are being materialized.
-    // This behavior is inhereted from the previous implementations.
+    // This behavior is inherited from the previous implementations.
     if (can_flatten_batch_dims(A) && (A.stride(-2) == 1 || A.stride(-1) == 1)
       // A.is_neg and unitriangular triggers a clone because (A, B) is not linear in the first argument, i.e.
       // (-A + I, B) = -(A - I, B) = -(A + I - 2I, B) != (A + I, B) - 2B.
@@ -3920,7 +3920,7 @@ Tensor& linalg_solve_triangular_out(
   // This means we are free to alter its stride structure and conj/neg flags.
   const bool out_fully_owned = (pOut->numel() == 0) && (pOut->sizes() != B_.sizes());
 
-  // NOTE: modifes B in-place
+  // NOTE: modifies B in-place
   const auto solve_kernel = [&left, &upper, &unitriangular](
     const Tensor& A,
     const Tensor& B,
@@ -3991,6 +3991,8 @@ Tensor& linalg_solve_triangular_out(
 
   // Solve (A, B) by trying to match layouts of A and B.
   // This function is a composition of all other previously defined functions.
+  // Conj materialization optimizations are deployed, when possible,
+  // when (A.is_conj() != B.is_conj(), see solve_with_matching_layout.
   // NOTE: B is modified in-place.
   // NOTE: NO COPY of A is done.
   const auto solve_by_layout_match = [&](
@@ -4000,10 +4002,6 @@ Tensor& linalg_solve_triangular_out(
     const bool is_A_col_major = A.stride(-2) == 1;
     const bool is_B_col_major = B.stride(-2) == 1;
 
-    // solve_with_matching_layout will materialize conj
-    // when (A.conj() != B.conj())), and that launches TWO conj_physical.
-    // We can avoid conj_physical entirely in certain cases, and
-    // reduce the number of launches to a single one in the others.
     if (is_A_col_major == is_B_col_major) {
       // Here A, B share the same memory layout, i.e.
       // both are col-major or row-major.
@@ -4011,6 +4009,7 @@ Tensor& linalg_solve_triangular_out(
     } else if (!is_A_col_major) {
       // Here A is row-major and B is col-major
       // Match layouts by transposing just A and picking an op
+      //
       // Optimization for avoiding conj materializations:
       // (A*, B) -> (A^T^H, B) -> ((A^T)^H, B), op(A) = A^H;
       // (A, B*) = (A*, B)* -> ((A^T)^H, B)*, op(A) = A^H;
