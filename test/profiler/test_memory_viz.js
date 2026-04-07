@@ -1010,7 +1010,7 @@ function test_full_snapshot_private_pools() {
 
   const envelopes = aot.filter(d => typeof d.elem === 'string' && d.elem.startsWith('pool:'));
   assertEqual(envelopes.length, 1, 'should have 1 pool envelope');
-  assertEqual(envelopes[0].elem, 'pool:0,1', 'envelope key matches pool (0,1)');
+  assertEqual(envelopes[0].elem, 'pool:0,1,s0', 'envelope key matches pool (0,1)');
 
   const stripes = aot.filter(d => typeof d.elem === 'number' && d.opacity === 0.5);
   assertEqual(stripes.length, 3, 'should have 3 pool stripes (elements 1, 3, 4)');
