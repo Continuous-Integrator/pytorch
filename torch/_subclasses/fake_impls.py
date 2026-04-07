@@ -966,7 +966,13 @@ def _compute_slice_index(size: IntLikeType, index: IntLikeType) -> IntLikeType |
     elif guard_or_false(index < 0):
         return torch.sym_max(index + size, 0)
 
-    return None
+    # General case (e.g. unbacked symints where we can't determine sign):
+    # Python slice semantics clamp the index to [0, size].
+    return torch.sym_ite(
+        index >= 0,
+        torch.sym_min(index, size),
+        torch.sym_max(index + size, 0),
+    )
 
 
 @register_op_impl(torch.ops.aten.slice.Tensor)
