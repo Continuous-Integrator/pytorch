@@ -1469,8 +1469,11 @@ class _CachingTorchDispatchMode(TorchDispatchMode):
 
         if policy in (CheckpointPolicy.MUST_SAVE, CheckpointPolicy.PREFER_SAVE) or is_compiling:
             self.storage[func][idx] = tree_map(lambda x: _VersionWrapper(_maybe_detach(x, any_ret_has_alias_info)), out)
+        else:
+            self.storage[func][idx] = _RECOMPUTE
         return out
 
+_RECOMPUTE = object()
 _CONSUMED = object()
 
 
@@ -1497,19 +1500,31 @@ class _CachedTorchDispatchMode(TorchDispatchMode):
         self.func_counter[func] += 1
 
         func_storage = self.storage.get(func)
-        if func_storage is not None:
-            entry = func_storage.get(idx)
-            if entry is _CONSUMED:
-                raise RuntimeError(
-                    "Trying to backward an extra time. You are only allowed to backward once "
-                    "on any region computed under selective activation checkpoint."
-                )
-            if entry is not None:
-                func_storage[idx] = _CONSUMED
-                return tree_map(lambda x: x.get_val(self.allow_cache_entry_mutation), entry)
-
-        kwargs = {} if kwargs is None else kwargs
-        return func(*args, **kwargs)
+        if func_storage is None:
+            raise RuntimeError(
+                f"{func} encountered during backward but not found in storage. "
+                "This can happen if the operations in the checkpointed region are "
+                "nondeterministic or depend on global state that changed between "
+                "forward and backward."
+            )
+        entry = func_storage.get(idx)
+        if entry is _CONSUMED:
+            raise RuntimeError(
+                "Trying to backward an extra time. You are only allowed to backward once "
+                "on any region computed under selective activation checkpoint."
+            )
+        if entry is _RECOMPUTE:
+            kwargs = {} if kwargs is None else kwargs
+            return func(*args, **kwargs)
+        if entry is not None:
+            func_storage[idx] = _CONSUMED
+            return tree_map(lambda x: x.get_val(self.allow_cache_entry_mutation), entry)
+        raise RuntimeError(
+            f"{func} invocation index {idx} encountered during backward but "
+            "not found in storage. This can happen if the operations in the "
+            "checkpointed region are nondeterministic or depend on global "
+            "state that changed between forward and backward."
+        )
 
 
 def create_selective_checkpoint_contexts(policy_fn_or_list, allow_cache_entry_mutation=False):
