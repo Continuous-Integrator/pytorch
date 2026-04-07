@@ -1158,16 +1158,29 @@ static PyObject* any_output_is_alias_to_input_or_output(
 }
 
 // Consolidated fast-path eligibility check for custom_op.
-// Combines torch_function_mode, dispatch-key TLS (autocast, functorch, etc.),
-// tensor subclass, device, and requires_grad checks in one C++ call.
+//
+// Computes a combined DispatchKeySet (TLS + per-tensor keys) and checks
+// that it only contains keys the fast path can handle. This mirrors
+// what the C++ dispatcher does (DispatchKeyExtractor / key_extractor),
+// but as a single go/no-go check.
+//
+// The Py_TYPE == THPVariableClass check remains because __torch_function__
+// subclasses have normal dispatch keys -- they're invisible to the keyset.
 //
 // Args: (args_tuple, check_multi_device: bool)
-//   args_tuple:         Python tuple of positional args to the custom op
-//   check_multi_device: if true, bail when tensor args span multiple devices
-//
-// Returns None when any guard fails (caller should fall back to the
-// C++ dispatcher). Otherwise returns (device_type: str, any_requires_grad:
-// bool).
+// Returns None when any guard fails (caller should fall back).
+// Otherwise returns (device_type: str, any_requires_grad: bool).
+
+// Keys that the fast path can handle: plain dense tensors with autograd.
+static constexpr c10::DispatchKeySet fast_path_allowed_ks =
+    c10::DispatchKeySet({
+        c10::DispatchKey::Dense,
+        c10::DispatchKey::BackendSelect,
+        c10::DispatchKey::ADInplaceOrView,
+    }) |
+    c10::autograd_dispatch_keyset |
+    c10::DispatchKeySet(c10::DispatchKeySet::RAW, c10::full_backend_mask);
+
 static PyObject* custom_op_fast_path_check(PyObject* _unused, PyObject* args) {
   HANDLE_TH_ERRORS
 
@@ -1183,19 +1196,8 @@ static PyObject* custom_op_fast_path_check(PyObject* _unused, PyObject* args) {
     Py_RETURN_NONE;
   }
 
-  // One-dispatch-key-computation: detect TLS deviation from normal eager.
-  // Normal eager: included <= {BackendSelect, ADInplaceOrView},
-  //               excluded >= {all autocast keys}.
-  // Use raw bitwise ops to avoid DispatchKeySet::operator- which treats
-  // backend bits specially.
   auto tls = c10::impl::tls_local_dispatch_key_set();
-  uint64_t inc = tls.included_.raw_repr();
-  uint64_t exc = tls.excluded_.raw_repr();
-  uint64_t default_inc = c10::default_included_set.raw_repr();
-  uint64_t default_exc = c10::default_excluded_set.raw_repr();
-  if ((inc & ~default_inc) != 0 || (default_exc & ~exc) != 0) {
-    Py_RETURN_NONE;
-  }
+  c10::DispatchKeySet ks = tls.included_;
 
   Py_ssize_t n = PyTuple_GET_SIZE(py_args);
   if (n == 0) {
@@ -1210,13 +1212,13 @@ static PyObject* custom_op_fast_path_check(PyObject* _unused, PyObject* args) {
     PyObject* obj = PyTuple_GET_ITEM(py_args, i);
     if (!THPVariable_Check(obj))
       continue;
+    // __torch_function__ subclasses have normal dispatch keys, so the
+    // keyset check below won't catch them. Exact type check is needed.
     if (Py_TYPE(obj) != (PyTypeObject*)THPVariableClass) {
       Py_RETURN_NONE;
     }
     const auto& t = THPVariable_Unpack(obj);
-    if (t.layout() != at::kStrided) {
-      Py_RETURN_NONE;
-    }
+    ks = ks | t.key_set();
     auto dev = t.device().type();
     if (!seen_tensor) {
       first_device = dev;
@@ -1230,6 +1232,13 @@ static PyObject* custom_op_fast_path_check(PyObject* _unused, PyObject* args) {
   }
 
   if (!seen_tensor) {
+    Py_RETURN_NONE;
+  }
+
+  // Mask out excluded keys (e.g. autocast keys are excluded by default)
+  // then check that nothing unexpected remains.
+  uint64_t active = (ks.raw_repr() & ~tls.excluded_.raw_repr());
+  if ((active & ~fast_path_allowed_ks.raw_repr()) != 0) {
     Py_RETURN_NONE;
   }
 

@@ -4899,6 +4899,37 @@ class TestCustomOpFastPath(TestCase):
         result = torch._C._custom_op_fast_path_check((sparse,), False)
         self.assertIsNone(result)
 
+    def test_custom_op_fast_path_check_rejects_torch_dispatch_subclass(self):
+        from torch.testing._internal.two_tensor import TwoTensor
+
+        tt = TwoTensor(torch.randn(3), torch.randn(3))
+        result = torch._C._custom_op_fast_path_check((tt,), False)
+        self.assertIsNone(result)
+
+    def test_fast_path_falls_back_for_torch_dispatch_subclass(self):
+        from torch.testing._internal.two_tensor import TwoTensor
+
+        @torch.library.custom_op("_torch_testing::fp_dispatch_sub", mutates_args=())
+        def fp_dispatch_sub(x: Tensor) -> Tensor:
+            return x.clone()
+
+        called = False
+
+        with torch.library._scoped_library("_torch_testing", "FRAGMENT") as m:
+
+            def twotensor_impl(cls, func, types, args, kwargs):
+                nonlocal called
+                called = True
+                return args[0].clone()
+
+            m._register_torch_dispatch_rule(
+                "fp_dispatch_sub", TwoTensor, twotensor_impl
+            )
+
+            tt = TwoTensor(torch.randn(3), torch.randn(3))
+            fp_dispatch_sub(tt)
+            self.assertTrue(called)
+
 
 class TestLibrarySourceLocation(TestCase):
     def test_library_source_location(self):
