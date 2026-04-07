@@ -1165,10 +1165,12 @@ static PyObject* any_output_is_alias_to_input_or_output(
 // dispatcher does (DispatchKeyExtractor / key_extractor), but as a
 // single go/no-go check.
 //
-// Args: (args_tuple, check_multi_device: bool)
+// Arg: a tuple of positional args to the custom op.
 // Returns None when any guard fails (caller should fall back).
 // Otherwise returns (device_type: str, any_requires_grad: bool).
-static PyObject* custom_op_fast_path_check(PyObject* _unused, PyObject* args) {
+static PyObject* custom_op_fast_path_check(
+    PyObject* _unused,
+    PyObject* py_args) {
   HANDLE_TH_ERRORS
 
   // The set of dispatch keys that a plain dense eager tensor can have:
@@ -1184,16 +1186,14 @@ static PyObject* custom_op_fast_path_check(PyObject* _unused, PyObject* args) {
       c10::autograd_dispatch_keyset |
       c10::DispatchKeySet(c10::DispatchKeySet::RAW, c10::full_backend_mask);
 
-  TORCH_INTERNAL_ASSERT(
-      PyTuple_GET_SIZE(args) == 1,
-      "_custom_op_fast_path_check expects exactly 1 arg");
-  PyObject* py_args = PyTuple_GET_ITEM(args, 0);
-  TORCH_CHECK(PyTuple_Check(py_args), "first arg must be a tuple");
+  TORCH_CHECK(PyTuple_Check(py_args), "arg must be a tuple");
 
   if (at::impl::torch_function_mode_enabled()) {
     Py_RETURN_NONE;
   }
 
+  // Accumulate dispatch keys from TLS and all tensor args, then check
+  // that the active keyset is a subset of fast_path_allowed_ks.
   auto tls = c10::impl::tls_local_dispatch_key_set();
   c10::DispatchKeySet ks = tls.included_;
 
@@ -1217,6 +1217,9 @@ static PyObject* custom_op_fast_path_check(PyObject* _unused, PyObject* args) {
     }
     const auto& t = THPVariable_Unpack(obj);
     ks = ks | t.key_set();
+    // Use the first tensor's device to select the backend kernel.
+    // Mixed-device inputs are passed through as-is, matching the
+    // slow path (dispatcher also picks one device and dispatches).
     auto dev = t.device().type();
     if (!seen_tensor) {
       first_device = dev;
@@ -1778,7 +1781,7 @@ static PyMethodDef methods[] = {
      nullptr},
     {"_custom_op_fast_path_check",
      custom_op_fast_path_check,
-     METH_VARARGS,
+     METH_O,
      nullptr},
     {"_set_dispatch_mode", set_dispatch_mode, METH_O, nullptr},
     {"_get_dispatch_mode", get_dispatch_mode, METH_O, nullptr},
