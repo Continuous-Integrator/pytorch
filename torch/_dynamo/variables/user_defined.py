@@ -3334,7 +3334,9 @@ class UserDefinedTupleVariable(UserDefinedObjectVariable):
 
     def is_python_equal(self, other: object) -> bool:
         assert self._tuple_vt is not None
-        other = other._tuple_vt if isinstance(other, UserDefinedTupleVariable) else other  # type: ignore[assignment]
+        other = (
+            other._tuple_vt if isinstance(other, UserDefinedTupleVariable) else other
+        )  # type: ignore[assignment]
         return self._tuple_vt.is_python_equal(other)
 
 
