@@ -201,6 +201,7 @@ if TYPE_CHECKING:
 
     from torch._subclasses.fake_tensor import FakeTensorMode
 
+    from .compile_options import DynamoCompileOptions
     from .package import CompilePackage
 
 log = logging.getLogger(__name__)
@@ -746,9 +747,7 @@ def generic_jump(
             # ConstDictVariable is optimized to be very lazy about insertion of
             # guards, so we have to manually insert a SEQUENCE_LENGTH guard
             # here.
-            if isinstance(value, BaseListVariable):
-                value._install_list_length_guard()
-            elif isinstance(value, ConstDictVariable) and value.source:
+            if isinstance(value, ConstDictVariable) and value.source:
                 install_guard(value.source.make_guard(GuardBuilder.SEQUENCE_LENGTH))
             if truth_fn(value.as_python_constant()):
                 if push:
@@ -1739,6 +1738,9 @@ class InstructionTranslatorBase(
                         exc=e,
                     )
 
+                if not isinstance(e, exc.RestartAnalysis):
+                    self.output.side_effects.log_side_effects_summary()
+
                 if hasattr(e, "msg") and "Data-dependent" in e.msg:
                     readable_graph = torch.fx.GraphModule(
                         self.output.nn_modules, self.output.graph
@@ -1752,6 +1754,8 @@ class InstructionTranslatorBase(
             except Exception as e:
                 if self.exec_recorder:
                     e.exec_record = self.exec_recorder.get_record()  # type: ignore[attr-defined]
+                if not isinstance(e, exc.RestartAnalysis):
+                    self.output.side_effects.log_side_effects_summary()
 
                 raise
             finally:
@@ -2255,7 +2259,7 @@ class InstructionTranslatorBase(
             # Pass the stored python_stack to preserve the original exception location
             python_stack = getattr(val, "python_stack", None)
             raise observed_exception_type(
-                f"raised exception {val}", real_stack=python_stack
+                f"raised exception {val.debug_repr()}", real_stack=python_stack
             )
 
         exc.raise_observed_exception(
@@ -2397,7 +2401,7 @@ class InstructionTranslatorBase(
             assert isinstance(raised_exception, dynamo_exc)  # sanity check
             unimplemented(
                 gb_type="Observed exception",
-                context=f"raised exception {curr_exc.python_type_name()}({curr_exc.args})",  # type: ignore[union-attr]
+                context=f"raised exception {curr_exc.debug_repr()}",
                 explanation=observed_exn_gb_explanation,
                 hints=[
                     *graph_break_hints.USER_ERROR,
@@ -4322,7 +4326,8 @@ class InstructionTranslatorBase(
         self.push(fn)
 
     def CONVERT_VALUE(self, inst: Instruction) -> None:
-        self.push(self._convert_value(self.pop(), inst.argval))
+        assert inst.arg is not None
+        self.push(self._convert_value(self.pop(), inst.arg))
 
     def FORMAT_SIMPLE(self, inst: Instruction) -> None:
         self._format_value(VariableTracker.build(self, ""), 0)
@@ -4767,14 +4772,11 @@ class InstructionTranslator(InstructionTranslatorBase):
         torch_function_mode_stack: Any,
         code_options: dict[str, Any],
         compiler_fn: Any,
-        one_graph: bool,
-        export: bool,
-        export_constraints: Any,
+        compile_options: DynamoCompileOptions,
         frame_state: Any,
         speculation_log: SpeculationLog,
         exn_vt_stack: ExceptionStack,
         distributed_state: DistributedState | None,
-        package: CompilePackage | None,
     ) -> None:
         _step_logger()(
             logging.INFO,
@@ -4785,15 +4787,12 @@ class InstructionTranslator(InstructionTranslatorBase):
                 code_options,
                 compiler_fn,
                 self,
-                export,
-                export_constraints,
+                compile_options,
                 frame_state,
                 local_scope=f_locals,
                 global_scope=f_globals,
                 f_code=f_code,
                 torch_function_mode_stack=torch_function_mode_stack,
-                one_graph=one_graph,
-                package=package,
             ),
             instructions=instructions,
             f_locals=f_locals,
@@ -4807,12 +4806,12 @@ class InstructionTranslator(InstructionTranslatorBase):
             symbolic_torch_function_state=None,  # type: ignore[arg-type] # set below
             symbolic_stream_state=None,  # type: ignore[arg-type] # set below
             f_code=f_code,
-            export=export,
+            export=compile_options.export,
             inline_depth=0,
             speculation_log=speculation_log,
             exn_vt_stack=exn_vt_stack,
             distributed_state=distributed_state,
-            package=package,
+            package=compile_options.package,
         )
 
         self._throw_if_in_functorch()
@@ -4820,8 +4819,8 @@ class InstructionTranslator(InstructionTranslatorBase):
         # as soon as we create the tracing context we should keep it active, so any calls
         # into dynamo apis can rely on finding it
         with tracing(self.output.tracing_context), self.set_current_tx():
-            self.one_graph: bool = one_graph
-            self.export = export
+            self.one_graph: bool = compile_options.one_graph
+            self.export = compile_options.export
             if self.export:
                 assert self.one_graph, (
                     "Export without one graph - something has gone wrong."
@@ -4914,7 +4913,7 @@ class InstructionTranslator(InstructionTranslatorBase):
 
             self.symbolic_stream_state = SymbolicStreamState()
 
-            if export:
+            if compile_options.export:
                 # export gets confused if we never realize unused inputs
                 # in export mode just eagerly realize everything
                 self.symbolic_locals = variables.LazyVariableTracker.realize_all(

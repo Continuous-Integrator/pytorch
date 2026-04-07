@@ -662,6 +662,22 @@ class TestLinalg(TestCase):
     @skipCUDAIfNoCusolver
     @skipCPUIfNoLapack
     @dtypes(*floating_and_complex_types())
+    def test_cholesky_upper_reconstructs(self, device, dtype):
+        batch_dims = (1,)
+        matrix_size = 65
+        A = torch.randn(
+            *(batch_dims + (matrix_size, matrix_size)), dtype=dtype, device=device
+        )
+        pd_matrix = A @ A.mH + torch.eye(matrix_size, dtype=dtype, device=device)
+        pd_matrix = pd_matrix.squeeze(0)
+        U = torch.linalg.cholesky(pd_matrix, upper=True)
+        self.assertEqual(U, torch.triu(U))
+        reconstructed = U.mH @ U
+        self.assertEqual(pd_matrix, reconstructed, atol=1e-4, rtol=1e-5)
+
+    @skipCUDAIfNoCusolver
+    @skipCPUIfNoLapack
+    @dtypes(*floating_and_complex_types())
     def test_cholesky_errors_and_warnings(self, device, dtype):
         from torch.testing._internal.common_utils import random_hermitian_pd_matrix
 
@@ -4722,7 +4738,7 @@ class TestLinalg(TestCase):
         make_arg = partial(make_tensor, dtype=dtype, device=device)
         make_fullrank = partial(make_fullrank_matrices_with_distinct_singular_values, dtype=dtype, device=device)
         b, n, k = shape
-        for left, uni, expand_a, tr_a, conj_a, expand_b, tr_b, conj_b in product((True, False), repeat=8):
+        for left, uni, expand_a, tr_a, conj_a, neg_a, expand_b, tr_b, conj_b, neg_b in product((True, False), repeat=10):
             # expand means that we generate a batch of matrices with a stride of zero in the batch dimension
             if (conj_a or conj_b) and not dtype.is_complex:
                 continue
@@ -4767,6 +4783,12 @@ class TestLinalg(TestCase):
                 A = A.conj()
             if conj_b:
                 B = B.conj()
+            if neg_a:
+                if uni:
+                    A.diagonal(0, -2, -1).fill_(-1)
+                A = A._neg_view()
+            if neg_b:
+                B = B._neg_view()
             if expand_a:
                 A = A.expand(b, *size_a)
             if expand_b:
@@ -4856,6 +4878,16 @@ class TestLinalg(TestCase):
 
     def triangular_solve_test_helper(self, A_dims, b_dims, upper, unitriangular,
                                      device, dtype):
+
+        def to_nondense_col_major(m):
+            m_col_major = m.mT.contiguous().mT
+            res = m_col_major[..., 1:, 1:]
+            # The result has contiguous columns,
+            # res.stride() == m_col_major.stride(), but
+            # res.shape != m_col_major.shape, unless sliced along empty dims
+            self.assertEqual(res.stride(), m_col_major.stride())
+            return res
+
         triangle_function = torch.triu if upper else torch.tril
         b = torch.randn(*b_dims, dtype=dtype, device=device)
         A = torch.randn(*A_dims, dtype=dtype, device=device)
@@ -4864,7 +4896,12 @@ class TestLinalg(TestCase):
         A_triangular = triangle_function(A)
         if unitriangular:
             A_triangular.diagonal(dim1=-2, dim2=-1).fill_(1.)
-        return b, A_triangular
+
+        # Row-major case
+        yield b, A_triangular
+
+        # Col-major-like case
+        yield to_nondense_col_major(b), to_nondense_col_major(A_triangular)
 
     @unittest.skipIf(TEST_WITH_ROCM and not torch.cuda.has_magma, "MAGMA required for ROCm")
     @skipCPUIfNoLapack
@@ -4877,13 +4914,15 @@ class TestLinalg(TestCase):
         ns = [0, 5]
         for k, n, (upper, unitriangular, transpose) in itertools.product(ks, ns,
                                                                          itertools.product([True, False], repeat=3)):
-            b, A = self.triangular_solve_test_helper((n, n), (n, k), upper,
-                                                     unitriangular, device, dtype)
-            x = torch.triangular_solve(b, A, upper=upper, unitriangular=unitriangular, transpose=transpose)[0]
-            if transpose:
-                self.assertEqual(b, np.matmul(A.t().cpu(), x.cpu()))
-            else:
-                self.assertEqual(b, np.matmul(A.cpu(), x.cpu()))
+            for b, A in self.triangular_solve_test_helper(
+                (n, n), (n, k), upper,
+                unitriangular, device, dtype
+            ):
+                x = torch.triangular_solve(b, A, upper=upper, unitriangular=unitriangular, transpose=transpose)[0]
+                if transpose:
+                    self.assertEqual(b, np.matmul(A.t().cpu(), x.cpu()))
+                else:
+                    self.assertEqual(b, np.matmul(A.cpu(), x.cpu()))
 
     @skipCPUIfNoLapack
     @unittest.skipIf(TEST_WITH_ROCM and not torch.cuda.has_magma, "MAGMA required for ROCm")
@@ -4892,31 +4931,35 @@ class TestLinalg(TestCase):
                         torch.float64: 1e-8, torch.complex128: 1e-8})
     def test_triangular_solve_batched(self, device, dtype):
         def triangular_solve_batch_helper(A_dims, b_dims, upper, unitriangular, transpose):
-            b, A = self.triangular_solve_test_helper(A_dims, b_dims, upper,
-                                                     unitriangular, device, dtype)
-            x_exp_list = []
-            for i in range(b_dims[0]):
-                x_exp_list.append(torch.triangular_solve(b[i], A[i], upper=upper,
-                                                         unitriangular=unitriangular,
-                                                         transpose=transpose)[0])
-            x_exp = torch.stack(x_exp_list)  # Stacked output
-            x_act = torch.triangular_solve(b, A, upper=upper,
-                                           unitriangular=unitriangular,
-                                           transpose=transpose)[0]  # Actual output
-            self.assertEqual(x_act, x_exp)  # Equality check
-            if transpose:
-                A = A.mT
+            for b, A in self.triangular_solve_test_helper(
+                A_dims, b_dims, upper,
+                unitriangular, device, dtype
+            ):
+                x_exp_list = []
+                for i in range(b_dims[0]):
+                    x_exp_list.append(torch.triangular_solve(b[i], A[i], upper=upper,
+                                                             unitriangular=unitriangular,
+                                                             transpose=transpose)[0])
+                x_exp = torch.stack(x_exp_list)  # Stacked output
+                x_act = torch.triangular_solve(b, A, upper=upper,
+                                               unitriangular=unitriangular,
+                                               transpose=transpose)[0]  # Actual output
+                self.assertEqual(x_act, x_exp)  # Equality check
+                if transpose:
+                    A = A.mT
 
-            Ax = np.matmul(A.cpu(), x_act.cpu())
-            self.assertEqual(b, Ax)
+                Ax = np.matmul(A.cpu(), x_act.cpu())
+                self.assertEqual(b, Ax)
 
         def triangular_solve_zero_batch_helper(A_dims, b_dims, upper, unitriangular, transpose):
-            b, A = self.triangular_solve_test_helper(A_dims, b_dims, upper,
-                                                     unitriangular, device, dtype)
-            x = torch.triangular_solve(b, A, upper=upper,
-                                       unitriangular=unitriangular,
-                                       transpose=transpose)[0]
-            self.assertTrue(x.shape == b.shape)
+            for b, A in self.triangular_solve_test_helper(
+                A_dims, b_dims, upper,
+                unitriangular, device, dtype
+            ):
+                x = torch.triangular_solve(b, A, upper=upper,
+                                           unitriangular=unitriangular,
+                                           transpose=transpose)[0]
+                self.assertTrue(x.shape == b.shape)
 
         for upper, unitriangular, transpose in itertools.product([True, False], repeat=3):
             batchsize = 3
@@ -4943,27 +4986,31 @@ class TestLinalg(TestCase):
     def test_triangular_solve_batched_many_batches(self, device, dtype):
         for upper, transpose, unitriangular in itertools.product([True, False], repeat=3):
             # test batched A case
-            b, A = self.triangular_solve_test_helper((256, 256, 5, 5), (5, 1),
-                                                     upper, unitriangular, device, dtype)
-            x, _ = torch.triangular_solve(b, A,
-                                          upper=upper, transpose=transpose, unitriangular=unitriangular)
-            if transpose:
-                A = A.mT
+            for b, A in self.triangular_solve_test_helper(
+                (256, 256, 5, 5), (5, 1),
+                upper, unitriangular, device, dtype
+            ):
+                x, _ = torch.triangular_solve(b, A,
+                                              upper=upper, transpose=transpose, unitriangular=unitriangular)
+                if transpose:
+                    A = A.mT
 
-            Ax = torch.matmul(A, x)
+                Ax = torch.matmul(A, x)
 
-            rtol = 1e-2 if dtype in [torch.float32, torch.complex64] else self.precision
-            self.assertEqual(Ax, b.expand_as(Ax), atol=self.precision, rtol=rtol)
+                rtol = 1e-2 if dtype in [torch.float32, torch.complex64] else self.precision
+                self.assertEqual(Ax, b.expand_as(Ax), atol=self.precision, rtol=rtol)
 
             # test batched b case
-            b, A = self.triangular_solve_test_helper((3, 3), (512, 512, 3, 1),
-                                                     upper, unitriangular, device, dtype)
-            x, _ = torch.triangular_solve(b, A, upper=upper, transpose=transpose,
-                                          unitriangular=unitriangular)
-            if transpose:
-                A = A.mT
+            for b, A in self.triangular_solve_test_helper(
+                (3, 3), (512, 512, 3, 1),
+                upper, unitriangular, device, dtype
+            ):
+                x, _ = torch.triangular_solve(b, A, upper=upper, transpose=transpose,
+                                              unitriangular=unitriangular)
+                if transpose:
+                    A = A.mT
 
-            self.assertEqual(torch.matmul(A, x), b)
+                self.assertEqual(torch.matmul(A, x), b)
 
     @unittest.skipIf(TEST_WITH_ROCM and not torch.cuda.has_magma, "MAGMA required for ROCm")
     @skipCPUIfNoLapack
@@ -4987,13 +5034,15 @@ class TestLinalg(TestCase):
             return flat_X.reshape(expand_B.shape)
 
         def run_test(A_dims, b_dims, device, upper, transpose, unitriangular):
-            b, A = self.triangular_solve_test_helper(A_dims, b_dims, upper,
-                                                     unitriangular, device, dtype)
-            x_exp = torch.as_tensor(scipy_tri_solve_batched(A.cpu().numpy(), b.cpu().numpy(),
-                                                            upper, transpose, unitriangular))
-            x = torch.triangular_solve(b, A, upper=upper, transpose=transpose, unitriangular=unitriangular)[0]
+            for b, A in self.triangular_solve_test_helper(
+                A_dims, b_dims, upper,
+                unitriangular, device, dtype
+            ):
+                x_exp = torch.as_tensor(scipy_tri_solve_batched(A.cpu().numpy(), b.cpu().numpy(),
+                                                                upper, transpose, unitriangular))
+                x = torch.triangular_solve(b, A, upper=upper, transpose=transpose, unitriangular=unitriangular)[0]
 
-            self.assertEqual(x, x_exp.to(device))
+                self.assertEqual(x, x_exp.to(device))
 
         for upper, transpose, unitriangular in itertools.product([True, False], repeat=3):
             # test against scipy.linalg.solve_triangular
