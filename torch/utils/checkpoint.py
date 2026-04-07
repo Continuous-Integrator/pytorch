@@ -1476,6 +1476,12 @@ class _CachingTorchDispatchMode(TorchDispatchMode):
 _RECOMPUTE = object()
 _CONSUMED = object()
 
+_SAC_MISMATCH_MSG = (
+    "This can happen if the operations in the checkpointed region are "
+    "nondeterministic or depend on global state that changed between "
+    "forward and backward."
+)
+
 
 class _CachedTorchDispatchMode(TorchDispatchMode):
     @classmethod
@@ -1502,10 +1508,8 @@ class _CachedTorchDispatchMode(TorchDispatchMode):
         func_storage = self.storage.get(func)
         if func_storage is None:
             raise RuntimeError(
-                f"{func} encountered during backward but not found in storage. "
-                "This can happen if the operations in the checkpointed region are "
-                "nondeterministic or depend on global state that changed between "
-                "forward and backward."
+                f"{func} encountered during backward but not found in "
+                f"storage. {_SAC_MISMATCH_MSG}"
             )
         entry = func_storage.get(idx)
         if entry is _CONSUMED:
@@ -1513,18 +1517,18 @@ class _CachedTorchDispatchMode(TorchDispatchMode):
                 "Trying to backward an extra time. You are only allowed to backward once "
                 "on any region computed under selective activation checkpoint."
             )
-        if entry is _RECOMPUTE:
+        elif entry is _RECOMPUTE:
             kwargs = {} if kwargs is None else kwargs
             return func(*args, **kwargs)
-        if entry is not None:
+        elif entry is not None:
             func_storage[idx] = _CONSUMED
             return tree_map(lambda x: x.get_val(self.allow_cache_entry_mutation), entry)
-        raise RuntimeError(
-            f"{func} invocation index {idx} encountered during backward but "
-            "not found in storage. This can happen if the operations in the "
-            "checkpointed region are nondeterministic or depend on global "
-            "state that changed between forward and backward."
-        )
+        else:
+            assert entry is None
+            raise RuntimeError(
+                f"{func} invocation index {idx} encountered during backward "
+                f"but not found in storage. {_SAC_MISMATCH_MSG}"
+            )
 
 
 def create_selective_checkpoint_contexts(policy_fn_or_list, allow_cache_entry_mutation=False):
