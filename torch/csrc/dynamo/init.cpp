@@ -94,7 +94,7 @@ THPObjectPtr _unicode_dispatch(PyObject* str) {
     case PyUnicode_4BYTE_KIND:
       return F::apply(str, PyUnicode_4BYTE_DATA(str), length);
     default:
-      // This should be impossible - throw to make the compiler happy.
+      // This should be impossible - error to make the compiler happy.
       TORCH_CHECK(false, "unreachable");
   }
 }
@@ -181,34 +181,35 @@ void _register_functions(PyObject* mod) {
 
 void initDynamoBindings(PyObject* torch) {
   PyObject* dynamo = PyModule_Create(&_module);
-  if (dynamo == nullptr || PyModule_AddObject(torch, "_dynamo", dynamo) != 0) {
-    throw python_error(); // @allow-raw-throw
-  }
+  TORCH_INTERNAL_ASSERT(
+      dynamo != nullptr && PyModule_AddObject(torch, "_dynamo", dynamo) == 0,
+      "Failed to initialize _dynamo module");
 #ifdef Py_GIL_DISABLED
   PyUnstable_Module_SetGIL(dynamo, Py_MOD_GIL_NOT_USED);
 #endif
 
   PyObject* eval_frame = torch_c_dynamo_eval_frame_init();
-  if (eval_frame == nullptr ||
-      PyModule_AddObject(dynamo, "eval_frame", eval_frame) != 0) {
-    throw python_error(); // @allow-raw-throw
-  }
+  TORCH_INTERNAL_ASSERT(
+      eval_frame != nullptr &&
+          PyModule_AddObject(dynamo, "eval_frame", eval_frame) == 0,
+      "Failed to initialize eval_frame module");
 
   PyObject* utils = torch_c_dynamo_utils_init();
-  if (utils == nullptr || PyModule_AddObject(dynamo, "utils", utils) != 0) {
-    throw python_error(); // @allow-raw-throw
-  }
+  TORCH_INTERNAL_ASSERT(
+      utils != nullptr && PyModule_AddObject(dynamo, "utils", utils) == 0,
+      "Failed to initialize utils module");
 
   PyObject* guards = torch_c_dynamo_guards_init();
-  if (guards == nullptr || PyModule_AddObject(dynamo, "guards", guards) != 0) {
-    throw python_error(); // @allow-raw-throw
-  }
+  TORCH_INTERNAL_ASSERT(
+      guards != nullptr && PyModule_AddObject(dynamo, "guards", guards) == 0,
+      "Failed to initialize guards module");
 
   PyObject* compiled_autograd = torch_c_dynamo_compiled_autograd_init();
-  if (compiled_autograd == nullptr ||
-      PyModule_AddObject(dynamo, "compiled_autograd", compiled_autograd) != 0) {
-    throw python_error(); // @allow-raw-throw
-  }
+  TORCH_INTERNAL_ASSERT(
+      compiled_autograd != nullptr &&
+          PyModule_AddObject(dynamo, "compiled_autograd", compiled_autograd) ==
+              0,
+      "Failed to initialize compiled_autograd module");
 
   auto m = py::handle(eval_frame).cast<py::module>();
 
