@@ -7,8 +7,13 @@ Per-type hook implementations (bool_impl, richcompare_impl, etc.)
 live in their respective VT files.
 """
 
+from functools import lru_cache
 from typing import TYPE_CHECKING
 
+from torch._C._dynamo import get_type_slots, has_slot, PyMappingSlots, PySequenceSlots
+
+from .. import graph_break_hints
+from ..exc import handle_observed_exception, ObservedTypeError, raise_type_error, unimplemented
 from ..utils import istype
 from .base import NO_SUCH_SUBOBJ, VariableTracker
 from .constant import CONSTANT_VARIABLE_FALSE, CONSTANT_VARIABLE_TRUE
@@ -72,7 +77,71 @@ def vt_identity_compare(
     return None
 
 
-def generic_bool(tx: "InstructionTranslator", obj: VariableTracker) -> VariableTracker:
+@lru_cache(maxsize=256)
+def _get_cached_slots(obj_type: type) -> tuple[int, int, int, int]:
+    """Get all type slots for a type (cached)."""
+    return get_type_slots(obj_type)
+
+
+def type_implements_sq_length(obj_type: type) -> bool:
+    """Check whether obj_type implements __len__ as sequence protocol"""
+    seq_slots, _, _, _ = _get_cached_slots(obj_type)
+    return has_slot(seq_slots, PySequenceSlots.SQ_LENGTH)
+
+
+def type_implements_mp_length(obj_type: type) -> bool:
+    """Check whether obj_type implements __len__ as mapping protocol"""
+    _, map_slots, _, _ = _get_cached_slots(obj_type)
+    return has_slot(map_slots, PyMappingSlots.MP_LENGTH)
+
+
+def maybe_get_python_type(obj: VariableTracker) -> type:
+    try:
+        return obj.python_type()
+    except NotImplementedError:
+        unimplemented(
+            gb_type="Unsupported python_type() call",
+            context=f"{obj} does not implement python_type()",
+            explanation="This VariableTracker does not implement python_type(), "
+            "which is required for object protocol operations.",
+            hints=[
+                *graph_break_hints.DYNAMO_BUG,
+            ],
+        )
+
+
+def vt_mapping_size(
+    tx: "InstructionTranslator", obj: "VariableTracker"
+) -> "VariableTracker":
+    # ref: https://github.com/python/cpython/blob/v3.13.3/Objects/abstract.c#L2308-L2330
+    T = maybe_get_python_type(obj)
+    if type_implements_mp_length(T):
+        return obj.mp_length(tx)
+
+    if type_implements_sq_length(T):
+        raise_type_error(tx, f"{obj.python_type_name()} is not a mapping")
+
+    raise_type_error(tx, f"object of type {obj.python_type_name()} has no len()")
+
+
+def generic_len(
+    tx: "InstructionTranslator", obj: "VariableTracker"
+) -> "VariableTracker":
+    # ref: https://github.com/python/cpython/blob/v3.13.3/Objects/abstract.c#L53-L69
+    """
+    Implements PyObject_Size/PyObject_Length semantics for VariableTracker objects.
+    Dispatches to sq_length (sequences) or mp_length (mappings) depending on the VT type.
+    """
+
+    T = maybe_get_python_type(obj)
+    if type_implements_sq_length(T):
+        return obj.sq_length(tx)
+    return vt_mapping_size(tx, obj)
+
+
+def generic_bool(
+    tx: "InstructionTranslator", obj: VariableTracker
+) -> VariableTracker:
     """Mirrors PyObject_IsTrue.
 
     https://github.com/python/cpython/blob/c09ccd9c429/Objects/object.c#L2135-L2158
@@ -88,27 +157,10 @@ def generic_bool(tx: "InstructionTranslator", obj: VariableTracker) -> VariableT
     if result is not None:
         return result
 
-    result = _bool_from_length(tx, obj)
-    if result is not None:
-        return result
+    try:
+        length = generic_len(tx, obj)
+        return ConstantVariable.create(length.as_python_constant() > 0)
+    except ObservedTypeError:
+        handle_observed_exception(tx)
 
     return CONSTANT_VARIABLE_TRUE
-
-
-def _bool_from_length(
-    tx: "InstructionTranslator", obj: VariableTracker
-) -> VariableTracker | None:
-    """mp_length / sq_length fallback in PyObject_IsTrue."""
-    from .constant import ConstantVariable
-    from .dicts import ConstDictVariable
-    from .lists import BaseListVariable
-
-    if isinstance(obj, BaseListVariable):
-        return ConstantVariable.create(len(obj.items) > 0)
-    if isinstance(obj, ConstDictVariable):
-        return ConstantVariable.create(len(obj.items) > 0)
-
-    if obj.has_unpack_var_sequence(tx):
-        return ConstantVariable.create(len(obj.unpack_var_sequence(tx)) > 0)
-
-    return None
