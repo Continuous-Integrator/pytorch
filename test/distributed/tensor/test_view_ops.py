@@ -733,26 +733,18 @@ class TestViewOps(DTensorContinuousTestBase):
     def _test_dtensor_flatten_split_case(self, in_shape, out_shape, placements, mesh):
         """Test a single Split(Flatten) view case.
 
-        Representable cases must produce zero communication and correct output.
-        Unrepresentable cases must raise RuntimeError with a specific message.
+        All Split(Flatten) cases must raise RuntimeError until proper support
+        is implemented.
         """
         nelem = math.prod(in_shape)
         global_tensor = torch.arange(nelem).view(in_shape)
         in_dt = distribute_tensor(global_tensor, mesh, placements, src_data_rank=None)
-        comm_mode = CommDebugMode()
-        try:
-            with comm_mode:
-                out_dt = in_dt.view(list(out_shape))
-        except RuntimeError as e:
-            self.assertRegex(
-                str(e),
-                r"is not supported yet"
-                r"|is not evenly divisible by mesh dimension",
-            )
-            return
-        self.assertEqual(comm_mode.get_total_counts(), 0)
-        expected = global_tensor.view(list(out_shape))
-        self.assertEqual(out_dt.full_tensor(), expected)
+        with self.assertRaisesRegex(
+            RuntimeError,
+            r"is not supported yet"
+            r"|is not evenly divisible by mesh dimension",
+        ):
+            in_dt.view(list(out_shape))
 
     def test_dtensor_flatten_split_multi_mesh(self):
         """Test views producing Split(Flatten) rules.
