@@ -2,6 +2,7 @@
 #define TORCH_ASSERT_ONLY_METHOD_OPERATORS
 #include <fmt/format.h>
 #include <iostream>
+#include <limits>
 #include <optional>
 
 #include <ATen/core/Tensor.h>
@@ -14,12 +15,9 @@
 #include <ATen/NativeFunctions.h>
 #else
 #include <ATen/ops/_scaled_dot_product_attention_math_for_mps_native.h>
-#include <ATen/ops/arange.h>
 #include <ATen/ops/empty_native.h>
 #include <ATen/ops/full.h>
-#include <ATen/ops/le.h>
-#include <ATen/ops/where.h>
-#include <ATen/ops/zeros.h>
+#include <ATen/ops/triu.h>
 #endif
 
 namespace at {
@@ -172,11 +170,14 @@ static std::tuple<Tensor, Tensor> sdpa_general_mps(const Tensor& query,
 
   auto scale_factor = sdp::calculate_scale(query, scale).expect_float();
 
-  // Apple's MPSGraph corrupts SDPA outputs when the score matrix exceeds 2^32
-  // total elements (pytorch/pytorch#179352). Chunk along the Q axis to keep
-  // each impl call below the threshold. SDPA's softmax is row-wise over Q so
-  // chunking is mathematically exact.
-  constexpr uint64_t kScoreElemThreshold = 1ULL << 32;
+  // Apple's MPSGraph corrupts SDPA outputs (and on some codepaths fails an
+  // internal assertion in MPSNDArrayMatrixMultiplication) when a stride
+  // inside the score matrix exceeds the kernel's 32-bit limit. Empirically
+  // the cliff is at B*H*Nq*Nkv ~= 2^32 elements; chunk along Q so each impl
+  // call stays strictly below UINT32_MAX. SDPA's softmax is row-wise over Q,
+  // so chunking is mathematically exact. See pytorch/pytorch#179352 and
+  // Apple Feedback Assistant FB22437937.
+  constexpr uint64_t kScoreElemThreshold = std::numeric_limits<uint32_t>::max();
   uint64_t total_score_elems = static_cast<uint64_t>(batchSize) * static_cast<uint64_t>(num_head) *
       static_cast<uint64_t>(qSize) * static_cast<uint64_t>(kSize);
 
@@ -205,14 +206,12 @@ static std::tuple<Tensor, Tensor> sdpa_general_mps(const Tensor& query,
 
       std::optional<Tensor> chunk_mask;
       if (is_causal) {
-        // Synthesize a per-chunk additive causal mask: 0 if j <= (qs + i)
-        // else -1e20 (matching the value used by the in-graph causal path).
-        // Pass it as attn_mask with is_causal=false so the impl's causal
+        // Synthesize a per-chunk additive causal mask: -1e20 where j > qs+i,
+        // else 0. Built in float32 to match the in-graph causal path, which
+        // upcasts the score matrix to float32 before applying the mask. Passed
+        // as attn_mask with is_causal=false so the impl's in-graph causal
         // branch (which assumes the chunk starts at row 0) is bypassed.
-        auto i_idx = at::arange(qs, qs + cur, query.options().dtype(kLong)).unsqueeze(1);
-        auto j_idx = at::arange(0, kSize, query.options().dtype(kLong)).unsqueeze(0);
-        auto valid = at::le(j_idx, i_idx);
-        auto m2d = at::where(valid, at::zeros({}, query.options()), at::full({}, -1e20, query.options()));
+        auto m2d = at::triu(at::full({cur, kSize}, -1e20, query.options().dtype(kFloat)), qs + 1);
         chunk_mask = m2d.unsqueeze(0).unsqueeze(0).expand({batchSize, num_head, cur, kSize});
       } else if (attn_mask) {
         chunk_mask = attn_mask->narrow(2, qs, cur);
