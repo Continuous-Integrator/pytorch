@@ -2856,7 +2856,13 @@ class ActivationCheckpointingNestedCompileTests(torch._dynamo.test_case.TestCase
 
         ctx = TracingContext(fake_mode)
 
-        with fake_mode, tracing(ctx), preserve_node_meta(), skip_nested_compile():
+        with (
+            fake_mode,
+            tracing(ctx),
+            preserve_node_meta(),
+            skip_nested_compile(),
+            torch.compiler._non_strict_tracing_context(),
+        ):
             gm = make_fx(fn)(fx_x)
 
         self.assertExpectedInline(
