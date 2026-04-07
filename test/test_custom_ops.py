@@ -4857,6 +4857,15 @@ class TestCustomOpFastPath(TestCase):
         result = fp_sparse(x)
         self.assertEqual(result, x.to_dense())
 
+    def test_fast_path_falls_back_for_nested_tensor(self):
+        @torch.library.custom_op("_torch_testing::fp_nested", mutates_args=())
+        def fp_nested(x: Tensor) -> Tensor:
+            return x.clone()
+
+        nt = torch.nested.nested_tensor([torch.randn(2), torch.randn(3)])
+        with self.assertRaisesRegex(NotImplementedError, "NestedTensorCPU"):
+            fp_nested(nt)
+
     def test_fast_path_falls_back_for_meta(self):
         @torch.library.custom_op("_torch_testing::fp_meta", mutates_args=())
         def fp_meta(x: Tensor) -> Tensor:
