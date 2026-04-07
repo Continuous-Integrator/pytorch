@@ -2899,11 +2899,6 @@ class UserDefinedDictVariable(UserDefinedObjectVariable):
             self._dict_vt = dict_vt
         self._dict_methods = dict_methods
 
-    def sq_length(self, tx: "InstructionTranslator") -> VariableTracker:
-        # Dict implements __len__ via mp_length (mapping protocol), not
-        # sq_length (sequence protocol). Redirect so generic_len works.
-        return self.mp_length(tx)
-
     def mp_subscript_impl(
         self,
         tx: "InstructionTranslator",
@@ -3154,17 +3149,15 @@ class UserDefinedTupleVariable(UserDefinedObjectVariable):
 
                 tx = InstructionTranslator.current_tx()
             elems = init_args[0].force_unpack_var_sequence(tx)
-            self._base_vt = TupleVariable(elems, mutation_type=ValueMutationNew())
+            self._tuple_vt = TupleVariable(elems, mutation_type=ValueMutationNew())
         else:
-            self._base_vt = tuple_vt
+            self._tuple_vt = tuple_vt
         self.tuple_cls = type(value)
-        self._base_methods = tuple_methods
-        assert self._base_vt is not None
 
     @property
     def items(self) -> list[VariableTracker]:
-        assert self._base_vt is not None
-        return self._base_vt.items  # type: ignore[return-value]
+        assert self._tuple_vt is not None
+        return self._tuple_vt.items  # type: ignore[return-value]
 
     def mp_subscript_impl(
         self,
@@ -3212,7 +3205,7 @@ class UserDefinedTupleVariable(UserDefinedObjectVariable):
                 codegen.create_load_const_unchecked(create_fn)
             )
         )
-        codegen(self._base_vt)
+        codegen(self._tuple_vt)
         codegen.extend_output(create_call_function(1, False))
 
     def get_construct_fn(self) -> Callable[..., Any]:
@@ -3318,9 +3311,9 @@ class UserDefinedTupleVariable(UserDefinedObjectVariable):
         return self._make_tree_map_result(new_items)
 
     def is_python_equal(self, other: object) -> bool:
-        assert self._base_vt is not None
-        other = other._base_vt if isinstance(other, UserDefinedTupleVariable) else other
-        return self._base_vt.is_python_equal(other)
+        assert self._tuple_vt is not None
+        other = other._tuple_vt if isinstance(other, UserDefinedTupleVariable) else other  # type: ignore[assignment]
+        return self._tuple_vt.is_python_equal(other)
 
 
 class NamedTupleVariable(UserDefinedTupleVariable):
