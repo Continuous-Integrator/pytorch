@@ -33,7 +33,7 @@ if hasattr(sys, "get_int_max_str_digits"):
         return sys.get_int_max_str_digits()
 
     @substitute_in_graph(sys.set_int_max_str_digits, can_constant_fold_through=True)
-    def set_int_max_str_digits(maxdigits: int, /) -> None:
+    def set_int_max_str_digits(maxdigits: int) -> None:
         sys.set_int_max_str_digits(maxdigits)
 
     __all__ += ["get_int_max_str_digits", "set_int_max_str_digits"]
