@@ -1160,29 +1160,29 @@ static PyObject* any_output_is_alias_to_input_or_output(
 // Consolidated fast-path eligibility check for custom_op.
 //
 // Computes a combined DispatchKeySet (TLS + per-tensor keys) and checks
-// that it only contains keys the fast path can handle. This mirrors
-// what the C++ dispatcher does (DispatchKeyExtractor / key_extractor),
-// but as a single go/no-go check.
-//
-// The Py_TYPE == THPVariableClass check remains because __torch_function__
-// subclasses have normal dispatch keys -- they're invisible to the keyset.
+// that it only contains keys the fast path can handle (dense backend
+// and autograd keys, with or without grad). This mirrors what the C++
+// dispatcher does (DispatchKeyExtractor / key_extractor), but as a
+// single go/no-go check.
 //
 // Args: (args_tuple, check_multi_device: bool)
 // Returns None when any guard fails (caller should fall back).
 // Otherwise returns (device_type: str, any_requires_grad: bool).
-
-// Keys that the fast path can handle: plain dense tensors with autograd.
-static constexpr c10::DispatchKeySet fast_path_allowed_ks =
-    c10::DispatchKeySet({
-        c10::DispatchKey::Dense,
-        c10::DispatchKey::BackendSelect,
-        c10::DispatchKey::ADInplaceOrView,
-    }) |
-    c10::autograd_dispatch_keyset |
-    c10::DispatchKeySet(c10::DispatchKeySet::RAW, c10::full_backend_mask);
-
 static PyObject* custom_op_fast_path_check(PyObject* _unused, PyObject* args) {
   HANDLE_TH_ERRORS
+
+  // The set of dispatch keys that a plain dense eager tensor can have:
+  // dense functionality + backend bits + autograd + BackendSelect +
+  // ADInplaceOrView. Anything outside this (e.g. Sparse, NestedTensor,
+  // Python, FuncTorchBatched, autocast) means the fast path is ineligible.
+  static constexpr c10::DispatchKeySet fast_path_allowed_ks =
+      c10::DispatchKeySet({
+          c10::DispatchKey::Dense,
+          c10::DispatchKey::BackendSelect,
+          c10::DispatchKey::ADInplaceOrView,
+      }) |
+      c10::autograd_dispatch_keyset |
+      c10::DispatchKeySet(c10::DispatchKeySet::RAW, c10::full_backend_mask);
 
   TORCH_INTERNAL_ASSERT(
       PyTuple_GET_SIZE(args) == 2,
