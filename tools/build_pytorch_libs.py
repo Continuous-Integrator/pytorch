@@ -5,11 +5,7 @@ import platform
 import subprocess
 
 from .setup_helpers.cmake import CMake, USE_NINJA
-from .setup_helpers.env import (
-    check_negative_env_flag,
-    IS_64BIT,
-    IS_WINDOWS,
-)
+from .setup_helpers.env import check_negative_env_flag, IS_64BIT, IS_WINDOWS
 
 
 def _get_vc_env(vc_arch: str) -> dict[str, str]:

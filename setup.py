@@ -504,7 +504,6 @@ report(f"Building wheel {TORCH_PACKAGE_NAME}-{TORCH_VERSION}")
 cmake = CMake()
 
 
-
 # Windows has very bad support for symbolic links.
 # Instead of using symlinks, we're going to copy files over
 def mirror_files_into_torchgen() -> None:
