@@ -191,10 +191,6 @@ manual_torch_name_rule_map: dict[
     "torch._C._group_tensors_by_device_and_dtype": TorchInGraphFunctionVariable,
     "torch.to_dlpack": SkipFunctionVariable,
     "torch._check": TorchInGraphFunctionVariable,
-    "torch._check_tensor_all": UserFunctionVariable,
-    "torch._check_tensor_all_with": UserFunctionVariable,
-    "torch._check_with": UserFunctionVariable,
-    "torch.fx.experimental.symbolic_shapes.expect_true": UserFunctionVariable,
     # We graph break on RNG state setters or getters like
     # `torch.get_rng_state`, `torch.set_rng_state`, and
     # `torch.Generator.manual_seed`. These functions are not aten
@@ -2382,8 +2378,11 @@ torch_non_c_binding_in_graph_functions = dict.fromkeys(
         "torch._check_index",
         "torch._check_is_size",
         "torch._check_not_implemented",
+        "torch._check_tensor_all_with",
+        "torch._check_tensor_all",
         "torch._check_type",
         "torch._check_value",
+        "torch._check_with",
         "torch._compile._disable_dynamo",
         "torch._functorch.apis.chunk_vmap",
         "torch._functorch.batch_norm_replacement.batch_norm_without_running_stats",

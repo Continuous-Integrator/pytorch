@@ -1864,12 +1864,6 @@ def constrain_unify(a: torch.SymInt, b: torch.SymInt) -> None:
 # versions of C++, this is replaced with [[likely]], which is weaker
 # and not accurate for this function!)
 def expect_true(a: BoolLikeType, skip: int = 0) -> bool:
-    # During Dynamo tracing, the normal path (SymBool.node.expect_true +
-    # inspect.currentframe) is not traceable.  Delegate to torch._check
-    # which emits a runtime assertion into the graph instead.
-    if torch.compiler.is_compiling():
-        torch._check(a)
-        return True
     if isinstance(a, SymBool):
         # TODO: check perf implications of this
         frame = inspect.currentframe()

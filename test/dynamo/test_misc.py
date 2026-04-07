@@ -4574,18 +4574,6 @@ not ___dict_contains('cccccccc', G['sys'].modules)""",
         result = torch.compile(m, fullgraph=True, backend="eager")(x)
         self.assertEqual(result, correct)
 
-    def test_check_tensor_all_with(self):
-        def fn(x):
-            torch._check_tensor_all_with(
-                RuntimeError, x > 0, lambda: "expected positive"
-            )
-            return x + 1
-
-        x = torch.tensor([1.0, 2.0, 3.0])
-        correct = fn(x)
-        result = torch.compile(fn, fullgraph=True, backend="eager")(x)
-        self.assertEqual(result, correct)
-
     def test_global_state_guard_serialization(self):
         GlobalStateGuard = torch._C._dynamo.guards.GlobalStateGuard
         guards = GlobalStateGuard()
