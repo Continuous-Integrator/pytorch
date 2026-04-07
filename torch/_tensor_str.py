@@ -155,9 +155,7 @@ class _Formatter:
                 tensor_view, torch.isfinite(tensor_view) & tensor_view.ne(0)
             )
 
-            if torch.fx.experimental.symbolic_shapes.statically_known_true(
-                nonzero_finite_vals.numel() == 0
-            ):
+            if nonzero_finite_vals.numel() == 0:
                 # no valid number, do nothing
                 return
 

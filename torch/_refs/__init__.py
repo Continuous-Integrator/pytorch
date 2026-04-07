@@ -4259,7 +4259,7 @@ def unbind(t: TensorLikeType, dim: int = 0) -> TensorSequenceType:
 
     # Note: t.shape[dim] can't be dynamic or unbacked, even if we use guard_or_false here we will fail
     # later in the split since t.shape[dim] control the number of output tensors.
-    if torch.fx.experimental.symbolic_shapes.statically_known_true(t.shape[dim] == 0):
+    if t.shape[dim] == 0:
         return ()
     else:
         return tuple(
