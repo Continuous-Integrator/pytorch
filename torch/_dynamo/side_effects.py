@@ -576,7 +576,13 @@ class SideEffects:
                 variables.user_defined._CONSTANT_BASE_TYPES,
             ):
                 example_args = [arg.as_python_constant() for arg in init_args]
-                obj = base_cls.__new__(user_cls, *example_args)  # pyrefly: ignore[bad-specialization]
+                try:
+                    obj = base_cls.__new__(user_cls, *example_args)  # pyrefly: ignore[bad-specialization]
+                except Exception:
+                    # __new__ can raise (e.g., exceeding int str digit limits).
+                    # Fall back to creating without args — the example value is
+                    # only used for tracing, not for correctness.
+                    obj = base_cls.__new__(user_cls)  # pyrefly: ignore[bad-specialization]
             else:
                 obj = base_cls.__new__(user_cls)
         return obj
