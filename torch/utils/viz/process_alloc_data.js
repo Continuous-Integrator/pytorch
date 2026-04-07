@@ -341,6 +341,9 @@ function format_frames(frames) {
  */
 function process_alloc_data(snapshot, device, plot_segments, max_entries, include_private_inactive = false) {
   const elements = [];
+  // Contains two types of blocks
+  // 1. free without alloc in trace
+  // 2. actively allocated in segments, but no matching alloc in trace
   const initially_allocated = [];
   const actions = [];
   const addr_to_alloc = {};
@@ -402,13 +405,12 @@ function process_alloc_data(snapshot, device, plot_segments, max_entries, includ
     }
   }
 
-  // --- Phase 2: Add segments from the snapshot (segment-level view only) ---
-  // For the block-level view, only trace events produce elements.
-  if (plot_segments) {
-    for (const seg of snapshot.segments) {
-      if (seg.device !== device) {
-        continue;
-      }
+  // --- Phase 2: Add elements from the snapshot ---
+  for (const seg of snapshot.segments) {
+    if (seg.device !== device) {
+      continue;
+    }
+    if (plot_segments) {
       if (!(seg.address in addr_to_alloc)) {
         const element = {
           action: 'alloc',
@@ -420,6 +422,24 @@ function process_alloc_data(snapshot, device, plot_segments, max_entries, includ
         };
         elements.push(element);
         initially_allocated.push(elements.length - 1);
+      }
+    } else {
+      for (const b of seg.blocks) {
+        const addr = b.addr ?? b.address;
+        if (b.state === 'active_allocated' && !(addr in addr_to_alloc)) {
+          const element = {
+            action: 'alloc',
+            addr,
+            size: b.requested_size,
+            frames: b.frames,
+            stream: seg.stream,
+            version: b.version,
+            segment_pool_id: seg.segment_pool_id,
+            ghost: true,
+          };
+          elements.push(element);
+          initially_allocated.push(elements.length - 1);
+        }
       }
     }
   }
@@ -497,6 +517,7 @@ function process_alloc_data(snapshot, device, plot_segments, max_entries, includ
       size,
       color,
     };
+    if (element_obj.ghost) e.ghost = true;
     current_data.push(e);
     data.push(e);
     total_mem += size;
@@ -585,11 +606,11 @@ function process_alloc_data(snapshot, device, plot_segments, max_entries, includ
   }
 
   // --- Process initially_allocated elements ---
+  // Private pool blocks are pre-loaded into pool state at timestep 0 (no
+  // animation) so that their envelope starts at the correct initial size
+  // and free events are correctly recognized as frees.
   for (const elem of initially_allocated) {
     if (include_private_inactive && get_pool_key(elem)) {
-      // Pre-load private pool blocks into pool state so that when they
-      // appear in the actions list (as a free-without-matching-alloc),
-      // they are correctly recognized as frees rather than new allocs.
       const pk = get_pool_key(elem);
       const size = elements[elem].size;
       const pool = get_or_create_pool(pk);
@@ -598,7 +619,7 @@ function process_alloc_data(snapshot, device, plot_segments, max_entries, includ
       if (pool.envelope_data === null) {
         const env = {
           elem: `pool:${pk}`,
-          timesteps: [timestep],
+          timesteps: [0],
           offsets: [total_mem],
           size: [0],
           color: 9,
@@ -612,17 +633,30 @@ function process_alloc_data(snapshot, device, plot_segments, max_entries, includ
       const inner_offset = pool.active;
       pool.active += size;
 
+      // Grow envelope directly without animation — these blocks pre-exist
       if (pool.active > pool.max) {
-        grow_pool_envelope(pool, pk, pool.active);
+        const delta = pool.active - pool.max;
+        pool.max = pool.active;
+        const env = pool.envelope_data;
+        env.size[env.size.length - 1] = pool.max;
+        total_mem += delta;
+        const pidx = current.indexOf(`pool:${pk}`);
+        if (pidx >= 0) {
+          for (let j = pidx + 1; j < current.length; j++) {
+            const e = current_data[j];
+            e.offsets[e.offsets.length - 1] += delta;
+          }
+        }
       }
 
       const stripe = {
         elem,
-        timesteps: [timestep],
+        timesteps: [0],
         offsets: [pool.envelope_data.offsets.at(-1) + inner_offset],
         size,
         color: elem_color(elem),
         opacity: 0.5,
+        ghost: elements[elem].ghost || false,
       };
       pool.block_stack.push({elem, size, inner_offset, stripe_data: stripe});
       data.push(stripe);
@@ -633,6 +667,21 @@ function process_alloc_data(snapshot, device, plot_segments, max_entries, includ
     } else {
       total_summarized_mem += elements[elem].size;
       summarized_elems[elem] = true;
+    }
+  }
+
+  // Fix up pool stripe offsets — stripes are not in current_data so they
+  // don't get shifted when other pools grow during initially_allocated
+  // processing. Recompute from the envelope's final offset.
+  for (const pk in pools) {
+    const p = pools[pk];
+    if (!p.envelope_data) continue;
+    const env_offset = p.envelope_data.offsets.at(-1);
+    for (const block of p.block_stack) {
+      const s = block.stripe_data;
+      for (let i = 0; i < s.offsets.length; i++) {
+        s.offsets[i] = env_offset + block.inner_offset;
+      }
     }
   }
 
@@ -800,6 +849,11 @@ function process_alloc_data(snapshot, device, plot_segments, max_entries, includ
       }
       if (!elem.action.includes('alloc')) {
         text = `${text}\nalloc not recorded, stack trace for free:`;
+      }
+      if (elem.ghost) {
+        text = `${text}\n[Ghost block] This block exists in the segment snapshot but has no alloc trace events. ` +
+          `It was allocated before _record_memory_history() was called, or its alloc event was evicted ` +
+          `from the trace ring buffer. The block is still active (not freed) at snapshot time.`;
       }
       const user_metadata_str = format_user_metadata(elem.user_metadata);
       if (user_metadata_str) {
