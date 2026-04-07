@@ -4882,17 +4882,17 @@ class TestCustomOpFastPath(TestCase):
 
     def test_custom_op_fast_path_check_c_api(self):
         args = (torch.randn(4), torch.randn(4))
-        result = torch._C._custom_op_fast_path_check(args, False)
+        result = torch._C._custom_op_fast_path_check(args)
         self.assertIsNotNone(result)
         self.assertEqual(result[0], "cpu")
         self.assertEqual(result[1], False)
 
         args_grad = (torch.randn(4, requires_grad=True),)
-        result = torch._C._custom_op_fast_path_check(args_grad, False)
+        result = torch._C._custom_op_fast_path_check(args_grad)
         self.assertEqual(result[1], True)
 
         with torch.autocast("cpu"):
-            result = torch._C._custom_op_fast_path_check(args, False)
+            result = torch._C._custom_op_fast_path_check(args)
             self.assertIsNone(result)
 
         class MyMode(torch.overrides.TorchFunctionMode):
@@ -4900,19 +4900,19 @@ class TestCustomOpFastPath(TestCase):
                 return func(*args, **(kwargs or {}))
 
         with MyMode():
-            result = torch._C._custom_op_fast_path_check(args, False)
+            result = torch._C._custom_op_fast_path_check(args)
             self.assertIsNone(result)
 
     def test_custom_op_fast_path_check_rejects_sparse(self):
         sparse = torch.randn(3, 3).to_sparse()
-        result = torch._C._custom_op_fast_path_check((sparse,), False)
+        result = torch._C._custom_op_fast_path_check((sparse,))
         self.assertIsNone(result)
 
     def test_custom_op_fast_path_check_rejects_torch_dispatch_subclass(self):
         from torch.testing._internal.two_tensor import TwoTensor
 
         tt = TwoTensor(torch.randn(3), torch.randn(3))
-        result = torch._C._custom_op_fast_path_check((tt,), False)
+        result = torch._C._custom_op_fast_path_check((tt,))
         self.assertIsNone(result)
 
     def test_fast_path_falls_back_for_torch_dispatch_subclass(self):

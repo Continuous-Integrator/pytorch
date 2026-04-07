@@ -1185,11 +1185,9 @@ static PyObject* custom_op_fast_path_check(PyObject* _unused, PyObject* args) {
       c10::DispatchKeySet(c10::DispatchKeySet::RAW, c10::full_backend_mask);
 
   TORCH_INTERNAL_ASSERT(
-      PyTuple_GET_SIZE(args) == 2,
-      "_custom_op_fast_path_check expects exactly 2 args");
+      PyTuple_GET_SIZE(args) == 1,
+      "_custom_op_fast_path_check expects exactly 1 arg");
   PyObject* py_args = PyTuple_GET_ITEM(args, 0);
-  int check_multi_device = PyObject_IsTrue(PyTuple_GET_ITEM(args, 1));
-  TORCH_CHECK(check_multi_device != -1, "check_multi_device must be a bool");
   TORCH_CHECK(PyTuple_Check(py_args), "first arg must be a tuple");
 
   if (at::impl::torch_function_mode_enabled()) {
@@ -1223,8 +1221,6 @@ static PyObject* custom_op_fast_path_check(PyObject* _unused, PyObject* args) {
     if (!seen_tensor) {
       first_device = dev;
       seen_tensor = true;
-    } else if (check_multi_device && dev != first_device) {
-      Py_RETURN_NONE;
     }
     if (t.requires_grad()) {
       any_requires_grad = true;

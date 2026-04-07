@@ -787,7 +787,6 @@ class CustomOpDef:
         )
 
         disabled_kernel = self._disabled_kernel
-        check_multi_device = raw_fns.get(None) is None and len(raw_fns) > 1
 
         def fast_call(*args, **kwargs):
             # Dynamo needs the fake impl and dispatcher.
@@ -796,10 +795,10 @@ class CustomOpDef:
             if not args or kwargs:
                 return _FAST_PATH_FALLBACK
 
-            # Single C++ call that checks: TorchFunctionMode, TLS dispatch
-            # keys (autocast, functorch, etc. via one-dispatch-key-computation),
-            # tensor subclasses, mixed devices, and requires_grad.
-            check = _C._custom_op_fast_path_check(args, check_multi_device)
+            # Single C++ call that checks: TorchFunctionMode, dispatch
+            # keyset (autocast, functorch, sparse, etc.), tensor subclasses,
+            # and requires_grad.
+            check = _C._custom_op_fast_path_check(args)
             if check is None:
                 return _FAST_PATH_FALLBACK
 
