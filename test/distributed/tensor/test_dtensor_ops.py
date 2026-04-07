@@ -204,8 +204,6 @@ dtensor_fails = {
     xfail("squeeze", "multiple"),
     # group_norm: sharding passes wrong N/HxW scalars to native_group_norm
     xfail("nn.functional.group_norm"),
-    # interpolation ops: Partial strategy triggers errors during sharding prop
-    xfail("nn.functional.grid_sample"),
     # instance_norm decomposes to group_norm → same N/HxW mismatch
     xfail("nn.functional.instance_norm"),
     # meta tensor data not allocated yet during tensor_split
@@ -423,14 +421,6 @@ dtensor_fails_no_strategy = {
     xfail("nanquantile"),
     xfail("nn.functional.bilinear"),
     xfail("nn.functional.hardshrink"),
-    xfail("nn.functional.interpolate", "nearest"),
-    xfail("nn.functional.interpolate", "nearest-exact"),
-    xfail("nn.functional.max_unpool1d"),
-    xfail("nn.functional.max_unpool1d", "grad"),
-    xfail("nn.functional.max_unpool2d"),
-    xfail("nn.functional.max_unpool2d", "grad"),
-    xfail("nn.functional.max_unpool3d"),
-    xfail("nn.functional.max_unpool3d", "grad"),
     xfail("nn.functional.multi_margin_loss"),
     xfail("nn.functional.multilabel_margin_loss"),
     xfail("nn.functional.pad", "reflect"),
