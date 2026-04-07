@@ -4550,6 +4550,30 @@ not ___dict_contains('cccccccc', G['sys'].modules)""",
         result = torch.compile(fn, fullgraph=True)(x)
         self.assertEqual(result, correct)
 
+    def test_deepcopy_user_defined_object_with_method(self):
+        class MyConfig:
+            def __init__(self, hidden_size=64):
+                self.hidden_size = hidden_size
+
+            def get_size(self):
+                return self.hidden_size
+
+        class MyModule(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.config = MyConfig()
+                self.linear = torch.nn.Linear(64, 64)
+
+            def forward(self, x):
+                cfg = copy.deepcopy(self.config)
+                return self.linear(x) * cfg.get_size()
+
+        m = MyModule()
+        x = torch.randn(2, 64)
+        correct = m(x)
+        result = torch.compile(m, fullgraph=True, backend="eager")(x)
+        self.assertEqual(result, correct)
+
     def test_global_state_guard_serialization(self):
         GlobalStateGuard = torch._C._dynamo.guards.GlobalStateGuard
         guards = GlobalStateGuard()

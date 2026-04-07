@@ -425,7 +425,7 @@ def instantiate_user_defined_class_object(
     return obj
 
 
-def reduce_ex_user_defined_object(obj: T, protocol: int, /) -> tuple:
+def reduce_ex_user_defined_object(obj: T, protocol: int, /) -> tuple:  # type: ignore[type-arg]
     """Traceable polyfill for object.__reduce_ex__ on user-defined objects.
 
     Returns the same tuple that CPython's _common_reduce produces:
@@ -435,7 +435,13 @@ def reduce_ex_user_defined_object(obj: T, protocol: int, /) -> tuple:
     import copyreg
 
     cls = type(obj)
-    return (copyreg.__newobj__, (cls,), obj.__dict__, None, None)
+    return (
+        copyreg.__newobj__,
+        (cls,),
+        obj.__dict__,
+        None,
+        None,
+    )  # pyrefly: ignore[missing-attribute]
 
 
 def mutable_mapping_update(
