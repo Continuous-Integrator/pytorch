@@ -251,9 +251,43 @@ PyObject* THPAutograd_initExtension(PyObject* _unused, PyObject* unused) {
       .def(
           "correlation_id",
           [](const KinetoEvent& e) { return e.correlationId(); })
-      // shapes of input tensors
-      .def("shapes", [](const KinetoEvent& e) { return e.shapes().vec(); })
+      // Shapes/strides are stored as vector<shape> where shape is
+      // variant<vector<int64_t>, vector<vector<int64_t>>>. Plain tensor
+      // inputs are vector<int64_t>, TensorList inputs are nested.
+      .def(
+          "shapes",
+          [](const KinetoEvent& e) {
+            py::list result;
+            for (const auto& s : e.shapes()) {
+              if (std::holds_alternative<std::vector<int64_t>>(s)) {
+                result.append(std::get<std::vector<int64_t>>(s));
+              } else {
+                result.append(std::get<std::vector<std::vector<int64_t>>>(s));
+              }
+            }
+            return result;
+          })
+      .def(
+          "strides",
+          [](const KinetoEvent& e) {
+            py::list result;
+            for (const auto& s : e.strides()) {
+              if (std::holds_alternative<std::vector<int64_t>>(s)) {
+                result.append(std::get<std::vector<int64_t>>(s));
+              } else {
+                result.append(std::get<std::vector<std::vector<int64_t>>>(s));
+              }
+            }
+            return result;
+          })
       .def("dtypes", [](const KinetoEvent& e) { return e.dtypes().vec(); })
+      .def("python_id", [](const KinetoEvent& e) { return e.pythonId(); })
+      .def(
+          "python_parent_id",
+          [](const KinetoEvent& e) { return e.pythonParentId(); })
+      .def(
+          "python_module_id",
+          [](const KinetoEvent& e) { return e.pythonModuleId(); })
       .def(
           "concrete_inputs",
           [](const KinetoEvent& e) {
@@ -311,15 +345,25 @@ PyObject* THPAutograd_initExtension(PyObject* _unused, PyObject* unused) {
                 e.activityType() ==
                 (uint8_t)libkineto::ActivityType::GPU_USER_ANNOTATION;
           })
+      .def(
+          "is_python_function",
+          [](const KinetoEvent& e) { return e.isPythonFunction(); })
       .def("nbytes", [](const KinetoEvent& e) { return e.nBytes(); })
       // whether the event is hidden
       .def(
           "is_hidden_event",
           [](const KinetoEvent& e) { return e.isHiddenEvent(); })
       // KinetoEvent metadata
-      .def("metadata_json", [](const KinetoEvent& e) {
-        return e.metadataJson();
-      });
+      .def(
+          "metadata_json",
+          [](const KinetoEvent& e) { return e.metadataJson(); })
+      .def(
+          "activity_type",
+          [](const KinetoEvent& e) {
+            return libkineto::toString(
+                static_cast<libkineto::ActivityType>(e.activityType()));
+          })
+      .def("extra_meta", [](const KinetoEvent& e) { return e.extraMeta(); });
 
   m.def("_soft_assert_raises", &setSoftAssertRaises);
   m.def("_get_sequence_nr", &at::sequence_number::peek);

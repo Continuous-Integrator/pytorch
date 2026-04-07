@@ -57,6 +57,22 @@ from torch.testing._internal.inductor_utils import HAS_GPU
 from torch.testing._internal.triton_utils import requires_cuda_and_triton
 
 
+try:
+    from importlib.metadata import version as pkg_version
+
+    _transformers_version = tuple(
+        int(x) for x in pkg_version("transformers").split(".")[:2]
+    )
+except Exception:
+    _transformers_version = (0, 0)
+
+# https://github.com/huggingface/transformers/issues/44188
+# expectedFailure only applies to transformers >= 5.2 which introduced the bug
+_expectedFailureIf_transformers_ge_5_2 = (
+    unittest.expectedFailure if _transformers_version >= (5, 2) else lambda fn: fn
+)
+
+
 log = logging.getLogger(__name__)
 
 
@@ -321,11 +337,12 @@ class FakeDDP(nn.Module):
 
     @contextmanager
     def _inside_ddp_forward(self):
+        old = DDP._active_ddp_module
         DDP._active_ddp_module = self
         try:
             yield
         finally:
-            DDP._active_ddp_module = None
+            DDP._active_ddp_module = old
 
     def forward(self, *inputs, **kwargs):
         if not DDP._active_ddp_module:
@@ -356,8 +373,7 @@ def run_hf_bert_ddp(self, model, inputs, backend):
 
 
 class TestFakeDistributedSingleProc(torch._dynamo.test_case.TestCase):
-    @unittest.expectedFailure
-    # https://github.com/huggingface/transformers/issues/44188
+    @_expectedFailureIf_transformers_ge_5_2
     @unittest.skipIf(not HAS_GPU, "Inductor+gpu needs triton and recent GPU arch")
     @patch.object(config, "optimize_ddp", True)
     @patch.object(torch._inductor.config, "fallback_random", True)
@@ -370,8 +386,7 @@ class TestFakeDistributedSingleProc(torch._dynamo.test_case.TestCase):
         model = FakeDDP(model)
         run_hf_bert_ddp(self, model, inputs, "inductor")
 
-    @unittest.expectedFailure
-    # https://github.com/huggingface/transformers/issues/44188
+    @_expectedFailureIf_transformers_ge_5_2
     @patch.object(config, "optimize_ddp", True)
     def test_hf_bert_ddp_aot_eager(self):
         model, inputs = get_hf_bert(0)
@@ -572,6 +587,70 @@ class TestFakeDistributedSingleProc(torch._dynamo.test_case.TestCase):
         model = FakeDDP(model)
         opt_model = torch.compile(model)
         opt_model(torch.randn(2, 129, 100, 96))
+
+    @patch.object(config, "optimize_ddp", True)
+    def test_nested_ddp_preserves_active_ddp_module(self):
+        """
+        When an inner DDP (e.g., TorchRec's data-parallel embedding lookup) is
+        nested inside an outer DDP, the inner DDP's _inside_ddp_forward exit
+        must restore _active_ddp_module to the outer DDP, not clear it to None.
+        Otherwise DDPOptimizer won't activate for compiled regions that run
+        after the inner DDP forward.
+        """
+
+        class InnerModule(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.linear = nn.Linear(10, 10)
+
+            def forward(self, x):
+                return self.linear(x)
+
+        class OuterModel(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.inner_ddp = FakeDDP(InnerModule())
+                self.weight = nn.Parameter(torch.randn(10, 10))
+
+            def forward(self, x):
+                # Inner DDP forward runs first (like DP embedding lookup)
+                x = self.inner_ddp(x)
+                # After inner DDP exits, _active_ddp_module must still be set
+                # for DDPOptimizer to split this region
+                x = x @ self.weight
+                return x
+
+        outer_model = OuterModel()
+        outer_ddp = FakeDDP(outer_model)
+
+        # Verify the context manager nesting directly
+        self.assertIsNone(DDP._active_ddp_module)
+        with outer_ddp._inside_ddp_forward():
+            self.assertIs(DDP._active_ddp_module, outer_ddp)
+            with outer_ddp.module.inner_ddp._inside_ddp_forward():
+                self.assertIs(DDP._active_ddp_module, outer_ddp.module.inner_ddp)
+            # After inner exits, outer must be restored
+            self.assertIs(DDP._active_ddp_module, outer_ddp)
+        # After outer exits, must be None again
+        self.assertIsNone(DDP._active_ddp_module)
+
+        # Verify DDPOptimizer activates with nested DDP during compilation
+        ddp_optimizer_activated = False
+        orig_init = DDPOptimizer.__init__
+
+        def tracking_init(self_opt, *args, **kwargs):
+            nonlocal ddp_optimizer_activated
+            ddp_optimizer_activated = True
+            return orig_init(self_opt, *args, **kwargs)
+
+        with patch.object(DDPOptimizer, "__init__", tracking_init):
+            opt_model = torch.compile(outer_ddp, backend="aot_eager")
+            opt_model(torch.randn(4, 10))
+
+        self.assertTrue(
+            ddp_optimizer_activated,
+            "DDPOptimizer should activate for compiled regions inside nested DDP",
+        )
 
 
 # These tests aren't really distributed, but need multiple GPUs to run
@@ -812,8 +891,7 @@ class TestMultiProc(DynamoDistributedMultiProcTestCase):
             model = DDP(model, static_graph=static_graph)
             run_hf_bert_ddp(self, model, inputs, "inductor")
 
-    @unittest.expectedFailure
-    # https://github.com/huggingface/transformers/issues/44188
+    @_expectedFailureIf_transformers_ge_5_2
     @skip_if_lt_x_gpu(2)
     @import_transformers_or_skip()
     @unittest.skipIf(not HAS_GPU, "Inductor+gpu needs triton and recent GPU arch")
@@ -822,8 +900,7 @@ class TestMultiProc(DynamoDistributedMultiProcTestCase):
     def test_hf_bert_ddp_inductor(self):
         self._test_hf_bert_ddp_inductor(static_graph=False)
 
-    @unittest.expectedFailure
-    # https://github.com/huggingface/transformers/issues/44188
+    @_expectedFailureIf_transformers_ge_5_2
     @skip_if_lt_x_gpu(2)
     @import_transformers_or_skip()
     @unittest.skipIf(not HAS_GPU, "Inductor+gpu needs triton and recent GPU arch")
@@ -838,16 +915,14 @@ class TestMultiProc(DynamoDistributedMultiProcTestCase):
             model = DDP(model, static_graph=static_graph)
             run_hf_bert_ddp(self, model, inputs, "aot_eager")
 
-    @unittest.expectedFailure
-    # https://github.com/huggingface/transformers/issues/44188
+    @_expectedFailureIf_transformers_ge_5_2
     @skip_if_lt_x_gpu(2)
     @import_transformers_or_skip()
     @config.patch(optimize_ddp=True, enable_compiler_collectives=True)
     def test_hf_bert_ddp_aot_eager(self):
         self._test_hf_bert_aot_eager(static_graph=False)
 
-    @unittest.expectedFailure
-    # https://github.com/huggingface/transformers/issues/44188
+    @_expectedFailureIf_transformers_ge_5_2
     @skip_if_lt_x_gpu(2)
     @import_transformers_or_skip()
     @config.patch(optimize_ddp=True, enable_compiler_collectives=True)
@@ -1050,8 +1125,7 @@ class TestMultiProc(DynamoDistributedMultiProcTestCase):
                 find_first_node(cnt.graphs[0], tag_activation_checkpoint) is not None
             )
 
-    @unittest.expectedFailure
-    # https://github.com/huggingface/transformers/issues/44188
+    @_expectedFailureIf_transformers_ge_5_2
     @import_transformers_or_skip()
     @unittest.skipIf(not HAS_GPU, "Inductor+gpu needs triton and recent GPU arch")
     # TODO(whc) Investigate why cudagraphs breaks inductor+fsdp for hf_bert
@@ -1097,8 +1171,7 @@ class TestMultiProc(DynamoDistributedMultiProcTestCase):
                 )
                 self.assertTrue(same(correct_results, opt_results))
 
-    @unittest.expectedFailure
-    # https://github.com/huggingface/transformers/issues/44188
+    @_expectedFailureIf_transformers_ge_5_2
     @import_transformers_or_skip()
     @unittest.skipIf(not HAS_GPU, "Inductor+gpu needs triton and recent GPU arch")
     # TODO(whc) Investigate why cudagraphs breaks inductor+fsdp for hf_bert

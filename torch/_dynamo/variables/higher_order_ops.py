@@ -908,6 +908,7 @@ def are_same_graph_modules(
     from torch._subclasses.fake_tensor import extract_tensor_metadata
 
     # Maps the equivalent nodes from a to b
+    # pyrefly: ignore [implicit-any]
     node_map = {}
 
     def check_all_args(a_nodes: Iterable[Any], b_nodes: Iterable[Any]) -> bool:
@@ -1711,7 +1712,7 @@ def speculate_subgraph_with_auto_output_flattening(
                 ):
                     graph_output_vt_list.append(vt)
 
-            VariableTracker.visit(visit, output)
+            VariableTracker.visit(visit, output, side_effects=tx.output.side_effects)
             graph_output_vts = tuple(graph_output_vt_list)
 
             # NOTE - [Return subgraph intermediates as subgraph outputs]
@@ -1752,11 +1753,13 @@ def speculate_subgraph_with_auto_output_flattening(
             # nested_compile_region and autograd.Function. Today, its safe
             # because we error out on seeing a side-effect.
 
-            allow_side_effects = (
-                allow_side_effects
-                or tx.output.current_tracer.traced_with_externally_visible_side_effects
+            traced_externally = (
+                tx.output.current_tracer.traced_with_externally_visible_side_effects
             )
-            if allow_side_effects:
+            has_side_effects = (
+                subtracer.side_effect_stack is not None or traced_externally
+            )
+            if (allow_side_effects or traced_externally) and has_side_effects:
                 extra_outputs = collect_intermediate_outputs(
                     tx, subtracer, graph_output_vts, filter_aliased_intermediates
                 )
@@ -4047,6 +4050,14 @@ class AutoFunctionalizeHigherOrderVariable(TorchHigherOrderOperatorVariable):
 class FlexAttentionBackwardHighOrderVariable(TorchHigherOrderOperatorVariable):
     _HOP_NAME = "torch.ops.higher_order.flex_attention_backward"
 
+    @staticmethod
+    def _uses_pretraced_graphs(
+        fw_graph: VariableTracker, joint_graph: VariableTracker
+    ) -> bool:
+        return not joint_graph.is_constant_none() or isinstance(
+            fw_graph, UnspecializedNNModuleVariable
+        )
+
     def proxy_submod(
         self, tx: "InstructionTranslator", arg: UnspecializedNNModuleVariable
     ) -> Proxy:
@@ -4191,7 +4202,7 @@ class FlexAttentionBackwardHighOrderVariable(TorchHigherOrderOperatorVariable):
         ):
             return self._call_function_fallback(tx, args, kwargs)
 
-        if torch._dynamo.compiled_autograd.in_compiled_autograd_region:
+        if self._uses_pretraced_graphs(fw_graph, joint_graph):
             return self._call_function_fallback(tx, args, kwargs)
 
         fw_graph_node, fw_graph_lifted_args, fw_graph_gm = self.create_wrapped_node(
@@ -5523,6 +5534,7 @@ class LocalMapWrappedHigherOrderVariable(WrapHigherOrderVariable):
 
             priors[vt] = global_tensor
             vt.as_proxy().node.meta["example_value"] = local_tensor
+            # pyrefly: ignore [missing-attribute]
             vt.synchronize_attributes(tx)
 
         # Step 3: Trace local_map subgraph with local tensors
@@ -5607,6 +5619,7 @@ class LocalMapWrappedHigherOrderVariable(WrapHigherOrderVariable):
         # Step 6: Restore inputs and outputs to global shapes
         for vt, global_tensor in priors.items():
             vt.as_proxy().node.meta["example_value"] = global_tensor
+            # pyrefly: ignore [missing-attribute]
             vt.synchronize_attributes(tx)
 
         outs = out.items if isinstance(out, TupleVariable) else [out]

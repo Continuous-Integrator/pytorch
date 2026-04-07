@@ -5996,7 +5996,7 @@ scaled_dot_product_attention = _add_docstr(
             attn_bias = torch.zeros(L, S, dtype=query.dtype, device=query.device)
             if is_causal:
                 assert attn_mask is None
-                temp_mask = torch.ones(L, S, dtype=torch.bool).tril(diagonal=0)
+                temp_mask = torch.ones(L, S, dtype=torch.bool, device=query.device).tril(diagonal=0)
                 attn_bias.masked_fill_(temp_mask.logical_not(), float("-inf"))
 
             if attn_mask is not None:
@@ -6582,10 +6582,10 @@ def multi_head_attention_forward(
     #
     # reshape q, k, v for multihead attention and make them batch first
     #
-    # pyrefly: ignore [no-matching-overload]
+    # pyrefly: ignore [bad-argument-type, no-matching-overload]
     q = q.view(tgt_len, bsz * num_heads, head_dim).transpose(0, 1)
     if static_k is None:
-        # pyrefly: ignore [no-matching-overload]
+        # pyrefly: ignore [bad-argument-type, no-matching-overload]
         k = k.view(k.shape[0], bsz * num_heads, head_dim).transpose(0, 1)
     else:
         # TODO finish disentangling control flow so we don't do in-projections when statics are passed
@@ -6599,7 +6599,7 @@ def multi_head_attention_forward(
             )
         k = static_k
     if static_v is None:
-        # pyrefly: ignore [no-matching-overload]
+        # pyrefly: ignore [bad-argument-type, no-matching-overload]
         v = v.view(v.shape[0], bsz * num_heads, head_dim).transpose(0, 1)
     else:
         # TODO finish disentangling control flow so we don't do in-projections when statics are passed
@@ -6672,11 +6672,15 @@ def multi_head_attention_forward(
             )
         else:
             attn_output_weights = torch.bmm(q_scaled, k.transpose(-2, -1))
+        if not torch.jit.is_scripting():
+            del q_scaled, k
         attn_output_weights = softmax(attn_output_weights, dim=-1)
         if dropout_p > 0.0:
             attn_output_weights = dropout(attn_output_weights, p=dropout_p)
 
         attn_output = torch.bmm(attn_output_weights, v)
+        if not torch.jit.is_scripting():
+            del v
 
         attn_output = (
             attn_output.transpose(0, 1).contiguous().view(tgt_len * bsz, embed_dim)
@@ -6704,15 +6708,22 @@ def multi_head_attention_forward(
             else:
                 attn_mask = attn_mask.view(bsz, num_heads, -1, src_len)
 
+        # pyrefly: ignore [bad-argument-type]
         q = q.view(bsz, num_heads, tgt_len, head_dim)
-        # pyrefly: ignore [no-matching-overload]
+        # pyrefly: ignore [bad-argument-type]
         k = k.view(bsz, num_heads, src_len, head_dim)
-        # pyrefly: ignore [no-matching-overload]
+        # pyrefly: ignore [bad-argument-type]
         v = v.view(bsz, num_heads, src_len, head_dim)
 
         attn_output = scaled_dot_product_attention(
             q, k, v, attn_mask, dropout_p, is_causal
         )
+        # Free q, k, v and their backing projection storage before the
+        # .contiguous() call below allocates.  In self-attention the three
+        # tensors are views of a single packed projection, so releasing all
+        # references here lets the allocator reclaim that memory immediately.
+        if not torch.jit.is_scripting():
+            del q, k, v
         attn_output = (
             attn_output.permute(2, 0, 1, 3).contiguous().view(bsz * tgt_len, embed_dim)
         )
