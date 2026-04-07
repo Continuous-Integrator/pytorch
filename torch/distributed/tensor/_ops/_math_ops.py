@@ -1912,7 +1912,7 @@ def interp_upsample_1out_1in_strategy(
     return [
         [_ShardingPlaceholder(0)] * 2,
         [_ShardingPlaceholder(1)] * 2,
-        [Partial(), Partial()],
+        [Partial("sum"), Partial("sum")],
         [Partial("avg"), Partial("avg")],
     ]
 
@@ -1937,68 +1937,63 @@ def interp_pool_1out_2in_strategy(
     ]
 
 
-@register_op_strategy(
+@register_single_dim_strategy(
     [aten.max_pool2d_with_indices_backward.default],
     schema_info=RuntimeSchemaInfo(1),
 )
-def pool_backward_strategy(op_schema: OpSchema) -> OpStrategy:
-    # max_pool2d_with_indices_backward(grad_output, self, ..., indices) -> grad_input
-    # `self` is only used for output shape; `indices` drives the scatter so it
-    # must be identical on all ranks (Replicate).  The backward is a pure
-    # selection from grad_output, so Partial(sum/avg/max/min) all pass through.
-    input_strategy = cast(OpStrategy, op_schema.args_schema[0])
-    mesh = input_strategy.mesh
-    # n = 1 output + 3 tensor inputs
-    n = 4
-    single_mesh_dim_strategies: list[PlacementList] = [
-        [Replicate()] * n,
-        [Shard(0)] * n,
-    ]
-    is_batched = input_strategy.ndim >= 4  # (N, C, H, W)
-    if is_batched:
-        single_mesh_dim_strategies.append([Shard(1)] * n)
-    # The backward is linear in grad_output, so P(sum/avg) pass through.
-    # indices must be replicated (integer positions, not reducible).
-    # self is only used for shape, so replicate it too.
-    # Order: [output, grad_output, self, indices]
-    r = Replicate()
-    for reduce_op in ("sum", "avg"):
-        p = Partial(reduce_op)
-        single_mesh_dim_strategies.append([p, p, r, r])
-    return expand_to_full_mesh_op_strategy(
-        mesh, op_schema, single_mesh_dim_strategies, input_index=1
-    )
-
-
-@register_single_dim_strategy(
-    [aten.grid_sampler_2d.default],
-    schema_info=RuntimeSchemaInfo(1),
-)
-def grid_sampler_2d_strategy(
+def pool_backward_strategy(
     op: torch._ops.OpOverload,
     args_schema: tuple[Any, ...],
     kwargs_schema: dict[str, Any],
 ) -> list[list[Placement | _ShardingPlaceholder]]:
-    # grid_sampler_2d(input[N,C,H,W], grid[N,H_out,W_out,2]) -> output[N,C,H_out,W_out]
+    # max_pool2d_with_indices_backward(grad_output, self, ..., indices) -> grad_input
+    # 1 output + 3 tensor inputs = 4 placements
+    # Order: [output, grad_output, self, indices]
+    input_meta = cast(TensorMeta, args_schema[0])
+    strategies: list[list[Placement | _ShardingPlaceholder]] = [
+        [_ShardingPlaceholder(0)] * 4,
+    ]
+    if len(input_meta.shape) >= 4:  # batched: (N, C, H, W)
+        strategies.append([_ShardingPlaceholder(1)] * 4)
+    # The backward is linear in grad_output, so P(sum/avg) pass through.
+    # indices must be replicated (integer positions, not reducible).
+    # self is only used for shape, so replicate it too.
+    r = Replicate()
+    for reduce_op in ("sum", "avg"):
+        p = Partial(reduce_op)
+        strategies.append([p, p, r, r])
+    return strategies
+
+
+@register_single_dim_strategy(
+    [aten.grid_sampler_2d.default, aten.grid_sampler_3d.default],
+    schema_info=RuntimeSchemaInfo(1),
+)
+def grid_sampler_strategy(
+    op: torch._ops.OpOverload,
+    args_schema: tuple[Any, ...],
+    kwargs_schema: dict[str, Any],
+) -> list[list[Placement | _ShardingPlaceholder]]:
+    # grid_sampler_{2,3}d(input[N,C,...], grid[N,...,{2,3}]) -> output[N,C,...]
     # grid has no channel dim, so only batch sharding applies to both inputs.
     # Linear in input: P(sum/avg) on input with replicated grid is valid.
     return [
         [_ShardingPlaceholder(0)] * 3,
-        [Partial(), Partial(), Replicate()],
+        [Partial("sum"), Partial("sum"), Replicate()],
         [Partial("avg"), Partial("avg"), Replicate()],
     ]
 
 
 @register_single_dim_strategy(
-    [aten.grid_sampler_2d_backward.default],
+    [aten.grid_sampler_2d_backward.default, aten.grid_sampler_3d_backward.default],
     schema_info=RuntimeSchemaInfo(1),
 )
-def grid_sampler_2d_backward_strategy(
+def grid_sampler_backward_strategy(
     op: torch._ops.OpOverload,
     args_schema: tuple[Any, ...],
     kwargs_schema: dict[str, Any],
 ) -> list[list[Placement | _ShardingPlaceholder]]:
-    # 2 outputs (grad_input, grad_grid) + 3 inputs = 5 placements, batch-only
+    # grid_sampler_{2,3}d_backward: 2 outputs (grad_input, grad_grid) + 3 inputs = 5 placements, batch-only
     return [[_ShardingPlaceholder(0)] * 5]
 
 
