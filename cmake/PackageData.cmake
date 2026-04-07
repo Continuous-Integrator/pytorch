@@ -20,11 +20,15 @@ install(DIRECTORY "${TORCH_SRC_DIR}/"
   PATTERN "py.typed"
 )
 
-# Benchmark utilities
-install(FILES
-  "${TORCH_SRC_DIR}/utils/benchmark/utils/valgrind_wrapper/timer_callgrind_template.cpp"
-  DESTINATION "utils/benchmark/utils/valgrind_wrapper"
-  OPTIONAL
+# Benchmark utilities — matches setup.py package_data patterns:
+#   utils/benchmark/utils/*.cpp
+#   utils/benchmark/utils/valgrind_wrapper/*.cpp
+#   utils/benchmark/utils/valgrind_wrapper/*.h
+# (*.h files are copied from third_party/ by FileMirroring.cmake; the pattern
+# here picks them up if already present.)
+install(DIRECTORY "${TORCH_SRC_DIR}/utils/benchmark/utils/"
+  DESTINATION "utils/benchmark/utils"
+  FILES_MATCHING PATTERN "*.cpp" PATTERN "*.h"
 )
 
 # Model dump utilities
