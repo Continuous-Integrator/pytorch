@@ -9684,7 +9684,7 @@ not ___dict_contains('cccccccc', G['sys'].modules)""",
 
     @torch._dynamo.config.patch(capture_scalar_outputs=True)
     def test_unbacked_slice_assignment_same_bounds(self):
-        # Repro from sequential_experts_gemm (MoE in HuggingFace Aria).
+        # Repro from sequential_experts_gemm (MoE pattern in HuggingFace Aria).
         # output[start:end] = out should not fail with a data-dependent guard
         # because `out` was produced from token_states[start:end], so both
         # slices share the same (start, end) and thus the same size.
