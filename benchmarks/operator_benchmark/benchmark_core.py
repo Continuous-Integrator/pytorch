@@ -385,8 +385,6 @@ class BenchmarkRunner:
         cuda_sync = "cuda" in test_case.test_config.test_name
         test_case.run_forward(num_runs=1, print_per_iter=False, cuda_sync=cuda_sync)
         test_case._output_mean()
-        if cuda_sync:
-            torch.cuda.synchronize()
 
         timer = Timer(
             stmt="test_case.run_backward(iters, print_per_iter, cuda_sync)",
