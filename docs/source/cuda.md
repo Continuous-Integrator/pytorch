@@ -165,6 +165,7 @@
     :toctree: generated
     :nosignatures:
 
+    caching_allocator_disabled
     caching_allocator_enable
 ```
 
@@ -187,8 +188,6 @@
     nvtx.range_push
     nvtx.range_pop
     nvtx.range
-    nvtx.range_end
-    nvtx.range_start
 ```
 
 ## Jiterator (beta)
