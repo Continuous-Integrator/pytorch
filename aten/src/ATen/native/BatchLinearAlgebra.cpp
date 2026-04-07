@@ -3876,11 +3876,10 @@ Tensor& linalg_solve_triangular_out(
 
   // Prepare A to be BLAS-compliant.
   const auto pA = [unitriangular](const auto& A, const auto& B) -> c10::MaybeOwned<Tensor> {
-    // NOTE: mem overlaps are fine as long as either cols or rows are contiguous.
     // FIXME: batch overlaps are permissible, but the kernel loops over the batch dims,
     // so the batch dims are being materialized.
     // This behavior is inherited from the previous implementations.
-    if (can_flatten_batch_dims(A) && (A.stride(-2) == 1 || A.stride(-1) == 1)
+    if ((isRowMajorLike(A) || isColMajorLike(A))
       // A.is_neg and unitriangular triggers a clone because (A, B) is not linear in the first argument, i.e.
       // (-A + I, B) = -(A - I, B) = -(A + I - 2I, B) != (A + I, B) - 2B.
       && !(A.is_neg() && unitriangular)
