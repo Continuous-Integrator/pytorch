@@ -64,10 +64,8 @@ from ..utils import (
     identity,
     is_tensor_base_attr_getter,
     istype,
-    list_methods,
     proxy_args_kwargs,
     raise_args_mismatch,
-    tuple_methods,
 )
 from .base import AsPythonConstantNotImplementedError, NO_SUCH_SUBOBJ, VariableTracker
 from .constant import CONSTANT_VARIABLE_FALSE, CONSTANT_VARIABLE_NONE, ConstantVariable
@@ -81,6 +79,9 @@ if TYPE_CHECKING:
 
 
 class SuperVariable(VariableTracker):
+    # PySuper_Type: https://github.com/python/cpython/blob/v3.13.0/Objects/typeobject.c#L11511
+    _cpython_type = super
+
     _nonvar_fields = {
         *VariableTracker._nonvar_fields,
     }
@@ -337,25 +338,12 @@ class SuperVariable(VariableTracker):
             )
             return variables.CONSTANT_VARIABLE_NONE
         elif (
-            isinstance(self.objvar, variables.UserDefinedDictVariable)
-            and inner_fn in self.objvar._dict_methods
+            isinstance(self.objvar, variables.UserDefinedObjectVariable)
+            and self.objvar._base_vt is not None
+            and self.objvar._base_methods is not None
+            and inner_fn in self.objvar._base_methods
         ):
-            return self.objvar._dict_vt.call_method(tx, name, args, kwargs)
-        elif (
-            isinstance(self.objvar, variables.UserDefinedSetVariable)
-            and inner_fn in self.objvar._set_methods
-        ):
-            return self.objvar._set_vt.call_method(tx, name, args, kwargs)
-        elif (
-            isinstance(self.objvar, variables.UserDefinedTupleVariable)
-            and inner_fn in tuple_methods
-        ):
-            return self.objvar._tuple_vt.call_method(tx, name, args, kwargs)
-        elif (
-            isinstance(self.objvar, variables.UserDefinedListVariable)
-            and inner_fn in list_methods
-        ):
-            return self.objvar._list_vt.call_method(tx, name, args, kwargs)
+            return self.objvar._base_vt.call_method(tx, name, args, kwargs)
         elif inner_fn is object.__getattribute__:
             # object.__getattribute__ has no side-effects. We can directly call
             # __getattribute__ to access the attribute.
@@ -545,6 +533,9 @@ class TracebackVariable(VariableTracker):
 
 
 class ExceptionVariable(VariableTracker):
+    # _PyExc_BaseException: https://github.com/python/cpython/blob/v3.13.0/Objects/exceptions.c
+    _cpython_type = BaseException
+
     # The ExceptionVariable corresponds to the BaseException class in Python
     def __init__(
         self,
@@ -812,6 +803,9 @@ class ComptimeVariable(VariableTracker):
 
 
 class CellVariable(VariableTracker):
+    # PyCell_Type: https://github.com/python/cpython/blob/v3.13.0/Objects/cellobject.c#L151
+    _cpython_type = types.CellType
+
     # If the cell existed before Dynamo tracing started, this will be the
     # VariableTracker that represents the cell content.
     #
@@ -1394,64 +1388,6 @@ class GetAttrVariable(VariableTracker):
             return result
         return super().mp_subscript_impl(tx, key)
 
-    def call_method(
-        self,
-        tx: "InstructionTranslator",
-        name: str,
-        args: list[VariableTracker],
-        kwargs: dict[str, VariableTracker],
-    ) -> VariableTracker:
-        if (
-            name == "get"
-            and self.name == "__dict__"
-            and not kwargs
-            and args[0].is_python_constant()
-            and isinstance(
-                self.obj,
-                (
-                    variables.NNModuleVariable,
-                    variables.UserDefinedClassVariable,
-                ),
-            )
-        ):
-            result = self._getattr_dict_lookup(tx, args[0])
-            if result is not None:
-                return result
-
-            # Return the default value for get
-            if len(args) == 2:
-                return args[1]
-            else:
-                return variables.CONSTANT_VARIABLE_NONE
-
-        elif (
-            name == "__contains__"
-            and self.name == "__dict__"
-            and len(args) == 1
-            and args[0].is_python_constant()
-            and not kwargs
-            and isinstance(
-                self.obj,
-                (
-                    variables.NNModuleVariable,
-                    variables.UserDefinedClassVariable,
-                ),
-            )
-        ):
-            obj = self.obj
-            key = args[0].as_python_constant()
-            if obj.has_key_in_generic_dict(tx, key):  # type: ignore[union-attr]
-                return variables.CONSTANT_VARIABLE_TRUE
-            else:
-                return variables.CONSTANT_VARIABLE_FALSE
-
-        elif name == "__setitem__" and self.name == "__dict__" and not kwargs:
-            if isinstance(self.obj, variables.NNModuleVariable):
-                # This matches how `setattr` is handled for NNModuleVariable
-                self.obj.convert_to_unspecialized(tx)
-
-        return super().call_method(tx, name, args, kwargs)
-
     def get_forwarded_dict(self, tx: "InstructionTranslator") -> VariableTracker:
         assert (
             self.name == "__dict__"
@@ -1628,6 +1564,9 @@ class GetSetDescriptorVariable(VariableTracker):
 
 
 class PythonModuleVariable(VariableTracker):
+    # PyModule_Type: https://github.com/python/cpython/blob/v3.13.0/Objects/moduleobject.c#L1203
+    _cpython_type = types.ModuleType
+
     _nonvar_fields = {
         "value",
         "is_torch",
@@ -2075,6 +2014,9 @@ class StringFormatVariable(VariableTracker):
 
 
 class ObjectVariable(VariableTracker):
+    # PyBaseObject_Type: https://github.com/python/cpython/blob/v3.13.0/Objects/typeobject.c#L7243
+    _cpython_type = object
+
     # placeholder for unknown / opaque values
     def __init__(self, value: object, **kwargs: Any) -> None:
         super().__init__(**kwargs)
@@ -2365,6 +2307,8 @@ class RandomVariable(VariableTracker):
     The supported methods for the random.Random object cannot be overridden.
     Assumes that random objects behave the same given a set seed or state.
     """
+
+    _cpython_type = random.Random
 
     _nonvar_fields = {
         "random",
