@@ -6990,12 +6990,12 @@ def forward(self, s77 : torch.SymInt, s27 : torch.SymInt, L_x_ : torch.Tensor):
 
         # Test TypeError when out is not a Tensor
         def empty_fn_bad_out(size, out):
-            return torch.empty(size, out=out,memory_format=torch.contiguous_format)
+            return torch.empty(size, out=out, memory_format=torch.contiguous_format)
 
         opt_model_bad = torch.compile(empty_fn_bad_out, dynamic=True)
         with self.assertRaisesRegex(TypeError, r"out must be a Tensor"):
             opt_model_bad([2, 3], [1])  # Pass a list instead of tensor
-            
+
     def test_no_tracing_into_eval_frame(self):
         # test that dynamo doesn't trace into nested calls from eval_frame
         @torch.compile(backend="eager", fullgraph=True)
