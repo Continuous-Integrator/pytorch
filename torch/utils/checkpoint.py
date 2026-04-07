@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import contextlib
+import itertools
 import platform
 import uuid
 import warnings
@@ -1344,7 +1345,8 @@ class _CachingTorchDispatchMode(TorchDispatchMode):
         if is_compiling:
             from torch.fx.experimental.proxy_tensor import get_proxy_mode
             proxy_mode = get_proxy_mode()
-            graph_len_before = len(proxy_mode.tracer.graph.nodes) if proxy_mode is not None else None
+            if proxy_mode is not None:
+                graph_len_before = len(proxy_mode.tracer.graph.nodes)
 
         out = func(*args, **kwargs)
 
@@ -1368,7 +1370,7 @@ class _CachingTorchDispatchMode(TorchDispatchMode):
             if proxy_mode is not None:
                 graph = proxy_mode.tracer.graph
                 num_new = len(graph.nodes) - graph_len_before
-                for node, _ in zip(reversed(graph.nodes), range(num_new)):
+                for node in itertools.islice(reversed(graph.nodes), num_new):
                     node.meta["recompute"] = policy
 
         if policy in (CheckpointPolicy.MUST_SAVE, CheckpointPolicy.PREFER_SAVE) or is_compiling:
