@@ -14,7 +14,12 @@
 #include <ATen/NativeFunctions.h>
 #else
 #include <ATen/ops/_scaled_dot_product_attention_math_for_mps_native.h>
+#include <ATen/ops/arange.h>
 #include <ATen/ops/empty_native.h>
+#include <ATen/ops/full.h>
+#include <ATen/ops/le.h>
+#include <ATen/ops/where.h>
+#include <ATen/ops/zeros.h>
 #endif
 
 namespace at {
@@ -39,17 +44,15 @@ static inline std::tuple<Tensor, bool> ensure_4d(const Tensor& x) {
   }
 }
 
-// general version
-static std::tuple<Tensor, Tensor> sdpa_general_mps(const Tensor& query,
-                                                   const Tensor& key,
-                                                   const Tensor& value,
-                                                   const std::optional<Tensor>& attn_mask,
-                                                   double dropout_p,
-                                                   bool is_causal,
-                                                   const std::optional<Tensor>& dropout_mask,
-                                                   std::optional<double> scale,
-                                                   const Tensor& orig_query,
-                                                   bool unsqueezed) {
+// Builds and runs a single MPSGraph SDPA call. Caller is responsible for any
+// chunking along the Q axis and for synthesizing per-chunk masks; see
+// sdpa_general_mps below for the chunking wrapper.
+static std::tuple<Tensor, Tensor> sdpa_general_mps_impl(const Tensor& query,
+                                                        const Tensor& key,
+                                                        const Tensor& value,
+                                                        const std::optional<Tensor>& attn_mask,
+                                                        bool is_causal,
+                                                        double scale_factor) {
   using namespace mps;
   struct CachedGraph : public MPSCachedGraph {
     CachedGraph(MPSGraph* graph) : MPSCachedGraph(graph) {}
@@ -68,7 +71,6 @@ static std::tuple<Tensor, Tensor> sdpa_general_mps(const Tensor& query,
   int64_t maxSeqLength = key.size(2);
   auto out = at::empty({batchSize, num_head, qSize, valueHeadSize}, query.options());
   auto attn = at::empty({batchSize, num_head, qSize, maxSeqLength}, query.options());
-  auto scale_factor = sdp::calculate_scale(query, scale).expect_float();
   @autoreleasepool {
     auto mkey = __func__ + getTensorsStringKey({query, key, value}) + ":" + std::to_string(is_causal) + ":" +
         std::to_string(attn_mask.has_value());
@@ -147,6 +149,79 @@ static std::tuple<Tensor, Tensor> sdpa_general_mps(const Tensor& query,
     }
     NSDictionary* outs = dictionaryFromPlaceholders(outputPlaceholder, attnPlaceholder);
     runMPSGraph(getCurrentMPSStream(), cachedGraph->graph(), feeds, outs);
+  }
+  return {std::move(out), std::move(attn)};
+}
+
+// general version
+static std::tuple<Tensor, Tensor> sdpa_general_mps(const Tensor& query,
+                                                   const Tensor& key,
+                                                   const Tensor& value,
+                                                   const std::optional<Tensor>& attn_mask,
+                                                   double dropout_p,
+                                                   bool is_causal,
+                                                   const std::optional<Tensor>& dropout_mask,
+                                                   std::optional<double> scale,
+                                                   const Tensor& orig_query,
+                                                   bool unsqueezed) {
+  int64_t batchSize = query.size(0);
+  int64_t num_head = query.size(1);
+  int64_t qSize = query.size(2);
+  int64_t kSize = key.size(2);
+  int64_t valueHeadSize = value.size(3);
+
+  auto scale_factor = sdp::calculate_scale(query, scale).expect_float();
+
+  // Apple's MPSGraph corrupts SDPA outputs when the score matrix exceeds 2^32
+  // total elements (pytorch/pytorch#179352). Chunk along the Q axis to keep
+  // each impl call below the threshold. SDPA's softmax is row-wise over Q so
+  // chunking is mathematically exact.
+  constexpr uint64_t kScoreElemThreshold = 1ULL << 32;
+  uint64_t total_score_elems = static_cast<uint64_t>(batchSize) * static_cast<uint64_t>(num_head) *
+      static_cast<uint64_t>(qSize) * static_cast<uint64_t>(kSize);
+
+  Tensor out;
+  Tensor attn;
+  if (total_score_elems <= kScoreElemThreshold) {
+    std::tie(out, attn) = sdpa_general_mps_impl(query, key, value, attn_mask, is_causal, scale_factor);
+  } else {
+    uint64_t per_q_row =
+        static_cast<uint64_t>(batchSize) * static_cast<uint64_t>(num_head) * static_cast<uint64_t>(kSize);
+    int64_t q_chunk = static_cast<int64_t>(std::max<uint64_t>(1, kScoreElemThreshold / per_q_row));
+    if (per_q_row > kScoreElemThreshold) {
+      TORCH_WARN_ONCE("MPS SDPA: B*H*kv_seq (=",
+                      per_q_row,
+                      ") exceeds the score-matrix element threshold ",
+                      kScoreElemThreshold,
+                      "; even single-row Q chunks exceed it and outputs may still be incorrect.");
+    }
+
+    out = at::empty({batchSize, num_head, qSize, valueHeadSize}, query.options());
+    attn = at::empty({batchSize, num_head, qSize, kSize}, query.options());
+
+    for (int64_t qs = 0; qs < qSize; qs += q_chunk) {
+      int64_t cur = std::min(q_chunk, qSize - qs);
+      auto q_slice = query.narrow(2, qs, cur);
+
+      std::optional<Tensor> chunk_mask;
+      if (is_causal) {
+        // Synthesize a per-chunk additive causal mask: 0 if j <= (qs + i)
+        // else -1e20 (matching the value used by the in-graph causal path).
+        // Pass it as attn_mask with is_causal=false so the impl's causal
+        // branch (which assumes the chunk starts at row 0) is bypassed.
+        auto i_idx = at::arange(qs, qs + cur, query.options().dtype(kLong)).unsqueeze(1);
+        auto j_idx = at::arange(0, kSize, query.options().dtype(kLong)).unsqueeze(0);
+        auto valid = at::le(j_idx, i_idx);
+        auto m2d = at::where(valid, at::zeros({}, query.options()), at::full({}, -1e20, query.options()));
+        chunk_mask = m2d.unsqueeze(0).unsqueeze(0).expand({batchSize, num_head, cur, kSize});
+      } else if (attn_mask) {
+        chunk_mask = attn_mask->narrow(2, qs, cur);
+      }
+
+      auto chunk_result = sdpa_general_mps_impl(q_slice, key, value, chunk_mask, /*is_causal=*/false, scale_factor);
+      out.narrow(2, qs, cur).copy_(std::get<0>(chunk_result));
+      attn.narrow(2, qs, cur).copy_(std::get<1>(chunk_result));
+    }
   }
 
   auto final_out = out;
