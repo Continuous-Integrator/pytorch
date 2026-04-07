@@ -249,6 +249,7 @@ dtensor_fails = {
     xfail("squeeze", "multiple"),
     # group_norm: sharding passes wrong N/HxW scalars to native_group_norm
     xfail("nn.functional.group_norm"),
+    # instance_norm decomposes to group_norm → same N/HxW mismatch
     xfail("nn.functional.instance_norm"),
     # -- meta tensor not allocated: tensor_split fake prop issue --
     # Fix: fix fake tensor propagation for tensor_split to allocate meta data.
