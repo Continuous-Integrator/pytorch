@@ -35,10 +35,7 @@ class GetItemTests(torch._dynamo.test_case.TestCase):
             )
 
         x = torch.randn(4)
-        ref = fn(x)
-        res = self._compile(fn, x)
-        for r, e in zip(res, ref):
-            self.assertEqual(r, e)
+        self.assertEqual(fn(x), self._compile(fn, x))
 
     def test_list_getitem_compiled_directly(self):
         compiled = torch.compile(operator.getitem, backend="eager", fullgraph=True)
@@ -55,11 +52,7 @@ class GetItemTests(torch._dynamo.test_case.TestCase):
             return full, partial, single
 
         x = torch.randn(4)
-        ref = fn(x)
-        res = self._compile(fn, x)
-        for ref_list, res_list in zip(ref, res):
-            for r, e in zip(res_list, ref_list):
-                self.assertEqual(r, e)
+        self.assertEqual(fn(x), self._compile(fn, x))
 
     def test_list_negative_index(self):
         def fn(x):
@@ -78,10 +71,7 @@ class GetItemTests(torch._dynamo.test_case.TestCase):
             )
 
         x = torch.randn(4)
-        ref = fn(x)
-        res = self._compile(fn, x)
-        for r, e in zip(res, ref):
-            self.assertEqual(r, e)
+        self.assertEqual(fn(x), self._compile(fn, x))
 
     def test_list_invalid_index_type(self):
         def fn(x):
@@ -133,11 +123,7 @@ class GetItemTests(torch._dynamo.test_case.TestCase):
             return full, partial, single
 
         x = torch.randn(4)
-        ref = fn(x)
-        res = self._compile(fn, x)
-        for ref_tup, res_tup in zip(ref, res):
-            for r, e in zip(res_tup, ref_tup):
-                self.assertEqual(r, e)
+        self.assertEqual(fn(x), self._compile(fn, x))
 
     def test_tuple_bool_index(self):
         def fn(x):
@@ -632,7 +618,6 @@ class GetItemTests(torch._dynamo.test_case.TestCase):
 
     # ===================================================================
     # CPython behavioral gaps — expectedFailure until implemented
-    # See agent_space/cpython_getitem_gap_analysis.md for details.
     # ===================================================================
 
     # --- DequeVariable (sq_item path) ---
