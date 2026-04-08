@@ -26,7 +26,8 @@ TORCH_PYTHON_API PyObject* CppFunction_pynew(
     return nullptr;
   THPCppFunction* f = (THPCppFunction*)obj.get();
   HANDLE_TH_ERRORS
-  new (&f->cdata) c10::intrusive_ptr<Node>(c10::intrusive_ptr<Node>::unsafe_steal_from_new(Ctor()(args)));
+  new (&f->cdata) c10::intrusive_ptr<Node>(
+      c10::intrusive_ptr<Node>::unsafe_steal_from_new(Ctor()(args)));
   END_HANDLE_TH_ERRORS
   if (!f->cdata) {
     return nullptr;

@@ -69,7 +69,8 @@ AnomalyMetadata* Node::metadata() noexcept {
 }
 
 // Iteratively release child nodes to prevent stack overflow on deletion
-// of deep computation graphs. See https://github.com/pytorch/pytorch/issues/5534
+// of deep computation graphs. See
+// https://github.com/pytorch/pytorch/issues/5534
 static void gatherFunctions(
     Node* func,
     std::vector<c10::intrusive_ptr<Node>>& stack) {

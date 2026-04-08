@@ -14,7 +14,9 @@ class PyObjectPreservation {
   // Store a PyObject wrapper on a fresh c10 wrapper. The caller must hold
   // a unique reference to `target`.
   template <typename T>
-    requires requires(T& t) { t.pyobj_slot(); }
+  requires requires(T& t) {
+    t.pyobj_slot();
+  }
   static void init_fresh_nonatomic(T& target, PyObject* pyobj) {
     auto* slot = target.pyobj_slot();
     TORCH_INTERNAL_ASSERT(slot->load_pyobj() == nullptr);
@@ -34,7 +36,9 @@ class PyObjectPreservation {
   // if another thread races and wins, the factory's result is destroyed and
   // the winner's wrapper is returned instead.
   template <typename T, typename Factory>
-    requires requires(T& t) { t.pyobj_slot(); }
+  requires requires(T& t) {
+    t.pyobj_slot();
+  }
   static PyObject* get_or_init(T& target, Factory&& pyobj_factory) {
     auto* slot = target.pyobj_slot();
     PyObject* obj = slot->load_pyobj();
@@ -50,8 +54,7 @@ class PyObjectPreservation {
 
     // Fast path: if we're the only owner, no other thread can see this
     // object, so we can skip the atomic CAS.
-    auto combined =
-        target.combined_refcount_.load(std::memory_order_relaxed);
+    auto combined = target.combined_refcount_.load(std::memory_order_relaxed);
     if (combined == c10::detail::kUniqueRef) {
       slot->pyobj_.store(obj, std::memory_order_relaxed);
       slot->pyobj_interpreter_.store(

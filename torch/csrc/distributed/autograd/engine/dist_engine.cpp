@@ -483,7 +483,8 @@ c10::intrusive_ptr<c10::ivalue::Future> DistEngine::executeSendFunctionAsync(
       initializedContextIds_.end()) {
     edge_list outputEdges;
     // Pass in a dummy graphRoot since all send functions are the roots.
-    auto dummyRoot = c10::make_intrusive<GraphRoot>(edge_list(), variable_list());
+    auto dummyRoot =
+        c10::make_intrusive<GraphRoot>(edge_list(), variable_list());
     computeDependencies(
         autogradContext, {}, {}, dummyRoot, outputEdges, retainGraph);
 

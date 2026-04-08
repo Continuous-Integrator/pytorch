@@ -15,7 +15,8 @@
 
 namespace torch::autograd {
 
-using function_constructor = std::function<c10::intrusive_ptr<Node>(edge_list&&)>;
+using function_constructor =
+    std::function<c10::intrusive_ptr<Node>(edge_list&&)>;
 
 /**
  * Wraps the tensor outputs in variables and creates the grad_fn and sets the
