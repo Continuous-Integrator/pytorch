@@ -28,7 +28,6 @@
 #include <c10/core/DispatchKeySet.h>
 #include <c10/core/impl/DeviceGuardImplInterface.h>
 #include <c10/core/impl/FakeTensorModeTLS.h>
-#include <c10/core/impl/TorchDispatchModeTLS.h>
 #include <c10/util/AbortHandler.h>
 #include <c10/util/Backtrace.h>
 #include <c10/util/Logging.h>
@@ -2947,7 +2946,6 @@ Call this whenever a new thread is created in order to propagate values from
       [](py::object converter, py::object shape_env) {
         Py_INCREF(shape_env.ptr());
         Py_INCREF(converter.ptr());
-
         auto mode = std::make_shared<c10::FakeTensorMode>(
             std::make_shared<c10::SafePyObject>(
                 shape_env.ptr(), getPyInterpreter()),
@@ -2959,9 +2957,6 @@ Call this whenever a new thread is created in order to propagate values from
       py::arg("shape_env") = py::none());
   py_module.def("_exit_fake_tensor_mode", []() {
     c10::impl::FakeTensorModeTLS::reset_state();
-  });
-  py_module.def("_is_cpp_fake_tensor_mode_active", []() -> bool {
-    return c10::impl::FakeTensorModeTLS::get_state() != nullptr;
   });
 
   py_module.def("_set_meta_in_tls_dispatch_include", [](bool meta_in_tls) {

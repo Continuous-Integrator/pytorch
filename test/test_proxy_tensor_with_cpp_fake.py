@@ -610,12 +610,6 @@ def forward(self, x_1):
                 continue
             self.assertTrue("val" in n.meta)
 
-    def test_cpp_fake_mode_is_active(self):
-        """Verify that the C++ fake mode TLS is active inside the context."""
-        with cpp_fake_tensor_mode():
-            self.assertTrue(torch._C._is_cpp_fake_tensor_mode_active())
-        self.assertFalse(torch._C._is_cpp_fake_tensor_mode_active())
-
     def test_simple_add(self):
         def f(x, y):
             return x + y
