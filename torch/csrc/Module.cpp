@@ -765,12 +765,11 @@ struct TorchDLPackExchangeAPI : public DLPackExchangeAPI {
     try {
       at::IntArrayRef shape(
           prototype->shape, prototype->shape + prototype->ndim);
-      at::TensorOptions options = at::TensorOptions()
-                                      .dtype(at::toScalarType(prototype->dtype))
-                                      .device(
-                                          at::dlDeviceToTorchDevice(
-                                              prototype->device.device_type,
-                                              prototype->device.device_id));
+      at::TensorOptions options =
+          at::TensorOptions()
+              .dtype(at::toScalarType(prototype->dtype))
+              .device(at::dlDeviceToTorchDevice(
+                  prototype->device.device_type, prototype->device.device_id));
       at::Tensor tensor = at::empty(shape, options);
       *out = at::toDLPackVersioned(tensor);
       return 0;
@@ -1518,10 +1517,9 @@ static PyObject* THPModule_getDefaultDtype(PyObject* _unused, PyObject* arg) {
 
 static PyObject* THPModule_getDefaultDevice(PyObject* _unused, PyObject* arg) {
   HANDLE_TH_ERRORS
-  return THPUtils_packString(
-      c10::DeviceTypeName(
-          dispatchKeyToDeviceType(torch::tensors::get_default_dispatch_key()),
-          /*lower_case=*/true));
+  return THPUtils_packString(c10::DeviceTypeName(
+      dispatchKeyToDeviceType(torch::tensors::get_default_dispatch_key()),
+      /*lower_case=*/true));
   END_HANDLE_TH_ERRORS
 }
 
@@ -2601,23 +2599,22 @@ Call this whenever a new thread is created in order to propagate values from
   // Scaled Dot Product Attention utilities
   ////////////////////////////////////////////////////////////////////////////////
   py::class_<sdp::sdp_params>(py_module, "_SDPAParams")
-      .def(
-          py::init([](at::Tensor const& query,
-                      at::Tensor const& key,
-                      at::Tensor const& value,
-                      std::optional<at::Tensor> attn_mask,
-                      double dropout,
-                      bool is_causal,
-                      bool enable_gqa) {
-            return sdp::sdp_params{
-                query,
-                key,
-                value,
-                std::move(attn_mask),
-                dropout,
-                is_causal,
-                enable_gqa};
-          }))
+      .def(py::init([](at::Tensor const& query,
+                       at::Tensor const& key,
+                       at::Tensor const& value,
+                       std::optional<at::Tensor> attn_mask,
+                       double dropout,
+                       bool is_causal,
+                       bool enable_gqa) {
+        return sdp::sdp_params{
+            query,
+            key,
+            value,
+            std::move(attn_mask),
+            dropout,
+            is_causal,
+            enable_gqa};
+      }))
       .def_readonly("query", &sdp::sdp_params::query)
       .def_readonly("key", &sdp::sdp_params::key)
       .def_readonly("value", &sdp::sdp_params::value)
@@ -2765,9 +2762,8 @@ Call this whenever a new thread is created in order to propagate values from
   py_module.def(
       "_get_fp32_precision_getter",
       [](const std::string& backend, const std::string& op) {
-        return at::precision2str(
-            at::globalContext().float32Precision(
-                at::str2backend(backend), at::str2op(op)));
+        return at::precision2str(at::globalContext().float32Precision(
+            at::str2backend(backend), at::str2op(op)));
       });
 
   py_module.def(
