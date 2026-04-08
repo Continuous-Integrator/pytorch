@@ -7009,7 +7009,7 @@ def forward(self, s77 : torch.SymInt, s27 : torch.SymInt, L_x_ : torch.Tensor):
             RuntimeError,
             "'memory_format' argument is incompatible with 'out' tensor argument",
         ):
-            opt_model([2, 3], out) 
+            opt_model([2, 3], out)
 
     def test_no_tracing_into_eval_frame(self):
         # test that dynamo doesn't trace into nested calls from eval_frame

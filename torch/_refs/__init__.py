@@ -5270,8 +5270,6 @@ def empty_out(
     out: TensorLikeType,
     memory_format: torch.memory_format | None = None,
 ) -> TensorLikeType:
-    # if memory_format is not None and not isinstance(out, torch.Tensor):
-    #     raise TypeError(f"out must be a Tensor, got {type(out).__name__}")
     from torch.fx.experimental.symbolic_shapes import guard_or_true
 
     if guard_or_true(out.shape != torch.Size(size)):
