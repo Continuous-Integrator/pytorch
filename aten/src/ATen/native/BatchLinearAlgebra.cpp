@@ -3891,7 +3891,7 @@ Tensor& linalg_solve_triangular_out(
       //
       // Conj materialization optimizations:
       // (A.is_conj() != B.is_conj()) might imply materialized conj in memory,
-      // see solve_by_layout_match and  solve_with_matching_layout.
+      // see solve_by_layout_match and solve_with_matching_layout.
       // So, we make a copy of A such that (A_clone.is_conj() == B.is_conj().
       auto A_clone = cloneMatrix(
         B.is_conj() ? A.conj() : A,
@@ -3904,16 +3904,16 @@ Tensor& linalg_solve_triangular_out(
   }(A_, B_);
 
   // Prepare solve output to be BLAS-compliant.
-  auto pOut = [&]() -> c10::MaybeOwned<Tensor> {
+  auto pOut = [](const Tensor& out) -> c10::MaybeOwned<Tensor> {
     // Out is borrowed when
     // - out is empty, or
     // - out is BLAS-compatible (here: contiguous rows or cols and no memory overlaps across all dims).
     if ((out.numel() == 0) || (isColMajorLike(out) || isRowMajorLike(out))) {
       return c10::MaybeOwned<Tensor>::borrowed(out);
     } else {
-      return c10::MaybeOwned<Tensor>::owned(at::empty({0}, A.options()));
+      return c10::MaybeOwned<Tensor>::owned(at::empty({0}, out.options()));
     }
-  }();
+  }(out);
   // Empty out with out.shape != B.sizes implies full ownership.
   // This means we are free to alter its stride structure and conj/neg flags.
   const bool out_fully_owned = (pOut->numel() == 0) && (pOut->sizes() != B_.sizes());
@@ -3935,7 +3935,7 @@ Tensor& linalg_solve_triangular_out(
 
   // Run solve_kernel on
   // (op(A), B) if A is col-major, or
-  // (op(A^T), B^T), otherwise.
+  // (op(A^T), B^T), otherwise (left and upper are mutated).
   // *^T is applied to the strides before the kernel call,
   // op(*) is applied in the kernel.
   const auto solve = [&left, &upper, &solve_kernel](
@@ -4011,33 +4011,27 @@ Tensor& linalg_solve_triangular_out(
       // Optimization for avoiding conj materializations:
       // (A*, B) -> (A^T^H, B) -> ((A^T)^H, B), op(A) = A^H;
       // (A, B*) = (A*, B)* -> ((A^T)^H, B)*, op(A) = A^H;
+      // (A, B) and (A*, B*) follow a similar route but with op(A)=A^T
       upper = !upper;
-      if (A.is_conj() != B.is_conj()) {
-        solve_with_matching_layout(
-          A.is_conj() ? A.mH() : A.mT(),
-          B.is_conj() ? B.conj() : B,
-          TransposeType::ConjTranspose
-        );
-      } else {
-        solve_with_matching_layout(A.mT(), B, TransposeType::Transpose);
-      }
+      solve_with_matching_layout(
+        A.is_conj() ? A.mH() : A.mT(),
+        B.is_conj() ? B.conj() : B,
+        (A.is_conj() != B.is_conj()) ? TransposeType::ConjTranspose : TransposeType::Transpose
+      );
     } else {
       // Here A is col-major and B is row-major
       // Match layouts by transposing the problem and picking an op
       //
       // Optimizations for avoiding conj materializations:
       // (A*, B) -> (A^H, B^T) = (op(A.conj()), B^T), with op(A)=A^H;
-      // (A, B*) -> (A^T, B*^T) = (A*^T, B^T)* = (A^H, B^T) = (op(A), B^T), with op(A)=A^H;
+      // (A, B*) -> (A^T, B*^T) = (A*^T, B^T)* = (A^H, B^T)* = (op(A), B^T)*, with op(A)=A^H;
+      // (A, B) and (A*, B*) follow a similar route but with op(A)=A^T.
       left = !left;
-      if (A.is_conj() != B.is_conj()) {
-        solve_with_matching_layout(
-          A.is_conj() ? A.conj() : A,
-          (B.is_conj() ? B.conj() : B).mT(),
-          TransposeType::ConjTranspose
-        );
-      } else {
-        solve_with_matching_layout(A, B.mT(), TransposeType::Transpose);
-      }
+      solve_with_matching_layout(
+        A.is_conj() ? A.conj() : A,
+        B.is_conj() ? B.mH() : B.mT(),
+        (A.is_conj() != B.is_conj()) ? TransposeType::ConjTranspose : TransposeType::Transpose
+      );
     }
   };
 
