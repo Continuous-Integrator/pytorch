@@ -60,8 +60,7 @@ PyObject* THPStorage_NewWithStorage(PyTypeObject* type, c10::Storage _storage) {
 
   c10::StorageImpl* storage_impl = _storage.unsafeGetStorageImpl();
   PyObject* obj = THPStorage_New(type, std::move(_storage));
-  PyObjectPreservation::init_fresh_nonatomic(
-      storage_impl, storage_impl->pyobj_slot(), obj);
+  PyObjectPreservation::init_fresh_nonatomic(*storage_impl, obj);
   return obj;
 }
 
@@ -73,22 +72,9 @@ PyObject* THPStorage_Wrap(c10::Storage storage) {
   }
 
   c10::StorageImpl* storage_impl = storage.unsafeGetStorageImpl();
-  c10::impl::PyObjectSlot* pyobj_slot = storage_impl->pyobj_slot();
-
-  PyObject* obj = pyobj_slot->load_pyobj();
-  if (obj) {
-    return Py_NewRef(obj);
-  }
-
-  obj = THPStorage_New(THPStorageClass, std::move(storage));
-  PyObject* wrapper =
-      PyObjectPreservation::init_once(storage_impl, pyobj_slot, obj);
-  if (wrapper != obj) {
-    // Another thread beat us to it
-    Py_DECREF(obj);
-    return Py_NewRef(wrapper);
-  }
-  return obj;
+  return PyObjectPreservation::get_or_init(*storage_impl, [&]() {
+    return THPStorage_New(THPStorageClass, std::move(storage));
+  });
 }
 
 static void THPStorage_dealloc(PyObject* self) {
