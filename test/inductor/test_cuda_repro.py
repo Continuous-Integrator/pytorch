@@ -2988,6 +2988,17 @@ def triton_poi_fused_add_reflection_pad2d_0(in_ptr0, in_ptr1, out_ptr0, xnumel, 
         x = torch.randn(1000, device=device_type, dtype=torch.float32) + 0.1
         self.common(fn, [x])
 
+    @config.patch("eager_numerics.division_rounding", True)
+    def test_div_by_constant_with_division_rounding(self):
+        # When division_rounding is enabled, div-by-constant must NOT be
+        # converted to mul-by-reciprocal, because mul-by-reciprocal does not
+        # match IEEE round-to-nearest division.
+        def fn(x):
+            return x / torch.tensor(1e-8, device=x.device)
+
+        x = torch.randn(2, 64, 32, 32, device=device_type).relu()
+        self.common(fn, [x], atol=0, rtol=0)
+
 
 if __name__ == "__main__":
     from torch._inductor.test_case import run_tests
