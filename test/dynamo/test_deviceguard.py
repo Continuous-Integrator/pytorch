@@ -5,7 +5,7 @@ from unittest.mock import Mock
 import torch
 import torch._dynamo.test_case
 import torch._dynamo.testing
-from torch._dynamo.device_interface import CudaInterface, DeviceGuard
+from torch._dynamo.device_interface import CudaInterface, DeviceGuard, XpuInterface
 from torch.testing._internal.common_cuda import TEST_CUDA, TEST_MULTIGPU
 from torch.testing._internal.common_utils import TEST_XPU
 
@@ -55,7 +55,7 @@ class TestCUDADeviceGuard(torch._dynamo.test_case.TestCase):
 
     def setUp(self):
         super().setUp()
-        self.device_interface = CudaInterface
+        self.device_interface = CudaInterface if TEST_CUDA else XpuInterface
 
     @unittest.skipIf(not TEST_MULTIGPU, "need multiple GPU")
     def test_device_guard(self):
