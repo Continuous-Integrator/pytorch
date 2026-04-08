@@ -55,21 +55,12 @@ IncludeDispatchKeyGuard::~IncludeDispatchKeyGuard() {
 }
 
 ExcludeDispatchKeyGuard::ExcludeDispatchKeyGuard(DispatchKeySet exclude)
-    : tls_(&raw_local_dispatch_key_set),
-      exclude_(DispatchKeySet(
-          DispatchKeySet::RAW,
-          exclude.raw_repr() & ~tls_->excluded().raw_repr())) {
-  if (!exclude_.empty()) {
-    tls_->set_excluded(tls_->excluded() | exclude_);
-  }
+    : tls_(&raw_local_dispatch_key_set), saved_state_(tls_->excluded()) {
+  tls_->set_excluded(saved_state_ | exclude);
 }
 
 ExcludeDispatchKeyGuard::~ExcludeDispatchKeyGuard() {
-  if (!exclude_.empty()) {
-    tls_->set_excluded(DispatchKeySet(
-        DispatchKeySet::RAW,
-        tls_->excluded().raw_repr() & ~exclude_.raw_repr()));
-  }
+  tls_->set_excluded(saved_state_);
 }
 
 // Non-RAII API
