@@ -158,7 +158,9 @@ struct GraphTask : std::enable_shared_from_this<GraphTask> {
 
   // Set an appropriate exception on this graph_task which was encountered while
   // running the provided function.
-  void set_exception(std::exception_ptr eptr, const c10::intrusive_ptr<Node>& fn);
+  void set_exception(
+      std::exception_ptr eptr,
+      const c10::intrusive_ptr<Node>& fn);
 
   // Set an appropriate exception on this graph_task which was encountered while
   // running the provided function. But doesn't signal completion on

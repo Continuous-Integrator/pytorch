@@ -42,12 +42,12 @@ class TORCH_API DistAutogradContext {
       int64_t autograd_message_id);
 
   // Return all send functions for this context.
-  std::unordered_map<int64_t, c10::intrusive_ptr<SendRpcBackward>> sendFunctions()
-      const;
+  std::unordered_map<int64_t, c10::intrusive_ptr<SendRpcBackward>>
+  sendFunctions() const;
 
   // Return all recv functions for this context.
-  std::unordered_map<int64_t, c10::intrusive_ptr<RecvRpcBackward>> recvFunctions()
-      const;
+  std::unordered_map<int64_t, c10::intrusive_ptr<RecvRpcBackward>>
+  recvFunctions() const;
 
   // Adds a future message recording an outstanding RPC.
   void addOutstandingRpc(const c10::intrusive_ptr<rpc::JitFuture>& jitFuture);

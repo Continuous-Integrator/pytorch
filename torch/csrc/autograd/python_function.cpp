@@ -571,7 +571,8 @@ static PyObject* THPFunction_new(
   // most fields
   THPFunction* self = (THPFunction*)obj;
   // Setup the PyNode later; we can't keep it live here
-  new (&self->cdata) c10::weak_intrusive_ptr<PyNode>(c10::intrusive_ptr<PyNode>());
+  new (&self->cdata)
+      c10::weak_intrusive_ptr<PyNode>(c10::intrusive_ptr<PyNode>());
   new (&self->output_info) std::vector<VariableInfo>();
   new (&self->input_info) std::vector<VariableInfo>();
   new (&self->saved_variables) std::vector<SavedVariable>();
@@ -1375,8 +1376,7 @@ PyObject* THPFunction_apply(PyObject* cls, PyObject* inputs) {
     return nullptr;
   THPFunction* ctx = (THPFunction*)ctx_obj.get();
 
-  auto cdata =
-      c10::make_intrusive<PyNode>(std::move(ctx_obj));
+  auto cdata = c10::make_intrusive<PyNode>(std::move(ctx_obj));
   ctx->cdata = cdata;
 
   // Record input nodes if tracing

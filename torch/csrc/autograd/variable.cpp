@@ -704,8 +704,8 @@ const c10::intrusive_ptr<torch::autograd::Node>& VariableHooks::grad_fn(
         }
         diff_view_meta->grad_fn_ = diff_view.grad_fn();
       } else {
-        auto fn =
-            c10::make_intrusive<torch::autograd::generated::AsStridedBackward0>();
+        auto fn = c10::make_intrusive<
+            torch::autograd::generated::AsStridedBackward0>();
         fn->self_geometry = at::TensorGeometry(view_info.base_);
         fn->size = self.sym_sizes().vec();
         fn->stride = self.sym_strides().vec();

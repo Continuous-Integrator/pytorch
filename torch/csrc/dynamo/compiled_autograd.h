@@ -254,7 +254,9 @@ struct TensorArgs {
     return lookup(tensor, true);
   }
 
-  TensorArg& add(const SavedVariable& sv, const c10::intrusive_ptr<Node>& node) {
+  TensorArg& add(
+      const SavedVariable& sv,
+      const c10::intrusive_ptr<Node>& node) {
     // no unpack hooks in this codepath
     at::Tensor tensor = sv.unpack(node);
     TensorArg& arg = add(tensor);

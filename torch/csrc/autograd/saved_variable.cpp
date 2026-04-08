@@ -225,7 +225,8 @@ Variable SavedVariable::unpack(c10::intrusive_ptr<Node> saved_for) const {
     var = make_variable(data, requires_grad_);
   }
 
-  impl::set_grad_accumulator(var, c10::weak_intrusive_ptr<Node>(grad_accumulator_));
+  impl::set_grad_accumulator(
+      var, c10::weak_intrusive_ptr<Node>(grad_accumulator_));
   impl::set_version_counter(var, impl::version_counter(data));
 
   // NB: var here is never a view so there is no need to make anything special
