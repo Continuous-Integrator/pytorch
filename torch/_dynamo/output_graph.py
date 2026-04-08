@@ -3804,6 +3804,8 @@ class SubgraphTracer(fx.Tracer):
                         )
                     ]
 
+        # fx.Node base class pre-sets stack_trace to "", so check for
+        # both missing and empty to ensure we populate the real trace.
         if not rv.node.meta.get("stack_trace", ""):
             frame_summaries: list[traceback.FrameSummary] = []
             while tx:
