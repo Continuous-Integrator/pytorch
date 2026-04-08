@@ -48,8 +48,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.event.client_payload.gh_token || inputs.gh_token || secrets.GITHUB_TOKEN }}
         run: |
+          echo "::add-mask::${GH_TOKEN}"
           echo "${GH_TOKEN}" | gh auth login --with-token
-          gh auth status
+          echo "gh CLI authenticated successfully"
 
       - name: Install Claude CLI
         run: npm install -g @anthropic-ai/claude-code
