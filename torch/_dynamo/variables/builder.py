@@ -1541,6 +1541,13 @@ class VariableBuilder:
                 value,
                 source=self.source,
             )
+        elif isinstance(value, torch._C.Generator):
+            unimplemented(
+                gb_type="Generator",
+                context="Generator objects as inputs",
+                explanation="torch.Generator is not supported in dynamo.",
+                hints=[*graph_break_hints.SUPPORTABLE],
+            )
         elif TorchScriptObjectVariable.is_matching_cls(type(value)):
             from ..source import (
                 FlattenScriptObjectSource,

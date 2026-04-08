@@ -3569,12 +3569,9 @@ instantiate_parametrized_tests(TestOpaqueObject)
 
 @unittest.skipIf(not torch.cuda.is_available(), "requires CUDA")
 class TestOpaqueGenerator(TestCase):
-    def test_make_fx_with_opaque_generator(self):
-        """make_fx should trace through OpaqueGenerator inputs."""
-        from torch._prims.rng_prims import (
-            graphsafe_run_with_rng_state,
-            OpaqueGenerator,
-        )
+    def test_make_fx_with_generator(self):
+        """make_fx should trace through Generator inputs as opaque values."""
+        from torch._prims.rng_prims import graphsafe_run_with_rng_state
 
         torch.cuda.init()
 
@@ -3582,7 +3579,13 @@ class TestOpaqueGenerator(TestCase):
             def forward(self, q, k, v, rng_state):
                 out = graphsafe_run_with_rng_state(
                     torch.ops.aten._scaled_dot_product_efficient_attention.default,
-                    q, k, v, None, True, 0.1, True,
+                    q,
+                    k,
+                    v,
+                    None,
+                    True,
+                    0.1,
+                    True,
                     rng_state=rng_state,
                 )
                 return out[0]
@@ -3590,7 +3593,7 @@ class TestOpaqueGenerator(TestCase):
         q = torch.randn(2, 8, 64, 32, device="cuda", dtype=torch.float16)
         k = torch.randn(2, 8, 64, 32, device="cuda", dtype=torch.float16)
         v = torch.randn(2, 8, 64, 32, device="cuda", dtype=torch.float16)
-        gen = OpaqueGenerator(torch.cuda.default_generators[0].clone_state())
+        gen = torch.cuda.default_generators[0].clone_state()
 
         gm = make_fx(M(), tracing_mode="real")(q, k, v, gen)
 
@@ -3607,16 +3610,22 @@ class TestOpaqueGenerator(TestCase):
             def forward(self, q, k, v, rng_state):
                 out = graphsafe_run_with_rng_state(
                     torch.ops.aten._scaled_dot_product_efficient_attention.default,
-                    q, k, v, None, False, 0.0, True,
+                    q,
+                    k,
+                    v,
+                    None,
+                    False,
+                    0.0,
+                    True,
                     rng_state=rng_state,
                 )
                 return out[0]
 
-        gen1 = OpaqueGenerator(torch.cuda.default_generators[0].clone_state())
-        gen2 = OpaqueGenerator(torch.cuda.default_generators[0].clone_state())
+        gen1 = torch.cuda.default_generators[0].clone_state()
+        gen2 = torch.cuda.default_generators[0].clone_state()
         gm0 = make_fx(M0(), tracing_mode="real")(q, k, v, gen1)
         expected = M0()(q, k, v, gen2)
-        gen3 = OpaqueGenerator(torch.cuda.default_generators[0].clone_state())
+        gen3 = torch.cuda.default_generators[0].clone_state()
         actual = gm0(q, k, v, gen3)
         self.assertEqual(actual, expected)
 

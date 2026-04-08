@@ -1237,7 +1237,7 @@ class GraphLowering(torch.fx.Interpreter):
             self.graph_input_names.append(target)
             return None
         # See note: Note: [Generator arguments in AOTDispatcher]
-        elif isinstance(example, (torch.Generator, torch._prims.rng_prims.OpaqueGenerator)):
+        elif isinstance(example, torch.Generator):
             assert len(V.graph.current_node.users) == 1 and next(
                 iter(V.graph.current_node.users)
             ).target in (
