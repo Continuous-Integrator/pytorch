@@ -27,7 +27,7 @@ struct Edge;
 struct FunctionPostHook;
 struct FunctionPreHook;
 struct Node;
-struct SavedVariable;
+class SavedVariable;
 
 using Variable = at::Tensor;
 using tensor_list = std::vector<at::Tensor>;
