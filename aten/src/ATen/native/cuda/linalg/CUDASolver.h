@@ -2,13 +2,13 @@
 
 #include <ATen/cuda/CUDAContext.h>
 
-#if defined(CUDART_VERSION) && defined(CUSOLVER_VERSION) && CUSOLVER_VERSION >= 11000
-// cuSOLVER version >= 11000 includes 64-bit API
+#if defined(HIPSOLVER_HAS_64BIT_SOLVER_EXTENSIONS) || (defined(CUDART_VERSION) && defined(CUSOLVER_VERSION) && CUSOLVER_VERSION >= 11000)
+// cuSOLVER version >= 11000 includes 64-bit API; hipSOLVER with 64-bit extensions also supports these
 #define USE_CUSOLVER_64_BIT
 #endif
 
-#if defined(CUDART_VERSION) && defined(CUSOLVER_VERSION) && CUSOLVER_VERSION >= 11701
-// cuSOLVER version >= 11701 includes 64-bit API for batched syev
+#if defined(HIPSOLVER_HAS_64BIT_SOLVER_EXTENSIONS) || (defined(CUDART_VERSION) && defined(CUSOLVER_VERSION) && CUSOLVER_VERSION >= 11701)
+// cuSOLVER version >= 11701 includes 64-bit API for batched syev; hipSOLVER with 64-bit extensions also supports
 #define USE_CUSOLVER_64_BIT_XSYEV_BATCHED
 #endif
 
@@ -629,8 +629,8 @@ void xsyevd<c10::complex<double>, double>(
 
 
 
-// cuSOLVER Xgeev (non-Hermitian eigen decomposition, CUDA >= 12.8)
-#if defined(CUSOLVER_VERSION) && (CUSOLVER_VERSION >= 11702)
+// cuSOLVER Xgeev (non-Hermitian eigen decomposition, CUDA >= 12.8 or hipSOLVER with 64-bit extensions)
+#if defined(HIPSOLVER_HAS_64BIT_SOLVER_EXTENSIONS) || (defined(CUSOLVER_VERSION) && (CUSOLVER_VERSION >= 11702))
 
 #define CUDASOLVER_XGEEV_BUFFERSIZE_ARGTYPES(scalar_t)                        \
 cusolverDnHandle_t handle, cusolverDnParams_t params,                         \
