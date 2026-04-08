@@ -9,9 +9,12 @@
 #include <ATen/Functions.h>
 #include <ATen/NativeFunctions.h>
 #else
+#include <ATen/ops/empty_like.h>
 #include <ATen/ops/grid_sampler_2d.h>
+#include <ATen/ops/grid_sampler_2d_backward_native.h>
 #include <ATen/ops/grid_sampler_2d_native.h>
 #include <ATen/ops/grid_sampler_3d_native.h>
+#include <ATen/ops/zeros_like.h>
 #endif
 
 namespace at::native {
@@ -221,6 +224,99 @@ Tensor grid_sampler_3d_mps(const Tensor& input,
                                 /*sampler_dims=*/3,
                                 /*op_name=*/"grid_sampler_3d");
   return output;
+}
+
+std::tuple<Tensor, Tensor> grid_sampler_2d_backward_mps(const Tensor& grad_output,
+                                                        const Tensor& input,
+                                                        const Tensor& grid,
+                                                        int64_t _interpolation_mode,
+                                                        int64_t _padding_mode,
+                                                        bool align_corners,
+                                                        std::array<bool, 2> output_mask) {
+  check_grid_sampler_common(input, grid);
+  check_grid_sampler_2d(input, grid);
+
+  TORCH_CHECK(input.scalar_type() == grid.scalar_type(),
+              "expected input and grid to have the same type, but got ",
+              input.scalar_type(),
+              " and ",
+              grid.scalar_type());
+
+  TORCH_CHECK_NOT_IMPLEMENTED(!c10::isComplexType(input.scalar_type()),
+                              "grid_sampler_2d_backward is not supported for complex on MPS");
+
+  auto input_requires_grad = output_mask[0];
+  Tensor grad_input = ([&]() {
+    if (input_requires_grad) {
+      return at::zeros_like(input, LEGACY_CONTIGUOUS_MEMORY_FORMAT);
+    } else {
+      return Tensor();
+    }
+  })();
+  auto grad_grid = at::empty_like(grid, LEGACY_CONTIGUOUS_MEMORY_FORMAT);
+
+  auto interpolation_mode = static_cast<GridSamplerInterpolation>(_interpolation_mode);
+  auto padding_mode = static_cast<GridSamplerPadding>(_padding_mode);
+
+  auto N = input.size(0);
+  auto out_H = grid.size(1);
+  auto out_W = grid.size(2);
+  auto num_threads = N * out_H * out_W;
+
+  if (num_threads == 0) {
+    return std::make_tuple(grad_input, grad_grid);
+  }
+
+  GridSamplerBackwardParams<4> params;
+  params.forward.sampler_dims = 2;
+  params.forward.align_corners = align_corners;
+
+  // Forward output shape is [N, C, out_H, out_W]
+  params.forward.output_sizes[0] = safe_downcast<int32_t, int64_t>(N);
+  params.forward.output_sizes[1] = safe_downcast<int32_t, int64_t>(input.size(1));
+  params.forward.output_sizes[2] = safe_downcast<int32_t, int64_t>(out_H);
+  params.forward.output_sizes[3] = safe_downcast<int32_t, int64_t>(out_W);
+
+  for (const auto dim : c10::irange(input.dim())) {
+    params.forward.input_sizes[dim] = safe_downcast<int32_t, int64_t>(input.size(dim));
+    params.forward.input_strides[dim] = safe_downcast<int32_t, int64_t>(input.stride(dim));
+    params.forward.grid_sizes[dim] = safe_downcast<int32_t, int64_t>(grid.size(dim));
+    params.forward.grid_strides[dim] = safe_downcast<int32_t, int64_t>(grid.stride(dim));
+    params.grad_output_strides[dim] = safe_downcast<int32_t, int64_t>(grad_output.stride(dim));
+    if (input_requires_grad) {
+      params.grad_input_strides[dim] = safe_downcast<int32_t, int64_t>(grad_input.stride(dim));
+    } else {
+      params.grad_input_strides[dim] = 0;
+    }
+  }
+  params.grad_grid_sW = safe_downcast<int32_t, int64_t>(grad_grid.stride(2));
+  params.input_requires_grad = input_requires_grad;
+
+  using namespace mps;
+  MPSStream* mpsStream = getCurrentMPSStream();
+
+  dispatch_sync_with_rethrow(mpsStream->queue(), ^() {
+    @autoreleasepool {
+      id<MTLComputeCommandEncoder> computeEncoder = mpsStream->commandEncoder();
+      auto pso = lib.getPipelineStateForFunc(fmt::format("grid_sampler_2d_backward_{}_{}_{}",
+                                                         mps::interp_to_string(interpolation_mode),
+                                                         mps::padding_to_string(padding_mode),
+                                                         scalarToMetalTypeString(input)));
+
+      getMPSProfiler().beginProfileKernel(pso, "grid_sampler_2d_backward", {grad_output, input, grid});
+      [computeEncoder setComputePipelineState:pso];
+      if (input_requires_grad) {
+        mtl_setArgs(computeEncoder, grad_input, grad_grid, grad_output, input, grid, params);
+      } else {
+        mtl_setArgs(computeEncoder, input, grad_grid, grad_output, input, grid, params);
+      }
+
+      mtl_dispatch1DJob(computeEncoder, pso, num_threads);
+      getMPSProfiler().endProfileKernel(pso);
+    }
+  });
+
+  return std::make_tuple(grad_input, grad_grid);
 }
 
 } // namespace at::native

@@ -22194,10 +22194,6 @@ op_db: list[OpInfo] = [
         skips=(
             DecorateInfo(slowTest, 'TestDecomp', 'test_comprehensive', dtypes=(torch.float32, torch.float64),
                          active_if=IS_WINDOWS),
-            # Exception: The operator 'aten::grid_sampler_2d_backward' is not currently implemented for the MPS device
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_dtypes', device_type='mps'),
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_variant_consistency_eager', device_type='mps'),
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_noncontiguous_samples', device_type='mps'),
         ),),
     # TODO: Remove grid_sampler_3d tests once `nn.functional.grid_sample` has
     # MPS support for all cases.

@@ -13095,6 +13095,8 @@ class TestConsistency(TestCaseMPS):
                 atol, rtol = 5e-3, 5e-3
             if op.name == "nn.functional.embedding_bag" and dtype == torch.float16:
                 atol, rtol = 5e-3, 5e-3
+            if op.name == "grid_sampler_2d":
+                atol, rtol = 2e-5, 2e-4
             if op.name == "index_reduce" and op.variant_test_name in ['mean', 'prod'] and dtype in [torch.float16]:
                 atol, rtol = 0.02, 0.02
 
