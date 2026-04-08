@@ -2,7 +2,8 @@
 
 // Shared cubic interpolation helpers used by both GridSampler and UpSample
 // kernels. Based on the Catmull-Rom spline with A=-0.75.
-// See https://en.wikipedia.org/wiki/Bicubic_interpolation#Bicubic_convolution_algorithm
+// See
+// https://en.wikipedia.org/wiki/Bicubic_interpolation#Bicubic_convolution_algorithm
 
 template <typename accscalar_t>
 accscalar_t cubic_convolution1(accscalar_t x, accscalar_t A) {

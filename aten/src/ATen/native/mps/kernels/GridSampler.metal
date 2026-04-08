@@ -149,7 +149,6 @@ struct PadReflection {
   }
 };
 
-
 // 2D Bilinear interpolation
 template <typename Pad, typename T>
 static T interpolate_bilinear_2d(
