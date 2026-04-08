@@ -407,7 +407,6 @@ class TestFakePG(TestCase):
         self.assertIn("aten.lift_fresh.default", op_names)
         self.assertIn("c10d.allreduce_.default", op_names)
 
-
     def test_reduce_scatter_wrong_input_list_size(self):
         store = FakeStore()
         dist.init_process_group(backend="fake", rank=1, world_size=2, store=store)
@@ -423,9 +422,7 @@ class TestFakePG(TestCase):
         dist.init_process_group(backend="fake", rank=0, world_size=2, store=store)
 
         output = torch.empty(3, 3)
-        with self.assertRaisesRegex(
-            RuntimeError, "Incorrect input list size"
-        ):
+        with self.assertRaisesRegex(RuntimeError, "Incorrect input list size"):
             dist.scatter(output, [torch.ones(3, 3)])
 
     def test_reduce_scatter_base_wrong_input_size(self):
