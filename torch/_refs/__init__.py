@@ -5270,9 +5270,9 @@ def empty_out(
     out: TensorLikeType,
     memory_format: torch.memory_format | None = None,
 ) -> TensorLikeType:
-    from torch.fx.experimental.symbolic_shapes import guard_or_true
+    from torch.fx.experimental.symbolic_shapes import guard_or_true, sym_eq
 
-    if guard_or_true(out.shape != torch.Size(size)):
+    if guard_or_true(torch.sym_not(sym_eq(tuple(out.shape), tuple(size)))):
         out.resize_(*size)
     return out
 

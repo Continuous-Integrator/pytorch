@@ -6984,9 +6984,15 @@ def forward(self, s77 : torch.SymInt, s27 : torch.SymInt, L_x_ : torch.Tensor):
         self.assertEqual(result.shape, torch.Size([2, 3]))
         self.assertTrue(result is out)
 
-        # Compiled: same resize behaviour under dynamic=True
+        # Compiled: same resize behaviour under dynamic=True (different ndim)
         opt_model = torch.compile(empty_fn, dynamic=True)
         out = torch.empty([1])
+        result = opt_model([2, 3], out)
+        self.assertEqual(result.shape, torch.Size([2, 3]))
+        self.assertTrue(result is out)
+
+        # Same ndim case: exercises sym_eq/sym_not to avoid data-dependent error
+        out = torch.empty([1, 1])
         result = opt_model([2, 3], out)
         self.assertEqual(result.shape, torch.Size([2, 3]))
         self.assertTrue(result is out)
