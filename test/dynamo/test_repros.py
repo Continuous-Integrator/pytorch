@@ -6998,15 +6998,18 @@ def forward(self, s77 : torch.SymInt, s27 : torch.SymInt, L_x_ : torch.Tensor):
         # Eager: memory_format is incompatible with out= tensor
         out = torch.empty([1])
         with self.assertRaisesRegex(
-            TypeError,
+            RuntimeError,
             "'memory_format' argument is incompatible with 'out' tensor argument",
         ):
             empty_fn_memory_format([2, 3], out)
 
-        # Compiled: raises when out is not a Tensor (hits _refs check or arg parser)
+        # Compiled: C++ arg parser rejects list as out before dispatch
         opt_model = torch.compile(empty_fn_memory_format, dynamic=True)
-        with self.assertRaisesRegex(TypeError, r"out must be a Tensor"):
-            opt_model([2, 3], [1])  # list instead of tensor
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "'memory_format' argument is incompatible with 'out' tensor argument",
+        ):
+            opt_model([2, 3], out) 
 
     def test_no_tracing_into_eval_frame(self):
         # test that dynamo doesn't trace into nested calls from eval_frame
