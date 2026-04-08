@@ -20,8 +20,7 @@ from torch.testing._internal.common_cuda import PLATFORM_SUPPORTS_FLASH_ATTENTIO
 from torch.testing._internal.common_utils import (
     instantiate_parametrized_tests,
     parametrize,
-    TEST_XPU,
-    TEST_CUDA
+    TEST_XPU
 )
 from torch.testing._internal.inductor_utils import GPU_TYPE
 

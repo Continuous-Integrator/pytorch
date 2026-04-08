@@ -6,12 +6,8 @@ import torch
 import torch._dynamo.test_case
 import torch._dynamo.testing
 from torch._dynamo.device_interface import CudaInterface, DeviceGuard
-<<<<<<< HEAD
 from torch.testing._internal.common_cuda import TEST_CUDA
-=======
-from torch.testing._internal.common_cuda import TEST_CUDA, TEST_MULTIGPU
 from torch.testing._internal.common_utils import TEST_XPU
->>>>>>> 6d9a4959b5a (port test/dynamo/test_wrap_inductor_compiled_regions.py to Intel GPU)
 
 
 class TestDeviceGuard(torch._dynamo.test_case.TestCase):
