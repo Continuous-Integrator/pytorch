@@ -2167,15 +2167,7 @@ class SkipFunctionVariable(VariableTracker):
         # importlib functions are frozen builtins that Dynamo cannot trace
         # into.  They are deterministic for a given package name, so
         # constant-fold them when all args are constants.
-        if self.value is importlib.util.find_spec and all(
-            a.is_python_constant() for a in args
-        ):
-            spec = self.value(*(a.as_python_constant() for a in args))
-            # Return a bool-like sentinel instead of ModuleSpec which
-            # SourcelessBuilder cannot wrap.  Callers only check `is not None`.
-            return VariableTracker.build(tx, spec is not None or None)
-
-        if self.value is importlib.metadata.version and all(
+        if self.value in (importlib.util.find_spec, importlib.metadata.version) and all(
             a.is_python_constant() for a in args
         ):
             return VariableTracker.build(
@@ -2192,7 +2184,6 @@ class SkipFunctionVariable(VariableTracker):
             and not kwargs
         ):
             from ..polyfills import reduce_ex_user_defined_object
-            from .user_defined import UserDefinedObjectVariable
 
             obj = self.value.__self__
             obj_vt = tx.output.side_effects.id_to_variable.get(id(obj))
