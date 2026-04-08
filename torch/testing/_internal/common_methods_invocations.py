@@ -26848,9 +26848,6 @@ python_ref_db = [
                 unittest.expectedFailure, 'TestCommon', 'test_python_ref_torch_fallback',
                 device_type='mps', dtypes=(torch.float16,)
             ),
-            # The dtyeps of _refs.stft is not aligned to stft
-            # # https://github.com/intel/torch-xpu-ops/issues/3238
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_dtypes', device_type='xpu'),
         ],
     ),
     PythonRefInfo(
