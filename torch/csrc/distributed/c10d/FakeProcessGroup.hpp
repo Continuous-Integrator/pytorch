@@ -238,12 +238,20 @@ class FakeProcessGroup : public Backend {
       // We receive outputSplitSizes[j] elements from rank j. In reality,
       // rank j would send from an offset determined by rank j's own
       // inputSplitSizes, which we don't have. As an approximation, we
-      // copy from input[0:outputSplitSizes[j]] for each output slot.
+      // copy from input[0:min(outputSplitSizes[j], inputSize)] for each
+      // output slot, repeating input as needed when the slot is larger
+      // than the input buffer.
       int64_t out_offset = 0;
+      auto in_size = inputBuffer.size(0);
       for (int j = 0; j < size_; ++j) {
-        if (outputSplitSizes[j] > 0) {
-          outputBuffer.narrow(0, out_offset, outputSplitSizes[j])
-              .copy_(inputBuffer.narrow(0, 0, outputSplitSizes[j]));
+        int64_t remaining = outputSplitSizes[j];
+        int64_t dst = out_offset;
+        while (remaining > 0) {
+          auto chunk = std::min(remaining, in_size);
+          outputBuffer.narrow(0, dst, chunk)
+              .copy_(inputBuffer.narrow(0, 0, chunk));
+          dst += chunk;
+          remaining -= chunk;
         }
         out_offset += outputSplitSizes[j];
       }
