@@ -546,21 +546,24 @@ class VariableTracker(metaclass=VariableTrackerMeta):
             ],
         )
 
+    def is_callable(self) -> bool:
+        """Mirrors PyCallable_Check — True when tp_call is set.
+
+        Returns True if this VT type overrides call_function, meaning the
+        Python object it represents is callable. Subclasses like
+        UserDefinedObjectVariable may override for instance-level checks.
+        """
+        return type(self).call_function is not VariableTracker.call_function
+
     def call_function(
         self,
         tx: Any,
         args: Sequence["VariableTracker"],
         kwargs: dict[str, "VariableTracker"],
     ) -> "VariableTracker":
-        unimplemented(
-            gb_type="Unsupported function call",
-            context=f"call_function {self} {args} {kwargs}",
-            explanation=f"Dynamo does not know how to trace the function `{self.debug_repr()}`",
-            hints=[
-                f"Avoid calling `{self.debug_repr()}` in your code.",
-                "Please report an issue to PyTorch.",
-            ],
-        )
+        from .object_protocol import generic_call
+
+        return generic_call(tx, self, args, kwargs)
 
     def sq_length(self, tx: Any) -> "VariableTracker":
         """Called when sq_length is not implemented."""
