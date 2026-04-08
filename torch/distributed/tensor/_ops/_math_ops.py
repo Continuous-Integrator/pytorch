@@ -33,6 +33,7 @@ from torch.distributed.tensor._ops.utils import (
 )
 from torch.distributed.tensor._utils import normalize_to_torch_size
 from torch.distributed.tensor.placement_types import (
+    _is_shard_like,
     _StridedShard,
     Partial,
     Placement,
@@ -159,7 +160,7 @@ def _replicate_dims_start_at(
 ) -> tuple[Placement, ...]:
     new_placements: list[Placement] = []
     for p in placements:
-        if p.is_partial() or (isinstance(p, Shard) and p.dim >= start_dim):
+        if p.is_partial() or (_is_shard_like(p) and p.dim >= start_dim):
             new_placements.append(Replicate())  # make it replicate
         else:
             new_placements.append(p)  # keep the placement
@@ -167,12 +168,16 @@ def _replicate_dims_start_at(
 
 
 # return new_placements which align with placements but skip the skipped_dim
+# Precondition: no shard-like placement on skipped_dim (callers must
+# replicate it first via replicate_reduction_dims).
 def _skip_dim(
     placements: tuple[Placement, ...], skipped_dim: int
 ) -> tuple[Placement, ...]:
     new_placements: list[Placement] = []
     for p in placements:
-        if isinstance(p, Shard) and p.dim >= skipped_dim:
+        if isinstance(p, _StridedShard) and p.dim >= skipped_dim:
+            new_placements.append(_StridedShard(p.dim - 1, split_factor=p.split_factor))
+        elif isinstance(p, Shard) and p.dim >= skipped_dim:
             new_placements.append(Shard(p.dim - 1))
         else:
             new_placements.append(p)
@@ -188,7 +193,7 @@ def replicate_reduction_dims(
     for p in placements:
         if p.is_partial():
             new_placements.append(Replicate())
-        elif isinstance(p, Shard) and p.dim in reduction_dims:
+        elif _is_shard_like(p) and p.dim in reduction_dims:
             new_placements.append(Replicate())
         else:
             new_placements.append(p)
@@ -210,7 +215,7 @@ def map_placements_after_reduction(
         if isinstance(placement, (Replicate, Partial)):
             new_placements.append(placement)
         else:
-            if not isinstance(placement, Shard | _StridedShard):
+            if not _is_shard_like(placement):
                 raise AssertionError(
                     f"Expected Shard/_StridedShard, got {type(placement)}"
                 )
@@ -221,14 +226,14 @@ def map_placements_after_reduction(
                 # (i.e. for the case where keepdims=True), we generate partial
                 new_placements.append(get_placement_from_reduction_op(reduction_op))
             else:
-                if isinstance(placement, Shard):
-                    new_placements.append(Shard(new_shard_dim))
-                else:
+                if isinstance(placement, _StridedShard):
                     new_placements.append(
                         _StridedShard(
                             new_shard_dim, split_factor=placement.split_factor
                         )
                     )
+                elif isinstance(placement, Shard):
+                    new_placements.append(Shard(new_shard_dim))
     return tuple(new_placements)
 
 
@@ -735,12 +740,6 @@ def foreach_max_strategy(op_schema: OpSchema) -> TupleStrategy:
         aten.tril.default,
         aten.triu.default,
         aten._linalg_eigh.default,
-        aten.upsample_bicubic2d.default,
-        aten.upsample_bilinear2d.default,
-        aten.upsample_linear1d.default,
-        aten.upsample_nearest2d.default,
-        aten.upsample_trilinear3d.default,
-        # TODO: support the full F.interpolate set of options.
     ],
     schema_info=RuntimeSchemaInfo(1),
 )
@@ -1876,3 +1875,123 @@ def linalg_cross_strategy(
             continue
         strategies.append([_ShardingPlaceholder(dim)] * 3)
     return strategies
+
+
+# ---------------------------------------------------------------------------
+# Interpolation / upsample / pooling ops
+#
+# These ops operate on spatial dims and are safely shardable on batch (dim 0)
+# and channel (dim 1). grid_sampler is batch-only because the grid tensor has
+# no channel dimension.
+# ---------------------------------------------------------------------------
+
+
+@register_single_dim_strategy(
+    [
+        aten.upsample_nearest1d.default,
+        aten.upsample_nearest2d.default,
+        aten.upsample_nearest3d.default,
+        aten._upsample_nearest_exact1d.default,
+        aten._upsample_nearest_exact2d.default,
+        aten._upsample_nearest_exact3d.default,
+        aten._upsample_bilinear2d_aa.default,
+        aten.upsample_bicubic2d.default,
+        aten.upsample_bilinear2d.default,
+        aten.upsample_linear1d.default,
+        aten.upsample_trilinear3d.default,
+    ],
+    schema_info=RuntimeSchemaInfo(1),
+)
+def interp_upsample_1out_1in_strategy(
+    op: torch._ops.OpOverload,
+    args_schema: tuple[Any, ...],
+    kwargs_schema: dict[str, Any],
+) -> list[list[Placement | _ShardingPlaceholder]]:
+    # 1 output + 1 input = 2 placements; shard on batch (0) and channel (1)
+    # Upsample is a linear transformation so Partial(sum/avg) is valid.
+    return [
+        [_ShardingPlaceholder(0)] * 2,
+        [_ShardingPlaceholder(1)] * 2,
+        [Partial("sum"), Partial("sum")],
+        [Partial("avg"), Partial("avg")],
+    ]
+
+
+@register_single_dim_strategy(
+    [
+        aten.max_unpool2d.default,
+        aten.max_unpool3d.default,
+        aten._adaptive_avg_pool2d_backward.default,
+    ],
+    schema_info=RuntimeSchemaInfo(1),
+)
+def interp_pool_1out_2in_strategy(
+    op: torch._ops.OpOverload,
+    args_schema: tuple[Any, ...],
+    kwargs_schema: dict[str, Any],
+) -> list[list[Placement | _ShardingPlaceholder]]:
+    # 1 output + 2 inputs = 3 placements; shard on batch (0) and channel (1)
+    return [
+        [_ShardingPlaceholder(0)] * 3,
+        [_ShardingPlaceholder(1)] * 3,
+    ]
+
+
+@register_single_dim_strategy(
+    [aten.max_pool2d_with_indices_backward.default],
+    schema_info=RuntimeSchemaInfo(1),
+)
+def pool_backward_strategy(
+    op: torch._ops.OpOverload,
+    args_schema: tuple[Any, ...],
+    kwargs_schema: dict[str, Any],
+) -> list[list[Placement | _ShardingPlaceholder]]:
+    # max_pool2d_with_indices_backward(grad_output, self, ..., indices) -> grad_input
+    # 1 output + 3 tensor inputs = 4 placements
+    # Order: [output, grad_output, self, indices]
+    input_meta = cast(TensorMeta, args_schema[0])
+    strategies: list[list[Placement | _ShardingPlaceholder]] = [
+        [_ShardingPlaceholder(0)] * 4,
+    ]
+    if len(input_meta.shape) >= 4:  # batched: (N, C, H, W)
+        strategies.append([_ShardingPlaceholder(1)] * 4)
+    # The backward is linear in grad_output, so P(sum/avg) pass through.
+    # indices must be replicated (integer positions, not reducible).
+    # self is only used for shape, so replicate it too.
+    r = Replicate()
+    for reduce_op in ("sum", "avg"):
+        p = Partial(reduce_op)
+        strategies.append([p, p, r, r])
+    return strategies
+
+
+@register_single_dim_strategy(
+    [aten.grid_sampler_2d.default, aten.grid_sampler_3d.default],
+    schema_info=RuntimeSchemaInfo(1),
+)
+def grid_sampler_strategy(
+    op: torch._ops.OpOverload,
+    args_schema: tuple[Any, ...],
+    kwargs_schema: dict[str, Any],
+) -> list[list[Placement | _ShardingPlaceholder]]:
+    # grid_sampler_{2,3}d(input[N,C,...], grid[N,...,{2,3}]) -> output[N,C,...]
+    # grid has no channel dim, so only batch sharding applies to both inputs.
+    # Linear in input: P(sum/avg) on input with replicated grid is valid.
+    return [
+        [_ShardingPlaceholder(0)] * 3,
+        [Partial("sum"), Partial("sum"), Replicate()],
+        [Partial("avg"), Partial("avg"), Replicate()],
+    ]
+
+
+@register_single_dim_strategy(
+    [aten.grid_sampler_2d_backward.default, aten.grid_sampler_3d_backward.default],
+    schema_info=RuntimeSchemaInfo(1),
+)
+def grid_sampler_backward_strategy(
+    op: torch._ops.OpOverload,
+    args_schema: tuple[Any, ...],
+    kwargs_schema: dict[str, Any],
+) -> list[list[Placement | _ShardingPlaceholder]]:
+    # grid_sampler_{2,3}d_backward: 2 outputs (grad_input, grad_grid) + 3 inputs = 5 placements, batch-only
+    return [[_ShardingPlaceholder(0)] * 5]
