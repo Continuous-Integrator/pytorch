@@ -112,7 +112,7 @@ class C10_API ExcludeDispatchKeyGuard {
   // A little micro-optimization to save us from tls_get_addr call
   // on destruction
   PODLocalDispatchKeySet* tls_;
-  DispatchKeySet exclude_;
+  DispatchKeySet saved_state_;
 };
 
 struct C10_API ForceDispatchKeyGuard {
