@@ -3828,6 +3828,7 @@ class GraphModule(torch.nn.Module):
         child._scale = 0.5
 
         from torch._library.opaque_object import _OPAQUE_TYPES
+
         original_reconstruct_fn = _OPAQUE_TYPES[OpaqueMultiplier].reconstruct_fn
 
         def multiplier_reconstruct_fn(obj, get_tracked_proxy, tracer):
@@ -3856,12 +3857,9 @@ class GraphModule(torch.nn.Module):
             derive_nodes = [
                 n
                 for n in gm.graph.nodes
-                if n.op == "call_function"
-                and "derive_multiplier" in str(n.target)
+                if n.op == "call_function" and "derive_multiplier" in str(n.target)
             ]
-            self.assertGreater(
-                len(derive_nodes), 0, "No derive_multiplier node found"
-            )
+            self.assertGreater(len(derive_nodes), 0, "No derive_multiplier node found")
 
             for node in derive_nodes:
                 self.assertIn(
@@ -3876,9 +3874,7 @@ class GraphModule(torch.nn.Module):
                     f"Node {node.name} should be classified as opaque",
                 )
         finally:
-            _OPAQUE_TYPES[OpaqueMultiplier].reconstruct_fn = (
-                original_reconstruct_fn
-            )
+            _OPAQUE_TYPES[OpaqueMultiplier].reconstruct_fn = original_reconstruct_fn
 
     def test_partitioner_must_save_opaque_node(self):
         """Opaque nodes tagged MUST_SAVE go to saved_opaque_nodes.
