@@ -4824,15 +4824,15 @@ class TestLinalg(TestCase):
         for b, n, k in product(bs, ns, ks):
             for A, B, left, upper, uni in gen_inputs((b + 1, n + 1, k + 1), dtype, device, well_conditioned=True):
                 # Testing dense BLAS-compliant inputs
-                A = A[..., :-1, :-1]
-                B = B[..., :-1, :-1]
-                self._test_linalg_solve_triangular(A, B, upper, left, uni)
+                Ad = A[..., :-1, :-1]
+                Bd = B[..., :-1, :-1]
+                self._test_linalg_solve_triangular(Ad, Bd, upper, left, uni)
 
                 # Testing non-dense BLAS-compliant inputs
                 # See https://github.com/pytorch/pytorch/issues/176274
-                A = A[..., 1:, 1:]
-                B = B[..., 1:, 1:]
-                self._test_linalg_solve_triangular(A, B, upper, left, uni)
+                And = A[..., 1:, 1:]
+                Bnd = B[..., 1:, 1:]
+                self._test_linalg_solve_triangular(And, Bnd, upper, left, uni)
 
     @slowTest
     @unittest.skipIf(IS_FBCODE or IS_SANDCASTLE, "Test fails for float64 on GPU (P100, V100) on Meta infra")
