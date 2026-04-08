@@ -97,7 +97,7 @@ from .ctx_manager import (
 )
 from .distributed import DistributedVariable
 from .functions import bind_args_cached, NestedUserFunctionVariable
-from .lists import ListVariable, NamedTupleVariable, TupleVariable
+from .lists import ListVariable, TupleVariable
 from .script_object import TorchScriptObjectVariable
 from .torch_function import (
     can_dispatch_torch_function,
@@ -105,6 +105,7 @@ from .torch_function import (
     TensorWithTFOverrideVariable,
     TorchFunctionModeStackVariable,
 )
+from .user_defined import UserDefinedTupleVariable
 
 
 try:
@@ -258,7 +259,7 @@ def _check_for_gradient_edge(var: VariableTracker, arg_name: str) -> None:
     """
     from .lists import BaseListVariable
 
-    if isinstance(var, NamedTupleVariable) and var.tuple_cls is GradientEdge:
+    if isinstance(var, UserDefinedTupleVariable) and type(var.value) is GradientEdge:
         # Try to get source info for context
         source_info = var.source.name if var.source else None
         context = f"GradientEdge in {arg_name}"
@@ -1990,6 +1991,39 @@ class TorchInGraphFunctionVariable(BaseTorchVariable):
 
             return CONSTANT_VARIABLE_NONE
 
+        from torch._prims_common import elementwise_dtypes
+
+        @register(elementwise_dtypes)
+        def handle_elementwise_dtypes(
+            self,
+            tx: "InstructionTranslator",
+            *args: VariableTracker,
+            **kwargs: VariableTracker,
+        ) -> VariableTracker:
+            from .builder import SourcelessBuilder
+
+            type_promotion_kind = kwargs["type_promotion_kind"].as_python_constant()
+            real_args = []
+            for arg in args:
+                if isinstance(arg, TensorVariable):
+                    real_args.append(arg.as_proxy().node.meta["example_value"])
+                elif arg.is_python_constant():
+                    real_args.append(arg.as_python_constant())
+                else:
+                    unimplemented(
+                        gb_type="elementwise_dtypes unsupported arg type",
+                        context=str(arg),
+                        explanation=(
+                            "elementwise_dtypes requires tensor or constant arguments, "
+                            f"got {type(arg).__name__}"
+                        ),
+                        hints=[*graph_break_hints.SUPPORTABLE],
+                    )
+            result = elementwise_dtypes(
+                *real_args, type_promotion_kind=type_promotion_kind
+            )
+            return SourcelessBuilder.create(tx, result)
+
         @register(torch._check)
         def handle_check(
             self,
@@ -2367,14 +2401,16 @@ class TorchInGraphFunctionVariable(BaseTorchVariable):
                     )
                 tx.output.autograd_grad_consumed_grad_fns.update(non_leaf_consumed)
 
-            return wrap_fx_proxy(
-                tx=tx,
-                proxy=tx.output.create_proxy(
+            with (
+                torch.fx.traceback.preserve_node_meta(),
+                torch.fx.traceback.annotate({"autograd_backward": True}),
+            ):
+                proxy = tx.output.create_proxy(
                     "call_function",
                     torch.autograd.grad,
                     *proxy_args_kwargs(args, kwargs),
-                ),
-            )
+                )
+            return wrap_fx_proxy(tx=tx, proxy=proxy)
 
         return handlers
 

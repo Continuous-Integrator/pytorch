@@ -16630,7 +16630,6 @@ op_db: list[OpInfo] = [
            supports_out=False,
            skips=(
                DecorateInfo(unittest.expectedFailure, 'TestJit', 'test_variant_consistency_jit'),
-               DecorateInfo(unittest.expectedFailure, 'TestDTensorOps', 'test_dtensor_op_db'),
                DecorateInfo(unittest.expectedFailure, 'TestInductorOpInfo', 'test_comprehensive'),
                DecorateInfo(unittest.expectedFailure, 'TestMathBits', 'test_neg_view'),
                # Error: The operator 'aten::_upsample_bilinear2d_aa_backward.grad_input'
@@ -22175,7 +22174,7 @@ op_db: list[OpInfo] = [
         supports_out=False,
         sample_inputs_func=sample_inputs_grid_sample,
         reference_inputs_func=reference_inputs_grid_sample,
-        supports_gradgrad=False,
+        supports_gradgrad=True,
         skips=(
             # Exception: The operator 'aten::grid_sampler_2d_backward' is not currently implemented for the MPS device
             DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_dtypes', device_type='mps'),
@@ -22189,7 +22188,7 @@ op_db: list[OpInfo] = [
         dtypes=floating_types_and(torch.float16, torch.bfloat16),
         supports_out=False,
         sample_inputs_func=sample_inputs_grid_sampler_2d,
-        supports_gradgrad=False,
+        supports_gradgrad=True,
         gradcheck_nondet_tol=1e-15,
         skips=(
             DecorateInfo(slowTest, 'TestDecomp', 'test_comprehensive', dtypes=(torch.float32, torch.float64),
@@ -22206,7 +22205,7 @@ op_db: list[OpInfo] = [
         dtypes=floating_types_and(torch.float16, torch.bfloat16),
         supports_out=False,
         sample_inputs_func=sample_inputs_grid_sampler_3d,
-        supports_gradgrad=False,
+        supports_gradgrad=True,
         gradcheck_nondet_tol=1e-15,
         skips=(
             # NOTE: Only run on MPS

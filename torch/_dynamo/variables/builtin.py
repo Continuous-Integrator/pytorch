@@ -100,11 +100,8 @@ from .dicts import (
     DictItemsVariable,
     DictKeysVariable,
     DictViewVariable,
-    FrozensetVariable,
-    is_hashable,
-    OrderedSetClassVariable,
-    SetVariable,
 )
+from .hashable import is_hashable
 from .lists import (
     BaseListVariable,
     ListIteratorVariable,
@@ -115,6 +112,7 @@ from .lists import (
     TupleVariable,
 )
 from .misc import NullVariable
+from .sets import FrozensetVariable, OrderedSetClassVariable, SetVariable
 from .tensor import (
     FakeItemVariable,
     supported_comparison_ops,
@@ -1564,7 +1562,8 @@ class BuiltinVariable(BaseBuiltinVariable):
             resolved_fn = getattr(self.fn, name)
             if resolved_fn in set_methods:
                 if isinstance(args[0], variables.UserDefinedSetVariable):
-                    return args[0]._set_vt.call_method(tx, name, args[1:], kwargs)
+                    assert args[0]._base_vt is not None
+                    return args[0]._base_vt.call_method(tx, name, args[1:], kwargs)
                 elif isinstance(args[0], variables.SetVariable):
                     return args[0].call_method(tx, name, args[1:], kwargs)
 
@@ -1650,7 +1649,7 @@ class BuiltinVariable(BaseBuiltinVariable):
             # - https://github.com/python/cpython/blob/3.12/Objects/floatobject.c#L878-L882
             assert istype(arg.sym_num, (torch.SymInt, torch.SymFloat))
             return SymNodeVariable.create(tx, arg.as_proxy() != 0)
-        if isinstance(arg, ConstDictVariable):
+        if isinstance(arg, (ConstDictVariable, SetVariable)):
             return ConstantVariable.build(tx, bool(arg.items))
         if isinstance(arg, variables.UserDefinedObjectVariable):
             # for user-defined objects, first try __bool__ if defined, else
@@ -2020,10 +2019,13 @@ class BuiltinVariable(BaseBuiltinVariable):
                         obj.source.make_guard(GuardBuilder.TUPLE_ITERATOR_LEN)
                     )
                 else:
-                    if (
-                        getattr(obj, "source", False)
-                        and isinstance(obj, ConstDictVariable)
-                        and not istype(obj, (SetVariable, FrozensetVariable))
+                    if getattr(obj, "source", False) and isinstance(
+                        obj,
+                        (
+                            ConstDictVariable,
+                            variables.OrderedSetVariable,
+                            variables.DictKeySetVariable,
+                        ),
                     ):
                         tx.output.guard_on_key_order.add(obj.source)
 
@@ -2559,7 +2561,6 @@ class BuiltinVariable(BaseBuiltinVariable):
             obj,
             (
                 variables.TensorVariable,
-                variables.NamedTupleVariable,
                 variables.ConstantVariable,
                 variables.DefaultDictVariable,
                 variables.DistributedVariable,
@@ -2654,7 +2655,6 @@ class BuiltinVariable(BaseBuiltinVariable):
             obj,
             (
                 variables.DefaultDictVariable,
-                variables.NamedTupleVariable,
                 variables.UserDefinedObjectVariable,
                 variables.NestedUserFunctionVariable,
                 variables.ExceptionVariable,
@@ -3206,7 +3206,7 @@ class BuiltinVariable(BaseBuiltinVariable):
         # Unwrap the underlying ConstDictVariable
         if isinstance(a, DictViewVariable):
             a = a.dv_dict
-        if isinstance(a, (ListVariable, ConstDictVariable)):
+        if isinstance(a, (ListVariable, ConstDictVariable, SetVariable)):
             return VariableTracker.build(tx, len(a.items) == 0)
         if isinstance(a, UserDefinedObjectVariable):
             bool_result = self.call_bool(tx, a)
@@ -3276,7 +3276,8 @@ class DictBuiltinVariable(BaseBuiltinVariable):
         resolved_fn = getattr(dict, name, None)
         if resolved_fn is not None and resolved_fn in dict_methods:
             if isinstance(args[0], variables.UserDefinedDictVariable):
-                return args[0]._dict_vt.call_method(tx, name, args[1:], kwargs)
+                assert args[0]._base_vt is not None
+                return args[0]._base_vt.call_method(tx, name, args[1:], kwargs)
             elif isinstance(args[0], ConstDictVariable):
                 return args[0].call_method(tx, name, args[1:], kwargs)
 

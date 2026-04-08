@@ -198,11 +198,7 @@ from .ctx_manager import (
 from .dicts import (
     ConstDictVariable,
     DefaultDictVariable,
-    DictKeySetVariable,
-    FrozensetVariable,
     MappingProxyVariable,
-    OrderedSetClassVariable,
-    OrderedSetVariable,
     SetVariable,
 )
 from .distributed import WorldMetaClassVariable
@@ -229,7 +225,6 @@ from .lists import (
     BaseListVariable,
     ListIteratorVariable,
     ListVariable,
-    NamedTupleVariable,
     RangeVariable,
     SizeVariable,
     SliceVariable,
@@ -270,6 +265,12 @@ from .nn_module import (
 from .optimizer import OptimizerVariable
 from .script_object import OpaqueObjectClassVariable, TorchScriptObjectVariable
 from .sdpa import SDPAParamsVariable
+from .sets import (
+    DictKeySetVariable,
+    FrozensetVariable,
+    OrderedSetClassVariable,
+    OrderedSetVariable,
+)
 from .streams import EventVariable, StreamContextVariable, StreamVariable
 from .tensor import (
     NumpyNdarrayVariable,
@@ -822,9 +823,8 @@ class VariableBuilder:
                 source=self.source,
                 mutation_type=ValueMutationExisting(),
             )
-            result = NamedTupleVariable(
-                output,
-                tuple_cls=type(value),
+            result = UserDefinedTupleVariable.get_vt_cls(type(value))(
+                value,
                 source=self.source,
                 tuple_vt=tuple_vt,
             )
@@ -857,7 +857,7 @@ class VariableBuilder:
                 self.tx.output.guard_on_key_order.add(self.source)
 
             # We need all the keys to be hashable. We do this within the
-            # _HashableTracker class in dicts.py
+            # HashableTracker class in hashable.py
             def build_key_value(
                 i: Any, k: Any, v: Any
             ) -> tuple[VariableTracker, VariableTracker]:
@@ -1663,7 +1663,7 @@ class VariableBuilder:
             self.tx.output.guard_on_key_order.add(self.source)
 
             # We need all the keys to be hashable. We do this within the
-            # _HashableTracker class in dicts.py
+            # HashableTracker class in hashable.py
             def build_key_value(
                 i: Any, k: Any, v: Any
             ) -> tuple[VariableTracker, VariableTracker]:
@@ -1773,7 +1773,7 @@ class VariableBuilder:
             return self.tx.output.side_effects.track_object_existing(value, result)
         elif is_frozen_dataclass(value):
             self.install_guards(GuardBuilder.TYPE_MATCH)
-            result = FrozenDataClassVariable.create(self.tx, value, source=self.source)
+            result = FrozenDataClassVariable(value, source=self.source)
             return self.tx.output.side_effects.track_object_existing(value, result)
         elif isinstance(value, dict_keys):
             if all(ConstantVariable.is_literal(k) for k in value):
@@ -3399,13 +3399,18 @@ def handle_traced_output(
         elif istype(example_value, (list, immutable_list)):
             return ListVariable(unpacked, **options)
         else:
-            assert (
-                example_value.__class__.__module__ == "torch.return_types"
-                or hasattr(example_value, "_fields")
-            ), (
-                f"expected {example_value.__class__.__module__} == torch.return_types or named tuple but got {type(example_value)}"
+            assert is_namedtuple(example_value), (
+                f"expected namedtuple or structseq but got {type(example_value)}"
             )
-            return NamedTupleVariable(unpacked, example_value.__class__, **options)  # type: ignore[arg-type]
+            tuple_vt = TupleVariable(
+                unpacked,
+                mutation_type=options.get("mutation_type", ValueMutationNew()),
+            )
+            return UserDefinedTupleVariable.get_vt_cls(type(example_value))(
+                example_value,
+                tuple_vt=tuple_vt,
+                **options,  # type: ignore[arg-type]
+            )
     elif example_value is None or proxy.node.target is torch.manual_seed:
         return ConstantVariable.create(None, **options)
     elif isinstance(example_value, (torch.SymInt, torch.SymFloat, torch.SymBool)):
@@ -4282,20 +4287,23 @@ class SourcelessBuilder:
             return UserDefinedClassVariable(value)
         elif isinstance(value, types.MethodWrapperType):
             return MethodWrapperVariable(value)
-        elif (
-            isinstance(value, types.MethodType)
-            # We only want to support sourceless class objects here
-            # An instance variable is not allowed and it should have source
-            and isinstance(value.__self__, (type, abc.ABCMeta))
-        ):
-            # value is a classmethod
-            assert getattr(value.__self__, value.__func__.__name__) == value
-            cls_obj_vt = SourcelessBuilder.create(tx, value.__self__)
-            try:
-                # pyrefly: ignore[bad-argument-type]
-                return cls_obj_vt.var_getattr(tx, value.__func__.__name__)
-            except NotImplementedError:
-                pass  # failthrough to unimplemented branch
+        elif isinstance(value, types.MethodType):
+            if isinstance(value.__self__, (type, abc.ABCMeta)):
+                # value is a classmethod
+                assert getattr(value.__self__, value.__func__.__name__) == value
+                cls_obj_vt = SourcelessBuilder.create(tx, value.__self__)
+                try:
+                    # pyrefly: ignore[bad-argument-type]
+                    return cls_obj_vt.var_getattr(tx, value.__func__.__name__)
+                except NotImplementedError:
+                    pass  # failthrough to unimplemented branch
+            else:
+                # Instance method — look up the VT for __self__ via side effects
+                obj_vt = tx.output.side_effects.id_to_variable.get(id(value.__self__))
+                if obj_vt is not None:
+                    return torch._dynamo.variables.UserMethodVariable(
+                        value.__func__, obj_vt
+                    )
         elif isinstance(value, torch.fx.graph_module.GraphModule):
             return SourcelessGraphModuleVariable(value)
         elif isinstance(value, torch.utils._pytree.TreeSpec):
@@ -4327,7 +4335,10 @@ class SourcelessBuilder:
                 SourcelessBuilder.create(tx, getattr(value, name))
                 for name in namedtuple_fields(type(value))
             ]
-            return NamedTupleVariable(output, tuple_cls=type(value))
+            tuple_vt = TupleVariable(output, mutation_type=ValueMutationNew())
+            return UserDefinedTupleVariable.get_vt_cls(type(value))(
+                value, tuple_vt=tuple_vt
+            )
         elif (
             isinstance(value, torch.SymInt)
             and value.node.expr in tx.output.bound_symbols

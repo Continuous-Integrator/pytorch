@@ -2016,7 +2016,7 @@ class OutputGraph(OutputGraphCommon):
                         elif (
                             vt.source is not None
                             and (source := getattr(vt.source, "base", None))  # type: ignore[assignment]
-                            and source.is_input
+                            and getattr(source, "is_input", False)
                         ):
                             self.export_metadata.output_return_type[idx] = (
                                 "input",
@@ -2188,7 +2188,13 @@ class OutputGraph(OutputGraphCommon):
                         if isinstance(var, UserDefinedDictVariable) and isinstance(
                             var.value, _ExportModuleSpecTrackerDict
                         ):
-                            for k, v in var.items.items():
+                            assert var._base_vt is not None
+                            for (
+                                k,
+                                v,
+                            ) in (
+                                var._base_vt.items.items()  # pyrefly: ignore[missing-attribute]
+                            ):
                                 # pyrefly: ignore [implicit-any]
                                 specs = {}
                                 # pyrefly: ignore[missing-attribute]
