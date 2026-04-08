@@ -4584,6 +4584,29 @@ not ___dict_contains('cccccccc', G['sys'].modules)""",
         result = torch.compile(m, fullgraph=True, backend="eager")(x)
         self.assertEqual(result, correct)
 
+    def test_deepcopy_nested_user_defined_object(self):
+        class Inner:
+            def __init__(self, scale):
+                self.scale = scale
+
+        class Outer:
+            def __init__(self):
+                self.inner = Inner(2.0)
+                self.bias = 1.0
+
+        def fn(x, cfg):
+            c = copy.deepcopy(cfg)
+            c.inner.scale = 3.0
+            return x * c.inner.scale + c.bias
+
+        cfg = Outer()
+        x = torch.randn(4)
+        correct = fn(x, cfg)
+        result = torch.compile(fn, fullgraph=True, backend="eager")(x, cfg)
+        self.assertEqual(result, correct)
+        # Verify deepcopy didn't mutate original
+        self.assertEqual(cfg.inner.scale, 2.0)
+
     def test_global_state_guard_serialization(self):
         GlobalStateGuard = torch._C._dynamo.guards.GlobalStateGuard
         guards = GlobalStateGuard()
