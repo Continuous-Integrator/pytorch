@@ -622,6 +622,28 @@ def propagate_single_dim(
     return input_tgt_placements[0], output_placements[0]
 
 
+class _MetaShim:
+    """Wraps TensorMeta so dim_map lambdas can access .ndim (missing on NamedTuple)."""
+
+    __slots__ = ("shape", "ndim")
+
+    def __init__(self, meta: TensorMeta) -> None:
+        self.shape = meta.shape
+        self.ndim = len(meta.shape)
+
+
+def _smallest_factor(n: int) -> int:
+    """Return smallest prime factor of n. n must be >= 2."""
+    if n % 2 == 0:
+        return 2
+    i = 3
+    while i * i <= n:
+        if n % i == 0:
+            return i
+        i += 2
+    return n
+
+
 class _ViewShardingPropagator:
     """Two-phase sharding propagator for view ops.
 
@@ -1458,15 +1480,53 @@ def register_op_strategy_map(
         return output_strategy
 
 
-register_op_strategy_map(aten.squeeze.default, torch.squeeze)
+def register_single_dim_view_strategy(
+    aten_op_overload: torch._ops.OpOverload,
+    local_op_name: Callable[..., torch.Tensor],
+    schema_info: RuntimeSchemaInfo | None = None,
+    strict_view: bool = False,
+) -> None:
+    """Register a view op under single-dim strategy using propagate_single_dim.
+
+    For each input dim, computes the output placement by calling
+    propagate_single_dim with a mesh_dim_size that guarantees divisibility
+    (smallest prime factor of the dim size).  The expansion infrastructure
+    handles actual divisibility checking at match time via is_tensor_shardable.
+    """
+    dim_map_fn: Callable[..., DimMap] = dim_maps[local_op_name]
+
+    @register_single_dim_strategy(aten_op_overload, schema_info=schema_info)
+    def view_single_dim(op, args_schema, kwargs_schema):
+        input_meta = cast(TensorMeta, args_schema[0])
+        shimmed_args = (_MetaShim(input_meta), *args_schema[1:])
+        rule = dim_map_fn(*shimmed_args, **kwargs_schema)
+
+        strategies: list[list[Placement | _ShardingPlaceholder]] = []
+        for d in range(len(input_meta.shape)):
+            dim_size = input_meta.shape[d]
+            if dim_size <= 1:
+                continue
+            mesh_dim_size = _smallest_factor(dim_size)
+            inp_tgt, out_plc = propagate_single_dim(
+                Shard(d), tuple(input_meta.shape), rule, mesh_dim_size, strict_view
+            )
+            if isinstance(inp_tgt, (Shard, _StridedShard)):
+                strategies.append([out_plc, inp_tgt])
+        # Partial placements pass through unchanged for view ops.
+        for reduce_op in ("sum", "avg", "max", "min"):
+            strategies.append([Partial(reduce_op), Partial(reduce_op)])
+        return strategies
+
+
+register_single_dim_view_strategy(aten.squeeze.default, torch.squeeze)
 register_op_strategy_map(aten.squeeze_.default, torch.squeeze)
 register_op_strategy_map(
     aten.squeeze_.dim, torch.squeeze, schema_info=RuntimeSchemaInfo(1)
 )
-register_op_strategy_map(
+register_single_dim_view_strategy(
     aten.squeeze.dim, torch.squeeze, schema_info=RuntimeSchemaInfo(1)
 )
-register_op_strategy_map(
+register_single_dim_view_strategy(
     aten.squeeze.dims, torch.squeeze, schema_info=RuntimeSchemaInfo(1)
 )
 register_op_strategy_map(
@@ -1478,12 +1538,12 @@ register_op_strategy_map(
     schema_info=RuntimeSchemaInfo(1),
     strict_view=True,
 )
-register_op_strategy_map(
+register_single_dim_view_strategy(
     aten.view_copy.default,
     Tensor.view,
     schema_info=RuntimeSchemaInfo(1),
 )
-register_op_strategy_map(
+register_single_dim_view_strategy(
     aten.reshape.default, torch.reshape, schema_info=RuntimeSchemaInfo(1)
 )
 register_op_strategy_map(
@@ -1492,22 +1552,22 @@ register_op_strategy_map(
     schema_info=RuntimeSchemaInfo(1),
     strict_view=True,
 )
-register_op_strategy_map(
+register_single_dim_view_strategy(
     aten.unsqueeze.default, torch.unsqueeze, schema_info=RuntimeSchemaInfo(1)
 )
-register_op_strategy_map(
+register_single_dim_view_strategy(
     aten.expand.default, Tensor.expand, schema_info=RuntimeSchemaInfo(1)
 )
-register_op_strategy_map(
+register_single_dim_view_strategy(
     aten.expand_copy.default, Tensor.expand, schema_info=RuntimeSchemaInfo(1)
 )
-register_op_strategy_map(
+register_single_dim_view_strategy(
     aten.permute.default, torch.permute, schema_info=RuntimeSchemaInfo(1)
 )
-register_op_strategy_map(
+register_single_dim_view_strategy(
     aten.repeat.default, Tensor.repeat, schema_info=RuntimeSchemaInfo(1)
 )
-register_op_strategy_map(
+register_single_dim_view_strategy(
     aten.transpose.int, torch.transpose, schema_info=RuntimeSchemaInfo(1)
 )
 
@@ -1529,4 +1589,4 @@ def view_as_complex_single_dim_strategy(op, args_schema, kwargs_schema):
     return strategies
 
 
-register_op_strategy_map(aten.view_as_real.default, torch.view_as_real)
+register_single_dim_view_strategy(aten.view_as_real.default, torch.view_as_real)
