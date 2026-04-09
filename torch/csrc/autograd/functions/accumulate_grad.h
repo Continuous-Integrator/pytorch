@@ -42,8 +42,9 @@ struct TORCH_API AccumulateGrad : public Node {
 
   variable_list apply(variable_list&& grads) override;
 
-  void release_variables() override {
+  void release_resources() override {
     variable.reset();
+    Node::release_resources();
   }
 
   std::vector<std::unique_ptr<FunctionPreHook>>& tensor_pre_hooks() noexcept

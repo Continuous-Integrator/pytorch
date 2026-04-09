@@ -422,7 +422,7 @@ struct DifferentiableGraphOp {
 
   // XXX: keep in mind that stack can be larger than the inputs we need!
   void operator()(Stack& stack) const {
-    auto grad_fn = std::make_shared<DifferentiableGraphBackward>(
+    auto grad_fn = c10::make_intrusive<DifferentiableGraphBackward>(
         grad_executor,
         grad.df_input_vjps.size(),
         grad.df_input_captured_inputs.size() +
