@@ -63,10 +63,8 @@ from ..utils import (
     identity,
     is_tensor_base_attr_getter,
     istype,
-    list_methods,
     proxy_args_kwargs,
     raise_args_mismatch,
-    tuple_methods,
 )
 from .base import AsPythonConstantNotImplementedError, NO_SUCH_SUBOBJ, VariableTracker
 from .constant import CONSTANT_VARIABLE_FALSE, CONSTANT_VARIABLE_NONE, ConstantVariable
@@ -80,6 +78,9 @@ if TYPE_CHECKING:
 
 
 class SuperVariable(VariableTracker):
+    # PySuper_Type: https://github.com/python/cpython/blob/v3.13.0/Objects/typeobject.c#L11511
+    _cpython_type = super
+
     _nonvar_fields = {
         *VariableTracker._nonvar_fields,
     }
@@ -336,25 +337,12 @@ class SuperVariable(VariableTracker):
             )
             return variables.CONSTANT_VARIABLE_NONE
         elif (
-            isinstance(self.objvar, variables.UserDefinedDictVariable)
-            and inner_fn in self.objvar._dict_methods
+            isinstance(self.objvar, variables.UserDefinedObjectVariable)
+            and self.objvar._base_vt is not None
+            and self.objvar._base_methods is not None
+            and inner_fn in self.objvar._base_methods
         ):
-            return self.objvar._dict_vt.call_method(tx, name, args, kwargs)
-        elif (
-            isinstance(self.objvar, variables.UserDefinedSetVariable)
-            and inner_fn in self.objvar._set_methods
-        ):
-            return self.objvar._set_vt.call_method(tx, name, args, kwargs)
-        elif (
-            isinstance(self.objvar, variables.UserDefinedTupleVariable)
-            and inner_fn in tuple_methods
-        ):
-            return self.objvar._tuple_vt.call_method(tx, name, args, kwargs)
-        elif (
-            isinstance(self.objvar, variables.UserDefinedListVariable)
-            and inner_fn in list_methods
-        ):
-            return self.objvar._list_vt.call_method(tx, name, args, kwargs)
+            return self.objvar._base_vt.call_method(tx, name, args, kwargs)
         elif inner_fn is object.__getattribute__:
             # object.__getattribute__ has no side-effects. We can directly call
             # __getattribute__ to access the attribute.
@@ -544,6 +532,9 @@ class TracebackVariable(VariableTracker):
 
 
 class ExceptionVariable(VariableTracker):
+    # _PyExc_BaseException: https://github.com/python/cpython/blob/v3.13.0/Objects/exceptions.c
+    _cpython_type = BaseException
+
     # The ExceptionVariable corresponds to the BaseException class in Python
     def __init__(
         self,
@@ -811,6 +802,9 @@ class ComptimeVariable(VariableTracker):
 
 
 class CellVariable(VariableTracker):
+    # PyCell_Type: https://github.com/python/cpython/blob/v3.13.0/Objects/cellobject.c#L151
+    _cpython_type = types.CellType
+
     # If the cell existed before Dynamo tracing started, this will be the
     # VariableTracker that represents the cell content.
     #
@@ -1513,6 +1507,9 @@ class GetSetDescriptorVariable(VariableTracker):
 
 
 class PythonModuleVariable(VariableTracker):
+    # PyModule_Type: https://github.com/python/cpython/blob/v3.13.0/Objects/moduleobject.c#L1203
+    _cpython_type = types.ModuleType
+
     _nonvar_fields = {
         "value",
         "is_torch",
@@ -1954,6 +1951,9 @@ class StringFormatVariable(VariableTracker):
 
 
 class ObjectVariable(VariableTracker):
+    # PyBaseObject_Type: https://github.com/python/cpython/blob/v3.13.0/Objects/typeobject.c#L7243
+    _cpython_type = object
+
     # placeholder for unknown / opaque values
     def __init__(self, value: object, **kwargs: Any) -> None:
         super().__init__(**kwargs)
@@ -2245,6 +2245,8 @@ class RandomVariable(VariableTracker):
     Assumes that random objects behave the same given a set seed or state.
     """
 
+    _cpython_type = random.Random
+
     _nonvar_fields = {
         "random",
         *VariableTracker._nonvar_fields,
@@ -2386,7 +2388,7 @@ class RandomVariable(VariableTracker):
 
 class WeakRefVariable(VariableTracker):
     @staticmethod
-    # pyrefly: ignore[bad-param-name-override]
+    # pyrefly: ignore [bad-override, bad-param-name-override]
     def build(
         tx: "InstructionTranslator",
         weakref_value: weakref.ReferenceType[Any],
