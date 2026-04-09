@@ -8,6 +8,7 @@
 
 ## PyTorch
 
+agent_space/
 .coverage
 coverage.xml
 .dmypy.json
@@ -40,7 +41,6 @@ docs/build/
 docs/cpp/src
 docs/src/**/*
 docs/cpp/build
-docs/cpp/source/api
 docs/cpp/source/html/
 docs/cpp/source/latex/
 docs/source/compile/generated/
