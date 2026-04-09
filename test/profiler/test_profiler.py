@@ -2726,21 +2726,28 @@ if KinetoStepTracker.current_step() != initial_step + 2 * niters:
                 y = torch.randn(10, 10)
                 z = torch.mm(x, y)
 
-    @unittest.skipIf(not torch.cuda.is_available(), "requires CUDA")
     @unittest.skipIf(not kineto_available(), "Kineto is required")
-    def test_activity_filter_backward_compat(self):
-        """Plain activities=[CPU] still works unchanged."""
-        with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA]) as p:
-            x = torch.randn(10, 10).to("cuda")
-            y = torch.mm(x, x)
+    def test_profiler(self):
+        """Basic test for torch.profiler.profile API."""
+        use_cuda = torch.profiler.ProfilerActivity.CUDA in supported_activities()
+        activities = [ProfilerActivity.CPU]
+        if use_cuda:
+            activities.append(ProfilerActivity.CUDA)
+        with profile(activities=activities) as p:
+            self.payload(use_cuda=use_cuda)
         events = p.events()
         self.assertGreater(len(events), 0)
-        has_overhead = any(
-            "Lazy Function Loading" in e.name for e in events
-        )  # Lazy Function Loading is an OVERHEAD event
-        self.assertTrue(has_overhead)
+        found_mm = False
+        for e in events:
+            if "aten::mm" in e.name:
+                found_mm = True
+        self.assertTrue(found_mm)
+        if use_cuda:
+            gpu_events = [e for e in events if e.device_type == DeviceType.CUDA]
+            self.assertGreater(len(gpu_events), 0, "No GPU events captured by profiler")
 
     @unittest.skipIf(not torch.cuda.is_available(), "requires CUDA")
+    @unittest.skipIf(TEST_WITH_ROCM, "not supported on ROCm")
     @unittest.skipIf(not kineto_available(), "Kineto is required")
     def test_activity_filter_dict_syntax(self):
         """Dict syntax collects only the requested activity types."""
@@ -3149,7 +3156,7 @@ class TestExperimentalUtils(TestCase):
 
     def test_utils_compute_queue_depth_when_no_cuda_events(self):
         # For traces with only cpu events, we expect empty queue depth list
-        x = torch.ones((1024, 1024))
+        x = torch.ones((100, 100))
         with profile() as prof:
             for _ in range(5):
                 x = x @ x
@@ -3199,7 +3206,7 @@ aten::copy_""",
         )
 
     def test_profiler_name_pattern(self):
-        x = torch.ones((4096, 4096))
+        x = torch.ones((100, 100))
         with profile() as prof:
             for _ in range(5):
                 x = x @ x

@@ -1995,8 +1995,8 @@ class OutputGraph(OutputGraphCommon):
                     and vt.tuple_cls
                     is torch._dynamo.functional_export.ExportTracerOutput
                 ):
-                    flat_returns = vt._tuple_vt.items[0]
-                    out_spec = vt._tuple_vt.items[1]
+                    flat_returns = vt.items[0]
+                    out_spec = vt.items[1]
                     assert isinstance(
                         flat_returns, torch._dynamo.variables.ListVariable
                     )
@@ -2188,7 +2188,13 @@ class OutputGraph(OutputGraphCommon):
                         if isinstance(var, UserDefinedDictVariable) and isinstance(
                             var.value, _ExportModuleSpecTrackerDict
                         ):
-                            for k, v in var.items.items():
+                            assert var._base_vt is not None
+                            for (
+                                k,
+                                v,
+                            ) in (
+                                var._base_vt.items.items()  # pyrefly: ignore[missing-attribute]
+                            ):
                                 # pyrefly: ignore [implicit-any]
                                 specs = {}
                                 # pyrefly: ignore[missing-attribute]
@@ -3806,7 +3812,9 @@ class SubgraphTracer(fx.Tracer):
                         )
                     ]
 
-        if "stack_trace" not in rv.node.meta:
+        # fx.Node base class pre-sets stack_trace to "", so check for
+        # both missing and empty to ensure we populate the real trace.
+        if not rv.node.meta.get("stack_trace", ""):
             frame_summaries: list[traceback.FrameSummary] = []
             while tx:
                 # Avoid frame summaries from inside the torch/nn/modules. This ensures that we keep the stack trace of

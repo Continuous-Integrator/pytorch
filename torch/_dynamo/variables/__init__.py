@@ -22,6 +22,7 @@ from .builtin import (
     BuiltinVariable,
     DictBuiltinVariable,
     IterBuiltinVariable,
+    ListBuiltinVariable,
 )
 from .constant import (
     CONSTANT_VARIABLE_FALSE,
@@ -57,14 +58,9 @@ from .dicts import (
     ConstDictVariable,
     DefaultDictVariable,
     DictItemsVariable,
-    DictKeySetVariable,
     DunderDictVariable,
-    FrozensetVariable,
     MappingProxyVariable,
     NNModuleHooksDictVariable,
-    OrderedSetClassVariable,
-    OrderedSetVariable,
-    SetVariable,
 )
 from .distributed import BackwardHookVariable, DistributedVariable
 from .functions import (
@@ -149,6 +145,13 @@ from .nn_module import (
 )
 from .optimizer import OptimizerVariable
 from .sdpa import SDPAParamsVariable
+from .sets import (
+    DictKeySetVariable,
+    FrozensetVariable,
+    OrderedSetClassVariable,
+    OrderedSetVariable,
+    SetVariable,
+)
 from .streams import (
     CudaStreamVariable,
     EventVariable,
@@ -220,6 +223,7 @@ __all__ = [
     "LambdaVariable",
     "LazyConstantVariable",
     "LazyVariableTracker",
+    "ListBuiltinVariable",
     "ListIteratorVariable",
     "ListVariable",
     "NestedUserFunctionVariable",
