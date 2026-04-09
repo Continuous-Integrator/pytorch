@@ -1036,7 +1036,9 @@ def slice_forward(
                 return v.node.expr
             return sympy.Integer(v)  # type: ignore[arg-type]
 
-        cache_key = (to_expr(start), to_expr(end), to_expr(sizes[dim]))
+        actual_start = start if start is not None else 0
+        actual_end = end if end is not None else sizes[dim]
+        cache_key = (to_expr(actual_start), to_expr(actual_end), to_expr(sizes[dim]))
         if cache_key in shape_env._slice_size_cache:
             existing = shape_env.create_symintnode(
                 shape_env._slice_size_cache[cache_key], hint=None
