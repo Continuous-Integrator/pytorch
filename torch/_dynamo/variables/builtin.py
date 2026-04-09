@@ -3039,7 +3039,9 @@ class BuiltinVariable(BaseBuiltinVariable):
         # Anything else (classes, DataPtrVariable, etc.) is a different type
         # entirely — the comparison result is known at compile time.
         non_symnode = right if isinstance(left, SymNodeVariable) else left
-        if not isinstance(non_symnode, (SymNodeVariable, ConstantVariable, TensorVariable)):
+        if not isinstance(
+            non_symnode, (SymNodeVariable, ConstantVariable, TensorVariable)
+        ):
             # pyrefly: ignore [bad-argument-type]
             return VariableTracker.build(tx, op(object(), None))
 
