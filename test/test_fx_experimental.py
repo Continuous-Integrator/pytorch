@@ -46,7 +46,7 @@ from torch.fx.passes import graph_manipulation
 from torch.fx.passes.param_fetch import lift_lowering_attrs_to_nodes
 from torch.fx.passes.shape_prop import ShapeProp
 from torch.fx._lazy_graph_module import _use_lazy_graph_module
-from torch.fx.passes.split_module import split_module
+from torch.fx.passes.split_module import split_module, split_module_simple
 from torch.fx.passes.annotate_getitem_nodes import annotate_getitem_nodes
 from torch.testing._internal.common_device_type import (
     instantiate_device_type_tests,
@@ -1079,6 +1079,194 @@ terrible spacing
 
         actual = torch.compile(moe, backend=backend)(inp)
         torch.testing.assert_close(actual, expected)
+
+    def test_split_module_simple_basic(self):
+        class Mod(torch.nn.Module):
+            def forward(self, x):
+                a = torch.relu(x)
+                b = torch.sigmoid(a)
+                c = torch.tanh(b)
+                return c
+
+        mod = Mod()
+        x = torch.randn(3, 4)
+        expected = mod(x)
+
+        traced = torch.fx.symbolic_trace(mod)
+
+        # Split into 2 partitions: relu in 0, sigmoid+tanh in 1
+        node_to_partition = {}
+        counter = 0
+        for node in traced.graph.nodes:
+            if node.op in ("placeholder", "get_attr", "output"):
+                continue
+            node_to_partition[node] = 0 if counter == 0 else 1
+            counter += 1
+
+        split_gm = split_module_simple(traced, node_to_partition)
+
+        # Verify structure: should have submod_0 and submod_1
+        submod_names = [name for name, _ in split_gm.named_children()]
+        self.assertEqual(sorted(submod_names), ["submod_0", "submod_1"])
+
+        # Verify correctness
+        self.assertEqual(split_gm(x), expected)
+
+    def test_split_module_simple_multi_output(self):
+        class Mod(torch.nn.Module):
+            def forward(self, x):
+                a = torch.relu(x)
+                b = torch.sigmoid(x)
+                c = a + b
+                return c
+
+        mod = Mod()
+        x = torch.randn(3, 4)
+        expected = mod(x)
+
+        traced = torch.fx.symbolic_trace(mod)
+
+        # relu and sigmoid in partition 0, add in partition 1
+        # This means partition 0 has 2 outputs (a, b)
+        node_to_partition = {}
+        for node in traced.graph.nodes:
+            if node.op in ("placeholder", "get_attr", "output"):
+                continue
+            if node.target in (torch.relu, torch.sigmoid):
+                node_to_partition[node] = 0
+            else:
+                node_to_partition[node] = 1
+
+        split_gm = split_module_simple(traced, node_to_partition)
+        self.assertEqual(split_gm(x), expected)
+
+    def test_split_module_simple_single_partition(self):
+        class Mod(torch.nn.Module):
+            def forward(self, x):
+                return torch.relu(torch.sigmoid(x))
+
+        mod = Mod()
+        x = torch.randn(3, 4)
+        expected = mod(x)
+
+        traced = torch.fx.symbolic_trace(mod)
+        node_to_partition = {}
+        for node in traced.graph.nodes:
+            if node.op in ("placeholder", "get_attr", "output"):
+                continue
+            node_to_partition[node] = 0
+
+        split_gm = split_module_simple(traced, node_to_partition)
+        self.assertEqual(split_gm(x), expected)
+
+    def test_split_module_simple_partition_affix(self):
+        class Mod(torch.nn.Module):
+            def forward(self, x):
+                a = torch.relu(x)
+                b = torch.sigmoid(a)
+                return b
+
+        traced = torch.fx.symbolic_trace(Mod())
+        node_to_partition = {}
+        counter = 0
+        for node in traced.graph.nodes:
+            if node.op in ("placeholder", "get_attr", "output"):
+                continue
+            node_to_partition[node] = counter
+            counter += 1
+
+        split_gm = split_module_simple(
+            traced, node_to_partition, partition_affix="pp"
+        )
+
+        submod_names = [name for name, _ in split_gm.named_children()]
+        self.assertTrue(all("pp" in name for name in submod_names))
+
+        x = torch.randn(3, 4)
+        self.assertEqual(
+            torch.fx.symbolic_trace(Mod())(x),
+            split_gm(x),
+        )
+
+    def test_split_module_simple_symint_crossing(self):
+        # Test that SymInt dependencies are propagated across partitions
+        class Mod(torch.nn.Module):
+            def forward(self, x):
+                a = torch.relu(x)
+                b = torch.sigmoid(a)
+                return b
+
+        mod = Mod()
+        inp = torch.randn(4, 8)
+        expected = mod(inp)
+
+        node_partition_map = {}
+        op_counter = 0
+
+        def callback(node) -> int:
+            if node in node_partition_map:
+                return node_partition_map[node]
+            nonlocal op_counter
+            pid = op_counter // 1  # each op in its own partition
+            op_counter += 1
+            node_partition_map[node] = pid
+            return pid
+
+        def backend(gm, inps):
+            # Build node_to_partition dict from callback
+            node_to_part = {}
+            for node in gm.graph.nodes:
+                if node.op in ("placeholder", "get_attr", "output"):
+                    continue
+                node_to_part[node] = callback(node)
+            return split_module_simple(gm, node_to_part)
+
+        actual = torch.compile(mod, backend=backend)(inp)
+        torch.testing.assert_close(actual, expected)
+
+    def test_split_module_simple_equivalence_with_split_module(self):
+        # For simple graphs, split_module_simple should produce equivalent
+        # results to split_module
+        class Mod(torch.nn.Module):
+            def forward(self, x, y):
+                a = torch.relu(x)
+                b = torch.sigmoid(y)
+                c = a + b
+                d = torch.tanh(c)
+                return d
+
+        mod = Mod()
+        traced1 = torch.fx.symbolic_trace(mod)
+        traced2 = torch.fx.symbolic_trace(mod)
+
+        # Build partition mapping: 2 ops per partition
+        node_to_partition_simple = {}
+        counter = 0
+        partition_counter = 0
+        callback_cache = {}
+
+        for node in traced1.graph.nodes:
+            if node.op in ("placeholder", "get_attr", "output"):
+                continue
+            pid = counter // 2
+            node_to_partition_simple[node] = pid
+            counter += 1
+
+        counter = 0
+
+        def split_cb(node):
+            nonlocal counter
+            if node.name not in callback_cache:
+                callback_cache[node.name] = counter // 2
+                counter += 1
+            return callback_cache[node.name]
+
+        split_gm_simple = split_module_simple(traced1, node_to_partition_simple)
+        split_gm_orig = split_module(traced2, mod, split_cb)
+
+        x = torch.randn(3, 4)
+        y = torch.randn(3, 4)
+        self.assertEqual(split_gm_simple(x, y), split_gm_orig(x, y))
 
     def test_normalize_binary_operators(self):
         ops_to_test = {
