@@ -4116,6 +4116,12 @@ class ShapeEnv:
         # all dims with the same shape_id are treated as the same symbol.
         self._shape_id_to_unbacked_symbol: dict[str, sympy.Expr] = {}
 
+        # Cache for slice sizes: maps (start_expr, end_expr, dim_size_expr)
+        # to the first unbacked symbol created for that slice. When the same
+        # (start, end, size) is sliced again, we mint a fresh symbol but add
+        # a torch._check equality constraint with the cached one.
+        self._slice_size_cache: dict[tuple[sympy.Expr, ...], sympy.Expr] = {}
+
     @property
     def allow_scalar_outputs(self) -> bool:
         return self.settings.allow_scalar_outputs
