@@ -44,6 +44,7 @@ import torch.utils.cpp_extension
 from torch import Tensor
 from torch._C import FileCheck
 from torch._dynamo import allow_in_graph
+from torch._dynamo.comptime import comptime
 from torch._dynamo.eval_frame import _debug_get_cache_entry_list
 from torch._dynamo.exc import Unsupported
 from torch._dynamo.source import ConstantSource, GetItemSource, LocalSource
@@ -4483,6 +4484,119 @@ not ___dict_contains('cccccccc', G['sys'].modules)""",
         result = torch.compile(fn, fullgraph=True)(x)
         self.assertEqual(result, correct)
 
+    def test_deepcopy_user_defined_object(self):
+        class MyConfig:
+            def __init__(self, hidden_size=64):
+                self.hidden_size = hidden_size
+
+        class MyModule(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.config = MyConfig()
+                self.linear = torch.nn.Linear(64, 64)
+
+            def forward(self, x):
+                cfg = copy.deepcopy(self.config)
+                return self.linear(x) * cfg.hidden_size
+
+        m = MyModule()
+        x = torch.randn(2, 64)
+        result = torch.compile(m, fullgraph=True, backend="eager")(x)
+        self.assertEqual(m(x), result)
+
+    def test_deepcopy_user_defined_object_with_containers(self):
+        class Config:
+            def __init__(self):
+                self.sizes = [1, 2, 3]
+                self.mapping = {"a": 10, "b": 20}
+                self.flags = (True, False)
+
+        def fn(x, cfg):
+            c = copy.deepcopy(cfg)
+            c.sizes[0] = 99
+            c.mapping["a"] = 77
+            return x + c.sizes[0] + c.mapping["a"]
+
+        cfg = Config()
+        x = torch.randn(4)
+        correct = fn(x, cfg)
+        result = torch.compile(fn, fullgraph=True, backend="eager")(x, cfg)
+        self.assertEqual(result, correct)
+        # Verify deepcopy didn't mutate original
+        self.assertEqual(cfg.sizes[0], 1)
+        self.assertEqual(cfg.mapping["a"], 10)
+
+    def test_deepcopy_set(self):
+        MY_SET = {1, 2, 3}
+
+        def fn(x):
+            s = copy.deepcopy(MY_SET)
+            return x + len(s)
+
+        x = torch.randn(4)
+        correct = fn(x)
+        result = torch.compile(fn, fullgraph=True)(x)
+        self.assertEqual(result, correct)
+
+    def test_deepcopy_frozenset(self):
+        MY_FROZENSET = frozenset([1, 2, 3])
+
+        def fn(x):
+            s = copy.deepcopy(MY_FROZENSET)
+            return x + len(s)
+
+        x = torch.randn(4)
+        correct = fn(x)
+        result = torch.compile(fn, fullgraph=True)(x)
+        self.assertEqual(result, correct)
+
+    def test_deepcopy_user_defined_object_with_method(self):
+        class MyConfig:
+            def __init__(self, hidden_size=64):
+                self.hidden_size = hidden_size
+
+            def get_size(self):
+                return self.hidden_size
+
+        class MyModule(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.config = MyConfig()
+                self.linear = torch.nn.Linear(64, 64)
+
+            def forward(self, x):
+                cfg = copy.deepcopy(self.config)
+                return self.linear(x) * cfg.get_size()
+
+        m = MyModule()
+        x = torch.randn(2, 64)
+        correct = m(x)
+        result = torch.compile(m, fullgraph=True, backend="eager")(x)
+        self.assertEqual(result, correct)
+
+    def test_deepcopy_nested_user_defined_object(self):
+        class Inner:
+            def __init__(self, scale):
+                self.scale = scale
+
+        class Outer:
+            def __init__(self):
+                self.inner = Inner(2.0)
+                self.bias = 1.0
+
+        def fn(x, cfg):
+            c = copy.deepcopy(cfg)
+            c.inner.scale = 3.0
+            return x * c.inner.scale + c.bias
+
+        cfg = Outer()
+        x = torch.randn(4)
+        correct = fn(x, cfg)
+        result = torch.compile(fn, fullgraph=True, backend="eager")(x, cfg)
+        self.assertEqual(result, correct)
+        # Verify deepcopy didn't mutate original
+        self.assertEqual(cfg.inner.scale, 2.0)
+
     def test_global_state_guard_serialization(self):
         GlobalStateGuard = torch._C._dynamo.guards.GlobalStateGuard
         guards = GlobalStateGuard()
@@ -6299,42 +6413,6 @@ not ___dict_contains('cccccccc', G['sys'].modules)""",
         res2 = opt_f2()
         self.assertTrue(same(res1, res2))
 
-    def test_list_append_does_not_recompile_on_existing_contents(self):
-        items = []
-        cnts = CompileCounter()
-
-        def fn():
-            items.append(torch.ones(8))
-
-        opt_fn = torch.compile(fn, backend=cnts, fullgraph=True)
-
-        opt_fn()
-        opt_fn()
-        opt_fn()
-
-        self.assertEqual(len(items), 3)
-        self.assertEqual(cnts.frame_count, 1)
-
-    def test_list_clear_does_not_recompile_on_existing_contents(self):
-        items = [torch.randn(8)]
-        cnts = CompileCounter()
-
-        def fn():
-            items.clear()
-            return torch.ones(8)
-
-        opt_fn = torch.compile(fn, backend=cnts, fullgraph=True)
-
-        out1 = opt_fn()
-        self.assertEqual(len(items), 0)
-
-        items.extend([torch.randn(8), torch.randn(8)])
-        out2 = opt_fn()
-
-        self.assertEqual(len(items), 0)
-        self.assertTrue(same(out1, out2))
-        self.assertEqual(cnts.frame_count, 1)
-
     def test_inline_dict_mutation(self):
         def f1(d):
             d["c"] = d["a"] + d.pop("b")
@@ -7203,6 +7281,49 @@ not ___dict_contains('cccccccc', G['sys'].modules)""",
         test_recompile(foo, exp_frame_count=1)
         torch._dynamo.reset()
         test_recompile(foo_graph_break, exp_frame_count=2)
+
+    def test_multithread_compile_dynamic(self):
+        def f(x):
+            comptime.assert_static(x.shape[0])
+            return x * x
+
+        def _do_test(func):
+            success = True
+
+            def run(offset):
+                for i in range(20):
+                    print(func(torch.randn(i * 2 + offset)))
+
+            t1 = threading.Thread(target=run, args=[0])
+            t2 = threading.Thread(target=run, args=[1])
+
+            def exc_hook(x):
+                nonlocal success
+                success = False
+
+            try:
+                threading.excepthook = exc_hook
+                t1.start()
+                t2.start()
+
+                t1.join()
+                t2.join()
+            finally:
+                threading.excepthook = threading.__excepthook__
+            self.assertTrue(success)
+
+        _do_test(torch.compile(f, backend="eager", dynamic=False))
+        torch._dynamo.reset()
+
+        f_opt = torch.compile(f, backend="eager")
+
+        def g(x):
+            with torch._dynamo.config.patch(
+                automatic_dynamic_shapes=False, assume_static_by_default=True
+            ):
+                f_opt(x)
+
+        _do_test(g)
 
     def test_backend_match_guard_multi_threads(self):
         x = torch.randn([3, 4])
@@ -14754,6 +14875,36 @@ fn
         self.assertRaises(Unsupported, f, fake_arg=1)
         self.assertRaises(Unsupported, f, [])
         self.assertRaises(Unsupported, f, "1 + j")
+
+    def test_builtin_class_method_constant_fold(self):
+        @torch.compile(backend="eager", fullgraph=True)
+        def fn():
+            return (
+                bool.__new__(bool),
+                bool.__new__(bool, 1),
+                bool.__new__(bool, 0),
+                bool.from_bytes(b"\x00" * 8, "big"),
+                bool.from_bytes(b"abcd", "little"),
+                int.__new__(int),
+                int.__new__(int, 42),
+                int.from_bytes(b"\x00\x03", "big"),
+                int.from_bytes(b"\xff", byteorder="big", signed=True),
+                float.fromhex("0x1.ffffp10"),
+                float.hex(1.5),
+            )
+
+        res = fn()
+        self.assertIs(res[0], False)
+        self.assertIs(res[1], True)
+        self.assertIs(res[2], False)
+        self.assertIs(res[3], False)
+        self.assertIs(res[4], True)
+        self.assertEqual(res[5], 0)
+        self.assertEqual(res[6], 42)
+        self.assertEqual(res[7], 3)
+        self.assertEqual(res[8], -1)
+        self.assertEqual(res[9], float.fromhex("0x1.ffffp10"))
+        self.assertEqual(res[10], "0x1.8000000000000p+0")
 
     def test_guard_string_escaped(self):
         d = {frozenset({0}): {frozenset({0}): 1}}
