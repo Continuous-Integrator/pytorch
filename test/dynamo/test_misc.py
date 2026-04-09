@@ -15341,16 +15341,19 @@ def forward(self, L_x_ : torch.Tensor):
         cnt.clear()
 
         @torch.compile(backend=cnt, fullgraph=True)
-        def h(x):
-            return len(x)
+        def h(x, s):
+            return x + len(s)
 
-        self.assertEqual(h(MyStr("abc")), 3)
+        r7 = h(torch.tensor(1), MyStr("abc"))
+        self.assertEqual(r7.item(), 4)
         self.assertEqual(cnt.frame_count, 1)
 
-        self.assertEqual(h(MyStr("abcde")), 5)
+        r8 = h(torch.tensor(1), MyStr("abcde"))
+        self.assertEqual(r8.item(), 6)
         self.assertEqual(cnt.frame_count, 2)
 
-        self.assertEqual(h(MyStr("abc")), 3)
+        r9 = h(torch.tensor(1), MyStr("abc"))
+        self.assertEqual(r9.item(), 4)
         self.assertEqual(cnt.frame_count, 2)
 
 
