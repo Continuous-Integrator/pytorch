@@ -300,6 +300,7 @@ from .user_defined import (
     MutableMappingVariable,
     SourcelessGraphModuleVariable,
     UserDefinedClassVariable,
+    UserDefinedConstantVariable,
     UserDefinedDictVariable,
     UserDefinedExceptionClassVariable,
     UserDefinedListVariable,
@@ -1543,6 +1544,21 @@ class VariableBuilder:
                 value,
                 source=self.source,
             )
+        elif type(value) is torch._C.Generator:
+            # Generator is registered as an opaque reference type for make_fx
+            # tracing (graphsafe_run_with_rng_state). It can flow through
+            # TorchScriptObjectVariable/FakeScriptObject, but:
+            # 1. Ops like torch.randn pass the generator directly to C++
+            #    without going through proxy dispatch, so the FakeScriptObject
+            #    (not a real Generator) causes "GeneratorImpl with nullptr".
+            # 2. Inductor's placeholder handler only supports Generator inputs
+            #    connected to graphsafe_run_with_rng_state.
+            unimplemented(
+                gb_type="Generator",
+                context="Generator objects as inputs",
+                explanation="torch.Generator is not supported in dynamo.",
+                hints=[*graph_break_hints.SUPPORTABLE],
+            )
         elif TorchScriptObjectVariable.is_matching_cls(type(value)):
             from ..source import (
                 FlattenScriptObjectSource,
@@ -1832,6 +1848,8 @@ class VariableBuilder:
             return self.wrap_user_defined(value)
 
     def wrap_user_defined(self, value: Any) -> VariableTracker:
+        from .user_defined import _CONSTANT_BASE_TYPES
+
         self.install_guards(GuardBuilder.TYPE_MATCH)
         if InspectVariable.is_matching_object(value):
             # Skip guards on inspect related variable trackers because they are
@@ -1839,6 +1857,12 @@ class VariableBuilder:
             # cause recompiles) and can cause a large number of OBJECT_ALIASING
             # guards.
             result = InspectVariable(value, source=SkipGuardSource(self.source))
+        elif (
+            isinstance(value, _CONSTANT_BASE_TYPES)
+            and type(value) not in common_constant_types
+        ):
+            self.install_guards(GuardBuilder.CONSTANT_SUBCLASS_MATCH)
+            result = UserDefinedConstantVariable(value, source=self.source)
         else:
             result = UserDefinedObjectVariable(value, source=self.source)
         if not SideEffects.cls_supports_mutation_side_effects(type(value)):
