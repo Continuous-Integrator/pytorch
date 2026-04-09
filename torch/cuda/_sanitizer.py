@@ -628,7 +628,7 @@ class EventHandler:
         to_delete = []
         for data_ptr, pending in self.pending_reuse.items():
             all_synced = True
-            for old_stream, seq_num in pending.stream_seq_nums.items():
+            for old_stream in pending.stream_seq_nums:
                 # Check if all known streams now see old_stream's seq_num.
                 # After all_streams_wait_for_stream(stream), every stream's
                 # view of `stream` is up-to-date. If old_stream == stream,
