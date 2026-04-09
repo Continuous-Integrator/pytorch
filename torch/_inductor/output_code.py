@@ -40,6 +40,7 @@ from torch._inductor.cudagraph_utils import (
     log_cudagraph_skip_and_bump_counter,
 )
 from torch._inductor.freezing_utils import has_frozen_params, is_frozen_param
+from torch._library.opaque_object import is_opaque_value
 from torch._inductor.utils import (
     _unstable_customized_partition_wrapper,
     align_inputs_from_check_idxs,
@@ -615,6 +616,7 @@ class CompiledFxGraph(OutputCode):
                     (
                         all(
                             isinstance(t, (torch.Tensor, torch.SymInt, torch.Generator))
+                            or is_opaque_value(t)
                             for t in example_inputs
                         ),
                         "non-Tensor inputs",
