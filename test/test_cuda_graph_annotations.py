@@ -307,6 +307,72 @@ class TestMarkKernels(TestCase):
         enable_annotations()
 
 
+@unittest.skipUnless(TEST_CUDA, "CUDA not available")
+class TestInductorAnnotationCodegen(TestCase):
+    """Tests that inductor emits mark_kernels calls in generated code."""
+
+    def _get_compiled_code(self, model, example_input, annotations_enabled):
+        import torch._inductor.config as inductor_config
+        from torch._inductor.utils import run_and_get_code
+
+        with inductor_config.patch(
+            {
+                "triton.cudagraph_kernel_annotations": annotations_enabled,
+            }
+        ):
+            compiled = torch.compile(model)
+            _, codes = run_and_get_code(compiled, example_input)
+        return codes
+
+    def test_annotation_codegen_enabled(self):
+        """When config is enabled, generated code should contain _mark_kernels calls."""
+
+        class SimpleModel(torch.nn.Module):
+            def forward(self, x):
+                return torch.relu(x @ torch.ones(64, 64, device="cuda")) + 1
+
+        model = SimpleModel().cuda()
+        x = torch.randn(32, 64, device="cuda")
+        codes = self._get_compiled_code(model, x, annotations_enabled=True)
+
+        code = codes[0]
+        self.assertIn("_mark_kernels", code)
+        self.assertIn("_annotation_ctx", code)
+        self.assertIn("__enter__", code)
+        self.assertIn("__exit__", code)
+
+    def test_annotation_codegen_disabled(self):
+        """When config is disabled, generated code should NOT contain _mark_kernels."""
+
+        class SimpleModel(torch.nn.Module):
+            def forward(self, x):
+                return torch.relu(x @ torch.ones(64, 64, device="cuda")) + 1
+
+        model = SimpleModel().cuda()
+        x = torch.randn(32, 64, device="cuda")
+        codes = self._get_compiled_code(model, x, annotations_enabled=False)
+
+        code = codes[0]
+        self.assertNotIn("_mark_kernels", code)
+        self.assertNotIn("_annotation_ctx", code)
+
+    def test_annotation_contains_fx_node_names(self):
+        """Generated annotation should reference FX node names."""
+
+        class SimpleModel(torch.nn.Module):
+            def forward(self, x):
+                return x + 1
+
+        model = SimpleModel().cuda()
+        x = torch.randn(32, 64, device="cuda")
+        codes = self._get_compiled_code(model, x, annotations_enabled=True)
+
+        code = codes[0]
+        # The add op should show up as an FX node name in the annotation
+        self.assertIn("_mark_kernels", code)
+        self.assertIn("add", code)
+
+
 class TestAnnotateTrace(TestCase):
     """Tests for the trace post-processing functions (no GPU required)."""
 
