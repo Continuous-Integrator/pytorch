@@ -3923,14 +3923,6 @@ def _get_fake_value_impl(
                 hints=[*graph_break_hints.USER_ERROR],
                 from_exc=cause,
             )
-        elif isinstance(cause, IndexError):
-            unimplemented(
-                gb_type="IndexError when making fake tensor call",
-                context=f"IndexError {node.target}: {cause}",
-                explanation=str(cause),
-                hints=[*graph_break_hints.USER_ERROR],
-                from_exc=cause,
-            )
         msg = get_concrete_sizes_from_symints(str(e), fake_mode)
         _wrap_graph_break_with_torch_runtime_err(
             lambda: unimplemented(

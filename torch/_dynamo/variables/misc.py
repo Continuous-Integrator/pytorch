@@ -1602,9 +1602,6 @@ class TypingVariable(VariableTracker):
         else:
             return SourcelessBuilder.create(tx, value)
 
-    def is_callable(self) -> bool:
-        return callable(self.value)
-
     def as_python_constant(self) -> Any:
         return self.value
 
