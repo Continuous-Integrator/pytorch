@@ -773,8 +773,7 @@ class MixOrderReductionTest(TestBase):
         self.assertEqual(len(compile_metrics), 1, "Don't recompile")
 
     @skipIfXpu(msg="https://github.com/intel/intel-xpu-backend-for-triton/issues/6398")
-    # Cooperative reductions cause this test to flake in the pipeline (we may be doing
-    # a different reduction order?)
+    # Cooperative reductions cause this test to fail if Triton is enabled.
     @inductor_config.patch(
         {
             "triton.cooperative_reductions": False,
