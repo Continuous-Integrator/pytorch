@@ -6389,7 +6389,7 @@ class TestArrayInterface(TestCase):
 
 
 class TestDelMisc(TestCase):
-    @xfailIfTorchDynamo  # .flat returns ravel() under dynamo, del raises AttributeError not TypeError
+    @xfail  # torch._numpy .flat returns ravel() instead of flatiter, so del is not supported
     def test_flat_element_deletion(self):
         it = np.ones(3).flat
         try:

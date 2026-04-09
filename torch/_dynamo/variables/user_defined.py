@@ -95,7 +95,9 @@ from ..utils import (
     unpatched_nn_module_getattr,
 )
 from .base import MutationType, NO_SUCH_SUBOBJ, ValueMutationNew, VariableTracker
-from .dicts import ConstDictVariable, DefaultDictVariable, SetVariable
+from .dicts import ConstDictVariable, DefaultDictVariable
+from .hashable import HashableTracker
+from .sets import SetVariable
 
 
 try:
@@ -2052,6 +2054,15 @@ class UserDefinedObjectVariable(UserDefinedVariable):
                 cls_source = source
             return VariableTracker.build(tx, type(self.value), cls_source)
 
+        # object.__reduce_ex__ is a C builtin that Dynamo cannot trace.
+        # Return a bound polyfill so copy.deepcopy can call reductor(4).
+        if name == "__reduce_ex__":
+            from .. import polyfills
+
+            return variables.UserMethodVariable(
+                polyfills.reduce_ex_user_defined_object, self
+            )
+
         from ..mutation_guard import unpatched_nn_module_init
 
         # ---- CPython attribute lookup algorithm ----
@@ -2967,7 +2978,7 @@ class UserDefinedSetVariable(UserDefinedObjectVariable):
         return self._base_vt.set_items  # pyrefly: ignore[missing-attribute]
 
     @property
-    def items(self) -> list[VariableTracker]:
+    def items(self) -> dict[HashableTracker, VariableTracker]:
         assert self._base_vt is not None
         return self._base_vt.items  # pyrefly: ignore[missing-attribute]
 
