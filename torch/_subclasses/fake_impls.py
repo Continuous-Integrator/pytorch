@@ -1023,11 +1023,32 @@ def slice_forward(
 
     # create unbacked if case unknown
     if new_size is None:
+        import sympy
+
         if shape_env is None:
             raise AssertionError("Must have shape_env to create symint")
+
+        def to_expr(v: object) -> sympy.Expr:
+            if isinstance(v, torch.SymInt):
+                return v.node.expr
+            return sympy.Integer(v)  # type: ignore[arg-type]
+
+        actual_start = start if start is not None else 0
+        actual_end = end if end is not None else sizes[dim]
+        cache_key = (
+            fake_mode.epoch,
+            to_expr(actual_start),
+            to_expr(actual_end),
+            to_expr(sizes[dim]),
+        )
         new_size = shape_env.create_unbacked_symint()
         torch._check(new_size >= 0)
         torch._check(new_size <= sizes[dim])
+        if cache_key in shape_env._slice_size_cache:
+            cached_expr = shape_env._slice_size_cache[cache_key]
+            shape_env._rename_unbacked_to(new_size.node.expr, cached_expr)
+        else:
+            shape_env._slice_size_cache[cache_key] = new_size.node.expr
 
     # stride
     new_stride = strides[dim] * step
