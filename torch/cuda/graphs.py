@@ -202,6 +202,7 @@ class graph:
             :func:`~torch.cuda._graph_annotations.resolve_pending_annotations` before
             the capture ends.  Annotations are **not** cleared on exit so that multiple
             graphs in the same workload can accumulate annotations.
+            Requires ``cuda.bindings`` package and cuda-compat >= 13.1 or CUDA driver >= 13.1.
 
     .. note::
         For effective memory sharing, if you pass a ``pool`` used by a previous capture and the previous capture
