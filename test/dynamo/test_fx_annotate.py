@@ -318,15 +318,15 @@ class AnnotateTests(torch._dynamo.test_case.TestCase):
         self.assertExpectedInline(
             str(dynamo_metadata),
             """\
-('placeholder', 's77', {'moo': 0})
 ('placeholder', 'l_x_', {'moo': 0})
+('placeholder', 's77', {'moo': 0})
 ('placeholder', 'l_y_', {'moo': 0})
-('call_function', 'x', {'moo': 0})
+('call_function', 'cat', {'moo': 0})
+('call_function', 'mul', {'moo': 0})
 ('call_method', 'item', {'moo': 0})
 ('call_function', 'mul_1', {'moo': 0})
 ('call_function', 'ge', {'moo': 0})
-('call_function', '_check', {'moo': 0})
-('call_function', 'mul', {'moo': 0})""",  # noqa: B950
+('call_function', '_check', {'moo': 0})""",  # noqa: B950
         )
 
 

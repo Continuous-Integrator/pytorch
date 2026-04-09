@@ -509,13 +509,16 @@ def _is_safe_to_reorder(node: fx.Node) -> bool:
     # _side_effectful_functions, and random ops.
     if node.is_impure():
         return False
-    # Non-OpOverload call_function targets need two checks:
+    # Non-OpOverload call_function targets need three checks:
     # 1. In-place functions (name ending with '_') mutate their inputs.
-    # 2. Targets with no FX Node arguments are likely state-changing operations
+    # 2. out= kwarg with a Node value indicates mutation (e.g. torch.add(y, 1, out=x)).
+    # 3. Targets with no FX Node arguments are likely state-changing operations
     #    (e.g., _vmap_increment_nesting, _set_fwd_grad_enabled).
     if not isinstance(node.target, torch._ops.OpOverload):
         name = getattr(node.target, "__name__", "")
         if name.endswith("_"):
+            return False
+        if isinstance(node.kwargs.get("out"), fx.Node):
             return False
         return bool(node.all_input_nodes)
     return True
@@ -2765,6 +2768,7 @@ class OutputGraph(OutputGraphCommon):
 
             if (
                 not self.export
+                and not torch.compiler.is_exporting()
                 and not torch._dynamo.compiled_autograd.in_compiled_autograd_region
             ):
                 _canonicalize_graph(self.graph)

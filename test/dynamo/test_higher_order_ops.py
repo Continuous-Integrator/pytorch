@@ -465,7 +465,7 @@ class GraphModule(torch.nn.Module):
                 actual_graph,
                 """\
 class GraphModule(torch.nn.Module):
-    def forward(self, s77: "Sym(s77)", L_x_: "f32[s77, 1]"):
+    def forward(self, L_x_: "f32[s77, 1]", s77: "Sym(s77)"):
         l_x_ = L_x_
 
         wrap_body_0 = self.wrap_body_0
@@ -658,13 +658,14 @@ class GraphModule(torch.nn.Module):
                 out_graph,
                 """\
 class GraphModule(torch.nn.Module):
-    def forward(self, s77: "Sym(s77)", L_x_: "f32[s77]"):
+    def forward(self, L_x_: "f32[s77]", s77: "Sym(s77)"):
         l_x_ = L_x_
+
+        wrap_body_1 = self.wrap_body_1
 
         sum_1: "f32[]" = l_x_.sum()
         item: "Sym(zuf0)" = sum_1.item();  sum_1 = None
 
-        wrap_body_1 = self.wrap_body_1
         wrap = torch.ops.higher_order.wrap(wrap_body_1, s77, l_x_, item);  wrap_body_1 = s77 = l_x_ = item = None
         getitem: "f32[s77]" = wrap[0];  wrap = None
         return (getitem,)
@@ -745,16 +746,17 @@ class GraphModule(torch.nn.Module):
                 out_graph,
                 """\
 class GraphModule(torch.nn.Module):
-    def forward(self, s77: "Sym(s77)", L_x_: "f32[s77]"):
+    def forward(self, L_x_: "f32[s77]", s77: "Sym(s77)"):
         l_x_ = L_x_
 
-        c: "i64[u0, 1]" = l_x_.nonzero()
-        sym_size_int_1: "Sym(u0)" = torch.ops.aten.sym_size.int(c, 0)
-        ge: "Sym(u0 >= 0)" = sym_size_int_1 >= 0
+        wrap_body_1 = self.wrap_body_1
+
+        nonzero: "i64[u0, 1]" = l_x_.nonzero()
+        sym_size_int: "Sym(u0)" = torch.ops.aten.sym_size.int(nonzero, 0)
+        ge: "Sym(u0 >= 0)" = sym_size_int >= 0
         _assert_scalar_default = torch.ops.aten._assert_scalar.default(ge, "Runtime assertion failed for expression u0 >= 0 on node 'ge'");  ge = _assert_scalar_default = None
 
-        wrap_body_1 = self.wrap_body_1
-        wrap = torch.ops.higher_order.wrap(wrap_body_1, s77, l_x_, sym_size_int_1, c);  wrap_body_1 = s77 = l_x_ = sym_size_int_1 = c = None
+        wrap = torch.ops.higher_order.wrap(wrap_body_1, s77, l_x_, sym_size_int, nonzero);  wrap_body_1 = s77 = l_x_ = sym_size_int = nonzero = None
         getitem: "f32[s77]" = wrap[0]
         getitem_1: "f32[u0, 1]" = wrap[1];  wrap = None
         return (getitem, getitem_1)
@@ -3068,32 +3070,32 @@ def forward(self, L_a_ : torch.SymInt, L_b_ : torch.SymInt, L_c_ : torch.SymInt,
     l_b_ = L_b_
     l_c_ = L_c_
     l_d_ = L_d_
-    a = torch.arange(l_a_)
-    b = torch.arange(l_b_)
-    c = torch.arange(l_c_)
-    d = torch.arange(l_d_)
+    arange = torch.arange(l_a_)
+    arange_1 = torch.arange(l_b_)
+    arange_2 = torch.arange(l_c_)
+    arange_3 = torch.arange(l_d_)
     lazy_load_decompositions = torch._functorch.predispatch.lazy_load_decompositions();  lazy_load_decompositions = None
     _vmap_increment_nesting = torch._functorch.predispatch._vmap_increment_nesting(l_d_, 'error');  _vmap_increment_nesting = None
-    child = torch._functorch.predispatch._add_batch_dim(d, 0, 1);  d = None
+    _add_batch_dim = torch._functorch.predispatch._add_batch_dim(arange_3, 0, 1);  arange_3 = None
     lazy_load_decompositions_1 = torch._functorch.predispatch.lazy_load_decompositions();  lazy_load_decompositions_1 = None
     _vmap_increment_nesting_1 = torch._functorch.predispatch._vmap_increment_nesting(l_c_, 'error');  _vmap_increment_nesting_1 = None
-    child_1 = torch._functorch.predispatch._add_batch_dim(c, 0, 2);  c = None
+    _add_batch_dim_1 = torch._functorch.predispatch._add_batch_dim(arange_2, 0, 2);  arange_2 = None
     lazy_load_decompositions_2 = torch._functorch.predispatch.lazy_load_decompositions();  lazy_load_decompositions_2 = None
     _vmap_increment_nesting_2 = torch._functorch.predispatch._vmap_increment_nesting(l_b_, 'error');  _vmap_increment_nesting_2 = None
-    child_2 = torch._functorch.predispatch._add_batch_dim(b, 0, 3);  b = None
+    _add_batch_dim_2 = torch._functorch.predispatch._add_batch_dim(arange_1, 0, 3);  arange_1 = None
     lazy_load_decompositions_3 = torch._functorch.predispatch.lazy_load_decompositions();  lazy_load_decompositions_3 = None
     _vmap_increment_nesting_3 = torch._functorch.predispatch._vmap_increment_nesting(l_a_, 'error');  _vmap_increment_nesting_3 = None
-    _add_batch_dim_3 = torch._functorch.predispatch._add_batch_dim(a, 0, 4);  a = None
-    add = _add_batch_dim_3 + child_2;  _add_batch_dim_3 = child_2 = None
-    add_1 = add + child_1;  add = child_1 = None
-    batched_outputs = add_1 + child;  add_1 = child = None
-    batched_outputs_1 = torch._functorch.predispatch._remove_batch_dim(batched_outputs, 4, l_a_, 0);  batched_outputs = l_a_ = None
+    _add_batch_dim_3 = torch._functorch.predispatch._add_batch_dim(arange, 0, 4);  arange = None
+    add = _add_batch_dim_3 + _add_batch_dim_2;  _add_batch_dim_3 = _add_batch_dim_2 = None
+    add_1 = add + _add_batch_dim_1;  add = _add_batch_dim_1 = None
+    add_2 = add_1 + _add_batch_dim;  add_1 = _add_batch_dim = None
+    _remove_batch_dim = torch._functorch.predispatch._remove_batch_dim(add_2, 4, l_a_, 0);  add_2 = l_a_ = None
     _vmap_decrement_nesting = torch._functorch.predispatch._vmap_decrement_nesting();  _vmap_decrement_nesting = None
-    batched_outputs_2 = torch._functorch.predispatch._remove_batch_dim(batched_outputs_1, 3, l_b_, 0);  batched_outputs_1 = l_b_ = None
+    _remove_batch_dim_1 = torch._functorch.predispatch._remove_batch_dim(_remove_batch_dim, 3, l_b_, 0);  _remove_batch_dim = l_b_ = None
     _vmap_decrement_nesting_1 = torch._functorch.predispatch._vmap_decrement_nesting();  _vmap_decrement_nesting_1 = None
-    batched_outputs_3 = torch._functorch.predispatch._remove_batch_dim(batched_outputs_2, 2, l_c_, 0);  batched_outputs_2 = l_c_ = None
+    _remove_batch_dim_2 = torch._functorch.predispatch._remove_batch_dim(_remove_batch_dim_1, 2, l_c_, 0);  _remove_batch_dim_1 = l_c_ = None
     _vmap_decrement_nesting_2 = torch._functorch.predispatch._vmap_decrement_nesting();  _vmap_decrement_nesting_2 = None
-    _remove_batch_dim_3 = torch._functorch.predispatch._remove_batch_dim(batched_outputs_3, 1, l_d_, 0);  batched_outputs_3 = l_d_ = None
+    _remove_batch_dim_3 = torch._functorch.predispatch._remove_batch_dim(_remove_batch_dim_2, 1, l_d_, 0);  _remove_batch_dim_2 = l_d_ = None
     _vmap_decrement_nesting_3 = torch._functorch.predispatch._vmap_decrement_nesting();  _vmap_decrement_nesting_3 = None
     return (_remove_batch_dim_3,)""",  # noqa: B950
             )

@@ -278,7 +278,7 @@ def forward(self, L_mesh_ : torch.distributed.device_mesh.DeviceMesh, L_self_buf
     l_self_buffers_buffer_ = L_self_buffers_buffer_
     l_x_ = L_x_
     from_local = torch.distributed.tensor._api.from_local(l_x_, l_mesh_, [torch.distributed.tensor.placement_types.Shard(dim=0)], run_check = False);  l_x_ = l_mesh_ = None
-    add = l_self_buffers_buffer_.add(from_local);  l_self_buffers_buffer_ = from_local = None
+    add = l_self_buffers_buffer_ + from_local;  l_self_buffers_buffer_ = from_local = None
     to_local = add.to_local();  add = None
     return (to_local,)""",  # noqa: B950
         )
@@ -1335,7 +1335,7 @@ def forward(self, L_mesh_ : torch.distributed.device_mesh.DeviceMesh, L_x_ : tor
     from_local = torch.distributed.tensor._api.from_local(l_x_, l_mesh_, [torch.distributed.tensor.placement_types.Shard(dim=0)], run_check = False);  l_x_ = None
     redistribute = from_local.redistribute(l_mesh_, [torch.distributed.tensor.placement_types.Replicate()]);  from_local = l_mesh_ = None
     to_local = redistribute.to_local();  redistribute = None
-    add = to_local.add(2);  to_local = None
+    add = to_local + 2;  to_local = None
     return (add,)""",  # noqa: B950
         )
         opt_fn = torch.compile(fn, backend="eager", fullgraph=True)
@@ -1366,7 +1366,7 @@ def forward(self, L_mesh_ : torch.distributed.device_mesh.DeviceMesh, L_x_ : tor
     from_local = torch.distributed.tensor._api.from_local(l_x_, l_mesh_, [torch.distributed.tensor.placement_types.Shard(dim=0)], run_check = False);  l_x_ = None
     redistribute = from_local.redistribute(device_mesh = l_mesh_, placements = [torch.distributed.tensor.placement_types.Replicate()]);  from_local = l_mesh_ = None
     to_local = redistribute.to_local();  redistribute = None
-    add = to_local.add(2);  to_local = None
+    add = to_local + 2;  to_local = None
     return (add,)""",  # noqa: B950
         )
 
