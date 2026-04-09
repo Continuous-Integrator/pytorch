@@ -216,11 +216,6 @@ class DecoratorTests(PytreeRegisteringTestCase):
         self.assertEqual(cnts.frame_count, 1)
         self.assertEqual(cnts.op_count, 5)
 
-    def test_allow_in_graph_deprecation_warning(self):
-        with self.assertWarnsRegex(FutureWarning, "nonstrict_trace"):
-            torch._dynamo.allow_in_graph(my_custom_function)
-        torch._dynamo.disallow_in_graph(my_custom_function)
-
     def test_allow_in_graph_no_id_reuse(self):
         cnts = torch._dynamo.testing.CompileCounter()
 
@@ -2441,6 +2436,21 @@ Detected recompile when torch.compile stance is 'fail_on_recompile'. filename: '
         model.forward = torch._dynamo.disable(model.forward, recursive=False)
         with self.assertRaises(RuntimeError):
             exported_model = torch.export.export(model, (inp,))
+
+    def test_allow_in_graph_inside_compile_gives_clear_error(self):
+        # Regression test for https://github.com/pytorch/pytorch/issues/178511
+        # Calling allow_in_graph inside a compiled region is not supported.
+        # Verify the error message guides users to annotate before compilation.
+        def forward(x):
+            wrapped_fn = torch.compiler.allow_in_graph(my_custom_function)
+            return wrapped_fn(x)
+
+        compiled = torch.compile(forward, fullgraph=True)
+        with self.assertRaisesRegex(
+            torch._dynamo.exc.Unsupported,
+            "allow_in_graph",
+        ):
+            compiled(torch.randn(4))
 
 
 instantiate_parametrized_tests(DecoratorTests)
