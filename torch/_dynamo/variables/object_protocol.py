@@ -109,7 +109,7 @@ def type_implements_mp_length(obj_type: type) -> bool:
 
 def type_implements_nb_bool(obj_type: type) -> bool:
     """Check whether obj_type implements the nb_bool slot (i.e. has __bool__ or __len__)."""
-    _, _, _, number_slots = _get_cached_slots(obj_type)
+    _, _, number_slots, _ = _get_cached_slots(obj_type)
     return has_slot(number_slots, PyNumberSlots.NB_BOOL)
 
 
@@ -178,6 +178,10 @@ def generic_bool(tx: "InstructionTranslator", obj: VariableTracker) -> VariableT
 
     try:
         length = generic_len(tx, obj)
+        from .tensor import SymNodeVariable
+
+        if isinstance(length, SymNodeVariable):
+            return SymNodeVariable.create(tx, length.as_proxy() > 0)
         return ConstantVariable.create(length.as_python_constant() > 0)
     except ObservedTypeError:
         handle_observed_exception(tx)

@@ -1419,10 +1419,6 @@ class UserDefinedObjectVariable(UserDefinedVariable):
     ) -> "VariableTracker | None":
         # Mirrors slot_nb_bool:
         # https://github.com/python/cpython/blob/c09ccd9c429/Objects/typeobject.c#L9408-L9458
-        # __bool__ → __len__ → truthy.
-        from .constant import CONSTANT_VARIABLE_TRUE, ConstantVariable
-        from .tensor import SymNodeVariable
-
         if self._maybe_get_baseclass_method("__bool__"):
             result = self.call_method(tx, "__bool__", [], {})
             if result.is_python_constant():
@@ -1436,16 +1432,7 @@ class UserDefinedObjectVariable(UserDefinedVariable):
                         ],
                     )
             return result
-        if self._maybe_get_baseclass_method("__len__"):
-            length = self.call_method(tx, "__len__", [], {})
-            if length.is_python_constant():
-                return ConstantVariable.create(length.as_python_constant() > 0)
-            # SymNodeVariable arises when __len__ returns a symbolic integer
-            # (e.g. under dynamic shapes), so we emit a symbolic boolean.
-            if isinstance(length, SymNodeVariable):
-                return SymNodeVariable.create(tx, length.as_proxy() > 0)
-            return None
-        return CONSTANT_VARIABLE_TRUE
+        return None
 
     def nb_index_impl(
         self,
