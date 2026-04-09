@@ -3076,13 +3076,24 @@ def template_fusion_pw_node(node1: BaseSchedulerNode, node2: BaseSchedulerNode):
 
 
 def _get_fx_node_names(node: BaseSchedulerNode) -> str:
-    """Extract comma-separated FX node names for CUDA graph annotation."""
+    """Extract comma-separated FX node names for CUDA graph annotation.
+
+    Uses origin_node (the direct FX node) rather than origins (which includes
+    transitive unrealized inputs) to avoid misleading annotations like
+    'mm_1, relu' when mm_1 merely consumes relu's output.  Falls back to
+    origins when origin_node is not set.
+    """
     names: list[str] = []
     for snode in node.get_nodes():
         if snode.node is not None:
-            for origin in snode.node.get_origins():
-                if origin.op == "call_function" and origin.name not in names:
+            origin = snode.node.get_origin_node()
+            if origin is not None:
+                if origin.name not in names:
                     names.append(origin.name)
+            else:
+                for o in snode.node.get_origins():
+                    if o.op == "call_function" and o.name not in names:
+                        names.append(o.name)
     return ", ".join(names)
 
 
