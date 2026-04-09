@@ -427,6 +427,11 @@ class EventHandler:
         # CallbackRegistry.fire_callbacks swallows exceptions.  They are
         # drained and raised in the next __torch_dispatch__ call.
         self.deferred_errors: list[SynchronizationError] = []
+        # Streams registered via record_stream() per data pointer.  The
+        # caching allocator guarantees it will not reuse memory until all
+        # recorded streams have completed, so these streams are safe and
+        # should be excluded from PendingReuse checks.
+        self.recorded_streams: dict[DataPtr, set[StreamId]] = {}
 
     def _handle_kernel_launch(
         self,
@@ -558,6 +563,19 @@ class EventHandler:
             stack_trace,
         )
 
+    def _handle_record_stream(
+        self, data_ptr: DataPtr, stream: StreamId
+    ) -> None:
+        """Handle tensor.record_stream(stream).
+
+        The caching allocator guarantees it will not reuse a block's memory
+        until every stream passed to record_stream has completed.  We track
+        these streams so that _handle_memory_deallocation can exclude them
+        from PendingReuse — the allocator itself ensures safety for recorded
+        streams.
+        """
+        self.recorded_streams.setdefault(data_ptr, set()).add(stream)
+
     def _handle_memory_deallocation(
         self, data_ptr: DataPtr, stream: StreamId
     ) -> None:
@@ -572,6 +590,13 @@ class EventHandler:
         for read in info.reads:
             prev = stream_seq_nums.get(read.stream, -1)
             stream_seq_nums[read.stream] = max(prev, read.seq_num)
+
+        # Exclude streams that were registered via record_stream().  The
+        # caching allocator guarantees it will not reuse this memory until
+        # those streams have completed, so they cannot race.
+        safe_streams = self.recorded_streams.pop(data_ptr, set())
+        for s in safe_streams:
+            stream_seq_nums.pop(s, None)
 
         if stream_seq_nums:
             dealloc_stack_trace = traceback.StackSummary.extract(
@@ -750,8 +775,22 @@ class CUDASanitizerDispatchMode(TorchDispatchMode):
         if kwargs is None:
             kwargs = {}
 
-        # record_stream is not a kernel dispatch, skip it
+        # record_stream tells the caching allocator that a tensor is used on
+        # an additional stream.  Forward this to EventHandler so it can
+        # exclude the recorded stream from allocator-reuse race checks.
         if func is aten.record_stream.default:
+            tensor, stream_arg = args[0], args[1]
+            if isinstance(tensor, torch.Tensor) and tensor.is_cuda:
+                data_ptr = tensor.data_ptr() if tensor.data_ptr() else id(tensor)
+                # stream_arg is a torch.Stream with (device_type, device_index,
+                # stream_id).  Convert to the raw cuda_stream handle that CSAN
+                # uses everywhere else for stream identity.
+                cuda_stream = torch.cuda.Stream(
+                    stream_id=stream_arg.stream_id,
+                    device_index=stream_arg.device_index,
+                    device_type=stream_arg.device_type,
+                ).cuda_stream
+                self.event_handler._handle_record_stream(data_ptr, cuda_stream)
             return func(*args, **kwargs)
 
         is_factory = bool(FACTORY_FUNCTION_REGEX.match(func._schema.name))
