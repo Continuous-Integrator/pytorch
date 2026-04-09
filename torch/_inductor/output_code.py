@@ -40,7 +40,6 @@ from torch._inductor.cudagraph_utils import (
     log_cudagraph_skip_and_bump_counter,
 )
 from torch._inductor.freezing_utils import has_frozen_params, is_frozen_param
-from torch._library.opaque_object import is_opaque_value
 from torch._inductor.utils import (
     _unstable_customized_partition_wrapper,
     align_inputs_from_check_idxs,
@@ -51,6 +50,7 @@ from torch._inductor.utils import (
     output_node,
     set_tracing_context_output_strides,
 )
+from torch._library.opaque_object import is_opaque_value
 from torch.fx._graph_pickler import _node_metadata_key_filter_safe, _ops_filter_safe
 from torch.utils._ordered_set import OrderedSet
 from torch.utils._python_dispatch import is_in_torch_dispatch_mode

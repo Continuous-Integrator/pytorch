@@ -84,10 +84,10 @@ from torch._inductor.cudagraph_utils import (
     PlaceholderInfo,
     WrappedFunction,
 )
+from torch._library.opaque_object import is_opaque_value
 from torch.multiprocessing.reductions import StorageWeakRef
 from torch.storage import UntypedStorage
 from torch.utils import _pytree as pytree
-from torch._library.opaque_object import is_opaque_value
 from torch.utils._ordered_set import OrderedSet
 from torch.utils.weak import TensorWeakRef
 
@@ -970,8 +970,7 @@ class CUDAGraphNode:
         self.non_managed_static_input_idxs: LevelList[int] = [
             i
             for i in wrapped_function.static_input_idxs
-            if i not in self.cudagraph_managed_idxs
-            and i not in opaque_input_idxs
+            if i not in self.cudagraph_managed_idxs and i not in opaque_input_idxs
         ]
 
         self.tensor_static_input_idxs: list[int] = [
@@ -1756,7 +1755,9 @@ class CUDAGraphNode:
         ):
             for i, inp in enumerate(inputs):
                 if not isinstance(inp, torch.Tensor):
-                    assert isinstance(inp, (int, torch.Generator)) or is_opaque_value(inp)
+                    assert isinstance(inp, (int, torch.Generator)) or is_opaque_value(
+                        inp
+                    )
 
                     recording_inputs.append(inp)
                 elif i not in self.static_input_idxs:
