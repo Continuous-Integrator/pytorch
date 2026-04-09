@@ -40,17 +40,15 @@ from logging import getLogger
 from typing import Any
 
 import torch
+from torch.cuda._utils import _check_cuda_bindings as _check_cuda, _HAS_CUDA_BINDINGS
 
 
 try:
     from cuda.bindings import (  # pyrefly: ignore[missing-import]
         runtime as _cuda_runtime,
     )
-
-    _HAS_CUDA_BINDINGS = True
 except ImportError:
     _cuda_runtime = None  # type: ignore[assignment]
-    _HAS_CUDA_BINDINGS = False
 
 
 logger = getLogger(__name__)
@@ -85,27 +83,6 @@ def _is_tools_id_unavailable() -> bool:
     if not hasattr(_cuda_runtime, "cudaGraphNodeGetToolsId"):
         return True
     return False
-
-
-def _check_cuda(result: Any) -> Any:
-    err, *out = result
-    if (
-        err
-        != _cuda_runtime.cudaError_t.cudaSuccess  # pyrefly: ignore[missing-attribute]
-    ):
-        _, err_str = (
-            _cuda_runtime.cudaGetErrorString(  # pyrefly: ignore[missing-attribute]
-                err
-            )
-        )
-        if isinstance(err_str, bytes):
-            err_str = err_str.decode()
-        raise RuntimeError(f"CUDA error: {err} ({err_str})")
-    if len(out) == 0:
-        return None
-    if len(out) == 1:
-        return out[0]
-    return out
 
 
 def _get_tools_id(node: Any) -> int | None:
@@ -185,7 +162,7 @@ _capture_graph: Any = None
 
 
 @contextmanager  # type: ignore[arg-type]
-def mark_kernels(annotation: Any):
+def mark_kernels(annotation: str | dict[str, Any]):
     """Context manager that records node index ranges for later annotation.
 
     During capture, calls ``cudaGraphGetNodes`` to count graph nodes before
@@ -204,6 +181,9 @@ def mark_kernels(annotation: Any):
     if not _annotations_enabled or _is_tools_id_unavailable():
         yield
         return
+
+    if isinstance(annotation, str):
+        annotation = {"str": annotation}
 
     stream = _cuda_runtime.cudaStream_t(  # pyrefly: ignore[missing-attribute]
         init_value=torch.cuda.current_stream().cuda_stream
@@ -410,7 +390,7 @@ def get_stream_for_pg(pg_key: str) -> int:
 
 
 @contextmanager  # type: ignore[arg-type]
-def mark_stream(stream: torch.cuda.Stream, annotation: Any):
+def mark_stream(stream: torch.cuda.Stream, annotation: str | dict[str, Any]):
     """Switch to stream, inject its ID into annotation, and mark kernels.
 
     If *stream* is already the current stream, no stream switch or stream ID
@@ -426,6 +406,8 @@ def mark_stream(stream: torch.cuda.Stream, annotation: Any):
         with mark_kernels(annotation):
             yield
     else:
+        if isinstance(annotation, str):
+            annotation = {"str": annotation}
         if isinstance(annotation, dict):
             annotation["stream"] = _get_stream_id(stream)
         with torch.cuda.stream(stream):

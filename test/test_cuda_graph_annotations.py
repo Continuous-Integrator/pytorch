@@ -60,7 +60,7 @@ class TestMarkKernels(TestCase):
         self.assertGreater(len(annotations), 0)
         for anns in annotations.values():
             for ann in anns:
-                self.assertEqual(ann, "phase_a")
+                self.assertEqual(ann, {"str": "phase_a"})
 
     def test_multiple_scopes_no_overlap(self):
         graph = torch.cuda.CUDAGraph()
@@ -78,9 +78,9 @@ class TestMarkKernels(TestCase):
         scope_2_ids = set()
         for tid, anns in annotations.items():
             self.assertEqual(len(anns), 1)
-            if anns[0] == "scope_1":
+            if anns[0] == {"str": "scope_1"}:
                 scope_1_ids.add(tid)
-            elif anns[0] == "scope_2":
+            elif anns[0] == {"str": "scope_2"}:
                 scope_2_ids.add(tid)
 
         self.assertGreater(len(scope_1_ids), 0)
@@ -152,7 +152,7 @@ class TestMarkKernels(TestCase):
         self.assertGreater(total_annotated, 0)
         for anns in annotations.values():
             for ann in anns:
-                self.assertEqual(ann, "tagged")
+                self.assertEqual(ann, {"str": "tagged"})
 
     def test_nested_scopes_innermost_wins(self):
         """With nested string scopes, the innermost name wins."""
@@ -175,11 +175,10 @@ class TestMarkKernels(TestCase):
                 len(anns), 1, f"toolsId {hex(tid)} has {len(anns)} annotations"
             )
             ann = anns[0]
-            # Outer-only kernels stay as raw strings
-            if ann == "outer":
+            self.assertIsInstance(ann, dict)
+            if ann["str"] == "outer":
                 outer_ids.add(tid)
-            # Nested kernels get merged into a dict
-            elif isinstance(ann, dict) and ann["name"] == "inner":
+            elif ann["str"] == "inner":
                 inner_ids.add(tid)
 
         self.assertGreater(len(outer_ids), 0, "Should have outer-only kernels")
