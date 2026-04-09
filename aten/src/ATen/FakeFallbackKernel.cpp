@@ -6,6 +6,47 @@
 
 namespace {
 
+// Iterate over tensor IValues in a stack range and apply a transform.
+// The callback receives a tensor and returns an optional replacement.
+// If the callback returns a value, the tensor is replaced on the stack.
+// If it returns nullopt, the tensor is left unchanged (useful for in-place
+// mutations like transmute_to_fake).
+template <typename Fn>
+static void for_each_tensor(
+    torch::jit::Stack* stack,
+    size_t begin,
+    size_t count,
+    const Fn& fn) {
+  for (const auto idx : c10::irange(count)) {
+    auto& ivalue = (*stack)[begin + idx];
+    if (ivalue.isTensor()) {
+      auto result = fn(ivalue.toTensor());
+      if (result.has_value()) {
+        (*stack)[begin + idx] = std::move(*result);
+      }
+    } else if (ivalue.isTensorList()) {
+      auto tensors = ivalue.toTensorList();
+      for (const auto i : c10::irange(tensors.size())) {
+        auto result = fn(tensors[i]);
+        if (result.has_value()) {
+          tensors[i] = std::move(*result);
+        }
+      }
+    } else if (ivalue.isOptionalTensorList()) {
+      auto opt_tensors = ivalue.toOptionalTensorList();
+      for (const auto i : c10::irange(opt_tensors.size())) {
+        std::optional<at::Tensor> ot = opt_tensors[i];
+        if (ot.has_value()) {
+          auto result = fn(*ot);
+          if (result.has_value()) {
+            opt_tensors[i] = std::move(*result);
+          }
+        }
+      }
+    }
+  }
+}
+
 static std::optional<c10::Device> get_common_device(
     torch::jit::Stack* stack,
     size_t num_arguments) {
@@ -107,48 +148,6 @@ static void transmute_to_fake(
   }
 }
 
-static bool needs_transmute(const at::Tensor& t) {
-  if (!t.defined())
-    return false;
-  if (!t.is_fake())
-    return true;
-  return t.device().is_meta();
-}
-
-static void wrap_outputs(
-    torch::jit::Stack* stack,
-    size_t returns_begin,
-    size_t num_returns,
-    c10::Device fake_device,
-    const std::shared_ptr<c10::FakeTensorMode>& mode) {
-  auto returns = torch::jit::last(*stack, num_returns);
-  for (size_t idx = 0; idx < num_returns; ++idx) {
-    const auto& ivalue = returns[idx];
-    if (ivalue.isTensor()) {
-      const auto& t = ivalue.toTensor();
-      if (needs_transmute(t)) {
-        transmute_to_fake(t, fake_device, mode);
-      }
-    } else if (ivalue.isTensorList()) {
-      auto tensors = ivalue.toTensorList();
-      for (const auto i : c10::irange(tensors.size())) {
-        at::Tensor t = tensors[i];
-        if (needs_transmute(t)) {
-          transmute_to_fake(t, fake_device, mode);
-        }
-      }
-    } else if (ivalue.isOptionalTensorList()) {
-      auto opt_tensors = ivalue.toOptionalTensorList();
-      for (const auto i : c10::irange(opt_tensors.size())) {
-        std::optional<at::Tensor> ot = opt_tensors[i];
-        if (ot.has_value() && needs_transmute(*ot)) {
-          transmute_to_fake(*ot, fake_device, mode);
-        }
-      }
-    }
-  }
-}
-
 void fakeFallback(
     const c10::OperatorHandle& op,
     c10::DispatchKeySet dispatchKeySet,
@@ -179,9 +178,18 @@ void fakeFallback(
     op.redispatchBoxed(ks, stack);
   }
 
+  // Stamp meta tensor outputs with the fake device.
   const auto num_returns = schema.returns().size();
   const auto returns_begin = stack->size() - num_returns;
-  wrap_outputs(stack, returns_begin, num_returns, *fake_device, mode);
+  for_each_tensor(
+      stack,
+      returns_begin,
+      num_returns,
+      [&](const at::Tensor& t) -> std::optional<at::Tensor> {
+        if (t.defined() && (!t.is_fake() || t.device().is_meta()))
+          transmute_to_fake(t, *fake_device, mode);
+        return std::nullopt;
+      });
 }
 
 TORCH_LIBRARY_IMPL(_, Fake, m) {
