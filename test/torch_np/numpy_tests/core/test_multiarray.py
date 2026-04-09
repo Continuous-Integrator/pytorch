@@ -6838,7 +6838,7 @@ class TestWritebackIfCopy(TestCase):
         np.choose(a, choices, out=out, mode="raise")
         assert_equal(out, np.array([[10, -10, 10], [-10, 10, -10], [10, -10, 10]]))
 
-    @xpassIfTorchDynamo_np  # (reason="XXX: ndarray.flat")
+    @xfail  # torch._numpy ndarray doesn't implement __array__
     def test_flatiter__array__(self):
         a = np.arange(9).reshape(3, 3)
         b = a.T.flat
