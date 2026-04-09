@@ -885,8 +885,8 @@ class TorchFunctionDisableVariable(ContextWrappingVariable):
 
     def python_type(self) -> type:
         if self.only_subclass:
-            return torch._C.DisableTorchFunctionSubclass
-        return torch._C.DisableTorchFunction
+            return torch._C.DisableTorchFunctionSubclass  # pyrefly: ignore[bad-return]
+        return torch._C.DisableTorchFunction  # pyrefly: ignore[bad-return]
 
 
 class DisabledSavedTensorsHooksVariable(ContextWrappingVariable):

@@ -2348,11 +2348,6 @@ class UnspecializedPythonVariable(TensorVariable):
         self.raw_value = raw_value
         self.need_unwrap = need_unwrap
 
-    def python_type(self) -> type:
-        if self.raw_value is not None:
-            return type(self.raw_value)
-        return super().python_type()
-
     @classmethod
     def from_tensor_variable(
         cls,
