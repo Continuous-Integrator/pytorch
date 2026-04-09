@@ -24,6 +24,7 @@ import copy
 import dataclasses
 import enum
 import functools
+import importlib.machinery
 import inspect
 import itertools
 import logging
@@ -198,11 +199,7 @@ from .ctx_manager import (
 from .dicts import (
     ConstDictVariable,
     DefaultDictVariable,
-    DictKeySetVariable,
-    FrozensetVariable,
     MappingProxyVariable,
-    OrderedSetClassVariable,
-    OrderedSetVariable,
     SetVariable,
 )
 from .distributed import WorldMetaClassVariable
@@ -269,6 +266,12 @@ from .nn_module import (
 from .optimizer import OptimizerVariable
 from .script_object import OpaqueObjectClassVariable, TorchScriptObjectVariable
 from .sdpa import SDPAParamsVariable
+from .sets import (
+    DictKeySetVariable,
+    FrozensetVariable,
+    OrderedSetClassVariable,
+    OrderedSetVariable,
+)
 from .streams import EventVariable, StreamContextVariable, StreamVariable
 from .tensor import (
     NumpyNdarrayVariable,
@@ -855,7 +858,7 @@ class VariableBuilder:
                 self.tx.output.guard_on_key_order.add(self.source)
 
             # We need all the keys to be hashable. We do this within the
-            # _HashableTracker class in dicts.py
+            # HashableTracker class in hashable.py
             def build_key_value(
                 i: Any, k: Any, v: Any
             ) -> tuple[VariableTracker, VariableTracker]:
@@ -1661,7 +1664,7 @@ class VariableBuilder:
             self.tx.output.guard_on_key_order.add(self.source)
 
             # We need all the keys to be hashable. We do this within the
-            # _HashableTracker class in dicts.py
+            # HashableTracker class in hashable.py
             def build_key_value(
                 i: Any, k: Any, v: Any
             ) -> tuple[VariableTracker, VariableTracker]:
@@ -4285,23 +4288,28 @@ class SourcelessBuilder:
             return UserDefinedClassVariable(value)
         elif isinstance(value, types.MethodWrapperType):
             return MethodWrapperVariable(value)
-        elif (
-            isinstance(value, types.MethodType)
-            # We only want to support sourceless class objects here
-            # An instance variable is not allowed and it should have source
-            and isinstance(value.__self__, (type, abc.ABCMeta))
-        ):
-            # value is a classmethod
-            assert getattr(value.__self__, value.__func__.__name__) == value
-            cls_obj_vt = SourcelessBuilder.create(tx, value.__self__)
-            try:
-                # pyrefly: ignore[bad-argument-type]
-                return cls_obj_vt.var_getattr(tx, value.__func__.__name__)
-            except NotImplementedError:
-                pass  # failthrough to unimplemented branch
+        elif isinstance(value, types.MethodType):
+            if isinstance(value.__self__, (type, abc.ABCMeta)):
+                # value is a classmethod
+                assert getattr(value.__self__, value.__func__.__name__) == value
+                cls_obj_vt = SourcelessBuilder.create(tx, value.__self__)
+                try:
+                    # pyrefly: ignore[bad-argument-type]
+                    return cls_obj_vt.var_getattr(tx, value.__func__.__name__)
+                except NotImplementedError:
+                    pass  # failthrough to unimplemented branch
+            else:
+                # Instance method — look up the VT for __self__ via side effects
+                obj_vt = tx.output.side_effects.id_to_variable.get(id(value.__self__))
+                if obj_vt is not None:
+                    return torch._dynamo.variables.UserMethodVariable(
+                        value.__func__, obj_vt
+                    )
         elif isinstance(value, torch.fx.graph_module.GraphModule):
             return SourcelessGraphModuleVariable(value)
-        elif isinstance(value, torch.utils._pytree.TreeSpec):
+        elif isinstance(
+            value, (importlib.machinery.ModuleSpec, torch.utils._pytree.TreeSpec)
+        ):
             return UserDefinedObjectVariable(value)
         elif isinstance(value, re.Pattern):
             return ConstantLikeVariable(value)

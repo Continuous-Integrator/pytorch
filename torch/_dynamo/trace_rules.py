@@ -3340,6 +3340,7 @@ def is_numpy_type_info(obj: Any) -> bool:
 BUILTIN_SKIPLIST = (
     abc,
     copy,
+    importlib,
     random,
     linecache,
 )

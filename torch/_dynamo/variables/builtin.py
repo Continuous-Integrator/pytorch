@@ -51,6 +51,7 @@ from ..exc import (
     UserErrorType,
 )
 from ..guards import GuardBuilder, install_guard
+from ..replay_record import DummyModule
 from ..source import (
     AttrSource,
     GetItemSource,
@@ -64,7 +65,6 @@ from ..utils import (
     check_numpy_ndarray_args,
     check_unspec_or_constant_args,
     check_unspec_python_args,
-    cmp_name_to_op_mapping,
     dict_methods,
     extract_fake_example_value,
     frozenset_methods,
@@ -99,11 +99,8 @@ from .dicts import (
     DictItemsVariable,
     DictKeysVariable,
     DictViewVariable,
-    FrozensetVariable,
-    is_hashable,
-    OrderedSetClassVariable,
-    SetVariable,
 )
+from .hashable import is_hashable
 from .lists import (
     BaseListVariable,
     ListIteratorVariable,
@@ -113,7 +110,8 @@ from .lists import (
     TupleIteratorVariable,
     TupleVariable,
 )
-from .misc import NullVariable
+from .misc import NullVariable, StringFormatVariable
+from .sets import FrozensetVariable, OrderedSetClassVariable, SetVariable
 from .tensor import (
     FakeItemVariable,
     supported_comparison_ops,
@@ -1658,7 +1656,7 @@ class BuiltinVariable(BaseBuiltinVariable):
             # - https://github.com/python/cpython/blob/3.12/Objects/floatobject.c#L878-L882
             assert istype(arg.sym_num, (torch.SymInt, torch.SymFloat))
             return SymNodeVariable.create(tx, arg.as_proxy() != 0)
-        if isinstance(arg, ConstDictVariable):
+        if isinstance(arg, (ConstDictVariable, SetVariable)):
             return ConstantVariable.build(tx, bool(arg.items))
         if isinstance(arg, variables.UserDefinedObjectVariable):
             # for user-defined objects, first try __bool__ if defined, else
@@ -2028,10 +2026,13 @@ class BuiltinVariable(BaseBuiltinVariable):
                         obj.source.make_guard(GuardBuilder.TUPLE_ITERATOR_LEN)
                     )
                 else:
-                    if (
-                        getattr(obj, "source", False)
-                        and isinstance(obj, ConstDictVariable)
-                        and not istype(obj, (SetVariable, FrozensetVariable))
+                    if getattr(obj, "source", False) and isinstance(
+                        obj,
+                        (
+                            ConstDictVariable,
+                            variables.OrderedSetVariable,
+                            variables.DictKeySetVariable,
+                        ),
                     ):
                         tx.output.guard_on_key_order.add(obj.source)
 
@@ -2113,6 +2114,7 @@ class BuiltinVariable(BaseBuiltinVariable):
             (
                 ConstantVariable,
                 SymNodeVariable,
+                StringFormatVariable,
                 TensorVariable,
                 ListVariable,
                 TupleVariable,
@@ -2738,7 +2740,7 @@ class BuiltinVariable(BaseBuiltinVariable):
     ) -> VariableTracker:
         format_string = _format_string.as_python_constant()
         format_string = str(format_string)
-        return variables.StringFormatVariable.create(format_string, args, kwargs)
+        return StringFormatVariable.create(format_string, args, kwargs)
 
     def call_id(
         self, tx: "InstructionTranslator", *args: VariableTracker
@@ -3046,7 +3048,7 @@ class BuiltinVariable(BaseBuiltinVariable):
         # Unwrap the underlying ConstDictVariable
         if isinstance(a, DictViewVariable):
             a = a.dv_dict
-        if isinstance(a, (ListVariable, ConstDictVariable)):
+        if isinstance(a, (ListVariable, ConstDictVariable, SetVariable)):
             return VariableTracker.build(tx, len(a.items) == 0)
         if isinstance(a, UserDefinedObjectVariable):
             bool_result = self.call_bool(tx, a)
@@ -3277,6 +3279,8 @@ class IterBuiltinVariable(BaseBuiltinVariable):
 class GetAttrBuiltinVariable(BaseBuiltinVariable):
     """Variable tracker for the `getattr` builtin."""
 
+    _fn = getattr
+
     def __init__(self, value: Any = getattr, **kwargs: Any) -> None:
         assert value is getattr
         super().__init__(**kwargs)
@@ -3284,28 +3288,16 @@ class GetAttrBuiltinVariable(BaseBuiltinVariable):
     def __repr__(self) -> str:
         return "GetAttrBuiltinVariable()"
 
-    def as_python_constant(self) -> Any:
-        return getattr
-
-    def reconstruct(self, codegen: "PyCodegen") -> None:
-        assert "getattr" not in codegen.tx.f_globals, "shadowed global"
-        codegen.append_output(codegen.create_load_global("getattr", add=True))
-
     def call_function(
         self,
         tx: "InstructionTranslator",
         args: Sequence[VariableTracker],
         kwargs: dict[str, VariableTracker],
     ) -> VariableTracker:
-        return GetAttrBuiltinVariable.call_getattr(tx, *args, **kwargs)
+        obj = args[0]
+        name_var = args[1]
+        default = args[2] if len(args) > 2 else None
 
-    @staticmethod
-    def call_getattr(
-        tx: "InstructionTranslator",
-        obj: VariableTracker,
-        name_var: VariableTracker,
-        default: VariableTracker | None = None,
-    ) -> VariableTracker:
         if not name_var.is_python_constant():
             unimplemented(
                 gb_type="getattr() with non-constant name argument",
@@ -3445,10 +3437,9 @@ class GetAttrBuiltinVariable(BaseBuiltinVariable):
                 member, (torch._ops.OpOverloadPacket, torch._ops.OpOverload)
             ) and torch._dynamo.trace_rules.is_aten_op_or_tensor_method(member):
                 return variables.TorchInGraphFunctionVariable(member, source=source)
-            elif name in cmp_name_to_op_mapping:
-                return variables.GetAttrVariable(obj, name, source=source)
             else:
                 return variables.GetAttrVariable(obj, name, source=source)
+        elif isinstance(obj, DummyModule):
             # TODO(mlazos) - Do we need this?
             if obj.is_torch or name not in obj.value.__dict__:
                 member = getattr(obj.value, name)
