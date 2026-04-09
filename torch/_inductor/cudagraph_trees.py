@@ -940,11 +940,6 @@ class CUDAGraphNode:
         # here just means "don't try to copy this as a tensor" — it
         # does NOT mean the object is semantically immutable.
         #
-        # Note: the cudagraph tree itself has no guard on opaque object
-        # identity. Correctness relies on dynamo guarding on identity
-        # upstream — a different opaque object triggers recompilation
-        # before it reaches this layer.
-        #
         # Opaque indices must also be excluded from any list passed to
         # _tensors_data_ptrs_at_indices_equal (the C++ data-pointer
         # stability check), because opaque objects have no data_ptr.
