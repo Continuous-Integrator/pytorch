@@ -1,6 +1,7 @@
 #pragma once
 
 #include <torch/csrc/python_headers.h>
+#include <torch/csrc/utils/python_compat.h>
 
 #include <c10/core/impl/PyObjectSlot.h>
 #include <c10/util/intrusive_ptr.h>
