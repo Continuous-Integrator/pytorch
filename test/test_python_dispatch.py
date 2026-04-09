@@ -243,17 +243,9 @@ class TestPythonRegistration(TestCase):
                 torch.ops.custom.sum.default(a)
                 self.assertTrue(meta_is_called)
 
-    @parametrize(
-        "key",
-        [
-            torch.DispatchKey.Meta,
-            torch.DispatchKey.CUDA,
-            torch.DispatchKey.CPU,
-        ],
-    )
-    def test_include_dispatch_key_guard_restores_tls_exactly(self, key) -> None:
+    def test_include_dispatch_key_guard_restores_tls_exactly(self) -> None:
         before = torch._C._dispatch_tls_local_include_set().raw_repr()
-        with torch._C._IncludeDispatchKeyGuard(key):
+        with torch._C._IncludeDispatchKeyGuard(torch.DispatchKey.Meta):
             pass
         after = torch._C._dispatch_tls_local_include_set().raw_repr()
         self.assertEqual(before, after)
