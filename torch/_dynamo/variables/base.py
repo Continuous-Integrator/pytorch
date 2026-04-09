@@ -561,9 +561,15 @@ class VariableTracker(metaclass=VariableTrackerMeta):
         args: Sequence["VariableTracker"],
         kwargs: dict[str, "VariableTracker"],
     ) -> "VariableTracker":
-        from .object_protocol import generic_call
-
-        return generic_call(tx, self, args, kwargs)
+        unimplemented(
+            gb_type="Unsupported function call",
+            context=f"call_function {self} {args} {kwargs}",
+            explanation=f"Dynamo does not know how to trace the function `{self.debug_repr()}`",
+            hints=[
+                f"Avoid calling `{self.debug_repr()}` in your code.",
+                "Please report an issue to PyTorch.",
+            ],
+        )
 
     def sq_length(self, tx: Any) -> "VariableTracker":
         """Called when sq_length is not implemented."""
