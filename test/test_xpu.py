@@ -1288,6 +1288,21 @@ if __name__ == "__main__":
 
         self.assertEqual(b.sum().item(), 11000.0)
 
+    def test_accelerator_graph_simple(self):
+        s = torch.Stream()
+        g = torch.accelerator.Graph()
+
+        with s, g:
+            a = torch.full((1000,), 1, device="xpu")
+            b = a
+            for _ in range(10):
+                b = b + 1
+        torch.accelerator.current_stream().wait_stream(s)
+
+        g.replay()
+
+        self.assertEqual(b.sum().item(), 11000.0)
+
     def test_graphsafe_set_get_rng_state(self):
         # Define a function to create generator states, with optional graph registration
         def create_states(generator):
@@ -3019,6 +3034,8 @@ class TestXPUAPISanity(TestCase):
                 self.assertTrue(value.group(1) in ["ON", "1"])
             else:
                 self.assertTrue(value.group(1) in ["OFF", "0"])
+            value = re.search(r"SYCL_COMPILER_VERSION=([^,]+)", config)
+            self.assertEqual(value.group(1), torch.version.xpu)
         else:
             self.assertTrue(value.group(1) in ["OFF", "0"])
             self.assertFalse(torch.distributed.is_xccl_available())
