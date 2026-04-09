@@ -1826,6 +1826,9 @@ class UserDefinedObjectVariable(UserDefinedVariable):
 
         return super().call_function(tx, args, kwargs)
 
+    def is_callable(self) -> bool:
+        return callable(self.value)
+
     def _check_for_getattr(self) -> object:
         return get_custom_getattr(self.value)
 

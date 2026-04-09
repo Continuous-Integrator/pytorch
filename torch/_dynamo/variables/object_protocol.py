@@ -19,6 +19,8 @@ from .constant import CONSTANT_VARIABLE_FALSE, CONSTANT_VARIABLE_TRUE
 
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from ..symbolic_convert import InstructionTranslator
 
 
@@ -122,6 +124,23 @@ def vt_mapping_size(
         raise_type_error(tx, f"{obj.python_type_name()} is not a mapping")
 
     raise_type_error(tx, f"object of type {obj.python_type_name()} has no len()")
+
+
+def generic_call(
+    tx: "InstructionTranslator",
+    fn: "VariableTracker",
+    args: "Sequence[VariableTracker]",
+    kwargs: "dict[str, VariableTracker]",
+) -> "VariableTracker":
+    # ref: https://github.com/python/cpython/blob/v3.13.3/Objects/call.c#L332-L367
+    """
+    Mirrors PyObject_Call — raises TypeError when tp_call is NULL.
+
+    This is the base VariableTracker.call_function implementation.  Subclasses
+    that represent callable Python objects override call_function directly, so
+    this only runs when no override exists (i.e. the object is not callable).
+    """
+    raise_type_error(tx, f"'{fn.python_type_name()}' object is not callable")
 
 
 def generic_len(
