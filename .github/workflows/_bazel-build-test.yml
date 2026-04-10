@@ -284,6 +284,7 @@ jobs:
           OUR_GITHUB_JOB_ID: ${{ steps.setup-linux.outputs.job-id }}
           CUDA_VERSION: ${{ inputs.cuda-version }}
           SKIP_SCCACHE_INITIALIZATION: 1
+          TORCH_CUDA_ARCH_LIST: 7.0
         shell: bash
         run: |
           .ci/pytorch/build.sh
