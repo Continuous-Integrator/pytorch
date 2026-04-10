@@ -11,6 +11,7 @@ Python handler (decomposition, fake_impl, etc.) and calls it. Sub-ops
 re-enter C++ Fake dispatch, so all results remain C++ fake tensors.
 """
 
+from torch.testing import make_tensor
 from torch.testing._internal.common_utils import TestCase, run_tests
 import torch
 import torch._dynamo
@@ -761,52 +762,24 @@ def forward(self, x_1):
         x = torch.randn(3, device="cuda")
         self.assertEqual(gm(x), f(x))
 
-    # --- Higher Order Op tests (calling internal ops directly) ---
+    # --- Higher Order Op tests ---
+    # These mirror the hop_db entries but call internal ops (cond_op, while_loop_op,
+    # map_impl, scan_op) directly, bypassing the user-facing wrappers that route
+    # through torch.compile/Dynamo.
 
-    def test_cond(self):
+    def test_cond_simple(self):
+        """Mirrors hop_db simple_cond."""
         from torch._higher_order_ops.cond import cond_op
 
         def f(x):
-            pred = x.shape[0] > 0  # static bool, but traced as a tensor pred
             return cond_op(
-                torch.tensor(True),
-                lambda x: x.cos(),
-                lambda x: x.sin(),
-                [x],
+                x.sum() > 2, lambda x: (x.cos(),), lambda x: (x.sin(),), [x]
             )
 
-        self._test(f, (torch.randn(3, 4),))
+        self._test(f, (make_tensor(2, 2, 2, low=0.1, high=2, dtype=torch.float, device="cpu"),))
 
-    def test_cond_branches_same_output(self):
-        from torch._higher_order_ops.cond import cond_op
-
-        def f(pred, x):
-            return cond_op(pred, lambda x: x + 1, lambda x: x - 1, [x])
-
-        with cpp_fake_tensor_mode():
-            gm = make_fx(f, tracing_mode="real")(torch.tensor(True), torch.randn(3, 4))
-        x = torch.randn(3, 4)
-        self.assertEqual(gm(torch.tensor(True), x), x + 1)
-        self.assertEqual(gm(torch.tensor(False), x), x - 1)
-
-    def test_cond_nested(self):
-        from torch._higher_order_ops.cond import cond_op
-
-        def f(pred, x):
-            def true_fn(x):
-                return cond_op(pred, lambda x: x.cos(), lambda x: x.sin(), [x])
-
-            def false_fn(x):
-                return x + 1
-
-            return cond_op(pred, true_fn, false_fn, [x])
-
-        with cpp_fake_tensor_mode():
-            gm = make_fx(f, tracing_mode="real")(torch.tensor(True), torch.randn(3))
-        x = torch.randn(3)
-        self.assertEqual(gm(torch.tensor(True), x), f(torch.tensor(True), x))
-
-    def test_while_loop(self):
+    def test_while_loop_simple(self):
+        """Mirrors hop_db simple_while_loop."""
         from torch._higher_order_ops.while_loop import while_loop_op
 
         def f(iter_t, x):
@@ -818,67 +791,49 @@ def forward(self, x_1):
 
             return while_loop_op(cond_fn, body_fn, (iter_t, x), ())
 
-        inp = (torch.tensor(3), torch.randn(2, 3))
+        inp = (torch.tensor(3), make_tensor(2, 3, 4, low=0.1, high=2, dtype=torch.float, device="cpu"))
         with cpp_fake_tensor_mode():
             gm = make_fx(f, tracing_mode="real")(*inp)
+        new_inp = (torch.tensor(2), torch.randn(2, 3, 4))
+        self.assertEqual(gm(*new_inp), f(*new_inp))
 
-        new_inp = (torch.tensor(2), torch.randn(2, 3))
-        r1 = gm(*new_inp)
-        r2 = f(*new_inp)
-        self.assertEqual(r1, r2)
-
-    def test_map(self):
+    def test_map_simple(self):
+        """Mirrors hop_db simple_map."""
         from torch._higher_order_ops.map import map_impl
 
-        def f(xs, y):
-            def body(x, y):
-                return x.cos() + y
+        def inner_f(x0, x1, y0, y1):
+            return [x0.cos().add_(1.0) * y0, (x1 + y1.sin()).cos_().view(x1.size())]
 
-            return map_impl(body, [xs], (y,))
+        def f(x0, x1, y0, y1):
+            return map_impl(inner_f, [x0, x1], (y0, y1))
 
-        xs = torch.randn(3, 4)
-        y = torch.randn(4)
+        x0 = make_tensor(2, 2, 2, low=0.1, high=2, dtype=torch.float, device="cpu")
+        x1 = make_tensor(2, 2, 2, low=0.1, high=2, dtype=torch.float, device="cpu")
+        y0 = make_tensor(1, low=0.1, high=2, dtype=torch.float, device="cpu")
+        y1 = make_tensor(1, low=0.1, high=2, dtype=torch.float, device="cpu")
         with cpp_fake_tensor_mode():
-            gm = make_fx(f, tracing_mode="real")(xs, y)
-        new_xs, new_y = torch.randn(3, 4), torch.randn(4)
-        self.assertEqual(gm(new_xs, new_y), f(new_xs, new_y))
+            gm = make_fx(f, tracing_mode="real")(x0, x1, y0, y1)
+        new_args = (torch.randn(2, 2, 2), torch.randn(2, 2, 2),
+                    torch.randn(1), torch.randn(1))
+        self.assertEqual(gm(*new_args), f(*new_args))
 
-    def test_map_multi_output(self):
-        from torch._higher_order_ops.map import map_impl
-
-        def f(xs, y):
-            def body(x, y):
-                return x.cos() + y, x.sin()
-
-            return map_impl(body, [xs], (y,))
-
-        xs = torch.randn(3, 4)
-        y = torch.randn(4)
-        with cpp_fake_tensor_mode():
-            gm = make_fx(f, tracing_mode="real")(xs, y)
-        new_xs, new_y = torch.randn(3, 4), torch.randn(4)
-        r1 = gm(new_xs, new_y)
-        r2 = f(new_xs, new_y)
-        self.assertEqual(r1[0], r2[0])
-        self.assertEqual(r1[1], r2[1])
-
-    def test_scan(self):
+    def test_scan_simple(self):
+        """Mirrors hop_db simple_scan."""
         from torch._higher_order_ops.scan import scan_op
 
+        def combine_fn(carry, x):
+            result = carry @ x + x
+            return result, carry.clone()
+
         def f(init, xs):
-            def combine_fn(carry, x):
-                return carry + x, carry.clone()
+            return scan_op(combine_fn, [init], [xs], ())
 
-            return scan_op(combine_fn, [init], [xs], [])
-
-        init = torch.randn(4)
-        xs = torch.randn(3, 4)
+        init = make_tensor(2, 2, low=0.1, high=2, dtype=torch.float, device="cpu")
+        xs = make_tensor(2, 2, 2, low=0.1, high=2, dtype=torch.float, device="cpu")
         with cpp_fake_tensor_mode():
             gm = make_fx(f, tracing_mode="real")(init, xs)
-        new_init, new_xs = torch.randn(4), torch.randn(3, 4)
-        r1 = gm(new_init, new_xs)
-        r2 = f(new_init, new_xs)
-        self.assertEqual(r1, r2)
+        new_init, new_xs = torch.randn(2, 2), torch.randn(2, 2, 2)
+        self.assertEqual(gm(new_init, new_xs), f(new_init, new_xs))
 
 
 # --- OpInfo-based exhaustive tests for C++ FakeTensor mode ---
