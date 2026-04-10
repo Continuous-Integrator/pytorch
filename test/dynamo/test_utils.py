@@ -605,7 +605,7 @@ class TestDynamoTimed(TestCase):
  'pass.pre_grad_passes.apply_gumbel_max_trick_pass': [0.0],
  'pass.pre_grad_passes.efficient_conv_bn_eval_pass': [0.0],
  'pass.pre_grad_passes.group_batch_fusion_passes': [0.0]}"""
-            ),  # noqa: B950
+            ),
         )
 
         # Now validate utils.calculate_time_spent(). Formatting the return
@@ -638,7 +638,7 @@ class TestDynamoTimed(TestCase):
  'gc': 0.0,
  'inductor_compile': 0.0,
  'total_wall_time': 0.0}"""
-            ),  # noqa: B950
+            ),
         )
 
         # Now validate the CompilationMetrics logs. We expect a log for the
@@ -862,7 +862,7 @@ class TestDynamoTimed(TestCase):
  'triton_compile_time_us': 0,
  'triton_kernel_compile_times_us': None,
  'triton_version': None}"""
-            ),  # noqa: B950
+            ),
         )
 
         # Second event is for the backward
@@ -1062,7 +1062,7 @@ class TestDynamoTimed(TestCase):
  'triton_compile_time_us': 0,
  'triton_kernel_compile_times_us': None,
  'triton_version': None}"""
-            ),  # noqa: B950
+            ),
         )
 
     @dynamo_config.patch(
