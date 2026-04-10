@@ -285,7 +285,8 @@ struct LpNormFunctor {
         for (int ii = 0; ii < kILP; ii++) {
           const auto next = static_cast<out_opmath_t>(r_x[ii]);
           if constexpr (norm_type == NormType::L0) {
-            vals[ii] += next != out_opmath_t(0) ? out_opmath_t(1) : out_opmath_t(0);
+            vals[ii] +=
+                next != out_opmath_t(0) ? out_opmath_t(1) : out_opmath_t(0);
           } else if constexpr (norm_type == NormType::LInf) {
             vals[ii] = max_propagate_nan(vals[ii], ::abs(next));
           } else {
@@ -302,7 +303,8 @@ struct LpNormFunctor {
           if (i < n && i < chunk_size) {
             const auto next = static_cast<out_opmath_t>(x[i]);
             if constexpr (norm_type == NormType::L0) {
-              vals[ii] += next != out_opmath_t(0) ? out_opmath_t(1) : out_opmath_t(0);
+              vals[ii] +=
+                  next != out_opmath_t(0) ? out_opmath_t(1) : out_opmath_t(0);
             } else if constexpr (norm_type == NormType::LInf) {
               vals[ii] = max_propagate_nan(vals[ii], ::abs(next));
             } else {
@@ -321,8 +323,8 @@ struct LpNormFunctor {
         val += vals[i];
       }
     }
-    auto final_val = norm_type == NormType::L0 ||
-            norm_type == NormType::L1 || norm_type == NormType::L2
+    auto final_val = norm_type == NormType::L0 || norm_type == NormType::L1 ||
+            norm_type == NormType::L2
         ? at::native::cuda_utils::BlockReduceSum(val, s_vals)
         : at::native::cuda_utils::BlockReduceMax(val, s_vals);
 
