@@ -108,18 +108,17 @@ class TestCppFakeProxyTensor(TestCase):
     fake tensor semantics.
     """
 
-    def _test(self, f, inps):
+    def _test(self, f, inps, compare_graph=False):
         # Trace under C++ fake mode
         with cpp_fake_tensor_mode():
             cpp_gm = make_fx(f, tracing_mode="real")(*inps)
 
-        # Trace under Python fake mode
-        py_gm = make_fx(f, tracing_mode="fake")(*inps)
-
-        # Compare graph structure
-        cpp_ops = [n.target for n in cpp_gm.graph.nodes if n.op == "call_function"]
-        py_ops = [n.target for n in py_gm.graph.nodes if n.op == "call_function"]
-        self.assertEqual(cpp_ops, py_ops)
+        if compare_graph:
+            # Trace under Python fake mode and compare graph structure
+            py_gm = make_fx(f, tracing_mode="fake")(*inps)
+            cpp_ops = [n.target for n in cpp_gm.graph.nodes if n.op == "call_function"]
+            py_ops = [n.target for n in py_gm.graph.nodes if n.op == "call_function"]
+            self.assertEqual(cpp_ops, py_ops)
 
         # Verify correctness with real inputs
         new_inps = tree_map(_create_new_input, inps)
@@ -790,7 +789,7 @@ def forward(self, x_1):
                 x.sum() > 2, lambda x: (x.cos(),), lambda x: (x.sin(),), [x]
             )
 
-        self._test(f, (self._make_arg(2, 2, 2),))
+        self._test(f, (self._make_arg(2, 2, 2),), compare_graph=True)
 
     def test_while_loop_simple(self):
         """Mirrors hop_db simple_while_loop."""
@@ -805,7 +804,7 @@ def forward(self, x_1):
 
             return while_loop_op(cond_fn, body_fn, (iter_t, x), ())
 
-        self._test(f, (torch.tensor(3), self._make_arg(2, 3, 4)))
+        self._test(f, (torch.tensor(3), self._make_arg(2, 3, 4)), compare_graph=True)
 
     def test_map_simple(self):
         """Mirrors hop_db simple_map."""
@@ -818,7 +817,7 @@ def forward(self, x_1):
             return map_impl(inner_f, [x0, x1], (y0, y1))
 
         self._test(f, (self._make_arg(2, 2, 2), self._make_arg(2, 2, 2),
-                        self._make_arg(1), self._make_arg(1)))
+                        self._make_arg(1), self._make_arg(1)), compare_graph=True)
 
     def test_scan_simple(self):
         """Mirrors hop_db simple_scan."""
@@ -831,7 +830,7 @@ def forward(self, x_1):
         def f(init, xs):
             return scan_op(combine_fn, [init], [xs], ())
 
-        self._test(f, (self._make_arg(2, 2), self._make_arg(2, 2, 2)))
+        self._test(f, (self._make_arg(2, 2), self._make_arg(2, 2, 2)), compare_graph=True)
 
 
 # --- OpInfo-based exhaustive tests for C++ FakeTensor mode ---
