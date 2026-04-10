@@ -222,6 +222,19 @@ class NNModuleVariable(VariableTracker):
     def get_real_python_backed_value(self) -> object:
         return self.value
 
+    def bool_impl(self, tx: "InstructionTranslator") -> VariableTracker:
+        """nb_bool for nn.Module.
+
+        nn.Module itself has no __bool__ or __len__, so bare modules are always
+        truthy.  Subclasses like ModuleList/ModuleDict define __len__, so
+        bool(module) calls PyObject_IsTrue which falls through nb_bool (NULL)
+        to sq_length/mp_length.  We evaluate on the real module to capture this.
+        """
+        from .constant import ConstantVariable
+
+        mod = tx.output.get_submodule(self.module_key)
+        return ConstantVariable.create(bool(mod))
+
     def _wrap_submodule(
         self,
         tx: "InstructionTranslator",
@@ -1301,8 +1314,7 @@ class UnspecializedNNModuleVariable(UserDefinedObjectVariable):
                 return key, value
 
             result = dict(
-                build_key_value(i, k, v)
-                for i, (k, v) in enumerate(dict.items(hooks_dict))
+                build_key_value(i, k, v) for i, (k, v) in enumerate(hooks_dict.items())
             )
 
             return variables.NNModuleHooksDictVariable(
