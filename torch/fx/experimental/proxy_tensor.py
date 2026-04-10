@@ -1159,7 +1159,7 @@ def _maybe_propagate_constant(
     # to be a freshly allocated constant — keep a copy for later item() calls.
     if (
         func is torch.ops.aten.lift_fresh_copy.default
-        and out.numel() <= CONSTANT_NUMEL_LIMIT
+        and out.numel() <= CONSTANT_NUMEL_LIMIT  # pyrefly: ignore[missing-attribute]
     ):
         with unset_fake_temporarily():
             if not isinstance(args[0], (Proxy, Tensor)):
@@ -1301,7 +1301,12 @@ def proxy_call(
     )
 
     # --- Track outputs ---
-    track_tensor_tree(out, proxy_out, constant=constant, tracer=tracer)
+    track_tensor_tree(
+        out,
+        proxy_out,
+        constant=constant,
+        tracer=tracer,  # pyrefly: ignore[bad-argument-type]
+    )
     _maybe_record_pointwise_barrier(func, proxy_mode)
     return out
 
