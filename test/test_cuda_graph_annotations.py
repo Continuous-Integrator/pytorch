@@ -351,6 +351,35 @@ class TestMarkKernels(TestCase):
         # Both graphs' annotations should be present.
         self.assertGreater(len(get_kernel_annotations()), first_count)
 
+    def test_enable_annotations_remaps_to_exec_graph(self):
+        """enable_annotations=True must remap toolsIds to the exec graph ID."""
+        from cuda.bindings import runtime as cuda_runtime
+
+        clear_kernel_annotations()
+
+        graph = torch.cuda.CUDAGraph()
+        x = torch.randn(8, device="cuda")
+
+        with torch.cuda.graph(graph, enable_annotations=True):
+            with mark_kernels("remap_test"):
+                _ = x + 1
+
+        exec_handle = cuda_runtime.cudaGraphExec_t(
+            init_value=graph.raw_cuda_graph_exec()
+        )
+        _, exec_graph_id = cuda_runtime.cudaGraphExecGetId(exec_handle)
+
+        annotations = get_kernel_annotations()
+        self.assertGreater(len(annotations), 0)
+        for tools_id in annotations:
+            graph_id = tools_id >> 32
+            self.assertEqual(
+                graph_id,
+                exec_graph_id,
+                f"toolsId 0x{tools_id:016x} has graph_id {graph_id}, "
+                f"expected exec_graph_id {exec_graph_id}",
+            )
+
     def test_enable_annotations_false_does_not_auto_resolve(self):
         """Without enable_annotations, pending scopes are not resolved."""
         graph = torch.cuda.CUDAGraph()
@@ -429,6 +458,46 @@ class TestInductorAnnotationCodegen(TestCase):
         # The add op should show up as an FX node name in the annotation
         self.assertIn("_mark_kernels", code)
         self.assertIn("add", code)
+
+    def test_annotation_includes_module_path(self):
+        """Annotation should include module path from nn_module_stack."""
+
+        class SimpleModel(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.linear = torch.nn.Linear(64, 64)
+
+            def forward(self, x):
+                return self.linear(x)
+
+        model = SimpleModel().cuda()
+        x = torch.randn(32, 64, device="cuda")
+        codes = self._get_compiled_code(model, x, annotations_enabled=True)
+
+        code = codes[0]
+        self.assertIn("module", code)
+        self.assertIn("linear", code)
+
+    def test_annotation_includes_custom_component(self):
+        """Annotation should include component from torch.fx.traceback.annotate."""
+        from torch.fx.traceback import annotate
+
+        class SimpleModel(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.linear = torch.nn.Linear(64, 64)
+
+            def forward(self, x):
+                with annotate({"component": "my_layer"}):
+                    return self.linear(x)
+
+        model = SimpleModel().cuda()
+        x = torch.randn(32, 64, device="cuda")
+        codes = self._get_compiled_code(model, x, annotations_enabled=True)
+
+        code = codes[0]
+        self.assertIn("component", code)
+        self.assertIn("my_layer", code)
 
 
 class TestAnnotateTrace(TestCase):

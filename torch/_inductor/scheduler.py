@@ -3075,26 +3075,61 @@ def template_fusion_pw_node(node1: BaseSchedulerNode, node2: BaseSchedulerNode):
     return node2 if is_epilogue_fusion(node1, node2) else node1
 
 
-def _get_fx_node_names(node: BaseSchedulerNode) -> str:
-    """Extract comma-separated FX node names for CUDA graph annotation.
+def _get_kernel_annotation(node: BaseSchedulerNode) -> dict[str, str]:
+    """Build a CUDA graph annotation dict for a scheduler node.
 
-    Uses origin_node (the direct FX node) rather than origins (which includes
-    transitive unrealized inputs) to avoid misleading annotations like
-    'mm_1, relu' when mm_1 merely consumes relu's output.  Falls back to
-    origins when origin_node is not set.
+    Returns a dict with ``name`` (FX node names), and optionally ``module``
+    (innermost nn.Module path from ``nn_module_stack``) and ``component``
+    (user-supplied label from ``torch.fx.traceback.annotate``).
+
+    Uses ``origin_node`` (the direct FX node) rather than ``origins`` (which
+    includes transitive unrealized inputs) to avoid misleading annotations.
+    Falls back to ``origins`` when ``origin_node`` is not set.
     """
     names: list[str] = []
+    modules: list[str] = []
+    components: list[str] = []
+
     for snode in node.get_nodes():
-        if snode.node is not None:
-            origin = snode.node.get_origin_node()
-            if origin is not None:
-                if origin.name not in names:
-                    names.append(origin.name)
-            else:
-                for o in snode.node.get_origins():
-                    if o.op == "call_function" and o.name not in names:
-                        names.append(o.name)
-    return ", ".join(names)
+        if snode.node is None:
+            continue
+        origin = snode.node.get_origin_node()
+        fx_nodes = (
+            [origin]
+            if origin is not None
+            else [
+                o
+                for o in snode.node.get_origins()
+                if o.op == "call_function"
+            ]
+        )
+        for fx_node in fx_nodes:
+            if fx_node.name not in names:
+                names.append(fx_node.name)
+
+            # Extract innermost module path from nn_module_stack
+            stack = fx_node.meta.get("nn_module_stack")
+            if stack:
+                # stack is OrderedDict: key -> (fqn, module_class)
+                fqn = list(stack.values())[-1][0]
+                if fqn and fqn not in modules:
+                    modules.append(fqn)
+
+            # Extract user-supplied component label
+            custom = fx_node.meta.get("custom")
+            if custom:
+                comp = custom.get("component", "")
+                if comp and comp not in components:
+                    components.append(comp)
+
+    ann: dict[str, str] = {}
+    if names:
+        ann["name"] = ", ".join(names)
+    if components:
+        ann["component"] = ", ".join(components)
+    elif modules:
+        ann["module"] = ", ".join(modules)
+    return ann
 
 
 class Scheduler:
@@ -7606,15 +7641,15 @@ class Scheduler:
             self.current_node = node
             self.buffer_names_to_free.update(node.last_usage)
 
-            annotation_name = ""
+            kernel_annotation: dict[str, str] = {}
             if (
                 config.triton.cudagraph_kernel_annotations
                 and not isinstance(node, NopKernelSchedulerNode)
             ):
-                annotation_name = _get_fx_node_names(node)
-                if annotation_name:
+                kernel_annotation = _get_kernel_annotation(node)
+                if kernel_annotation:
                     V.graph.wrapper_code.write_cudagraph_annotation_begin(
-                        annotation_name
+                        kernel_annotation
                     )
 
             if node.is_template():
@@ -7649,7 +7684,7 @@ class Scheduler:
                 assert isinstance(node, NopKernelSchedulerNode)
                 node.mark_run()
 
-            if annotation_name:
+            if kernel_annotation:
                 V.graph.wrapper_code.write_cudagraph_annotation_end()
 
             # pyrefly: ignore [unbound-name]

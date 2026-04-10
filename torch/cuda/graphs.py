@@ -284,6 +284,11 @@ class graph:
 
         self.cuda_graph.capture_end()
         self.stream_ctx.__exit__(*args)
+
+        if self._enable_annotations:
+            from torch.cuda._graph_annotations import remap_to_exec_graph
+
+            remap_to_exec_graph(self.cuda_graph)
         # returning None should propagate exceptions from either capture_end or stream_ctx.__exit__()
 
 

@@ -4206,10 +4206,10 @@ class PythonWrapperCodegen(CodeGen):
         """
         return
 
-    def write_cudagraph_annotation_begin(self, annotation: str) -> None:
-        self.writeline(
-            f'_annotation_ctx = _mark_kernels({{"name": {annotation!r}}})'
-        )
+    def write_cudagraph_annotation_begin(
+        self, annotation: dict[str, str]
+    ) -> None:
+        self.writeline(f"_annotation_ctx = _mark_kernels({annotation!r})")
         self.writeline("_annotation_ctx.__enter__()")
 
     def write_cudagraph_annotation_end(self) -> None:
