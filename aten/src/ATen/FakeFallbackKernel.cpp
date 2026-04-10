@@ -175,9 +175,14 @@ void fakeFallback(
   auto fake_device = get_common_device(stack, num_arguments);
   auto mode = get_fake_tensor_mode(stack, num_arguments);
 
+  // Always rewrite device kwargs to meta so composite kernels create meta
+  // tensors internally (e.g. rand_like(x, device='cpu') must not create real
+  // CPU tensors inside the CompositeExplicitAutograd kernel).
+  auto device_from_args = rewrite_device_args_to_meta(
+      stack, arguments_begin, num_arguments, schema);
+
   if (!fake_device.has_value()) {
-    fake_device = rewrite_device_args_to_meta(
-        stack, arguments_begin, num_arguments, schema);
+    fake_device = device_from_args;
     if (!fake_device.has_value()) {
       fake_device = c10::Device(c10::DeviceType::CPU);
     }
