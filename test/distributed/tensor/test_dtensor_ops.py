@@ -870,6 +870,7 @@ ops_unbacked_dtensor_dde = {
     xfail("rot90"),
     xfail("scatter"),
     xfail("scatter_add"),
+    xfail("select_scatter"),
     xfail("sort"),
     xfail("squeeze_copy"),
     xfail("std_mean"),
