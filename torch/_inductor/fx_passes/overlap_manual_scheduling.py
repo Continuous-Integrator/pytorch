@@ -4,8 +4,8 @@ import heapq
 from collections import Counter, defaultdict
 from typing import Any, TYPE_CHECKING
 
-import torch
-import torch.fx as fx
+import torch  # noqa: TC001
+import torch.fx as fx  # noqa: TC001
 from torch._dynamo.graph_deduplication import _stable_topological_sort
 from torch._inductor.fx_passes.bucketing import (
     _get_collective_node_from_wait,
@@ -91,23 +91,19 @@ class ManualOverlapPreservingBucketer(OverlapPreservingBucketer):
 
         logger.debug(f"bucketing nodes: {coll_nodes} into {new_nodes}")  # noqa: G004
 
-        # Identify the new wait(s) and start
-        new_waits = [n for n in new_nodes if _schedulable_wait_node(n)]
-        assert len(new_waits) >= 1, f"Expected at least one new wait, got {new_waits}"
-
-        if len(new_waits) == 1:
-            new_wait = new_waits[0]
-            new_start: fx.Node = new_wait.args[0]  # pyrefly: ignore[bad-assignment]
-            assert isinstance(new_start, fx.Node)
-        else:
-            # Coalesced bucketing: N waits, find the collective start through getitem
-            coll_start = _get_collective_node_from_wait(new_waits[0])
-            assert coll_start is not None, (
-                f"Expected collective node behind wait, got {new_waits[0]}"
-            )
-            new_start = coll_start
-            # Use last wait as the canonical wait for scheduling
-            new_wait = new_waits[-1]
+        # Identify the new wait(s) and their collective start in a single pass
+        wait_to_start = {
+            n: start
+            for n in new_nodes
+            if (start := _get_collective_node_from_wait(n)) is not None
+        }
+        assert len(wait_to_start) >= 1, (
+            f"Expected at least one new wait, got none in {new_nodes}"
+        )
+        new_waits = list(wait_to_start)
+        new_start: fx.Node = wait_to_start[new_waits[0]]
+        # Use last wait as the canonical wait for scheduling (same node when len == 1)
+        new_wait = new_waits[-1]
 
         # Set manual bucketing-specific metadata (generic metadata is preserved in bucketing.py)
         node_type = (

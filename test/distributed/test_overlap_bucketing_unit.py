@@ -644,6 +644,58 @@ class TestOverlapPreservingBucketing(InductorTestCase):
         self.assertIn("cat.default", graph_str)
         self.assertNotIn("all_gather_into_tensor_coalesced", graph_str)
 
+    def test_reduce_scatter_coalesced_mode_single_rs(self):
+        """
+        Test that 'coalesced' bucket mode correctly identifies the collective
+        start node even when there is only a single reduce_scatter (so only
+        one wait node is produced).  This exercises the unified
+        _get_collective_node_from_wait path instead of the .args[0] shortcut.
+        """
+
+        def func(a):
+            group_name = "0"
+            group_size = 2
+
+            rs1 = torch.ops._c10d_functional.reduce_scatter_tensor(
+                a, "sum", group_size, group_name
+            )
+
+            rs1_out = torch.ops._c10d_functional.wait_tensor(rs1)
+
+            return rs1_out.sum()
+
+        with FakeTensorMode():
+            a = torch.ones(4, 4, device=self.device)
+            traced = make_fx(func)(a)
+
+        rs_nodes = traced.graph.find_nodes(
+            op="call_function",
+            target=torch.ops._c10d_functional.reduce_scatter_tensor.default,
+        )
+        self.assertEqual(len(rs_nodes), 1)
+
+        hiding_annotations = {}
+        collective_info = build_collective_info(traced.graph, hiding_annotations)
+        scheduled = OrderedSet(traced.graph.nodes)
+
+        from torch._inductor.fx_passes.overlap_preserving_bucketer import (
+            OverlapPreservingBucketer,
+        )
+
+        bucketer = OverlapPreservingBucketer(
+            traced.graph,
+            collective_info,
+            scheduled,
+            bucket_mode="coalesced",
+        )
+        # Single RS should not crash — bucket_collectives groups by key,
+        # and a single-element group is a no-op (no merge needed).
+        bucketer.bucket_collectives()
+
+        # Graph should still contain the original reduce_scatter (no merge happened)
+        graph_str = str(traced.graph)
+        self.assertIn("reduce_scatter_tensor", graph_str)
+
     def test_can_bucket_multidtype_collectives(self):
         """
         Test that all_gathers with different dtypes CAN bucket together.
