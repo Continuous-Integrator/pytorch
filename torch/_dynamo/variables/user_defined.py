@@ -470,7 +470,9 @@ class UserDefinedClassVariable(UserDefinedVariable):
         if name in cmp_name_to_op_mapping and not isinstance(
             cls_attr, types.FunctionType
         ):
-            return variables.GetAttrVariable(self, name, None, source=source)
+            return variables.GetAttrVariable(
+                self, name, py_type=type(cls_attr), source=source
+            )
 
         # User-defined descriptor with Python __get__.
         # For torch-internal classes or attributes in the class's own __dict__,

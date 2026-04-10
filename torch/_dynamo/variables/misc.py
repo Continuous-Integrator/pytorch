@@ -1603,7 +1603,9 @@ class TypingVariable(VariableTracker):
         from .builder import SourcelessBuilder, VariableBuilder
 
         if name in cmp_name_to_op_mapping:
-            return variables.GetAttrVariable(self, name)
+            return variables.GetAttrVariable(
+                self, name, py_type=type(getattr(self.value, name))
+            )
 
         if tx.output.side_effects.has_pending_mutation_of_attr(self, name):
             return tx.output.side_effects.load_attr(self, name)
