@@ -270,6 +270,19 @@ jobs:
           aws-region: us-east-1
           role-duration-seconds: 18000
 
+      - name: Configure Bazel for OSDC pypi-cache
+        if: steps.filter.outputs.is-test-matrix-empty == 'False'
+        shell: bash
+        run: |
+          # On OSDC, cache-enforcer iptables rules TCP-reset direct connections
+          # to files.pythonhosted.org. Redirect Bazel's Java downloader through
+          # the cluster-internal pypi-cache proxy.
+          cat > /tmp/osdc_downloader.cfg << 'EOF'
+          rewrite files\.pythonhosted\.org/(.*) pypi-cache-cpu.pypi-cache.svc.cluster.local:8080/$1
+          rewrite pypi\.org/(.*) pypi-cache-cpu.pypi-cache.svc.cluster.local:8080/$1
+          EOF
+          echo "common --experimental_downloader_config=/tmp/osdc_downloader.cfg" >> .bazelrc
+
       - name: Build
         if: steps.filter.outputs.is-test-matrix-empty == 'False'
         id: build
