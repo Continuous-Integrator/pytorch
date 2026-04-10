@@ -1761,6 +1761,12 @@ class DistMathOpsTest(DTensorTestBase):
         self.assertEqual(result.full_tensor(), expected)
         self.assertTrue(result.placements[0].is_replicate())
 
+        # group_norm with batch-dim sharding — scalar N/C/HxW args are adjusted
+        num_groups = 3
+        expected = F.group_norm(inp, num_groups, weight, bias)
+        result = F.group_norm(dt_inp, num_groups, dt_weight, dt_bias)
+        self.assertEqual(result.full_tensor(), expected)
+        self.assertTrue(result.placements[0].is_shard(0))
 
 DistMathOpsTestWithLocalTensor = create_local_tensor_test_class(
     DistMathOpsTest,

@@ -7001,8 +7001,6 @@ def skips_mvlgamma(skip_redundant=False):
         DecorateInfo(unittest.skip("Skipped!"), 'TestUnaryUfuncs',
                      'test_reference_numerics_small',
                      dtypes=(torch.int8,)),
-        # NotImplementedError: The operator 'aten::mvlgamma.out' is not currently implemented for the MPS device
-        DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_variant_consistency_eager', device_type='mps'),
     )
     if skip_redundant:
         # Redundant tests
@@ -18001,30 +17999,15 @@ op_db: list[OpInfo] = [
            sample_inputs_func=sample_inputs_mode,),
     make_mvlgamma_opinfo(variant_test_name='mvlgamma_p_1',
                          domain=(1, None),
-                         skips=skips_mvlgamma() + (
-                             # NotImplementedError: The operator 'aten::mvlgamma.out' is not currently
-                             # implemented for the MPS device
-                             DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_out', device_type='mps'),
-                             DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_out_warning', device_type='mps'),
-                         ),
+                         skips=skips_mvlgamma(),
                          sample_kwargs=lambda device, dtype, input: ({'p': 1}, {'d': 1})),
     make_mvlgamma_opinfo(variant_test_name='mvlgamma_p_3',
                          domain=(2, None),
-                         skips=skips_mvlgamma() + (
-                             # NotImplementedError: The operator 'aten::mvlgamma.out' is not currently
-                             # implemented for the MPS device
-                             DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_out', device_type='mps'),
-                             DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_out_warning', device_type='mps'),
-                         ),
+                         skips=skips_mvlgamma(),
                          sample_kwargs=lambda device, dtype, input: ({'p': 3}, {'d': 3})),
     make_mvlgamma_opinfo(variant_test_name='mvlgamma_p_5',
                          domain=(3, None),
-                         skips=skips_mvlgamma() + (
-                             # NotImplementedError: The operator 'aten::mvlgamma.out' is not currently
-                             # implemented for the MPS device
-                             DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_out', device_type='mps'),
-                             DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_out_warning', device_type='mps'),
-                         ),
+                         skips=skips_mvlgamma(),
                          sample_kwargs=lambda device, dtype, input: ({'p': 5}, {'d': 5})),
     BinaryUfuncInfo('ne',
                     ref=np.not_equal,
@@ -21576,7 +21559,6 @@ op_db: list[OpInfo] = [
            sample_inputs_func=sample_inputs_nonzero_static,
            supports_out=False,
            supports_autograd=False,
-           decorators=[onlyCPU],
            skips=(
                DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_out'),
                DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_out_warning'),
@@ -22174,7 +22156,7 @@ op_db: list[OpInfo] = [
         supports_out=False,
         sample_inputs_func=sample_inputs_grid_sample,
         reference_inputs_func=reference_inputs_grid_sample,
-        supports_gradgrad=False,
+        supports_gradgrad=True,
         skips=(
             # Exception: The operator 'aten::grid_sampler_2d_backward' is not currently implemented for the MPS device
             DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_dtypes', device_type='mps'),
@@ -22188,7 +22170,7 @@ op_db: list[OpInfo] = [
         dtypes=floating_types_and(torch.float16, torch.bfloat16),
         supports_out=False,
         sample_inputs_func=sample_inputs_grid_sampler_2d,
-        supports_gradgrad=False,
+        supports_gradgrad=True,
         gradcheck_nondet_tol=1e-15,
         skips=(
             DecorateInfo(slowTest, 'TestDecomp', 'test_comprehensive', dtypes=(torch.float32, torch.float64),
@@ -22205,7 +22187,7 @@ op_db: list[OpInfo] = [
         dtypes=floating_types_and(torch.float16, torch.bfloat16),
         supports_out=False,
         sample_inputs_func=sample_inputs_grid_sampler_3d,
-        supports_gradgrad=False,
+        supports_gradgrad=True,
         gradcheck_nondet_tol=1e-15,
         skips=(
             # NOTE: Only run on MPS
