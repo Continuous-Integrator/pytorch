@@ -13,7 +13,12 @@
 
 namespace c10d::symmetric_memory {
 
+// Key type for the symmetric memory map. `void*` for tensor storage ptr,
+// `std::string` for group name.
 using SymmMemKey = std::pair<void*, std::string>;
+// Hash function for the symmetric memory map. c10::hash has a std::pair
+// specialization (line 323-329 of hash.h) that delegates to the tuple hasher
+// which combines hashes of each element.
 using SymmMemKeyHash = c10::hash<SymmMemKey>;
 
 // Covers NVL72
