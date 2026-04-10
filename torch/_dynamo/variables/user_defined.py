@@ -278,6 +278,9 @@ class UserDefinedClassVariable(UserDefinedVariable):
             frozenset.__new__,
             tuple.__new__,
             list.__new__,
+            int.__new__,
+            float.__new__,
+            str.__new__,
         }
         return c_new_fns.union(exceptions)
 
@@ -2089,15 +2092,6 @@ class UserDefinedObjectVariable(UserDefinedVariable):
                 cls_source = source
             return VariableTracker.build(tx, type(self.value), cls_source)
 
-        # object.__reduce_ex__ is a C builtin that Dynamo cannot trace.
-        # Return a bound polyfill so copy.deepcopy can call reductor(4).
-        if name == "__reduce_ex__":
-            from .. import polyfills
-
-            return variables.UserMethodVariable(
-                polyfills.reduce_ex_user_defined_object, self
-            )
-
         from ..mutation_guard import unpatched_nn_module_init
 
         # ---- CPython attribute lookup algorithm ----
@@ -2842,6 +2836,40 @@ class KeyedJaggedTensorVariable(UserDefinedObjectVariable):
             with TracingContext.patch(force_unspec_int_unbacked_size_like=True):
                 return super().var_getattr(tx, name)
         return super().var_getattr(tx, name)
+
+
+_CONSTANT_BASE_TYPES = (int, float, str)
+
+_constant_base_methods: dict[type, set[Any]] = {
+    t: {m for m in t.__dict__.values() if callable(m)} for t in _CONSTANT_BASE_TYPES
+}
+
+
+class UserDefinedConstantVariable(UserDefinedObjectVariable):
+    """
+    Represents user-defined objects that subclass immutable constant types
+    (int, float, str).
+
+    Uses a ConstantVariable as _base_vt for the underlying constant value.
+    """
+
+    def __init__(self, value: Any, **kwargs: Any) -> None:
+        from .constant import ConstantVariable
+
+        super().__init__(value, **kwargs)
+        for base in type(value).__mro__:
+            if base in _CONSTANT_BASE_TYPES:
+                self._base_vt = ConstantVariable.create(base(value))
+                self._base_methods = _constant_base_methods[base]
+                break
+        assert self._base_vt is not None
+
+    def as_python_constant(self) -> Any:
+        return self.value
+
+    def as_proxy(self) -> object:
+        assert self._base_vt is not None
+        return self._base_vt.as_proxy()
 
 
 class IntWrapperVariable(UserDefinedObjectVariable):
