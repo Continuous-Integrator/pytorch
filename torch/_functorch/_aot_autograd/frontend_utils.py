@@ -64,13 +64,17 @@ def process_inputs(
     # SubclassCreationMeta for output tangent metadata. At runtime, autograd
     # produces plain tensor tangents, causing a type mismatch. Unwrapping
     # here prevents ACT from appearing in the traced metadata.
-    from torch.distributed._functional_collectives import AsyncCollectiveTensor
+    try:
+        from torch.distributed._functional_collectives import AsyncCollectiveTensor
+    except ImportError:
+        AsyncCollectiveTensor = None
 
     act_input_indices: list[int] = []
-    for i, a in enumerate(flat_args):
-        if isinstance(a, AsyncCollectiveTensor):
-            act_input_indices.append(i)
-            flat_args[i] = a.trigger_wait()
+    if AsyncCollectiveTensor is not None:
+        for i, a in enumerate(flat_args):
+            if isinstance(a, AsyncCollectiveTensor):
+                act_input_indices.append(i)
+                flat_args[i] = a.trigger_wait()
 
     with fake_mode:
 
