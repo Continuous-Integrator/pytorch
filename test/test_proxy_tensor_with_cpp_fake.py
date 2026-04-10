@@ -109,10 +109,21 @@ class TestCppFakeProxyTensor(TestCase):
     """
 
     def _test(self, f, inps):
+        # Trace under C++ fake mode
         with cpp_fake_tensor_mode():
-            fx_f = make_fx(f, tracing_mode="real")(*inps)
+            cpp_gm = make_fx(f, tracing_mode="real")(*inps)
+
+        # Trace under Python fake mode
+        py_gm = make_fx(f, tracing_mode="fake")(*inps)
+
+        # Compare graph structure
+        cpp_ops = [n.target for n in cpp_gm.graph.nodes if n.op == "call_function"]
+        py_ops = [n.target for n in py_gm.graph.nodes if n.op == "call_function"]
+        self.assertEqual(cpp_ops, py_ops)
+
+        # Verify correctness with real inputs
         new_inps = tree_map(_create_new_input, inps)
-        r1 = fx_f(*new_inps)
+        r1 = cpp_gm(*new_inps)
         r2 = f(*new_inps)
         self.assertEqual(r1, r2)
 
