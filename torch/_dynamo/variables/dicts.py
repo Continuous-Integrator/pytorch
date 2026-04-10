@@ -368,14 +368,12 @@ class ConstDictVariable(VariableTracker):
     ) -> VariableTracker:
         key = HashableTracker(arg)
         if key not in self.items:
+            # Match CPython's KeyError(key) — just the key, no verbose message.
             try:
-                error_message = (
-                    f"Dict key lookup failed for {str(arg)}. "
-                    f"Debug representation of the key is {arg.debug_repr()!r}"
-                )
-            except Exception:
-                error_message = f"Dict key lookup failed for {str(arg)}"
-            raise_observed_exception(KeyError, tx, args=[error_message])
+                key_value = arg.as_python_constant()
+            except NotImplementedError:
+                key_value = str(arg)
+            raise_observed_exception(KeyError, tx, args=[key_value])
         return self.items[key]
 
     def getitem_const(
@@ -1035,8 +1033,9 @@ class DefaultDictVariable(ConstDictVariable):
         tx: "InstructionTranslator",
         key: VariableTracker,
     ) -> VariableTracker:
+        # Mirrors CPython's defaultdict.__getitem__ (dict_subscript → __missing__).
         # defaultdict.__missing__: https://github.com/python/cpython/blob/62a6e898e01/Modules/_collectionsmodule.c#L2233-L2254
-        # TODO(follow-up): add test for unhashable/invalid key type
+        # Key present → normal dict lookup (same as ConstDictVariable.mp_subscript_impl).
         if key in self:
             return self.getitem_const(tx, key)
 
@@ -1044,7 +1043,11 @@ class DefaultDictVariable(ConstDictVariable):
             istype(self.default_factory, ConstantVariable)
             and self.default_factory.value is None
         ):
-            raise_observed_exception(KeyError, tx, args=[key])
+            try:
+                key_value = key.as_python_constant()
+            except NotImplementedError:
+                key_value = str(key)
+            raise_observed_exception(KeyError, tx, args=[key_value])
         else:
             default_var = self.default_factory.call_function(tx, [], {})
             super().call_method(tx, "__setitem__", [key, default_var], {})

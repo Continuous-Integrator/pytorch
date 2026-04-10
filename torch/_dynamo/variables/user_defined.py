@@ -1512,6 +1512,12 @@ class UserDefinedObjectVariable(UserDefinedVariable):
     ) -> VariableTracker:
         # PyObject_GetItem: https://github.com/python/cpython/blob/62a6e898e01/Objects/abstract.c#L155-L206
         method = self._maybe_get_baseclass_method("__getitem__")
+        if (
+            self._base_vt is not None
+            and self._base_methods is not None
+            and method in self._base_methods
+        ):
+            return self._base_vt.mp_subscript_impl(tx, key)
         if method is not None:
             return self.resolve_type_attr(
                 tx, "__getitem__", method, self.source
@@ -2988,6 +2994,7 @@ class UserDefinedDictVariable(UserDefinedObjectVariable):
         # TODO(follow-up): add test for unhashable/invalid key type, Counter missing key
         method = self._maybe_get_baseclass_method("__getitem__")
         if method in self._base_methods:
+            assert self._base_vt is not None
             try:
                 return self._base_vt.mp_subscript_impl(tx, key)
             except ObservedKeyError:
@@ -3110,19 +3117,6 @@ class UserDefinedListVariable(UserDefinedObjectVariable):
         self._base_methods = list_methods
         assert self._base_vt is not None
 
-    def mp_subscript_impl(
-        self,
-        tx: "InstructionTranslator",
-        key: VariableTracker,
-    ) -> VariableTracker:
-        # Delegates to list's list_subscript via _base_vt.
-        # TODO(follow-up): add tests for negative index, slice
-        assert self._base_vt is not None
-        method = self._maybe_get_baseclass_method("__getitem__")
-        if method in list_methods:
-            return self._base_vt.mp_subscript_impl(tx, key)
-        return super().mp_subscript_impl(tx, key)
-
 
 class UserDefinedTupleVariable(UserDefinedObjectVariable):
     """
@@ -3177,19 +3171,6 @@ class UserDefinedTupleVariable(UserDefinedObjectVariable):
     def items(self) -> list[VariableTracker]:
         assert self._base_vt is not None
         return self._base_vt.items  # type: ignore[return-value]
-
-    def mp_subscript_impl(
-        self,
-        tx: "InstructionTranslator",
-        key: VariableTracker,
-    ) -> VariableTracker:
-        # Delegates to tuple's tuple_subscript via _base_vt.
-        # TODO(follow-up): add tests for negative index, slice
-        assert self._base_vt is not None
-        method = self._maybe_get_baseclass_method("__getitem__")
-        if method in tuple_methods:
-            return self._base_vt.mp_subscript_impl(tx, key)
-        return super().mp_subscript_impl(tx, key)
 
     def call_method(
         self,

@@ -590,9 +590,9 @@ class VariableTracker(metaclass=VariableTrackerMeta):
 
     def mp_subscript_impl(
         self,
-        tx: "InstructionTranslator",
-        key: "VariableTracker",
-    ) -> "VariableTracker":
+        tx: InstructionTranslator,
+        key: VariableTracker,
+    ) -> VariableTracker:
         # PyObject_GetItem: https://github.com/python/cpython/blob/62a6e898e01/Objects/abstract.c#L155-L206
         unimplemented(
             gb_type="unsupported __getitem__",
