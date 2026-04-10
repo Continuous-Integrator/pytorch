@@ -790,6 +790,60 @@ class CUDADeviceVariable(ContextWrappingVariable):
         return "device"
 
 
+class XPUDeviceVariable(ContextWrappingVariable):
+    """represents torch.xpu.device"""
+
+    @staticmethod
+    def create(
+        tx: "InstructionTranslator", device: Any, **kwargs: Any
+    ) -> "XPUDeviceVariable":
+        var = XPUDeviceVariable(
+            target_values=[torch.xpu._get_device_index(device, optional=True)],
+            initial_values=None,
+            **kwargs,
+        )
+        return var
+
+    def __init__(
+        self,
+        target_values: Any,
+        initial_values: Any | None = None,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(
+            target_values=target_values, initial_values=initial_values, **kwargs
+        )
+
+    def exit(
+        self, tx: "InstructionTranslator", *args: VariableTracker
+    ) -> VariableTracker:
+        self.cleanup_assert()
+        tx.output.create_node(
+            "call_function",
+            torch.xpu._maybe_exchange_device,
+            (self.proxy,),
+            {},
+        )
+        return variables.CONSTANT_VARIABLE_FALSE
+
+    def enter(self, tx: "InstructionTranslator") -> VariableTracker:
+        prev_idx = torch.xpu._exchange_device(*self.target_values)
+        self.set_cleanup_hook(tx, lambda: torch.xpu._maybe_exchange_device(prev_idx))
+        self.proxy = tx.output.create_node(
+            "call_function",
+            torch.xpu._exchange_device,
+            (*self.target_values,),
+            {},
+        )
+        return variables.CONSTANT_VARIABLE_NONE
+
+    def module_name(self) -> str:
+        return "torch.xpu"
+
+    def fn_name(self) -> str:
+        return "device"
+
+
 class TorchFunctionDisableVariable(ContextWrappingVariable):
     """represents whether torch function overrides are enabled or not"""
 

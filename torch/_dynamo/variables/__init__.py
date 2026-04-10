@@ -52,6 +52,7 @@ from .ctx_manager import (
     VmapIncrementNestingCtxManagerVariable,
     WithEnterFunctionVariable,
     WithExitFunctionVariable,
+    XPUDeviceVariable,
 )
 from .dicts import (
     ConstDictVariable,
