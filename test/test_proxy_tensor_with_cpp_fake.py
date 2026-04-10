@@ -767,6 +767,9 @@ def forward(self, x_1):
     # map_impl, scan_op) directly, bypassing the user-facing wrappers that route
     # through torch.compile/Dynamo.
 
+    def _make_arg(self, *shape, low=0.1, high=2):
+        return make_tensor(*shape, low=low, high=high, dtype=torch.float, device="cpu")
+
     def test_cond_simple(self):
         """Mirrors hop_db simple_cond."""
         from torch._higher_order_ops.cond import cond_op
@@ -776,7 +779,7 @@ def forward(self, x_1):
                 x.sum() > 2, lambda x: (x.cos(),), lambda x: (x.sin(),), [x]
             )
 
-        self._test(f, (make_tensor(2, 2, 2, low=0.1, high=2, dtype=torch.float, device="cpu"),))
+        self._test(f, (self._make_arg(2, 2, 2),))
 
     def test_while_loop_simple(self):
         """Mirrors hop_db simple_while_loop."""
@@ -791,11 +794,7 @@ def forward(self, x_1):
 
             return while_loop_op(cond_fn, body_fn, (iter_t, x), ())
 
-        inp = (torch.tensor(3), make_tensor(2, 3, 4, low=0.1, high=2, dtype=torch.float, device="cpu"))
-        with cpp_fake_tensor_mode():
-            gm = make_fx(f, tracing_mode="real")(*inp)
-        new_inp = (torch.tensor(2), torch.randn(2, 3, 4))
-        self.assertEqual(gm(*new_inp), f(*new_inp))
+        self._test(f, (torch.tensor(3), self._make_arg(2, 3, 4)))
 
     def test_map_simple(self):
         """Mirrors hop_db simple_map."""
@@ -807,15 +806,8 @@ def forward(self, x_1):
         def f(x0, x1, y0, y1):
             return map_impl(inner_f, [x0, x1], (y0, y1))
 
-        x0 = make_tensor(2, 2, 2, low=0.1, high=2, dtype=torch.float, device="cpu")
-        x1 = make_tensor(2, 2, 2, low=0.1, high=2, dtype=torch.float, device="cpu")
-        y0 = make_tensor(1, low=0.1, high=2, dtype=torch.float, device="cpu")
-        y1 = make_tensor(1, low=0.1, high=2, dtype=torch.float, device="cpu")
-        with cpp_fake_tensor_mode():
-            gm = make_fx(f, tracing_mode="real")(x0, x1, y0, y1)
-        new_args = (torch.randn(2, 2, 2), torch.randn(2, 2, 2),
-                    torch.randn(1), torch.randn(1))
-        self.assertEqual(gm(*new_args), f(*new_args))
+        self._test(f, (self._make_arg(2, 2, 2), self._make_arg(2, 2, 2),
+                        self._make_arg(1), self._make_arg(1)))
 
     def test_scan_simple(self):
         """Mirrors hop_db simple_scan."""
@@ -828,12 +820,7 @@ def forward(self, x_1):
         def f(init, xs):
             return scan_op(combine_fn, [init], [xs], ())
 
-        init = make_tensor(2, 2, low=0.1, high=2, dtype=torch.float, device="cpu")
-        xs = make_tensor(2, 2, 2, low=0.1, high=2, dtype=torch.float, device="cpu")
-        with cpp_fake_tensor_mode():
-            gm = make_fx(f, tracing_mode="real")(init, xs)
-        new_init, new_xs = torch.randn(2, 2), torch.randn(2, 2, 2)
-        self.assertEqual(gm(new_init, new_xs), f(new_init, new_xs))
+        self._test(f, (self._make_arg(2, 2), self._make_arg(2, 2, 2)))
 
 
 # --- OpInfo-based exhaustive tests for C++ FakeTensor mode ---
