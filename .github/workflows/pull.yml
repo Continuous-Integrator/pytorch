@@ -512,7 +512,7 @@ jobs:
       build-environment: linux-jammy-rocm-py3.10
       docker-image-name: ci-image:pytorch-linux-jammy-rocm-n-py3
       # TODO (huydhn): Add this back once other workflow migrates
-      sync-tag: rocm-build
+      # sync-tag: rocm-build
       test-matrix: |
         { include: [
           { config: "default", shard: 1, num_shards: 3, runner: "linux.rocm.gpu.2" },
