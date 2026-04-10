@@ -281,12 +281,9 @@ jobs:
           SCCACHE_BUCKET: ossci-compiler-cache-circleci-v2
           SCCACHE_REGION: us-east-1
           SCCACHE_S3_NO_CREDENTIALS: ${{ steps.aws-creds.outcome != 'success' && 'true' || 'false' }}
-          TORCH_CUDA_ARCH_LIST: 5.2
           OUR_GITHUB_JOB_ID: ${{ steps.setup-linux.outputs.job-id }}
           CUDA_VERSION: ${{ inputs.cuda-version }}
           SKIP_SCCACHE_INITIALIZATION: 1
-          MAX_JOBS: 14
-          SHARD_NUMBER: 0
         shell: bash
         run: |
           .ci/pytorch/build.sh
