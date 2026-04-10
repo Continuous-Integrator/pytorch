@@ -275,13 +275,9 @@ jobs:
         shell: bash
         run: |
           # On OSDC, cache-enforcer iptables rules TCP-reset direct connections
-          # to files.pythonhosted.org. Redirect Bazel's Java downloader through
-          # the cluster-internal pypi-cache proxy.
-          cat > /tmp/osdc_downloader.cfg << 'EOF'
-          rewrite https://files\.pythonhosted\.org/(.*) http://pypi-cache-cpu.pypi-cache.svc.cluster.local:8080/$1
-          rewrite https://pypi\.org/(.*) http://pypi-cache-cpu.pypi-cache.svc.cluster.local:8080/$1
-          EOF
-          echo "common --experimental_downloader_config=/tmp/osdc_downloader.cfg" >> .bazelrc
+          # to files.pythonhosted.org. Override pip_parse's index URL to use the
+          # cluster-internal pypi-cache proxy instead.
+          echo "common --repo_env=PIP_INDEX_URL=${PIP_INDEX_URL}" >> .bazelrc
 
       - name: Build
         if: steps.filter.outputs.is-test-matrix-empty == 'False'

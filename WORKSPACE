@@ -236,6 +236,8 @@ pip_parse(
     name = "pip_deps",
     python_interpreter_target = interpreter,
     requirements_lock = "//:tools/build/bazel/requirements.txt",
+    extra_pip_args = ["--index-url", "${PIP_INDEX_URL}"],
+    envsubst = ["PIP_INDEX_URL"],
 )
 
 load("@pip_deps//:requirements.bzl", "install_deps")
