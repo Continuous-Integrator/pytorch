@@ -7850,7 +7850,11 @@ not ___dict_contains('cccccccc', G['sys'].modules)""",
             dynamo_result = graph(x)
             self.assertTrue(same(real, dynamo_result))
 
+    # ===== error_on_nested_fx_trace=True (default) =====
+    # FX tracing into torch.compile-wrapped code errors by default.
+
     def test_error_on_nested_fx_trace(self):
+        # Function wrapped with torch.compile: errors during FX trace.
         input = torch.rand(2, 3)
 
         def f(x):
@@ -7864,10 +7868,40 @@ not ___dict_contains('cccccccc', G['sys'].modules)""",
         with self.assertRaisesRegex(RuntimeError, "Detected that you are using FX"):
             gm = torch.fx.symbolic_trace(optimized)
 
+    def test_error_on_nested_fx_trace_module(self):
+        # Module wrapped with torch.compile: errors during FX trace.
+        class Inner(torch.nn.Module):
+            def forward(self, x):
+                return x + x
+
+        class Outer(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.inner = torch.compile(Inner(), backend="eager")
+
+            def forward(self, x):
+                return self.inner(x) + 1
+
+        mod = Outer()
+        with self.assertRaisesRegex(RuntimeError, "Detected that you are using FX"):
+            torch.fx.symbolic_trace(mod)
+
+    # ===== error_on_nested_fx_trace=False =====
+    # FX tracing falls back to eager: dynamo is skipped and the original
+    # function runs with Proxy args. This means the compiled region runs
+    # UNCOMPILED during the FX trace AND in the resulting graph — the
+    # compile wrapper is bypassed and the graph inlines the original ops.
+    #
+    # WARNING: this causes a performance regression if the resulting graph
+    # is used on the hot path, because the compiled region loses its
+    # torch.compile optimization. Only use this when the FX trace is a
+    # one-time setup step (e.g., torchrec pipeline init) and the compiled
+    # module will be re-wrapped after tracing.
+
     @patch.object(torch._dynamo.config, "error_on_nested_fx_trace", False)
     def test_fx_trace_through_compiled_function(self):
-        # With error_on_nested_fx_trace=False, torch.compile-wrapped
-        # functions are transparent to FX symbolic tracing.
+        # Function case: FX traces through the original function eagerly.
+        # The graph contains the inlined ops, NOT a compiled call.
         input = torch.rand(2, 3)
 
         def f(x):
@@ -7878,9 +7912,91 @@ not ___dict_contains('cccccccc', G['sys'].modules)""",
         optimized = torch.compile(f, backend="eager")
         self.assertTrue(same(optimized(input), real))
 
-        # FX tracing should succeed and produce correct results
         gm = torch.fx.symbolic_trace(optimized)
         self.assertTrue(same(gm(input), real))
+
+    @patch.object(torch._dynamo.config, "error_on_nested_fx_trace", False)
+    def test_fx_trace_through_compiled_module_eager(self):
+        # Module case without skip_compiled_module_during_fx_trace:
+        # FX traces into the module eagerly, inlining the ops.
+        # The compiled module's ops appear as individual nodes in the graph.
+        # This LOSES compilation — the module runs uncompiled.
+        class Inner(torch.nn.Module):
+            def forward(self, x):
+                return x + x
+
+        class Outer(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.inner = torch.compile(Inner(), backend="eager")
+
+            def forward(self, x):
+                return self.inner(x) + 1
+
+        mod = Outer()
+        input = torch.rand(2, 3)
+
+        gm = torch.fx.symbolic_trace(mod)
+        self.assertTrue(same(gm(input), mod(input)))
+
+        # The graph has inlined ops from Inner.forward, no call_module
+        call_module_nodes = [
+            n for n in gm.graph.nodes if n.op == "call_module"
+        ]
+        self.assertEqual(len(call_module_nodes), 0)
+
+    # ===== skip_compiled_module_during_fx_trace=True =====
+    # Compiled modules are treated as leaf nodes during FX tracing.
+    # The tracer does NOT enter them — they appear as a single call_module
+    # node. The module KEEPS its torch.compile wrapper, so it runs compiled
+    # when the graph executes. No performance regression.
+    #
+    # Requires error_on_nested_fx_trace=False (so compile_wrapper on methods
+    # inside the model can still fall back to eager).
+    #
+    # Use this when FX tracing a model that has torch.compile-wrapped child
+    # modules and you want to preserve their compilation.
+
+    @torch._dynamo.config.patch(
+        error_on_nested_fx_trace=False,
+        skip_compiled_module_during_fx_trace=True,
+    )
+    def test_fx_trace_compiled_module_is_leaf(self):
+        # Module case with skip_compiled_module_during_fx_trace=True:
+        # The compiled module is a leaf — single call_module node.
+        # Compilation is preserved.
+        cnts = torch._dynamo.testing.CompileCounter()
+
+        class Inner(torch.nn.Module):
+            def forward(self, x):
+                return x + x
+
+        class Outer(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.inner = torch.compile(Inner(), backend=cnts)
+
+            def forward(self, x):
+                return self.inner(x) + 1
+
+        mod = Outer()
+        input = torch.rand(2, 3)
+
+        # FX tracing should succeed with the compiled inner module as a leaf
+        gm = torch.fx.symbolic_trace(mod)
+
+        # The graph should have a call_module node for inner
+        call_module_nodes = [
+            n for n in gm.graph.nodes if n.op == "call_module"
+        ]
+        self.assertEqual(len(call_module_nodes), 1)
+        self.assertEqual(call_module_nodes[0].target, "inner")
+
+        # Running the traced graph should still compile the inner module
+        result = gm(input)
+        expected = mod(input)
+        self.assertTrue(same(result, expected))
+        self.assertEqual(cnts.frame_count, 1)
 
     def test_not_dynamic_scope(self):
         def f(y):

@@ -502,10 +502,19 @@ error_on_nested_jit_trace = True
 
 # If true (default), error if we symbolically trace over a dynamo-optimized
 # function. If false, dynamo is skipped and the original function runs eagerly,
-# allowing FX tracing to see through torch.compile wrappers.
+# allowing FX tracing to see through torch.compile wrappers. WARNING: the
+# compiled region runs uncompiled in the resulting graph, which may cause a
+# performance regression.
 # Use config.patch(error_on_nested_fx_trace=False) as a context manager to
 # scope this to a specific FX trace call.
 error_on_nested_fx_trace = True
+
+# If true, torch.compile-wrapped modules are treated as leaf modules during
+# FX symbolic tracing — the tracer won't enter them, preserving compilation.
+# Unlike error_on_nested_fx_trace=False alone, this keeps the module compiled
+# in the resulting graph, avoiding performance regression.
+# Requires error_on_nested_fx_trace=False.
+skip_compiled_module_during_fx_trace = False
 
 # If true, force dynamo compilation even when inside FX symbolic tracing.
 # This allows nested compilation where the outer tracer (e.g., make_fx) can

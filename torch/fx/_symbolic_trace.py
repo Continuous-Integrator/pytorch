@@ -487,6 +487,13 @@ class Tracer(TracerBase):
                 submodule ``bar``, which contains submodule ``baz``, that module will
                 appear with the qualified name ``foo.bar.baz`` here.
         """
+        # When enabled, treat torch.compile-wrapped modules as leaves
+        # so FX does not enter the compiled region.
+        if hasattr(m, "_torchdynamo_orig_callable"):
+            import torch._dynamo.config as dynamo_config
+
+            if dynamo_config.skip_compiled_module_during_fx_trace:
+                return True
         return (
             m.__module__.startswith("torch.nn")
             or m.__module__.startswith("torch.ao.nn")
