@@ -916,8 +916,27 @@ class BaseSchedulerNode:
                         for x in input_buf.users
                         if x.node.get_name() not in inconsequential_nodes
                     ]
+                    # In multi-stream graphs, don't reuse a buffer if
+                    # completed (codegen'd) users on other streams may
+                    # still be reading it on the GPU.
+                    has_cross_stream_hazard = False
+                    if self.scheduler._has_multi_stream_nodes():
+                        my_stream = self.scheduler.node_to_stream.get(self)
+                        for user in input_buf.users:
+                            unode = user.node
+                            if (
+                                isinstance(unode, BaseSchedulerNode)
+                                and unode is not self
+                                and unode.get_name() in inconsequential_nodes
+                            ):
+                                user_stream = self.scheduler.node_to_stream.get(unode)
+                                if user_stream is not None and user_stream != my_stream:
+                                    has_cross_stream_hazard = True
+                                    break
+
                     if (
-                        len(remaining_uses) == 1
+                        not has_cross_stream_hazard
+                        and len(remaining_uses) == 1
                         and remaining_uses[0].can_inplace
                         and remaining_uses[0].node is self
                         and input_buf.node is not None
@@ -1584,10 +1603,17 @@ class SchedulerNode(BaseSchedulerNode):
         extra_indexing_constraints: tuple[dict[Any, Any], list[Any]] | None = None,
         recompute_sizes_body_func: Callable[..., Any] | None = None,
     ) -> None:
+        fake_deps: OrderedSet[Dep] = OrderedSet(
+            dep for dep in self.read_writes.reads if isinstance(dep, (WeakDep, StarDep))
+        )
         self._compute_attrs(
             extra_indexing_constraints=extra_indexing_constraints,
             recompute_sizes_body_func=recompute_sizes_body_func,
         )
+        if fake_deps:
+            self.set_read_writes(
+                self.read_writes.with_read(fake_deps).rename(self.mutation_renames)
+            )
 
     def refresh_dependencies(
         self, normalize: bool, need_clear_tiling_cache: bool
@@ -3009,12 +3035,36 @@ def get_scheduler_node_symbol_uses(
     return free_symbol_uses
 
 
+def _is_epilogue_fusion_enabled(template_node: BaseSchedulerNode) -> bool:
+    """Check per-template flag, fall back to global config."""
+    tb = template_node.get_template_node()
+    if tb is not None and tb.allow_epilogue_fusion is not None:
+        return tb.allow_epilogue_fusion
+    return config.epilogue_fusion
+
+
+def _is_prologue_fusion_enabled(template_node: BaseSchedulerNode) -> bool:
+    """Check per-template flag, fall back to global config."""
+    tb = template_node.get_template_node()
+    if tb is not None and tb.allow_prologue_fusion is not None:
+        return tb.allow_prologue_fusion
+    return config.prologue_fusion
+
+
 def is_epilogue_fusion(node1: BaseSchedulerNode, node2: BaseSchedulerNode):
-    return node1.is_template() and config.epilogue_fusion and not node2.is_template()
+    return (
+        node1.is_template()
+        and not node2.is_template()
+        and _is_epilogue_fusion_enabled(node1)
+    )
 
 
 def is_prologue_fusion(node1: BaseSchedulerNode, node2: BaseSchedulerNode):
-    return node2.is_template() and config.prologue_fusion and not node1.is_template()
+    return (
+        node2.is_template()
+        and not node1.is_template()
+        and _is_prologue_fusion_enabled(node2)
+    )
 
 
 def is_template_fusion(node1: BaseSchedulerNode, node2: BaseSchedulerNode):
@@ -4375,7 +4425,7 @@ class Scheduler:
                             fusion_log.debug(  # noqa: G200
                                 "Exception in compiling %s: %s",
                                 "prologue" if not epilogue_fusion else "epilogue",
-                                str(e),
+                                e,
                             )
                         continue
                     with multi_node.swap_as_triton_caller(choice):
@@ -4510,7 +4560,7 @@ class Scheduler:
                             fusion_log.debug(  # noqa: G200
                                 "Exception in compiling %s: %s",
                                 "prologue" if not epilogue_fusion else "epilogue",
-                                str(e),
+                                e,
                             )
                         continue
 
@@ -4942,11 +4992,7 @@ class Scheduler:
             is_reorder_round,
         )
 
-        if (
-            (config.max_autotune_gemm or config.max_autotune)
-            and config.prologue_fusion
-            and config.epilogue_fusion
-        ):
+        if config.max_autotune_gemm or config.max_autotune:
             possible_fusions = self._handle_template_overlap(
                 possible_fusions, deferred_prologue_fusions
             )
@@ -5799,6 +5845,15 @@ class Scheduler:
                 why("node1 is extern but node2.node.data is not Pointwise")
                 return False
 
+            assert len(node1.node.mutation_outputs) == 1
+            written_buffer_name = node1.node.mutation_outputs[0].name
+
+            # The epilogue can only read from the output buffer.
+            # Any other tensor/s would require additional load expressions.
+            if any(dep.name != written_buffer_name for dep in node2.read_writes.reads):
+                why("epilogue reads from buffers other than the mutated output")
+                return False
+
             # the epilogue depends on expressions which may not available in the user triton kernel
             # (e.g. indexing exprs used not in a load)
             node2_inner_fn_free_symbols = node2.node.data.inner_fn_free_symbols()
@@ -5812,9 +5867,6 @@ class Scheduler:
             if node1.node.mutable_args[0].layout != node2.node.layout:
                 why("node1 and node2 uses different buf layouts")
                 return False
-
-            assert len(node1.node.mutation_outputs) == 1
-            written_buffer_name = node1.node.mutation_outputs[0].name
 
             def _is_other_node_that_references_mutation_buffer(
                 other_node: BaseSchedulerNode,
@@ -5843,7 +5895,7 @@ class Scheduler:
             return False
 
         if node2.is_template():
-            if not config.prologue_fusion:
+            if not _is_prologue_fusion_enabled(node2):
                 why("prologue fusion turned off")
                 return False
 
@@ -5903,7 +5955,7 @@ class Scheduler:
             if (
                 node2.has_aliasing_or_mutation()
                 or node2.is_reduction()
-                or not config.epilogue_fusion
+                or not _is_epilogue_fusion_enabled(node1)
             ):
                 why("template epilogue not satisfied")
                 return False
@@ -6300,9 +6352,7 @@ class Scheduler:
         if node1.is_template() or node2.is_template():
             return False
 
-        if (config.max_autotune or config.max_autotune_gemm) and (
-            config.prologue_fusion or config.epilogue_fusion
-        ):
+        if config.max_autotune or config.max_autotune_gemm:
             node1_outputs = node1.get_outputs()
             node2_outputs = node2.get_outputs()
 
@@ -6323,6 +6373,7 @@ class Scheduler:
                     if (
                         isinstance(user.node, BaseSchedulerNode)
                         and user.node.is_template()
+                        and _is_prologue_fusion_enabled(user.node)
                     ):
                         # Check if this output is actually in the template's
                         # allowed_prologue_inps. If not, fusing horizontally
@@ -6360,12 +6411,15 @@ class Scheduler:
                                 # Conservative: block fusion
                                 return False
 
-            if config.epilogue_fusion:
-                for node in (node1, node2):
-                    for dep in node.read_writes.reads:
-                        producer = self.name_to_fused_node.get(dep.name)
-                        if producer is not None and producer.is_template():
-                            return False
+            for node in (node1, node2):
+                for dep in node.read_writes.reads:
+                    producer = self.name_to_fused_node.get(dep.name)
+                    if (
+                        producer is not None
+                        and producer.is_template()
+                        and _is_epilogue_fusion_enabled(producer)
+                    ):
+                        return False
 
         return True
 
@@ -7458,6 +7512,10 @@ class Scheduler:
         if self.default_device_context and config.triton.autotune_at_compile_time:
             V.graph.wrapper_code.write_get_raw_stream_header()
 
+        # Register non-mutated inputs that need alignment checks.
+        # Deferred to just before the first kernel that reads each input.
+        V.graph.wrapper_code.register_alignment_check_inputs()
+
         for node in nodes:
             if log.isEnabledFor(logging.DEBUG):
                 try:
@@ -7473,6 +7531,12 @@ class Scheduler:
                     )
 
             self.enter_context(node)
+
+            # pyrefly: ignore [unbound-name]
+            if config.size_asserts:
+                V.graph.wrapper_code.codegen_deferred_input_asserts(
+                    dep.name for dep in node.read_writes.reads
+                )
 
             if device := node.get_device():
                 if (
@@ -7514,6 +7578,15 @@ class Scheduler:
             if self._has_multi_stream_nodes() and self.current_device is not None:
                 self.generate_stream_ctx_switching(node)
 
+            # Emit deferred alignment copies for inputs first used by this
+            # node.  This runs *after* stream context switching so the copy
+            # executes on the same stream as the consuming kernel.
+            # TODO: inputs read on multiple streams should be copied in the
+            # prologue instead, to avoid cross-stream races.
+            V.graph.wrapper_code.codegen_deferred_alignment_copies(
+                dep.name for dep in node.read_writes.reads
+            )
+
             self.current_node = node
             self.buffer_names_to_free.update(node.last_usage)
 
@@ -7533,8 +7606,12 @@ class Scheduler:
                 backend_ = self.get_backend(device)
                 from .codegen.cuda_combined_scheduling import CUDACombinedScheduling
                 from .codegen.simd import SIMDScheduling
+                from .codegen.xpu.xpu_combined_scheduling import XPUCombinedScheduling
 
-                if isinstance(backend_, (SIMDScheduling, CUDACombinedScheduling)):
+                if isinstance(
+                    backend_,
+                    (SIMDScheduling, CUDACombinedScheduling, XPUCombinedScheduling),
+                ):
                     backend = backend_
                 else:
                     raise AssertionError(f"{type(self)=}")

@@ -36,6 +36,7 @@ from torch._inductor.utils import (
 )
 from torch._library import capture_triton
 from torch._utils_internal import full_aoti_runtime_assert
+from torch.cuda import caching_allocator_disabled
 from torch.export import Dim, export
 from torch.export.pt2_archive._package import load_pt2
 from torch.nn.attention import (
@@ -106,6 +107,9 @@ from torch.utils._triton import (
     has_triton_experimental_host_tma,
     has_triton_tensor_descriptor_host_tma,
 )
+
+
+f8_msg = "FP8 is only supported on H100+, SM 8.9 and MI300+, XPU and CPU devices"
 
 
 @contextlib.contextmanager
@@ -1335,10 +1339,8 @@ class AOTInductorTestsTemplate:
         example_inputs = (x, y)
         self.check_model(Model(), example_inputs, dynamic_shapes=dynamic_shapes)
 
-    @unittest.skipIf(
-        not PLATFORM_SUPPORTS_FP8,
-        "FP8 is only supported on H100+, SM 8.9 and MI300+ devices or XPU",
-    )
+    @unittest.skipIf(not PLATFORM_SUPPORTS_FP8, f8_msg)
+    @skipIfMPS
     def test_fp8(self):
         # cuda only
         if self.device not in ("cuda", "xpu"):
@@ -1446,10 +1448,8 @@ class AOTInductorTestsTemplate:
             (x_fp8, weight_fp8, scale_a, scale_b, offsets),
         )
 
-    @unittest.skipIf(
-        not PLATFORM_SUPPORTS_FP8,
-        "FP8 is only supported on H100+, SM 8.9 and MI300+ devices or XPU",
-    )
+    @unittest.skipIf(not PLATFORM_SUPPORTS_FP8, f8_msg)
+    @skipIfMPS
     def test_fp8_view_of_param(self):
         # cuda only
         if self.device != GPU_TYPE:
@@ -1607,6 +1607,47 @@ class AOTInductorTestsTemplate:
             (
                 torch.randn(batch, M, K, device=self.device),
                 torch.randn(batch, K, N, device=self.device),
+            ),
+        )
+        self.check_model_with_multiple_inputs(
+            model,
+            list_example_inputs,
+            options={
+                "max_autotune": True,
+                "max_autotune_gemm_backends": "TRITON",
+            },
+            dynamic_shapes=dynamic_shapes,
+        )
+
+    @unittest.skipIf(
+        not IS_BIG_GPU, "Skipping triton backend only since not big GPU (not enough SM)"
+    )
+    def test_bmm_large_batch_dynamic(self):
+        if self.device == "cpu":
+            raise unittest.SkipTest("using triton backend only is not supported on CPU")
+
+        class Model(torch.nn.Module):
+            def forward(self, a, b):
+                return torch.bmm(a, b)
+
+        M, K, N = 64, 64, 64
+        dtype = torch.float16
+        model = Model()
+
+        # Compile with small batch, then run with batch > 65535 (CUDA grid.y limit)
+        compile_batch = 100
+        a = torch.randn(compile_batch, M, K, device=self.device, dtype=dtype)
+        b = torch.randn(compile_batch, K, N, device=self.device, dtype=dtype)
+        dim0_a = Dim("dim0_a", min=1, max=2**17)
+        dynamic_shapes = {"a": {0: dim0_a}, "b": {0: dim0_a}}
+        list_example_inputs = [(a, b)]
+
+        # Large batch exceeding CUDA grid.y limit of 65535
+        large_batch = 70000
+        list_example_inputs.append(
+            (
+                torch.randn(large_batch, M, K, device=self.device, dtype=dtype),
+                torch.randn(large_batch, K, N, device=self.device, dtype=dtype),
             ),
         )
         self.check_model_with_multiple_inputs(
@@ -1848,23 +1889,24 @@ class AOTInductorTestsTemplate:
                 return cat * cat
 
         # Disable cuda caching allocator to check for IMA
-        torch.cuda.caching_allocator_enable(False)
-        model = Repro()
-        example_inputs = (
-            # s0, s1
-            torch.randn((100, 200), device=self.device),
-            # s2, s3
-            torch.randn((100, 3), device=self.device),
-            # u0, u1, u2, u3, u100
-            torch.tensor([200, 100, 0, 1, 300], device=self.device, dtype=torch.int),
-        )
-        spec = {
-            "x": (Dim.DYNAMIC, Dim.DYNAMIC),
-            "y": (Dim.DYNAMIC, Dim.DYNAMIC),
-            "lst": (Dim.STATIC,),
-        }
-        self.check_model(model, example_inputs, dynamic_shapes=spec)
-        torch.cuda.caching_allocator_enable(True)
+        with caching_allocator_disabled():
+            model = Repro()
+            example_inputs = (
+                # s0, s1
+                torch.randn((100, 200), device=self.device),
+                # s2, s3
+                torch.randn((100, 3), device=self.device),
+                # u0, u1, u2, u3, u100
+                torch.tensor(
+                    [200, 100, 0, 1, 300], device=self.device, dtype=torch.int
+                ),
+            )
+            spec = {
+                "x": (Dim.DYNAMIC, Dim.DYNAMIC),
+                "y": (Dim.DYNAMIC, Dim.DYNAMIC),
+                "lst": (Dim.STATIC,),
+            }
+            self.check_model(model, example_inputs, dynamic_shapes=spec)
 
     @skipIfMPS
     @config.patch({"unbacked_symint_fallback": 12})
@@ -1906,20 +1948,87 @@ class AOTInductorTestsTemplate:
                 relevant_embeddings += ones
                 return relevant_embeddings * relevant_embeddings
 
-        torch.cuda.caching_allocator_enable(False)
-        model = Repro()
-        example_inputs = (
-            torch.randn((1000, INNER_DIM), device=self.device),
-            torch.randn((2000, INNER_DIM), device=self.device),
-            torch.ones(3000),
-        )
-        spec = {
-            "x": (Dim.DYNAMIC, Dim.STATIC),
-            "y": (Dim.DYNAMIC, Dim.STATIC),
-            "lengths": (Dim.DYNAMIC,),
-        }
-        self.check_model(model, example_inputs, dynamic_shapes=spec)
-        torch.cuda.caching_allocator_enable(True)
+        with caching_allocator_disabled():
+            model = Repro()
+            example_inputs = (
+                torch.randn((1000, INNER_DIM), device=self.device),
+                torch.randn((2000, INNER_DIM), device=self.device),
+                torch.ones(3000),
+            )
+            spec = {
+                "x": (Dim.DYNAMIC, Dim.STATIC),
+                "y": (Dim.DYNAMIC, Dim.STATIC),
+                "lengths": (Dim.DYNAMIC,),
+            }
+            self.check_model(model, example_inputs, dynamic_shapes=spec)
+
+    @skipIfMPS
+    @config.patch({"triton.autotune_at_compile_time": None})
+    @torch.fx.experimental._config.patch("backed_size_oblivious", True)
+    def test_slice_independent_backed_symints_no_unbacked(self):
+        # x[0:s1] where x.size(0) = s0-1 should produce Min(s1, s0-1),
+        # not an unbacked symint with a bad fallback value.
+        if self.device != GPU_TYPE:
+            raise unittest.SkipTest("requires triton")
+
+        INNER_DIM = 4224
+
+        class Repro(torch.nn.Module):
+            def forward(self, x, y):
+                x_trimmed = x[:-1]
+                sliced = x_trimmed[: y.size(0)]
+                reshaped = sliced.reshape(-1, 128, 33)
+                expanded = reshaped.unsqueeze(3).expand(-1, 128, 33, 8)
+                shifts = torch.arange(0, 64, 8, device=x.device, dtype=torch.int64)
+                return (expanded >> shifts) & 255
+
+        with caching_allocator_disabled():
+            model = Repro()
+            example_inputs = (
+                torch.randint(
+                    0, 256, (200, INNER_DIM), device=self.device, dtype=torch.int64
+                ),
+                torch.randn(50, 8, device=self.device),
+            )
+            spec = {
+                "x": (Dim.DYNAMIC, Dim.STATIC),
+                "y": (Dim.DYNAMIC, Dim.STATIC),
+            }
+            self.check_model(model, example_inputs, dynamic_shapes=spec)
+
+    @skipIfMPS
+    @config.patch({"triton.autotune_at_compile_time": None})
+    @torch.fx.experimental._config.patch("backed_size_oblivious", True)
+    def test_slice_negative_index_backed_symints_no_unbacked(self):
+        # x[-s1:] where x.size(0) = s0-1 should produce Max(s0-1 - s1, 0),
+        # not an unbacked symint with a bad fallback value.
+        if self.device != GPU_TYPE:
+            raise unittest.SkipTest("requires triton")
+
+        INNER_DIM = 4224
+
+        class Repro(torch.nn.Module):
+            def forward(self, x, y):
+                x_trimmed = x[:-1]
+                sliced = x_trimmed[-y.size(0) :]
+                reshaped = sliced.reshape(-1, 128, 33)
+                expanded = reshaped.unsqueeze(3).expand(-1, 128, 33, 8)
+                shifts = torch.arange(0, 64, 8, device=x.device, dtype=torch.int64)
+                return (expanded >> shifts) & 255
+
+        with caching_allocator_disabled():
+            model = Repro()
+            example_inputs = (
+                torch.randint(
+                    0, 256, (200, INNER_DIM), device=self.device, dtype=torch.int64
+                ),
+                torch.randn(50, 8, device=self.device),
+            )
+            spec = {
+                "x": (Dim.DYNAMIC, Dim.STATIC),
+                "y": (Dim.DYNAMIC, Dim.STATIC),
+            }
+            self.check_model(model, example_inputs, dynamic_shapes=spec)
 
     @config.patch({"triton.autotune_at_compile_time": None})
     def test_stride_with_unbacked_expr(self):
@@ -3563,7 +3672,6 @@ class AOTInductorTestsTemplate:
         example_inputs = (torch.randn(3, 10, device=self.device),)
         self.check_model(Model(), example_inputs)
 
-    @skipIfRocm(msg="Fails with Triton 3.7")
     @skipIfRocmArch(NAVI_ARCH)  # regression on ROCm 7.2
     def test_repeated_calling(self):
         if self.device != "cuda":
@@ -5065,10 +5173,7 @@ class AOTInductorTestsTemplate:
 
         self.check_model(m, inputs)
 
-    @unittest.skipIf(
-        not PLATFORM_SUPPORTS_FP8,
-        "FP8 is only supported on H100+, SM 8.9 and MI300+ devices or XPU",
-    )
+    @unittest.skipIf(not PLATFORM_SUPPORTS_FP8, f8_msg)
     @patch.dict(os.environ, {"AOTI_RUNTIME_CHECK_INPUTS": "1"})
     def test_runtime_checks_fp8(self):
         # cuda only
@@ -5808,10 +5913,8 @@ class AOTInductorTestsTemplate:
                     2,
                 ).run(code)
 
-    @unittest.skipIf(
-        not PLATFORM_SUPPORTS_FP8,
-        "FP8 is only supported on H100+, SM 8.9 and MI300+ devices or XPU",
-    )
+    @unittest.skipIf(not PLATFORM_SUPPORTS_FP8, f8_msg)
+    @skipIfMPS
     def test_aoti_debug_printer_fp8_dtype(self):
         if self.device != GPU_TYPE:
             raise unittest.SkipTest("requires GPU")
@@ -7271,34 +7374,22 @@ class AOTInductorTestsTemplate:
         m = torch.tensor([4096], dtype=torch.int32, device=self.device)
 
         with config.patch("triton.autotune_with_sample_inputs", True):
-            if torch.version.hip:
-                # ROCm: Use dynamic grid checking (portable across different configs)
-                # Compile and get the generated code
-                _, src_code = run_and_get_cpp_code(
-                    torch._export.aot_compile, Model(), (x, y, m)
-                )
-                actual_grid, expected_grids = get_triton_grid_info(
-                    strange_config_matmul_kernel, 4096 * 2046, src_code
-                )
-                self.assertTrue(
-                    actual_grid is not None, "Could not find grid_0 in generated code"
-                )
-                self.assertIn(
-                    actual_grid,
-                    expected_grids,
-                    f"grid_0={actual_grid} not in expected {expected_grids} from kernel configs",
-                )
-
-            else:
-                # CUDA/XPU: Keep existing hardcoded values
-                # The tuned best config on XPU is different with CUDA.
-                if GPU_TYPE == "xpu":
-                    grid_0 = 32736
-                else:
-                    grid_0 = 1023
-                self.code_check_count(
-                    Model(), (x, y, m), f"uint32_t grid_0 = {grid_0}L;", 1
-                )
+            # Use dynamic grid checking (portable across different configs
+            # and Triton versions)
+            _, src_code = run_and_get_cpp_code(
+                torch._export.aot_compile, Model(), (x, y, m)
+            )
+            actual_grid, expected_grids = get_triton_grid_info(
+                strange_config_matmul_kernel, 4096 * 2046, src_code
+            )
+            self.assertTrue(
+                actual_grid is not None, "Could not find grid_0 in generated code"
+            )
+            self.assertIn(
+                actual_grid,
+                expected_grids,
+                f"grid_0={actual_grid} not in expected {expected_grids} from kernel configs",
+            )
 
     def test_triton_mutated_autotuning(self):
         if self.device != GPU_TYPE:
@@ -7341,34 +7432,22 @@ class AOTInductorTestsTemplate:
         m = torch.tensor([4095], dtype=torch.int32, device=self.device)
 
         with config.patch("triton.autotune_with_sample_inputs", True):
-            if torch.version.hip:
-                # ROCm: Use dynamic grid checking (portable across different configs)
-                # Compile and get the generated code
-                _, src_code = run_and_get_cpp_code(
-                    torch._export.aot_compile, Model(), (x, y, m)
-                )
-                actual_grid, expected_grids = get_triton_grid_info(
-                    strange_config_matmul_kernel, 4096 * 2046, src_code
-                )
-                self.assertTrue(
-                    actual_grid is not None, "Could not find grid_0 in generated code"
-                )
-                self.assertIn(
-                    actual_grid,
-                    expected_grids,
-                    f"grid_0={actual_grid} not in expected {expected_grids} from kernel configs",
-                )
-
-            else:
-                # CUDA/XPU: Keep existing hardcoded values
-                # The tuned best config on XPU is different with CUDA.
-                if GPU_TYPE == "xpu":
-                    grid_0 = 32736
-                else:
-                    grid_0 = 1023
-                self.code_check_count(
-                    Model(), (x, y, m), f"uint32_t grid_0 = {grid_0}L;", 1
-                )
+            # Use dynamic grid checking (portable across different configs
+            # and Triton versions)
+            _, src_code = run_and_get_cpp_code(
+                torch._export.aot_compile, Model(), (x, y, m)
+            )
+            actual_grid, expected_grids = get_triton_grid_info(
+                strange_config_matmul_kernel, 4096 * 2046, src_code
+            )
+            self.assertTrue(
+                actual_grid is not None, "Could not find grid_0 in generated code"
+            )
+            self.assertIn(
+                actual_grid,
+                expected_grids,
+                f"grid_0={actual_grid} not in expected {expected_grids} from kernel configs",
+            )
 
     @patch.dict(os.environ, {"TRITON_DEBUG": "1"})
     def test_triton_dynamic_launcher_grid(self):

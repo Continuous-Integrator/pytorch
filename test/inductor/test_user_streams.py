@@ -27,6 +27,7 @@ from torch._inductor.stream_constants import (
 from torch._inductor.stream_utils import get_stream_name
 from torch._inductor.test_case import TestCase as InductorTestCase
 from torch._inductor.utils import IndentedBuffer
+from torch.testing import FileCheck
 from torch.testing._internal.common_cuda import TEST_CUDA
 from torch.testing._internal.common_utils import instantiate_parametrized_tests
 
@@ -987,10 +988,11 @@ with torch.cuda._DeviceGuard(0):
     from torch._dynamo.graph_bytecode_inputs import get_external_object_by_index
     stream1 = get_external_object_by_index(0)
     with torch.cuda.stream(stream1):
+        arg0_1 = copy_misaligned(arg0_1)
         buf0 = empty_strided_cuda((1024, ), (1, ), torch.float32)
         buf1 = buf0; del buf0
-        stream0 = get_raw_stream(0)
-        triton_kernel.run(buf1, arg0_1, 1024, stream=stream0)
+        raw_stream = get_raw_stream(0)
+        triton_kernel.run(buf1, arg0_1, 1024, stream=raw_stream)
     return (buf1, )""",
         )
 
@@ -1046,24 +1048,17 @@ class GraphModule(torch.nn.Module):
         )
 
         wrapper_body = _extract_wrapper_body(code)
-        self.assertExpectedInline(
-            wrapper_body,
+        FileCheck().run(
             """\
-arg0_1, arg1_1, arg2_1 = args
-with torch.cuda._DeviceGuard(0):
-    torch.cuda.set_device(0)
-    default_stream = torch.cuda.current_stream()
-    from torch._dynamo.graph_bytecode_inputs import get_external_object_by_index
-    stream1 = get_external_object_by_index(0)
-    with torch.cuda.stream(default_stream):
-        buf0 = empty_strided_cuda((32, 32), (32, 1), torch.float32)
-        extern_kernels.mm(arg0_1, arg1_1, out=buf0)
-        torch.ops.streams.record_event.default(1, 2)
-    with torch.cuda.stream(stream1):
-        torch.ops.streams.wait_event.default(1, 0)
-        buf3 = empty_strided_cuda((32, 32), (32, 1), torch.float32)
-        extern_kernels.mm(buf0, arg2_1, out=buf3)
-    return (buf3, )""",
+# CHECK: with torch.cuda.stream(default_stream):
+# CHECK: copy_misaligned
+# CHECK: extern_kernels.mm(
+# CHECK: record_event
+# CHECK: with torch.cuda.stream(stream1):
+# CHECK: wait_event
+# CHECK: copy_misaligned
+# CHECK: extern_kernels.mm(""",
+            wrapper_body,
         )
 
     def test_codegen_structure_three_stream_pipeline(self):
@@ -1145,31 +1140,22 @@ class GraphModule(torch.nn.Module):
         )
 
         wrapper_body = _extract_wrapper_body(code)
-        self.assertExpectedInline(
-            wrapper_body,
+        FileCheck().run(
             """\
-arg0_1, arg1_1, arg2_1, arg3_1 = args
-with torch.cuda._DeviceGuard(0):
-    torch.cuda.set_device(0)
-    default_stream = torch.cuda.current_stream()
-    from torch._dynamo.graph_bytecode_inputs import get_external_object_by_index
-    stream1 = get_external_object_by_index(0)
-    stream2 = get_external_object_by_index(1)
-    stream3 = get_external_object_by_index(2)
-    with torch.cuda.stream(stream1):
-        buf0 = empty_strided_cuda((32, 32), (32, 1), torch.float32)
-        extern_kernels.mm(arg0_1, arg1_1, out=buf0)
-        torch.ops.streams.record_event.default(3, 0)
-    with torch.cuda.stream(stream2):
-        torch.ops.streams.wait_event.default(3, 1)
-        buf3 = empty_strided_cuda((32, 32), (32, 1), torch.float32)
-        extern_kernels.mm(buf0, arg2_1, out=buf3)
-        torch.ops.streams.record_event.default(4, 1)
-    with torch.cuda.stream(stream3):
-        torch.ops.streams.wait_event.default(4, 2)
-        buf6 = buf0; del buf0
-        extern_kernels.mm(buf3, arg3_1, out=buf6)
-    return (buf6, )""",
+# CHECK: with torch.cuda.stream(stream1):
+# CHECK: copy_misaligned
+# CHECK: extern_kernels.mm(
+# CHECK: record_event
+# CHECK: with torch.cuda.stream(stream2):
+# CHECK: wait_event
+# CHECK: copy_misaligned
+# CHECK: extern_kernels.mm(
+# CHECK: record_event
+# CHECK: with torch.cuda.stream(stream3):
+# CHECK: wait_event
+# CHECK: copy_misaligned
+# CHECK: extern_kernels.mm(""",
+            wrapper_body,
         )
 
     def test_codegen_structure_parallel_matmuls(self):
@@ -1243,31 +1229,20 @@ class GraphModule(torch.nn.Module):
         )
 
         wrapper_body = _extract_wrapper_body(code)
-        self.assertExpectedInline(
-            wrapper_body,
+        FileCheck().run(
             """\
-arg0_1, arg1_1, arg2_1 = args
-with torch.cuda._DeviceGuard(0):
-    torch.cuda.set_device(0)
-    default_stream = torch.cuda.current_stream()
-    from torch._dynamo.graph_bytecode_inputs import get_external_object_by_index
-    stream1 = get_external_object_by_index(0)
-    stream2 = get_external_object_by_index(1)
-    with torch.cuda.stream(stream1):
-        buf0 = empty_strided_cuda((32, 32), (32, 1), torch.float32)
-        extern_kernels.mm(arg0_1, arg1_1, out=buf0)
-        torch.ops.streams.record_event.default(2, 0)
-    with torch.cuda.stream(stream2):
-        buf2 = empty_strided_cuda((32, 32), (32, 1), torch.float32)
-        extern_kernels.mm(arg0_1, arg2_1, out=buf2)
-        torch.ops.streams.record_event.default(3, 1)
-    with torch.cuda.stream(default_stream):
-        torch.ops.streams.wait_event.default(2, 4)
-        torch.ops.streams.wait_event.default(3, 4)
-        buf6 = buf0; del buf0
-        stream0 = get_raw_stream(0)
-        triton_kernel.run(buf6, buf2, 1024, stream=stream0)
-    return (buf6, )""",  # noqa: B950
+# CHECK: with torch.cuda.stream(stream1):
+# CHECK: copy_misaligned
+# CHECK: extern_kernels.mm(
+# CHECK: record_event
+# CHECK: with torch.cuda.stream(stream2):
+# CHECK: copy_misaligned
+# CHECK: extern_kernels.mm(
+# CHECK: record_event
+# CHECK: with torch.cuda.stream(default_stream):
+# CHECK: wait_event
+# CHECK: triton_kernel.run(""",
+            wrapper_body,
         )
 
 
@@ -1278,7 +1253,7 @@ class TestStreamOrderingStress(InductorTestCase):
     matmuls so there is real GPU work, and repeats many iterations so
     that race conditions (if ordering is wrong) surface reliably."""
 
-    N = 512  # matrix size — big enough for real GPU work
+    N = 4096  # matrix size — big enough for real GPU work
     ITERS = 20  # repetitions per test
 
     def _check_compiled_matches_eager(self, fn, *args):
@@ -1287,6 +1262,9 @@ class TestStreamOrderingStress(InductorTestCase):
         for _ in range(self.ITERS):
             expected = fn(*args)
             actual = compiled_fn(*args)
+            # Compiled code may not codegen stream.synchronize() yet, so
+            # synchronize the device to ensure all stream work is visible.
+            torch.cuda.synchronize()
             if not isinstance(expected, (tuple, list)):
                 expected, actual = [expected], [actual]
             for e, a in zip(expected, actual):
@@ -1307,9 +1285,6 @@ class TestStreamOrderingStress(InductorTestCase):
     #    Without the event.wait() the consumer would launch immediately
     #    and read stale memory because the producer chain hasn't finished.
     # ------------------------------------------------------------------
-    @unittest.skip(
-        "Pre-existing cross-stream buffer reuse bug — needs record_stream support"
-    )
     def test_race_producer_consumer(self):
         N = self.N
 
@@ -1370,9 +1345,6 @@ class TestStreamOrderingStress(InductorTestCase):
     # 3. Race: fan-out where the producer is slow.
     #    All three consumers depend on the producer finishing.
     # ------------------------------------------------------------------
-    @unittest.skip(
-        "Pre-existing cross-stream buffer reuse bug — needs record_stream support"
-    )
     def test_race_fan_out(self):
         N = self.N
 
@@ -1501,9 +1473,6 @@ class TestStreamOrderingStress(InductorTestCase):
     # ------------------------------------------------------------------
     # 6. Race: back-to-back sync, both directions carry heavy work
     # ------------------------------------------------------------------
-    @unittest.skip(
-        "Pre-existing cross-stream buffer reuse bug — needs record_stream support"
-    )
     def test_race_back_to_back(self):
         N = self.N
 
@@ -1525,6 +1494,34 @@ class TestStreamOrderingStress(InductorTestCase):
 
             s.synchronize()
             return c
+
+        x = torch.randn(N, N, device="cuda")
+        w = torch.eye(N, device="cuda") * 0.9
+        self._check_compiled_matches_eager(fn, x, w)
+
+    # ------------------------------------------------------------------
+    # 7. Race: triton kernel on user stream.
+    #    Without the triton stream fix the kernel launches on the default
+    #    stream and reads stale/in-progress data from the user stream.
+    # ------------------------------------------------------------------
+    def test_race_triton_on_user_stream(self):
+        N = self.N
+
+        def fn(x, w):
+            s = torch.cuda.Stream()
+            e = torch.cuda.Event()
+
+            with torch.cuda.stream(s):
+                # Heavy matmul chain produces data on user stream
+                a = TestStreamOrderingStress._heavy_matmul_chain(x, w)
+                # Triton pointwise on the same user stream — without fix
+                # this launches on the default stream
+                b = torch.relu(a)
+                e.record(s)
+
+            e.wait()
+            s.synchronize()
+            return b
 
         x = torch.randn(N, N, device="cuda")
         w = torch.eye(N, device="cuda") * 0.9
