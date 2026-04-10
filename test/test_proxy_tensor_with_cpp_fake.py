@@ -761,6 +761,125 @@ def forward(self, x_1):
         x = torch.randn(3, device="cuda")
         self.assertEqual(gm(x), f(x))
 
+    # --- Higher Order Op tests (calling internal ops directly) ---
+
+    def test_cond(self):
+        from torch._higher_order_ops.cond import cond_op
+
+        def f(x):
+            pred = x.shape[0] > 0  # static bool, but traced as a tensor pred
+            return cond_op(
+                torch.tensor(True),
+                lambda x: x.cos(),
+                lambda x: x.sin(),
+                [x],
+            )
+
+        self._test(f, (torch.randn(3, 4),))
+
+    def test_cond_branches_same_output(self):
+        from torch._higher_order_ops.cond import cond_op
+
+        def f(pred, x):
+            return cond_op(pred, lambda x: x + 1, lambda x: x - 1, [x])
+
+        with cpp_fake_tensor_mode():
+            gm = make_fx(f, tracing_mode="real")(torch.tensor(True), torch.randn(3, 4))
+        x = torch.randn(3, 4)
+        self.assertEqual(gm(torch.tensor(True), x), x + 1)
+        self.assertEqual(gm(torch.tensor(False), x), x - 1)
+
+    def test_cond_nested(self):
+        from torch._higher_order_ops.cond import cond_op
+
+        def f(pred, x):
+            def true_fn(x):
+                return cond_op(pred, lambda x: x.cos(), lambda x: x.sin(), [x])
+
+            def false_fn(x):
+                return x + 1
+
+            return cond_op(pred, true_fn, false_fn, [x])
+
+        with cpp_fake_tensor_mode():
+            gm = make_fx(f, tracing_mode="real")(torch.tensor(True), torch.randn(3))
+        x = torch.randn(3)
+        self.assertEqual(gm(torch.tensor(True), x), f(torch.tensor(True), x))
+
+    def test_while_loop(self):
+        from torch._higher_order_ops.while_loop import while_loop_op
+
+        def f(iter_t, x):
+            def cond_fn(iter_t, x):
+                return iter_t > 0
+
+            def body_fn(iter_t, x):
+                return iter_t - 1, x.cos()
+
+            return while_loop_op(cond_fn, body_fn, (iter_t, x), ())
+
+        inp = (torch.tensor(3), torch.randn(2, 3))
+        with cpp_fake_tensor_mode():
+            gm = make_fx(f, tracing_mode="real")(*inp)
+
+        new_inp = (torch.tensor(2), torch.randn(2, 3))
+        r1 = gm(*new_inp)
+        r2 = f(*new_inp)
+        self.assertEqual(r1, r2)
+
+    def test_map(self):
+        from torch._higher_order_ops.map import map_impl
+
+        def f(xs, y):
+            def body(x, y):
+                return x.cos() + y
+
+            return map_impl(body, [xs], (y,))
+
+        xs = torch.randn(3, 4)
+        y = torch.randn(4)
+        with cpp_fake_tensor_mode():
+            gm = make_fx(f, tracing_mode="real")(xs, y)
+        new_xs, new_y = torch.randn(3, 4), torch.randn(4)
+        self.assertEqual(gm(new_xs, new_y), f(new_xs, new_y))
+
+    def test_map_multi_output(self):
+        from torch._higher_order_ops.map import map_impl
+
+        def f(xs, y):
+            def body(x, y):
+                return x.cos() + y, x.sin()
+
+            return map_impl(body, [xs], (y,))
+
+        xs = torch.randn(3, 4)
+        y = torch.randn(4)
+        with cpp_fake_tensor_mode():
+            gm = make_fx(f, tracing_mode="real")(xs, y)
+        new_xs, new_y = torch.randn(3, 4), torch.randn(4)
+        r1 = gm(new_xs, new_y)
+        r2 = f(new_xs, new_y)
+        self.assertEqual(r1[0], r2[0])
+        self.assertEqual(r1[1], r2[1])
+
+    def test_scan(self):
+        from torch._higher_order_ops.scan import scan_op
+
+        def f(init, xs):
+            def combine_fn(carry, x):
+                return carry + x, carry.clone()
+
+            return scan_op(combine_fn, [init], [xs], [])
+
+        init = torch.randn(4)
+        xs = torch.randn(3, 4)
+        with cpp_fake_tensor_mode():
+            gm = make_fx(f, tracing_mode="real")(init, xs)
+        new_init, new_xs = torch.randn(4), torch.randn(3, 4)
+        r1 = gm(new_init, new_xs)
+        r2 = f(new_init, new_xs)
+        self.assertEqual(r1, r2)
+
 
 # --- OpInfo-based exhaustive tests for C++ FakeTensor mode ---
 
@@ -884,7 +1003,14 @@ _cpp_fake_decomps = {
     }
 }
 
-filtered_hop_db = [op for op in hop_db if op.name != "auto_functionalize"]
+# HOPs whose user-facing wrappers (torch.cond, etc.) call torch.compile internally,
+# creating a Python FakeTensorMode that conflicts with C++ fake mode.
+# These are tested directly via internal ops in TestCppFakeProxyTensor.
+_HOP_SKIP_USER_FACING = {
+    "cond", "map", "scan", "while_loop", "while_loop_stack_output",
+    "auto_functionalize",
+}
+filtered_hop_db = [op for op in hop_db if op.name not in _HOP_SKIP_USER_FACING]
 
 
 @unittest.skipIf(not torch._dynamo.is_dynamo_supported(), "Cond requires dynamo")
