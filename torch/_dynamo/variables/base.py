@@ -556,6 +556,17 @@ class VariableTracker(metaclass=VariableTrackerMeta):
             ],
         )
 
+    def is_callable(self) -> bool:
+        """Mirrors PyCallable_Check — True when tp_call is set."""
+        from .object_protocol import type_implements_tp_call
+
+        try:
+            python_type = self.python_type()
+        except NotImplementedError:
+            return type(self).call_function is not VariableTracker.call_function
+
+        return type_implements_tp_call(python_type)
+
     def call_function(
         self,
         tx: Any,

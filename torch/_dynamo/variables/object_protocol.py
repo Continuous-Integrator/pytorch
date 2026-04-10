@@ -16,6 +16,7 @@ from torch._C._dynamo import (
     PyMappingSlots,
     PyNumberSlots,
     PySequenceSlots,
+    PyTypeSlots,
 )
 
 from .. import graph_break_hints
@@ -93,6 +94,12 @@ def vt_identity_compare(
 def _get_cached_slots(obj_type: type) -> tuple[int, int, int, int]:
     """Get all type slots for a type (cached)."""
     return get_type_slots(obj_type)
+
+
+def type_implements_tp_call(obj_type: type) -> bool:
+    """Check whether obj_type has tp_call set (i.e. instances are callable)."""
+    _, _, _, type_slots = _get_cached_slots(obj_type)
+    return has_slot(type_slots, PyTypeSlots.TP_CALL)
 
 
 def type_implements_sq_length(obj_type: type) -> bool:

@@ -1269,6 +1269,10 @@ class InstructionTranslatorBase(
             inner_fn = fn.fn
         if inner_fn and callable(inner_fn) and is_forbidden(inner_fn):
             raise AssertionError(f"Attempt to trace forbidden callable {inner_fn}")
+        if not fn.is_callable():
+            from torch._dynamo.exc import raise_type_error
+
+            raise_type_error(self, f"'{fn.python_type_name()}' object is not callable")
         self.push(fn.call_function(self, args, kwargs))  # type: ignore[arg-type]
 
     def inline_generator_function(
