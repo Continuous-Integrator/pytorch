@@ -201,9 +201,9 @@ dtensor_fails = {
     xfail("sparse.mm", "reduce"),
     # bug in squeeze.dims strategy: TypeError with empty dims arg
     xfail("squeeze", "multiple"),
-    # group_norm: sharding passes wrong N/HxW scalars to native_group_norm
+    # group_norm: test tries channel-dim sharding which isn't supported
     xfail("nn.functional.group_norm"),
-    # instance_norm decomposes to group_norm → same N/HxW mismatch
+    # instance_norm decomposes to group_norm → same limitation
     xfail("nn.functional.instance_norm"),
     # meta tensor data not allocated yet during tensor_split
     xfail("tensor_split"),
@@ -256,6 +256,7 @@ dtensor_fails = {
 }
 
 dtensor_multi_threaded_fails = {
+    xfail("index_fill"),
     xfail("full_like"),
     xfail("nn.functional.dropout2d"),
     xfail("nn.functional.dropout3d"),
@@ -332,6 +333,12 @@ dtensor_compiled_fails = {
     xfail("nn.functional.logsigmoid"),
     # Miscellaneous runtime crashes (e.g. index out of bounds).
     xfail("gather"),
+    xfail("index_add"),
+    xfail("index_copy"),
+    xfail("index_reduce", "amax"),
+    xfail("index_reduce", "amin"),
+    xfail("index_reduce", "mean"),
+    xfail("index_reduce", "prod"),
     xfail("index_select"),
     xfail("lu_unpack"),
     xfail("scatter"),
@@ -405,13 +412,6 @@ dtensor_fails_no_strategy = {
     xfail("geometric"),
     xfail("histogram"),
     xfail("histogramdd"),
-    xfail("index_add"),
-    xfail("index_copy"),
-    xfail("index_fill"),
-    xfail("index_reduce", "prod"),
-    xfail("index_reduce", "mean"),
-    xfail("index_reduce", "amax"),
-    xfail("index_reduce", "amin"),
     xfail("isin"),
     xfail("linalg.matrix_power"),
     xfail("linspace", "tensor_overload"),
@@ -811,7 +811,13 @@ ops_unbacked_dtensor_dde = {
     xfail("float"),
     xfail("gather"),
     xfail("histc"),
+    xfail("index_add"),
+    xfail("index_copy"),
     xfail("index_put"),
+    xfail("index_reduce", "amax"),
+    xfail("index_reduce", "amin"),
+    xfail("index_reduce", "mean"),
+    xfail("index_reduce", "prod"),
     xfail("index_select"),
     xfail("kthvalue"),
     xfail("linalg.lu"),
@@ -844,6 +850,7 @@ ops_unbacked_dtensor_dde = {
     xfail("nn.functional.conv_transpose2d"),
     xfail("nn.functional.conv_transpose3d"),
     xfail("nn.functional.cosine_embedding_loss"),
+    xfail("nn.functional.glu"),
     xfail("nn.functional.hinge_embedding_loss"),
     xfail("nn.functional.interpolate", "nearest"),
     xfail("nn.functional.interpolate", "nearest-exact"),
@@ -869,7 +876,6 @@ ops_unbacked_dtensor_dde = {
     xfail("rot90"),
     xfail("scatter"),
     xfail("scatter_add"),
-    xfail("slice"),
     xfail("sort"),
     xfail("squeeze_copy"),
     xfail("std_mean"),
