@@ -85,6 +85,7 @@ from torch._inductor.cudagraph_utils import (
     WrappedFunction,
 )
 from torch._library.opaque_object import is_opaque_value
+from torch._opaque_base import OpaqueBase
 from torch.multiprocessing.reductions import StorageWeakRef
 from torch.storage import UntypedStorage
 from torch.utils import _pytree as pytree
@@ -948,10 +949,11 @@ class CUDAGraphNode:
         opaque_input_idxs = OrderedSet(
             i for i, inp in enumerate(inputs) if is_opaque_value(inp)
         )
+        static_input_idxs = OrderedSet(wrapped_function.static_input_idxs)
+        cudagraph_managed_idxs = OrderedSet(self.cudagraph_managed_idxs)
+
         self.static_input_idxs: list[int] = list(
-            OrderedSet(wrapped_function.static_input_idxs)
-            | OrderedSet(self.cudagraph_managed_idxs)
-            | opaque_input_idxs
+            static_input_idxs | cudagraph_managed_idxs | opaque_input_idxs
         )
 
         self.non_static_input_idx: LevelList[int] = [
@@ -962,15 +964,13 @@ class CUDAGraphNode:
             self.non_static_input_idx
         )
 
-        self.non_managed_static_input_idxs: LevelList[int] = [
-            i
-            for i in wrapped_function.static_input_idxs
-            if i not in self.cudagraph_managed_idxs and i not in opaque_input_idxs
-        ]
+        self.non_managed_static_input_idxs: LevelList[int] = LevelList(
+            static_input_idxs - cudagraph_managed_idxs - opaque_input_idxs
+        )
 
-        self.tensor_static_input_idxs: list[int] = [
-            i for i in self.static_input_idxs if i not in opaque_input_idxs
-        ]
+        self.tensor_static_input_idxs: list[int] = list(
+            static_input_idxs | cudagraph_managed_idxs
+        )
 
         def maybe_get_static_data_ptr(
             idx: int,
@@ -1750,9 +1750,7 @@ class CUDAGraphNode:
         ):
             for i, inp in enumerate(inputs):
                 if not isinstance(inp, torch.Tensor):
-                    assert isinstance(inp, (int, torch.Generator)) or is_opaque_value(
-                        inp
-                    )
+                    assert isinstance(inp, (int, torch.Generator, OpaqueBase))
 
                     recording_inputs.append(inp)
                 elif i not in self.static_input_idxs:
