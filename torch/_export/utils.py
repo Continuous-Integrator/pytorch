@@ -397,7 +397,7 @@ def _check_symint(
                     path = get_keystr(keypath)
                     if i is not None:
                         path += f".shape[{i}]"
-                    raise RuntimeError(
+                    raise RuntimeError(  # noqa: B904
                         f"Expected input {path} = {arg} to be "
                         f"of the form {symint.node.expr}, where {symbol} is an integer"
                     )
