@@ -2639,7 +2639,7 @@ class test_configs:
 
 
 if TYPE_CHECKING:
-    from torch.utils._config_typing import *  # noqa: F403
+    from torch.utils._config_typing import *  # noqa: F401, F403
 
 
 class eager_numerics:

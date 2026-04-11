@@ -23,7 +23,7 @@ from .utils import DTYPE_TO_CUTLASS_TYPE
 
 
 if TYPE_CHECKING:
-    from ...scheduler import BaseSchedulerNode
+    from ...scheduler import BaseSchedulerNode  # noqa: TC004
 else:
     BaseSchedulerNode = Any
 
