@@ -12710,8 +12710,6 @@ op_db: list[OpInfo] = [
                             dtypes=(torch.float64,), device_type='xpu'),
                DecorateInfo(unittest.expectedFailure, 'TestBwdGradients', 'test_fn_grad',
                             dtypes=(torch.float64,), device_type='xpu'),
-               DecorateInfo(unittest.expectedFailure, 'TestBwdGradients', 'test_fn_gradgrad',
-                            dtypes=(torch.float64,), device_type='xpu'),
                DecorateInfo(unittest.expectedFailure, 'TestBwdGradients', 'test_inplace_grad',
                             dtypes=(torch.float64,), device_type='xpu'),
            ),
@@ -12933,8 +12931,6 @@ op_db: list[OpInfo] = [
                DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_dtypes', device_type='mps'),
                # Jacobian mismatch, https://github.com/intel/torch-xpu-ops/issues/2360
                # Exception: Jacobian computed with forward mode mismatch for output 0 with respect to input 1
-               DecorateInfo(unittest.expectedFailure, 'TestFwdGradients', 'test_fn_fwgrad_bwgrad',
-                            dtypes=(torch.float64,), device_type='xpu'),
                DecorateInfo(unittest.expectedFailure, 'TestBwdGradients', 'test_fn_gradgrad',
                             dtypes=(torch.float64,), device_type='xpu'),
                DecorateInfo(unittest.expectedFailure, 'TestBwdGradients', 'test_inplace_gradgrad',
@@ -18790,8 +18786,6 @@ op_db: list[OpInfo] = [
                # Jacobian mismatch, https://github.com/intel/torch-xpu-ops/issues/2360
                # Exception: Jacobian computed with forward mode mismatch for output 0 with respect to input 1
                DecorateInfo(unittest.expectedFailure, 'TestFwdGradients', 'test_forward_mode_AD',
-                            dtypes=(torch.float64,), device_type='xpu'),
-               DecorateInfo(unittest.expectedFailure, 'TestBwdGradients', 'test_fn_grad',
                             dtypes=(torch.float64,), device_type='xpu'),
                DecorateInfo(unittest.expectedFailure, 'TestBwdGradients', 'test_fn_gradgrad',
                             dtypes=(torch.float64,), device_type='xpu'),
