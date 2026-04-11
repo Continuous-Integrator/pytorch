@@ -93,12 +93,8 @@ jobs:
         with:
           github-secret: ${{ secrets.GITHUB_TOKEN }}
 
-      # [see note: pytorch repo ref]
-      - name: Checkout PyTorch
-        uses: pytorch/pytorch/.github/actions/checkout-pytorch@main
-
       - name: Setup Linux
-        uses: ./.github/actions/setup-linux
+        uses: pytorch/pytorch/.github/actions/setup-linux@main
 
       - name: Login to ECR
         uses: ./.github/actions/ecr-login
@@ -275,9 +271,23 @@ jobs:
         shell: bash
         run: |
           # On OSDC, cache-enforcer iptables rules TCP-reset direct connections
-          # to files.pythonhosted.org. Override PIP_INDEX_URL so pip_parse
-          # (via envsubst in rules_python 0.31.0) downloads through the
-          # cluster-internal pypi-cache proxy instead.
+          # to files.pythonhosted.org and pypi.org.
+          #
+          # Two download paths need fixing:
+          # 1) pip_parse's internal deps use http_archive (Bazel's Java downloader)
+          #    -> fix with --experimental_downloader_config URL rewrite
+          # 2) User pip packages use pip subprocess
+          #    -> fix with --repo_env=PIP_INDEX_URL (envsubst in rules_python 0.31.0)
+          #
+          # Bazel strips the scheme before matching rewrite patterns, so the
+          # pattern is scheme-less. Starting the replacement with http:// makes
+          # Bazel use that scheme instead of the original https://.
+          CACHE="http://pypi-cache-cpu.pypi-cache.svc.cluster.local:8080"
+          cat > /tmp/osdc_downloader.cfg << DLEOF
+          rewrite files\.pythonhosted\.org/(.*) ${CACHE}/\$1
+          rewrite pypi\.org/(.*) ${CACHE}/\$1
+          DLEOF
+          echo "common --experimental_downloader_config=/tmp/osdc_downloader.cfg" >> .bazelrc
           echo "common --repo_env=PIP_INDEX_URL=${PIP_INDEX_URL}" >> .bazelrc
 
       - name: Build

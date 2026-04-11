@@ -1137,6 +1137,7 @@ class VariableBuilder:
                     source=AttrSource(self.source, member="__self__"),
                 ),
                 "apply",
+                py_type=type(value),
             )
         elif isinstance(value, torch._C._ImperativeEngine):
             self.install_guards(GuardBuilder.ID_MATCH)
@@ -1438,6 +1439,7 @@ class VariableBuilder:
             return GetAttrVariable(
                 BuiltinVariable(float, source=self.source),
                 value.__name__,
+                py_type=type(value),
             )
         elif is_function_or_wrapper(value):
             value, attr_name = unwrap_with_attr_name_if_wrapper(value)
@@ -1983,7 +1985,9 @@ class VariableBuilder:
         self.install_guards(GuardBuilder.RANGE_ITERATOR_MATCH)
         # Get all the values from the range iterator; no need to install guards
         # on items since `RANGE_ITERATOR_MATCH` guarantees the same items.
-        items = [ConstantVariable.create(v) for v in copy.deepcopy(value)]
+        items: list[VariableTracker] = [
+            ConstantVariable.create(v) for v in copy.deepcopy(value)
+        ]
         result = ListIteratorVariable(items, source=self.source)
         return self.tx.output.side_effects.track_mutable(value, result)
 
@@ -4281,7 +4285,7 @@ class SourcelessBuilder:
             # NamedTuple._make uses an alias of tuple.__new__
             # pyrefly: ignore[not-callable, bad-argument-count, missing-attribute]
             obj = trace_rules.lookup_callable(value.__self__)(value.__self__)
-            return GetAttrVariable(obj, "__new__")
+            return GetAttrVariable(obj, "__new__", py_type=type(value))
         elif is_function_or_wrapper(value):
             # pyrefly: ignore[not-callable, bad-argument-count]
             return trace_rules.lookup(value)(value)
