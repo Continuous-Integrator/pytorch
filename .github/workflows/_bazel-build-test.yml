@@ -301,6 +301,7 @@ jobs:
           .ci/pytorch/build.sh
 
       - name: Test
+        id: test
         timeout-minutes: 120
         env:
           BUILD_ENVIRONMENT: ${{ inputs.build-environment }}
