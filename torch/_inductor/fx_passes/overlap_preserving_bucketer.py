@@ -47,7 +47,7 @@ class WhyNoBucket:
     def __call__(self, reason: str, *args: Any) -> None:
         if bucket_log.isEnabledFor(logging.DEBUG):
             bucket_log.debug(
-                "cannot bucket %s with %s: " + reason,
+                "cannot bucket %s with %s: " + reason,  # noqa: G003
                 self.name1,
                 self.name2,
                 *args,
