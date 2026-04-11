@@ -38,6 +38,7 @@ from ..exc import (
     handle_observed_exception,
     ObservedAttributeError,
     raise_observed_exception,
+    raise_type_error,
     unimplemented,
     UnspecializeRestartAnalysis,
     Unsupported,
@@ -69,7 +70,7 @@ from ..utils import (
     unpatched_nn_module_call,
     unpatched_nn_module_call_impl,
 )
-from .base import raise_type_error_exc, typestr, ValueMutationNew, VariableTracker
+from .base import typestr, ValueMutationNew, VariableTracker
 from .functions import invoke_and_store_as_constant
 from .lazy import LazyVariableTracker
 from .lists import SliceVariable
@@ -80,6 +81,7 @@ if TYPE_CHECKING:
     from torch._dynamo.symbolic_convert import InstructionTranslator
 
     from .constant import ConstantVariable
+    from .dicts import DunderDictVariable
 
 
 def initialize_lazy_module(
@@ -114,15 +116,12 @@ def initialize_lazy_module(
         fake_kwargs = {k: convert_to_fake(v) for k, v in proxy_kwargs.items()}
         try:
             mod._infer_parameters(mod, fake_args, fake_kwargs)  # type: ignore[operator]
-        except AttributeError as e:
+        except AttributeError:
             # Re-raise with the original error message from the AttributeError
-            error_message = VariableTracker.build(
-                tx, str(e) or "AttributeError during lazy module initialization"
-            )
             raise_observed_exception(
                 AttributeError,
                 tx,
-                args=[error_message],
+                args=["AttributeError during lazy module initialization"],
             )
 
 
@@ -204,6 +203,11 @@ class NNModuleVariable(VariableTracker):
         self.source: Source = self.source
         self.nn_module_stack_source = self.source
 
+    def get_dict_vt(self, tx: "InstructionTranslator") -> "DunderDictVariable":
+        if not hasattr(self, "dict_vt"):
+            self.dict_vt = variables.DunderDictVariable.create(tx, self)
+        return self.dict_vt
+
     def get_nn_module_stack_source(self) -> Source:
         res = self.nn_module_stack_source or self.source
         assert res
@@ -217,6 +221,19 @@ class NNModuleVariable(VariableTracker):
 
     def get_real_python_backed_value(self) -> object:
         return self.value
+
+    def bool_impl(self, tx: "InstructionTranslator") -> VariableTracker:
+        """nb_bool for nn.Module.
+
+        nn.Module itself has no __bool__ or __len__, so bare modules are always
+        truthy.  Subclasses like ModuleList/ModuleDict define __len__, so
+        bool(module) calls PyObject_IsTrue which falls through nb_bool (NULL)
+        to sq_length/mp_length.  We evaluate on the real module to capture this.
+        """
+        from .constant import ConstantVariable
+
+        mod = tx.output.get_submodule(self.module_key)
+        return ConstantVariable.create(bool(mod))
 
     def _wrap_submodule(
         self,
@@ -281,18 +298,6 @@ class NNModuleVariable(VariableTracker):
         if tx.f_code.co_name != "__init__":
             GenerationTracker.mark_class_dynamic(type(mod))
         raise UnspecializeRestartAnalysis
-
-    def has_key_in_generic_dict(self, tx: "InstructionTranslator", key: str) -> bool:
-        base = tx.output.get_submodule(self.module_key)
-
-        if tx.output.side_effects.has_pending_mutation_of_attr(self, key):
-            mutated_attr = tx.output.side_effects.load_attr(self, key, deleted_ok=True)
-            return not isinstance(mutated_attr, variables.DeletedVariable)
-
-        # Use object.__getattribute__ to access __dict__ directly,
-        # bypassing any custom __getattribute__ on the module.
-        base_dict = object.__getattribute__(base, "__dict__")
-        return key in base_dict
 
     def _custom_getattr_fallback(
         self,
@@ -381,7 +386,7 @@ class NNModuleVariable(VariableTracker):
             )
 
         if name == "__dict__":
-            return variables.GetAttrVariable(self, name, source=source)
+            return self.get_dict_vt(tx)
 
         subobj = None
         if name in base_dict:
@@ -408,13 +413,10 @@ class NNModuleVariable(VariableTracker):
                 if result is not None:
                     return result
                 # if we can't find a __getattr__, we can't parse this, raise attribute error
-                error_message = VariableTracker.build(
-                    tx, f"'{type(base).__name__}' object has no attribute '{name}'"
-                )
                 raise_observed_exception(
                     AttributeError,
                     tx,
-                    args=[error_message],
+                    args=[f"'{type(base).__name__}' object has no attribute '{name}'"],
                 )
 
         if name == "forward":
@@ -475,7 +477,7 @@ class NNModuleVariable(VariableTracker):
                     ],
                 )
 
-        return variables.GetAttrVariable(self, name, source=source)
+        return super().var_getattr(tx, name)
 
     def call_function(
         self,
@@ -646,12 +648,12 @@ class NNModuleVariable(VariableTracker):
 
         if name == "_get_item_by_idx":
             if not args[1].is_python_constant():
-                raise_type_error_exc(
+                raise_type_error(
                     tx,
                     f"``nn.Module`` {module}'s call method {name} requires a constant index argument",
                 )
             if not isinstance(args[0], TupleVariable):
-                raise_type_error_exc(
+                raise_type_error(
                     tx,
                     f"``nn.Module`` {module}'s call method {name} requires a tuple as first argument",
                 )
@@ -830,15 +832,6 @@ class NNModuleVariable(VariableTracker):
             for name, submod in module.items():  # type: ignore[operator]
                 items_result.append(named_embed(name, submod))
             return ListIteratorVariable(items_result, mutation_type=ValueMutationNew())
-        elif name == "__len__":
-            if args or kwargs:
-                raise_args_mismatch(
-                    tx,
-                    name,
-                    "0 args and 0 kwargs",
-                    f"{len(args)} args and {len(kwargs)} kwargs",
-                )
-            return VariableTracker.build(tx, len(module))  # type: ignore[arg-type]
         elif name == "__iter__":
             return ListIteratorVariable(
                 self.unpack_var_sequence(tx), mutation_type=ValueMutationNew()
@@ -979,6 +972,11 @@ class NNModuleVariable(VariableTracker):
             return generic_call_method_helper(name)
         else:
             return super().call_method(tx, name, list(args), kwargs)
+
+    def sq_length(self, tx: "InstructionTranslator") -> "VariableTracker":
+        """Sequence length for container modules (e.g., nn.Sequential)."""
+        module = tx.output.get_submodule(self.module_key)
+        return VariableTracker.build(tx, len(module))  # type: ignore[arg-type]
 
 
 class UnspecializedNNModuleVariable(UserDefinedObjectVariable):
@@ -1342,14 +1340,12 @@ class UnspecializedNNModuleVariable(UserDefinedObjectVariable):
         if out is None:
             out = self.getattr_helper(tx, "_buffers", name_vt)
         if out is None:
-            error_message = VariableTracker.build(
-                tx,
-                f"'{type(self.value).__name__}' object has no attribute '{name}'",
-            )
             raise_observed_exception(
                 AttributeError,
                 tx,
-                args=[error_message],
+                args=[
+                    f"'{type(self.value).__name__}' object has no attribute '{name}'"
+                ],
             )
         assert out is not None
         return out
