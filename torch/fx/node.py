@@ -49,7 +49,7 @@ base_types = typing.get_args(BaseArgumentTypes)
 
 Target: TypeAlias = Callable[..., Any] | str
 
-Argument = Optional[  # noqa: UP007, UP045
+Argument = Optional[  # noqa: UP045
     Union[
         tuple["Argument", ...],
         Sequence["Argument"],
