@@ -2268,6 +2268,7 @@ class TorchInGraphFunctionVariable(BaseTorchVariable):
             from .builder import wrap_fx_proxy
             from .constant import ConstantVariable
             from .dicts import ConstDictVariable
+            from .lists import BaseListVariable
             from .tensor import TensorVariable
 
             if not config.trace_autograd_ops:
@@ -2455,26 +2456,38 @@ class TorchInGraphFunctionVariable(BaseTorchVariable):
                     )
                 tx.output.autograd_grad_consumed_grad_fns.update(non_leaf_consumed)
 
+            # Convert dict inputs to tuple for the FX graph. The engine
+            # always operates on flat tuples; we reconstruct the dict after.
+            inputs_var = args[1] if len(args) >= 2 else kwargs.get("inputs")
+            if isinstance(inputs_var, ConstDictVariable):
+                inputs_as_tuple = TupleVariable(list(inputs_var.items.values()))
+                if len(args) >= 2:
+                    args = (args[0], inputs_as_tuple, *args[2:])
+                else:
+                    kwargs = {**kwargs, "inputs": inputs_as_tuple}
+
             with (
                 torch.fx.traceback.preserve_node_meta(),
                 torch.fx.traceback.annotate({"autograd_backward": True}),
             ):
-                # Convert dict inputs to tuple for the FX graph. The engine
-                # always operates on flat tuples; we reconstruct the dict after.
-                inputs_var = args[1] if len(args) >= 2 else kwargs.get("inputs")
-                if isinstance(inputs_var, ConstDictVariable):
-                    inputs_as_tuple = TupleVariable(list(inputs_var.items.values()))
-                    if len(args) >= 2:
-                        args = (args[0], inputs_as_tuple, *args[2:])
-                    else:
-                        kwargs = {**kwargs, "inputs": inputs_as_tuple}
-
                 proxy = tx.output.create_proxy(
                     "call_function",
                     torch.autograd.grad,
                     *proxy_args_kwargs(args, kwargs),
                 )
-            return wrap_fx_proxy(tx=tx, proxy=proxy)
+            result = wrap_fx_proxy(tx=tx, proxy=proxy)
+
+            if isinstance(inputs_var, ConstDictVariable):
+                assert isinstance(result, BaseListVariable)
+                items: dict[VariableTracker, VariableTracker] = dict(
+                    zip(
+                        inputs_var.items.keys(),
+                        result.items,
+                        strict=True,
+                    )
+                )
+                return ConstDictVariable(items, dict)
+            return result
 
         @register(torch._functorch.eager_transforms._autograd_grad)
         def handle_functorch_autograd_grad(
@@ -2537,20 +2550,6 @@ class TorchInGraphFunctionVariable(BaseTorchVariable):
                                 ],
                             )
             return None
-
-            if isinstance(inputs_var, ConstDictVariable):
-                from .lists import BaseListVariable
-
-                assert isinstance(result, BaseListVariable)
-                items: dict[VariableTracker, VariableTracker] = dict(
-                    zip(
-                        inputs_var.items.keys(),
-                        result.items,
-                        strict=True,
-                    )
-                )
-                return ConstDictVariable(items, dict)
-            return result
 
         return handlers
 
