@@ -1338,9 +1338,6 @@ TRACE CALL 0 [NullVariable, LazyVariableTracker(unrealized: <class 'function'>)]
         self.assertEqual((len(matches) <= 20), True)
         self.assertIn("Most recent bytecode instructions traced (max 20):", s)
 
-    # TODO this test is broken with nested_graph_breaks because we need to update
-    # the resume collapse function for nested graph breaks
-    @torch._dynamo.config.patch(nested_graph_breaks=False)
     @torch._dynamo.config.patch(verbose=True)
     @make_logging_test(graph_breaks=True)
     def test_graph_break_traceback_above_dynamo_shows_user_code(self, records):
@@ -1458,6 +1455,12 @@ Most recent bytecode instructions traced (max 20):
 Graph break in user code at test_error_messages.py:N
 Graph Break Reason: Data-dependent branching
   Explanation: Detected data-dependent branching (e.g. `if my_tensor.sum() > 0:`). Dynamo does not support tracing dynamic control flow.
+
+      The branch condition involves a tensor computed as follows:
+        # File "test_error_messages.py", line N, in torch_dynamo_resume_in_helper_at_N, code: if x.sum() > 0:  # 1
+        gt = gt(sum_1, 0)
+
+  Hint: The branch condition uses a scalar integer tensor. Consider rewriting the computation to use plain Python ints (e.g. use int attributes instead of tensor buffers) so the condition becomes a shape guard instead of data-dependent branching.
   Hint: This graph break is fundamental - it is unlikely that Dynamo will ever be able to trace through your code. Consider finding a workaround.
   Hint: Use `torch.cond` to express dynamic control flow.
 
