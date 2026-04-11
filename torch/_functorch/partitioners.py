@@ -1743,7 +1743,7 @@ def functionalize_rng_ops(
         return torch.device("cpu")
 
     def get_sample_rng_state(device: torch.device | None) -> torch.Tensor:
-        from torch._guards import detect_fake_mode  # noqa: F401
+        from torch._guards import detect_fake_mode
 
         fake_mode = detect_fake_mode()
         if fake_mode is None:
@@ -2844,7 +2844,7 @@ def get_default_op_list() -> OpTypes:
         aten.unsqueeze,
         aten.rsub,
         aten._to_copy,
-    ]  # noqa: E501,B950
+    ]
     recomputable_view_ops = [aten.squeeze, aten.unsqueeze, aten.alias]
     recomputable_view_ops += [
         aten.view,
@@ -2894,7 +2894,7 @@ def get_default_op_list() -> OpTypes:
         aten.maximum,
         prims.iota,
         prims._low_memory_max_pool_offsets_to_indices,
-    ]  # noqa: E501,B950
+    ]
     # Natalia said that we should allow recomputing indexing :)
     default_recomputable_ops += [aten.index, aten.gather]
     default_recomputable_ops += view_ops
@@ -2923,7 +2923,7 @@ def get_default_op_list() -> OpTypes:
         aten._efficient_attention_forward,
         aten.upsample_bilinear2d,
         aten._scaled_mm,
-    ]  # noqa: E501,B950
+    ]
 
     fusible_ops = recomputable_ops | random_ops
     return OpTypes(
@@ -3195,7 +3195,7 @@ def choose_saved_values_set(
             # if idx in all_recomputable_banned_nodes:
             try:
                 dont_ban.add(all_recomputable_banned_nodes[idx])
-            except BaseException:  # noqa: B036
+            except BaseException:
                 pass
 
         if not dont_ban.issubset(all_recomputable_banned_nodes):

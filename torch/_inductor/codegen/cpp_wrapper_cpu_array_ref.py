@@ -5,7 +5,7 @@ from typing import Any
 import sympy
 
 import torch
-import torch._inductor.async_compile  # noqa: F401 required to warm up AsyncCompile pools
+import torch._inductor.async_compile
 import torch._ops
 
 from .. import config, ir
