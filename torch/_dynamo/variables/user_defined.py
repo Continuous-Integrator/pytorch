@@ -2947,7 +2947,7 @@ class UserDefinedDictVariable(UserDefinedObjectVariable):
 
     def len(self) -> int:
         assert self._base_vt is not None
-        return self._base_vt.len()
+        return self._base_vt.len()  # type: ignore[union-attr]
 
     def sq_length(self, tx: "InstructionTranslator") -> VariableTracker:
         # Dict implements __len__ via mp_length (mapping protocol), not

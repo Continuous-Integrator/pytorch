@@ -831,7 +831,7 @@ class VariableBuilder:
                 tuple_vt=tuple_vt,
             )
             return self.tx.output.side_effects.track_object_existing(value, result)
-        elif istype(value, (dict, collections.defaultdict)):
+        elif istype(value, (dict, collections.defaultdict, collections.OrderedDict)):
             self.install_guards(GuardBuilder.TYPE_MATCH)
             all_const = all(ConstantVariable.is_literal(k) for k in value)
 
@@ -894,6 +894,13 @@ class VariableBuilder:
                     ),
                     source=self.source,
                 )
+            elif istype(value, collections.OrderedDict):
+                dict_vt = ConstDictVariable(
+                    result,  # type: ignore[arg-type]
+                    user_cls=collections.OrderedDict,
+                    source=self.source,
+                )
+                result = OrderedDictVariable(value, dict_vt=dict_vt, source=self.source)
             else:
                 result = ConstDictVariable(
                     result,  # type: ignore[arg-type]
