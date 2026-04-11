@@ -160,7 +160,7 @@ jobs:
           SHA1: ${{ github.event.pull_request.head.sha || github.sha }}
           SCCACHE_BUCKET: ossci-compiler-cache-circleci-v2
           SCCACHE_REGION: us-east-1
-          TORCH_CUDA_ARCH_LIST: 5.2
+          TORCH_CUDA_ARCH_LIST: 7.5
           DOCKER_IMAGE: ${{ steps.calculate-docker-image.outputs.docker-image }}
           OUR_GITHUB_JOB_ID: ${{ steps.get-job-id.outputs.job-id }}
           CUDA_VERSION: ${{ inputs.cuda-version }}
@@ -275,7 +275,8 @@ jobs:
         shell: bash
         run: |
           # On OSDC, cache-enforcer iptables rules TCP-reset direct connections
-          # to files.pythonhosted.org. Override pip_parse's index URL to use the
+          # to files.pythonhosted.org. Override PIP_INDEX_URL so pip_parse
+          # (via envsubst in rules_python 0.31.0) downloads through the
           # cluster-internal pypi-cache proxy instead.
           echo "common --repo_env=PIP_INDEX_URL=${PIP_INDEX_URL}" >> .bazelrc
 
@@ -293,7 +294,7 @@ jobs:
           OUR_GITHUB_JOB_ID: ${{ steps.setup-linux.outputs.job-id }}
           CUDA_VERSION: ${{ inputs.cuda-version }}
           SKIP_SCCACHE_INITIALIZATION: 1
-          TORCH_CUDA_ARCH_LIST: 7.0
+          TORCH_CUDA_ARCH_LIST: 7.5
         shell: bash
         run: |
           .ci/pytorch/build.sh
