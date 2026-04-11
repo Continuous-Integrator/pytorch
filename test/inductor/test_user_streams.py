@@ -1044,7 +1044,7 @@ class GraphModule(torch.nn.Module):
 
         synchronize = get_external_object_by_index.synchronize();  get_external_object_by_index = synchronize = None
         return (b,)
-""",  # noqa: B950
+""",
         )
 
         wrapper_body = _extract_wrapper_body(code)
@@ -1136,7 +1136,7 @@ class GraphModule(torch.nn.Module):
 
         synchronize_2 = get_external_object_by_index_2.synchronize();  get_external_object_by_index_2 = synchronize_2 = None
         return (c,)
-""",  # noqa: B950
+""",
         )
 
         wrapper_body = _extract_wrapper_body(code)
@@ -1225,7 +1225,7 @@ class GraphModule(torch.nn.Module):
 
         synchronize_1 = get_external_object_by_index_1.synchronize();  get_external_object_by_index_1 = synchronize_1 = None
         return (c,)
-""",  # noqa: B950
+""",
         )
 
         wrapper_body = _extract_wrapper_body(code)
