@@ -776,6 +776,7 @@ class CompiledFxGraph(OutputCode):
         # _wrap_compiled_regions) still runs normally.
         policy = config.cudagraph_policy
         if isinstance(policy, CUDAGraphPolicy) and not policy.should_wrap(self):
+            counters["inductor"]["cudagraph_skips"] += 1
             BoxedBool.disable(cudagraphs)
 
         if cudagraphs:

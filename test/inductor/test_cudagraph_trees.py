@@ -5221,6 +5221,7 @@ if HAS_CUDA_AND_TRITON:
                 result = compiled(x)
 
             self.assertEqual(result, x * 2)
+            self.assertGreater(len(wrapped), 0)
 
         def test_default_policy_matches_builtin(self):
             """Default CUDAGraphPolicy produces same results as no policy."""
