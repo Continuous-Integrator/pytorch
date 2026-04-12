@@ -78,6 +78,11 @@ myst_enable_extensions = [
     "html_image",
 ]
 
+# Don't execute notebooks during the docs build. Notebook correctness is
+# verified by the separate docs_test CI job; re-executing them here just
+# adds ~3 minutes to the build for no benefit.
+nb_execution_mode = "off"
+
 html_baseurl = "https://docs.pytorch.org/docs/stable/"  # needed for sphinx-sitemap
 sitemap_locales = [None]
 sitemap_excludes = [
@@ -2430,7 +2435,65 @@ def setup(app):
     app.connect("autodoc-process-docstring", process_docstring)
     app.connect("html-page-context", hide_edit_button_for_pages)
     app.config.add_last_updated = True
+
+    # Force serial reads to avoid pipe congestion from large env pickles.
+    # Sphinx's parallel read sends the entire environment (100s of MB for
+    # PyTorch) through a 64KB OS pipe per worker, which causes extreme
+    # slowdowns with many workers. Serial reads avoid this overhead while
+    # parallel writes (which send trivial payloads) remain enabled.
+    from sphinx.builders import Builder
+
+    _orig_read_serial = Builder._read_serial
+
+    def _serial_read_ignoring_nproc(self, docnames, nproc=1):
+        return _orig_read_serial(self, docnames)
+
+    Builder._read_parallel = _serial_read_ignoring_nproc
+
+    # Skip pickling doctrees to disk. This is only used for incremental
+    # rebuilds which don't apply in CI clean builds. Saves ~2 minutes by
+    # avoiding serializing large autodoc-generated doctrees.
+
+    _orig_write_doctree = Builder.write_doctree
+
+    def _write_doctree_no_disk(self, docname, doctree, *, _cache=True):
+        # Still do the cleanup and in-memory caching, just skip the disk I/O
+        doctree.reporter = None
+        doctree.transformer = None
+        doctree.settings = doctree.settings.copy()
+        doctree.settings.warning_stream = None
+        doctree.settings.env = None
+        from docutils.utils import DependencyList
+
+        doctree.settings.record_dependencies = DependencyList()
+        if _cache:
+            self.env._write_doc_doctree_cache[docname] = doctree
+
+    Builder.write_doctree = _write_doctree_no_disk
+
+    _skip_git_dates_on_ci(app)
+
     return {"version": "0.1", "parallel_read_safe": True}
+
+
+def _skip_git_dates_on_ci(app):
+    """Skip git date lookups on non-release CI builds.
+
+    The pytorch theme runs 2 git subprocess calls per page to display
+    "Created/Updated" dates. On CI preview builds this is wasteful (dates
+    aren't needed) and problematic (treeless clones make git log slow).
+    Release builds (WITH_PUSH=true) keep the original behavior so dates
+    appear in published docs.
+    """
+    if not os.environ.get("CI") or os.environ.get("WITH_PUSH") == "true":
+        return
+
+    try:
+        import pytorch_sphinx_theme2
+    except ImportError:
+        return
+
+    pytorch_sphinx_theme2.get_git_dates = lambda path: ("Unknown", "Unknown")
 
 
 def hide_edit_button_for_pages(app, pagename, templatename, context, doctree):
