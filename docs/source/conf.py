@@ -82,6 +82,7 @@ myst_enable_extensions = [
 # verified by the separate docs_test CI job; re-executing them here just
 # adds ~3 minutes to the build for no benefit.
 nb_execution_mode = "off"
+suppress_warnings = ["myst-nb.lexer"]
 
 html_baseurl = "https://docs.pytorch.org/docs/stable/"  # needed for sphinx-sitemap
 sitemap_locales = [None]
@@ -2472,8 +2473,62 @@ def setup(app):
     Builder.write_doctree = _write_doctree_no_disk
 
     _skip_git_dates_on_ci(app)
+    _fix_katex_server_race(app)
 
     return {"version": "0.1", "parallel_read_safe": True}
+
+
+def _fix_katex_server_race(app):
+    """Retry on ConnectionRefusedError when connecting to the KaTeX server.
+
+    sphinxcontrib-katex 0.9.x starts a Node.js server and connects via Unix
+    socket. There's a race: Python sees the socket file (created by bind())
+    and calls connect() before Node.js has called listen(). On slow CI
+    machines this causes ConnectionRefusedError. Fix by retrying connect().
+    """
+    try:
+        from sphinxcontrib.katex import KaTeXServer
+    except ImportError:
+        return
+
+    import socket as _socket
+    import time as _time
+
+    _orig_start = KaTeXServer.start_server_process
+
+    @classmethod
+    def _start_with_retry(cls, rundir, timeout):
+        from subprocess import PIPE, Popen
+
+        from sphinxcontrib.katex import ONE_MILLISECOND
+
+        socket_path = rundir / "katex.sock"
+        cmd = cls.build_command(socket=socket_path)
+        process = Popen(cmd, stdin=PIPE, stdout=PIPE, cwd=rundir)
+
+        startup_start = _time.monotonic()
+        while not socket_path.is_socket():
+            _time.sleep(ONE_MILLISECOND)
+            if _time.monotonic() - startup_start > timeout:
+                raise cls.timeout_error(timeout)
+
+        # Retry connect() — bind() creates the socket file but listen()
+        # is async in Node.js and may not be ready yet.
+        sock = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+        while True:
+            remaining = startup_start + timeout - _time.monotonic()
+            if remaining <= 0:
+                raise cls.timeout_error(timeout)
+            try:
+                sock.settimeout(remaining)
+                sock.connect(str(socket_path))
+                break
+            except ConnectionRefusedError:
+                _time.sleep(ONE_MILLISECOND)
+
+        return process, sock
+
+    KaTeXServer.start_server_process = _start_with_retry
 
 
 def _skip_git_dates_on_ci(app):
