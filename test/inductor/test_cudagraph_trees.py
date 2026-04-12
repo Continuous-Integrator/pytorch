@@ -5222,6 +5222,7 @@ if HAS_CUDA_AND_TRITON:
 
             self.assertEqual(result, x * 2)
             self.assertGreater(len(wrapped), 0)
+            self.assertIn("CompiledFxGraph", wrapped)
 
         def test_default_policy_matches_builtin(self):
             """Default CUDAGraphPolicy produces same results as no policy."""
@@ -5244,6 +5245,34 @@ if HAS_CUDA_AND_TRITON:
                 out = compiled_policy(x)
 
             self.assertEqual(ref, out)
+
+        @torch._inductor.config.patch("graph_partition", True)
+        def test_policy_cudagraphify_partition(self):
+            """Custom policy's cudagraphify is called via the partition path."""
+            from torch._inductor.cudagraph_utils import CUDAGraphPolicy
+
+            calls = []
+
+            class RecordingPolicy(CUDAGraphPolicy):
+                def cudagraphify(self, model, inputs, static_input_idxs, **kwargs):
+                    calls.append(
+                        {
+                            "static_input_idxs": static_input_idxs,
+                            "device_index": kwargs.get("device_index"),
+                        }
+                    )
+                    return model
+
+            def foo(x):
+                return x * x + 1
+
+            with config.patch("cudagraph_policy", RecordingPolicy()):
+                compiled = torch.compile(foo)
+                x = torch.randn(4, device="cuda")
+                compiled(x)
+                compiled(x)
+
+            self.assertGreater(len(calls), 0)
 
     class TestSAC(TestCase):
         def _make_observer_mode(self):

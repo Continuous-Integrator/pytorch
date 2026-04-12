@@ -4,7 +4,7 @@ from __future__ import annotations
 import dataclasses
 from collections.abc import Callable
 from enum import Enum
-from typing import Any, TYPE_CHECKING
+from typing import Any, TYPE_CHECKING, TypeVar
 
 import torch
 from torch._dynamo.utils import counters, get_metrics_context
@@ -19,6 +19,8 @@ if TYPE_CHECKING:
     from collections.abc import Sequence, Set as AbstractSet
 
     from torch._inductor.output_code import OutputCode
+
+_OC = TypeVar("_OC", bound="OutputCode")
 
 
 cudagraphs_log = torch._logging.getArtifactLogger(__name__, "cudagraphs")
@@ -97,12 +99,14 @@ class CUDAGraphPolicy:
         """
         return True
 
-    def wrap_output(self, output_code: OutputCode) -> OutputCode:
+    def wrap_output(self, output_code: _OC) -> _OC:
         """Optional outer-level wrapping after inner post_compile completes.
 
-        Called by ``BundledOutputCodeLoadable.post_compile`` on the final
-        output (e.g. ``RegionalOutputCode``).  Use this to wrap the entire
-        compound output as a single CUDA graph instead of per-inner-region.
+        Called by ``BundledOutputCodeLoadable.post_compile`` on *every*
+        ``OutputCode`` returned from ``post_compile``, not only compound
+        types like ``RegionalOutputCode``.  Subclasses that only want to
+        wrap specific output types should check ``isinstance`` and return
+        the input unchanged for types they don't handle.
 
         Default: identity (no outer wrapping).
         """
