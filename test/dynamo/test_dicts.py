@@ -1244,6 +1244,35 @@ class DictTests(torch._dynamo.test_case.TestCase):
 
         self.assertEqual(ref, res)
 
+    def test_default_dict_lambda_factory(self):
+        """Test defaultdict with a lambda as default_factory — previously unsupported."""
+
+        def f(x):
+            dd = defaultdict(lambda: [0])
+            dd["a"].append(1)
+            dd["b"].append(2)
+            return x + 1, dict(dd)
+
+        x = torch.ones(2)
+        ref = f(x)
+        res = torch.compile(f, backend="eager", fullgraph=True)(x)
+        self.assertEqual(ref, res)
+
+    def test_default_dict_setattr_default_factory(self):
+        """Test mutating default_factory via setattr."""
+
+        def f(x):
+            dd = defaultdict(list)
+            dd["a"].append(1)
+            dd.default_factory = int
+            val = dd["b"]  # should be 0 (int()), not []
+            return x + 1, dict(dd), val
+
+        x = torch.ones(2)
+        ref = f(x)
+        res = torch.compile(f, backend="eager", fullgraph=True)(x)
+        self.assertEqual(ref, res)
+
     @parametrize("op", ["or_", "and_", "xor", "sub"])
     def test_dict_keys_binop(self, op):
         op = getattr(operator, op)
