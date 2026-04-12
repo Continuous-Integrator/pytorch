@@ -12658,13 +12658,6 @@ op_db: list[OpInfo] = [
                # RuntimeError: value cannot be converted to type double without overflow
                DecorateInfo(unittest.expectedFailure, 'TestCommon', device_type='mps', dtypes=(torch.complex64,)),
                DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_dtypes', device_type='mps'),
-               # Jacobian mismatch, https://github.com/intel/torch-xpu-ops/issues/2360
-               # Exception: Jacobian computed with forward mode mismatch for output 0 with respect to input 1
-               DecorateInfo(unittest.expectedFailure, 'TestFwdGradients', 'test_forward_mode_AD',
-                            dtypes=(torch.float64,), device_type='xpu'),
-               # https://github.com/intel/torch-xpu-ops/issues/1893
-               DecorateInfo(unittest.skip('Skipped!'), 'TestMathBits', 'test_neg_view',
-                            device_type='xpu', dtypes=(torch.float64,)),
            )),
     OpInfo('addmm',
            # When alpha=beta=1 as compile-time constants, JIT will decompose addmm into mm and add.
@@ -12715,20 +12708,6 @@ op_db: list[OpInfo] = [
                DecorateInfo(toleranceOverride({torch.float32: tol(atol=2e-5, rtol=3e-6)}),
                             "TestConsistency", "test_output_grad_match", device_type="mps"),
            ],
-           skips=(
-               # Jacobian mismatch, https://github.com/intel/torch-xpu-ops/issues/2360
-               # Exception: Jacobian computed with forward mode mismatch for output 0 with respect to input 1
-               DecorateInfo(unittest.expectedFailure, 'TestFwdGradients', 'test_forward_mode_AD',
-                            dtypes=(torch.float64,), device_type='xpu'),
-               DecorateInfo(unittest.expectedFailure, 'TestFwdGradients', 'test_inplace_forward_mode_AD',
-                            dtypes=(torch.float64,), device_type='xpu'),
-               DecorateInfo(unittest.expectedFailure, 'TestBwdGradients', 'test_fn_grad',
-                            dtypes=(torch.float64,), device_type='xpu'),
-               DecorateInfo(unittest.expectedFailure, 'TestBwdGradients', 'test_inplace_grad',
-                            dtypes=(torch.float64,), device_type='xpu'),
-               # https://github.com/intel/torch-xpu-ops/issues/1893
-               DecorateInfo(unittest.skip('Skipped!'), 'TestMathBits', 'test_neg_view',
-                            device_type='xpu', dtypes=(torch.float64,)),),
            sample_inputs_func=sample_inputs_addmv),
     OpInfo('addbmm',
            ref=lambda M, batch1, batch2, beta=1, alpha=1: np.add(np.multiply(np.asarray(beta, dtype=M.dtype), M),
@@ -12780,16 +12759,6 @@ op_db: list[OpInfo] = [
                # when doing an unsafe cast from a result of dtype torch.float32
                # into an out= with dtype torch.long
                DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_out', dtypes=(torch.float32,), device_type='mps'),
-               # Jacobian mismatch, https://github.com/intel/torch-xpu-ops/issues/2360
-               # Exception: Jacobian computed with forward mode mismatch for output 0 with respect to input 1
-               DecorateInfo(unittest.expectedFailure, 'TestFwdGradients', 'test_forward_mode_AD',
-                            dtypes=(torch.float64,), device_type='xpu'),
-               DecorateInfo(unittest.expectedFailure, 'TestFwdGradients', 'test_inplace_forward_mode_AD',
-                            dtypes=(torch.float64,), device_type='xpu'),
-               DecorateInfo(unittest.expectedFailure, 'TestBwdGradients', 'test_fn_grad',
-                            dtypes=(torch.float64,), device_type='xpu'),
-               DecorateInfo(unittest.expectedFailure, 'TestBwdGradients', 'test_inplace_grad',
-                            dtypes=(torch.float64,), device_type='xpu'),
            ),
            sample_inputs_func=sample_inputs_addbmm),
     OpInfo('baddbmm',
@@ -12828,24 +12797,7 @@ op_db: list[OpInfo] = [
                    unittest.skip("Skipped!"),
                    'TestSchemaCheckModeOpInfo',
                    'test_schema_correctness',
-                   dtypes=(torch.complex64, torch.complex128)),
-               # Jacobian mismatch, https://github.com/intel/torch-xpu-ops/issues/2360
-               # Exception: Jacobian computed with forward mode mismatch for output 0 with respect to input 1
-               DecorateInfo(unittest.expectedFailure, 'TestFwdGradients', 'test_forward_mode_AD',
-                            dtypes=(torch.float64,), device_type='xpu'),
-               DecorateInfo(unittest.expectedFailure, 'TestFwdGradients', 'test_inplace_forward_mode_AD',
-                            dtypes=(torch.float64,), device_type='xpu'),
-               DecorateInfo(unittest.expectedFailure, 'TestBwdGradients', 'test_fn_grad',
-                            dtypes=(torch.float64,), device_type='xpu'),
-               DecorateInfo(unittest.expectedFailure, 'TestBwdGradients', 'test_inplace_grad',
-                            dtypes=(torch.float64,), device_type='xpu'),
-               # https://github.com/intel/torch-xpu-ops/issues/2269
-               DecorateInfo(
-                   unittest.skip("Skipped!"),
-                   'TestFwdGradients',
-                   'test_inplace_forward_mode_AD',
-                   dtypes=(torch.float64,)),
-           )),
+                   dtypes=(torch.complex64, torch.complex128)))),
     OpInfo('dot',
            dtypes=all_types_and_complex_and(torch.float16, torch.bfloat16),
            dtypesIfCUDA=floating_and_complex_types_and(torch.float16, torch.bfloat16),
@@ -12914,19 +12866,7 @@ op_db: list[OpInfo] = [
            assert_autodiffed=True,
            supports_forward_ad=True,
            supports_fwgrad_bwgrad=True,
-           sample_inputs_func=sample_inputs_mv,
-           skips=(
-               # Jacobian mismatch, https://github.com/intel/torch-xpu-ops/issues/2360
-               # Exception: Jacobian computed with forward mode mismatch for output 0 with respect to input 1
-               DecorateInfo(unittest.expectedFailure, 'TestFwdGradients', 'test_fn_fwgrad_bwgrad',
-                            dtypes=(torch.float64,), device_type='xpu'),
-               DecorateInfo(unittest.expectedFailure, 'TestFwdGradients', 'test_forward_mode_AD',
-                            dtypes=(torch.float64,), device_type='xpu'),
-               DecorateInfo(unittest.expectedFailure, 'TestBwdGradients', 'test_fn_grad',
-                            dtypes=(torch.float64,), device_type='xpu'),
-               DecorateInfo(unittest.expectedFailure, 'TestBwdGradients', 'test_fn_gradgrad',
-                            dtypes=(torch.float64,), device_type='xpu'),
-           )),
+           sample_inputs_func=sample_inputs_mv),
     OpInfo('addr',
            dtypes=all_types_and_complex_and(torch.bool, torch.bfloat16, torch.float16),
            # Reference: https://github.com/pytorch/pytorch/issues/50747
@@ -12956,12 +12896,6 @@ op_db: list[OpInfo] = [
                    device_type='mps',
                    dtypes=(torch.int64,)),
                DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_dtypes', device_type='mps'),
-               # Jacobian mismatch, https://github.com/intel/torch-xpu-ops/issues/2360
-               # Exception: Jacobian computed with forward mode mismatch for output 0 with respect to input 1
-               DecorateInfo(unittest.expectedFailure, 'TestBwdGradients', 'test_fn_gradgrad',
-                            dtypes=(torch.float64,), device_type='xpu'),
-               DecorateInfo(unittest.expectedFailure, 'TestBwdGradients', 'test_inplace_gradgrad',
-                            dtypes=(torch.float64,), device_type='xpu'),
            ),
            sample_inputs_func=sample_inputs_addr,
            gradcheck_nondet_tol=GRADCHECK_NONDET_TOL),
@@ -13313,10 +13247,6 @@ op_db: list[OpInfo] = [
            assert_autodiffed=False,
            sample_inputs_func=sample_inputs_cdist,
            skips=(
-               # Jacobian mismatch, https://github.com/intel/torch-xpu-ops/issues/2360
-               # Exception: Jacobian computed with forward mode mismatch for output 0 with respect to input 1
-               DecorateInfo(unittest.expectedFailure, 'TestBwdGradients', 'test_fn_grad',
-                            dtypes=(torch.float64,), device_type='xpu'),
                # NotImplementedError: The operator 'aten::_cdist_backward' is not currently implemented for the MPS device
                DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_noncontiguous_samples', device_type='mps'),
                DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_variant_consistency_eager', device_type='mps'),
@@ -14965,17 +14895,6 @@ op_db: list[OpInfo] = [
                # https://github.com/pytorch/pytorch/issues/71774
                DecorateInfo(unittest.skip('Skipped!'), 'TestNNCOpInfo', 'test_nnc_correctness',
                             device_type='cpu', dtypes=(torch.long,)),
-               # Jacobian mismatch, https://github.com/intel/torch-xpu-ops/issues/2360
-               # Exception: Jacobian computed with forward mode mismatch for output 0 with respect to input 1
-               DecorateInfo(unittest.expectedFailure, 'TestFwdGradients', 'test_fn_fwgrad_bwgrad',
-                            dtypes=(torch.float64,), device_type='xpu'),
-               DecorateInfo(unittest.expectedFailure, 'TestFwdGradients', 'test_forward_mode_AD',
-                            dtypes=(torch.float64,), device_type='xpu'),
-               DecorateInfo(unittest.expectedFailure, 'TestBwdGradients', 'test_fn_grad',
-                            dtypes=(torch.float64,), device_type='xpu'),
-               DecorateInfo(unittest.expectedFailure, 'TestBwdGradients', 'test_fn_gradgrad',
-                            dtypes=(torch.float64,), device_type='xpu'),
-
            )),
     OpInfo('max',
            variant_test_name='reduction_with_dim',
@@ -18821,12 +18740,6 @@ op_db: list[OpInfo] = [
                # https://github.com/pytorch/pytorch/issues/71774
                DecorateInfo(unittest.skip('Skipped!'), 'TestNNCOpInfo', 'test_nnc_correctness',
                             device_type='cpu', dtypes=(torch.long,)),
-               # Jacobian mismatch, https://github.com/intel/torch-xpu-ops/issues/2360
-               # Exception: Jacobian computed with forward mode mismatch for output 0 with respect to input 1
-               DecorateInfo(unittest.expectedFailure, 'TestFwdGradients', 'test_forward_mode_AD',
-                            dtypes=(torch.float64,), device_type='xpu'),
-               DecorateInfo(unittest.expectedFailure, 'TestBwdGradients', 'test_fn_gradgrad',
-                            dtypes=(torch.float64,), device_type='xpu'),
            )),
     BinaryUfuncInfo('__rmod__',
                     op=torch.Tensor.__rmod__,
@@ -19806,12 +19719,6 @@ op_db: list[OpInfo] = [
              skips=(
                  DecorateInfo(toleranceOverride({torch.float16: tol(atol=2e-3, rtol=3e-3)}),
                               'TestInductorOpInfo', 'test_comprehensive'),
-                 # Jacobian mismatch, https://github.com/intel/torch-xpu-ops/issues/2360
-                 # Exception: Jacobian computed with forward mode mismatch for output 0 with respect to input 1
-                 DecorateInfo(unittest.expectedFailure, 'TestBwdGradients', 'test_fn_gradgrad',
-                              dtypes=(torch.float64,), device_type='xpu', active_if=(reduction_type in ['mean', 'prod'])),
-                 DecorateInfo(unittest.expectedFailure, 'TestBwdGradients', 'test_inplace_gradgrad',
-                              dtypes=(torch.float64,), device_type='xpu', active_if=(reduction_type in ['amin', 'prod'])),
              ),
              supports_out=True,
              sample_inputs_func=sample_inputs_index_reduce,
@@ -22275,10 +22182,6 @@ op_db: list[OpInfo] = [
         dtypes=floating_types_and(torch.bfloat16, torch.float16),
         sample_inputs_func=sample_inputs_multi_head_attention_forward,
         skips=(
-            # Jacobian mismatch, https://github.com/intel/torch-xpu-ops/issues/2360
-            # Exception: qqqJacobian computed with forward mode mismatch for output 0 with respect to input 1
-            DecorateInfo(unittest.expectedFailure, 'TestBwdGradients', 'test_fn_grad',
-                         dtypes=(torch.float64,), device_type='xpu'),
             # Tensor-likes are not close
             DecorateInfo(unittest.skip("Skipped!"), 'TestCommon', 'test_noncontiguous_samples', dtypes=(torch.float32,)),
             DecorateInfo(toleranceOverride({torch.float32: tol(atol=5e-3, rtol=0)}), 'TestDecomp', 'test_comprehensive'),

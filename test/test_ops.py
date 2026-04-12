@@ -29,6 +29,7 @@ from torch.testing._internal.common_device_type import (
     onlyCPU,
     onlyCUDA,
     onlyNativeDeviceTypesAnd,
+    onlyOn,
     OpDTypes,
     ops,
     skipCUDAIfNotRocm,
@@ -490,7 +491,7 @@ class TestCommon(TestCase):
                 )
 
     # Tests that the cpu and gpu results are consistent
-    @onlyAccelerator
+    @onlyOn(["cuda", "xpu"])
     @suppress_warnings
     @skipCUDAIfNotRocm
     @ops(_ops_and_refs_with_no_numpy_ref, dtypes=OpDTypes.any_common_cpu_cuda_one)
