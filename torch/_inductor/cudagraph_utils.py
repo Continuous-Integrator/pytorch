@@ -18,6 +18,8 @@ from .utils import is_using_cudagraph_partition
 if TYPE_CHECKING:
     from collections.abc import Sequence, Set as AbstractSet
 
+    from torch._inductor.output_code import OutputCode
+
 
 cudagraphs_log = torch._logging.getArtifactLogger(__name__, "cudagraphs")
 static_inputs_log = torch._logging.getArtifactLogger(
@@ -36,7 +38,6 @@ class CUDAGraphPolicy:
       - HOW compiled functions are cudagraph-wrapped (cudagraphify)
       - WHETHER inner CompiledFxGraphs should be wrapped (should_wrap)
       - OUTER wrapping of compound outputs like RegionalOutputCode (wrap_output)
-      - TEARDOWN of cudagraph resources (teardown)
 
     Set via ``torch._inductor.config.cudagraph_policy``.  When ``None``
     (the default), the existing built-in behaviour is used unchanged.
@@ -64,8 +65,9 @@ class CUDAGraphPolicy:
     ) -> Callable[..., Any]:
         """Wrap a single compiled callable with CUDA graph capture/replay.
 
-        Called by ``cudagraph_post_compile`` for each ``CompiledFxGraph``.
-        The default delegates to ``compile_fx.cudagraphify`` (cudagraph_trees).
+        Called by ``cudagraph_post_compile`` (and the partition variant)
+        for each ``CompiledFxGraph``.  The default delegates to
+        ``compile_fx.cudagraphify`` (cudagraph_trees).
 
         ``inputs`` are the example inputs at post_compile time.  The
         default implementation does not forward them because
@@ -84,7 +86,7 @@ class CUDAGraphPolicy:
             **kwargs,
         )
 
-    def should_wrap(self, compiled_graph: Any) -> bool:
+    def should_wrap(self, compiled_graph: OutputCode) -> bool:
         """Whether to apply cudagraph wrapping to this CompiledFxGraph.
 
         Called for each inner ``CompiledFxGraph`` during ``post_compile``.
@@ -95,7 +97,7 @@ class CUDAGraphPolicy:
         """
         return True
 
-    def wrap_output(self, output_code: Any) -> Any:
+    def wrap_output(self, output_code: OutputCode) -> OutputCode:
         """Optional outer-level wrapping after inner post_compile completes.
 
         Called by ``BundledOutputCodeLoadable.post_compile`` on the final
@@ -105,13 +107,6 @@ class CUDAGraphPolicy:
         Default: identity (no outer wrapping).
         """
         return output_code
-
-    def teardown(self) -> None:
-        """Release CUDA graph resources (pools, streams, NCCL refs).
-
-        Called at training end.  Default: no-op (cudagraph_trees uses GC).
-        """
-        pass
 
 
 @dataclasses.dataclass(frozen=True, slots=True)

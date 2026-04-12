@@ -559,9 +559,8 @@ graph_partition: bool = (
 # Pluggable CUDAGraph wrapping policy.  When set to a ``CUDAGraphPolicy``
 # instance, ``post_compile`` delegates cudagraph wrapping to the policy
 # instead of the built-in ``cudagraphify`` pipeline.  This allows custom
-# cudagraph implementations (e.g. with explicit teardown for NCCL),
-# selective inner-vs-outer wrapping for regional compilation, and shared
-# memory pool management.
+# cudagraph implementations, selective inner-vs-outer wrapping for
+# regional compilation, and shared memory pool management.
 #
 # See ``torch._inductor.cudagraph_utils.CUDAGraphPolicy`` for the base class.
 cudagraph_policy: "CUDAGraphPolicy | None" = None

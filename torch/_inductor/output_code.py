@@ -323,8 +323,6 @@ def cudagraph_partition_post_compile(
         maybe_handle_backward_generation(compiled_graph, boxed_forward_device_index)
         return
 
-    from .compile_fx import cudagraphify
-
     assert compiled_graph.current_callable is not None
     assert compiled_graph.recursively_apply_fns is not None
     is_inference = compiled_graph.fx_kwargs["is_inference"]
@@ -353,6 +351,8 @@ def cudagraph_partition_post_compile(
         compiled_graph, example_inputs, boxed_forward_device_index
     )
 
+    policy = config.cudagraph_policy
+
     # cudagraphify each partition function, assuming every graph partition function
     # is cudagraphable. Non-cudagraphable ops (e.g., cpu ops) are inlined into
     # `call` function and not included in partition functions.
@@ -363,8 +363,7 @@ def cudagraph_partition_post_compile(
             graph_metadata,
         )
 
-        cudagraphify_fn = partial(
-            cudagraphify,
+        partition_kwargs = dict(
             static_input_idxs=tuple(partition_metadata.static_input_idxs),
             device_index=device_index,
             stack_traces=partition_metadata.stack_traces,
@@ -374,6 +373,20 @@ def cudagraph_partition_post_compile(
             placeholders=partition_metadata.placeholders,
             mutated_input_idxs=tuple(partition_metadata.mutated_input_idxs),
         )
+
+        if isinstance(policy, CUDAGraphPolicy):
+            cudagraphify_fn = partial(
+                policy.cudagraphify,
+                inputs=example_inputs,
+                **partition_kwargs,
+            )
+        else:
+            from .compile_fx import cudagraphify
+
+            cudagraphify_fn = partial(
+                cudagraphify,
+                **partition_kwargs,
+            )
         cudagraphify_fns.append(cudagraphify_fn)
 
     compiled_graph.recursively_apply_fns(cudagraphify_fns)
