@@ -3203,8 +3203,10 @@ class DefaultDictVariable(UserDefinedDictVariable):
             if (
                 istype(args[0], ConstantVariable) and args[0].value == "default_factory"
             ) and self.is_supported_factory(args[1]):
-                tx.output.side_effects.mutation(self)
                 self.default_factory = args[1]
+                tx.output.side_effects.store_attr(
+                    self, "default_factory", self.default_factory
+                )
                 return variables.CONSTANT_VARIABLE_NONE
             return super().call_method(tx, name, args, kwargs)
         elif name == "__eq__":
