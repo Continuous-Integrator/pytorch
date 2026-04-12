@@ -87,7 +87,10 @@ pushd docs
 if [ "$is_main_doc" = true ]; then
   build_docs html || exit $?
 
-  make coverage
+  # Run coverage check without parallel workers (-j 1) since it's a quick
+  # check that doesn't need parallelism, and avoids re-triggering the
+  # expensive parallel read/write machinery.
+  SPHINXOPTS="-WT --keep-going" make coverage
   # Now we have the coverage report, we need to make sure it is empty.
   # Sphinx 7.2.6+ format: python.txt contains a statistics table with a TOTAL row
   # showing the undocumented count in the third column.

@@ -2451,11 +2451,13 @@ def setup(app):
 
     Builder._read_parallel = _serial_read_ignoring_nproc
 
-    # Skip pickling doctrees to disk. This is only used for incremental
-    # rebuilds which don't apply in CI clean builds. Saves ~2 minutes by
-    # avoiding serializing large autodoc-generated doctrees.
+    # Skip pickling doctrees to disk for the HTML builder. This is only used
+    # for incremental rebuilds which don't apply in CI clean builds. Saves
+    # ~2 minutes by avoiding serializing large autodoc-generated doctrees.
+    # Other builders (doctest, coverage) may need doctrees on disk.
+    from sphinx.builders.html import StandaloneHTMLBuilder
 
-    _orig_write_doctree = Builder.write_doctree
+    _orig_write_doctree = StandaloneHTMLBuilder.write_doctree
 
     def _write_doctree_no_disk(self, docname, doctree, *, _cache=True):
         # Still do the cleanup and in-memory caching, just skip the disk I/O
@@ -2470,7 +2472,7 @@ def setup(app):
         if _cache:
             self.env._write_doc_doctree_cache[docname] = doctree
 
-    Builder.write_doctree = _write_doctree_no_disk
+    StandaloneHTMLBuilder.write_doctree = _write_doctree_no_disk
 
     _skip_git_dates_on_ci(app)
     _fix_katex_server_race(app)
