@@ -1455,10 +1455,54 @@ AOTITorchError aoti_torch_library_init_fragment(
   });
 }
 
+#define AOTI_TORCH_TAG_IMPL(name, enum_val) \
+  int32_t aoti_torch_tag_##name() {         \
+    return (int32_t)at::Tag::enum_val;     \
+  }
+
+AOTI_TORCH_TAG_IMPL(core, core)
+AOTI_TORCH_TAG_IMPL(cudagraph_unsafe, cudagraph_unsafe)
+AOTI_TORCH_TAG_IMPL(data_dependent_output, data_dependent_output)
+AOTI_TORCH_TAG_IMPL(dynamic_output_shape, dynamic_output_shape)
+AOTI_TORCH_TAG_IMPL(flexible_layout, flexible_layout)
+AOTI_TORCH_TAG_IMPL(generated, generated)
+AOTI_TORCH_TAG_IMPL(inplace_view, inplace_view)
+AOTI_TORCH_TAG_IMPL(maybe_aliasing_or_mutating, maybe_aliasing_or_mutating)
+AOTI_TORCH_TAG_IMPL(needs_contiguous_strides, needs_contiguous_strides)
+AOTI_TORCH_TAG_IMPL(needs_exact_strides, needs_exact_strides)
+AOTI_TORCH_TAG_IMPL(needs_fixed_stride_order, needs_fixed_stride_order)
+AOTI_TORCH_TAG_IMPL(nondeterministic_bitwise, nondeterministic_bitwise)
+AOTI_TORCH_TAG_IMPL(nondeterministic_seeded, nondeterministic_seeded)
+AOTI_TORCH_TAG_IMPL(out_variant, out_variant)
+AOTI_TORCH_TAG_IMPL(pointwise, pointwise)
+AOTI_TORCH_TAG_IMPL(pt2_compliant_tag, pt2_compliant_tag)
+AOTI_TORCH_TAG_IMPL(reduction, reduction)
+AOTI_TORCH_TAG_IMPL(view_copy, view_copy)
+#undef AOTI_TORCH_TAG_IMPL
+
 AOTI_TORCH_EXPORT AOTITorchError
 aoti_torch_library_def(TorchLibraryHandle self, const char* name) {
   AOTI_TORCH_CONVERT_EXCEPTION_TO_ERROR_CODE(
       { reinterpret_cast<torch::Library*>(self)->def(name); });
+}
+
+AOTI_TORCH_EXPORT AOTITorchError
+aoti_torch_library_def_with_tags(
+    TorchLibraryHandle self,
+    const char* schema,
+    const int32_t* tags,
+    int32_t num_tags) {
+  AOTI_TORCH_CONVERT_EXCEPTION_TO_ERROR_CODE({
+    std::vector<at::Tag> tag_vec;
+    tag_vec.reserve(num_tags);
+    for (int32_t i = 0; i < num_tags; i++) {
+      tag_vec.push_back(static_cast<at::Tag>(tags[i]));
+    }
+    reinterpret_cast<torch::Library*>(self)->def(
+        torch::schema(schema),
+        tag_vec,
+        torch::_RegisterOrVerify::REGISTER);
+  });
 }
 
 AOTI_TORCH_EXPORT AOTITorchError

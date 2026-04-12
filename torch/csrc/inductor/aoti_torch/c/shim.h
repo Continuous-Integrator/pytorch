@@ -520,10 +520,41 @@ AOTI_TORCH_EXPORT AOTITorchError aoti_torch_library_impl(
     const char* name,
     void (*fn)(StableIValue*, uint64_t, uint64_t));
 
+#if TORCH_FEATURE_VERSION >= TORCH_VERSION_2_12_0
+AOTI_TORCH_EXPORT int32_t aoti_torch_tag_core();
+AOTI_TORCH_EXPORT int32_t aoti_torch_tag_cudagraph_unsafe();
+AOTI_TORCH_EXPORT int32_t aoti_torch_tag_data_dependent_output();
+AOTI_TORCH_EXPORT int32_t aoti_torch_tag_dynamic_output_shape();
+AOTI_TORCH_EXPORT int32_t aoti_torch_tag_flexible_layout();
+AOTI_TORCH_EXPORT int32_t aoti_torch_tag_generated();
+AOTI_TORCH_EXPORT int32_t aoti_torch_tag_inplace_view();
+AOTI_TORCH_EXPORT int32_t aoti_torch_tag_maybe_aliasing_or_mutating();
+AOTI_TORCH_EXPORT int32_t aoti_torch_tag_needs_contiguous_strides();
+AOTI_TORCH_EXPORT int32_t aoti_torch_tag_needs_exact_strides();
+AOTI_TORCH_EXPORT int32_t aoti_torch_tag_needs_fixed_stride_order();
+AOTI_TORCH_EXPORT int32_t aoti_torch_tag_nondeterministic_bitwise();
+AOTI_TORCH_EXPORT int32_t aoti_torch_tag_nondeterministic_seeded();
+AOTI_TORCH_EXPORT int32_t aoti_torch_tag_out_variant();
+AOTI_TORCH_EXPORT int32_t aoti_torch_tag_pointwise();
+AOTI_TORCH_EXPORT int32_t aoti_torch_tag_pt2_compliant_tag();
+AOTI_TORCH_EXPORT int32_t aoti_torch_tag_reduction();
+AOTI_TORCH_EXPORT int32_t aoti_torch_tag_view_copy();
+#endif // TORCH_FEATURE_VERSION >= TORCH_VERSION_2_12_0
+
 // stable corollary to torch::Library method m.def(), should be
 // called from StableLibrary
 AOTI_TORCH_EXPORT AOTITorchError
 aoti_torch_library_def(TorchLibraryHandle self, const char* schema);
+
+// stable corollary to torch::Library method m.def() with tags.
+// Tags are passed as int32_t values obtained from aoti_torch_tag_*() getters,
+// not raw enum ordinals, so the ABI is stable across versions.
+AOTI_TORCH_EXPORT AOTITorchError
+aoti_torch_library_def_with_tags(
+    TorchLibraryHandle self,
+    const char* schema,
+    const int32_t* tags,
+    int32_t num_tags);
 
 // the above stable constructors for torch::Library add Library objects
 // to the heap. if you are calling those functions directly, please use
