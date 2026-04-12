@@ -368,7 +368,7 @@ class ConstDictVariable(VariableTracker):
     ) -> VariableTracker:
         key = HashableTracker(arg)
         if key not in self.items:
-            raise_observed_exception(KeyError, tx, args=[arg.as_python_constant()])
+            raise_observed_exception(KeyError, tx, args=[arg])
         return self.items[key]
 
     def getitem_const(
@@ -1035,7 +1035,7 @@ class DefaultDictVariable(ConstDictVariable):
             return self.getitem_const(tx, key)
 
         if self.default_factory.is_constant_none():
-            raise_observed_exception(KeyError, tx, args=[key.as_python_constant()])
+            raise_observed_exception(KeyError, tx, args=[key])
         else:
             default_var = self.default_factory.call_function(tx, [], {})
             super().call_method(tx, "__setitem__", [key, default_var], {})
