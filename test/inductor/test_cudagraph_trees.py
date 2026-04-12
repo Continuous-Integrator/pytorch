@@ -5274,6 +5274,33 @@ if HAS_CUDA_AND_TRITON:
 
             self.assertGreater(len(calls), 0)
 
+        def test_should_wrap_false_with_wrap_output(self):
+            """should_wrap=False skips inner wrapping; wrap_output does outer wrapping."""
+            from torch._inductor.cudagraph_utils import CUDAGraphPolicy
+
+            wrap_calls = []
+
+            class OuterOnlyPolicy(CUDAGraphPolicy):
+                def should_wrap(self, compiled_graph):
+                    return False
+
+                def wrap_output(self, output_code):
+                    wrap_calls.append(type(output_code).__name__)
+                    return output_code
+
+            def foo(x):
+                return x * x + 1
+
+            with config.patch("cudagraph_policy", OuterOnlyPolicy()):
+                compiled = torch.compile(foo)
+                x = torch.randn(4, device="cuda")
+                result = compiled(x)
+                result = compiled(x)
+
+            self.assertEqual(result, x * x + 1)
+            self.assertEqual(counters["inductor"]["cudagraph_skips"], 1)
+            self.assertGreater(len(wrap_calls), 0)
+
     class TestSAC(TestCase):
         def _make_observer_mode(self):
             class ObserverMode(TorchDispatchMode):

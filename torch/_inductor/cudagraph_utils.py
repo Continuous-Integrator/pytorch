@@ -50,6 +50,7 @@ class CUDAGraphPolicy:
             def cudagraphify(self, model, inputs, static_input_idxs, **kwargs):
                 return my_custom_wrapper(model, inputs, static_input_idxs)
 
+
         with torch._inductor.config.patch("cudagraph_policy", MyCUDAGraphPolicy()):
             compiled_fn = deserialize_artifacts(...)
     """
