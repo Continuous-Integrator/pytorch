@@ -5137,6 +5137,7 @@ if HAS_CUDA_AND_TRITON:
     class TestCUDAGraphPolicy(TestCase):
         def setUp(self):
             super().setUp()
+            counters.clear()
             self._stack = contextlib.ExitStack()
             self._stack.enter_context(
                 config.patch(
@@ -5226,6 +5227,29 @@ if HAS_CUDA_AND_TRITON:
 
         def test_default_policy_matches_builtin(self):
             """Default CUDAGraphPolicy produces same results as no policy."""
+            from torch._inductor.cudagraph_utils import CUDAGraphPolicy
+
+            def foo(x):
+                return x * x + x
+
+            x = torch.randn(4, device="cuda")
+
+            compiled_default = torch.compile(foo)
+            ref = compiled_default(x)
+            ref = compiled_default(x)
+
+            torch._dynamo.reset()
+
+            with config.patch("cudagraph_policy", CUDAGraphPolicy()):
+                compiled_policy = torch.compile(foo)
+                out = compiled_policy(x)
+                out = compiled_policy(x)
+
+            self.assertEqual(ref, out)
+
+        @torch._inductor.config.patch("graph_partition", True)
+        def test_default_policy_matches_builtin_partition(self):
+            """Default CUDAGraphPolicy matches builtin when graph_partition=True."""
             from torch._inductor.cudagraph_utils import CUDAGraphPolicy
 
             def foo(x):
