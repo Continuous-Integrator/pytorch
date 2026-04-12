@@ -676,7 +676,9 @@ class UserFunctionVariable(BaseUserFunctionVariable):
         if name == "__dict__":
             return super().var_getattr(tx, name)
         elif name in cmp_name_to_op_mapping:
-            return variables.GetAttrVariable(self, name)
+            return variables.GetAttrVariable(
+                self, name, py_type=type(getattr(self.fn, name))
+            )
         source = self.get_source()
         return fn_var_getattr(tx, self.fn, source, name)
 
@@ -1939,7 +1941,9 @@ class NestedUserFunctionVariable(BaseUserFunctionVariable):
             d = getattr(self, "defaults", None)
             return d.as_python_constant() if d else ConstantVariable.create(None)
         elif name in cmp_name_to_op_mapping:
-            return variables.GetAttrVariable(self, name)
+            return variables.GetAttrVariable(
+                self, name, py_type=type(getattr(types.FunctionType, name))
+            )
         else:
             return super().var_getattr(tx, name)
 
@@ -2147,7 +2151,14 @@ class SkipFunctionVariable(VariableTracker):
 
             guard_on_source.make_guard(GuardBuilder.CLOSURE_MATCH)
         elif inspect.isbuiltin(value):
-            install_guard(source.make_guard(GuardBuilder.BUILTIN_MATCH))
+            # Bound builtin methods (e.g. obj.__reduce_ex__) are created fresh
+            # on every attribute access, so their id() is unstable.  Skip the
+            # id-based BUILTIN_MATCH guard for them — the type guard on
+            # the owner object is sufficient.
+            if not hasattr(value, "__self__") or isinstance(
+                value.__self__, types.ModuleType
+            ):
+                install_guard(source.make_guard(GuardBuilder.BUILTIN_MATCH))
         elif not is_wrapper_or_member_descriptor(value):
             # These descriptors are not guaranteed to return the same object on
             # attribute lookup. They are unlikely to be changed, so we can skip
@@ -2333,7 +2344,9 @@ class SkipFunctionVariable(VariableTracker):
 
     def var_getattr(self, tx: "InstructionTranslator", name: str) -> VariableTracker:
         if name in cmp_name_to_op_mapping:
-            return variables.GetAttrVariable(self, name)
+            return variables.GetAttrVariable(
+                self, name, py_type=type(getattr(self.value, name))
+            )
 
         return fn_var_getattr(tx, self.value, self.source, name)
 
@@ -2615,7 +2628,7 @@ class CollectiveFunctionRewriteVariable(UserFunctionVariable):
                     "`P2POp` used incorrectly"
                 )
 
-            ops = list()
+            ops: list[VariableTracker] = list()
             peers = list()
             tags = list()
             tensors = list()
@@ -2805,7 +2818,9 @@ class FunctoolsPartialVariable(VariableTracker):
             items = {VariableTracker.build(tx, k): v for k, v in self.keywords.items()}
             return variables.ConstDictVariable(items, source=source)
         if name in cmp_name_to_op_mapping:
-            return variables.GetAttrVariable(self, name)
+            return variables.GetAttrVariable(
+                self, name, py_type=type(getattr(functools.partial, name))
+            )
         raise_observed_exception(AttributeError, tx)
 
     def as_python_constant(self) -> Any:

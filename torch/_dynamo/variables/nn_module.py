@@ -55,6 +55,7 @@ from ..source import (
     UnspecializedNNModuleSource,
 )
 from ..utils import (
+    enumerate_items_with_dict_position,
     get_custom_getattr,
     get_fake_value,
     is_lazy_module,
@@ -477,7 +478,7 @@ class NNModuleVariable(VariableTracker):
                     ],
                 )
 
-        return variables.GetAttrVariable(self, name, source=source)
+        return super().var_getattr(tx, name)
 
     def call_function(
         self,
@@ -1314,7 +1315,8 @@ class UnspecializedNNModuleVariable(UserDefinedObjectVariable):
                 return key, value
 
             result = dict(
-                build_key_value(i, k, v) for i, (k, v) in enumerate(hooks_dict.items())
+                build_key_value(i, k, v)
+                for i, k, v in enumerate_items_with_dict_position(hooks_dict)
             )
 
             return variables.NNModuleHooksDictVariable(
