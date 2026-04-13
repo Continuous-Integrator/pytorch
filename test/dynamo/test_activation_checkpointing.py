@@ -2898,6 +2898,7 @@ class ActivationCheckpointingNonStrictTracerTests(torch._dynamo.test_case.TestCa
             op="call_function", target=torch.ops.aten.neg.default
         )
         self.assertEqual(len(neg_nodes), 1)
+        self.assertNotIn("autograd_backward", neg_nodes[0].meta)
         self.assertEqual(neg_nodes[0].meta.get("custom", {}), {"ac_region_id": 0})
 
     def _trace_train_step(self, mod, x):
