@@ -1464,30 +1464,6 @@ class UserDefinedObjectVariable(UserDefinedVariable):
             )
         return result
 
-    def nb_int_impl(
-        self,
-        tx: "InstructionTranslator",
-    ) -> VariableTracker:
-        # CPython: slot_nb_int calls __int__() and validates the return type.
-        method_var = self.resolve_type_attr(
-            tx,
-            "__int__",
-            inspect.getattr_static(type(self.value), "__int__"),
-            source=None,
-        )
-        result = method_var.call_function(tx, [], {})
-        if result.is_python_constant() and not isinstance(
-            result.as_python_constant(), int
-        ):
-            raise_observed_exception(
-                TypeError,
-                tx,
-                args=[
-                    f"__int__ returned non-int (type {type(result.as_python_constant()).__name__})"
-                ],
-            )
-        return result
-
     def torch_function_check(self) -> None:
         assert has_torch_function(self), (
             f"calling torch function on object without __torch_function__ {self}"
