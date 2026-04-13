@@ -13187,6 +13187,23 @@ class TestConsistency(TestCaseMPS):
             self.assertEqual(op(x, y[0]), op(x.to("mps"), y.to("mps")[0]).cpu())
 
 
+    def test_autograd_sum_expand_stride_zero(self):
+        # Regression test for https://github.com/pytorch/pytorch/issues/180201
+        # MPS strided API does not handle stride 0 (from expand in sum backward),
+        # causing corrupted gradients when using autograd.grad(y.sum(), x).
+        torch.manual_seed(123)
+        w = torch.randn(16, 3, device="mps")
+        b = torch.randn(16, device="mps")
+
+        torch.manual_seed(0)
+        x = torch.randn(64, 3, device="mps", requires_grad=True)
+        y = torch.sin(x @ w.T + b).sum(-1)
+
+        grad_sum = torch.autograd.grad(y.sum(), x)[0]
+        grad_explicit = torch.autograd.grad(y, x, grad_outputs=torch.ones_like(y))[0]
+        self.assertEqual(grad_sum, grad_explicit)
+
+
 class TestErrorInputs(TestCase):
     _ignore_not_implemented_error = True
 
