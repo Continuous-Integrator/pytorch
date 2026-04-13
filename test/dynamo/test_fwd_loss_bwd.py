@@ -1017,11 +1017,14 @@ class GraphModule(torch.nn.Module):
         grad = torch.autograd.grad(loss, [l_mod_parameters_weight_, l_mod_parameters_bias_], allow_unused = False, retain_graph = True)
         getitem: "f32[4, 4]" = grad[0]
         getitem_1: "f32[4]" = grad[1];  grad = None
+
         _set_grad_enabled = torch._C._set_grad_enabled(False);  _set_grad_enabled = None
+
         new_grad_strided: "f32[4, 4]" = torch.empty_like(l_mod_parameters_weight_)
         copy_: "f32[4, 4]" = new_grad_strided.copy_(getitem);  getitem = copy_ = None
         new_grad_strided_1: "f32[4]" = torch.empty_like(l_mod_parameters_bias_)
         copy__1: "f32[4]" = new_grad_strided_1.copy_(getitem_1);  getitem_1 = copy__1 = None
+
         _set_grad_enabled_1 = torch._C._set_grad_enabled(True);  _set_grad_enabled_1 = None
 
         grad_1 = torch.autograd.grad(loss, [l_mod_parameters_weight_, l_mod_parameters_bias_], allow_unused = False)
