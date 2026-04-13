@@ -13187,23 +13187,16 @@ class TestConsistency(TestCaseMPS):
             self.assertEqual(op(x, y[0]), op(x.to("mps"), y.to("mps")[0]).cpu())
 
 
-    def test_autograd_sum_expand_stride_zero(self):
+    def test_mm_stride_zero(self):
         # Regression test for https://github.com/pytorch/pytorch/issues/180201
-        # Matmul backward with stride-0 gradient (from sum of a size-1 output)
-        # produces corrupted (mostly zero) gradients on some macOS versions.
-        torch.manual_seed(42)
-        w1, b1 = torch.randn(16, 3), torch.randn(16)
-        w2, b2 = torch.randn(1, 16), torch.randn(1)
-
-        x_mps = torch.randn(64, 3, device="mps", requires_grad=True)
-        x_cpu = x_mps.detach().cpu().requires_grad_(True)
-
-        y_mps = (x_mps @ w1.T.to("mps") + b1.to("mps")) @ w2.T.to("mps") + b2.to("mps")
-        y_cpu = (x_cpu @ w1.T + b1) @ w2.T + b2
-
-        y_mps.sum().backward()
-        y_cpu.sum().backward()
-        self.assertEqual(x_mps.grad, x_cpu.grad)
+        # MPS arrayViewWithShape:strides: mishandles stride-0 tensors in mm,
+        # producing zero rows for every 16th threadgroup when M>=16 and N>=16.
+        # Fixed in macOS 26.4, but still needed for older versions.
+        expanded = torch.ones(1, 1, device="mps").expand(64, 1)
+        w = torch.randn(1, 16, device="mps")
+        result = expanded.mm(w)
+        expected = torch.ones(64, 1, device="mps").mm(w)
+        self.assertEqual(result, expected)
 
 
 class TestErrorInputs(TestCase):
