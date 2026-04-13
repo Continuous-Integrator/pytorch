@@ -1488,6 +1488,28 @@ class UserDefinedObjectVariable(UserDefinedVariable):
         }
         return fns
 
+    def mp_subscript_impl(
+        self,
+        tx: "InstructionTranslator",
+        key: VariableTracker,
+    ) -> VariableTracker:
+        # PyObject_GetItem: https://github.com/python/cpython/blob/62a6e898e01/Objects/abstract.c#L155-L206
+        method = self._maybe_get_baseclass_method("__getitem__")
+        if (
+            self._base_vt is not None
+            and self._base_methods is not None
+            and method in self._base_methods
+        ):
+            return self._base_vt.mp_subscript_impl(tx, key)
+        if isinstance(method, types.FunctionType):
+            source_fn = self.source and self.get_source_by_walking_mro(
+                tx, "__getitem__"
+            )
+            return variables.UserMethodVariable(
+                method, self, source_fn=source_fn, source=self.source
+            ).call_function(tx, [key], {})
+        return super().mp_subscript_impl(tx, key)
+
     def call_method(
         self,
         tx: "InstructionTranslator",
@@ -2964,6 +2986,27 @@ class UserDefinedDictVariable(UserDefinedObjectVariable):
         # sq_length (sequence protocol). Redirect so generic_len works.
         return self.mp_length(tx)
 
+    def mp_subscript_impl(
+        self,
+        tx: "InstructionTranslator",
+        key: VariableTracker,
+    ) -> VariableTracker:
+        # dict_subscript: https://github.com/python/cpython/blob/62a6e898e01/Objects/dictobject.c#L3673-L3706
+        # TODO(follow-up): add test for unhashable/invalid key type, Counter missing key
+        method = self._maybe_get_baseclass_method("__getitem__")
+        if method in self._base_methods:
+            assert self._base_vt is not None
+            try:
+                return self._base_vt.mp_subscript_impl(tx, key)
+            except ObservedKeyError:
+                if issubclass(
+                    self.python_type(), dict
+                ) and self._maybe_get_baseclass_method("__missing__"):
+                    return self.call_method(tx, "__missing__", [key], {})
+                else:
+                    raise
+        return super().mp_subscript_impl(tx, key)
+
     def call_method(
         self,
         tx: "InstructionTranslator",
@@ -3179,24 +3222,26 @@ class DefaultDictVariable(UserDefinedDictVariable):
                 args = list(args[1:])
             assert self._base_vt is not None
             return self._base_vt.call_method(tx, "__init__", args, kwargs)
-        elif name == "__getitem__":
+        elif name in ("__getitem__", "__missing__"):
             if len(args) != 1:
                 raise_args_mismatch(tx, name, "1 args", f"{len(args)} args")
             assert self._base_vt is not None
-            if args[0] in self._base_vt:  # type: ignore[operator]
+            # __getitem__ checks the dict first; __missing__ is called
+            # by mp_subscript_impl after a KeyError.
+            if name == "__getitem__" and args[0] in self._base_vt:  # type: ignore[operator]
                 return self._base_vt.getitem_const(tx, args[0])  # type: ignore[union-attr]
+            # Auto-vivification via default_factory
+            if (
+                istype(self.default_factory, ConstantVariable)
+                and self.default_factory.value is None
+            ):
+                raise_observed_exception(KeyError, tx, args=[args[0]])
             else:
-                if (
-                    istype(self.default_factory, ConstantVariable)
-                    and self.default_factory.value is None
-                ):
-                    raise_observed_exception(KeyError, tx, args=[args[0]])
-                else:
-                    default_var = self.default_factory.call_function(tx, [], {})
-                    self._base_vt.call_method(
-                        tx, "__setitem__", [args[0], default_var], kwargs
-                    )
-                    return default_var
+                default_var = self.default_factory.call_function(tx, [], {})
+                self._base_vt.call_method(
+                    tx, "__setitem__", [args[0], default_var], kwargs
+                )
+                return default_var
         elif name == "__setattr__":
             if len(args) != 2:
                 raise_args_mismatch(tx, name, "2 args", f"{len(args)} args")
