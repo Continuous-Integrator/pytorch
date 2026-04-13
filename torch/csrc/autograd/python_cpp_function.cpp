@@ -68,13 +68,13 @@ int traverse_node(
 namespace {
 
 int THPCppFunction_traverse(PyObject* self, visitproc visit, void* arg) {
-  auto* cpp_fn = (THPCppFunction*)self;
+  auto* cpp_fn = reinterpret_cast<THPCppFunction*>(self);
   return traverse_node(cpp_fn->cdata, visit, arg);
 }
 
 void THPCppFunction_dealloc(PyObject* self) {
   PyObject_GC_UnTrack(self);
-  auto* cpp_fn = (THPCppFunction*)self;
+  auto* cpp_fn = reinterpret_cast<THPCppFunction*>(self);
   if (cpp_fn->cdata) {
     auto* slot = cpp_fn->cdata->pyobj_slot();
     if (slot->load_pyobj() == self) {
