@@ -32,10 +32,8 @@ def replace_collectives_with_low_contention(
         c10d.reduce_scatter_tensor_out.default,
     }
 
-    replacements = 0
-    skipped = 0
-    total = 0
     _enabled_groups: set[str] = set()
+    collectives = []
 
     for node in list(graph.nodes):
         if node.op != "call_function":
@@ -44,32 +42,76 @@ def replace_collectives_with_low_contention(
         is_rs = node.target in RS_TARGETS
         if not is_ag and not is_rs:
             continue
+        collectives.append((node, is_ag))
 
-        total += 1
+    if not collectives:
+        return
 
-        if mode is None:
-            has_overlap = node.meta.get("has_compute_overlap")
-            if has_overlap is None:
-                has_overlap = _has_compute_overlap(node, graph)
-            if not has_overlap:
-                skipped += 1
+    # In auto mode, decide per-graph: replace all or none.
+    # Mixing NCCL and LC collectives in the same graph causes scheduling
+    # conflicts that are worse than either pure approach.
+    from torch._inductor import config
+
+    if mode is None:
+        threshold = config.aten_distributed_optimizations.low_contention_auto_threshold
+        # Use weighted overlap: each collective contributes its overlap ratio
+        # (0.0 = fully exposed, 1.0 = fully hidden). Falls back to binary
+        # (0 or 1) when overlap_scheduling didn't annotate ratios.
+        weighted_hidden = 0.0
+        for node, _ in collectives:
+            ratio = node.meta.get("compute_overlap_ratio")
+            if ratio is not None:
+                weighted_hidden += ratio
+            else:
+                has_overlap = node.meta.get("has_compute_overlap")
+                if has_overlap is None:
+                    has_overlap = _has_compute_overlap(node, graph)
+                weighted_hidden += 1.0 if has_overlap else 0.0
+        hidden_ratio = weighted_hidden / len(collectives)
+        # Replace all if weighted hidden ratio exceeds threshold.
+        # Otherwise keep all as NCCL to avoid mixing penalty.
+        if hidden_ratio <= threshold:
+            log.info(
+                "LC auto: skipping graph (%.1f/%d hidden, ratio=%.1f%% <= %.0f%%)",
+                weighted_hidden,
+                len(collectives),
+                hidden_ratio * 100,
+                threshold * 100,
+            )
+            return
+        log.info(
+            "LC auto: replacing all %d collectives (%.1f/%d hidden, ratio=%.1f%% > %.0f%%)",
+            len(collectives),
+            weighted_hidden,
+            len(collectives),
+            hidden_ratio * 100,
+            threshold * 100,
+        )
+
+    min_bytes = config.aten_distributed_optimizations.low_contention_min_bytes_per_rank
+
+    replacements = 0
+    skipped_small = 0
+    for node, is_ag in collectives:
+        if min_bytes > 0:
+            per_rank_bytes = _get_per_rank_bytes(node)
+            if per_rank_bytes is not None and per_rank_bytes < min_bytes:
+                skipped_small += 1
                 continue
-
         if is_ag:
             _replace_all_gather(node, graph, symm_mem, _enabled_groups, ag_impl)
         else:
             _replace_reduce_scatter(node, graph, symm_mem, _enabled_groups)
         replacements += 1
 
-    if total > 0:
-        log.info(
-            "Replaced %d/%d FSDP collectives (ag_impl=%s, "
-            "skipped %d critical-path)",
-            replacements,
-            total,
-            ag_impl,
-            skipped,
-        )
+    log.info(
+        "Replaced %d/%d FSDP collectives (ag_impl=%s, skipped_small=%d, min_bytes=%d)",
+        replacements,
+        len(collectives),
+        ag_impl,
+        skipped_small,
+        min_bytes,
+    )
 
 
 def _replace_all_gather(node, graph, symm_mem, enabled_groups, ag_impl="low_contention"):
@@ -126,6 +168,14 @@ def _replace_reduce_scatter(node, graph, symm_mem, enabled_groups):
     new_node.meta.update(node.meta)
     node.replace_all_uses_with(new_node)
     graph.erase_node(node)
+
+
+def _get_per_rank_bytes(node):
+    """Return per-rank message bytes for a collective, or None if unknown."""
+    input_val = node.args[0].meta.get("val") if node.args else None
+    if not isinstance(input_val, torch.Tensor):
+        return None
+    return input_val.nelement() * input_val.element_size()
 
 
 def _has_compute_overlap(start_node, graph):

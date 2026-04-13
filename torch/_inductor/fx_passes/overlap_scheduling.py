@@ -1331,7 +1331,9 @@ class OverlapScheduler:
                 continue
 
             # Check if we can reach this collective without scheduling compute, other collectives, or waits
-            path = self._find_schedulable_path(collective, overlap_node, why)
+            path = self._find_schedulable_path(
+                collective, overlap_node, why
+            )
             if path is None:
                 continue
 
@@ -1368,7 +1370,10 @@ class OverlapScheduler:
             self.wasted_compute += min(remaining_time_per_pg.values())
 
     def _find_schedulable_path(
-        self, target: fx.Node, curr_overlap_node: fx.Node | None, why: WhyNoOverlap
+        self,
+        target: fx.Node,
+        curr_overlap_node: fx.Node | None,
+        why: WhyNoOverlap,
     ) -> OrderedSet[fx.Node] | None:
         """Find path to target by collecting unscheduled dependencies."""
         # Get unscheduled ancestors
@@ -1404,7 +1409,9 @@ class OverlapScheduler:
                 )
                 return None
 
-            # Skip c10 ops and dtensor shard ops - they should be scheduled via main loop
+            # Skip c10 ops and dtensor shard ops - they should be scheduled via
+            # main loop since they have complex dependencies that can create
+            # cycles in the reordered graph.
             target_str = str(node.target)
             if "c10" in target_str or "_dtensor" in target_str:
                 log.debug(
@@ -1522,11 +1529,25 @@ class OverlapScheduler:
             self.wasted_compute,
         )
 
+        # Log per-PG exposed breakdown for debugging
+        if exposed:
+            exposed_by_pg: dict[str, tuple[int, float]] = {}
+            for c in self.collective_info.values():
+                if c.exposed_time_ms > 0:
+                    pg = get_group_name(c.start_node)
+                    cnt, ms = exposed_by_pg.get(pg, (0, 0.0))
+                    exposed_by_pg[pg] = (cnt + 1, ms + c.exposed_time_ms)
+            for pg, (cnt, ms) in exposed_by_pg.items():
+                log.debug("  Exposed on PG %s: %d collectives, %.2f ms", pg, cnt, ms)
+
         # Persist overlap annotations for downstream passes (e.g., LC replacement).
-        # A collective "has compute overlap" when some compute was scheduled
-        # between it and its wait, reducing its exposed time.
         for info in self.collective_info.values():
             info.start_node.meta["has_compute_overlap"] = not info.is_exposed
+            if info.estimated_time_ms > 0:
+                ratio = 1.0 - info.exposed_time_ms / info.estimated_time_ms
+                info.start_node.meta["compute_overlap_ratio"] = max(0.0, min(1.0, ratio))
+            else:
+                info.start_node.meta["compute_overlap_ratio"] = 0.0
 
         self.reorder_graph()
 
