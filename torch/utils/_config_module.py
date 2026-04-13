@@ -567,7 +567,19 @@ class ConfigModule(ModuleType):
         if ignore_private_configs:
             prefixes.append("_")
         prefixes.extend(getattr(self, "_cache_config_ignore_prefix", []))
-        return self._get_dict(ignored_prefixes=prefixes)
+        config = self._get_dict(ignored_prefixes=prefixes)
+        for key in getattr(self, "_cache_config_factory_keys", []):
+            if key in config and config[key] is not None:
+                instance = config[key]()
+                if hasattr(instance, "uuid"):
+                    config[key] = instance.uuid()
+                else:
+                    raise RuntimeError(
+                        f"Config '{key}' is set to {config[key]} which does not "
+                        f"implement uuid(). Implement uuid() for cache key "
+                        f"participation."
+                    )
+        return config
 
     def codegen_config(self) -> str:
         """Convert config to Python statements that replicate current config.
@@ -734,28 +746,40 @@ class ConfigModule(ModuleType):
                 )
         if not isinstance(changes, dict):
             raise AssertionError(f"expected `dict` got {type(changes)}")
-        prior: dict[str, Any] = {}
         config = self
 
         class ConfigPatch(ContextDecorator):
             def __init__(self) -> None:
                 self.changes = changes
+                self._prior: ContextVar[tuple[dict[str, Any], ...]] = ContextVar(
+                    f"{config.__name__}.ConfigPatch[{id(self)}]",
+                    default=(),
+                )
 
             def __enter__(self) -> None:
-                if prior:
-                    raise AssertionError(
-                        "prior should be empty when entering ConfigPatch"
-                    )
+                prior: dict[str, Any] = {}
                 for key in self.changes:
                     # KeyError on invalid entry
                     prior[key] = config.__getattr__(key)
-                for k, v in self.changes.items():
-                    config.__setattr__(k, v)
+                prior_stack = self._prior.get()
+                self._prior.set((*prior_stack, prior))
+                try:
+                    for k, v in self.changes.items():
+                        config.__setattr__(k, v)
+                except Exception:
+                    self._prior.set(prior_stack)
+                    raise
 
             def __exit__(self, exc_type, exc_val, exc_tb):  # type: ignore[no-untyped-def]
+                prior_stack = self._prior.get()
+                if not prior_stack:
+                    raise AssertionError(
+                        "prior should not be empty when exiting ConfigPatch"
+                    )
+                prior = prior_stack[-1]
+                self._prior.set(prior_stack[:-1])
                 for k, v in prior.items():
                     config.__setattr__(k, v)
-                prior.clear()
 
         return ConfigPatch()
 
