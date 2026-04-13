@@ -4,6 +4,19 @@
 
 #include <ATen/cuda/Exceptions.h>
 
+
+namespace cudnn_frontend {
+// This is needed to define the symbol `cudnn_dlhandle`
+// When using the flag NV_CUDNN_FRONTEND_USE_DYNAMIC_LOADING
+// to enable dynamic loading of LibNVRTC.
+#ifdef _WIN32
+HMODULE cudnn_dlhandle = nullptr;
+#else
+void *cudnn_dlhandle = nullptr;
+#endif
+}
+
+
 namespace at::native {
 namespace {
 
