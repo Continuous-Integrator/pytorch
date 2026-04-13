@@ -4,8 +4,22 @@ import logging
 import warnings
 
 import torch
+from torch.utils._ordered_set import OrderedSet
+
 
 log = logging.getLogger(__name__)
+
+
+def is_compute_bound_node(n: torch.fx.Node) -> bool:
+    """True if n is a compute-bound op (matmul, conv, attention/SDPA).
+
+    Checks whether the op has a registered FLOP formula — only
+    compute-intensive ops (mm, bmm, addmm, conv, sdpa, etc.) do.
+    """
+    return (
+        getattr(n.target, "overloadpacket", None)
+        in torch.utils.flop_counter.flop_registry
+    )
 
 
 def replace_collectives_with_low_contention(
@@ -26,16 +40,20 @@ def replace_collectives_with_low_contention(
     c10d = torch.ops._c10d_functional
     symm_mem = torch.ops.symm_mem
 
-    AG_TARGETS = {
-        c10d.all_gather_into_tensor.default,
-        c10d.all_gather_into_tensor_out.default,
-    }
-    RS_TARGETS = {
-        c10d.reduce_scatter_tensor.default,
-        c10d.reduce_scatter_tensor_out.default,
-    }
+    AG_TARGETS = OrderedSet(
+        [
+            c10d.all_gather_into_tensor.default,
+            c10d.all_gather_into_tensor_out.default,
+        ]
+    )
+    RS_TARGETS = OrderedSet(
+        [
+            c10d.reduce_scatter_tensor.default,
+            c10d.reduce_scatter_tensor_out.default,
+        ]
+    )
 
-    _enabled_groups: set[str] = set()
+    _enabled_groups: OrderedSet[str] = OrderedSet()
     collectives = []
 
     for node in list(graph.nodes):
@@ -131,8 +149,6 @@ def _get_per_rank_bytes(node):
 def _has_compute_bound_overlap(start_node, graph):
     """Check if compute-bound ops (matmul, conv, attention) exist between
     the collective start and its wait in topological order."""
-    from torch._inductor.fx_passes.overlap_scheduling import is_compute_node
-
     wait_node = None
     for user in start_node.users:
         if _is_wait_tensor(user):
@@ -149,7 +165,7 @@ def _has_compute_bound_overlap(start_node, graph):
         pos = node_positions[node]
         if pos <= start_pos or pos >= wait_pos:
             continue
-        if is_compute_node(node):
+        if is_compute_bound_node(node):
             return True
     return False
 

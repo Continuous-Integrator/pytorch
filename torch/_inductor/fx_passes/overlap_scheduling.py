@@ -160,14 +160,12 @@ def estimate_collective_time(
 
 
 def is_compute_node(n: fx.Node) -> bool:
-    """
-    Should we consider this node computationally expensive ?
-    Currently uses flop registration, but we could expand more generally.
-    """
-    return (
-        getattr(n.target, "overloadpacket", None)
-        in torch.utils.flop_counter.flop_registry
+    """True if n is a compute-bound op (matmul, conv, attention/SDPA)."""
+    from torch._inductor.fx_passes.low_contention_collectives import (
+        is_compute_bound_node,
     )
+
+    return is_compute_bound_node(n)
 
 
 def estimate_roofline_runtime_ms(node: fx.Node) -> float:
@@ -1529,25 +1527,12 @@ class OverlapScheduler:
             self.wasted_compute,
         )
 
-        # Log per-PG exposed breakdown for debugging
-        if exposed:
-            exposed_by_pg: dict[str, tuple[int, float]] = {}
-            for c in self.collective_info.values():
-                if c.exposed_time_ms > 0:
-                    pg = get_group_name(c.start_node)
-                    cnt, ms = exposed_by_pg.get(pg, (0, 0.0))
-                    exposed_by_pg[pg] = (cnt + 1, ms + c.exposed_time_ms)
-            for pg, (cnt, ms) in exposed_by_pg.items():
-                log.debug("  Exposed on PG %s: %d collectives, %.2f ms", pg, cnt, ms)
-
-        # Persist overlap annotations for downstream passes (e.g., LC replacement).
+        # Annotate collectives for downstream passes (e.g., LC replacement).
+        # True iff any hiding node is compute-bound (matmul, conv, attention).
         for info in self.collective_info.values():
-            info.start_node.meta["has_compute_bound_overlap"] = not info.is_exposed
-            if info.estimated_time_ms > 0:
-                ratio = 1.0 - info.exposed_time_ms / info.estimated_time_ms
-                info.start_node.meta["compute_overlap_ratio"] = max(0.0, min(1.0, ratio))
-            else:
-                info.start_node.meta["compute_overlap_ratio"] = 0.0
+            info.start_node.meta["has_compute_bound_overlap"] = any(
+                is_compute_node(n) for n in info.hiding_nodes
+            )
 
         self.reorder_graph()
 

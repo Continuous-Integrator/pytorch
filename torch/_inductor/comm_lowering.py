@@ -882,32 +882,6 @@ def register_symm_mem_lowerings():
             ),
         )
 
-    @register_lowering(symm_mem._multimem_all_gather)
-    def _symm_mem_multimem_all_gather(
-        inp: ir.TensorBox,
-        group_name: str,
-    ):
-        return ir.TensorBox.create(
-            ir._CollectiveKernel.create_out_of_place(
-                symm_mem._multimem_all_gather.default,
-                inp,
-                group_name,
-            ),
-        )
-
-    @register_lowering(symm_mem._multimem_all_gather_inplace)
-    def _symm_mem_multimem_all_gather_inplace(
-        inp: ir.TensorBox,
-        group_name: str,
-    ):
-        return ir.TensorBox.create(
-            ir._CollectiveKernel.create_out_of_place(
-                symm_mem._multimem_all_gather_inplace.default,
-                inp,
-                group_name,
-            ),
-        )
-
     @register_lowering(symm_mem._low_contention_reduce_scatter)
     def _symm_mem_low_contention_reduce_scatter(
         inp: ir.TensorBox,
