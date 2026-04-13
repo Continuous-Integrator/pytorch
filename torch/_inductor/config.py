@@ -1178,22 +1178,11 @@ class aten_distributed_optimizations:
     # Supersedes enable_low_contention_collectives when set.
     use_low_contention_collectives_for_fsdp: bool | None = False
 
-    # Implementation for all-gather replacement in low-contention mode.
-    #   "low_contention": copy engine P2P via symm_mem._low_contention_all_gather
-    #   "multimem": NVSwitch multicast via symm_mem._multimem_all_gather
-    #   "multimem_inplace": NVSwitch multicast, returns symm_mem buffer (no DtoD)
-    low_contention_ag_impl: str = "low_contention"
-
     # Skip the post-copy barrier in LC collectives. Reduces barrier overhead.
     # "none": keep all barriers (default, safest)
     # "ag_only": skip AG barrier2 only (RS barrier1 provides protection)
     # "all": skip all barrier2s (UNSAFE — causes data corruption)
     low_contention_skip_barrier2: str = "none"
-
-    # In auto mode (use_low_contention_collectives_for_fsdp=None), the
-    # fraction of collectives in a graph that must be hidden behind compute
-    # to trigger replacement.  Graphs below this threshold keep all NCCL.
-    low_contention_auto_threshold: float = 0.8
 
     # Minimum per-rank message size (bytes) for LC replacement.
     # Collectives smaller than this keep NCCL because LC's ~0.11ms barrier

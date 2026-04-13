@@ -1542,7 +1542,7 @@ class OverlapScheduler:
 
         # Persist overlap annotations for downstream passes (e.g., LC replacement).
         for info in self.collective_info.values():
-            info.start_node.meta["has_compute_overlap"] = not info.is_exposed
+            info.start_node.meta["has_compute_bound_overlap"] = not info.is_exposed
             if info.estimated_time_ms > 0:
                 ratio = 1.0 - info.exposed_time_ms / info.estimated_time_ms
                 info.start_node.meta["compute_overlap_ratio"] = max(0.0, min(1.0, ratio))
