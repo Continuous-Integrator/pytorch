@@ -365,7 +365,9 @@ def post_grad_passes(gm: torch.fx.GraphModule, is_inference: bool):
                 )
             )
 
-    lc_mode = config.aten_distributed_optimizations.use_low_contention_collectives_for_fsdp
+    lc_mode = (
+        config.aten_distributed_optimizations.use_low_contention_collectives_for_fsdp
+    )
     # Backward compat: old bool config maps to True
     if (
         lc_mode is False
@@ -380,9 +382,7 @@ def post_grad_passes(gm: torch.fx.GraphModule, is_inference: bool):
         GraphTransformObserver(
             gm, "replace_collectives_with_low_contention"
         ).apply_graph_pass(
-            lambda graph: replace_collectives_with_low_contention(
-                graph, mode=lc_mode
-            )
+            lambda graph: replace_collectives_with_low_contention(graph, mode=lc_mode)
         )
 
     # Keep these last, since they introduce mutation. Look at

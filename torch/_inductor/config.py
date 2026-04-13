@@ -1178,12 +1178,6 @@ class aten_distributed_optimizations:
     # Supersedes enable_low_contention_collectives when set.
     use_low_contention_collectives_for_fsdp: bool | None = False
 
-    # Skip the post-copy barrier in LC collectives. Reduces barrier overhead.
-    # "none": keep all barriers (default, safest)
-    # "ag_only": skip AG barrier2 only (RS barrier1 provides protection)
-    # "all": skip all barrier2s (UNSAFE — causes data corruption)
-    low_contention_skip_barrier2: str = "none"
-
     # Minimum per-rank message size (bytes) for LC replacement.
     # Collectives smaller than this keep NCCL because LC's ~0.11ms barrier
     # overhead dominates for small messages.  Micro-benchmarks show LC

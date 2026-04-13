@@ -1329,9 +1329,7 @@ class OverlapScheduler:
                 continue
 
             # Check if we can reach this collective without scheduling compute, other collectives, or waits
-            path = self._find_schedulable_path(
-                collective, overlap_node, why
-            )
+            path = self._find_schedulable_path(collective, overlap_node, why)
             if path is None:
                 continue
 

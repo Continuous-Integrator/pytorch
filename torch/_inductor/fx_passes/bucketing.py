@@ -162,8 +162,7 @@ def _populate_node_meta(
             # Propagate overlap annotations from overlap_scheduling.
             # Conservative: bucket has overlap only if ALL constituents do.
             overlap_vals = [
-                bn.meta.get("has_compute_bound_overlap")
-                for bn in bucket_nodes
+                bn.meta.get("has_compute_bound_overlap") for bn in bucket_nodes
             ]
             if all(v is not None for v in overlap_vals):
                 n.meta["has_compute_bound_overlap"] = all(overlap_vals)

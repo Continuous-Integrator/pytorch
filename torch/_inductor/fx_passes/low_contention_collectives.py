@@ -16,10 +16,9 @@ def is_compute_bound_node(n: torch.fx.Node) -> bool:
     Checks whether the op has a registered FLOP formula — only
     compute-intensive ops (mm, bmm, addmm, conv, sdpa, etc.) do.
     """
-    return (
-        getattr(n.target, "overloadpacket", None)
-        in torch.utils.flop_counter.flop_registry
-    )
+    from torch.utils.flop_counter import flop_registry
+
+    return getattr(n.target, "overloadpacket", None) in flop_registry
 
 
 def replace_collectives_with_low_contention(
@@ -76,18 +75,34 @@ def replace_collectives_with_low_contention(
     skipped_no_overlap = 0
     skipped_small = 0
     for node, is_ag in collectives:
+        coll_type = "AG" if is_ag else "RS"
         # Size filter: LC barrier overhead dominates for small messages
         if min_bytes > 0:
             per_rank_bytes = _get_per_rank_bytes(node)
             if per_rank_bytes is not None and per_rank_bytes < min_bytes:
                 skipped_small += 1
+                log.debug(
+                    "LC skip %s %s: size %d < min_bytes %d",
+                    coll_type,
+                    node.name,
+                    per_rank_bytes,
+                    min_bytes,
+                )
                 continue
 
         # In auto mode, only replace collectives overlapping compute-bound ops
         if mode is None:
-            has_overlap = node.meta.get("has_compute_bound_overlap")
+            meta_overlap = node.meta.get("has_compute_bound_overlap")
+            has_overlap = meta_overlap
             if has_overlap is None:
                 has_overlap = _has_compute_bound_overlap(node, graph)
+            log.debug(
+                "LC overlap %s %s: meta=%s fallback=%s",
+                coll_type,
+                node.name,
+                meta_overlap,
+                has_overlap,
+            )
             if not has_overlap:
                 skipped_no_overlap += 1
                 continue
@@ -149,32 +164,121 @@ def _get_per_rank_bytes(node):
 def _has_compute_bound_overlap(start_node, graph):
     """Check if compute-bound ops (matmul, conv, attention) exist between
     the collective start and its wait in topological order."""
-    wait_node = None
-    for user in start_node.users:
-        if _is_wait_tensor(user):
-            wait_node = user
-            break
+    wait_node = _find_wait_for_collective(start_node)
     if wait_node is None:
+        log.debug(
+            "LC overlap %s: no wait_tensor found. "
+            "target=%s, args=%s, users=%s",
+            start_node.name,
+            start_node.target,
+            [(a.name if isinstance(a, torch.fx.Node) else a) for a in start_node.args],
+            [
+                (u.name, u.target)
+                for u in start_node.users
+            ],
+        )
         return False
 
     node_positions = {node: i for i, node in enumerate(graph.nodes)}
     start_pos = node_positions[start_node]
     wait_pos = node_positions[wait_node]
+    nodes_between = wait_pos - start_pos - 1
 
     for node in graph.nodes:
         pos = node_positions[node]
         if pos <= start_pos or pos >= wait_pos:
             continue
         if is_compute_bound_node(node):
+            log.debug(
+                "LC overlap %s: found compute %s (%d nodes between start/wait)",
+                start_node.name,
+                node.target,
+                nodes_between,
+            )
             return True
+    log.debug(
+        "LC overlap %s: no compute-bound ops (%d nodes between start/wait)",
+        start_node.name,
+        nodes_between,
+    )
     return False
 
 
+_WAIT_TARGETS: OrderedSet | None = None
+
+
+def _get_wait_targets():
+    global _WAIT_TARGETS
+    if _WAIT_TARGETS is None:
+        _WAIT_TARGETS = OrderedSet([torch.ops._c10d_functional.wait_tensor.default])
+        try:
+            _WAIT_TARGETS.add(torch.ops.c10d_functional.wait_tensor.default)
+        except AttributeError:
+            pass
+    return _WAIT_TARGETS
+
+
 def _is_wait_tensor(node):
-    return (
-        node.op == "call_function"
-        and node.target is torch.ops._c10d_functional.wait_tensor.default
-    )
+    """Check if node is a wait_tensor op (direct or wrapped in ControlDeps)."""
+    if node.op != "call_function":
+        return False
+    # Direct wait_tensor
+    if node.target in _get_wait_targets():
+        return True
+    # ControlDeps-wrapped wait_tensor (from TBB manual scheduling):
+    # control_deps(deps, subgraph, *args) where subgraph wraps wait_tensor
+    if _is_control_deps_wrapping_wait(node):
+        return True
+    return False
+
+
+def _is_control_deps_wrapping_wait(node):
+    """Check if a ControlDeps node wraps a wait_tensor op."""
+    from torch._inductor.fx_passes.control_dependencies import ControlDeps
+
+    if not isinstance(node.target, ControlDeps):
+        return False
+    # Check subgraph (args[1] is a GraphModule containing the wrapped op)
+    if len(node.args) >= 2:
+        subgraph = node.args[1]
+        if isinstance(subgraph, torch.fx.GraphModule):
+            for n in subgraph.graph.nodes:
+                if n.op == "call_function" and n.target in _get_wait_targets():
+                    return True
+    # Fallback: check if the node name indicates wait_tensor
+    if "wait_tensor" in node.name:
+        return True
+    return False
+
+
+def _find_wait_for_collective(start_node):
+    """Find the wait_tensor node for a collective.
+
+    Handles multiple graph patterns:
+    1. Direct: start -> wait_tensor(start)
+    2. _out variant: start(out=buf) -> wait_tensor(buf)
+    3. ControlDeps-wrapped: start -> control_deps(wait_tensor_subgraph, start)
+    """
+    for user in start_node.users:
+        if _is_wait_tensor(user):
+            return user
+
+    # For _out variants, check users of the out-buffer argument.
+    c10d = torch.ops._c10d_functional
+    out_arg_idx = None
+    if start_node.target is c10d.all_gather_into_tensor_out.default:
+        out_arg_idx = 3
+    elif start_node.target is c10d.reduce_scatter_tensor_out.default:
+        out_arg_idx = 4
+
+    if out_arg_idx is not None and len(start_node.args) > out_arg_idx:
+        out_buf = start_node.args[out_arg_idx]
+        if isinstance(out_buf, torch.fx.Node):
+            for user in out_buf.users:
+                if _is_wait_tensor(user):
+                    return user
+
+    return None
 
 
 def _ensure_symm_mem_for_group(group_name, enabled_groups):

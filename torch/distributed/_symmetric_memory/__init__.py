@@ -1723,9 +1723,7 @@ def _low_contention_all_gather(
             remote_rank = (rank - step) % world_size
             src_buf = symm_mem.get_buffer(remote_rank, tensor.shape, tensor.dtype)
             chunks[remote_rank].copy_(src_buf)
-        _skip = torch._inductor.config.aten_distributed_optimizations.low_contention_skip_barrier2
-        if _skip not in ("ag_only", "all"):
-            symm_mem.barrier()
+        symm_mem.barrier()
         torch._C._distributed_c10d._register_work(output, Work())
         return output
 
@@ -1766,9 +1764,7 @@ def _low_contention_reduce_scatter_with_symm_mem_input(
                 chunks[0].numel() * rank,
             )
             chunks[remote_rank].copy_(src_buf)
-        _skip = torch._inductor.config.aten_distributed_optimizations.low_contention_skip_barrier2
-        if _skip != "all":
-            symm_mem.barrier()
+        symm_mem.barrier()
 
         ret = a2a_res.unflatten(0, (world_size, -1))
         if reduce_op == "sum":
@@ -1803,9 +1799,7 @@ def _low_contention_reduce_scatter_with_workspace(
                 remote_rank, chunks[0].shape, chunks[0].dtype, chunks[0].numel() * rank
             )
             dst_buf.copy_(chunks[remote_rank])
-        _skip = torch._inductor.config.aten_distributed_optimizations.low_contention_skip_barrier2
-        if _skip != "all":
-            workspace.barrier()
+        workspace.barrier()
 
         buf = workspace.get_buffer(rank, tensor.shape, tensor.dtype)
         ret = buf.unflatten(0, (world_size, -1))
