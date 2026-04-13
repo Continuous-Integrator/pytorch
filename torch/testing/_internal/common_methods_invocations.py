@@ -12724,6 +12724,7 @@ op_db: list[OpInfo] = [
            gradcheck_fast_mode=True,
            supports_forward_ad=True,
            supports_fwgrad_bwgrad=True,
+           sample_inputs_func=sample_inputs_addbmm,
            decorators=[
                DecorateInfo(
                    toleranceOverride({torch.float32: tol(atol=1.3e-05, rtol=1.3e-05),
@@ -12758,9 +12759,7 @@ op_db: list[OpInfo] = [
                # AssertionError: RuntimeError not raised : Expected RuntimeError
                # when doing an unsafe cast from a result of dtype torch.float32
                # into an out= with dtype torch.long
-               DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_out', dtypes=(torch.float32,), device_type='mps'),
-           ),
-           sample_inputs_func=sample_inputs_addbmm),
+               DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_out', dtypes=(torch.float32,), device_type='mps'))),
     OpInfo('baddbmm',
            dtypes=all_types_and_complex_and(torch.bfloat16, torch.float16),
            dtypesIfCUDA=floating_types_and(torch.float16, torch.complex64, torch.complex128,
@@ -13676,13 +13675,12 @@ op_db: list[OpInfo] = [
            dtypesIfHpu=custom_types(torch.float32, torch.bfloat16, torch.int32),
            supports_forward_ad=True,
            supports_fwgrad_bwgrad=True,
+           sample_inputs_func=sample_inputs_cumulative_ops,
            skips=(
                # cumsum does not handle correctly out= dtypes
                DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_out'),
                # The following dtypes did not work in forward but are listed by the OpInfo: {torch.bool}
-               DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_dtypes', device_type='mps'),
-           ),
-           sample_inputs_func=sample_inputs_cumulative_ops),
+               DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_dtypes', device_type='mps'))),
     OpInfo('cumprod',
            dtypes=all_types_and_complex_and(torch.float16, torch.bfloat16),
            dtypesIfHpu=custom_types(torch.float32, torch.bfloat16),
