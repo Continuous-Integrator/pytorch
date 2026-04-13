@@ -758,12 +758,17 @@ def autograd_cache_key(
             pickler = AOTAutogradCachePickler(gm)
             # The prefix distinguishes among the other kinds of objects we cache
             key = "a" + pickler.get_hash(details)
-            debug_lines = pickler.debug_lines(details)
-            log.debug(
-                "Autograd graph cache hash details for key %s:\n%s",
-                key,
-                LazyString(lambda: "\n".join(debug_lines)),
-            )
+            # debug_lines re-hashes every attribute individually and is
+            # expensive. Only compute when debug logging is enabled.
+            if log.isEnabledFor(logging.DEBUG):
+                debug_lines = pickler.debug_lines(details)
+                log.debug(
+                    "Autograd graph cache hash details for key %s:\n%s",
+                    key,
+                    LazyString(lambda: "\n".join(debug_lines)),
+                )
+            else:
+                debug_lines: list[str] = []
             return key, debug_lines
         except Exception:
             # If enable_aot_compile is set, we're in AOT precompile mode where we always
@@ -796,6 +801,7 @@ def sanitize_gm_for_cache(
     """
     # Mapping from each field to a default value
     IGNORED_FIELDS: dict[str, Any] = {
+        # pyrefly: ignore [implicit-any]
         "meta": {},  # metadata used by export
         "compile_subgraph_reason": None,  # Used by dynamo only for logging, no change in inductor/autograd behavior
         "_param_name_to_source": None,  # Encapsulated by aot_config.aot_autograd_arg_pos_to_source
