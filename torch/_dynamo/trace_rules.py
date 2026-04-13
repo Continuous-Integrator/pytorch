@@ -64,6 +64,7 @@ from .variables import (
     FunctorchHigherOrderVariable,
     InspectSignatureVariable,
     IterBuiltinVariable,
+    ListBuiltinVariable,
     LocalGeneratorFunctionVariable,
     LocalGeneratorObjectVariable,
     NestedUserFunctionVariable,
@@ -353,6 +354,7 @@ manual_torch_name_rule_map: dict[
     "torch._dynamo.nonstrict_trace": UserFunctionVariable,
     "torch._dynamo.bytecode_debugger.breakpoint": UserFunctionVariable,
     "torch._dynamo.patch_dynamo_config": UserFunctionVariable,
+    "torch._dynamo.disable_nested_graph_breaks": UserFunctionVariable,
     "torch._dynamo.error_on_graph_break": UserFunctionVariable,
     "torch._dynamo.override_cudagraphs": UserFunctionVariable,
     "torch.fx.experimental.symbolic_shapes.guard_size_oblivious": TorchInGraphFunctionVariable,
@@ -3997,7 +3999,11 @@ def is_torch(filename: str) -> bool:
 Main entry point for looking up the trace rule (the Dynamo variable) for a given callable object.
 """
 
-BUILTIN_CALLABLES = {dict: DictBuiltinVariable, iter: IterBuiltinVariable}
+BUILTIN_CALLABLES = {
+    dict: DictBuiltinVariable,
+    iter: IterBuiltinVariable,
+    list: ListBuiltinVariable,
+}
 
 
 def lookup_callable(obj: Callable[..., Any]) -> type[VariableTracker] | None:
