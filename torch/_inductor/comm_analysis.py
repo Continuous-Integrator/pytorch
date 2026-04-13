@@ -351,12 +351,18 @@ def compute_min_saturation_bytes(
     Compute the minimum collective message size (in bytes) needed to achieve
     `target_efficiency` of the peak algorithm bandwidth.
 
+    # Keep in sync with estimate_nccl_collective_runtime_impl above.
     Uses the same NCCL analytical model as estimate_nccl_collective_runtime_impl.
     At target_efficiency e, the minimum bytes satisfy:
         transport_time / (transport_time + latency) >= e
     which gives:
         min_bytes = e / (1 - e) * latency_seconds * bandwidth_bytes_per_second
     """
+    _SUPPORTED = (NCCL_COLL.ALL_GATHER, NCCL_COLL.REDUCE_SCATTER, NCCL_COLL.ALL_REDUCE)
+    assert coll in _SUPPORTED, (
+        f"Unsupported collective {coll}, expected one of {_SUPPORTED}"
+    )
+
     if group_size <= 1:
         return 0
 
@@ -385,9 +391,7 @@ def compute_min_saturation_bytes(
 
     if coll == NCCL_COLL.ALL_REDUCE:
         nsteps = 2 * (nRanks - 1)
-    elif coll in (NCCL_COLL.REDUCE_SCATTER, NCCL_COLL.ALL_GATHER):
-        nsteps = nRanks - 1
-    else:
+    else:  # ALL_GATHER, REDUCE_SCATTER (guarded by assert above)
         nsteps = nRanks - 1
 
     bandwidth_GB_per_s = busBw * (1.0 * nRanks) / nsteps
@@ -395,7 +399,7 @@ def compute_min_saturation_bytes(
     intraHw = NCCL_HW.NVLINK
     if coll == NCCL_COLL.ALL_REDUCE:
         nInterSteps = 2 * nNodes if nNodes > 1 else 0
-    else:
+    else:  # ALL_GATHER, REDUCE_SCATTER
         nInterSteps = nNodes - 1
 
     latency_us = baseLat[nccl_algo][nccl_proto]

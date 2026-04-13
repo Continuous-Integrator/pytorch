@@ -61,7 +61,14 @@ def is_fsdp_reduce_scatter_wait(wait: torch.fx.Node) -> bool:
     Uses forward BFS to verify every path from *wait* reaches an output node and
     every intermediate node is unary (single input). Handles arbitrary chains of
     view/reshape/cast ops between RS wait and output.
+
+    Note: this would return False for compiled multi-microbatch gradient
+    accumulation where add(existing_grad, rs_result) appears in the chain.
+    Current FSDP2 compile patterns don't produce this (each microbatch is
+    compiled separately).
     """
+    if not wait.users:
+        return False
     visited: OrderedSet[torch.fx.Node] = OrderedSet()
     queue = [wait]
     while queue:
@@ -287,10 +294,15 @@ def pre_bucket_fsdp_collectives(
     if not fsdp_groups:
         return
 
-    # Count collectives before bucketing
-    ag_count = sum(1 for n in gm.graph.nodes if is_all_gather(n))
-    rs_count = sum(1 for n in gm.graph.nodes if is_reduce_scatter_tensor(n))
-    ar_count = sum(1 for n in gm.graph.nodes if is_all_reduce_tensor(n))
+    def _is_fsdp_coll(n, is_coll_fn):
+        return is_coll_fn(n) and _get_group_name(n) in fsdp_groups
+
+    # Count FSDP collectives before bucketing
+    ag_count = sum(1 for n in gm.graph.nodes if _is_fsdp_coll(n, is_all_gather))
+    rs_count = sum(
+        1 for n in gm.graph.nodes if _is_fsdp_coll(n, is_reduce_scatter_tensor)
+    )
+    ar_count = sum(1 for n in gm.graph.nodes if _is_fsdp_coll(n, is_all_reduce_tensor))
 
     # Verbose: log per-collective sizes before bucketing
     if verbose:
@@ -319,6 +331,9 @@ def pre_bucket_fsdp_collectives(
     if group_size is not None:
         cap_mb = compute_pre_bucket_cap_mb(group_size, bucket_cap_mb)
     else:
+        # Shouldn't be reachable: fsdp_groups is populated from AG nodes, so
+        # the loop above should always find at least one matching AG.
+        logger.warning("pre_bucket_fsdp: no FSDP all_gather found for group_size")
         cap_mb = bucket_cap_mb if bucket_cap_mb is not None else 500.0
 
     def bucket_cap_fn(_idx: int) -> float:
@@ -335,11 +350,15 @@ def pre_bucket_fsdp_collectives(
         gm, bucket_cap_mb_by_bucket_idx=bucket_cap_fn, fsdp_groups=fsdp_groups
     )
 
-    ag_count_after = sum(1 for n in gm.graph.nodes if is_all_gather(n))
-    rs_count_after = sum(1 for n in gm.graph.nodes if is_reduce_scatter_tensor(n))
-    ar_count_after = sum(1 for n in gm.graph.nodes if is_all_reduce_tensor(n))
+    ag_count_after = sum(1 for n in gm.graph.nodes if _is_fsdp_coll(n, is_all_gather))
+    rs_count_after = sum(
+        1 for n in gm.graph.nodes if _is_fsdp_coll(n, is_reduce_scatter_tensor)
+    )
+    ar_count_after = sum(
+        1 for n in gm.graph.nodes if _is_fsdp_coll(n, is_all_reduce_tensor)
+    )
 
-    nNodes = math.ceil((group_size or 1) / 8)
+    nNodes = math.ceil(group_size / 8) if group_size is not None else 1
 
     # Verbose: log per-collective sizes after bucketing
     if verbose:
