@@ -60,13 +60,6 @@ class Graph(_acceleratorGraph):
         return super().__new__(cls, keep_graph)
 
     def __init__(
-        self, keep_graph: bool = False, *, pool: tuple[int, int] | None = None
-    ) -> None:
-        super().__init__(keep_graph)
-        self.graph_pool = pool
-
-    # pyrefly: ignore [bad-override]
-    def capture_begin(
         self,
         keep_graph: bool = False,
         *,
