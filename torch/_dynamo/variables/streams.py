@@ -184,6 +184,20 @@ def _(device_type: str, device_index: int) -> None:
 has_side_effect(torch.ops.streams.synchronize_device.default)
 
 
+@custom_op("streams::synchronize_stream", mutates_args=())
+def synchronize_stream(stream_index: int) -> None:
+    stream = _get_stream_by_index(stream_index)
+    stream.synchronize()
+
+
+@synchronize_stream.register_fake
+def _(stream_index: int) -> None:
+    pass
+
+
+has_side_effect(torch.ops.streams.synchronize_stream.default)
+
+
 @custom_op("streams::wait_stream", mutates_args=())
 def wait_stream(waiting_stream_index: int, waited_on_stream_index: int) -> None:
     waiting = _get_stream_by_index(waiting_stream_index)
@@ -324,6 +338,9 @@ class StreamContextVariable(FxTracebackAnnotateVariable):
         tx.symbolic_stream_state.exit_stream()
         return super().exit(tx, *args)
 
+    def python_type(self) -> type:
+        return torch.cuda.StreamContext
+
     def supports_graph_breaks(self) -> bool:
         return True
 
@@ -334,6 +351,8 @@ class StreamContextVariable(FxTracebackAnnotateVariable):
 
 class StreamVariable(StreamContextVariable):
     """Represents the device-agnostic torch.Stream class"""
+
+    _cpython_type = torch.Stream
 
     def __init__(
         self,
@@ -372,9 +391,17 @@ class StreamVariable(StreamContextVariable):
         from ..utils import cmp_name_to_op_mapping, proxy_args_kwargs
         from .builder import wrap_fx_proxy_cls
 
-        if name in ("wait_stream", "synchronize", "wait_event"):
+        if name in ("wait_stream", "wait_event"):
             tx.output.create_proxy(
                 "call_method", name, *proxy_args_kwargs([self] + args, kwargs)
+            )
+            return CONSTANT_VARIABLE_NONE
+        elif name == "synchronize":
+            tx.output.create_proxy(
+                "call_function",
+                torch.ops.streams.synchronize_stream,
+                (self.user_object_index,),
+                {},
             )
             return CONSTANT_VARIABLE_NONE
         elif name == "query":
@@ -474,6 +501,8 @@ class StreamVariable(StreamContextVariable):
 class CudaStreamVariable(StreamVariable):
     """Represents torch.cuda.Stream, preserving device-specific type and attributes."""
 
+    _cpython_type = torch.cuda.Stream
+
     def python_type(self) -> type:
         return torch.cuda.Stream
 
@@ -505,6 +534,9 @@ class EventVariable(VariableTracker):
         self.proxy = proxy
         self.value = value
         self.user_object_index = user_object_index
+
+    def python_type(self) -> type:
+        return torch.Event
 
     def get_real_python_backed_value(self) -> object:
         return self.value

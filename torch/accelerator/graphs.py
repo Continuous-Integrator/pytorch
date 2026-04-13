@@ -90,6 +90,7 @@ class Graph(_acceleratorGraph):
         super().__init__(keep_graph)
         self.graph_pool = pool
 
+    # pyrefly: ignore [bad-override]
     def capture_begin(
         self,
         capture_error_mode: Literal[
