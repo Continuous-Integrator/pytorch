@@ -17,6 +17,7 @@ from torch._inductor.comm_analysis import (
 from torch._inductor.runtime.runtime_utils import dynamo_timed
 from torch._logging import trace_structured
 from torch.fx.experimental.proxy_tensor import make_fx
+from torch.fx.operator_schemas import normalize_function
 from torch.fx.traceback import NodeSource, NodeSourceAction
 from torch.utils._ordered_set import OrderedSet
 
@@ -98,19 +99,33 @@ def _schedulable_wait_node(node: torch.fx.Node) -> bool:
     """
     Add additional check on if the wait node is schedulable
     We should not schedule a fx node that is:
-        1. wait on a collective that is not callable
+        1. wait on a collective whose target is not an OpOverload
         2. wait on a non-NCCL communication node
+        3. wait on a collective with a symbolic (non-string) group_name
     """
     if not is_wait_tensor(node):
         return False
     assert isinstance(node.args[0], torch.fx.Node)
-    target = node.args[0].target
+    coll_node = node.args[0]
+    target = coll_node.target
     if not isinstance(target, torch._ops.OpOverload):
         return False
-    is_callable: bool = node.args[0].op == "call_function"
+    if coll_node.op != "call_function":
+        return False
     coll: NCCL_COLL = get_collective_type_from_kernel_name(target.name())
-    is_collective: bool = coll != NCCL_COLL.UNSUPPORTED
-    return is_callable and is_collective
+    if coll == NCCL_COLL.UNSUPPORTED:
+        return False
+    # Skip collectives with symbolic group_name (e.g. flattened submeshes)
+    # — runtime estimation needs to resolve the group to get its size.
+    opt = normalize_function(
+        target,
+        args=coll_node.args,
+        kwargs=coll_node.kwargs,
+        normalize_to_only_use_kwargs=True,
+    )
+    if opt is None or not isinstance(opt[1].get("group_name"), str):
+        return False
+    return True
 
 
 def _populate_node_meta(
