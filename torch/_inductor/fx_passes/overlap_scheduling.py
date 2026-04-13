@@ -160,12 +160,15 @@ def estimate_collective_time(
 
 
 def is_compute_node(n: fx.Node) -> bool:
-    """True if n is a compute-bound op (matmul, conv, attention/SDPA)."""
-    from torch._inductor.fx_passes.low_contention_collectives import (
-        is_compute_bound_node,
-    )
+    """True if n is a compute-bound op (matmul, conv, attention/SDPA).
 
-    return is_compute_bound_node(n)
+    Checks whether the op has a registered FLOP formula — only
+    compute-intensive ops (mm, bmm, addmm, conv, sdpa, etc.) do.
+    """
+    return (
+        getattr(n.target, "overloadpacket", None)
+        in torch.utils.flop_counter.flop_registry
+    )
 
 
 def estimate_roofline_runtime_ms(node: fx.Node) -> float:

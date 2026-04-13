@@ -1176,7 +1176,7 @@ class aten_distributed_optimizations:
     #     (not on the critical path), using overlap annotations from
     #     overlap_scheduling or independent analysis.
     # Supersedes enable_low_contention_collectives when set.
-    use_low_contention_collectives_for_fsdp: bool | None = False
+    use_low_contention_collectives_for_fsdp: bool | None = None
 
     # Minimum per-rank message size (bytes) for LC replacement.
     # Collectives smaller than this keep NCCL because LC's ~0.11ms barrier
