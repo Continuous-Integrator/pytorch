@@ -421,53 +421,32 @@ static PyObject* THPVariable_WrapWithType(
   }
 
   c10::TensorImpl* tensor_impl = var.unsafeGetTensorImpl();
-  c10::impl::PyObjectSlot* pyobj_slot = tensor_impl->pyobj_slot();
-
-  PyObject* obj = pyobj_slot->load_pyobj();
-  if (obj) {
+  THPObjectPtr obj(PyObjectPreservation::get_or_init(*tensor_impl, [&]() {
+    PyTypeObject* type = reinterpret_cast<PyTypeObject*>(THPVariableClass);
     if (desired_type) {
-      check_tensor_subclass(obj, *desired_type);
+      type = *desired_type;
+    } else if (C10_UNLIKELY(var.device().type() == c10::kXLA)) {
+      if (auto clazz = getPythonTensorClass(var.device())) {
+        type = reinterpret_cast<PyTypeObject*>(clazz);
+      }
     }
-    return Py_NewRef(obj);
-  }
 
-  PyTypeObject* type = reinterpret_cast<PyTypeObject*>(THPVariableClass);
+    PyObject* wrapper = type->tp_alloc(type, 0);
+    TORCH_CHECK_WITH(
+        OutOfMemoryError,
+        wrapper,
+        "Failed to allocate a ",
+        type->tp_name,
+        " object");
+    auto v = reinterpret_cast<THPVariable*>(wrapper);
+    new (&v->cdata) Tensor(std::forward<T>(var));
+    return wrapper;
+  }));
+
   if (desired_type) {
-    type = *desired_type;
-  } else if (C10_UNLIKELY(var.device().type() == c10::kXLA)) {
-    if (auto clazz = getPythonTensorClass(var.device())) {
-      type = reinterpret_cast<PyTypeObject*>(clazz);
-    }
+    check_tensor_subclass(obj.get(), *desired_type);
   }
-
-  obj = type->tp_alloc(type, 0);
-  TORCH_CHECK(obj, "Failed to allocate a ", type->tp_name, " object");
-
-  // Ensure that PyUnstable_TryIncref calls don't fail spuriously in
-  // free-threaded Python.
-  PyUnstable_EnableTryIncRef(obj);
-
-  auto v = reinterpret_cast<THPVariable*>(obj);
-  new (&v->cdata) Tensor(std::forward<T>(var));
-
-  if (THPVariable_Unpack(obj).is_uniquely_owned()) {
-    // We can use a faster non-atomic code path if we have the only reference to
-    // a fresh Tensor.
-    PyObjectPreservation::init_fresh_nonatomic(tensor_impl, pyobj_slot, obj);
-    return obj;
-  }
-
-  PyObject* wrapper =
-      PyObjectPreservation::init_once(tensor_impl, pyobj_slot, obj);
-  if (wrapper != obj) {
-    // Another thread beat us to it
-    Py_DECREF(obj);
-    if (desired_type) {
-      check_tensor_subclass(wrapper, *desired_type);
-    }
-    return Py_NewRef(wrapper);
-  }
-  return obj;
+  return obj.release();
 }
 
 PyObject* THPVariable_Wrap(at::TensorBase&& var) {
@@ -3854,13 +3833,10 @@ static int THPVariable_traverse(PyObject* self, visitproc visit, void* arg) {
       if (autograd_meta) {
         // Do NOT call grad_fn() here as that might trigger a recompute
         const auto& grad_fn = autograd_meta->grad_fn_;
-        if (grad_fn && grad_fn.use_count() == 1) {
-          // All Node can have a pyobj (stored in "pyobj_")
-          Py_VISIT(grad_fn->pyobj());
-          // PyNode are special as they also have an "obj" field
-          if (auto py_node_fn = dynamic_cast<PyNode*>(grad_fn.get())) {
-            Py_VISIT(py_node_fn->obj);
-          }
+        // Check that this python object is the sole owner of the grad_fn.
+        // The grad_fn's PyObject holds the other reference.
+        if (grad_fn && grad_fn.use_count() == 2) {
+          Py_VISIT(grad_fn->pyobj_slot()->load_pyobj());
         }
       }
     }
