@@ -3874,35 +3874,6 @@ Tensor& linalg_solve_triangular_out(
     out.transpose_(-2, -1);
   }
 
-  // Prepare A to be BLAS-compliant.
-  const auto pA = [unitriangular](const auto& A, const auto& B) -> c10::MaybeOwned<Tensor> {
-    // FIXME: batch overlaps are permissible, but the kernel loops over the batch dims,
-    // so the batch dims are being materialized.
-    // This behavior is inherited from the previous implementations.
-    if ((isRowMajorLike(A) || isColMajorLike(A))
-      // A.is_neg and unitriangular triggers a clone because (A, B) is not linear in the first argument, i.e.
-      // (-A + I, B) = -(A - I, B) = -(A + I - 2I, B) != (A + I, B) - 2B.
-      && !(A.is_neg() && unitriangular)
-    ) {
-      return c10::MaybeOwned<Tensor>::borrowed(A);
-    } else {
-      // Here A will be cloned
-      // NOTE: This is the only place A is copied!
-      //
-      // Conj materialization optimizations:
-      // (A.is_conj() != B.is_conj()) might imply materialized conj in memory,
-      // see solve_by_layout_match and solve_with_matching_layout.
-      // So, we make a copy of A such that (A_clone.is_conj() == B.is_conj().
-      auto A_clone = cloneMatrix(
-        B.is_conj() ? A.conj() : A,
-        // NOTE: preserve memory format for faster clone
-        /*make_col_major_like=*/(A.stride(-1) != 1)
-      );
-      A_clone._set_conj(B.is_conj());
-      return c10::MaybeOwned<Tensor>::owned(std::move(A_clone));
-    }
-  }(A_, B_);
-
   // Prepare solve output to be BLAS-compliant.
   auto pOut = [](const Tensor& out) -> c10::MaybeOwned<Tensor> {
     // Out is borrowed when
@@ -3914,6 +3885,36 @@ Tensor& linalg_solve_triangular_out(
       return c10::MaybeOwned<Tensor>::owned(at::empty({0}, out.options()));
     }
   }(out);
+
+  // Prepare A to be BLAS-compliant.
+  const auto pA = [unitriangular](const auto& A, const auto& B) -> c10::MaybeOwned<Tensor> {
+    // FIXME: batch overlaps are permissible, but the kernel loops over the batch dims,
+    // so the batch dims are being materialized.
+    // This behavior is inherited from the previous implementations.
+    if ((isRowMajorLike(A) || isColMajorLike(A))
+      // A.is_neg and unitriangular triggers a clone because (A, B) is not linear in the first argument, i.e.
+      // (-A + I, B) = -(A - I, B) = -(A + I - 2I, B) != (A + I, B) - (2I, B) = (A + I, B) - 2B.
+      && !(A.is_neg() && unitriangular)
+    ) {
+      return c10::MaybeOwned<Tensor>::borrowed(A);
+    } else {
+      // Here A will be cloned
+      // NOTE: This is the only place A is copied!
+      //
+      // Conj materialization optimizations:
+      // (A.is_conj() != B.is_conj()) might imply materialized conj in memory,
+      // see solve_by_layout_match and solve_with_matching_layout.
+      // So, we make a copy of A such that (A_clone.is_conj() == B.is_conj()).
+      auto A_clone = cloneMatrix(
+        B.is_conj() ? A.conj() : A,
+        // NOTE: preserve memory format for faster clone
+        /*make_col_major_like=*/(A.stride(-1) != 1)
+      );
+      A_clone._set_conj(B.is_conj());
+      return c10::MaybeOwned<Tensor>::owned(std::move(A_clone));
+    }
+  }(A_, *pOut);
+
   // Empty out with out.shape != B.sizes implies full ownership.
   // This means we are free to alter its stride structure and conj/neg flags.
   const bool out_fully_owned = (pOut->numel() == 0) && (pOut->sizes() != B_.sizes());
@@ -3992,7 +3993,7 @@ Tensor& linalg_solve_triangular_out(
   // Solve (A, B) by trying to match layouts of A and B.
   // This function is a composition of all other previously defined functions.
   // Conj materialization optimizations are deployed, when possible,
-  // when (A.is_conj() != B.is_conj(), see solve_with_matching_layout.
+  // when (A.is_conj() != B.is_conj()), see solve_with_matching_layout.
   // NOTE: B is modified in-place.
   // NOTE: NO COPY of A is done.
   const auto solve_by_layout_match = [&](
