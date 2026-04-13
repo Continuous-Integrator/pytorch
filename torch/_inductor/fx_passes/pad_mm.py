@@ -163,7 +163,7 @@ def can_pad(
     if (
         torch._inductor.config.deterministic
         and not torch._inductor.config.force_shape_pad
-        and "pad_mm" not in torch._inductor.config.autoheuristic_use
+        and not torch._inductor.config.use_autoheuristic("pad_mm")
     ):
         return False
 
