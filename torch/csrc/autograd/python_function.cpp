@@ -379,7 +379,8 @@ void PyNode::compiled_args(CompiledNodeArgs& args) const {
   args.collect(f->output_info);
   args.collect(f->input_info);
 
-  c10::SafePyObject backward_obj(Py_NewRef(pyobj()), getPyInterpreter());
+  PyObject* py = pyobj();
+  c10::SafePyObject backward_obj(Py_NewRef(py), getPyInterpreter());
   std::optional<c10::SafePyObject> backward_state_obj;
   PyObject* bw_state = f->compiled_autograd_backward_state;
   if (args.cond(bw_state != nullptr)) {
