@@ -432,7 +432,12 @@ static PyObject* THPVariable_WrapWithType(
     }
 
     PyObject* wrapper = type->tp_alloc(type, 0);
-    TORCH_CHECK(wrapper, "Failed to allocate a ", type->tp_name, " object");
+    TORCH_CHECK_WITH(
+        OutOfMemoryError,
+        wrapper,
+        "Failed to allocate a ",
+        type->tp_name,
+        " object");
     auto v = reinterpret_cast<THPVariable*>(wrapper);
     new (&v->cdata) Tensor(std::forward<T>(var));
     return wrapper;
