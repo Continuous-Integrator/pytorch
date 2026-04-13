@@ -27,21 +27,8 @@ def _get_collective_info(node):
 
 def replace_collectives_with_low_contention(
     graph: torch.fx.Graph,
-    mode: bool | None = None,
 ) -> None:
-    """Replace FSDP collectives with copy-engine symm_mem variants.
-
-    mode:
-        True  — replace all FSDP collectives (force).
-        False — don't replace any.
-        None  — per-collective: replace only those overlapping compute-bound ops
-                (matmul, conv, attention) and above the minimum size threshold.
-                Skips collectives that would overlap other groups' NCCL
-                collectives (e.g. TP), to avoid NVLink contention.
-    """
-    if mode is False:
-        return
-
+    """Replace FSDP collectives with copy-engine symm_mem variants."""
     symm_mem = torch.ops.symm_mem
 
     collectives = []
@@ -67,9 +54,7 @@ def replace_collectives_with_low_contention(
 
     # Filter to collectives whose groups we can actually resolve
     collectives = [
-        (node, is_ag, gn)
-        for node, is_ag, gn in collectives
-        if gn in valid_groups
+        (node, is_ag, gn) for node, is_ag, gn in collectives if gn in valid_groups
     ]
     if not collectives:
         return
@@ -79,9 +64,9 @@ def replace_collectives_with_low_contention(
     min_bytes = config.aten_distributed_optimizations.low_contention_min_bytes_per_rank
 
     replacements = 0
-    skipped_no_overlap = 0
     skipped_small = 0
-    skipped_nccl_contention = 0
+    skipped_no_overlap = 0
+    skipped_nvlink_contention = 0
     for node, is_ag, group_name in collectives:
         coll_type = "AG" if is_ag else "RS"
 
@@ -99,39 +84,38 @@ def replace_collectives_with_low_contention(
                 )
                 continue
 
-        # In auto mode, apply per-collective heuristics
-        if mode is None:
-            # Only replace collectives overlapping compute-bound ops
-            has_overlap = node.meta.get("has_compute_bound_overlap")
-            if has_overlap is None:
-                has_overlap = _has_compute_bound_overlap(node, graph)
-            log.debug("LC overlap %s %s: %s", coll_type, node.name, has_overlap)
-            if not has_overlap:
-                skipped_no_overlap += 1
-                continue
+        # Only replace collectives that overlap compute-bound ops
+        # (matmul, conv, attention). LC adds barrier overhead, so replacing
+        # a collective on the critical path with no compute to hide behind
+        # would add latency for no benefit.
+        if not _has_compute_bound_overlap(node, graph):
+            skipped_no_overlap += 1
+            log.debug("LC skip %s %s: no compute-bound overlap", coll_type, node.name)
+            continue
 
-            # Skip if other groups' NCCL collectives (e.g. TP) overlap,
-            # to avoid NVLink contention between LC and NCCL traffic
-            if _has_other_group_collectives(node, group_name, graph):
-                skipped_nccl_contention += 1
-                log.debug(
-                    "LC skip %s %s: overlaps other-group NCCL collectives",
-                    coll_type,
-                    node.name,
-                )
-                continue
+        # Skip if other groups' NCCL collectives (e.g. TP) overlap,
+        # to avoid NVLink contention between LC and NCCL traffic
+        if _has_other_group_collectives(node, group_name, graph):
+            skipped_nvlink_contention += 1
+            log.debug(
+                "LC skip %s %s: overlaps other-group collectives (NVLink contention)",
+                coll_type,
+                node.name,
+            )
+            continue
 
         _replace_collective(node, graph, symm_mem, is_ag, group_name)
         replacements += 1
 
     log.info(
         "Replaced %d/%d FSDP collectives "
-        "(skipped: no_overlap=%d, small=%d, nccl_contention=%d, min_bytes=%d)",
+        "(skipped_small=%d, skipped_no_overlap=%d, "
+        "skipped_nvlink_contention=%d, min_bytes=%d)",
         replacements,
         len(collectives),
-        skipped_no_overlap,
         skipped_small,
-        skipped_nccl_contention,
+        skipped_no_overlap,
+        skipped_nvlink_contention,
         min_bytes,
     )
 
@@ -151,7 +135,7 @@ def _enable_symm_mem(group_name):
             enable_symm_mem_for_group(group_name)
         return True
     except (TypeError, RuntimeError) as e:
-        log.debug("LC: cannot enable symm_mem for group %s: %s", group_name, e)
+        log.debug("LC: cannot enable symm_mem for group %s: %s", group_name, e)  # noqa: G200
         return False
 
 

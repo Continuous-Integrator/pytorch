@@ -1163,20 +1163,11 @@ class aten_distributed_optimizations:
     overlap_scheduling_autofix_cycles: bool = False
 
     # Replace NCCL collectives (all_gather, reduce_scatter) with
-    # copy-engine-based symmetric memory low-contention collectives.
-    # Eligible collectives on NVLink-connected groups are replaced with
-    # symm_mem._low_contention_all_gather/_low_contention_reduce_scatter,
-    # which use copy engine P2P instead of SM-based NCCL kernels.
-    enable_low_contention_collectives: bool = False
-
-    # Selective replacement of FSDP collectives with copy-engine variants.
-    #   True:  replace all FSDP collectives (bucketed and standalone).
-    #   False: don't replace any.
-    #   None (auto): replace only collectives hidden behind compute
-    #     (not on the critical path), using overlap annotations from
-    #     overlap_scheduling or independent analysis.
-    # Supersedes enable_low_contention_collectives when set.
-    use_low_contention_collectives_for_fsdp: bool | None = None
+    # copy-engine-based symmetric memory low-contention collectives
+    # (symm_mem._low_contention_all_gather/_low_contention_reduce_scatter).
+    # Uses copy engine P2P instead of SM-based NCCL kernels, freeing SMs
+    # for overlapping compute.
+    optimize_contention_with_low_contention_collectives: bool = False
 
     # Minimum per-rank message size (bytes) for LC replacement.
     # Collectives smaller than this keep NCCL because LC's ~0.11ms barrier

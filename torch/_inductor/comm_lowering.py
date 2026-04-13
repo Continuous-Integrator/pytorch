@@ -183,6 +183,12 @@ def _one_shot_all_reduce(inp: ir.TensorBox, reduce_op, group_name):
     )
 
 
+def _create_out_of_place(kernel, inputs, *args) -> ir.IRNode:
+    node = ir._CollectiveKernel.create_out_of_place(kernel, inputs, *args)
+    assert isinstance(node, ir.IRNode)
+    return ir.TensorBox.create(node)
+
+
 def register_comm_lowerings():
     """
     Register lowerings for the comm subsystem.
@@ -286,11 +292,6 @@ def register_comm_lowerings():
             group_name,
         )
         return inputs
-
-    def _create_out_of_place(kernel, inputs, *args) -> ir.IRNode:
-        node = ir._CollectiveKernel.create_out_of_place(kernel, inputs, *args)
-        assert isinstance(node, ir.IRNode)
-        return ir.TensorBox.create(node)
 
     @register_comm_lowering(c10d.all_gather_into_tensor)
     def _all_gather_into_tensor(inp, group_size, group_name):
@@ -864,11 +865,6 @@ def register_symm_mem_lowerings():
             reduce_op,
         )
         return None
-
-    def _create_out_of_place(kernel, inputs, *args) -> ir.IRNode:
-        node = ir._CollectiveKernel.create_out_of_place(kernel, inputs, *args)
-        assert isinstance(node, ir.IRNode)
-        return ir.TensorBox.create(node)
 
     @register_lowering(symm_mem._low_contention_all_gather)
     def _symm_mem_low_contention_all_gather(

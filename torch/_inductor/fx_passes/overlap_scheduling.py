@@ -1528,13 +1528,6 @@ class OverlapScheduler:
             self.wasted_compute,
         )
 
-        # Annotate collectives for downstream passes (e.g., LC replacement).
-        # True iff any hiding node is compute-bound (matmul, conv, attention).
-        for info in self.collective_info.values():
-            info.start_node.meta["has_compute_bound_overlap"] = any(
-                is_compute_node(n) for n in info.hiding_nodes
-            )
-
         self.reorder_graph()
 
     def _bucket_collectives(self) -> None:

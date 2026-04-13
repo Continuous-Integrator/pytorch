@@ -159,14 +159,6 @@ def _populate_node_meta(
                 for original_node in bucket_nodes
             ]
 
-            # Propagate overlap annotations from overlap_scheduling.
-            # Conservative: bucket has overlap only if ALL constituents do.
-            overlap_vals = [
-                bn.meta.get("has_compute_bound_overlap") for bn in bucket_nodes
-            ]
-            if all(v is not None for v in overlap_vals):
-                n.meta["has_compute_bound_overlap"] = all(overlap_vals)
-
 
 def bucket_key(node: torch.fx.Node, mode: BucketMode | None = None) -> object | None:
     if is_all_gather_into_tensor(node):
