@@ -1416,5 +1416,88 @@ class LazyConstantVariableTests(TestCase):
             self.assertEqual(counter.frame_count, 1)  # Still no recompile!
 
 
+    def test_namedtuple_with_lazy_constant_no_recompile(self):
+        """Returning a namedtuple with lazy constants should not recompile on value change."""
+        from collections import namedtuple
+
+        Result = namedtuple("Result", ["tensor_out", "label"])
+        tensor_input = torch.randn(3)
+
+        def fn(t, label):
+            return Result(tensor_out=t + 1, label=label)
+
+        counter = CompileCounter()
+        opt_fn = torch.compile(fn, backend=counter)
+
+        eager1 = fn(tensor_input, "first")
+        compiled1 = opt_fn(tensor_input, "first")
+        self.assertTrue(same(eager1.tensor_out, compiled1.tensor_out))
+        self.assertEqual(eager1.label, compiled1.label)
+        self.assertEqual(counter.frame_count, 1)
+
+        # Different label should NOT recompile
+        eager2 = fn(tensor_input, "second")
+        compiled2 = opt_fn(tensor_input, "second")
+        self.assertTrue(same(eager2.tensor_out, compiled2.tensor_out))
+        self.assertEqual(eager2.label, compiled2.label)
+        self.assertEqual(counter.frame_count, 1)
+
+    def test_namedtuple_field_access_with_lazy_constant(self):
+        """Accessing namedtuple fields containing lazy constants should work correctly."""
+        from collections import namedtuple
+
+        Config = namedtuple("Config", ["scale", "mode"])
+        tensor_input = torch.randn(3)
+
+        def fn(t, cfg):
+            return t * cfg.scale, cfg.mode
+
+        counter = CompileCounter()
+        opt_fn = torch.compile(fn, backend=counter)
+
+        cfg1 = Config(scale=2.0, mode="bilinear")
+        eager1 = fn(tensor_input, cfg1)
+        compiled1 = opt_fn(tensor_input, cfg1)
+        self.assertTrue(same(eager1[0], compiled1[0]))
+        self.assertEqual(eager1[1], compiled1[1])
+        self.assertEqual(counter.frame_count, 1)
+
+        # Different mode should NOT recompile (mode is not branched on)
+        cfg2 = Config(scale=2.0, mode="nearest")
+        eager2 = fn(tensor_input, cfg2)
+        compiled2 = opt_fn(tensor_input, cfg2)
+        self.assertTrue(same(eager2[0], compiled2[0]))
+        self.assertEqual(eager2[1], compiled2[1])
+        self.assertEqual(counter.frame_count, 1)
+
+    def test_namedtuple_branching_on_lazy_constant_recompiles(self):
+        """Branching on a namedtuple field that is a lazy constant should recompile."""
+        from collections import namedtuple
+
+        Config = namedtuple("Config", ["tensor_val", "flag"])
+        tensor_input = torch.randn(3)
+
+        def fn(t, cfg):
+            if cfg.flag:
+                return t + 1
+            return t - 1
+
+        counter = CompileCounter()
+        opt_fn = torch.compile(fn, backend=counter)
+
+        cfg_true = Config(tensor_val=tensor_input, flag=True)
+        eager1 = fn(tensor_input, cfg_true)
+        compiled1 = opt_fn(tensor_input, cfg_true)
+        self.assertTrue(same(eager1, compiled1))
+        self.assertEqual(counter.frame_count, 1)
+
+        # Branching on different flag value SHOULD recompile
+        cfg_false = Config(tensor_val=tensor_input, flag=False)
+        eager2 = fn(tensor_input, cfg_false)
+        compiled2 = opt_fn(tensor_input, cfg_false)
+        self.assertTrue(same(eager2, compiled2))
+        self.assertEqual(counter.frame_count, 2)
+
+
 if __name__ == "__main__":
     run_tests()
