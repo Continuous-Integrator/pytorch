@@ -791,9 +791,7 @@ class CompiledFxGraph(OutputCode):
                         "boxed_forward_device_index", None
                     )
 
-                if config.graph_partition and not isinstance(
-                    policy, CUDAGraphPolicy
-                ):
+                if config.graph_partition and not isinstance(policy, CUDAGraphPolicy):
                     # With graph_partition=True, we skip some cudagraph checks
                     # if it's supported with partition, so we use
                     # cudagraph_partition_post_compile.  When a CUDAGraphPolicy
