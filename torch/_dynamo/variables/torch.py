@@ -1099,7 +1099,6 @@ class TorchInGraphFunctionVariable(BaseTorchVariable):
         ) -> VariableTracker:
             tx.output.create_node("call_function", torch._C._enter_dual_level)
             level = torch._C._enter_dual_level()
-            # breakpoint()
             tx.output.add_cleanup_hook(lambda: torch._C._exit_dual_level(level))
             return VariableTracker.build(tx, level)
 

@@ -1098,7 +1098,7 @@ class GraphModule(torch.nn.Module):
 
         set_autocast_cache_enabled_1 = torch.set_autocast_cache_enabled(True);  set_autocast_cache_enabled_1 = None
         return (x,)
-""",  # NOQA: B950
+""",
             )
         else:
             self.assertExpectedInline(
@@ -1130,7 +1130,7 @@ class GraphModule(torch.nn.Module):
 
         set_autocast_cache_enabled_1 = torch.set_autocast_cache_enabled(True);  set_autocast_cache_enabled_1 = None
         return (x,)
-""",  # NOQA: B950
+""",
             )
 
     def test__enter__exit_autocast_graph_break(self):
@@ -1176,7 +1176,7 @@ class GraphModule(torch.nn.Module):
 
         x: "bf16[s77, s77]" = l_x_ @ l_y_;  l_x_ = l_y_ = None
         return (x,)
-""",  # NOQA: B950
+""",
             )
         else:
             self.assertExpectedInline(
@@ -1198,7 +1198,7 @@ class GraphModule(torch.nn.Module):
 
         x: "bf16[3, 3]" = l_x_ @ l_y_;  l_x_ = l_y_ = None
         return (x,)
-""",  # NOQA: B950
+""",
             )
 
         # Doesn't include autocast functions, see comment above
@@ -1226,7 +1226,7 @@ class GraphModule(torch.nn.Module):
 
         set_autocast_cache_enabled = torch.set_autocast_cache_enabled(True);  set_autocast_cache_enabled = None
         return (x,)
-""",  # NOQA: B950
+""",
             )
         else:
             self.assertExpectedInline(
@@ -1249,7 +1249,7 @@ class GraphModule(torch.nn.Module):
 
         set_autocast_cache_enabled = torch.set_autocast_cache_enabled(True);  set_autocast_cache_enabled = None
         return (x,)
-""",  # NOQA: B950
+""",
             )
 
     def test_autocast_low_level_api(self):
@@ -1346,7 +1346,7 @@ class GraphModule(torch.nn.Module):
 
         _exit_autocast = torch.amp.autocast_mode._exit_autocast(_enter_autocast);  _enter_autocast = _exit_autocast = None
         return (x,)
-""",  # NOQA: B950
+""",
         )
 
         # Recompiling will decompose the _enter_autocast and _exit_autocast calls to lower level autocast functions
@@ -1388,7 +1388,7 @@ class GraphModule(torch.nn.Module):
 
         set_autocast_cache_enabled_1 = torch.set_autocast_cache_enabled(True);  set_autocast_cache_enabled_1 = None
         return (x,)
-""",  # NOQA: B950
+""",
         )
 
     @parametrize(
@@ -1675,7 +1675,7 @@ class GraphModule(torch.nn.Module):
 
         _saved_tensors_hooks_enable = torch._C._autograd._saved_tensors_hooks_enable();  _saved_tensors_hooks_enable = None
         return (add,)
-""",  # NOQA: B950
+""",
         )
 
     def test_disable_saved_tensors_hooks_prev_disabled(self):
@@ -1718,7 +1718,7 @@ class GraphModule(torch.nn.Module):
 
         _saved_tensors_hooks_disable_1 = torch._C._autograd._saved_tensors_hooks_disable('Previously disabled message');  _saved_tensors_hooks_disable_1 = None
         return (add,)
-""",  # NOQA: B950
+""",
         )
 
     def test_disable_saved_tensors_hooks_prev_disabled_nested(self):
@@ -1773,7 +1773,7 @@ class GraphModule(torch.nn.Module):
 
         _saved_tensors_hooks_disable_3 = torch._C._autograd._saved_tensors_hooks_disable('Previously disabled message');  _saved_tensors_hooks_disable_3 = None
         return (add_1,)
-""",  # NOQA: B950
+""",
         )
 
     def test_disable_saved_tensors_hooks_graph_break(self):
@@ -1806,7 +1806,7 @@ class GraphModule(torch.nn.Module):
 
         _saved_tensors_hooks_enable = torch._C._autograd._saved_tensors_hooks_enable();  _saved_tensors_hooks_enable = None
         return (y,)
-""",  # NOQA: B950
+""",
         )
 
         graph = eager.graphs[1]
@@ -1824,7 +1824,7 @@ class GraphModule(torch.nn.Module):
 
         _saved_tensors_hooks_enable = torch._C._autograd._saved_tensors_hooks_enable();  _saved_tensors_hooks_enable = None
         return (mul,)
-""",  # NOQA: B950
+""",
         )
 
     def test__saved_tensors_hooks_disable(self):
@@ -1854,7 +1854,7 @@ class GraphModule(torch.nn.Module):
 
         _saved_tensors_hooks_enable = torch._C._autograd._saved_tensors_hooks_enable();  _saved_tensors_hooks_enable = None
         return (y_1,)
-""",  # NOQA: B950
+""",
         )
 
     def test_context_wrapping_grad_mode_decorator(self):
@@ -3361,7 +3361,7 @@ class GraphModule(torch.nn.Module):
         _grad_decrement_nesting = torch._C._functorch._grad_decrement_nesting();  _grad_decrement_nesting = None
         _saved_tensors_hooks_enable = torch._C._autograd._saved_tensors_hooks_enable();  _saved_tensors_hooks_enable = None
         return (grad_input_1,)
-""",  # NOQA: B950
+""",
         )
 
         d = {}
@@ -3526,7 +3526,7 @@ class GraphModule(torch.nn.Module):
 
         unflatten: "f32[3, 3, 3, 3]" = jac_out_in.unflatten(-1, (3, 3));  jac_out_in = None
         return (unflatten,)
-""",  # NOQA: B950
+""",
         )
 
         d = {}
@@ -3574,7 +3574,7 @@ class GraphModule(torch.nn.Module):
 
         _vmap_decrement_nesting = torch._functorch.predispatch._vmap_decrement_nesting();  _vmap_decrement_nesting = None
         return (_remove_batch_dim,)
-""",  # NOQA: B950
+""",
         )
 
         d = {}
@@ -3628,7 +3628,7 @@ class GraphModule(torch.nn.Module):
         _grad_decrement_nesting = torch._C._functorch._grad_decrement_nesting();  _grad_decrement_nesting = None
         _saved_tensors_hooks_enable = torch._C._autograd._saved_tensors_hooks_enable();  _saved_tensors_hooks_enable = None
         return (results, child, primals_out)
-""",  # NOQA: B950
+""",
         )
 
         d = {}
@@ -3685,7 +3685,7 @@ class GraphModule(torch.nn.Module):
         _set_fwd_grad_enabled_1 = torch._C._set_fwd_grad_enabled(True);  _set_fwd_grad_enabled_1 = None
         _jvp_decrement_nesting = torch._C._functorch._jvp_decrement_nesting();  _jvp_decrement_nesting = None
         return (primals_out_unflatten, tangents_out_unflatten)
-""",  # NOQA: B950
+""",
         )
 
         d = {}
@@ -3770,7 +3770,7 @@ class GraphModule(torch.nn.Module):
 
         output_input: "f32[3, 3, 3, 3]" = split_1.view((3, 3, 3, 3));  split_1 = None
         return (output_input,)
-""",  # NOQA: B950
+""",
         )
 
         d = {}
@@ -3858,7 +3858,7 @@ class GraphModule(torch.nn.Module):
 
         unflatten: "f32[3, 3, 3, 3]" = jac_out_in.unflatten(-1, (3, 3));  jac_out_in = None
         return (unflatten,)
-""",  # NOQA: B950
+""",
         )
 
         d = {}
