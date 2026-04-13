@@ -2843,14 +2843,14 @@ class ActivationCheckpointingNonStrictTracerTests(torch._dynamo.test_case.TestCa
             node.meta["seq_nr"]
             for node in gm.graph.nodes
             if node.op == "call_function"
-            and not node.meta.get("custom", {}).get("autograd_backward", False)
+            and not node.meta.get("autograd_backward", False)
             and "seq_nr" in node.meta
         }
         backward_seq_nrs = {
             node.meta["seq_nr"]
             for node in gm.graph.nodes
             if node.op == "call_function"
-            and node.meta.get("custom", {}).get("autograd_backward", False)
+            and node.meta.get("autograd_backward", False)
             and "seq_nr" in node.meta
         }
 
@@ -2869,6 +2869,36 @@ class ActivationCheckpointingNonStrictTracerTests(torch._dynamo.test_case.TestCa
                 "_non_strict_tracing_context\\(\\)",
             ):
                 torch.autograd.grad(loss, (x,))
+
+    def test_patch_autograd_grad_does_not_leak_backward_tag(self):
+        from torch.fx.experimental.proxy_tensor import make_fx
+        from torch.fx.traceback import preserve_node_meta
+
+        x = torch.randn(2, 4, requires_grad=True)
+
+        def fn(x):
+            with torch.fx.traceback.annotate({"ac_region_id": 0}):
+                y = torch.sin(x)
+                torch.autograd.grad(y.sum(), (x,))
+                return torch.neg(y)
+
+        with (
+            torch.compiler._non_strict_tracing_context(),
+            torch.compiler._patch_autograd_grad(),
+            preserve_node_meta(),
+        ):
+            gm = make_fx(fn)(x)
+
+        backward_nodes = [
+            node for node in gm.graph.nodes if node.meta.get("autograd_backward", False)
+        ]
+        self.assertTrue(backward_nodes)
+
+        neg_nodes = gm.graph.find_nodes(
+            op="call_function", target=torch.ops.aten.neg.default
+        )
+        self.assertEqual(len(neg_nodes), 1)
+        self.assertEqual(neg_nodes[0].meta.get("custom", {}), {"ac_region_id": 0})
 
     def _trace_train_step(self, mod, x):
         import torch.utils._pytree as pytree

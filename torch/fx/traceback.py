@@ -23,6 +23,7 @@ __all__ = [
     "preserve_node_meta",
     "has_preserved_node_meta",
     "set_stack_trace",
+    "set_autograd_backward",
     "set_grad_fn_seq_nr",
     "reset_grad_fn_seq_nr",
     "format_stack",
@@ -349,6 +350,24 @@ def annotate(annotation_dict: dict):
             current_meta["custom"] = old_custom
         else:
             del current_meta["custom"]
+
+
+@compatibility(is_backward_compatible=False)
+@contextmanager
+def set_autograd_backward(enable: bool = True):
+    global current_meta
+
+    had_autograd_backward = "autograd_backward" in current_meta
+    old_autograd_backward = current_meta.get("autograd_backward", False)
+
+    try:
+        current_meta["autograd_backward"] = enable
+        yield
+    finally:
+        if had_autograd_backward:
+            current_meta["autograd_backward"] = old_autograd_backward
+        else:
+            current_meta.pop("autograd_backward", None)
 
 
 @compatibility(is_backward_compatible=False)

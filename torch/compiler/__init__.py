@@ -483,7 +483,7 @@ def _patch_autograd_grad():
     """Patch autograd.grad for non-strict make_fx tracing.
 
     This patch annotates the traced backward region with
-    custom["autograd_backward"] before delegating to the real
+    node.meta["autograd_backward"] before delegating to the real
     torch.autograd.grad.
     """
     import functools
@@ -506,7 +506,7 @@ def _patch_autograd_grad():
 
         setup_stacktrace_preservation_hooks_from_tensors(outputs)
 
-        with fx_traceback.annotate({"autograd_backward": True}):
+        with fx_traceback.set_autograd_backward():
             return _orig_grad(outputs, inputs, *args, **kwargs)
 
     torch.autograd.grad = _patched_grad

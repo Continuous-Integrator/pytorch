@@ -262,6 +262,9 @@ class TracerBase:
                 if "stack_trace" in replay_node.meta:
                     node.stack_trace = replay_node.meta.get("stack_trace")
 
+            if current_meta.get("autograd_backward", False):
+                node.meta["autograd_backward"] = True
+
         elif self.module_stack:
             node.meta["nn_module_stack"] = copy.copy(self.module_stack)
 
