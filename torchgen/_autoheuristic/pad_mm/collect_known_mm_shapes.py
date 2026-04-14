@@ -1,6 +1,5 @@
 import argparse
 import csv
-import math
 import sys
 from pathlib import Path
 
@@ -17,7 +16,7 @@ sys.path.append(
 )
 
 from operator_inp_utils import (  # type: ignore[import-not-found]
-    dtype_abbrs_parsing,
+    deserialize_args,
     OperatorInputsLoader,
 )
 
@@ -25,32 +24,7 @@ import torch
 from torch._inductor.fx_passes.pad_mm import (
     get_alignment_size_dtype,  # type: ignore[import-not-found]
 )
-
-
-def get_tensor_properties(inps):
-    """Extract tensor properties (shape, dtype) from serialized input string."""
-
-    def extract_tensor_info(size, dtype, stride=None):
-        """Extract just the shape and dtype info we need."""
-        return {"shape": tuple(size), "dtype": dtype}
-
-    def extract_sparse_tensor_info(size, dtype, layout, is_coalesced, nnz=None):
-        """Extract sparse tensor info."""
-        return {"shape": tuple(size), "dtype": dtype}
-
-    inps = inps.strip().strip("'")
-    global_vals = {
-        "T": extract_tensor_info,
-        "ST": extract_sparse_tensor_info,
-        "th": torch,
-        "inf": math.inf,
-        "torch": torch,
-        **dtype_abbrs_parsing,
-    }
-    # f strings introduce quotations we dont want
-    for key in dtype_abbrs_parsing:
-        inps = inps.replace(f"'{key}'", key)
-    return eval(inps.strip().strip("'").strip('"'), global_vals)
+from torch._subclasses.fake_tensor import FakeTensorMode
 
 
 def is_aligned(dim: int, align_size: int) -> bool:
@@ -61,74 +35,82 @@ def is_aligned(dim: int, align_size: int) -> bool:
 def extract_mm_shapes_from_loader(
     loader: OperatorInputsLoader,
 ) -> list[tuple[int, int, int, torch.dtype, torch.dtype]]:
-    """Extract matrix multiplication shapes from an OperatorInputsLoader using existing parsing logic."""
+    """Extract matrix multiplication shapes from an OperatorInputsLoader using deserialize_args with FakeTensorMode."""
     shapes = []
 
     # Matrix multiplication operators to look for
     mm_operators = ["aten.mm.default", "aten.addmm.default", "aten.bmm.default"]
 
-    for op_name in mm_operators:
-        if op_name not in loader.operator_db:
-            continue
-
-        # Count shapes extracted from this operator
-        shape_count = 0
-
-        # Access the raw string data directly from operator_db and reuse existing parsing
-        for input_str in loader.operator_db[op_name]:
-            try:
-                # Extract tensor properties directly
-                args, kwargs = get_tensor_properties(input_str)
-
-                if op_name == "aten.mm.default":
-                    # mm(input, mat2) -> result
-                    if len(args) >= 2:
-                        a, b = args[0], args[1]
-                        if isinstance(a, dict) and isinstance(b, dict):
-                            a_shape, a_dtype = a["shape"], a["dtype"]
-                            b_shape, b_dtype = b["shape"], b["dtype"]
-                            if len(a_shape) == 2 and len(b_shape) == 2:
-                                m, k = a_shape
-                                k2, n = b_shape
-                                if k == k2:  # Valid matrix multiplication
-                                    shapes.append((m, k, n, a_dtype, b_dtype))
-                                    shape_count += 1
-
-                elif op_name == "aten.addmm.default":
-                    # addmm(bias, input, mat2) -> result
-                    if len(args) >= 3:
-                        _, a, b = args[0], args[1], args[2]
-                        if isinstance(a, dict) and isinstance(b, dict):
-                            a_shape, a_dtype = a["shape"], a["dtype"]
-                            b_shape, b_dtype = b["shape"], b["dtype"]
-                            if len(a_shape) == 2 and len(b_shape) == 2:
-                                m, k = a_shape
-                                k2, n = b_shape
-                                if k == k2:  # Valid matrix multiplication
-                                    shapes.append((m, k, n, a_dtype, b_dtype))
-                                    shape_count += 1
-
-                elif op_name == "aten.bmm.default":
-                    # bmm(input, mat2) -> result (batch matrix multiplication)
-                    if len(args) >= 2:
-                        a, b = args[0], args[1]
-                        if isinstance(a, dict) and isinstance(b, dict):
-                            a_shape, a_dtype = a["shape"], a["dtype"]
-                            b_shape, b_dtype = b["shape"], b["dtype"]
-                            if len(a_shape) == 3 and len(b_shape) == 3:
-                                batch1, m, k = a_shape
-                                batch2, k2, n = b_shape
-                                if (
-                                    batch1 == batch2 and k == k2
-                                ):  # Valid batch matrix multiplication
-                                    shapes.append((m, k, n, a_dtype, b_dtype))
-                                    shape_count += 1
-
-            except Exception:
-                # Skip invalid inputs
+    # Use FakeTensorMode to avoid instantiating actual tensors
+    with FakeTensorMode():
+        for op_name in mm_operators:
+            if op_name not in loader.operator_db:
                 continue
 
-        print(f"    Extracted {shape_count} shapes from {op_name}")
+            # Count shapes extracted from this operator
+            shape_count = 0
+
+            # Access the raw string data directly from operator_db and reuse existing parsing
+            for input_str in loader.operator_db[op_name]:
+                try:
+                    # Use deserialize_args to parse inputs - will create fake tensors
+                    args, kwargs = deserialize_args(input_str)
+
+                    if op_name == "aten.mm.default":
+                        # mm(input, mat2) -> result
+                        if len(args) >= 2:
+                            a, b = args[0], args[1]
+                            if isinstance(a, torch.Tensor) and isinstance(
+                                b, torch.Tensor
+                            ):
+                                a_shape, a_dtype = tuple(a.shape), a.dtype
+                                b_shape, b_dtype = tuple(b.shape), b.dtype
+                                if len(a_shape) == 2 and len(b_shape) == 2:
+                                    m, k = a_shape
+                                    k2, n = b_shape
+                                    if k == k2:  # Valid matrix multiplication
+                                        shapes.append((m, k, n, a_dtype, b_dtype))
+                                        shape_count += 1
+
+                    elif op_name == "aten.addmm.default":
+                        # addmm(bias, input, mat2) -> result
+                        if len(args) >= 3:
+                            _, a, b = args[0], args[1], args[2]
+                            if isinstance(a, torch.Tensor) and isinstance(
+                                b, torch.Tensor
+                            ):
+                                a_shape, a_dtype = tuple(a.shape), a.dtype
+                                b_shape, b_dtype = tuple(b.shape), b.dtype
+                                if len(a_shape) == 2 and len(b_shape) == 2:
+                                    m, k = a_shape
+                                    k2, n = b_shape
+                                    if k == k2:  # Valid matrix multiplication
+                                        shapes.append((m, k, n, a_dtype, b_dtype))
+                                        shape_count += 1
+
+                    elif op_name == "aten.bmm.default":
+                        # bmm(input, mat2) -> result (batch matrix multiplication)
+                        if len(args) >= 2:
+                            a, b = args[0], args[1]
+                            if isinstance(a, torch.Tensor) and isinstance(
+                                b, torch.Tensor
+                            ):
+                                a_shape, a_dtype = tuple(a.shape), a.dtype
+                                b_shape, b_dtype = tuple(b.shape), b.dtype
+                                if len(a_shape) == 3 and len(b_shape) == 3:
+                                    batch1, m, k = a_shape
+                                    batch2, k2, n = b_shape
+                                    if (
+                                        batch1 == batch2 and k == k2
+                                    ):  # Valid batch matrix multiplication
+                                        shapes.append((m, k, n, a_dtype, b_dtype))
+                                        shape_count += 1
+
+                except Exception:
+                    # Skip invalid inputs
+                    continue
+
+            print(f"    Extracted {shape_count} shapes from {op_name}")
 
     return shapes
 
