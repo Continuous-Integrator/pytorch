@@ -49,6 +49,7 @@ from .hints import (
     ReductionHint,
     TileHint,
     TRITON_MAX_BLOCK,
+    TRITON_MAX_RSPLIT,
 )
 from .runtime_utils import (
     cache_dir,
