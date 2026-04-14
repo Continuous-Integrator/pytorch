@@ -2715,25 +2715,27 @@ class CollectionsNamedTupleFunction(UserFunctionVariable):
         args: Sequence[VariableTracker],
         kwargs: dict[str, VariableTracker],
     ) -> VariableTracker:
-        constant_args = check_constant_args(
+        if check_constant_args(args, kwargs) or check_constant_args_allow_lazy(
             args, kwargs
-        ) or check_constant_args_allow_lazy(args, kwargs)
-        if constant_args:
+        ):
             try:
                 value = self.fn(
                     *[x.as_python_constant() for x in args],
                     **{k: v.as_python_constant() for k, v in kwargs.items()},
                 )
+            except AsPythonConstantNotImplementedError:
+                pass  # lazy arg became symbolic after realization, fall through
             except TypeError as exc:
                 raise_observed_exception(
                     type(exc),
                     tx,
                     args=list(exc.args),
                 )
-            return variables.UserDefinedClassVariable(
-                value,
-                mutation_type=ValueMutationNew(),
-            )
+            else:
+                return variables.UserDefinedClassVariable(
+                    value,
+                    mutation_type=ValueMutationNew(),
+                )
         unimplemented(
             gb_type="namedtuple construction",
             context=f"{args=}, {kwargs=}",

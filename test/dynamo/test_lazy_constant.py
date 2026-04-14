@@ -1354,6 +1354,27 @@ class LazyConstantVariableTests(TestCase):
         self.assertTrue(same(eager, compiled))
         self.assertEqual(counter.frame_count, 1)
 
+    @torch._dynamo.config.patch(specialize_int=False, assume_static_by_default=False)
+    def test_enum_creation_with_symbolic_int_no_crash(self):
+        """Enum creation must not crash when lazy int args realize into SymNodeVariable.
+
+        With specialize_int=False and assume_static_by_default=False, lazy int
+        args become SymNodeVariable when realized. The constant folding path
+        must catch AsPythonConstantNotImplementedError and fall through.
+        """
+        import enum
+
+        def fn(x, values):
+            MyEnum = enum.Enum("MyEnum", [("A", values[0]), ("B", values[1])])
+            return x + MyEnum.A.value
+
+        opt_fn = torch.compile(fn, backend="eager")
+
+        x = torch.randn(3)
+        eager = fn(x, [42, 99])
+        compiled = opt_fn(x, [42, 99])
+        self.assertTrue(same(eager, compiled))
+
     def test_dict_mutation_no_recompile_on_unused_key_change(self):
         """Test that mutating a dict doesn't guard on unused keys.
 
