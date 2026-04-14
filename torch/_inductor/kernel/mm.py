@@ -667,9 +667,7 @@ def tuned_addmm(inp, mat1, mat2, *, alpha=1, beta=1, layout=None):
 
     templates_to_use: list[ExternKernelChoice | KernelTemplate] = []
 
-    use_unexpanded_bias = torch.version.hip or (
-        mat1.get_device().type == "xpu"
-    )
+    use_unexpanded_bias = torch.version.hip or (mat1.get_device().type == "xpu")
 
     if use_aten_gemm_kernels():
         aten_templates: list[ExternKernelChoice | KernelTemplate] = [aten_addmm]
