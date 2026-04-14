@@ -5,6 +5,8 @@ set -ex
 SOURCE_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null && pwd )"
 
 source ${SOURCE_DIR}/set_desired_python.sh
+# shellcheck source=../pytorch/rocm_utils.sh
+source "$(dirname "${SOURCE_DIR}")/pytorch/rocm_utils.sh"
 
 
 if [[ -n "$BUILD_PYTHONLESS" && -z "$LIBTORCH_VARIANT" ]]; then
@@ -162,16 +164,7 @@ echo "Finished setup.py bdist at $(date)"
 
 # Build rocm-composable-kernel (ck4inductor) wheel for ROCm builds
 if [[ "$DESIRED_CUDA" == *"rocm"* ]]; then
-    echo "Building rocm-composable-kernel (ck4inductor) wheel at $(date)"
-    CK_COMMIT=$(cat .ci/docker/ci_commit_pins/rocm-composable-kernel.txt)
-    git clone --depth 1 https://github.com/ROCm/composable_kernel.git /tmp/ck
-    pushd /tmp/ck
-    git fetch --depth 1 origin "$CK_COMMIT"
-    git checkout "$CK_COMMIT"
-    python -m build --wheel --no-isolation --outdir /tmp/$WHEELHOUSE_DIR
-    popd
-    rm -rf /tmp/ck
-    echo "Finished building rocm-composable-kernel (ck4inductor) wheel at $(date)"
+    build_rocm_ck_wheel "/tmp/$WHEELHOUSE_DIR"
 fi
 
 # Build libtorch packages

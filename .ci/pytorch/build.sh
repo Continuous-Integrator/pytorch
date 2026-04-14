@@ -10,6 +10,8 @@ set -ex -o pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 # shellcheck source=./common-build.sh
 source "$(dirname "${BASH_SOURCE[0]}")/common-build.sh"
+# shellcheck source=./rocm_utils.sh
+source "$(dirname "${BASH_SOURCE[0]}")/rocm_utils.sh"
 
 echo "Python version:"
 python --version
@@ -333,17 +335,7 @@ else
       fi
 
       # Build rocm-composable-kernel (ck4inductor) wheel alongside PyTorch
-      echo "Building rocm-composable-kernel (ck4inductor) wheel at $(date)"
-      CK_COMMIT=$(cat .ci/docker/ci_commit_pins/rocm-composable-kernel.txt)
-      git clone --depth 1 https://github.com/ROCm/composable_kernel.git /tmp/ck
-      pushd /tmp/ck
-      git fetch --depth 1 origin "$CK_COMMIT"
-      git checkout "$CK_COMMIT"
-      python -m build --wheel --no-isolation --outdir /tmp/ck_dist/
-      popd
-      cp /tmp/ck_dist/rocm_composable_kernel*.whl dist/
-      rm -rf /tmp/ck /tmp/ck_dist
-      echo "Finished building rocm-composable-kernel (ck4inductor) wheel at $(date)"
+      build_rocm_ck_wheel dist/
     fi
 
     CUSTOM_TEST_ARTIFACT_BUILD_DIR=${CUSTOM_TEST_ARTIFACT_BUILD_DIR:-"build/custom_test_artifacts"}
