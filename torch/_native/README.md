@@ -234,3 +234,151 @@ def example_ordering_fn(op_symbol, dispatch_key, nodes):
 
     return out_nodes
 ```
+
+# Testing Native Ops
+
+Adding operators means that they should be tested. Given that we're dealing with overrides, which by definition change behavior, we need to be a little careful.
+
+The preferred testing method is to co-opt the existing `OpInfo` and `op_db` class/list and benefit from all the infrastructure built around that functionality.
+
+`OpInfo` has been extended to include an optional `dsl_name` argument, identifying the op to be tested as using a given DSL, and that information is used at test time to discover and filter relevant tests. Test files that use `op_db` include:
+
+* `test_ops.py`
+* `test_unary_ufuncs.py`
+* `test_ops_gradients.py`
+* `test_torchinductor_opinfo.py`
+* `test_export_opinfo.py`
+
+Each op added under `torch/_native/ops` should have a corresponding entry in `test/python_native/ops`, which exposes a `*_opinfo` instance - this will then be added to the main `op_db` list of `OpInfo` instances for testing.
+
+## Testing only Native ops
+
+Optionally, one can set the `OPINFO_RESTRICT_TO_DSL` environment variable to enable only the DSL specified for quick testing.
+
+## Example
+
+Following is an example for an override to the `aten::silu` method - a comparatively simple unary function, in this case implemented using triton.
+
+```
+def sample_inputs_triton_silu(op_info, device, dtype, requires_grad, **kwargs):
+    """
+    Generate sample inputs for direct Triton SiLU kernel testing.
+
+    Since this tests the Triton kernel directly, we focus on:
+    - Large tensors (Triton is optimized for these)
+    - Various shapes that maintain good memory access patterns
+    - Different value ranges for numerical robustness
+    - Only CUDA tensors (Triton requirement)
+    """
+    # For direct kernel testing, we don't need requires_grad
+    make_arg = partial(make_tensor, device=device, dtype=dtype, requires_grad=False)
+
+    # Focus on large tensors where Triton provides benefits
+    # All shapes have >= 1M elements for meaningful Triton testing
+    test_shapes = [
+        (4096, 4096),     # 16M elements - classic large case
+        (5000, 4000),     # 20M elements - non-power-of-2
+        (8192, 2048),     # 16M elements - different aspect ratio
+        (1024, 1024, 16), # 16M elements - 3D tensor
+        (2048, 2048),     # 4M elements - moderately large
+        (1000, 2000),     # 2M elements - rectangular
+    ]
+
+    for shape in test_shapes:
+        # Standard values (most common case)
+        yield SampleInput(make_arg(shape).contiguous())
+
+        # Mixed positive/negative values (SiLU handles both)
+        yield SampleInput(make_arg(shape, low=-3.0, high=3.0).contiguous())
+
+        # Larger range for numerical stability testing
+        yield SampleInput(make_arg(shape, low=-7.0, high=7.0).contiguous())
+
+        # Small positive values (test near-zero behavior)
+        yield SampleInput(make_arg(shape, low=0.0, high=2.0).contiguous())
+
+        # Small negative values (test negative saturation)
+        yield SampleInput(make_arg(shape, low=-2.0, high=0.0).contiguous())
+
+
+def reference_silu(x):
+    """Reference implementation of SiLU for correctness comparison."""
+    return x * torch.sigmoid(x)
+
+
+# Import the Triton kernel launcher and availability flag directly
+from torch._native.ops.silu.triton_kernels import triton_silu_kernel_launcher, HAS_TRITON
+
+
+# UnaryUfuncInfo with DSL variant for Triton SiLU testing
+triton_silu_opinfo = UnaryUfuncInfo(
+    'triton_silu',  # Custom name for Triton-specific testing
+    op=triton_silu_kernel_launcher,  # Direct call to Triton kernel
+    dsl_name='triton',  # Actual DSL name for DSL variant
+
+    # UnaryUfuncInfo-specific parameters for SiLU
+    dtypes=_dispatch_dtypes((torch.bfloat16,)),  # Triton SiLU only supports bfloat16
+    domain=(None, None),  # SiLU is defined for all real values
+    handles_complex_extremal_values=False,  # SiLU is real-valued only
+    handles_large_floats=True,  # SiLU handles large values well
+
+    # Input generation - only generate inputs that meet Triton conditions
+    sample_inputs_func=sample_inputs_triton_silu,
+
+    # Reference function for numerical testing
+    ref=lambda x: reference_silu(x),
+
+    # Autodiff support - test with requires_grad=False since we're testing kernel directly
+    supports_autograd=False,  # Direct kernel testing, not autodiff integration
+    supports_forward_ad=False,
+    supports_fwgrad_bwgrad=False,
+
+    # Direct kernel testing doesn't support out parameter or inplace
+    supports_out=False,
+    inplace_variant=None,  # Direct kernel testing - no inplace variant
+
+    # Device and precision decorators
+    decorators=[
+        # Higher tolerance for bfloat16 due to reduced precision
+        DecorateInfo(
+            toleranceOverride({
+                torch.float16: tol(atol=1e-3, rtol=1e-3),
+                torch.bfloat16: tol(atol=1e-2, rtol=1e-2),  # More relaxed for bfloat16
+            }),
+            'TestTritonSilu', device_type='cuda',
+        ),
+
+        # Only test on CUDA since Triton requires CUDA
+        DecorateInfo(
+            onlyCUDA,
+            'TestTritonSilu',
+        ),
+    ],
+
+    # Skip conditions
+    skips=(
+        # Skip if CUDA is not available (Triton requires CUDA)
+        DecorateInfo(
+            skipCUDAIf(not torch.cuda.is_available(), "CUDA not available"),
+            'TestTritonSilu',
+        ),
+
+        # Skip if Triton is not available
+        DecorateInfo(
+            unittest.skipIf(not HAS_TRITON, "Triton not available"),
+            'TestTritonSilu',
+        ),
+
+        # Skip complex dtypes as SiLU doesn't support them meaningfully
+        DecorateInfo(
+            unittest.skip("Complex dtypes not supported for SiLU"),
+            'TestTritonSilu',
+            dtypes=(torch.cfloat, torch.cdouble)
+        ),
+    ),
+
+    # Additional metadata for Triton-specific testing
+    variant_test_name='triton_optimized',
+)
+```
+
