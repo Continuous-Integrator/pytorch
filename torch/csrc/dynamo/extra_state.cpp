@@ -75,16 +75,15 @@ CacheEntry* extract_cache_entry(
   if (extra_state == nullptr) {
     return nullptr;
   }
-  auto it = extra_state->cache_entry_map.find(isolate_recompiles_id);
-  if (it != extra_state->cache_entry_map.end() && !it->second.empty()) {
-    return &it->second.front();
-  }
-  // Read-only fallback to the default bucket, matching lookup() behavior.
-  if (isolate_recompiles_id >= 0) {
-    auto default_it = extra_state->cache_entry_map.find(-1);
-    if (default_it != extra_state->cache_entry_map.end() &&
-        !default_it->second.empty()) {
-      return &default_it->second.front();
+  // Search own bucket first, then fall back to default bucket (-1),
+  // matching lookup() behavior.
+  int64_t ids_to_search[] = {isolate_recompiles_id, -1};
+  int num_ids = (isolate_recompiles_id >= 0) ? 2 : 1;
+
+  for (int i = 0; i < num_ids; i++) {
+    auto it = extra_state->cache_entry_map.find(ids_to_search[i]);
+    if (it != extra_state->cache_entry_map.end() && !it->second.empty()) {
+      return &it->second.front();
     }
   }
   return nullptr;
@@ -157,10 +156,10 @@ static CacheEntry* lookup_in_list(
     std::list<CacheEntry>& entries,
     FrameLocalsMapping* f_locals,
     PyObject* backend,
-    size_t& index,
     bool is_skip_guard_eval_unsafe,
     bool* guard_error,
     PyObject** maybe_cached_code) {
+  size_t index = 0;
   for (CacheEntry& cache_entry : entries) {
     bool valid = backend == Py_False ||
         backend_match(cache_entry.backend.ptr(), backend);
@@ -207,7 +206,6 @@ void lookup(
     PyObject** maybe_cached_code,
     const char** trace_annotation,
     bool is_skip_guard_eval_unsafe) {
-  size_t index = 0;
   CacheEntry* found = nullptr;
   bool guard_error = false;
 
@@ -218,35 +216,20 @@ void lookup(
     }
   }
 
-  // Look up in this compile scope's bucket
-  auto it = extra_state->cache_entry_map.find(isolate_recompiles_id);
-  if (it != extra_state->cache_entry_map.end()) {
-    found = lookup_in_list(
-        it->second,
-        f_locals,
-        backend,
-        index,
-        is_skip_guard_eval_unsafe,
-        &guard_error,
-        maybe_cached_code);
-    if (guard_error) {
-      return;
-    }
-  }
+  // Search own bucket first, then fall back to default bucket (-1).
+  // This lets isolated compiles reuse compilations from non-isolated
+  // torch.compile() calls (BC friendly). New entries are still written
+  // to the isolated bucket.
+  int64_t ids_to_search[] = {isolate_recompiles_id, -1};
+  int num_ids = (isolate_recompiles_id >= 0) ? 2 : 1;
 
-  // Read-only fallback: if an isolated compile (id >= 0) has no hit in its
-  // own bucket, also check the default bucket (id -1). This lets isolated
-  // compiles reuse compilations from non-isolated torch.compile() calls,
-  // which is BC friendly. New entries are still written to the isolated bucket.
-  if (found == nullptr && isolate_recompiles_id >= 0) {
-    auto default_it = extra_state->cache_entry_map.find(-1);
-    if (default_it != extra_state->cache_entry_map.end()) {
-      index = 0;
+  for (int i = 0; i < num_ids && found == nullptr; i++) {
+    auto it = extra_state->cache_entry_map.find(ids_to_search[i]);
+    if (it != extra_state->cache_entry_map.end()) {
       found = lookup_in_list(
-          default_it->second,
+          it->second,
           f_locals,
           backend,
-          index,
           is_skip_guard_eval_unsafe,
           &guard_error,
           maybe_cached_code);

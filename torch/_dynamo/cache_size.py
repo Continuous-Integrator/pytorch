@@ -138,6 +138,10 @@ def _has_same_id_matched_objs(frame: DynamoFrameType, cache_entry: Any) -> bool:
 def compute_cache_size(
     frame: DynamoFrameType, cache_entries: list[Any]
 ) -> CacheSizeRelevantForFrame:
+    # cache_entries is already scoped to a single isolate_recompiles region.
+    # We intentionally count only that region's entries — the default region's
+    # entries are not included, so isolated regions get their full recompile
+    # budget independently.
     num_cache_entries = 0
     num_cache_entries_with_same_id_matched_objs = 0
 

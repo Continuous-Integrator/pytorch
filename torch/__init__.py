@@ -2702,13 +2702,17 @@ def compile(
         tooling, this is surfaced on wrapped compiled-region higher-order operators and other debug metadata.
        disable (bool): Turn torch.compile() into a no-op for testing
        recompile_limit (int or None): Maximum number of recompilations allowed for this
-        compiled region before falling back to eager. If None (default), uses the global
-        ``torch._dynamo.config.recompile_limit`` (default 8). With ``fullgraph=True``,
-        exceeding the limit raises ``FailOnRecompileLimitHit``.
-       isolate_recompiles (bool): If True, this ``torch.compile()`` call gets its own
-        isolated cache. Multiple calls to ``torch.compile()`` on the same function will
-        each track recompilations independently, so one region hitting its limit does
-        not affect the others. Default False.
+        ``torch.compile()`` call before falling back to eager. If None (default), uses
+        the global ``torch._dynamo.config.recompile_limit`` (default 8). With
+        ``fullgraph=True``, exceeding the limit raises ``FailOnRecompileLimitHit``.
+       isolate_recompiles (bool): If True, this ``torch.compile()`` call tracks
+        recompilations independently. By default, all ``torch.compile()`` calls on the
+        same function share a single set of compiled entries, so one call's
+        recompilations count against every other call's limit. With
+        ``isolate_recompiles=True``, each call gets its own isolated set of entries.
+        Lookups for an isolated compile call will still fall back to entries from
+        non-isolated compile calls, but new compilations are stored separately.
+        Default False.
 
     Example::
 

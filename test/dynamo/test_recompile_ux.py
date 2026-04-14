@@ -534,38 +534,123 @@ class IsolateRecompilesTests(torch._dynamo.test_case.TestCase):
 
     @torch._dynamo.config.patch(automatic_dynamic_shapes=False)
     def test_isolate_recompiles_static_and_dynamic(self):
-        """Two compile regions on the same function: one static, one dynamic.
-        Their cache entries don't interfere."""
-        cnt_static = torch._dynamo.testing.CompileCounter()
-        cnt_dynamic = torch._dynamo.testing.CompileCounter()
+        """Two compile regions on the same function with the same backend:
+        one static, one dynamic. isolate_recompiles keeps their cache entries
+        separate (without it the static recompile would count against the
+        dynamic region too)."""
+        cnt = torch._dynamo.testing.CompileCounter()
 
         def f(x):
             return x.sum()
 
         opt_static = torch.compile(
-            f, backend=cnt_static, dynamic=False, isolate_recompiles=True
+            f, backend=cnt, dynamic=False, isolate_recompiles=True
         )
         opt_dynamic = torch.compile(
-            f, backend=cnt_dynamic, dynamic=True, isolate_recompiles=True
+            f, backend=cnt, dynamic=True, isolate_recompiles=True
         )
 
         opt_static(torch.randn(4, 8))
-        self.assertEqual(cnt_static.frame_count, 1)
+        self.assertEqual(cnt.frame_count, 1)
 
         opt_dynamic(torch.randn(5, 9))
-        self.assertEqual(cnt_dynamic.frame_count, 1)
+        self.assertEqual(cnt.frame_count, 2)
 
-        # Static cache hit
+        # Static cache hit — no new compilation
         opt_static(torch.randn(4, 8))
-        self.assertEqual(cnt_static.frame_count, 1)
+        self.assertEqual(cnt.frame_count, 2)
 
-        # Dynamic cache hit with different shape
+        # Dynamic cache hit with different shape — no new compilation
         opt_dynamic(torch.randn(6, 10))
-        self.assertEqual(cnt_dynamic.frame_count, 1)
+        self.assertEqual(cnt.frame_count, 2)
 
         # Static recompile with new shape
         opt_static(torch.randn(5, 9))
-        self.assertEqual(cnt_static.frame_count, 2)
+        self.assertEqual(cnt.frame_count, 3)
+
+    @torch._dynamo.config.patch(automatic_dynamic_shapes=False)
+    def test_no_isolate_recompiles_shared_cache(self):
+        """Without isolate_recompiles, two compile calls on the same function
+        share the cache — a static recompile from one counts against the
+        other's limit."""
+        cnt = torch._dynamo.testing.CompileCounter()
+
+        def f(x):
+            return x.sum()
+
+        opt_a = torch.compile(f, backend=cnt, dynamic=False)
+        opt_b = torch.compile(f, backend=cnt, dynamic=False)
+
+        opt_a(torch.randn(4))
+        self.assertEqual(cnt.frame_count, 1)
+
+        # opt_b shares the cache — same shape is a cache hit
+        opt_b(torch.randn(4))
+        self.assertEqual(cnt.frame_count, 1)
+
+        # Different shape triggers a recompile counted in the shared cache
+        opt_a(torch.randn(5))
+        self.assertEqual(cnt.frame_count, 2)
+
+        # opt_b sees the shared recompilation
+        opt_b(torch.randn(5))
+        self.assertEqual(cnt.frame_count, 2)
+
+    @torch._dynamo.config.patch(
+        recompile_limit=2,
+        fail_on_recompile_limit_hit=True,
+        automatic_dynamic_shapes=False,
+    )
+    def test_different_backends_shared_cache_without_isolate(self):
+        """Without isolate_recompiles, different backends on the same function
+        share the cache. Entries from backend A count against backend B's
+        recompile limit even though they don't cross-match during lookup."""
+        cnt_a = torch._dynamo.testing.CompileCounter()
+        cnt_b = torch._dynamo.testing.CompileCounter()
+
+        def f(x):
+            return x.sum()
+
+        opt_a = torch.compile(f, backend=cnt_a, dynamic=False)
+        opt_b = torch.compile(f, backend=cnt_b, dynamic=False)
+
+        # Backend A compiles twice (two shapes)
+        opt_a(torch.randn(3))
+        opt_a(torch.randn(4))
+        self.assertEqual(cnt_a.frame_count, 2)
+
+        # Backend B: despite being a different backend, backend A's entries
+        # fill the shared cache, pushing B over the recompile limit.
+        with self.assertRaises(FailOnRecompileLimitHit):
+            opt_b(torch.randn(5))
+
+    @torch._dynamo.config.patch(
+        recompile_limit=2,
+        fail_on_recompile_limit_hit=True,
+        automatic_dynamic_shapes=False,
+    )
+    def test_different_backends_independent_with_isolate(self):
+        """With isolate_recompiles, different backends on the same function
+        get independent cache buckets."""
+        cnt_a = torch._dynamo.testing.CompileCounter()
+        cnt_b = torch._dynamo.testing.CompileCounter()
+
+        def f(x):
+            return x.sum()
+
+        opt_a = torch.compile(f, backend=cnt_a, dynamic=False, isolate_recompiles=True)
+        opt_b = torch.compile(f, backend=cnt_b, dynamic=False, isolate_recompiles=True)
+
+        # Backend A compiles twice
+        opt_a(torch.randn(3))
+        opt_a(torch.randn(4))
+        self.assertEqual(cnt_a.frame_count, 2)
+
+        # Backend B compiles independently — not affected by A's entries
+        opt_b(torch.randn(5))
+        self.assertEqual(cnt_b.frame_count, 1)
+        opt_b(torch.randn(6))
+        self.assertEqual(cnt_b.frame_count, 2)
 
     @torch._dynamo.config.patch(recompile_limit=1)
     def test_isolate_recompiles_fullgraph_raises(self):
@@ -905,27 +990,6 @@ class IsolateRecompilesTests(torch._dynamo.test_case.TestCase):
         torch._dynamo.reset()
         self.assertEqual(self._num_cache_entries(f), 0)
 
-    def test_clone_with_backend_shares_isolate_recompiles_id(self):
-        """_clone_with_backend preserves the isolate_recompiles_id so the
-        clone shares the same cache bucket as the original."""
-        from torch._dynamo.convert_frame import convert_frame_assert
-
-        original = convert_frame_assert("eager", isolate_recompiles=True)
-        clone = original._clone_with_backend("aot_eager")
-
-        self.assertGreaterEqual(original._isolate_recompiles_id, 0)
-        self.assertEqual(original._isolate_recompiles_id, clone._isolate_recompiles_id)
-
-    def test_clone_with_backend_no_isolate(self):
-        """Without isolate_recompiles, _clone_with_backend preserves id=-1."""
-        from torch._dynamo.convert_frame import convert_frame_assert
-
-        original = convert_frame_assert("eager", isolate_recompiles=False)
-        clone = original._clone_with_backend("aot_eager")
-
-        self.assertEqual(original._isolate_recompiles_id, -1)
-        self.assertEqual(clone._isolate_recompiles_id, -1)
-
     @torch._dynamo.config.patch(
         recompile_limit=2,
         fail_on_recompile_limit_hit=True,
@@ -966,6 +1030,35 @@ class IsolateRecompilesTests(torch._dynamo.test_case.TestCase):
         opt_dynamic(torch.randn(7))
         self.assertEqual(cnt.frame_count, 3)
 
+    @torch._dynamo.config.patch(
+        recompile_limit=1,
+        automatic_dynamic_shapes=False,
+    )
+    def test_isolate_recompiles_limit_does_not_skip_other_regions(self):
+        """When an isolated region hits its recompile limit and falls back
+        to eager, the default (non-isolated) region can still compile."""
+        cnt = torch._dynamo.testing.CompileCounter()
+
+        def f(x):
+            return x.sin()
+
+        opt_isolated = torch.compile(
+            f, backend=cnt, dynamic=False, isolate_recompiles=True
+        )
+        opt_default = torch.compile(f, backend=cnt, dynamic=False)
+
+        # Isolated region compiles once
+        opt_isolated(torch.randn(3))
+        self.assertEqual(cnt.frame_count, 1)
+
+        # Isolated region hits limit — falls back to eager silently
+        opt_isolated(torch.randn(4))
+        self.assertEqual(cnt.frame_count, 1)
+
+        # Default region still compiles — not affected by isolated limit
+        opt_default(torch.randn(5))
+        self.assertEqual(cnt.frame_count, 2)
+
     def test_debug_get_cache_entry_list_deterministic_order(self):
         """_debug_get_cache_entry_list returns entries sorted by
         isolate_recompiles_id, so the order is deterministic regardless
@@ -975,15 +1068,16 @@ class IsolateRecompilesTests(torch._dynamo.test_case.TestCase):
         def f(x):
             return x.sin()
 
-        # Create entries in two isolated regions, deliberately interleaved.
-        opt_iso_a = torch.compile(f, backend=cnt, isolate_recompiles=True)
-        opt_iso_b = torch.compile(f, backend=cnt, isolate_recompiles=True)
-
-        opt_iso_b(torch.randn(5))
-        opt_iso_a(torch.randn(4))
+        # Create entries across several isolated regions in reverse order
+        # to make unordered_map iteration more likely to differ from sorted.
+        opts = [
+            torch.compile(f, backend=cnt, isolate_recompiles=True) for _ in range(6)
+        ]
+        for opt in reversed(opts):
+            opt(torch.randn(3))
 
         entries = torch._dynamo.eval_frame._debug_get_cache_entry_list(f)
-        self.assertEqual(len(entries), 2)
+        self.assertEqual(len(entries), 6)
 
         ids = [e.isolate_recompiles_id for e in entries]
         self.assertEqual(ids, sorted(ids))

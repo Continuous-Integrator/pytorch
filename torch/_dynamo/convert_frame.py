@@ -612,6 +612,8 @@ class ConvertFrameAssert:
 
     @property
     def _clone_with_backend(self) -> Callable[[CompilerFn], ConvertFrameAssert]:
+        # Preserves isolate_recompiles_id so the clone shares the same cache
+        # bucket (used by DDPOptimizer).
         return lambda backend: convert_frame_assert(
             backend,
             self._one_graph,
@@ -2159,6 +2161,9 @@ class ConvertFrame:
 
     @property
     def _clone_with_backend(self) -> Callable[[WrapBackendDebug], ConvertFrame]:
+        # Used by DDPOptimizer to swap in its own backend while preserving the
+        # same isolate_recompiles_id so DDP-split subgraphs share the original
+        # compile call's cache bucket.
         return lambda backend: convert_frame(
             backend,
             self._hooks,
