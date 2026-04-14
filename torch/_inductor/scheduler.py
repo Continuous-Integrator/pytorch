@@ -5607,6 +5607,10 @@ class Scheduler:
         # No reordering candidates found. Try reindexing the pointwise
         # to match the reduction's iteration domain (e.g., [1024, 8192] ->
         # [65536, 128] for RMS norm with reshape), then retry loop reordering.
+        # The retry is needed because FusedSchedulerNodes may have more loop
+        # vars than the reindexed pointwise (e.g., 3 vs 2), and only the
+        # normalize() comparison in _try_reorder_loops_for_candidates handles
+        # that num_vars mismatch.
         if (
             not config.loop_reindexing_after_fusion
             or not self._try_reindex_pointwise_for_reduction(node1, node2)
@@ -5775,7 +5779,16 @@ class Scheduler:
             refresh_group_node_dependencies(pw_node)
 
         # Verify reindexing actually increases shared deps.
-        if self.score_fusion_memory(node1, node2) <= 0:
+        common_names = (
+            node1.read_writes.buffer_names() & node2.read_writes.buffer_names()
+        )
+        n1_deps = {dep.name: dep for dep in node1.read_writes.reads_and_writes()}
+        n2_deps = {dep.name: dep for dep in node2.read_writes.reads_and_writes()}
+        has_benefit = any(
+            self.deps_match_normalized(n1_deps[name], n2_deps[name])
+            for name in common_names
+        )
+        if not has_benefit:
             for sn, state in snapshots:
                 sn.restore_loop_state(state)
             if isinstance(pw_node, FusedSchedulerNode):
@@ -6385,6 +6398,24 @@ class Scheduler:
         if isinstance(write, StarDep) and read_name == write_name:
             return True
         return False
+
+    @staticmethod
+    def deps_match_normalized(dep1: Dep, dep2: Dep) -> bool:
+        """Check if two deps refer to the same access pattern after normalization.
+
+        Handles the case where FusedSchedulerNodes have more loop vars
+        than a single SchedulerNode (e.g., 3 vars vs 2) by falling back
+        to normalize() which merges loops before comparing.
+        """
+        if not isinstance(dep1, MemoryDep) or not isinstance(dep2, MemoryDep):
+            return False
+        if dep1 == dep2:
+            return True
+        if dep1.num_vars == dep2.num_vars:
+            return (
+                dep1.normalize_with_stride_order() == dep2.normalize_with_stride_order()
+            )
+        return dep1.normalize() == dep2.normalize()
 
     def dep_size_hint(self, dep: Dep, count_bytes: bool = True) -> int:
         return V.graph.get_dep_size_hint(dep, count_bytes)
