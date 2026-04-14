@@ -1984,6 +1984,7 @@ class TestPDLWithMultiStream(InductorTestCase):
     @inductor_config.patch({"triton.enable_pdl": True})
     def test_pdl_correctness_with_multiple_streams(self):
         """Enabling PDL with independent side streams produces correct results."""
+        from torch._inductor.utils import run_and_get_triton_code
 
         def fn(x):
             s1 = torch.cuda.Stream()
@@ -2007,6 +2008,11 @@ class TestPDLWithMultiStream(InductorTestCase):
         expected = fn(x)
         compiled_fn = torch.compile(fn)
         self.assertEqual(compiled_fn(x), expected)
+
+        triton_code = run_and_get_triton_code(torch.compile(fn), x)
+        # At least the per-stream pointwise kernels should have PDL
+        pdl_count = triton_code.count("'launch_pdl': True")
+        self.assertGreaterEqual(pdl_count, 2)
 
     @unittest.skipIf(not SM90OrLater or TEST_WITH_ROCM, "PDL requires NVIDIA sm90+")
     @inductor_config.patch({"triton.enable_pdl": True})
@@ -2108,7 +2114,7 @@ class TestPDLWithMultiStream(InductorTestCase):
     @inductor_config.patch({"triton.enable_pdl": True})
     def test_pdl_empty_stream_context(self):
         """An empty side stream context must not crash with PDL enabled."""
-        from torch._inductor.utils import run_and_get_code
+        from torch._inductor.utils import run_and_get_code, run_and_get_triton_code
 
         def fn(x):
             s = torch.cuda.Stream()
@@ -2124,6 +2130,10 @@ class TestPDLWithMultiStream(InductorTestCase):
         result, (code,) = run_and_get_code(compiled_fn, x)
         self.assertEqual(result, expected)
 
+        # The default-stream kernel should still get PDL
+        triton_code = run_and_get_triton_code(torch.compile(fn), x)
+        FileCheck().check("'launch_pdl': True").run(triton_code)
+
     @unittest.skipIf(not SM90OrLater or TEST_WITH_ROCM, "PDL requires NVIDIA sm90+")
     @inductor_config.patch({"triton.enable_pdl": True})
     def test_pdl_three_stream_pipeline_correctness(self):
@@ -2131,6 +2141,7 @@ class TestPDLWithMultiStream(InductorTestCase):
 
         Each stage runs on a different stream so PDL's GDC intrinsics are
         no-ops across the boundaries — correctness relies on the events."""
+        from torch._inductor.utils import run_and_get_code
 
         def fn(x):
             s1 = torch.cuda.Stream()
@@ -2160,7 +2171,13 @@ class TestPDLWithMultiStream(InductorTestCase):
         x = torch.randn(1024, device="cuda")
         expected = fn(x)
         compiled_fn = torch.compile(fn)
-        self.assertEqual(compiled_fn(x), expected)
+        result, (code,) = run_and_get_code(compiled_fn, x)
+        self.assertEqual(result, expected)
+
+        # All three stream contexts and both event pairs must survive
+        self.assertGreaterEqual(code.count("torch.cuda.stream"), 3)
+        self.assertGreaterEqual(code.count("record_event"), 2)
+        self.assertGreaterEqual(code.count("wait_event"), 2)
 
     @unittest.skipIf(not SM90OrLater or TEST_WITH_ROCM, "PDL requires NVIDIA sm90+")
     @inductor_config.patch({"triton.enable_pdl": True})
@@ -2171,6 +2188,8 @@ class TestPDLWithMultiStream(InductorTestCase):
         Uses 4096x4096 matmuls (matching TestStreamOrderingStress) so the
         GPU work is long enough that a missing event.wait() would cause
         the consumer to read stale data."""
+        from torch._inductor.utils import run_and_get_code
+
         N = 4096
         ITERS = 20
 
@@ -2193,7 +2212,12 @@ class TestPDLWithMultiStream(InductorTestCase):
         x = torch.randn(N, N, device="cuda")
         w = torch.eye(N, device="cuda") * 0.9
 
+        # Verify codegen once before the stress loop
         compiled_fn = torch.compile(fn)
+        result, (code,) = run_and_get_code(compiled_fn, x, w)
+        self.assertIn("torch.cuda.stream", code)
+        self.assertIn("wait_event", code)
+
         for _ in range(ITERS):
             expected = fn(x, w)
             actual = compiled_fn(x, w)
