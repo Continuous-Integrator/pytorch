@@ -916,23 +916,9 @@ class BaseSchedulerNode:
                         for x in input_buf.users
                         if x.node.get_name() not in inconsequential_nodes
                     ]
-                    # In multi-stream graphs, don't reuse a buffer if
-                    # completed (codegen'd) users on other streams may
-                    # still be reading it on the GPU.
-                    has_cross_stream_hazard = False
-                    if self.scheduler._has_multi_stream_nodes():
-                        my_stream = self.scheduler.node_to_stream.get(self)
-                        for user in input_buf.users:
-                            unode = user.node
-                            if (
-                                isinstance(unode, BaseSchedulerNode)
-                                and unode is not self
-                                and unode.get_name() in inconsequential_nodes
-                            ):
-                                user_stream = self.scheduler.node_to_stream.get(unode)
-                                if user_stream is not None and user_stream != my_stream:
-                                    has_cross_stream_hazard = True
-                                    break
+                    has_cross_stream_hazard = self.scheduler.has_cross_stream_hazard(
+                        read.name, self
+                    )
 
                     if (
                         not has_cross_stream_hazard
@@ -2689,14 +2675,20 @@ class ForeachKernelSchedulerNode(FusedSchedulerNode):
                     continue
                 device_groups[device].append(node)
 
-            # Chunk each device group separately
+            # Sub-group by stream to avoid mixing nodes across stream
+            # boundaries.  When multi-stream scheduling is inactive every
+            # node maps to DEFAULT_STREAM_IDX so this is a no-op.
             for device_nodes in device_groups.values():
-                grouped_nodes.extend(
-                    [
-                        device_nodes[i : i + max_num_nodes]
-                        for i in range(0, len(device_nodes), max_num_nodes)
-                    ]
-                )
+                stream_groups: dict[int, list[BaseSchedulerNode]] = defaultdict(list)
+                for node in device_nodes:
+                    stream_groups[scheduler.node_to_stream.get(node, 0)].append(node)
+                for stream_nodes in stream_groups.values():
+                    grouped_nodes.extend(
+                        [
+                            stream_nodes[i : i + max_num_nodes]
+                            for i in range(0, len(stream_nodes), max_num_nodes)
+                        ]
+                    )
         return grouped_nodes
 
     group_algorithm_for_combo_kernels: Callable[
@@ -3374,11 +3366,11 @@ class Scheduler:
         return name_to_donated_buf
 
     def _populate_stream_assignments(self) -> None:
-        """Populate node_to_stream and buff_to_stream from FX node metadata.
+        """Populate node_to_stream and buff_to_stream from IR node stream_idx.
 
-        Reads the 'custom.stream' metadata from FX nodes to determine which
-        stream each scheduler node should run on. This metadata is set by
-        dynamo when tracing torch.cuda.stream() context managers.
+        Reads the stream_idx field set on IR nodes during lowering to determine
+        which stream each scheduler node should run on. This field is propagated
+        from 'custom.stream' FX node metadata via IRNode.current_stream_idx().
         """
         from .stream_constants import DEFAULT_STREAM_IDX
 
@@ -3389,29 +3381,19 @@ class Scheduler:
         for node in self.nodes:
             stream_idx = DEFAULT_STREAM_IDX
 
-            # Get the origin FX nodes to read metadata.
-            # Each scheduler node may have multiple origin FX nodes (via origins).
             if node.node is not None:
-                origins = node.node.get_origins()
-                for fx_node in origins:
-                    if not hasattr(fx_node, "meta"):
-                        continue
-                    custom_meta = fx_node.meta.get("custom", {})
-                    if "stream" in custom_meta:
-                        user_obj_idx = custom_meta["stream"]
-                        if user_obj_idx not in user_obj_to_stream_idx:
-                            new_stream_idx = next(stream_idx_counter)
-                            user_obj_to_stream_idx[user_obj_idx] = new_stream_idx
-                            self.stream_idx_to_user_obj_idx[new_stream_idx] = (
-                                user_obj_idx
-                            )
-                        stream_idx = user_obj_to_stream_idx[user_obj_idx]
-                        # Use the first stream found
-                        break
+                user_obj_idx = node.node.get_stream_idx()
+                if user_obj_idx is not None:
+                    if user_obj_idx not in user_obj_to_stream_idx:
+                        new_stream_idx = next(stream_idx_counter)
+                        user_obj_to_stream_idx[user_obj_idx] = new_stream_idx
+                        self.stream_idx_to_user_obj_idx[new_stream_idx] = user_obj_idx
+                    stream_idx = user_obj_to_stream_idx[user_obj_idx]
 
             self.node_to_stream[node] = stream_idx
 
-            # Also populate buff_to_stream for all buffers produced by this node
+            # Also populate buff_to_stream for all buffers produced by this node.
+            # Mutation renames are resolved at lookup time via get_buf_stream.
             for buf in node.get_buffer_names():
                 self.buff_to_stream[buf] = stream_idx
 
@@ -3442,6 +3424,21 @@ class Scheduler:
     def _has_multi_stream_nodes(self) -> bool:
         """Check if any nodes are assigned to non-default streams."""
         return self._multi_stream_nodes
+
+    def get_buf_stream(self, buf_name: str) -> int:
+        """Return the stream index for a buffer, resolving mutation renames."""
+        real = self.mutation_renames.get(buf_name, buf_name)
+        return self.buff_to_stream.get(real, self.buff_to_stream.get(buf_name, 0))
+
+    def has_cross_stream_hazard(self, buf_name: str, node: BaseSchedulerNode) -> bool:
+        """True if buf_name was produced on a different stream than node.
+
+        Resolves mutation renames so that mutated buffers inherit the
+        stream of their original definition.
+        """
+        if not self._has_multi_stream_nodes():
+            return False
+        return self.get_buf_stream(buf_name) != self.node_to_stream.get(node, 0)
 
     @property
     def current_device(self) -> torch.device | None:
@@ -5112,6 +5109,11 @@ class Scheduler:
             self.name_to_fused_node.update(
                 {n.get_name(): group_snode for n in group_snode.get_nodes()}
             )
+            # Propagate stream assignment so codegen can place the combo
+            # kernel in the correct stream context.
+            stream = self.node_to_stream.get(node_list[0])
+            if stream is not None:
+                self.node_to_stream[group_snode] = stream
         self.nodes = sorted(fused_nodes, key=lambda x: x.min_order)
         self.nodes = self.topological_sort_schedule(self.nodes)
         log.info(
