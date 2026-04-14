@@ -577,11 +577,16 @@ class ConfigModule(ModuleType):
         self, *, ignore_private_configs: bool = True
     ) -> dict[str, Any]:
         """Convert config to portable format"""
+        from torch._dynamo.utils import dynamo_timed
+
         prefixes = []
         if ignore_private_configs:
             prefixes.append("_")
         prefixes.extend(getattr(self, "_cache_config_ignore_prefix", []))
-        config = self._get_dict(ignored_prefixes=prefixes)
+        with dynamo_timed(
+            f"save_config_portable.{self.__name__}._get_dict",
+        ):
+            config = self._get_dict(ignored_prefixes=prefixes)
         for key in getattr(self, "_cache_config_factory_keys", []):
             if key in config and config[key] is not None:
                 instance = config[key]()

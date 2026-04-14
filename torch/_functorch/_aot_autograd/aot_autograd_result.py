@@ -162,6 +162,12 @@ class FxGraphCacheLoadable(InductorOutput[CompiledFxGraph]):
         return False
 
     def load(self, example_inputs: Sequence[Any]) -> CompiledFxGraph:
+        from torch._dynamo.utils import dynamo_timed
+
+        with dynamo_timed("AOTAutogradCache.FxGraphCacheLoadable.load"):
+            return self._load_impl(example_inputs)
+
+    def _load_impl(self, example_inputs: Sequence[Any]) -> CompiledFxGraph:
         from .autograd_cache import FXGraphCacheMiss
 
         # [Note: AOTAutogradCache and FXGraphCache Guard interactions]

@@ -668,7 +668,19 @@ class FxGraphCachePickler(pickle.Pickler):
         """
         Serialize an object and return a hash of the bytes.
         """
-        serialized_data = self.dumps(obj)
+        with dynamo_timed("FxGraphCachePickler.get_hash.dumps"):
+            for attr, val in vars(obj).items():
+                if attr in ("gm", "example_inputs"):
+                    with dynamo_timed(
+                        f"FxGraphCachePickler.get_hash.dumps.{attr}"
+                    ):
+                        self.dumps(val)
+                else:
+                    self.dumps(val)
+            with dynamo_timed(
+                "FxGraphCachePickler.get_hash.dumps._instrumentation_overhead"
+            ):
+                serialized_data = self.dumps(obj)
         return sha256_hash(serialized_data)
 
     def debug_lines(self, inp: FxGraphHashDetails) -> list[str]:
@@ -677,7 +689,10 @@ class FxGraphCachePickler(pickle.Pickler):
         comprising an object. Useful for debugging when one graph hashes
         to a different value than another.
         """
+        with dynamo_timed("FxGraphCachePickler.debug_lines"):
+            return self._debug_lines_impl(inp)
 
+    def _debug_lines_impl(self, inp: FxGraphHashDetails) -> list[str]:
         def get_str(obj: Any) -> str:
             if isinstance(obj, torch.Tensor):
                 return str(extract_tensor_metadata_for_cache_key(obj))
@@ -692,17 +707,20 @@ class FxGraphCachePickler(pickle.Pickler):
 
         lines = []
         for attr, obj in vars(inp).items():
-            if isinstance(obj, list):
-                for ii in range(len(obj)):
-                    h = self.get_hash(obj[ii])
-                    lines.append(f"[{h}] {attr}[{ii}]: {get_str(obj[ii])}")
-            elif isinstance(obj, dict):
-                for k, v in obj.items():
-                    h = self.get_hash(v)
-                    lines.append(f"[{h}] {attr}[{k}]: {get_str(v)}")
-            else:
-                h = self.get_hash(obj)
-                lines.append(f"[{h}] {attr}: {get_str(obj)}")
+            with dynamo_timed(
+                f"FxGraphCachePickler.debug_lines.{attr}"
+            ):
+                if isinstance(obj, list):
+                    for ii in range(len(obj)):
+                        h = self.get_hash(obj[ii])
+                        lines.append(f"[{h}] {attr}[{ii}]: {get_str(obj[ii])}")
+                elif isinstance(obj, dict):
+                    for k, v in obj.items():
+                        h = self.get_hash(v)
+                        lines.append(f"[{h}] {attr}[{k}]: {get_str(v)}")
+                else:
+                    h = self.get_hash(obj)
+                    lines.append(f"[{h}] {attr}: {get_str(obj)}")
         return lines
 
 
@@ -921,21 +939,27 @@ class FxGraphHashDetails:
                     continue
                 for node in itertools.chain(
                     module.graph.find_nodes(
-                        op="call_function", target=triton_kernel_wrapper_functional
+                        op="call_function",
+                        target=triton_kernel_wrapper_functional,
                     ),
                     module.graph.find_nodes(
-                        op="call_function", target=triton_kernel_wrapper_mutation
+                        op="call_function",
+                        target=triton_kernel_wrapper_mutation,
                     ),
                 ):
                     from triton.runtime.autotuner import Autotuner
 
-                    kernel = kernel_side_table.get_kernel(node.kwargs["kernel_idx"])
+                    kernel = kernel_side_table.get_kernel(
+                        node.kwargs["kernel_idx"]
+                    )
                     configs = None
                     if isinstance(kernel, Autotuner):
                         if kernel.configs:
                             configs = str(
                                 sorted(
-                                    sorted(str(kv) for kv in c.all_kwargs().items())
+                                    sorted(
+                                        str(kv) for kv in c.all_kwargs().items()
+                                    )
                                     for c in kernel.configs
                                 )
                             )
@@ -1002,7 +1026,10 @@ class FxGraphHashDetails:
         # Also hash on various system info (including the triton compiler version).
         self.torch_version = torch_key()
         self.system_info = CacheBase.get_system()
-        self.inductor_config = config.save_config_portable(ignore_private_configs=False)
+        with dynamo_timed("FxGraphHashDetails.save_config_portable"):
+            self.inductor_config = config.save_config_portable(
+                ignore_private_configs=False
+            )
         # Custom passes should provide an ID to hash when they run late (after cache lookup).
         if resolve_pre_grad_pass_timing() != "early":
             self.pre_grad_custom_pass = self._get_custom_pass_detail(
@@ -1186,7 +1213,10 @@ class GuardedCache(Generic[T]):
                     try:
                         with open(os.path.join(subdir, path), "rb") as f:
                             content = f.read()
-                            yield pickle.loads(content), content, True
+                            with dynamo_timed(
+                                "GuardedCache.iterate_over_candidates.local_pickle_loads"
+                            ):
+                                yield pickle.loads(content), content, True
                     except Exception:
                         log.warning(
                             "fx graph cache unable to load compiled graph",
@@ -1195,12 +1225,17 @@ class GuardedCache(Generic[T]):
 
         if remote_cache:
             try:
-                if (cache_data := remote_cache.get(key)) is not None:
+                with dynamo_timed("GuardedCache.iterate_over_candidates.remote_get"):
+                    cache_data = remote_cache.get(key)
+                if cache_data is not None:
                     assert isinstance(cache_data, dict)
                     data = cache_data["data"]
                     assert isinstance(data, (str, bytes))
                     content = base64.b64decode(data)
-                    yield pickle.loads(content), content, False
+                    with dynamo_timed(
+                        "GuardedCache.iterate_over_candidates.remote_pickle_loads"
+                    ):
+                        yield pickle.loads(content), content, False
             except Exception:
                 log.warning(
                     "%s unable to load compiled graph", cls.__name__, exc_info=True
@@ -1253,7 +1288,8 @@ class GuardedCache(Generic[T]):
             # If there's not a cache hit, we don't want the evaluation to
             # affect the current env, e.g., cause the creation of new guards,
             # so we evaluate with the hints instead of the symbols.
-            hit = bool(evaluate_guards(candidate.guards_expr, hints))  # type: ignore[attr-defined]
+            with dynamo_timed("GuardedCache.evaluate_guards"):
+                hit = bool(evaluate_guards(candidate.guards_expr, hints))  # type: ignore[attr-defined]
             if hit:
                 graph = candidate
                 pickled_content = content
