@@ -1815,6 +1815,7 @@ class OutputGraph(OutputGraphCommon):
         # i.e. last element corresponds to root frame (1),
         # first element corresponds to current frame (N)
         all_stack_values = []
+        # pyrefly: ignore [implicit-any]
         all_stack_locals_metas = []
         cur_tx: InstructionTranslatorBase | None = tx
         while cur_tx is not None:
@@ -2015,7 +2016,7 @@ class OutputGraph(OutputGraphCommon):
                         elif (
                             vt.source is not None
                             and (source := getattr(vt.source, "base", None))  # type: ignore[assignment]
-                            and source.is_input
+                            and getattr(source, "is_input", False)
                         ):
                             self.export_metadata.output_return_type[idx] = (
                                 "input",
@@ -2187,7 +2188,13 @@ class OutputGraph(OutputGraphCommon):
                         if isinstance(var, UserDefinedDictVariable) and isinstance(
                             var.value, _ExportModuleSpecTrackerDict
                         ):
-                            for k, v in var.items.items():
+                            assert var._base_vt is not None
+                            for (
+                                k,
+                                v,
+                            ) in (
+                                var._base_vt.items.items()  # pyrefly: ignore[missing-attribute]
+                            ):
                                 # pyrefly: ignore [implicit-any]
                                 specs = {}
                                 # pyrefly: ignore[missing-attribute]
@@ -2459,11 +2466,16 @@ class OutputGraph(OutputGraphCommon):
             # if any node was consumed by autograd.grad
             reachable_grad_fns = collect_reachable_grad_fns([(fake_tensor, None)])
             if reachable_grad_fns & self.autograd_grad_consumed_grad_fns:
-                # Set the flag to graph break at autograd.grad on retry
-                tx.speculation_log.graph_break_on_autograd_grad = True
-                raise exc.AutogradGradRestartAnalysis(
-                    restart_reason="autograd.grad consumed grad_fns of returned tensors"
-                )
+                # Record info about the leaked tensor for the error message
+                tensor_name = str(var.source) if var.source else var.proxy.node.name
+                tx.speculation_log.autograd_grad_leaked_tensors.append(tensor_name)
+
+        if tx.speculation_log.autograd_grad_leaked_tensors:
+            # Set the flag to graph break at autograd.grad on retry
+            tx.speculation_log.graph_break_on_autograd_grad = True
+            raise exc.AutogradGradRestartAnalysis(
+                restart_reason="autograd.grad consumed grad_fns of returned tensors"
+            )
 
     def _check_requires_grad_intermediate_outputs(
         self, rv: list["VariableTracker"], tx: "InstructionTranslatorBase"
@@ -2630,8 +2642,7 @@ class OutputGraph(OutputGraphCommon):
                 # If dynamo produces a graph with parameters, skip package stuff
                 # Bypass output graph
                 self.bypass_package(
-                    "Graph contains named parameters: either inline_inbuilt_nn_modules=False or there are static addresses.",
-                    inline_builtin_nn_modules=torch._dynamo.config.inline_inbuilt_nn_modules,
+                    "Graph contains named parameters due to static addresses.",
                     gm=gm.print_readable(
                         print_output=False, include_stride=True, include_device=True
                     ),
@@ -3754,7 +3765,6 @@ class SubgraphTracer(fx.Tracer):
             rv.node.meta["source_fn_stack"] = self.source_fn_stack + [stack]
         elif kind == "call_module":
             if self.parent is not None:
-                # TODO can remove once inline_inbuilt_nn_modules is always True
                 unimplemented(
                     gb_type="Invoking an nn.Module inside a higher order operator",
                     context=f"Higher order op name: {self.source_target}",
@@ -3788,7 +3798,6 @@ class SubgraphTracer(fx.Tracer):
                     ]
                 elif kind == "call_module":
                     if self.parent is not None:
-                        # TODO can remove once inline_inbuilt_nn_modules is always True
                         unimplemented(
                             gb_type="Invoking an nn.Module inside a HigherOrderOperator",
                             context="",
