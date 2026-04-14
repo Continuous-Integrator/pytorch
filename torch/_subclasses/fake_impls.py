@@ -426,9 +426,9 @@ def _unique(
 
         if dim is None:
             if unique_consecutive:
-                arg.unique_consecutive_memo = nnz
+                arg.unique_consecutive_memo = nnz  # pyrefly: ignore[bad-assignment]
             else:
-                arg.unique_memo = nnz
+                arg.unique_memo = nnz  # pyrefly: ignore[bad-assignment]
 
     if dim is None:
         # pyrefly: ignore[no-matching-overload]
@@ -439,15 +439,19 @@ def _unique(
 
     return_if_dim_and_cpu = dim is not None and arg.fake_device == torch.device("cpu")
     if return_inverse or return_if_dim_and_cpu:
-        inverse = arg.new_empty(arg.shape if dim is None else (arg.shape[dim],))
+        inverse = arg.new_empty(
+            arg.shape if dim is None else (arg.shape[dim],), dtype=torch.int64
+        )
     else:
-        inverse = arg.new_empty(0)
+        inverse = arg.new_empty(0, dtype=torch.int64)
     ret.append(inverse)
 
     if return_counts or return_if_dim_and_cpu:
-        counts = arg.new_empty(ret[0].shape if dim is None else (ret[0].shape[dim],))
+        counts = arg.new_empty(
+            ret[0].shape if dim is None else (ret[0].shape[dim],), dtype=torch.int64
+        )
     else:
-        counts = arg.new_empty(0)
+        counts = arg.new_empty(0, dtype=torch.int64)
     ret.append(counts)
 
     return tuple(ret)
@@ -905,7 +909,7 @@ def nonzero(fake_mode: FakeTensorMode, func: OpOverload, arg: FakeTensor) -> Fak
 
             _constrain_range_for_size(nnz, max=maxval)
 
-        arg.nonzero_memo = nnz
+        arg.nonzero_memo = nnz  # pyrefly: ignore[bad-assignment]
     return arg.new_empty_strided((nnz, arg.dim()), (1, nnz), dtype=torch.int64)  # type: ignore[return]
 
 

@@ -2998,6 +2998,13 @@ def check_dim_size(tensor, dim, dim_size, size):
     )
 
 
+@register_meta(aten.quantize_per_tensor)
+def meta_quantize_per_tensor(
+    input: torch.Tensor, scale: float, zero_point: int, dtype: torch.dtype
+) -> torch.Tensor:
+    return torch.empty_like(input)
+
+
 @register_meta(aten.avg_pool2d.default)
 def meta_avg_pool2d(
     input,
@@ -3580,8 +3587,8 @@ def meta_complex(real, imag):
 @register_meta([aten.nonzero_static.default, aten.nonzero_static.out])
 @out_wrapper()
 def nonzero_static(self, *, size, fill_value: int = -1):
-    # The impl of xpu nonzero_static is different with cuda but aligned with cpu
-    if device_hint(self) in ("cpu", "xpu"):
+    # The impl of nonzero_static on xpu and mps differs from cuda but aligned with cpu
+    if device_hint(self) in ("cpu", "mps", "xpu"):
         return self.new_empty((size, self.dim()), dtype=torch.long)
     else:
         return torch.empty_strided(
@@ -5715,11 +5722,22 @@ def meta_zeros(
 
 @register_meta(aten.select_scatter.default)
 def meta_select_scatter(self, src, dim, index):
-    return utils.clone_preserve_strides(self)
+    return _scatter_meta_output(self)
 
 
 @register_meta(aten.slice_scatter.default)
 def meta_slice_scatter(self, src, dim=0, start=None, end=None, step=1):
+    return _scatter_meta_output(self)
+
+
+def _scatter_meta_output(self):
+    from torch.fx.experimental.symbolic_shapes import free_unbacked_symbols
+
+    # Match clone_preserve_strides() in aten/native/TensorShape.cpp: overlapping
+    # bases cannot preserve their logical strides because the scatter writes would
+    # alias, so eager falls back to clone().
+    if not free_unbacked_symbols(self) and torch._debug_has_internal_overlap(self) == 1:
+        return self.clone()
     return utils.clone_preserve_strides(self)
 
 

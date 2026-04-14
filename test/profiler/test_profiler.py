@@ -2726,21 +2726,28 @@ if KinetoStepTracker.current_step() != initial_step + 2 * niters:
                 y = torch.randn(10, 10)
                 z = torch.mm(x, y)
 
-    @unittest.skipIf(not torch.cuda.is_available(), "requires CUDA")
     @unittest.skipIf(not kineto_available(), "Kineto is required")
-    def test_activity_filter_backward_compat(self):
-        """Plain activities=[CPU] still works unchanged."""
-        with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA]) as p:
-            x = torch.randn(10, 10).to("cuda")
-            y = torch.mm(x, x)
+    def test_profiler(self):
+        """Basic test for torch.profiler.profile API."""
+        use_cuda = torch.profiler.ProfilerActivity.CUDA in supported_activities()
+        activities = [ProfilerActivity.CPU]
+        if use_cuda:
+            activities.append(ProfilerActivity.CUDA)
+        with profile(activities=activities) as p:
+            self.payload(use_cuda=use_cuda)
         events = p.events()
         self.assertGreater(len(events), 0)
-        has_overhead = any(
-            "Lazy Function Loading" in e.name for e in events
-        )  # Lazy Function Loading is an OVERHEAD event
-        self.assertTrue(has_overhead)
+        found_mm = False
+        for e in events:
+            if "aten::mm" in e.name:
+                found_mm = True
+        self.assertTrue(found_mm)
+        if use_cuda:
+            gpu_events = [e for e in events if e.device_type == DeviceType.CUDA]
+            self.assertGreater(len(gpu_events), 0, "No GPU events captured by profiler")
 
     @unittest.skipIf(not torch.cuda.is_available(), "requires CUDA")
+    @unittest.skipIf(TEST_WITH_ROCM, "not supported on ROCm")
     @unittest.skipIf(not kineto_available(), "Kineto is required")
     def test_activity_filter_dict_syntax(self):
         """Dict syntax collects only the requested activity types."""
@@ -2832,11 +2839,26 @@ if KinetoStepTracker.current_step() != initial_step + 2 * niters:
             self.assertGreater(
                 len(kernel_events), 0, "Error: No kernel events in trace"
             )
+            has_kernel_launch_metadata = False
             for ke in kernel_events:
                 args = ke.get("args", {})
                 name = ke.get("name", "<unknown>")
-                for key in ["device", "stream", "correlation", "grid", "block"]:
+                for key in ["device", "stream", "correlation"]:
                     self.assertIn(key, args, f"kernel '{name}' missing '{key}'")
+                # Some kernel events on ROCm (__amd_rocclr...) do not have grid/block metadata
+                # so we just validate that it shows up for at least one event
+                has_grid = "grid" in args
+                has_block = "block" in args
+                self.assertEqual(
+                    has_grid,
+                    has_block,
+                    f"kernel '{name}' should provide grid and block together",
+                )
+                has_kernel_launch_metadata |= has_grid
+            self.assertTrue(
+                has_kernel_launch_metadata,
+                "Error: No kernel events in trace contained grid/block metadata",
+            )
 
 
 class SimpleNet(nn.Module):
@@ -3149,7 +3171,7 @@ class TestExperimentalUtils(TestCase):
 
     def test_utils_compute_queue_depth_when_no_cuda_events(self):
         # For traces with only cpu events, we expect empty queue depth list
-        x = torch.ones((1024, 1024))
+        x = torch.ones((100, 100))
         with profile() as prof:
             for _ in range(5):
                 x = x @ x
@@ -3199,7 +3221,7 @@ aten::copy_""",
         )
 
     def test_profiler_name_pattern(self):
-        x = torch.ones((4096, 4096))
+        x = torch.ones((100, 100))
         with profile() as prof:
             for _ in range(5):
                 x = x @ x
@@ -3975,11 +3997,12 @@ class TestProfilerEventsParity(TestCase):
             )
             self.assertIsNotNone(json_add)
             args = json_add["args"]
-            self.assertEqual(fe_add.input_shapes, args["Input Dims"])
-            self.assertEqual(fe_add.input_strides, args["Input Strides"])
+            self.assertEqual(fe_add.structured_input_shapes, args["Input Dims"])
+            self.assertEqual(fe_add.structured_input_strides, args["Input Strides"])
             self.assertEqual(fe_add.input_dtypes, args["Input type"])
 
-            # Test a case with TensorList inputs -- input_shapes should handle this
+            # Test a case with TensorList inputs -- structured_input_shapes
+            # should handle TensorList nesting correctly.
             json_cat = next(
                 (
                     e
@@ -3990,8 +4013,8 @@ class TestProfilerEventsParity(TestCase):
             )
             self.assertIsNotNone(json_cat)
             args_cat = json_cat["args"]
-            self.assertEqual(fe_cat.input_shapes, args_cat["Input Dims"])
-            self.assertEqual(fe_cat.input_strides, args_cat["Input Strides"])
+            self.assertEqual(fe_cat.structured_input_shapes, args_cat["Input Dims"])
+            self.assertEqual(fe_cat.structured_input_strides, args_cat["Input Strides"])
             self.assertEqual(fe_cat.input_dtypes, args_cat["Input type"])
 
     def test_profiler_external_id_parity(self):
