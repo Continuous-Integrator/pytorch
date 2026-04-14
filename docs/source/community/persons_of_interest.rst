@@ -350,6 +350,7 @@ ExecuTorch (Edge, Mobile)
 -  (emeritus) Kimish Patel (`kimishpatel <https://github.com/kimishpatel>`__)
 -  (emeritus) Dave Bort (`dbort <https://github.com/dbort>`__)
 -  (emeritus) Martin Yuan (`iseeyuan <https://github.com/iseeyuan>`__)
+-  (emeritus) Mengwei Liu (`larryliu0820 <https://github.com/larryliu0820>`__)
 
 TorchCodec
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
