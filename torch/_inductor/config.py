@@ -671,7 +671,9 @@ use_pre_grad_passes: bool = True
 #   requires custom passes to implement uuid() for the cache key.
 # "default": resolves to "late" when possible (no custom pass, or custom pass
 #   with uuid), falls back to "early" otherwise.
-pre_grad_pass_timing: Literal["early", "late", "default"] = "default"
+pre_grad_pass_timing: Literal["early", "late", "default"] = (
+    "late" if is_fbcode() else "default"
+)
 
 
 use_joint_graph_passes: bool = True
@@ -1141,6 +1143,14 @@ class aten_distributed_optimizations:
     # as atomic units with memory-bound runtime estimates.
     enable_fusion_regions: bool | None = None
 
+    # Default bucketing mode for auto and manual overlap scheduling
+    # "default": traced bucketing, fully lowered by inductor during compilation
+    # "custom_ops": temporary bucketing using custom ops to hide parts from inductor
+    # "custom_ops_multidtype": same as custom_ops but buckets multiple dtypes
+    #     (e.g. bf16 and fp32) into one bucket
+    # None means "auto" — the compiler picks the best mode
+    bucket_mode: Literal["default", "custom_ops", "custom_ops_multidtype"] | None = None
+
     # Prioritize bucketing during overlap scheduling by grouping candidates by bucket key
     prioritize_bucketing_during_scheduling: bool = True
 
@@ -1153,9 +1163,6 @@ class aten_distributed_optimizations:
     # RuntimeError. "error" fails fast instead of risking silent NCCL hang.
     # TODO(ivankobzarev): change default to "error" after real-world testing.
     spmd_mismatch: Literal["warn", "error"] = "warn"
-
-    # Bucket mode for collective bucketing in overlap scheduling
-    bucket_mode: Literal["default", "custom_ops", "custom_ops_multidtype"] | None = None
 
     # When True, automatically remove extra deps that create cycles instead of
     # raising an error.  Set this to True as a workaround if overlap scheduling
