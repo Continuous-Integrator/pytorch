@@ -8429,7 +8429,7 @@ class ReproTestsDevice(torch._dynamo.test_case.TestCase):
                         64,
                         dtype=torch.bfloat16,
                         device=device_type,
-                        requires_grad=True
+                        requires_grad=True,
                     )
                 )
                 self.b = torch.nn.Parameter(
@@ -8438,7 +8438,7 @@ class ReproTestsDevice(torch._dynamo.test_case.TestCase):
                         64,
                         dtype=torch.bfloat16,
                         device=device_type,
-                        requires_grad=True
+                        requires_grad=True,
                     )
                 )
                 self.bias = torch.nn.Parameter(
