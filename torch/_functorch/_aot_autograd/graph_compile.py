@@ -249,6 +249,14 @@ def aot_stage1_graph_capture(
                     fw_metadata=aot_state.fw_metadata,
                 )
             )
+            # Tag the last autograd.grad node as backward for the remat pass.
+            last_grad_node = None
+            for node in graph.graph.nodes:
+                if node.op == "call_function" and node.target is torch.autograd.grad:
+                    last_grad_node = node
+            if last_grad_node is not None:
+                last_grad_node.meta.setdefault("custom", {})["autograd_backward"] = True
+
             # Apply AC rematerialization to forward+loss+bwd graph
             if torch._functorch.config.remat_using_tags_for_fwd_loss_bwd_graph:
                 from torch._functorch._activation_checkpointing.remat_using_tags_for_fwd_loss_bwd_graph_pass import (
