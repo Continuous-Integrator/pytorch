@@ -710,8 +710,14 @@ void FunctionExtractor::ConvertScopeToFunction(
       ctx_nlist.insert(last_n_it, func_n);
 
       // remove replaced nodes from list
-      std::erase_if(
-          ctx_nlist, [&old_nodes](Node* n) { return old_nodes.contains(n); });
+      ctx_nlist.erase(
+          std::remove_if(
+              ctx_nlist.begin(),
+              ctx_nlist.end(),
+              [&old_nodes](Node* n) {
+                return old_nodes.find(n) != old_nodes.end();
+              }),
+          ctx_nlist.end());
 
       GRAPH_DEBUG("Parent total nodes after remove: ", ctx_nlist.size());
 

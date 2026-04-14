@@ -63,13 +63,7 @@ from ..create_parameter_op import (
     tracable_create_parameter,
 )
 from ..device_interface import get_registered_device_interfaces
-from ..exc import (
-    raise_observed_exception,
-    raise_type_error,
-    unimplemented,
-    UserError,
-    UserErrorType,
-)
+from ..exc import raise_observed_exception, unimplemented, UserError, UserErrorType
 from ..guards import GuardBuilder, install_guard
 from ..source import (
     AttrSource,
@@ -88,7 +82,7 @@ from ..utils import (
     proxy_args_kwargs,
     unwrap_if_wrapper,
 )
-from .base import typestr, VariableTracker
+from .base import raise_type_error_exc, typestr, VariableTracker
 from .ctx_manager import (
     AutocastModeVariable,
     ProfilerContextVariable,
@@ -97,7 +91,7 @@ from .ctx_manager import (
 )
 from .distributed import DistributedVariable
 from .functions import bind_args_cached, NestedUserFunctionVariable
-from .lists import ListVariable, TupleVariable
+from .lists import ListVariable, NamedTupleVariable, TupleVariable
 from .script_object import TorchScriptObjectVariable
 from .torch_function import (
     can_dispatch_torch_function,
@@ -105,7 +99,6 @@ from .torch_function import (
     TensorWithTFOverrideVariable,
     TorchFunctionModeStackVariable,
 )
-from .user_defined import UserDefinedTupleVariable
 
 
 try:
@@ -259,7 +252,7 @@ def _check_for_gradient_edge(var: VariableTracker, arg_name: str) -> None:
     """
     from .lists import BaseListVariable
 
-    if isinstance(var, UserDefinedTupleVariable) and type(var.value) is GradientEdge:
+    if isinstance(var, NamedTupleVariable) and var.tuple_cls is GradientEdge:
         # Try to get source info for context
         source_info = var.source.name if var.source else None
         context = f"GradientEdge in {arg_name}"
@@ -686,7 +679,6 @@ class TorchInGraphFunctionVariable(BaseTorchVariable):
     def _get_handlers() -> dict[Callable[..., Any], Callable[..., Any]]:
         """Build a dict from function -> method to handle it so that we are O(1)
         in terms of the number of function with special handling."""
-        # pyrefly: ignore [implicit-any]
         handlers = {}
 
         def register(
@@ -1794,7 +1786,7 @@ class TorchInGraphFunctionVariable(BaseTorchVariable):
             **kwargs: VariableTracker,
         ) -> VariableTracker:
             if len(args) != 1 or kwargs:
-                raise_type_error(
+                raise_type_error_exc(
                     tx,
                     f"push_torch_function takes exactly one argument ({len(args)} given)",
                 )
@@ -1811,7 +1803,7 @@ class TorchInGraphFunctionVariable(BaseTorchVariable):
             **kwargs: VariableTracker,
         ) -> VariableTracker:
             if args or kwargs:
-                raise_type_error(tx, "len_torch_function_stack takes no arguments")
+                raise_type_error_exc(tx, "len_torch_function_stack takes no arguments")
             return VariableTracker.build(
                 tx, len(tx.symbolic_torch_function_state.mode_stack)
             )
@@ -1824,7 +1816,7 @@ class TorchInGraphFunctionVariable(BaseTorchVariable):
             **kwargs: VariableTracker,
         ) -> TorchFunctionModeVariable:
             if len(args) != 1 or kwargs:
-                raise_type_error(
+                raise_type_error_exc(
                     tx,
                     f"get_function_stack_at takes exactly one argument ({len(args)} given)",
                 )
@@ -2083,7 +2075,7 @@ class TorchInGraphFunctionVariable(BaseTorchVariable):
             fn: Callable[[int], int | None],
         ) -> VariableTracker:
             if len(args) != 1 or kwargs:
-                raise_type_error(
+                raise_type_error_exc(
                     tx,
                     f"{fn.__name__} takes exactly one argument ({len(args)} given)",
                 )

@@ -17,6 +17,3 @@ jobs:
     secrets: inherit
     with:
       additional_claude_args: '--allowedTools Skill'
-      append_system_prompt: |
-        When asked to review a PR, always use the /pr-review skill first.
-        It contains PyTorch-specific review guidelines, output format, and critical checks.

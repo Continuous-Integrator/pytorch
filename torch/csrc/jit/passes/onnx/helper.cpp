@@ -39,8 +39,14 @@ void eraseUnusedBlockInputs(Block* b) {
 }
 
 void eraseUnusedValuesFromMap(ValueToParamPairMap& valsToParamsMap) {
-  std::erase_if(
-      valsToParamsMap, [](const auto& pr) { return !pr.first->hasUses(); });
+  auto it = valsToParamsMap.begin();
+  while (it != valsToParamsMap.end()) {
+    if (!it->first->hasUses()) {
+      it = valsToParamsMap.erase(it);
+    } else {
+      ++it;
+    }
+  }
 }
 
 void buildParamsMapFromValueToParamsMap(

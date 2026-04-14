@@ -68,9 +68,9 @@ class InductorCompiledCode(HigherOrderOperator):
     def __init__(self) -> None:
         super().__init__("inductor_compiled_code")
 
-    def __call__(self, func, inputs, *, name: str | None = None):
+    def __call__(self, func, *args, **kwargs):
         # pyrefly: ignore [missing-attribute]
-        return super().__call__(func, inputs, name=name)
+        return super().__call__(func, *args, **kwargs)
 
 
 inductor_compiled_code = InductorCompiledCode()
@@ -88,16 +88,10 @@ class InductorCompiledCallable:
     Each instance gets a globally unique idx at creation (via atomic itertools.count).
     """
 
-    def __init__(
-        self,
-        compiled_callable,
-        original_gm=None,
-        compile_region_name: str | None = None,
-    ):
+    def __init__(self, compiled_callable, original_gm=None):
         self.idx = next(_inductor_compiled_callable_id)
         self.compiled_callable = compiled_callable
         self.original_gm = original_gm
-        self.compile_region_name = compile_region_name
         # AOT autograd needs this to know inputs are passed as a list
         self._boxed_call = True
 
@@ -166,7 +160,7 @@ def _resolve_inductor_callable(
 
 
 @inductor_compiled_code.py_impl(DispatchKey.CompositeExplicitAutograd)
-def inductor_compiled_code_impl(func, inputs, *, name=None):
+def inductor_compiled_code_impl(func, inputs):
     resolved = _resolve_inductor_callable(func)
     return resolved.compiled_callable(inputs)
 
@@ -177,7 +171,7 @@ redirect_to_mode(inductor_compiled_code, _CachedTorchDispatchMode)
 
 
 @register_fake(inductor_compiled_code)
-def inductor_compiled_code_fake(func, inputs, *, name=None):
+def inductor_compiled_code_fake(func, inputs):
     resolved = _resolve_inductor_callable(func)
     if resolved.original_gm is None:
         raise RuntimeError(
@@ -190,24 +184,22 @@ def inductor_compiled_code_fake(func, inputs, *, name=None):
 
 
 @inductor_compiled_code.py_functionalize_impl
-def inductor_compiled_code_functionalize(ctx, func, inputs, *, name=None):
+def inductor_compiled_code_functionalize(ctx, func, inputs):
     # Unwrap the functional tensors to get the underlying tensors
     unwrapped_inputs = ctx.unwrap_tensors(inputs)
 
     # Redispatch to the next handler in the dispatch chain
     with ctx.redispatch_to_next():
-        kwargs = {"name": name} if name is not None else {}
-        result = inductor_compiled_code(func, unwrapped_inputs, **kwargs)
+        result = inductor_compiled_code(func, unwrapped_inputs)
         return ctx.wrap_tensors(result)
 
 
 @inductor_compiled_code.py_impl(ProxyTorchDispatchMode)
-def inductor_compiled_code_proxy(mode, func, inputs, *, name=None):
+def inductor_compiled_code_proxy(mode, func, inputs):
     resolved = _resolve_inductor_callable(func)
 
     # Run the fake impl to get example outputs for tracing
-    kwargs = {"name": name} if name is not None else {}
-    example_out = inductor_compiled_code(func, inputs, **kwargs)
+    example_out = inductor_compiled_code(func, inputs)
 
     # Register in side table so the FX node stores a serializable int
     callable_idx = inductor_code_side_table.add_callable(resolved)
@@ -218,7 +210,7 @@ def inductor_compiled_code_proxy(mode, func, inputs, *, name=None):
         "call_function",
         inductor_compiled_code,
         (callable_idx, proxy_inputs),
-        kwargs,
+        {},
     )
 
     return track_tensor_tree(example_out, out_proxy, constant=None, tracer=mode.tracer)
@@ -498,7 +490,6 @@ Please make sure the checkpointed region does not contain in-place ops (e.g. tor
     # checkpoint's recompute_fn captures the function in a closure. A bound method
     # reference would keep the Interpreter alive, whose env dict retains the output
     # tensors and prevents the autograd graph from being freed.
-
     def run_with_interpreter(*args):
         return Interpreter(gmod).run(*args)
 

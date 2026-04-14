@@ -3,9 +3,8 @@ import logging
 import sys
 from typing import cast
 
-from torch._vendor.packaging.version import Version
+from packaging.version import Version
 
-from ..backends import cuda as _cuda
 from .common_utils import (
     _available_version,
     _unavailable_reason,
@@ -35,9 +34,6 @@ def _check_runtime_available() -> tuple[bool, Version | None]:
 
     NOTE: must not import at this point
     """
-    # Skip all checks if running on CPU-only binary
-    if not _cuda.is_built():
-        return (False, None)
 
     deps = [
         ("triton", "triton"),

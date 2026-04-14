@@ -4,20 +4,19 @@
 
 import sys
 
-import torch
-
 # Import TEST_WITH_ROCM first to check for ROCm before importing NVSHMEM modules
 from torch.testing._internal.common_utils import TEST_WITH_ROCM
 
 
-# Skip entire module on ROCm before importing NVSHMEM-specific modules or running on CPU
+# Skip entire module on ROCm before importing NVSHMEM-specific modules
 # NVSHMEM is NVIDIA-specific and can cause crashes during import on ROCm
-if TEST_WITH_ROCM or not torch.backends.cuda.is_built():
+if TEST_WITH_ROCM:
     print("NVSHMEM not available on ROCm, skipping tests")
     sys.exit(0)
 
 import triton.language as tl
 
+import torch
 import torch.distributed as dist
 import torch.distributed._symmetric_memory as symm_mem
 import torch.distributed._symmetric_memory._nvshmem_triton as nvshmem

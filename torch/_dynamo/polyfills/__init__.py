@@ -327,7 +327,7 @@ def set_union(
         set_update(union_set, set2)
 
     # frozenset also uses this function
-    # pyrefly: ignore [bad-argument-count, not-callable]
+    # pyrefly: ignore[not-callable]
     return cls(union_set)
 
 

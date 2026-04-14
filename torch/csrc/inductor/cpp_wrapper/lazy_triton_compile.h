@@ -4,11 +4,7 @@
 
 #include <torch/csrc/inductor/aoti_torch/utils.h>
 #include <torch/csrc/inductor/cpp_wrapper/common.h>
-#if defined(USE_XPU)
-#include <torch/csrc/inductor/cpp_wrapper/device_internal/xpu.h>
-#else
 #include <torch/csrc/inductor/cpp_wrapper/device_internal/cuda.h>
-#endif
 
 struct LazyKernelCompileResult {
   std::string cubin_path;
@@ -148,7 +144,7 @@ template <typename... Args>
 static inline LazyKernelCompileResult runTritonKernelWithAutotune(
     PyObject* pending_kernels,
     const std::string& kernel_name,
-    void* stream,
+    cudaStream_t stream,
     const Args&... kernel_args) {
   py::gil_scoped_acquire_simple acquire;
 

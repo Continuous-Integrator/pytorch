@@ -964,7 +964,10 @@ void Value::addUser(Node* node) {
 }
 
 void Value::eraseUser(Node* node) {
-  std::erase(users_, node);
+  users_.erase(
+      std::remove_if(
+          users_.begin(), users_.end(), [&](Node* el) { return el == node; }),
+      users_.end());
 }
 
 std::vector<const Value*> Value::getListElements() const {

@@ -6,11 +6,7 @@ from typing import Any, TYPE_CHECKING
 from typing_extensions import final, override
 
 import torch._inductor.async_compile  # noqa: F401 required to warm up AsyncCompile pools
-from torch._inductor.output_code import (
-    CompiledFxGraph,
-    CompiledFxGraphConstants,
-    OutputCode,
-)
+from torch._inductor.output_code import CompiledFxGraphConstants, OutputCode
 
 from .compile_fx import _CompileFxKwargs, _InProcessFxCompile, FxCompile
 from .output_code import complex_memory_overlap  # noqa: F401
@@ -203,9 +199,7 @@ class _AsyncFxCompile(FxCompile):
         inputs_to_check: Sequence[int],
         graph_kwargs: _CompileFxKwargs,
     ) -> OutputCode:
-        eager_compile = _InProcessFxCompile()
-        eager_compile.compile_region_name = self.compile_region_name
-        eager_output_code = eager_compile.codegen_and_compile(
+        eager_output_code = _InProcessFxCompile().codegen_and_compile(
             gm, example_inputs, inputs_to_check, graph_kwargs
         )
 
@@ -228,8 +222,6 @@ class _AsyncFxCompile(FxCompile):
         def callback(pickled_output: _WireProtocolPickledOutput) -> OutputCode:
             _AsyncFxCompile._stat_bg_finished += 1
             output = pickled_output.deserialize(constants)
-            if isinstance(output.graph, CompiledFxGraph):
-                output.graph.compile_region_name = self.compile_region_name
             self._compile._postprocess(output)
             return output.graph
 
@@ -400,8 +392,6 @@ class _ProgressiveFxCompile(FxCompile):
         def callback(pickled_output: _WireProtocolPickledOutput) -> OutputCode:
             _ProgressiveFxCompile._stat_bg_finished += 1
             output = pickled_output.deserialize(constants)
-            if isinstance(output.graph, CompiledFxGraph):
-                output.graph.compile_region_name = self.compile_region_name
             self._optimized_compile._postprocess(output)
             return output.graph
 

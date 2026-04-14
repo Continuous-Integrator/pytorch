@@ -310,7 +310,6 @@ class ResultEncoderFactory(Protocol[_P, _R, _EncodedR]):
     ) -> Callable[_P, Callable[[_R], _EncodedR | DeferredRecording[_R, _EncodedR]]]: ...
 
 
-# pyrefly: ignore [variance-mismatch]
 class ResultDecoderFactory(Protocol[_P, _R, _EncodedR]):
     """Protocol for custom result decoder factories.
 

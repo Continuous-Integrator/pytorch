@@ -399,9 +399,6 @@ class ZipVariable(IteratorVariable):
     Represents zip(*iterables)
     """
 
-    # PyZip_Type: https://github.com/python/cpython/blob/v3.13.0/Python/bltinmodule.c#L3011
-    _cpython_type = zip
-
     _nonvar_fields = {
         "index",
         "strict",
@@ -523,9 +520,6 @@ class MapVariable(ZipVariable):
     Represents map(fn, *iterables)
     """
 
-    # PyMap_Type: https://github.com/python/cpython/blob/v3.13.0/Python/bltinmodule.c#L1484
-    _cpython_type = map
-
     def __init__(
         self,
         fn: VariableTracker,
@@ -572,9 +566,6 @@ class FilterVariable(IteratorVariable):
     """
     Represents filter(fn, iterable)
     """
-
-    # PyFilter_Type: https://github.com/python/cpython/blob/v3.13.0/Python/bltinmodule.c#L630
-    _cpython_type = filter
 
     _nonvar_fields = {
         "index",

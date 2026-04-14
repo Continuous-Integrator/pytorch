@@ -46,6 +46,8 @@ class Unserializable:
         return self.inner
 
     def __getstate__(self):
+        # Note: can't return {}, because python2 won't call __setstate__
+        # if the value evaluates to False
         return "<unserializable>"
 
     def __setstate__(self, state):

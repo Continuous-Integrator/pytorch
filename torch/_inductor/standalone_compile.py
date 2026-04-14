@@ -371,12 +371,6 @@ class AOTCompiledArtifact(CompiledArtifact):
             return AOTCompiledArtifact.deserialize(artifact)
 
 
-def _resolve_ignore_shape_env(dynamic_shapes: Any):
-    # tells compile_fx to ignore the shape_envs on the ambient context
-    # and the graph_module.
-    return dynamic_shapes == "from_example_inputs"
-
-
 def standalone_compile(
     gm: GraphModule,
     example_inputs: Sequence[InputType],
@@ -392,9 +386,12 @@ def standalone_compile(
 
     from .compile_fx import compile_fx
 
-    ignore_shape_env = _resolve_ignore_shape_env(dynamic_shapes)
+    ignore_shape_env = False
     if dynamic_shapes == "from_example_inputs":
         fake_mode = FakeTensorMode(shape_env=ShapeEnv())
+        # tells compile_fx to ignore the shape_envs on the ambient context
+        # and the graph_module.
+        ignore_shape_env = True
     elif dynamic_shapes == "from_tracing_context":
         # Reuse fake_mode from the TracingContext.
         # NB: The TracingContext only exists if we're currently in a torch.compile backend.
@@ -443,7 +440,6 @@ def standalone_compile(
         torch._functorch.config.patch("bundled_autograd_cache", aot),
     ):
         # compile_fx can mutate gm
-        # TODO: this is only needed if we dont hit the cache!!
         gm = copy.deepcopy(gm)
         compiled_fn = compile_fx(
             gm, example_inputs, ignore_shape_env=ignore_shape_env, **options
@@ -463,18 +459,3 @@ def standalone_compile(
             )
 
     return CacheCompiledArtifact(compiled_fn, artifacts)
-
-
-def autograd_cache_key(
-    graph,
-    example_inputs,
-    dynamic_shapes: Any,
-):
-    from . import compile_fx
-
-    ignore_shape_env = _resolve_ignore_shape_env(dynamic_shapes)
-    return compile_fx.autograd_cache_key(
-        graph,
-        example_inputs,
-        ignore_shape_env=ignore_shape_env,
-    )

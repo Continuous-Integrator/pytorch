@@ -228,7 +228,7 @@ class ComptimeContext:
 
     def __get_tx(self, stacklevel: int) -> Any:
         tx = self.__tx
-        # pyrefly: ignore [bad-assignment, non-convergent-recursion]
+        # pyrefly: ignore [bad-assignment]
         for _ in range(stacklevel):
             tx = tx.parent  # type: ignore[assignment]
         return tx

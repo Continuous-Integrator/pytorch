@@ -195,7 +195,6 @@ class ValueRangeAnalysis(SymPyValueRangeAnalysis, DefaultHandler):
         return cls.to_dtype(index, dtype)
 
     @staticmethod
-    # pyrefly: ignore [bad-override]
     def to_dtype(
         x: Any,
         dtype: torch.dtype,
@@ -238,12 +237,10 @@ class ValueRangeAnalysis(SymPyValueRangeAnalysis, DefaultHandler):
             return ValueRanges(cast(x.lower, dtype), cast(x.upper, dtype))
 
     @staticmethod
-    # pyrefly: ignore [bad-override]
     def square(x: Any) -> ValueRanges[Any]:
         return ValueRanges.convex_min_zero_map(x, lambda y: PowByNatural(y, 2))
 
     @staticmethod
-    # pyrefly: ignore [bad-override]
     def neg(x: Any) -> ValueRanges[Any]:
         return ValueRanges.decreasing_map(x, operator.neg)
 

@@ -20,15 +20,17 @@ void initializeDtypes() {
 
   for (at::ScalarType scalarType : all_scalar_types) {
     auto [primary_name, legacy_name] = c10::getDtypeNames(scalarType);
-    THPObjectPtr dtype(THPDtype_New(scalarType, primary_name));
-    torch::registerDtypeObject((THPDtype*)dtype.get(), scalarType);
-    if (PyModule_AddObjectRef(
-            torch_module.get(), primary_name.c_str(), dtype.get()) != 0) {
+    PyObject* dtype = THPDtype_New(scalarType, primary_name);
+    torch::registerDtypeObject((THPDtype*)dtype, scalarType);
+    Py_INCREF(dtype);
+    if (PyModule_AddObject(torch_module.get(), primary_name.c_str(), dtype) !=
+        0) {
       throw python_error();
     }
     if (!legacy_name.empty()) {
-      if (PyModule_AddObjectRef(
-              torch_module.get(), legacy_name.c_str(), dtype.get()) != 0) {
+      Py_INCREF(dtype);
+      if (PyModule_AddObject(torch_module.get(), legacy_name.c_str(), dtype) !=
+          0) {
         throw python_error();
       }
     }

@@ -1438,9 +1438,6 @@ def slice_(x, dim=0, start=0, end=sys.maxsize, step=1, clamp=True):
         elif fn(sympy.Ge(index, 0)):
             # If index >= 0, the resolved index is at most min(index, size).
             return sympy.Min(index, size)
-        elif fn(sympy.Lt(index, 0)):
-            # If index < 0, wrap and clamp: the resolved index is at least 0.
-            return sympy.Max(index + size, 0)
         return None
 
     start_index, end_index = None, None
@@ -2666,9 +2663,6 @@ fallback_rand_generator = fallback_handler(aten.rand.generator)
 fallback_randn_default = fallback_handler(aten.randn.default)
 fallback_randn_generator = fallback_handler(aten.randn.generator)
 make_fallback(aten.randint)
-make_fallback(aten.rand_like, override_decomp=True)
-make_fallback(aten.randn_like, override_decomp=True)
-make_fallback(aten.randint_like, override_decomp=True)
 
 # TODO: mlazos reevaluate if we want to codegen something different
 make_fallback(torch.ops.streams.record_event.default)
@@ -3685,7 +3679,7 @@ def _unwrap(x):
     return x
 
 
-@register_lowering([torch.tensor, aten.scalar_tensor, prims.scalar_tensor])
+@register_lowering([torch.tensor, aten.scalar_tensor])
 def tensor(data, *, dtype=None, device=None, layout=None, pin_memory=False):
     assert_nyi(layout in (None, torch.strided), f"layout={layout}")
     assert_nyi(not pin_memory, "pin_memory")
@@ -5060,7 +5054,7 @@ def constant_boundary_condition(
 
         mask = functools.reduce(
             ops.and_,
-            # pyrefly: ignore [bad-argument-type, no-matching-overload]
+            # pyrefly: ignore [no-matching-overload]
             [range_mask(ih[i], h[i] + padding_h[i], -padding_h[i]) for i in range(dim)],
         )
         return (
@@ -5975,7 +5969,7 @@ def upsample_nearest2d_backward(
         device=x.get_device(),
         dtype=x.get_dtype(),
         inner_fn=fn,
-        # pyrefly: ignore [bad-argument-type, no-matching-overload]
+        # pyrefly: ignore [no-matching-overload]
         ranges=list(input_size),
     )
 

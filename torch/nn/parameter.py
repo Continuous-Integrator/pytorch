@@ -101,7 +101,6 @@ class Parameter(torch.Tensor, metaclass=_ParameterMeta):
             (self.data, self.requires_grad, hooks, state),
         )
 
-    # pyrefly: ignore [bad-override]
     __torch_function__ = _disabled_torch_function_impl
 
 
@@ -274,7 +273,6 @@ class Buffer(torch.Tensor, metaclass=_BufferMeta):
         t._is_buffer = True
         return t
 
-    # pyrefly: ignore [bad-override]
     __torch_function__ = _disabled_torch_function_impl
 
 

@@ -257,7 +257,6 @@ class FSDPMemTracker(MemTracker):
                 state = _FSDPModState.AFT_PRE_FW
             mod_stat.snapshots.setdefault(state, []).append(self.get_tracker_snapshot())
             self._fsdp_state = _FSDPState.FW
-            # pyrefly: ignore [bad-return]
             return args, kwargs
 
         return inner

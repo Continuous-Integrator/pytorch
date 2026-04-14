@@ -11,7 +11,6 @@ from torch.utils.data.datapipes.datapipe import IterDataPipe, MapDataPipe
 __all__ = ["traverse", "traverse_dps"]
 
 DataPipe = IterDataPipe | MapDataPipe
-# pyrefly: ignore [invalid-type-alias]
 DataPipeGraph = dict[int, tuple[DataPipe, "DataPipeGraph"]]
 
 

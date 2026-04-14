@@ -3,7 +3,7 @@ import importlib.metadata
 import os
 from functools import cache
 
-from torch._vendor.packaging import version as _packaging_version
+import packaging.version
 
 
 @cache
@@ -33,7 +33,7 @@ def _unavailable_reason(deps: list[tuple[str, str]]) -> None | str:
     return None
 
 
-def _available_version(package: str) -> _packaging_version.Version | None:
+def _available_version(package: str) -> packaging.version.Version | None:
     """
     Get the installed version of a package as (major, minor, patch).
 
@@ -47,8 +47,8 @@ def _available_version(package: str) -> _packaging_version.Version | None:
         return None
 
     try:
-        v = _packaging_version.parse(version)
-    except _packaging_version.InvalidVersion:
+        v = packaging.version.parse(version)
+    except packaging.version.InvalidVersion:
         return None
 
     return v

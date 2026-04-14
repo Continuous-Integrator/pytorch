@@ -1984,7 +1984,6 @@ __all__ = [
     "amp",
     "caching_allocator_alloc",
     "caching_allocator_delete",
-    "caching_allocator_disabled",
     "caching_allocator_enable",
     "can_device_access_peer",
     "check_error",

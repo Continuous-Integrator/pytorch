@@ -221,11 +221,27 @@ void TCPStoreMasterDaemon::queryFds(std::vector<struct pollfd>& fds) {
 
 void TCPStoreMasterDaemon::clearSocketWaitState(int socket) {
   // Remove all the tracking state of the close FD
-  std::erase_if(waitingSockets_, [&](auto& entry) {
-    std::erase(entry.second, socket);
-    return entry.second.empty();
-  });
-  keysAwaited_.erase(socket);
+  for (auto it = waitingSockets_.begin(); it != waitingSockets_.end();) {
+    for (auto vecIt = it->second.begin(); vecIt != it->second.end();) {
+      if (*vecIt == socket) {
+        vecIt = it->second.erase(vecIt);
+      } else {
+        ++vecIt;
+      }
+    }
+    if (it->second.empty()) {
+      it = waitingSockets_.erase(it);
+    } else {
+      ++it;
+    }
+  }
+  for (auto it = keysAwaited_.begin(); it != keysAwaited_.end();) {
+    if (it->first == socket) {
+      it = keysAwaited_.erase(it);
+    } else {
+      ++it;
+    }
+  }
 }
 
 // query communicates with the worker. The format

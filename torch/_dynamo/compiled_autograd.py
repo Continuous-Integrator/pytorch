@@ -504,7 +504,6 @@ class AutogradCompilerInstance:
 
         pgrads = self.fx_tracer.create_proxy(
             kind="call_function",
-            # pyrefly: ignore [bad-argument-type]
             target=call_aot_bwd_prologue,
             args=(
                 psaved_tensors,
@@ -635,7 +634,6 @@ class AutogradCompilerInstance:
 
             poutput = self.fx_tracer.create_proxy(
                 kind="call_function",
-                # pyrefly: ignore [bad-argument-type]
                 target=make_subclass,
                 args=tuple(punwrapped_args),
                 kwargs={},
