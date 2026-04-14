@@ -1186,10 +1186,8 @@ class aten_distributed_optimizations:
     # for overlapping compute.
     optimize_contention_with_low_contention_collectives: bool = False
 
-    # Minimum per-rank message size (bytes) for LC replacement.
-    # Collectives smaller than this keep NCCL because LC's ~0.11ms barrier
-    # overhead dominates for small messages.  Micro-benchmarks show LC
-    # converges with NCCL at ~16 MB/rank.  Set to 0 to disable the filter.
+    # Minimum per-rank bytes for LC replacement. Below this, LC barrier
+    # overhead exceeds the benefit. Set to 0 to disable.
     low_contention_min_bytes_per_rank: int = 16 * 1024 * 1024
 
 

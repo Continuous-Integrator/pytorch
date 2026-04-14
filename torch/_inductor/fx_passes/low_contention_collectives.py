@@ -44,9 +44,7 @@ def replace_collectives_with_low_contention(
     if not collectives:
         return
 
-    # Enable symmetric memory for all groups found in collectives.
-    # Some group names (e.g. DTensor mesh-derived "mesh_get_process_group")
-    # can't be resolved at compile time — skip those groups.
+    # Some group names can't be resolved at compile time — skip them.
     valid_groups: OrderedSet[str] = OrderedSet()
     for group_name in groups:
         if _enable_symm_mem(group_name):
@@ -62,6 +60,8 @@ def replace_collectives_with_low_contention(
     from torch._inductor import config
 
     min_bytes = config.aten_distributed_optimizations.low_contention_min_bytes_per_rank
+
+    node_positions = {n: i for i, n in enumerate(graph.nodes)}
 
     replacements = 0
     skipped_small = 0
@@ -84,18 +84,14 @@ def replace_collectives_with_low_contention(
                 )
                 continue
 
-        # Only replace collectives that overlap compute-bound ops
-        # (matmul, conv, attention). LC adds barrier overhead, so replacing
-        # a collective on the critical path with no compute to hide behind
-        # would add latency for no benefit.
-        if not _has_compute_bound_overlap(node, graph):
+        # Skip collectives with no compute to hide behind
+        if not _has_compute_bound_overlap(node, graph, node_positions):
             skipped_no_overlap += 1
             log.debug("LC skip %s %s: no compute-bound overlap", coll_type, node.name)
             continue
 
-        # Skip if other groups' NCCL collectives (e.g. TP) overlap,
-        # to avoid NVLink contention between LC and NCCL traffic
-        if _has_other_group_collectives(node, group_name, graph):
+        # Skip if other groups' NCCL collectives overlap on NVLink
+        if _has_other_group_collectives(node, group_name, graph, node_positions):
             skipped_nvlink_contention += 1
             log.debug(
                 "LC skip %s %s: overlaps other-group collectives (NVLink contention)",
@@ -164,16 +160,14 @@ def _get_per_rank_bytes(node):
     return input_val.nelement() * input_val.element_size()
 
 
-def _has_compute_bound_overlap(start_node, graph):
-    """Check if compute-bound ops (matmul, conv, attention) exist between
-    the collective start and its wait in topological order."""
+def _has_compute_bound_overlap(start_node, graph, node_positions):
+    """Check if compute-bound ops exist between collective start and wait."""
     from torch._inductor.fx_passes.overlap_scheduling import is_compute_node
 
     wait_node = _find_wait_for_collective(start_node)
     if wait_node is None:
         return False
 
-    node_positions = {node: i for i, node in enumerate(graph.nodes)}
     start_pos = node_positions[start_node]
     wait_pos = node_positions[wait_node]
 
@@ -186,17 +180,12 @@ def _has_compute_bound_overlap(start_node, graph):
     return False
 
 
-def _has_other_group_collectives(start_node, group_name, graph):
-    """Check if collectives from other groups exist between start and wait.
-
-    If a different group's NCCL collective (e.g. TP all-reduce) runs
-    concurrently with our LC collective, they compete for NVLink bandwidth.
-    """
+def _has_other_group_collectives(start_node, group_name, graph, node_positions):
+    """Check if other groups' collectives overlap, competing for NVLink."""
     wait_node = _find_wait_for_collective(start_node)
     if wait_node is None:
         return False
 
-    node_positions = {node: i for i, node in enumerate(graph.nodes)}
     start_pos = node_positions[start_node]
     wait_pos = node_positions[wait_node]
 
