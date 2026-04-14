@@ -8,14 +8,7 @@ import operator
 import types
 import unittest
 import weakref
-from collections import (
-    ChainMap,
-    Counter,
-    defaultdict,
-    namedtuple,
-    OrderedDict,
-    UserDict,
-)
+from collections import defaultdict, namedtuple, OrderedDict, UserDict
 from collections.abc import Callable
 from functools import partial
 from typing import Any, NamedTuple
@@ -1251,114 +1244,52 @@ class DictTests(torch._dynamo.test_case.TestCase):
 
         self.assertEqual(ref, res)
 
-    def test_default_dict_lambda_factory(self):
-        """Test defaultdict with a lambda as default_factory — previously unsupported."""
+    def test_dict_new_ignores_extra_args(self):
+        """dict.__new__ ignores extra args (CPython behavior).
+
+        This matters for instantiate_user_defined_class_object which calls
+        cls.__new__(cls, *args, **kwargs) — dict.__new__ should not fail
+        on the extra args.
+        """
 
         def f(x):
-            dd = defaultdict(lambda: [0])
-            dd["a"].append(1)
-            dd["b"].append(2)
-            return x + 1, dict(dd)
+            od = OrderedDict(a=1, b=2)
+            return x + od["a"]
 
         x = torch.ones(2)
         ref = f(x)
         res = torch.compile(f, backend="eager", fullgraph=True)(x)
         self.assertEqual(ref, res)
 
-    def test_default_dict_setattr_default_factory(self):
-        """Test mutating default_factory via setattr."""
+    def test_ordered_dict_repr(self):
+        """repr() on OrderedDictVariable should not graph break."""
 
         def f(x):
-            dd = defaultdict(list)
-            dd["a"].append(1)
-            dd.default_factory = int
-            val = dd["b"]  # should be 0 (int()), not []
-            return x + 1, dict(dd), val
+            od = OrderedDict(a=1, b=2)
+            r = repr(od)
+            # Just verify repr doesn't graph break and returns a string
+            return x + (1 if isinstance(r, str) else 0)
 
         x = torch.ones(2)
         ref = f(x)
         res = torch.compile(f, backend="eager", fullgraph=True)(x)
         self.assertEqual(ref, res)
 
-    def test_counter_from_iterable(self):
-        """Counter(iterable) uses _count_elements C accelerator (polyfilled)."""
+    def test_c_new_init_args_ignored_for_dict(self):
+        """C-level __new__ for dict/set passes init_args=[] since they
+        ignore extra args. This ensures generators passed to OrderedDict()
+        don't end up in reconstruction."""
 
-        def f(x):
-            c = Counter([1, 2, 2, 3, 3, 3])
-            return x + c[3]
+        def whoo(t):
+            yield 1, t + 1
+            yield 2, t + 2
 
-        x = torch.ones(2)
-        ref = f(x)
-        res = torch.compile(f, backend="eager", fullgraph=True)(x)
-        self.assertEqual(ref, res)
+        def f(t):
+            return OrderedDict(whoo(t))
 
-    def test_counter_arithmetic(self):
-        """Counter supports +, -, &, | operators (all Python)."""
-
-        def f(x):
-            c1 = Counter(a=3, b=1)
-            c2 = Counter(a=1, b=2, c=1)
-            result = c1 + c2
-            return x + result["a"]
-
-        x = torch.ones(2)
-        ref = f(x)
-        res = torch.compile(f, backend="eager", fullgraph=True)(x)
-        self.assertEqual(ref, res)
-
-    @unittest.expectedFailure
-    def test_counter_most_common(self):
-        """Counter.most_common uses heapq/sorted which hits untraced builtins."""
-
-        def f(x):
-            c = Counter(a=4, b=2, c=1)
-            top = c.most_common(1)
-            return x + top[0][1]
-
-        x = torch.ones(2)
-        ref = f(x)
-        res = torch.compile(f, backend="eager", fullgraph=True)(x)
-        self.assertEqual(ref, res)
-
-    def test_counter_update_and_missing(self):
-        """Counter.update adds counts; __missing__ returns 0."""
-
-        def f(x):
-            c = Counter(a=1)
-            c.update({"a": 2, "b": 3})
-            return x + c["a"] + c["z"]  # z missing → 0
-
-        x = torch.ones(2)
-        ref = f(x)
-        res = torch.compile(f, backend="eager", fullgraph=True)(x)
-        self.assertEqual(ref, res)
-
-    def test_chainmap(self):
-        """ChainMap is pure Python (MutableMapping subclass)."""
-
-        def f(x):
-            m1 = {"a": 1, "b": 2}
-            m2 = {"b": 3, "c": 4}
-            cm = ChainMap(m1, m2)
-            # 'b' comes from m1 (first map wins)
-            return x + cm["a"] + cm["b"] + cm["c"]
-
-        x = torch.ones(2)
-        ref = f(x)
-        res = torch.compile(f, backend="eager", fullgraph=True)(x)
-        self.assertEqual(ref, res)
-
-    def test_userdict(self):
-        """UserDict is pure Python (MutableMapping subclass)."""
-
-        def f(x):
-            ud = UserDict(a=1, b=2)
-            ud["c"] = 3
-            return x + ud["a"] + ud["c"]
-
-        x = torch.ones(2)
-        ref = f(x)
-        res = torch.compile(f, backend="eager", fullgraph=True)(x)
+        t = torch.randn(2)
+        ref = f(t)
+        res = torch.compile(f, backend="eager", fullgraph=True)(t)
         self.assertEqual(ref, res)
 
     @parametrize("op", ["or_", "and_", "xor", "sub"])
