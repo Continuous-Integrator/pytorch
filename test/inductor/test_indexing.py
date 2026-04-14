@@ -23,6 +23,7 @@ from torch.testing._internal.common_utils import (
 from torch.testing._internal.inductor_utils import GPU_TYPE, HAS_CPU, HAS_GPU
 from torch.utils._sympy.functions import (
     FloorDiv,
+    Identity,
     Mod,
     ModularIndexing,
     PythonMod,
@@ -368,6 +369,29 @@ class ExprPrinterTests(InductorTestCase):
             texpr(expr), """libdevice.llrint((1/2)*x).to(tl.int64)"""
         )
 
+    def test_print_nan(self):
+        expr = sympy.nan
+        self.assertExpectedInline(pexpr(expr), """math.nan""")
+        self.assertExpectedInline(
+            cexpr(expr), """std::numeric_limits<double>::quiet_NaN()"""
+        )
+
+    def test_print_infinity(self):
+        expr = sympy.oo
+        self.assertExpectedInline(pexpr(expr), """math.inf""")
+        self.assertExpectedInline(
+            cexpr(expr),
+            """std::numeric_limits<double>::infinity()""",
+        )
+
+    def test_print_negative_infinity(self):
+        expr = -sympy.oo
+        self.assertExpectedInline(pexpr(expr), """-math.inf""")
+        self.assertExpectedInline(
+            cexpr(expr),
+            """-std::numeric_limits<double>::infinity()""",
+        )
+
     def test_print_integer(self):
         expr = sympy.S((-1) << 63)
         self.assertExpectedInline(cexpr(expr), f"""(-1{LONG_SUFFIX} << 63)""")
@@ -612,6 +636,66 @@ class TestPrecomputedSizeHinting(InductorTestCase):
         # optimization_hint should resolve ps0 -> s0*5 -> 50, then add 3 -> 53
         hint = sizevars.optimization_hint(expr)
         self.assertEqual(hint, 53)
+
+
+class TestOptimizationHintZeroDivision(InductorTestCase):
+    """Test that optimization_hint handles ZeroDivisionError from ModularIndexing with zero-valued unbacked symbols."""
+
+    def test_modular_indexing_with_zero_divisor(self):
+        sizevars = SizeVarAllocator()
+        u0 = sizevars.shape_env.create_unbacked_symint().node.expr
+        u1 = sizevars.shape_env.create_unbacked_symint().node.expr
+
+        # u0 + 1 ensures base != 0 after substitution; u1 is the divisor.
+        # With fallback=0: u0->0, u1->0, so (0+1) // 0 -> ZeroDivisionError.
+        # optimization_hint catches ZeroDivisionError and returns fallback.
+        expr = ModularIndexing(u0 + 1, u1, 4)
+        hint = sizevars.optimization_hint(expr, fallback=0)
+        self.assertEqual(hint, 0)
+
+    def test_floor_div_with_zero_divisor(self):
+        """optimization_hint should not crash when FloorDiv has an unbacked
+        symbol as divisor that gets substituted with 0."""
+        sizevars = SizeVarAllocator()
+        u0 = sizevars.shape_env.create_unbacked_symint().node.expr
+        u1 = sizevars.shape_env.create_unbacked_symint().node.expr
+
+        # With fallback=0: u0->0, u1->0, FloorDiv(0+1, 0) -> ZeroDivisionError.
+        # optimization_hint catches ZeroDivisionError and returns fallback.
+        expr = FloorDiv(u0 + 1, u1)
+        hint = sizevars.optimization_hint(expr, fallback=0)
+        self.assertEqual(hint, 0)
+
+    def test_modular_indexing_zero_divisor_nonzero_fallback(self):
+        """When fallback is nonzero, the hint should still not crash."""
+        sizevars = SizeVarAllocator()
+        u0 = sizevars.shape_env.create_unbacked_symint().node.expr
+        u1 = sizevars.shape_env.create_unbacked_symint().node.expr
+
+        # With fallback=8192: u0->8192, u1->8192
+        # (8192+1) // 8192 = 1, 1 % 4 = 1
+        expr = ModularIndexing(u0 + 1, u1, 4)
+        hint = sizevars.optimization_hint(expr, fallback=8192)
+        self.assertEqual(hint, 1)
+
+
+class TestOptimizationHintIdentityExpansion(InductorTestCase):
+    """Test that optimization_hint expands Identity wrappers after _sub_unbacked_exprs."""
+
+    def test_identity_wrapped_expr_resolves_to_int(self):
+        """An expression containing Identity-wrapped constants and an unbacked
+        symbol should resolve to a concrete int after substitution."""
+        sizevars = SizeVarAllocator()
+        u0 = sizevars.shape_env.create_unbacked_symint().node.expr
+
+        # Mirrors the real bug: -u0 * (-Identity(1) + Identity(0))
+        # simplifies to -u0 * (0 - 1) = u0.
+        # Without expand(identity=True) after _sub_unbacked_exprs,
+        # subs({u0: fallback}) leaves -Identity(1) + Identity(0) unexpanded,
+        # causing RuntimeError("Failed to realize expression to int").
+        expr = -u0 * (-Identity(sympy.Integer(1)) + Identity(sympy.Integer(0)))
+        hint = sizevars.optimization_hint(expr, fallback=42)
+        self.assertEqual(hint, 42)
 
 
 if __name__ == "__main__":
