@@ -12674,10 +12674,6 @@ op_db: list[OpInfo] = [
                # https://github.com/pytorch/pytorch/issues/71784
                DecorateInfo(unittest.skip('Skipped!'), 'TestNNCOpInfo', 'test_nnc_correctness',
                             device_type='cpu', dtypes=(torch.float16,)),
-               DecorateInfo(unittest.expectedFailure, 'TestFwdGradients', 'test_inplace_forward_mode_AD',
-                            dtypes=(torch.float64,), device_type='xpu'),
-               DecorateInfo(unittest.expectedFailure, 'TestBwdGradients', 'test_inplace_grad',
-                            dtypes=(torch.float64,), device_type='xpu'),
            )),
     OpInfo('addmv',
            dtypes=all_types_and_complex_and(torch.bfloat16, torch.float16),
@@ -15440,7 +15436,9 @@ op_db: list[OpInfo] = [
            dtypes=all_types_and(torch.bool, torch.float16, torch.bfloat16),
            dtypesIfHpu=custom_types(torch.float32, torch.bfloat16, torch.int32, torch.int8),
            decorators=(onlyNativeDeviceTypes,),
-           supports_autograd=False,
+           supports_autograd=True,
+           supports_forward_ad=True,
+           supports_fwgrad_bwgrad=True,
            sample_inputs_func=sample_inputs_aminmax,
            skips=(
                # Exception: MPS supports tensors with dimensions <= 16, but got 65.
@@ -19677,6 +19675,7 @@ op_db: list[OpInfo] = [
                               'TestInductorOpInfo', 'test_comprehensive'),
                  # Exception: Backward is not reentrant, #2359
                  DecorateInfo(unittest.skip("Skipped!"), 'TestBwdGradients', 'test_fn_gradgrad', device_type='xpu'),
+                 DecorateInfo(unittest.skip("Skipped!"), 'TestBwdGradients', 'test_inplace_gradgrad', device_type='xpu'),
              ),
              supports_out=True,
              sample_inputs_func=sample_inputs_index_reduce,
@@ -20669,11 +20668,6 @@ op_db: list[OpInfo] = [
                DecorateInfo(unittest.expectedFailure, 'TestJit', 'test_variant_consistency_jit'),
                # Not Implemented on XLA.
                DecorateInfo(unittest.skip("Skipped!"), 'TestOpInfo', device_type='xla'),
-               # RuntimeError: histogramdd(): weight should be contiguous on MPS
-               DecorateInfo(
-                   unittest.expectedFailure, 'TestCommon', 'test_noncontiguous_samples',
-                   device_type='mps', dtypes=(torch.float32,)
-               ),
                # Align dtypes with CUDA for fallback ops
                DecorateInfo(unittest.skip("Skipped!"), 'TestCommon', 'test_dtypes', device_type='xpu'),
            )),
