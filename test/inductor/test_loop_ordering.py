@@ -416,6 +416,140 @@ class LoopOrderingTest(TestCase):
         self.do_acc_test(f, x)
         self.assertEqual(1, metrics.generated_kernel_count)
 
+    def test_reshape_reindexing_for_reduction(self):
+        """
+        RMS norm pattern where reshape(-1, head_dim) changes the loop
+        decomposition from [M, N] to [M*num_heads, head_dim]. Without
+        reindexing, the pointwise and reduction have different MemoryDep
+        indexing and can't fuse. With reindexing, the pointwise's
+        iteration is re-factored to match the reduction's, enabling fusion
+        into a single kernel.
+        """
+
+        def f(x):
+            head_dim = 128
+            M, N = x.shape
+            x_reshaped = x.reshape(-1, head_dim)
+            x_f32 = x_reshaped.float()
+            variance = x_f32.pow(2).mean(dim=-1, keepdim=True)
+            x_normed = x_f32 * torch.rsqrt(variance + 1e-5)
+            return x_normed.reshape(M, N).to(x.dtype)
+
+        if DO_PERF_TEST:
+            M = 1024
+        else:
+            M = 16
+        # Non-contiguous input (simulating a slice from qkv projection)
+        qkv = torch.randn(M, 10240, dtype=torch.bfloat16)
+        x = qkv[:, :8192]
+
+        ref = f(x)
+        actual = torch.compile(f)(x)
+        torch.testing.assert_close(actual, ref, atol=1e-2, rtol=1e-2)
+        self.assertEqual(1, metrics.generated_kernel_count)
+
+        if DO_PERF_TEST:
+            from triton.testing import do_bench
+
+            optf = torch.compile(f)
+            print(f"ms={do_bench(lambda: optf(x))}")
+
+    @unittest.skipIf(not PLATFORM_SUPPORTS_FP8, "FP8 requires H100+ or MI300+")
+    def test_reindex_unfusable_write_read_dep(self):
+        """
+        FP8 grouped quantization where a custom op consumes both
+        the quantized tensor and the scale, forcing the reduction
+        (amax) and scale epilogue to fuse into a FusedSchedulerNode
+        while the quantize pointwise remains separate.
+
+        The FusedSchedulerNode's dep on the input has 3 vars (from the
+        reduction + scale bodies), while the pointwise has 2 vars.
+        This num_vars mismatch causes _try_reorder_loops_for_candidates
+        to return a score based on the shared read (input), short-
+        circuiting reindexing. _has_unfusable_write_read_deps detects
+        the unfusable write→read dep and returns -1, letting reindexing
+        fire.
+        """
+        FP8 = torch.float8_e4m3fn
+        FP8_MAX = torch.finfo(FP8).max
+        HIDDEN, GROUP_SIZE = 7168, 128
+
+        @torch.library.custom_op("test::opaque_gemm", mutates_args=())
+        def opaque_gemm(x_q: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
+            return torch.zeros(
+                x_q.shape[0], 1024, device=x_q.device, dtype=torch.bfloat16
+            )
+
+        @opaque_gemm.register_fake
+        def _(x_q, scale):
+            return torch.zeros(
+                x_q.shape[0], 1024, device=x_q.device, dtype=torch.bfloat16
+            )
+
+        def f(x):
+            grouped = x.reshape(-1, HIDDEN // GROUP_SIZE, GROUP_SIZE).float()
+            absmax = grouped.abs().amax(dim=-1, keepdim=True)
+            scale = (absmax / FP8_MAX).clamp(min=1e-6)
+            x_q = (grouped / scale).clamp(-FP8_MAX, FP8_MAX).to(FP8).reshape(x.shape)
+            scale = scale.squeeze(-1)
+            return torch.ops.test.opaque_gemm(x_q, scale)
+
+        x = torch.randn(8, HIDDEN, dtype=torch.bfloat16)
+        self.do_acc_test(f, x)
+        self.assertEqual(1, metrics.generated_kernel_count)
+
+    def test_reindex_rollback_on_no_improvement(self):
+        """
+        When reindexing is attempted but doesn't improve the fusion
+        score, the node state should be rolled back. Here a reduction
+        and pointwise both read from x but at different slices (offsets).
+        They share the buffer and have the same iteration numel, so
+        reindexing is attempted, but the offset means deps still don't
+        match after reindexing. The rollback restores the original
+        node state so the pointwise isn't left with a wrong iteration
+        domain.
+        """
+        M, N = 16, 128
+
+        def f(x):
+            r = x[:, :N].sum(dim=-1)
+            p = x[:, N:] * 2
+            return r, p
+
+        x = torch.randn(M, N * 2, device=GPU_TYPE)
+        self.do_acc_test(f, x)
+
+    def test_reshape_reindexing_fused_pointwise(self):
+        """
+        Redecomposition where the pointwise side is a FusedSchedulerNode.
+        realize() forces ops to materialize as separate nodes, so
+        add and clamp become two SchedulerNodes that fuse into a
+        FusedSchedulerNode before the reindexing fuses them with
+        the reduction.
+        """
+
+        def f(x, bias):
+            head_dim = 128
+            M, N = x.shape
+            y = realize(x + bias)
+            z = realize(y.clamp(-1, 1))
+            x_reshaped = z.reshape(-1, head_dim)
+            x_f32 = x_reshaped.float()
+            variance = x_f32.pow(2).mean(dim=-1, keepdim=True)
+            x_normed = x_f32 * torch.rsqrt(variance + 1e-5)
+            return x_normed.reshape(M, N).to(x.dtype)
+
+        M = 16
+        qkv = torch.randn(M, 10240, dtype=torch.bfloat16)
+        x = qkv[:, :8192]
+        bias = torch.randn(8192, dtype=torch.bfloat16)
+
+        ref = f(x, bias)
+        actual = torch.compile(f)(x, bias)
+        torch.testing.assert_close(actual, ref, atol=1e-2, rtol=1e-2)
+        self.assertEqual(1, metrics.generated_kernel_count)
+        torch._dynamo.reset()
+
     @unittest.skipIf(not PLATFORM_SUPPORTS_FP8, "FP8 requires H100+ and MI300+")
     @unittest.skipIf(not SM90OrLater, "sm89 errors out on this test")
     def test_fp8_cast_and_t(self):
