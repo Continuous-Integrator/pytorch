@@ -403,6 +403,11 @@ def getattr_and_trace(*args: Any, **kwargs: Any) -> Any:
     return fn(*args[2:], **kwargs)
 
 
+def getattr_and_trace_no_nested_graph_breaks(*args: Any, **kwargs: Any) -> Any:
+    with torch._dynamo.disable_nested_graph_breaks():
+        return getattr_and_trace(*args, **kwargs)
+
+
 def mapping_get(obj: Mapping[T, U], key: T, value: U | None = None, /) -> U | None:
     try:
         return obj.__getitem__(key)
@@ -423,25 +428,6 @@ def instantiate_user_defined_class_object(
     if issubclass(type(obj), cls):
         obj.__init__(*args, **kwargs)
     return obj
-
-
-def reduce_ex_user_defined_object(obj: T, protocol: int, /) -> tuple:  # type: ignore[type-arg]
-    """Traceable polyfill for object.__reduce_ex__ on user-defined objects.
-
-    Returns the same tuple that CPython's _common_reduce produces:
-    (copyreg.__newobj__, (cls,), obj.__dict__, None, None).
-    copy._reconstruct then calls cls.__new__(cls) and updates __dict__.
-    """
-    import copyreg
-
-    cls = type(obj)
-    return (
-        copyreg.__newobj__,  # pyrefly: ignore[missing-attribute]
-        (cls,),
-        obj.__dict__,
-        None,
-        None,
-    )
 
 
 def mutable_mapping_update(
