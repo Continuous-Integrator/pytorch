@@ -773,7 +773,7 @@ class CUDASanitizerDispatchMode(TorchDispatchMode):
         # an additional stream.  Forward this to EventHandler so it can
         # exclude the recorded stream from allocator-reuse race checks.
         if func is aten.record_stream.default:
-            tensor, stream_arg = args[0], args[1]
+            tensor, stream_arg = args[0], args[1]  # type: ignore[index]
             if isinstance(tensor, torch.Tensor) and tensor.is_cuda:
                 data_ptr = tensor.data_ptr() if tensor.data_ptr() else id(tensor)
                 # stream_arg is a torch.Stream with (device_type, device_index,
