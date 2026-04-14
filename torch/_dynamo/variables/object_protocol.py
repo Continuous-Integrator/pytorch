@@ -250,7 +250,9 @@ def generic_int(tx: "InstructionTranslator", obj: VariableTracker) -> VariableTr
 
     # String/bytes/bytearray parsing fallback.
     # https://github.com/python/cpython/blob/v3.13.0/Objects/abstract.c#L1598-L1612
-    if obj.is_python_constant() and isinstance(obj.as_python_constant(), (str, bytes, bytearray)):
+    if obj.is_python_constant() and isinstance(
+        obj.as_python_constant(), (str, bytes, bytearray)
+    ):
         return ConstantVariable.create(int(obj.as_python_constant()))
 
     raise_type_error(
