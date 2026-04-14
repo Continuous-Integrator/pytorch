@@ -95,7 +95,13 @@ from ..utils import (
     tuple_methods,
     unpatched_nn_module_getattr,
 )
-from .base import MutationType, NO_SUCH_SUBOBJ, ValueMutationNew, VariableTracker
+from .base import (
+    AsPythonConstantNotImplementedError,
+    MutationType,
+    NO_SUCH_SUBOBJ,
+    ValueMutationNew,
+    VariableTracker,
+)
 from .dicts import ConstDictVariable, DefaultDictVariable
 from .hashable import HashableTracker
 from .sets import SetVariable
@@ -777,9 +783,7 @@ class UserDefinedClassVariable(UserDefinedVariable):
             var.call_method(tx, "__init__", list(args), kwargs)  # type: ignore[arg-type]
             return var
 
-        if self.can_constant_fold_through() and (
-            constant_args or check_constant_args_allow_lazy(args, kwargs)
-        ):
+        if self.can_constant_fold_through() and constant_args:
             # constant fold
             return VariableTracker.build(
                 tx,
@@ -788,6 +792,21 @@ class UserDefinedClassVariable(UserDefinedVariable):
                     **{k: v.as_python_constant() for k, v in kwargs.items()},
                 ),
             )
+        elif self.can_constant_fold_through() and check_constant_args_allow_lazy(
+            args, kwargs
+        ):
+            # constant fold with lazy args - realization may produce SymNodeVariable
+            # (e.g., int with specialize_int=False), so catch that case
+            try:
+                return VariableTracker.build(
+                    tx,
+                    self.as_python_constant()(  # type: ignore[operator]
+                        *[x.as_python_constant() for x in args],
+                        **{k: v.as_python_constant() for k, v in kwargs.items()},
+                    ),
+                )
+            except AsPythonConstantNotImplementedError:
+                pass
         elif self.value is torch.nn.CrossEntropyLoss:
             return self._call_cross_entropy_loss(tx, args, kwargs)
         elif self.value is contextlib.nullcontext:
