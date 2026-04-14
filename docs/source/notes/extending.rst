@@ -159,6 +159,7 @@ class attributes:
   to free individual grads mid-execution by removing them from the list, reducing
   peak memory. When enabled, the backward calling convention changes from
   ``backward(ctx, *grads) -> Tuple[Tensor, ...]`` to ``backward(ctx, grads) -> Tuple[Tensor, ...]`` where ``grads`` is a list.
+  The return convention is unchanged.
   The default is ``False``.
 
 Here is an example using ``boxed_grads_call`` to reduce peak memory in the backward

@@ -1958,7 +1958,7 @@ main()
                 yield x.grad
 
         self.check_output_and_recompiles(
-            fn, count=[1, 3], compiler_fn=make_compiler_fn(fullgraph=False)
+            fn, count=[1, 2], compiler_fn=make_compiler_fn(fullgraph=False)
         )
 
     def test_custom_fn_compiled_fw_graph_break(self):
@@ -2012,9 +2012,9 @@ main()
                 yield x.grad
 
         self.check_output_and_recompiles(
-            fn, count=[1, 3], compiler_fn=make_compiler_fn(fullgraph=False)
+            fn, count=[1, 2], compiler_fn=make_compiler_fn(fullgraph=False)
         )
-        self.assertEqual(counters["stats"]["unique_graphs"], 6)  # 3 fw, 3 bw
+        self.assertEqual(counters["stats"]["unique_graphs"], 5)
 
     def test_mismatch_fake_tensor_mode(self, dynamic_shape=False):
         """
@@ -4615,7 +4615,7 @@ class CompiledAutograd1(torch.nn.Module):
         self.check_output_and_recompiles(
             fn,
             compiler_fn=make_compiler_fn(fullgraph=False),
-            count=[1, 2],
+            count=[1, 1],
         )
 
     # Case 1.5.1: Dense variable gradient layout contract
@@ -4884,7 +4884,7 @@ class CompiledAutograd1(torch.nn.Module):
         self.check_output_and_recompiles(
             fn,
             compiler_fn=make_compiler_fn(fullgraph=False),
-            count=[1, 2],
+            count=[1, 1],
         )
 
     # Case 3.1: Sparse variable_grad + Dense new_grad (reorder into Dense + Sparse)
@@ -4981,7 +4981,7 @@ class CompiledAutograd1(torch.nn.Module):
         self.check_output_and_recompiles(
             fn,
             compiler_fn=make_compiler_fn(fullgraph=False),
-            count=[1, 3],
+            count=[1, 2],
         )
 
     def test_torch_function_mode(self):
@@ -5423,6 +5423,7 @@ skipped_tests.add("test_custom_function_boxed_grads_no_extra_refs")
 skipped_tests.add("test_custom_function_boxed_grads_cleanup_on_error")
 skipped_tests.add("test_custom_function_boxed_grads_chain")
 skipped_tests.add("test_custom_function_boxed_grads_none_grads")
+skipped_tests.add("test_custom_function_boxed_grads_materialize_grads")
 skipped_tests.add("test_custom_function_boxed_grads_direct_apply")
 skipped_tests.add("test_custom_function_boxed_grads_single_list_arg")
 
