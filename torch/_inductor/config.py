@@ -681,9 +681,7 @@ use_pre_grad_passes: bool = True
 #   requires custom passes to implement uuid() for the cache key.
 # "default": resolves to "late" when possible (no custom pass, or custom pass
 #   with uuid), falls back to "early" otherwise.
-pre_grad_pass_timing: Literal["early", "late", "default"] = (
-    "late" if is_fbcode() else "default"
-)
+pre_grad_pass_timing: Literal["early", "late", "default"] = "default"
 
 
 use_joint_graph_passes: bool = True
@@ -1158,8 +1156,12 @@ class aten_distributed_optimizations:
     # "custom_ops": temporary bucketing using custom ops to hide parts from inductor
     # "custom_ops_multidtype": same as custom_ops but buckets multiple dtypes
     #     (e.g. bf16 and fp32) into one bucket
+    # "coalesced": zero-copy batching via reduce_scatter_tensor_coalesced
+    #     (reduce_scatter only; all_gather falls back to default)
     # None means "auto" — the compiler picks the best mode
-    bucket_mode: Literal["default", "custom_ops", "custom_ops_multidtype"] | None = None
+    bucket_mode: (
+        Literal["default", "custom_ops", "custom_ops_multidtype", "coalesced"] | None
+    ) = None
 
     # Prioritize bucketing during overlap scheduling by grouping candidates by bucket key
     prioritize_bucketing_during_scheduling: bool = True
