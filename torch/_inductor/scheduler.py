@@ -5606,16 +5606,14 @@ class Scheduler:
 
         # No reordering candidates found. Try reindexing the pointwise
         # to match the reduction's iteration domain (e.g., [1024, 8192] ->
-        # [65536, 128] for RMS norm with reshape), then retry loop reordering.
+        # [65536, 128] for RMS norm with reshape). Reindexing sets the
+        # pointwise's sizes to exactly match the reduction's groups, so
+        # no further loop reordering is needed.
         if (
             not config.loop_reindexing_after_fusion
             or not self._try_reindex_pointwise_for_reduction(node1, node2)
         ):
             return -1
-
-        score = self._try_reorder_loops_for_candidates(node1, node2)
-        if score >= 0:
-            return score
 
         return self.score_fusion_memory(node1, node2)
 
