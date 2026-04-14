@@ -1697,6 +1697,15 @@ class CppWrapperCpu(PythonWrapperCodegen):
                 f"AOTI_TORCH_ERROR_CODE_CHECK(aoti_torch_check_inf_and_nan({buf}));"
             )
 
+    def codegen_input_nan_asserts(self) -> None:
+        self.wrapper_call.writeline("// make sure graph inputs are not nan/inf")
+        for name, buf in self.get_graph_inputs().items():
+            if isinstance(buf, (sympy.Expr, ir.TorchBindObject)):
+                continue
+            self.wrapper_call.writeline(
+                f'AOTI_TORCH_ERROR_CODE_CHECK(aoti_torch_check_inf_and_nan("{name}", {name}));'
+            )
+
     def codegen_device(self, device):
         assert device.type in DEVICE_TO_ATEN, (
             device.type + " not found in DEVICE_TO_ATEN"
