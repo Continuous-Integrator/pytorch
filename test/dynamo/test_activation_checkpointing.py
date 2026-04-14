@@ -2827,6 +2827,17 @@ instantiate_device_type_tests(
 class ActivationCheckpointingNonStrictTracerTests(torch._dynamo.test_case.TestCase):
     """Tests for non-strict tracing flag interaction with checkpoint."""
 
+    @staticmethod
+    def _count_backward_regions(gm):
+        regions = 0
+        in_backward = False
+        for node in gm.graph.nodes:
+            is_backward = bool(node.meta.get("autograd_backward", False))
+            if is_backward and not in_backward:
+                regions += 1
+            in_backward = is_backward
+        return regions
+
     def test_backward_nodes_have_seq_nr_under_non_strict(self):
         class Model(nn.Module):
             def __init__(self):
@@ -2900,6 +2911,29 @@ class ActivationCheckpointingNonStrictTracerTests(torch._dynamo.test_case.TestCa
         self.assertEqual(len(neg_nodes), 1)
         self.assertNotIn("autograd_backward", neg_nodes[0].meta)
         self.assertEqual(neg_nodes[0].meta.get("custom", {}), {"ac_region_id": 0})
+
+    def test_patch_autograd_grad_mlp_has_single_contiguous_backward_region(self):
+        class Block(nn.Module):
+            def __init__(self, dim):
+                super().__init__()
+                self.fc1 = nn.Linear(dim, dim * 2)
+                self.fc2 = nn.Linear(dim * 2, dim)
+
+            def forward(self, x):
+                return x + self.fc2(torch.relu(self.fc1(x)))
+
+        class Model(nn.Module):
+            def __init__(self, dim=32, depth=6):
+                super().__init__()
+                self.blocks = nn.ModuleList([Block(dim) for _ in range(depth)])
+
+            def forward(self, x):
+                for block in self.blocks:
+                    x = block(x)
+                return x
+
+        gm = self._trace_train_step(Model(), torch.randn(4, 16, 32))
+        self.assertEqual(self._count_backward_regions(gm), 1)
 
     def _trace_train_step(self, mod, x):
         import torch.utils._pytree as pytree
