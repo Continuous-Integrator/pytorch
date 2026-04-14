@@ -31,7 +31,7 @@ def get_heuristic_decision(m: int, k: int, n: int, dtype: torch.dtype) -> str | 
         pad_mm_precondition,
     )
 
-    torch._inductor.config.autoheuristic_use = "pad_mm"
+    torch._inductor.config.autoheuristic_use.pad_mm = True
 
     if not torch._inductor.config.run_autoheuristic("pad_mm"):
         return None
