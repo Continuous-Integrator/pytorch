@@ -3,11 +3,11 @@
 import argparse
 import csv
 import functools
-import time
 
 import torch
 from torch._inductor.autoheuristic.autoheuristic_utils import AHContext, AHMetadata
 from torch._inductor.fx_passes.pad_mm import get_alignment_size_dtype
+from torch._inductor.runtime.benchmarking import benchmarker
 from torch._inductor.utils import get_gpu_shared_memory
 
 
@@ -16,8 +16,8 @@ def fits_in_memory(dtype, m: int, k: int, n: int) -> bool:
     return dtype.itemsize * (m * k + k * n + m * n) < threshold_memory
 
 
-def set_precision(dtype) -> None:
-    precision = "highest" if dtype == torch.float32 else "high"
+def set_precision(dtype, float32_precision: str = "highest") -> None:
+    precision = float32_precision if dtype == torch.float32 else "high"
     torch.set_float32_matmul_precision(precision)
 
 
@@ -57,7 +57,7 @@ def get_heuristic_decision(m: int, k: int, n: int, dtype: torch.dtype) -> str | 
         return 1.0
 
     def fallback() -> str:
-        return "autotune"
+        return "no_decision"
 
     autoheuristic = AutoHeuristic(
         fallback=fallback,
@@ -70,33 +70,27 @@ def get_heuristic_decision(m: int, k: int, n: int, dtype: torch.dtype) -> str | 
     )
 
     choice = autoheuristic.get_choice()
-    # Return the actual choice made by the heuristic
-    # "autotune" means fallback to benchmarking (heuristic not confident)
     return choice
 
 
 def benchmark_both_choices(
-    m: int, k: int, n: int, dtype: torch.dtype, num_reps: int = 3
+    m: int,
+    k: int,
+    n: int,
+    dtype: torch.dtype,
+    num_reps: int = 3,
+    float32_precision: str = "highest",
 ) -> tuple[float, float]:
-    set_precision(dtype)
+    set_precision(dtype, float32_precision)
     a = torch.randn(m, k, dtype=dtype, device="cuda")
     b = torch.randn(k, n, dtype=dtype, device="cuda")
 
-    def benchmark_fn(fn, num_warmup=5):
-        for _ in range(num_warmup):
-            fn()
-        torch.cuda.synchronize()
-
-        times = []
-        for _ in range(num_reps):
-            start = time.perf_counter()
-            fn()
-            torch.cuda.synchronize()
-            end = time.perf_counter()
-            times.append(end - start)
-        return sum(times) / len(times)
-
-    orig_time = benchmark_fn(lambda: torch.mm(a, b))
+    # Use existing benchmarking infrastructure with proper cache management
+    # benchmarker returns time in milliseconds, so convert to seconds for consistency
+    orig_time_ms = benchmarker.benchmark(
+        torch.mm, fn_args=(a, b), rep=num_reps, is_vetted_benchmarking=True
+    )
+    orig_time = orig_time_ms / 1000.0  # Convert ms to seconds
 
     from torch._inductor.fx_passes.pad_mm import (
         get_alignment_size,
@@ -111,38 +105,38 @@ def benchmark_both_choices(
     if m_padded_length == 0 and k_padded_length == 0 and n_padded_length == 0:
         return orig_time, orig_time
 
-    def pad_fn():
-        return pad_mm(a, b, m_padded_length, k_padded_length, n_padded_length)
+    pad_time_ms = benchmarker.benchmark(
+        pad_mm,
+        fn_args=(a, b, m_padded_length, k_padded_length, n_padded_length),
+        rep=num_reps,
+        is_vetted_benchmarking=True,
+    )
+    pad_time = pad_time_ms / 1000.0  # Convert ms to seconds
 
-    pad_time = benchmark_fn(pad_fn)
     return orig_time, pad_time
 
 
 def load_shapes_from_csv(csv_file: str) -> list:
     shapes = []
-    try:
-        with open(csv_file) as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                m, k, n = int(row["M"]), int(row["K"]), int(row["N"])
-                dtype_str = row["dtype"]
+    with open(csv_file) as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            m, k, n = int(row["M"]), int(row["K"]), int(row["N"])
+            dtype_str = row["dtype"]
 
-                if dtype_str == "float16":
-                    dtype = torch.float16
-                elif dtype_str == "bfloat16":
-                    dtype = torch.bfloat16
-                elif dtype_str == "float32":
-                    dtype = torch.float32
-                else:
-                    continue
+            if dtype_str == "float16":
+                dtype = torch.float16
+            elif dtype_str == "bfloat16":
+                dtype = torch.bfloat16
+            elif dtype_str == "float32":
+                dtype = torch.float32
+            else:
+                continue
 
-                shapes.append((m, k, n, dtype))
+            shapes.append((m, k, n, dtype))
 
-        print(f"Loaded {len(shapes)} shapes from {csv_file}")
-        return shapes
-    except Exception as e:
-        print(f"Error loading shapes from {csv_file}: {e}")
-        return []
+    print(f"Loaded {len(shapes)} shapes from {csv_file}")
+    return shapes
 
 
 @functools.cache
@@ -233,6 +227,13 @@ def main():
         default=10000,
         help="Max shapes to test (default: 10000)",
     )
+    parser.add_argument(
+        "--float32_matmul_precision",
+        type=str,
+        choices=["high", "highest"],
+        default="highest",
+        help="Matmul precision for float32 (default: highest). Non-fp32 always uses 'high'.",
+    )
 
     args = parser.parse_args()
 
@@ -266,101 +267,89 @@ def main():
     true_negatives = 0  # Chose orig, should orig
     false_positives = 0  # Chose pad, should orig
     false_negatives = 0  # Chose orig, should pad
-    skipped_shapes = 0
-    autotune_shapes = 0
+    no_decision_shapes = 0
 
     tp_speedups = []  # Speed-up percentages for true positives
     fp_slowdowns = []  # Speed-down percentages for false positives
 
     # Track non-confident decisions and confident decisions by dtype
-    autotune_shape_list = []  # List of (M, K, N, dtype) where heuristic chose autotune
+    no_decision_shape_list = []  # List of (M, K, N, dtype) where heuristic chose no_decision
     confident_by_dtype = {}  # Count of confident decisions by dtype
 
     for i, (m, k, n, dtype) in enumerate(shapes, 1):
-        try:
-            print(f"Shape {i}/{len(shapes)}: M={m}, K={k}, N={n}, dtype={dtype}")
+        print(f"Shape {i}/{len(shapes)}: M={m}, K={k}, N={n}, dtype={dtype}")
 
-            heuristic_choice = get_heuristic_decision(m, k, n, dtype)
-            print(f"  Heuristic: {heuristic_choice}")
+        heuristic_choice = get_heuristic_decision(m, k, n, dtype)
+        print(f"  Heuristic: {heuristic_choice}")
 
-            if heuristic_choice is None:
-                print("  (Skipped - error)")
-                skipped_shapes += 1
-                continue
+        orig_time, pad_time = benchmark_both_choices(
+            m, k, n, dtype, args.num_reps, args.float32_matmul_precision
+        )
+        ground_truth = "pad" if pad_time < orig_time else "orig"
 
-            orig_time, pad_time = benchmark_both_choices(m, k, n, dtype, args.num_reps)
-            ground_truth = "pad" if pad_time < orig_time else "orig"
+        print(f"  Times: orig={orig_time:.6f}s, pad={pad_time:.6f}s")
+        print(f"  Ground truth: {ground_truth}")
 
-            print(f"  Times: orig={orig_time:.6f}s, pad={pad_time:.6f}s")
-            print(f"  Ground truth: {ground_truth}")
-
-            if heuristic_choice == "autotune":
-                # Heuristic punted to benchmarking - this is correct behavior for small/uncertain shapes
-                autotune_shapes += 1
-                autotune_shape_list.append((m, k, n, dtype))
-                print("  Heuristic chose to benchmark (conservative)")
-            else:
-                # Heuristic made a confident decision - evaluate accuracy
-                total_decisions += 1
-                # Track confident decisions by dtype
-                dtype_str = str(dtype).replace("torch.", "")
-                confident_by_dtype[dtype_str] = confident_by_dtype.get(dtype_str, 0) + 1
-                if heuristic_choice == ground_truth:
-                    correct_decisions += 1
-                    print("  ✓ CORRECT")
-                    if heuristic_choice == "pad":
-                        true_positives += 1  # Correctly chose pad
-                        # Calculate speed-up: (orig_time - pad_time) / orig_time * 100
-                        speedup = (orig_time - pad_time) / orig_time * 100
-                        tp_speedups.append(speedup)
-                        print(f"    Speed-up: {speedup:.1f}%")
-                    else:
-                        true_negatives += 1  # Correctly chose orig
+        if heuristic_choice == "no_decision":
+            # Heuristic punted to benchmarking - this is correct behavior for small/uncertain shapes
+            no_decision_shapes += 1
+            no_decision_shape_list.append((m, k, n, dtype))
+            print("  Heuristic chose to benchmark (conservative)")
+        else:
+            # Heuristic made a confident decision - evaluate accuracy
+            total_decisions += 1
+            # Track confident decisions by dtype
+            dtype_str = str(dtype).replace("torch.", "")
+            confident_by_dtype[dtype_str] = confident_by_dtype.get(dtype_str, 0) + 1
+            if heuristic_choice == ground_truth:
+                correct_decisions += 1
+                print("  ✓ CORRECT")
+                if heuristic_choice == "pad":
+                    true_positives += 1  # Correctly chose pad
+                    # Calculate speed-up: (orig_time - pad_time) / orig_time * 100
+                    speedup = (orig_time - pad_time) / orig_time * 100
+                    tp_speedups.append(speedup)
+                    print(f"    Speed-up: {speedup:.1f}%")
                 else:
-                    print("  ✗ WRONG")
-                    if heuristic_choice == "pad" and ground_truth == "orig":
-                        false_positives += 1
-                        # Calculate speed-down: (pad_time - orig_time) / orig_time * 100
-                        slowdown = (pad_time - orig_time) / orig_time * 100
-                        fp_slowdowns.append(slowdown)
-                        print(f"    Speed-down: {slowdown:.1f}%")
-                    elif heuristic_choice == "orig" and ground_truth == "pad":
-                        false_negatives += 1
+                    true_negatives += 1  # Correctly chose orig
+            else:
+                print("  ✗ WRONG")
+                if heuristic_choice == "pad" and ground_truth == "orig":
+                    false_positives += 1
+                    # Calculate speed-down: (pad_time - orig_time) / orig_time * 100
+                    slowdown = (pad_time - orig_time) / orig_time * 100
+                    fp_slowdowns.append(slowdown)
+                    print(f"    Speed-down: {slowdown:.1f}%")
+                elif heuristic_choice == "orig" and ground_truth == "pad":
+                    false_negatives += 1
 
-            print(f"  Confidence Rate: {total_decisions}/{i}")
-            if total_decisions > 0:
-                accuracy = correct_decisions / total_decisions * 100
-                tp_rate = true_positives / total_decisions * 100
-                tn_rate = true_negatives / total_decisions * 100
-                fp_rate = false_positives / total_decisions * 100
-                fn_rate = false_negatives / total_decisions * 100
+        print(f"  Confidence Rate: {total_decisions}/{i}")
+        if total_decisions > 0:
+            accuracy = correct_decisions / total_decisions * 100
+            tp_rate = true_positives / total_decisions * 100
+            tn_rate = true_negatives / total_decisions * 100
+            fp_rate = false_positives / total_decisions * 100
+            fn_rate = false_negatives / total_decisions * 100
 
-                # Compute average speedup/slowdown
-                avg_tp_speedup = (
-                    sum(tp_speedups) / len(tp_speedups) if tp_speedups else 0
-                )
-                avg_fp_slowdown = (
-                    sum(fp_slowdowns) / len(fp_slowdowns) if fp_slowdowns else 0
-                )
+            # Compute average speedup/slowdown
+            avg_tp_speedup = sum(tp_speedups) / len(tp_speedups) if tp_speedups else 0
+            avg_fp_slowdown = (
+                sum(fp_slowdowns) / len(fp_slowdowns) if fp_slowdowns else 0
+            )
 
-                print(
-                    f"  Accuracy: {correct_decisions}/{total_decisions} ({accuracy:.1f}%) "
-                    f"| TP: {tp_rate:.1f}% (avg speedup: {avg_tp_speedup:.1f}%) "
-                    f"| TN: {tn_rate:.1f}% "
-                    f"| FP: {fp_rate:.1f}% (avg slowdown: {avg_fp_slowdown:.1f}%)"
-                    f"| FN: {fn_rate:.1f}%"
-                )
-
-        except Exception as e:
-            print(f"  Error: {e}")
-            skipped_shapes += 1
+            print(
+                f"  Accuracy: {correct_decisions}/{total_decisions} ({accuracy:.1f}%) "
+                f"| TP: {tp_rate:.1f}% (avg speedup: {avg_tp_speedup:.1f}%) "
+                f"| TN: {tn_rate:.1f}% "
+                f"| FP: {fp_rate:.1f}% (avg slowdown: {avg_fp_slowdown:.1f}%)"
+                f"| FN: {fn_rate:.1f}%"
+            )
 
         print()
 
     print("=== FINAL RESULTS ===")
     print(f"Confident decisions: {total_decisions}")
-    print(f"Autotune (punted to benchmarking): {autotune_shapes}")
-    print(f"Skipped (errors): {skipped_shapes}")
+    print(f"#Shapes without confident decisions: {no_decision_shapes}")
 
     if total_decisions > 0:
         accuracy = correct_decisions / total_decisions * 100
@@ -406,17 +395,17 @@ def main():
     else:
         print("No confident decisions made!")
 
-    total_evaluated = total_decisions + autotune_shapes
+    total_evaluated = total_decisions + no_decision_shapes
     if total_evaluated > 0:
         print(
             f"\nConfidence rate: ({total_decisions}/{total_evaluated} made confident decisions)"
         )
 
     # Print shapes where AutoHeuristics did not make a confident decision
-    print(f"\n=== NON-CONFIDENT DECISIONS ({len(autotune_shape_list)}) ===")
-    if autotune_shape_list:
-        print("Shapes where AutoHeuristics chose 'autotune' (non-confident):")
-        for m, k, n, dtype in autotune_shape_list:
+    print(f"\n=== NON-CONFIDENT DECISIONS ({len(no_decision_shape_list)}) ===")
+    if no_decision_shape_list:
+        print("Shapes where AutoHeuristics chose 'no_decision' (non-confident):")
+        for m, k, n, dtype in no_decision_shape_list:
             dtype_str = str(dtype).replace("torch.", "")
             print(f"  M={m}, K={k}, N={n}, dtype={dtype_str}")
     else:
