@@ -388,7 +388,7 @@ class UserDefinedClassVariable(UserDefinedVariable):
         # can't trace).  GetAttrVariable defers the access and lets
         # call_method handle it.
         if meta_attr is not NO_SUCH_SUBOBJ:
-            return variables.GetAttrVariable(self, name, None, source=source)
+            return variables.GetAttrVariable(self, name, type(meta_attr), source=source)
 
         # __getattr__ on metaclass (not part of type_getattro proper —
         # CPython handles this via slot_tp_getattr_hook).
@@ -435,7 +435,7 @@ class UserDefinedClassVariable(UserDefinedVariable):
 
         if ConstantVariable.is_literal(resolved):
             return VariableTracker.build(tx, resolved)
-        return variables.GetAttrVariable(self, name, None, source=source)
+        return variables.GetAttrVariable(self, name, type(resolved), source=source)
 
     def resolve_cls_descriptor(
         self,
@@ -470,7 +470,9 @@ class UserDefinedClassVariable(UserDefinedVariable):
         if name in cmp_name_to_op_mapping and not isinstance(
             cls_attr, types.FunctionType
         ):
-            return variables.GetAttrVariable(self, name, None, source=source)
+            return variables.GetAttrVariable(
+                self, name, py_type=type(cls_attr), source=source
+            )
 
         # User-defined descriptor with Python __get__.
         # For torch-internal classes or attributes in the class's own __dict__,
@@ -504,7 +506,7 @@ class UserDefinedClassVariable(UserDefinedVariable):
                 )
             ):
                 return VariableTracker.build(tx, cls_attr, source)
-            return variables.GetAttrVariable(self, name, None, source=source)
+            return variables.GetAttrVariable(self, name, type(cls_attr), source=source)
 
         # Everything else: FunctionType, etc.
         return VariableTracker.build(tx, cls_attr, source)
@@ -522,7 +524,7 @@ class UserDefinedClassVariable(UserDefinedVariable):
         ):
             return super().var_getattr(tx, name)
         if self.value is collections.OrderedDict:
-            return variables.GetAttrVariable(self, name)
+            return variables.GetAttrVariable(self, name, py_type=type(cls_attr))
         return VariableTracker.build(tx, cls_attr, source)
 
     def invoke_cls_descriptor_get(
@@ -1505,6 +1507,28 @@ class UserDefinedObjectVariable(UserDefinedVariable):
         }
         return fns
 
+    def mp_subscript_impl(
+        self,
+        tx: "InstructionTranslator",
+        key: VariableTracker,
+    ) -> VariableTracker:
+        # PyObject_GetItem: https://github.com/python/cpython/blob/62a6e898e01/Objects/abstract.c#L155-L206
+        method = self._maybe_get_baseclass_method("__getitem__")
+        if (
+            self._base_vt is not None
+            and self._base_methods is not None
+            and method in self._base_methods
+        ):
+            return self._base_vt.mp_subscript_impl(tx, key)
+        if isinstance(method, types.FunctionType):
+            source_fn = self.source and self.get_source_by_walking_mro(
+                tx, "__getitem__"
+            )
+            return variables.UserMethodVariable(
+                method, self, source_fn=source_fn, source=self.source
+            ).call_function(tx, [key], {})
+        return super().mp_subscript_impl(tx, key)
+
     def call_method(
         self,
         tx: "InstructionTranslator",
@@ -2313,6 +2337,9 @@ class UserDefinedObjectVariable(UserDefinedVariable):
         # MethodDescriptorType: e.g. list.append (PyMethodDef)
         # WrapperDescriptorType: e.g. list.__add__ (slot wrappers)
         # MethodWrapperType: e.g. [].__add__ (bound slot wrappers)
+        #
+        # Exception: if the descriptor has a registered polyfill, return the
+        # polyfill as a bound method so Dynamo can trace through it.
         if (
             isinstance(
                 type_attr,
@@ -2325,7 +2352,17 @@ class UserDefinedObjectVariable(UserDefinedVariable):
             or torch._C._dynamo.utils.is_instancemethod(type_attr)  # type: ignore[attr-defined]
             or is_cython_function(type_attr)
         ):
-            return variables.GetAttrVariable(self, name, None, source=source)
+            from .. import trace_rules
+
+            if trace_rules.is_polyfilled_callable(type_attr):  # type: ignore[arg-type]
+                from .functions import PolyfilledFunctionVariable
+
+                polyfill_handlers = PolyfilledFunctionVariable._get_polyfill_handlers()
+                wrapped: Any = polyfill_handlers.get(type_attr)  # type: ignore[arg-type]
+                if wrapped is not None:
+                    traceable_fn = wrapped.__torch_dynamo_polyfill__
+                    return variables.UserMethodVariable(traceable_fn, self)
+            return variables.GetAttrVariable(self, name, type(type_attr), source=source)
 
         # Plain class variable (or MethodType, C-level non-data descriptor
         # without __get__, etc.).
@@ -2965,6 +3002,27 @@ class UserDefinedDictVariable(UserDefinedObjectVariable):
         # Dict implements __len__ via mp_length (mapping protocol), not
         # sq_length (sequence protocol). Redirect so generic_len works.
         return self.mp_length(tx)
+
+    def mp_subscript_impl(
+        self,
+        tx: "InstructionTranslator",
+        key: VariableTracker,
+    ) -> VariableTracker:
+        # dict_subscript: https://github.com/python/cpython/blob/62a6e898e01/Objects/dictobject.c#L3673-L3706
+        # TODO(follow-up): add test for unhashable/invalid key type, Counter missing key
+        method = self._maybe_get_baseclass_method("__getitem__")
+        if method in self._base_methods:
+            assert self._base_vt is not None
+            try:
+                return self._base_vt.mp_subscript_impl(tx, key)
+            except ObservedKeyError:
+                if issubclass(
+                    self.python_type(), dict
+                ) and self._maybe_get_baseclass_method("__missing__"):
+                    return self.call_method(tx, "__missing__", [key], {})
+                else:
+                    raise
+        return super().mp_subscript_impl(tx, key)
 
     def call_method(
         self,
