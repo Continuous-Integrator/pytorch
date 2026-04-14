@@ -1310,6 +1310,36 @@ class ComboKernelTestsMaxAutotune(TestCase):
         self.assertEqual(torch._inductor.metrics.generated_kernel_count, 1)
 
     @requires_gpu_and_triton
+    def test_combo_kernel_per_subkernel_reduction_hint(self):
+        def fn(x, y):
+            return x.sum(dim=-1), y.sum(dim=0)
+
+        inps = [
+            torch.rand(128, 256, device=GPU_TYPE),
+            torch.rand(128, 256, device=GPU_TYPE),
+        ]
+
+        out_eager = fn(*inps)
+        out, code = run_and_get_code(torch.compile(fn), *inps)
+        self.assertEqual(out_eager, out)
+        # Verify per-subkernel reduction hints in generated code
+        found_hints = {}
+        for c in code:
+            for key in ["reduction_hint_0", "reduction_hint_1"]:
+                m = re.search(rf"'{key}':\s*'(\w+)'", c)
+                if m:
+                    found_hints[key] = m.group(1)
+
+        self.assertIn(
+            "reduction_hint_0", found_hints, "Missing per-subkernel reduction_hint_0"
+        )
+        self.assertIn(
+            "reduction_hint_1", found_hints, "Missing per-subkernel reduction_hint_1"
+        )
+        self.assertEqual(found_hints["reduction_hint_0"], "INNER")
+        self.assertEqual(found_hints["reduction_hint_1"], "OUTER")
+
+    @torch._inductor.config.patch("combo_kernel_autotune_grouping", True)
     def test_combo_autotune_grouping(self):
         def fn(a, b, c, d):
             return a.cos(), b.sin(), c.exp(), d.neg()
@@ -1347,6 +1377,45 @@ class ComboKernelTestsMaxAutotune(TestCase):
         )
         self.assertEqual(out_eager, out_compiled)
         self.assertEqual(torch._inductor.metrics.generated_kernel_count, 1)
+
+    @requires_gpu_and_triton
+    @torch._inductor.config.patch("combo_kernel_autotune_grouping", True)
+    def test_combo_autotune_grouping_uses_tiling_signature(self):
+        import triton
+
+        inductor_meta = {
+            "combo_grid_meta": {
+                "num_kernels": 2,
+                "heuristic_0": "pointwise",
+                "heuristic_1": "pointwise",
+                "size_hints_0": {"x": 256, "y": 256},
+                "size_hints_1": {"x": 256, "y": 256},
+                "tile_hint_0": "TileHint.SQUARE",
+                "tile_hint_1": "TileHint.SQUARE",
+                "tiling_scores_0": {"x": 8, "y": 1},
+                "tiling_scores_1": {"x": 1, "y": 8},
+            }
+        }
+
+        def pointwise_configs(*args, **kwargs):
+            return [
+                triton.Config({"XBLOCK": 64, "YBLOCK": 32}, num_warps=4, num_stages=1),
+                triton.Config({"XBLOCK": 128, "YBLOCK": 32}, num_warps=4, num_stages=1),
+            ]
+
+        with unittest.mock.patch(
+            "torch._inductor.runtime.triton_heuristics.pointwise",
+            side_effect=pointwise_configs,
+        ):
+            torch._inductor.runtime.triton_heuristics._handle_combo_kernel_per_subkernel_blocks(
+                {"x": 256, "y": 256},
+                inductor_meta,
+                triton_meta={},
+            )
+
+        groups = inductor_meta["combo_tuning_groups"]
+        self.assertEqual(len(groups), 2)
+        self.assertEqual([[0], [1]], [g["member_indices"] for g in groups])
 
 
 if __name__ == "__main__":

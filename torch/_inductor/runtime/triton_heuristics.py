@@ -23,7 +23,7 @@ from typing import Any, Generic, Literal, TYPE_CHECKING, TypeVar
 
 import torch
 from torch._dynamo.utils import counters, set_feature_use
-from torch._inductor import metrics
+from torch._inductor import config as inductor_config, metrics
 from torch._inductor.config import triton as inductor_triton_config
 from torch._prims_common import compute_required_storage_length
 from torch.utils._debug_mode import get_active_debug_mode
@@ -1475,14 +1475,6 @@ class CachingAutotuner(KernelInterface):
             "global_scratch": launcher.global_scratch,
             "profile_scratch": launcher.profile_scratch,
         }
-        if self.device_props.type == "xpu":
-            # On the XPU backend, threads_per_warp is not always 32.
-            # For Intel GEMM Triton kernels, it can be 16.
-            # This information must be preserved so that the Cpp wrapper
-            # can launch the kernel with the correct configuration.
-            params["threads_per_warp"] = getattr(
-                launcher.bin.metadata, "threads_per_warp", 32
-            )
 
         from torch._inductor import config
         from torch._inductor.codecache import CudaKernelParamCache
@@ -2905,6 +2897,30 @@ def _get_config(numels: dict[str, int]) -> dict[str, int]:
     return {prefix.upper() + "BLOCK": numel for prefix, numel in numels.items()}
 
 
+def _combo_tiling_signature(
+    tiling_scores: dict[str, Any] | None,
+) -> tuple[tuple[str, float], ...] | None:
+    """
+    Build a grouping signature from tiling scores.
+
+    Normalize scores so proportional patterns (e.g. {x: 8, y: 1} vs {x: 16, y: 2})
+    end up in the same group, while kernels with different coalescing preference do not.
+    """
+    if not tiling_scores:
+        return None
+
+    total = sum(float(score) for score in tiling_scores.values())
+    if total == 0:
+        return tuple(sorted((dim, 0.0) for dim in tiling_scores))
+
+    return tuple(
+        sorted(
+            (dim, round(float(score) / total, 2))
+            for dim, score in tiling_scores.items()
+        )
+    )
+
+
 def _handle_combo_kernel_per_subkernel_blocks(
     size_hints: dict[str, int],
     inductor_meta: dict[str, Any],
@@ -2944,11 +2960,16 @@ def _handle_combo_kernel_per_subkernel_blocks(
     unique_warp_stage_pairs: OrderedSet[tuple[int, int]] = OrderedSet()
 
     # Group sub-kernels with identical config kwargs to skip redundant tuning.
-    group_map: dict[tuple[tuple[str, int], ...], dict[str, Any]] = {}
+    group_map: dict[tuple[Any, ...], dict[str, Any]] = {}
+    enable_grouping = inductor_config.combo_kernel_autotune_grouping
 
     for i in range(num_kernels):
         subkernel_heuristic = combo_meta[f"heuristic_{i}"]
         size_hints_i = combo_meta[f"size_hints_{i}"]
+        tiling_scores_i = combo_meta.get(f"tiling_scores_{i}")
+        inductor_meta_i = dict(inductor_meta_clean)
+        if tiling_scores_i is not None:
+            inductor_meta_i["tiling_scores"] = tiling_scores_i
 
         if subkernel_heuristic == "pointwise":
             cfgs = pointwise(
@@ -2959,27 +2980,27 @@ def _handle_combo_kernel_per_subkernel_blocks(
                 else TileHint.DEFAULT,
                 filename=filename,
                 min_elem_per_thread=min_elem_per_thread,
-                inductor_meta=inductor_meta_clean,
+                inductor_meta=inductor_meta_i,
                 return_configs=True,
             )
             skip_rblock = False
         elif subkernel_heuristic == "reduction":
             cfgs = reduction(
                 size_hints_i,
-                reduction_hint=reduction_hint,
+                reduction_hint=ReductionHint[combo_meta[f"reduction_hint_{i}"]],
                 triton_meta=triton_meta,
                 filename=filename,
-                inductor_meta=inductor_meta_clean,
+                inductor_meta=inductor_meta_i,
                 return_configs=True,
             )
             skip_rblock = False
         elif subkernel_heuristic == "persistent_reduction":
             cfgs = persistent_reduction(
                 size_hints_i,
-                reduction_hint=reduction_hint,
+                reduction_hint=ReductionHint[combo_meta[f"reduction_hint_{i}"]],
                 triton_meta=triton_meta,
                 filename=filename,
-                inductor_meta=inductor_meta_clean,
+                inductor_meta=inductor_meta_i,
                 return_configs=True,
             )
             skip_rblock = True  # persistent reduction embeds RBLOCK in kernel body
@@ -2998,10 +3019,20 @@ def _handle_combo_kernel_per_subkernel_blocks(
             unique_warp_stage_pairs.add((c.num_warps, c.num_stages))
 
         cfg_key = tuple(item for c in cfgs for item in sorted(c.kwargs.items()))
-        if cfg_key in group_map:
-            group_map[cfg_key]["member_indices"].append(i)
+        group_key = (
+            (
+                subkernel_heuristic,
+                skip_rblock,
+                cfg_key,
+                _combo_tiling_signature(tiling_scores_i),
+            )
+            if enable_grouping
+            else (i,)
+        )
+        if group_key in group_map:
+            group_map[group_key]["member_indices"].append(i)
         else:
-            group_map[cfg_key] = {
+            group_map[group_key] = {
                 "member_indices": [i],
                 "configs": cfgs,
                 "skip_rblock": skip_rblock,
