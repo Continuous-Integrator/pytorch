@@ -2839,6 +2839,19 @@ def check_constant_args(args: Iterable[Any], kwargs: Mapping[Any, Any]) -> bool:
     return all(x.is_python_constant() for x in itertools.chain(args, kwargs.values()))
 
 
+def check_constant_args_allow_lazy(
+    args: Iterable[Any], kwargs: Mapping[Any, Any]
+) -> bool:
+    """Like check_constant_args but also accepts unrealized lazy constants.
+
+    Use this when constant folding is desired even if args contain lazy
+    constants (e.g., Enum class creation). Calling as_python_constant() on
+    such args will realize them and install guards, which is correct for
+    operations that must execute at trace time.
+    """
+    return all(x.try_peek_constant()[0] for x in itertools.chain(args, kwargs.values()))
+
+
 def check_unspec_python_args(args: Iterable[Any], kwargs: Mapping[Any, Any]) -> bool:
     from .variables import VariableTracker
     from .variables.tensor import UnspecializedPythonVariable

@@ -74,6 +74,7 @@ from ..source import (
 )
 from ..utils import (
     check_constant_args,
+    check_constant_args_allow_lazy,
     cmp_name_to_op_mapping,
     dict_methods,
     frozenset_methods,
@@ -776,7 +777,9 @@ class UserDefinedClassVariable(UserDefinedVariable):
             var.call_method(tx, "__init__", list(args), kwargs)  # type: ignore[arg-type]
             return var
 
-        if self.can_constant_fold_through() and constant_args:
+        if self.can_constant_fold_through() and (
+            constant_args or check_constant_args_allow_lazy(args, kwargs)
+        ):
             # constant fold
             return VariableTracker.build(
                 tx,
@@ -3368,6 +3371,9 @@ class NamedTupleVariable(UserDefinedTupleVariable):
         return self.tuple_cls(*items)  # type: ignore[arg-type]
 
     def try_peek_constant(self) -> tuple[bool, bool, Any]:
+        from .lists import TupleVariable
+
+        assert isinstance(self._base_vt, TupleVariable)
         can_peek, any_unrealized, values = self._base_vt._try_peek_items()
         if not can_peek:
             return (False, False, None)
@@ -3408,6 +3414,9 @@ class StructSequenceVariable(UserDefinedTupleVariable):
         return self.tuple_cls(items)
 
     def try_peek_constant(self) -> tuple[bool, bool, Any]:
+        from .lists import TupleVariable
+
+        assert isinstance(self._base_vt, TupleVariable)
         can_peek, any_unrealized, values = self._base_vt._try_peek_items()
         if not can_peek:
             return (False, False, None)

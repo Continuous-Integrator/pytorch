@@ -582,7 +582,7 @@ class ComputedLazyConstantVariable(LazyVariableTracker):
     _cache: ComputedLazyCache  # pyrefly: ignore[bad-override]
 
     @staticmethod
-    def create(  # pyrefly: ignore[bad-param-name-override]
+    def create(  # pyrefly: ignore[bad-param-name-override, bad-override]
         op: Callable[..., Any],
         args: list[VariableTracker],
         reconstruct_fn: Callable[[Any, list[VariableTracker]], None],

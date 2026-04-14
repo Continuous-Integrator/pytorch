@@ -423,7 +423,7 @@ class VariableTracker(metaclass=VariableTrackerMeta):
         # Returns None when the type has no nb_bool, causing generic_bool to
         # fall through to length check, then truthy default.
         return None
-        
+
     def try_peek_constant(self) -> tuple[bool, bool, Any]:
         """Try to peek at the constant value without triggering realization.
 

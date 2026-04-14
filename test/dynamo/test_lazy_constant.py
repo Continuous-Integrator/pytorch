@@ -1278,6 +1278,41 @@ class LazyConstantVariableTests(TestCase):
         x2 = torch.tensor([5, 6])
         self.assertEqual(opt_fn(x2), fn(x2))
 
+    def test_enum_creation_with_lazy_constant_values(self):
+        """Enum class creation with lazy constant member values should constant-fold."""
+        import enum
+
+        def fn(x, values):
+            MyEnum = enum.Enum("MyEnum", [("A", values[0]), ("B", values[1])])
+            return x + MyEnum.A.value + MyEnum.B.value
+
+        counter = CompileCounter()
+        opt_fn = torch.compile(fn, backend=counter, fullgraph=True)
+
+        x = torch.randn(3)
+        eager = fn(x, [1.0, 2.0])
+        compiled = opt_fn(x, [1.0, 2.0])
+        self.assertTrue(same(eager, compiled))
+        self.assertEqual(counter.frame_count, 1)
+
+    def test_namedtuple_type_creation_with_lazy_constant_fields(self):
+        """namedtuple type creation with lazy constant field names should constant-fold."""
+        import collections
+
+        def fn(x, fields):
+            MyTuple = collections.namedtuple("MyTuple", fields)
+            t = MyTuple(1, 2)
+            return x + t[0] + t[1]
+
+        counter = CompileCounter()
+        opt_fn = torch.compile(fn, backend=counter, fullgraph=True)
+
+        x = torch.randn(3)
+        eager = fn(x, ["a", "b"])
+        compiled = opt_fn(x, ["a", "b"])
+        self.assertTrue(same(eager, compiled))
+        self.assertEqual(counter.frame_count, 1)
+
     def test_dict_get_or_create_with_tuple_key_identity(self):
         """Dict get-or-create with a tuple key containing lazy constant strings.
 
