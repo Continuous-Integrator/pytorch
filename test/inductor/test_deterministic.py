@@ -1,5 +1,10 @@
 # Owner(s): ["module: inductor"]
 import contextlib
+import os
+import pathlib
+import subprocess
+import sys
+import tempfile
 import unittest
 
 import torch
@@ -9,13 +14,17 @@ from torch._inductor.test_case import run_tests, TestCase
 from torch._inductor.utils import fresh_cache
 from torch.testing._internal.common_utils import (
     instantiate_parametrized_tests,
+    IS_FBCODE,
     parametrize,
 )
 from torch.testing._internal.inductor_utils import (
     GPU_TYPE,
-    HAS_CUDA_AND_TRITON,
+    HAS_GPU_AND_TRITON,
     IS_BIG_GPU,
 )
+
+
+REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent.parent
 
 
 @instantiate_parametrized_tests
@@ -104,7 +113,82 @@ class DeterministicTest(TestCase):
             else:
                 self.assertTrue(counters["inductor"]["coordesc_tuning_bench"] > 0)
 
+    def test_reorder_for_locality_preserves_randint_order(self):
+        with inductor_config.patch(fallback_random=True):
+
+            def fn():
+                torch.manual_seed(0)
+                out = torch.randint(0, 100, (4, 1), dtype=torch.int64)
+                _ = torch.randint(0, 100, (2, 1), dtype=torch.int64)
+                return out
+
+            compiled = torch.compile(fn, backend="inductor")
+
+            torch.manual_seed(0)
+            eager = fn()
+
+            torch.manual_seed(0)
+            compiled_out = compiled()
+
+            torch.testing.assert_close(eager, compiled_out)
+
+    @unittest.skipIf(IS_FBCODE, "Skipping run2run determinism test in fbcode")
+    @parametrize("model_name", ["GoogleFnet", "BertForMaskedLM", "DistillGPT2"])
+    @parametrize("training_or_inference", ["training", "inference"])
+    @parametrize("precision", ["float32", "bfloat16", "float16", "amp"])
+    def test_run2run_determinism(self, model_name, training_or_inference, precision):
+        """
+        Test run2run determinism for a few huggingface models.
+
+        The test assumes benchmarks/dynamo/huggingface.py can be found from
+        the current working directory.
+        """
+
+        def _setup_env(env):
+            env["TORCHINDUCTOR_FORCE_DISABLE_CACHES"] = "1"  # disable autotune cache
+            env["TORCHINDUCTOR_FX_GRAPH_REMOTE_CACHE"] = "0"
+            env["TORCHINDUCTOR_FX_GRAPH_CACHE"] = "0"
+            if enable_determinism:
+                env["TORCHINDUCTOR_DETERMINISTIC"] = "1"
+
+        # set to false if you want to check how the test fails without
+        # the deterministic mode
+        enable_determinism = True
+        with tempfile.TemporaryDirectory() as tmpdir:
+            saved_pkl = os.path.join(tmpdir, "saved.pkl")
+            cmd = (
+                f"{sys.executable} {REPO_ROOT}/benchmarks/dynamo/huggingface.py --backend inductor"
+                + f" --{precision} --accuracy --only {model_name} --{training_or_inference}"
+                + f" --disable-cudagraphs --save-model-outputs-to={saved_pkl}"
+            )
+            print("Command", cmd)
+            env = os.environ.copy()
+            _setup_env(env)
+            out = subprocess.run(cmd.split(), capture_output=True, env=env)
+
+            # We don't check the accuracy against eager here because some
+            # of the combination between model and precision can not
+            # pass that accuracy test. But it's still valuable to make
+            # sure we generate bitwise equivalent result from run to run.
+            # self.assertTrue("pass" in out.stdout.decode())
+
+            cmd = (
+                f"{sys.executable} {REPO_ROOT}/benchmarks/dynamo/huggingface.py --backend inductor"
+                + f" --{precision} --accuracy --only {model_name} --{training_or_inference}"
+                + f" --disable-cudagraphs --compare-model-outputs-with={saved_pkl}"
+            )
+            print("Command", cmd)
+
+            # distort benchmarking results
+            env["TORCHINDUCTOR_DISTORT_BENCHMARKING_RESULT"] = "inverse"
+            out = subprocess.run(cmd.split(), capture_output=True, env=env)
+            self.assertTrue(
+                "The result is bitwise equivalent to the previously saved result"
+                in out.stdout.decode(),
+                f"stdout: {out.stdout.decode()}, stderr: {out.stderr.decode()}",
+            )
+
 
 if __name__ == "__main__":
-    if HAS_CUDA_AND_TRITON:
+    if HAS_GPU_AND_TRITON:
         run_tests()

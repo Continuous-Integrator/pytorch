@@ -12,7 +12,6 @@ from ..ir import (
     FixedLayout,
     FlexibleLayout,
     InputBuffer,
-    ShapeAsConstantBuffer,
     StorageBox,
     Subgraph,
     TensorBox,
@@ -513,7 +512,7 @@ def build_subgraph_buffer(
 
 def create_placeholder(
     name: str, dtype: torch.dtype, device: torch.device
-) -> TensorBox | ShapeAsConstantBuffer:
+) -> TensorBox:
     """
     Creates a placeholder input buffers for producing subgraph_output
     """
@@ -571,7 +570,8 @@ def tuned_b2b_gemm(
         )
     )
     # autotune
-    return autotune_select_algorithm("b2b_gemm", choices, [A, B, C], layout)
+    node, _ = autotune_select_algorithm("b2b_gemm", choices, [A, B, C], layout)
+    return node
 
 
 # match the inner mm of a potential b2b_gemm
@@ -641,7 +641,7 @@ def b2b_gemm_handler(match: Match, mat1: torch.fx.Node, mat2: torch.fx.Node) -> 
                 if node is dst:
                     visited.add(node)
                 elif (node is src) or is_pointwise_node(node):
-                    for user in node.users.keys():
+                    for user in node.users:
                         # for nodes other than dst, bookkeep their users' input counts
                         if user not in input_counter:
                             input_counter[user] = len(user.all_input_nodes)

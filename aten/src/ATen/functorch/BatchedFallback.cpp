@@ -6,7 +6,6 @@
 
 #include <ATen/functorch/BatchedFallback.h>
 #include <ATen/functorch/LegacyVmapTransforms.h>
-#include <ATen/functorch/TensorWrapper.h>
 #include <ATen/functorch/DynamicLayer.h>
 #include <ATen/functorch/PlumbingHelper.h>
 
@@ -191,7 +190,7 @@ static void batchedTensorInplaceForLoopFallback(const c10::OperatorHandle& op, t
       // simplicity. When that is not the case, this code should be updated.
       const auto& argument = (*stack)[arguments_begin + arg_idx];
       if (batched_tensor_inputs_pos_iter == batched_tensor_inputs_position.end()
-          || (int64_t)arg_idx != *batched_tensor_inputs_pos_iter) {
+          || static_cast<int64_t>(arg_idx) != *batched_tensor_inputs_pos_iter) {
         // argument isn't a BatchedTensor
         torch::jit::push(stack, argument);
         continue;
@@ -345,7 +344,7 @@ void batchedTensorForLoopFallback(const c10::OperatorHandle& op, torch::jit::Sta
       // simplicity. When that is not the case, this code should be updated.
       const auto& argument = (*stack)[arguments_begin + arg_idx];
       if (batched_tensor_inputs_pos_iter == batched_tensor_inputs_position.end()
-          || (int64_t)arg_idx != *batched_tensor_inputs_pos_iter) {
+          || static_cast<int64_t>(arg_idx) != *batched_tensor_inputs_pos_iter) {
         // argument isn't a BatchedTensor
         torch::jit::push(stack, argument);
         continue;
@@ -413,10 +412,8 @@ void batchedNestedTensorForLoopFallback(const c10::OperatorHandle& op, torch::ji
     return;
   }
 
-  if (isInplaceOp(schema)) {
-    TORCH_INTERNAL_ASSERT(false, "vmap fallback not supported for in-place ops on nested tensors");
-    return;
-  }
+  TORCH_INTERNAL_ASSERT(!isInplaceOp(schema), "vmap fallback not supported for in-place ops on nested tensors");
+
   TORCH_CHECK(!schema.is_mutable() && !schema.hasAnyAliasInfo(),
               "Nested batching rule not implemented for ", schema.operator_name(), "; ",
               "the fallback path doesn't work on out= or view ops.");
@@ -473,7 +470,7 @@ void batchedNestedTensorForLoopFallback(const c10::OperatorHandle& op, torch::ji
       // simplicity. When that is not the case, this code should be updated.
       const auto& argument = (*stack)[arguments_begin + arg_idx];
       if (batched_tensor_inputs_pos_iter == batched_tensor_inputs_position.end()
-          || (int64_t)arg_idx != *batched_tensor_inputs_pos_iter) {
+          || static_cast<int64_t>(arg_idx) != *batched_tensor_inputs_pos_iter) {
         // argument isn't a BatchedTensor
         torch::jit::push(stack, argument);
         continue;

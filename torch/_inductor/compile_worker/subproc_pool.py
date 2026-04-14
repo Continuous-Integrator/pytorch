@@ -11,10 +11,11 @@ import sys
 import threading
 import traceback
 import typing
+from collections.abc import Callable
 from concurrent.futures import Future, ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
 from enum import Enum, IntEnum
-from typing import Any, Callable, IO, Optional, TypeVar
+from typing import Any, IO, TypeVar
 from typing_extensions import Never, ParamSpec
 
 # _thread_safe_fork is needed because the subprocesses in the pool can read
@@ -23,6 +24,7 @@ from typing_extensions import Never, ParamSpec
 import torch._thread_safe_fork  # noqa: F401
 from torch._inductor import config
 from torch._inductor.codecache import torch_key
+from torch._inductor.compile_worker.timer import Timer
 from torch._inductor.compile_worker.tracked_process_pool import (
     TrackedProcessPoolExecutor,
 )
@@ -129,8 +131,9 @@ class SubprocPool:
     def __init__(
         self,
         nprocs: int,
-        pickler: Optional[SubprocPickler] = None,
+        pickler: SubprocPickler | None = None,
         kind: SubprocKind = SubprocKind.FORK,
+        quiesce: bool = False,
     ) -> None:
         entry = os.path.join(os.path.dirname(__file__), "__main__.py")
         self.pickler = pickler or SubprocPickler()
@@ -172,7 +175,7 @@ class SubprocPool:
 
         if log_path:
             # pyrefly: ignore [bad-assignment]
-            self.log_file = open(log_path, "w")
+            self.log_file = open(log_path, "w")  # noqa:SIM115
 
         self.process = subprocess.Popen(
             cmd,
@@ -206,14 +209,21 @@ class SubprocPool:
         self.running_waitcounter.__enter__()
 
         # The quiesce waitcounter indicates when the job is in a quiesced state.
-        self.quiesce_waitcounter: Optional[_WaitCounterTracker] = None
+        self.quiesce_waitcounter: _WaitCounterTracker | None = None
 
         # Firstjob is used to capture the time from when the firstjob is queued, to when the first job is done.
         self.firstjob = True
-        self.firstjob_id: Optional[int] = None
+        self.firstjob_id: int | None = None
         self.firstjob_waitcounter = _WaitCounter(
             "pytorch.wait_counter.subproc_pool.first_job"
         ).guard()
+
+        if quiesce:
+            self.timer: Timer | None = Timer(
+                config.quiesce_async_compile_time, self.quiesce
+            )
+        else:
+            self.timer = None
 
         # Start thread last to ensure all member variables are initialized
         # before any access.
@@ -287,6 +297,8 @@ class SubprocPool:
             with self.futures_lock:
                 if not self.running:
                     return
+                if self.timer:
+                    self.timer.record_call()
                 if isinstance(result, _SubprocExceptionInfo):
                     # An exception occurred in the submitted job
                     self.pending_futures[job_id].set_exception(
@@ -307,11 +319,11 @@ class SubprocPool:
 
     def quiesce(self) -> None:
         self._send(MsgHeader.QUIESCE)
-        assert self.quiesce_waitcounter is None
-        self.quiesce_waitcounter = _WaitCounter(
-            "pytorch.wait_counter.subproc_pool.running"
-        ).guard()
-        self.quiesce_waitcounter.__enter__()
+        if self.quiesce_waitcounter is None:
+            self.quiesce_waitcounter = _WaitCounter(
+                "pytorch.wait_counter.subproc_pool.quiesced"
+            ).guard()
+            self.quiesce_waitcounter.__enter__()
 
     def wakeup(self) -> None:
         self._send(MsgHeader.WAKEUP)
@@ -321,6 +333,8 @@ class SubprocPool:
             with self.write_lock:
                 if not self.running:
                     return
+                if self.timer:
+                    self.timer.quit()
                 self.running = False
                 self.running_waitcounter.__exit__()
                 _send_msg(self.write_pipe, MsgHeader.SHUTDOWN)
@@ -355,7 +369,7 @@ class SubprocMain:
         self.write_pipe = write_pipe
         self.write_lock = threading.Lock()
         self.nprocs = nprocs
-        self.pool: Optional[ProcessPoolExecutor] = None
+        self.pool: ProcessPoolExecutor | None = None
         self.running = True
 
     def main(self) -> None:
@@ -446,7 +460,7 @@ class SubprocMain:
         return pickler.dumps(result)
 
 
-AnyPool = typing.Union[ProcessPoolExecutor, SubprocPool]
+AnyPool = ProcessPoolExecutor | SubprocPool
 
 
 def _warm_process_pool(pool: ProcessPoolExecutor, n: int) -> None:

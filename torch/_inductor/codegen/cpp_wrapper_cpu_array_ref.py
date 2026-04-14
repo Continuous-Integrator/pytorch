@@ -1,6 +1,6 @@
 # mypy: allow-untyped-defs
-from collections.abc import Sequence
-from typing import Any, Callable, Optional, Union
+from collections.abc import Callable, Sequence
+from typing import Any
 
 import sympy
 
@@ -50,9 +50,9 @@ class CppWrapperCpuArrayRef(CppWrapperCpu):
     @staticmethod
     def create(
         is_subgraph: bool,
-        subgraph_name: Optional[str],
-        parent_wrapper: Optional[PythonWrapperCodegen],
-        partition_signatures: Optional[ir.GraphPartitionSignature] = None,
+        subgraph_name: str | None,
+        parent_wrapper: PythonWrapperCodegen | None,
+        partition_signatures: ir.GraphPartitionSignature | None = None,
     ):
         # TODO - support subgraph codegen by lifting functions. Check the
         # comment at CppWrapperCpu `codegen_subgraph` function.
@@ -114,8 +114,10 @@ class CppWrapperCpuArrayRef(CppWrapperCpu):
         raw_keys=None,
         raw_args=None,
         triton_meta=None,
+        inductor_meta=None,
         graph_name="",
         original_fxnode_name=None,
+        current_stream_idx=None,
     ):
         """
         Generates kernel call code.
@@ -708,11 +710,14 @@ class CppWrapperCpuArrayRef(CppWrapperCpu):
         src_is_tensor,
         reduce,
         kwargs,
+        device,
     ):
         reduce = self._get_scatter_reduce_enum(reduce)
 
         # call the ABI shim function instead of the ATen one
-        cpp_kernel_name = self.get_c_shim_func_name(cpp_kernel_name, self.device)
+        self.add_device_include(device)
+        cpp_kernel_name = self.get_c_shim_func_name(cpp_kernel_name, device)
+
         # TODO: consider remove "_out" and add missing inplace variants to fallback_ops.py
         cpp_kernel_name = cpp_kernel_name.replace("__", "_") + "_out"
         self._assert_safe_to_use_borrow_arrayref_tensor_as_tensor()
@@ -767,7 +772,7 @@ class CppWrapperCpuArrayRef(CppWrapperCpu):
         buf_name: str,
         python_kernel_name: str,
         get_args: Callable[[], Sequence[str]],
-        op_overload: Union[torch._ops.OpOverload, torch._ops.HigherOrderOperator],
+        op_overload: torch._ops.OpOverload | torch._ops.HigherOrderOperator,
         raw_args: Sequence[Any],
         outputs: Sequence[ir.Buffer],
     ) -> None:
@@ -777,7 +782,7 @@ class CppWrapperCpuArrayRef(CppWrapperCpu):
             buf_name, python_kernel_name, get_args, op_overload, raw_args, outputs
         )
 
-    def codegen_device_copy(self, src, dst, non_blocking: Union[bool, str]):
+    def codegen_device_copy(self, src, dst, non_blocking: bool | str):
         # aoti_torch_tensor_copy_ takes AtenTensorHandle as input,
         # while stack-allocation results in ArrayRefTensor
         # so disable stack allocation here

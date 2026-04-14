@@ -30,7 +30,6 @@
 #include <torch/csrc/jit/passes/shape_analysis.h>
 #include <torch/csrc/jit/passes/specialize_autogradzero.h>
 #include <torch/csrc/jit/passes/tensorexpr_fuser.h>
-#include <torch/csrc/jit/resource_guard.h>
 #include <torch/csrc/jit/runtime/argument_spec.h>
 #include <torch/csrc/jit/runtime/autodiff.h>
 #include <torch/csrc/jit/runtime/custom_operator.h>
@@ -636,6 +635,9 @@ struct GraphExecutorImpl : public GraphExecutorImplBase {
   const ExecutionPlan& getPlanFor(
       Stack& stack,
       std::optional<size_t> remaining_bailout_depth) override {
+    if (FLAGS_torch_jit_input_independent_optimization) {
+      return getInputIndependentPlan();
+    }
     return getGraphExecutorOptimize() ? getOrCompile(stack)
                                       : getOrCompileFallback();
   }
@@ -779,6 +781,38 @@ struct GraphExecutorImpl : public GraphExecutorImplBase {
     return ExecutionPlan(opt_graph, function_name_);
   }
 
+  const ExecutionPlan& getInputIndependentPlan() override {
+    std::lock_guard<std::mutex> lock(compile_mutex);
+    if (!input_independent_plan_) {
+      auto opt_graph = graph->copy();
+      Inline(*opt_graph);
+      LowerGradOf(*opt_graph);
+      specializeAutogradZero(opt_graph);
+      LowerSimpleTuples(opt_graph);
+      ConstantPooling(opt_graph);
+      runRequiredPasses(opt_graph);
+      ConstantPropagation(opt_graph);
+      // Skip PropagateInputShapes and PropagateRequiresGrad since they need
+      // actual input data.
+      runOptimization(opt_graph);
+
+      // Input-independent passes from runNondiffOptimization. Skipped:
+      // FuseTensorExprs/FuseGraph (need specialized tensor types).
+      for (const auto& passPair : getCustomPrePasses()) {
+        passPair.first(opt_graph);
+      }
+      DecomposeOps(opt_graph);
+      BatchMM(opt_graph);
+      for (const auto& passPair : getCustomPostPasses()) {
+        passPair.first(opt_graph);
+      }
+
+      EliminateDeadCode(opt_graph);
+      input_independent_plan_ = ExecutionPlan(opt_graph, function_name_);
+    }
+    return *input_independent_plan_;
+  }
+
   ~GraphExecutorImpl() override = default;
 
   // NOLINTNEXTLINE(cppcoreguidelines-non-private-member-variables-in-classes)
@@ -787,6 +821,10 @@ struct GraphExecutorImpl : public GraphExecutorImplBase {
   // be unused). The compiled version of graph.
   // NOLINTNEXTLINE(cppcoreguidelines-non-private-member-variables-in-classes)
   ExecutionPlan fallback;
+
+  // Cached plan from getOptimizedPlan() -- uses only input-independent passes.
+  // NOLINTNEXTLINE(cppcoreguidelines-non-private-member-variables-in-classes)
+  std::optional<ExecutionPlan> input_independent_plan_;
 
   // Mapping from argument configurations to optimized versions of the graph
   // that are specialized to the spec.
@@ -841,6 +879,10 @@ const ExecutionPlan& GraphExecutor::getPlanFor(
     Stack& inputs,
     std::optional<size_t> remaining_bailout_depth) {
   return pImpl->getPlanFor(inputs, remaining_bailout_depth);
+}
+
+const ExecutionPlan& GraphExecutor::getInputIndependentPlan() {
+  return pImpl->getInputIndependentPlan();
 }
 
 GraphExecutorState GraphExecutor::getDebugState() {

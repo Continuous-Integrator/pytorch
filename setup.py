@@ -58,8 +58,8 @@
 #   USE_FBGEMM=0
 #     disables the FBGEMM build
 #
-#   USE_FBGEMM_GENAI=0
-#     disables the FBGEMM GenAI build
+#   USE_MSLK=0
+#     disables the MSLK build
 #
 #   USE_KINETO=0
 #     disables usage of libkineto library for profiling
@@ -271,7 +271,6 @@ if sys.version_info < python_min_version:
     sys.exit(-1)
 
 import filecmp
-import glob
 import importlib
 import itertools
 import json
@@ -315,6 +314,7 @@ os.environ["PYTHONPATH"] = os.pathsep.join(
 ).rstrip(os.pathsep)
 
 from tools.build_pytorch_libs import build_pytorch
+from tools.clean import clean as _clean
 from tools.generate_torch_version import get_torch_version
 from tools.setup_helpers.cmake import CMake, CMakeValue
 from tools.setup_helpers.env import (
@@ -399,56 +399,45 @@ RUN_BUILD_DEPS = True
 # see if the user passed a quiet flag to setup.py arguments and respect
 # that in our parts of the build
 EMIT_BUILD_WARNING = False
-RERUN_CMAKE = str2bool(os.environ.pop("CMAKE_FRESH", None))
-CMAKE_ONLY = str2bool(os.environ.pop("CMAKE_ONLY", None))
+RERUN_CMAKE = str2bool(os.environ.pop("CMAKE_FRESH", None)) or "--cmake" in sys.argv
+CMAKE_ONLY = str2bool(os.environ.pop("CMAKE_ONLY", None)) or "--cmake-only" in sys.argv
 filtered_args = []
 for i, arg in enumerate(sys.argv):
-    if arg == "--cmake":
-        RERUN_CMAKE = True
-        continue
-    if arg == "--cmake-only":
-        # Stop once cmake terminates. Leave users a chance to adjust build
-        # options.
-        CMAKE_ONLY = True
+    if arg in ("--cmake", "--cmake-only"):
         continue
     if arg == "rebuild" or arg == "build":
         arg = "build"  # rebuild is gone, make it build
         EMIT_BUILD_WARNING = True
-    if arg == "develop":
-        print(
-            (
-                "WARNING: Redirecting 'python setup.py develop' to 'pip install -e . -v --no-build-isolation',"
-                " for more info see https://github.com/pytorch/pytorch/issues/152276"
-            ),
-            file=sys.stderr,
-        )
-        result = subprocess.run(
-            [
-                sys.executable,
-                "-m",
-                "pip",
-                "install",
-                "-e",
-                ".",
-                "-v",
-                "--no-build-isolation",
-            ],
-            env={**os.environ},
-        )
-        sys.exit(result.returncode)
-    if arg == "install":
-        print(
-            (
-                "WARNING: Redirecting 'python setup.py install' to 'pip install . -v --no-build-isolation',"
-                " for more info see https://github.com/pytorch/pytorch/issues/152276"
-            ),
-            file=sys.stderr,
-        )
-        result = subprocess.run(
-            [sys.executable, "-m", "pip", "install", ".", "-v", "--no-build-isolation"],
-            env={**os.environ},
-        )
-        sys.exit(result.returncode)
+    if arg in ("develop", "install"):
+        # CMAKE_ONLY only runs cmake and exits (via sys.exit in build_deps)
+        # before setup() is called, so there's no need to go through pip.
+        # Replace the command with "build" so setuptools doesn't complain
+        # about an unrecognized command if we somehow reach setup().
+        if CMAKE_ONLY:
+            arg = "build"
+        else:
+            editable = arg == "develop"
+            print(
+                (
+                    f"WARNING: Redirecting 'python setup.py {arg}' to "
+                    f"'pip install {'-e ' if editable else ''}. -v --no-build-isolation',"
+                    " for more info see https://github.com/pytorch/pytorch/issues/152276"
+                ),
+                file=sys.stderr,
+            )
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "pip",
+                    "install",
+                    *(("-e", ".") if editable else (".",)),
+                    "-v",
+                    "--no-build-isolation",
+                ],
+                env={**os.environ},
+            )
+            sys.exit(result.returncode)
     if arg == "--":
         filtered_args += sys.argv[i:]
         break
@@ -630,6 +619,48 @@ def mirror_files_into_torchgen() -> None:
         raise RuntimeError("Check the file paths in `mirror_files_into_torchgen()`")
 
 
+def mirror_inductor_external_kernels() -> None:
+    """
+    Copy external kernels into Inductor so they are importable.
+    """
+    cuda_is_disabled = not str2bool(os.getenv("USE_CUDA"))
+    paths = [
+        (
+            CWD
+            / "torch/_inductor/kernel/vendored_templates/cutedsl/kernels/cutedsl_grouped_gemm.py",
+            CWD
+            / "third_party/cutlass/examples/python/CuTeDSL/blackwell/grouped_gemm.py",
+            True,
+        ),
+    ]
+    for new_path, orig_path, allow_missing_if_cuda_is_disabled in paths:
+        # Create the dirs involved in new_path if they don't exist
+        if not new_path.exists():
+            new_path.parent.mkdir(parents=True, exist_ok=True)
+            # Add `__init__.py` for find_packages to see `new_path.parent` as a submodule
+            (new_path.parent / "__init__.py").touch(exist_ok=True)
+
+        # Copy the files from the orig location to the new location
+        if orig_path.is_file():
+            shutil.copyfile(orig_path, new_path)
+            continue
+        if orig_path.is_dir():
+            if new_path.exists():
+                # copytree fails if the tree exists already, so remove it.
+                shutil.rmtree(new_path)
+            shutil.copytree(orig_path, new_path)
+            continue
+        if (
+            not orig_path.exists()
+            and allow_missing_if_cuda_is_disabled
+            and cuda_is_disabled
+        ):
+            continue
+        raise RuntimeError(
+            "Check the file paths in `mirror_inductor_external_kernels()`"
+        )
+
+
 # ATTENTION: THIS IS AI SLOP
 def extract_variant_from_version(version: str) -> str:
     """Extract variant from version string, defaulting to 'cpu'."""
@@ -787,7 +818,7 @@ def get_latest_nightly_version(variant: str = "cpu") -> str:
 def download_and_extract_nightly_wheel(version: str) -> None:
     """Download and extract nightly PyTorch wheel for USE_NIGHTLY=VERSION builds."""
 
-    # Extract variant from version (e.g., cpu, cu121, cu118, rocm5.7)
+    # Extract variant from version (e.g., cpu, cu121, cu118, rocm6.2)
     variant = extract_variant_from_version(version)
     nightly_index_url = f"https://download.pytorch.org/whl/nightly/{variant}/"
 
@@ -1058,6 +1089,60 @@ def check_pydep(importname: str, module: str) -> None:
 
 
 class build_ext(setuptools.command.build_ext.build_ext):
+    def _wrap_headers_with_macro(self, include_dir: Path) -> None:
+        """Wrap all header files with #if !defined(TORCH_STABLE_ONLY) && !defined(TORCH_TARGET_VERSION).
+
+        Excludes:
+        - torch/headeronly/*
+        - torch/csrc/stable/*
+        - torch/csrc/inductor/aoti_torch/c/ (only shim headers)
+        - torch/csrc/inductor/aoti_torch/generated/
+
+        This method is idempotent - it will not wrap headers that are already wrapped.
+        """
+        header_extensions = (".h", ".hpp", ".cuh")
+        header_files = [
+            f for ext in header_extensions for f in include_dir.rglob(f"*{ext}")
+        ]
+
+        # Paths to exclude from wrapping (relative to include_dir)
+        exclude_dir_patterns = [
+            "torch/headeronly/",
+            "torch/csrc/stable/",
+            "torch/csrc/inductor/aoti_torch/c/",
+            "torch/csrc/inductor/aoti_torch/generated/",
+        ]
+
+        # Marker to detect if a header is already wrapped
+        wrap_start_marker = (
+            "#if !defined(TORCH_STABLE_ONLY) && !defined(TORCH_TARGET_VERSION)\n"
+        )
+
+        for header_file in header_files:
+            rel_path = header_file.relative_to(include_dir).as_posix()
+
+            if any(rel_path.startswith(pattern) for pattern in exclude_dir_patterns):
+                report(f"Skipping header: {rel_path}")
+                continue
+
+            original_content = header_file.read_text(encoding="utf-8")
+
+            # Check if already wrapped (idempotency check)
+            if original_content.startswith(wrap_start_marker):
+                report(f"Already wrapped, skipping: {rel_path}")
+                continue
+
+            wrapped_content = (
+                wrap_start_marker
+                + f"{original_content}"
+                + "\n#else\n"
+                + '#error "This file should not be included when either TORCH_STABLE_ONLY or TORCH_TARGET_VERSION is defined."\n'
+                + "#endif  // !defined(TORCH_STABLE_ONLY) && !defined(TORCH_TARGET_VERSION)\n"
+            )
+
+            header_file.write_text(wrapped_content, encoding="utf-8")
+            report(f"Wrapped header: {rel_path}")
+
     def _embed_libomp(self) -> None:
         # Copy libiomp5.dylib/libomp.dylib inside the wheel package on MacOS
         build_lib = Path(self.build_lib)
@@ -1077,12 +1162,18 @@ class build_ext(setuptools.command.build_ext.build_ext):
         for idx, line in enumerate(otool_cmds):
             if line.strip() == "cmd LC_LOAD_DYLIB":
                 lib_name = otool_cmds[idx + 2].strip()
-                assert lib_name.startswith("name ")
+                if not lib_name.startswith("name "):
+                    raise AssertionError(
+                        f"Expected lib_name to start with 'name ', got: {lib_name}"
+                    )
                 libs.append(lib_name.split(" ", 1)[1].rsplit("(", 1)[0][:-1])
 
             if line.strip() == "cmd LC_RPATH":
                 rpath = otool_cmds[idx + 2].strip()
-                assert rpath.startswith("path ")
+                if not rpath.startswith("path "):
+                    raise AssertionError(
+                        f"Expected rpath to start with 'path ', got: {rpath}"
+                    )
                 rpaths.append(rpath.split(" ", 1)[1].rsplit("(", 1)[0][:-1])
 
         omplib_path: str = get_cmake_cache_vars()["OpenMP_libomp_LIBRARY"]  # type: ignore[assignment]
@@ -1225,6 +1316,15 @@ class build_ext(setuptools.command.build_ext.build_ext):
 
         super().run()
 
+        # Wrap headers with TORCH_STABLE_ONLY and TORCH_TARGET_VERSION guards
+        build_lib = Path(self.build_lib)
+        build_torch_include_dir = build_lib / "torch" / "include"
+        if build_torch_include_dir.exists():
+            report(
+                "-- Wrapping header files with if !defined(TORCH_STABLE_ONLY) && !defined(TORCH_TARGET_VERSION)"
+            )
+            self._wrap_headers_with_macro(build_torch_include_dir)
+
         if IS_DARWIN:
             self._embed_libomp()
 
@@ -1335,7 +1435,8 @@ class bdist_wheel(setuptools.command.bdist_wheel.bdist_wheel):
         super().write_wheelfile(*args, **kwargs)
 
         if BUILD_LIBTORCH_WHL:
-            assert self.bdist_dir is not None
+            if self.bdist_dir is None:
+                raise AssertionError("self.bdist_dir must not be None")
             bdist_dir = Path(self.bdist_dir)
             # Remove extraneneous files in the libtorch wheel
             for file in itertools.chain(
@@ -1360,21 +1461,7 @@ class clean(Command):
         pass
 
     def run(self) -> None:
-        ignores = (CWD / ".gitignore").read_text(encoding="utf-8")
-        for wildcard in filter(None, ignores.splitlines()):
-            if wildcard.strip().startswith("#"):
-                if "BEGIN NOT-CLEAN-FILES" in wildcard:
-                    # Marker is found and stop reading .gitignore.
-                    break
-                # Ignore lines which begin with '#'.
-            else:
-                # Don't remove absolute paths from the system
-                wildcard = wildcard.lstrip("./")
-                for filename in glob.iglob(wildcard):
-                    try:
-                        os.remove(filename)
-                    except OSError:
-                        shutil.rmtree(filename, ignore_errors=True)
+        _clean()
 
 
 # Need to dump submodule hashes and create the proper LICENSE.txt for the sdist
@@ -1554,7 +1641,7 @@ def configure_extension_build() -> tuple[
     if cmake_cache_vars["USE_DISTRIBUTED"]:
         # Only enable fr_trace command if distributed is enabled
         entry_points["console_scripts"].append(
-            "torchfrtrace = tools.flight_recorder.fr_trace:main",
+            "torchfrtrace = torch.distributed.flight_recorder.fr_trace:main",
         )
     return ext_modules, cmdclass, packages, entry_points, extra_install_requires
 
@@ -1592,7 +1679,7 @@ def main() -> None:
     install_requires = [
         "filelock",
         "typing-extensions>=4.10.0",
-        'setuptools ; python_version >= "3.12"',
+        "setuptools<82",
         "sympy>=1.13.3",
         "networkx>=2.5.1",
         "jinja2",
@@ -1615,6 +1702,7 @@ def main() -> None:
     mirror_files_into_torchgen()
     if RUN_BUILD_DEPS:
         build_deps()
+        mirror_inductor_external_kernels()
 
     (
         ext_modules,
@@ -1649,6 +1737,7 @@ def main() -> None:
         "_inductor/codegen/aoti_runtime/*.cpp",
         "_inductor/script.ld",
         "_inductor/kernel/flex/templates/*.jinja",
+        "_inductor/kernel/templates/*.jinja",
         "_export/serde/*.yaml",
         "_export/serde/*.thrift",
         "share/cmake/ATen/*.cmake",

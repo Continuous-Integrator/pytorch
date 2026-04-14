@@ -3,11 +3,12 @@ import concurrent
 import dataclasses
 import logging
 import threading
+from collections.abc import Callable
 from concurrent.futures import Future, ProcessPoolExecutor
 from dataclasses import dataclass
 from multiprocessing.context import BaseContext
 from time import time
-from typing import Any, Callable, Optional, TypeVar
+from typing import Any, TypeVar
 from typing_extensions import ParamSpec
 
 # _thread_safe_fork is needed because the subprocesses in the pool can read
@@ -43,9 +44,9 @@ _queue_stats_lock = threading.Lock()
 class TrackedProcessPoolExecutor(ProcessPoolExecutor):
     def __init__(
         self,
-        max_workers: Optional[int] = None,
-        mp_context: Optional[BaseContext] = None,
-        initializer: Optional[Callable[[], object]] = None,
+        max_workers: int | None = None,
+        mp_context: BaseContext | None = None,
+        initializer: Callable[[], object] | None = None,
     ) -> None:
         with _queue_stats_lock:
             _queue_stats.pool_count += 1

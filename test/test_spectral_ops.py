@@ -18,10 +18,8 @@ from torch.testing._internal.common_device_type import \
      skipCPUIfNoFFT, deviceCountAtLeast, onlyCUDA, OpDTypes, skipIf, toleranceOverride, tol)
 from torch.testing._internal.common_methods_invocations import (
     spectral_funcs, SpectralFuncType)
-from torch.testing._internal.common_cuda import SM53OrLater
 from torch._prims_common import corresponding_complex_dtype
 
-from typing import Optional
 from packaging import version
 
 
@@ -123,8 +121,6 @@ def skip_helper_for_fft(device, dtype):
 
     if device_type == 'cpu':
         raise unittest.SkipTest("half and complex32 are not supported on CPU")
-    if not SM53OrLater:
-        raise unittest.SkipTest("half and complex32 are only supported on CUDA device with SM>53")
 
 
 # Tests of functions related to Fourier analysis in the torch.fft namespace
@@ -329,8 +325,6 @@ class TestFFT(TestCase):
         default_msg = "Unsupported dtype"
         if dtype is torch.half and device_type == 'cuda' and TEST_WITH_ROCM:
             err_msg = default_msg
-        elif dtype is torch.half and device_type == 'cuda' and not SM53OrLater:
-            err_msg = "cuFFT doesn't support signals of half type with compute capability less than SM_53"
         else:
             err_msg = default_msg
         with self.assertRaisesRegex(RuntimeError, err_msg):
@@ -357,6 +351,9 @@ class TestFFT(TestCase):
     @unittest.skipIf(not TEST_NUMPY, 'NumPy not found')
     @ops([op for op in spectral_funcs if op.ndimensional == SpectralFuncType.ND],
          allowed_dtypes=(torch.cfloat, torch.cdouble))
+    @toleranceOverride({
+        torch.cfloat : tol(2e-4, 1.3e-6),
+    })
     def test_reference_nd(self, device, dtype, op):
         if op.ref is None:
             raise unittest.SkipTest("No reference implementation")
@@ -481,7 +478,7 @@ class TestFFT(TestCase):
             torch.fft.ifft2,
         ]:
             inp = make_tensor((10, 10), device=device, dtype=dtype)
-            out = torch.fft.fftn(inp, dim=[])
+            out = op(inp, dim=[])
 
             expect_dtype = RESULT_TYPE.get(inp.dtype, inp.dtype)
             expect = inp.to(expect_dtype)
@@ -601,7 +598,7 @@ class TestFFT(TestCase):
                 else:
                     numpy_fn = getattr(np.fft, fname)
 
-                def fn(t: torch.Tensor, s: Optional[list[int]], dim: list[int] = (-2, -1), norm: Optional[str] = None):
+                def fn(t: torch.Tensor, s: list[int] | None, dim: list[int] = (-2, -1), norm: str | None = None):
                     return torch_fn(t, s, dim, norm)
 
                 torch_fns = (torch_fn, torch.jit.script(fn))

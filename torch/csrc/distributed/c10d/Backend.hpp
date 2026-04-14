@@ -1,6 +1,8 @@
 #pragma once
 
 #include <memory>
+#include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -40,6 +42,7 @@ class TORCH_API Backend : public torch::CustomClassHolder {
         std::chrono::milliseconds timeout = kBackendDefaultTimeout)
         : timeout(timeout), backend(std::move(backend)) {}
     ~Options() override = default;
+    Options(const Options&) = default;
 
     std::chrono::milliseconds timeout;
 
@@ -47,6 +50,7 @@ class TORCH_API Backend : public torch::CustomClassHolder {
     // NOLINTNEXTLINE(cppcoreguidelines-avoid-const-or-ref-data-members)
     const std::string backend;
     std::string group_name;
+    std::string group_desc;
     std::vector<uint64_t> global_ranks_in_group;
   };
 
@@ -77,6 +81,23 @@ class TORCH_API Backend : public torch::CustomClassHolder {
 
   virtual bool supportsTimeEstimation() const {
     return false;
+  }
+
+  virtual bool supportsShrinking() const {
+    return false;
+  }
+
+  // Shrink the backend by excluding specified ranks. Backends that support
+  // communicator shrinking should override this and return a new backend
+  // instance representing the shrunken group. Backends may use opts_override
+  // to supply backend-specific options for the new group.
+  virtual c10::intrusive_ptr<Backend> shrink(
+      const std::vector<int64_t>& /*ranks_to_exclude*/,
+      int /*shrink_flags*/ = 0,
+      const c10::intrusive_ptr<Options>& /*opts_override*/ = nullptr) {
+    TORCH_CHECK(
+        false,
+        c10::str("Backend ", getBackendName(), " does not support shrink"));
   }
 
   virtual void setTimeout(std::chrono::milliseconds timeout) {
@@ -489,6 +510,26 @@ class TORCH_API Backend : public torch::CustomClassHolder {
   // Shutdown the backend if the backend supports it. This should be used for
   // normal shutdown.
   virtual void shutdown() {}
+
+  // APIs related to memory offload
+  virtual void suspend() {
+    TORCH_CHECK(
+        false,
+        c10::str("Backend ", getBackendName(), " does not support suspend"));
+  }
+
+  virtual void resume() {
+    TORCH_CHECK(
+        false,
+        c10::str("Backend ", getBackendName(), " does not support resume"));
+  }
+
+  virtual std::unordered_map<std::string, uint64_t> getMemoryStats() {
+    TORCH_CHECK(
+        false,
+        c10::str(
+            "Backend ", getBackendName(), " does not support getMemoryStats"));
+  }
 
  protected:
   // Implementations of this interface need to call this to setup

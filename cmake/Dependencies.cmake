@@ -47,14 +47,20 @@ if(USE_CUDA)
     # torch::cudart is dealt with separately, due to CUDA_ADD_LIBRARY
     # design reason (it adds CUDA_LIBRARIES itself).
     set(Caffe2_PUBLIC_CUDA_DEPENDENCY_LIBS )
-    if(NOT CAFFE2_USE_NVRTC)
-      caffe2_update_option(USE_NVRTC OFF)
-    endif()
     list(APPEND Caffe2_CUDA_DEPENDENCY_LIBS caffe2::curand caffe2::cufft caffe2::cublas)
     if(CAFFE2_USE_CUDNN)
+      if(NOT CAFFE2_USE_NVRTC)
+        message(FATAL_ERROR
+          "USE_CUDNN requires USE_NVRTC (required by cudnn_frontend 1.21+). "
+          "Please set -DUSE_NVRTC=ON or disable cuDNN with -DUSE_CUDNN=OFF.")
+      endif()
       list(APPEND Caffe2_CUDA_DEPENDENCY_LIBS torch::cudnn)
+      list(APPEND Caffe2_CUDA_DEPENDENCY_LIBS caffe2::nvrtc_runtime)
     else()
       caffe2_update_option(USE_CUDNN OFF)
+    endif()
+    if(NOT CAFFE2_USE_NVRTC)
+      caffe2_update_option(USE_NVRTC OFF)
     endif()
     if(CAFFE2_USE_CUSPARSELT)
       list(APPEND Caffe2_CUDA_DEPENDENCY_LIBS torch::cusparselt)
@@ -581,6 +587,12 @@ if(USE_XNNPACK AND NOT USE_SYSTEM_XNNPACK)
       "${XNNPACK_SOURCE_DIR}"
       "${CONFU_DEPENDENCIES_BINARY_DIR}/XNNPACK")
 
+    if(CMAKE_C_COMPILER_ID STREQUAL "GNU" AND CMAKE_C_COMPILER_VERSION VERSION_GREATER_EQUAL "14")
+      foreach(xnn_tgt IN ITEMS XNNPACK microkernels-prod microkernels-all)
+          target_compile_options(${xnn_tgt} PRIVATE -Wno-error=incompatible-pointer-types)
+      endforeach()
+    endif()
+
     # Revert to whatever it was before
     set(CMAKE_POSITION_INDEPENDENT_CODE ${__caffe2_CMAKE_POSITION_INDEPENDENT_CODE_FLAG})
   endif()
@@ -866,16 +878,6 @@ add_library(pybind::pybind11 INTERFACE IMPORTED)
 target_include_directories(pybind::pybind11 SYSTEM INTERFACE ${pybind11_INCLUDE_DIRS})
 target_link_libraries(pybind::pybind11 INTERFACE Python::Module)
 
-# ---[ OpenTelemetry API headers
-find_package(OpenTelemetryApi)
-if(NOT OpenTelemetryApi_FOUND)
-  message(STATUS "Using third_party/opentelemetry-cpp.")
-  set(OpenTelemetryApi_INCLUDE_DIRS ${CMAKE_CURRENT_LIST_DIR}/../third_party/opentelemetry-cpp/api/include)
-endif()
-message(STATUS "opentelemetry api include dirs: " "${OpenTelemetryApi_INCLUDE_DIRS}")
-add_library(opentelemetry::api INTERFACE IMPORTED)
-target_include_directories(opentelemetry::api SYSTEM INTERFACE ${OpenTelemetryApi_INCLUDE_DIRS})
-
 # ---[ MPI
 if(USE_MPI)
   find_package(MPI)
@@ -1015,7 +1017,6 @@ if(USE_ROCM)
     list(APPEND HIP_CXX_FLAGS -Wno-shift-count-overflow)
     list(APPEND HIP_CXX_FLAGS -DCAFFE2_USE_MIOPEN)
     list(APPEND HIP_CXX_FLAGS -DTHRUST_DEVICE_SYSTEM=THRUST_DEVICE_SYSTEM_HIP)
-    list(APPEND HIP_CXX_FLAGS -std=c++17)
     list(APPEND HIP_CXX_FLAGS -DHIPBLAS_V2)
     list(APPEND HIP_CXX_FLAGS -DHIP_ENABLE_WARP_SYNC_BUILTINS)
     if(HIPBLASLT_OUTER_VEC)
@@ -1028,6 +1029,15 @@ if(USE_ROCM)
       list(APPEND HIP_CXX_FLAGS -DUSE_ROCM_CK_GEMM)
     endif()
     list(APPEND HIP_HIPCC_FLAGS --offload-compress)
+    list(APPEND HIP_HIPCC_FLAGS -std=c++20)
+    # Pass device library path for theRock nightly builds
+    if(DEFINED ENV{HIP_DEVICE_LIB_PATH})
+      file(TO_CMAKE_PATH "$ENV{HIP_DEVICE_LIB_PATH}" _hip_device_lib_path)
+      list(APPEND HIP_HIPCC_FLAGS --rocm-device-lib-path=${_hip_device_lib_path})
+    elseif(EXISTS "${ROCM_PATH}/lib/llvm/amdgcn/bitcode")
+      file(TO_CMAKE_PATH "${ROCM_PATH}/lib/llvm/amdgcn/bitcode" _rocm_device_lib_path)
+      list(APPEND HIP_HIPCC_FLAGS --rocm-device-lib-path=${_rocm_device_lib_path})
+    endif()
     if(WIN32)
       add_definitions(-DROCM_ON_WINDOWS)
       list(APPEND HIP_CXX_FLAGS -fms-extensions)
@@ -1059,6 +1069,9 @@ if(USE_ROCM)
     list(APPEND HIP_HIPCC_FLAGS -fclang-abi-compat=17)
 
     set(HIP_CLANG_FLAGS ${HIP_CXX_FLAGS})
+    string(JOIN " " HIP_HIPCC_FLAGS_STR ${HIP_HIPCC_FLAGS})
+    set(HIP_HIPCC_FLAGS ${HIP_HIPCC_FLAGS_STR})
+    set(CMAKE_HIP_FLAGS ${HIP_HIPCC_FLAGS})
     # Ask hcc to generate device code during compilation so we can use
     # host linker to link.
     list(APPEND HIP_CLANG_FLAGS -fno-gpu-rdc)
@@ -1082,6 +1095,16 @@ if(USE_ROCM)
       list(APPEND Caffe2_PUBLIC_HIP_DEPENDENCY_LIBS
         roc::hipsparselt
       )
+      if(ROCM_VERSION_DEV VERSION_GREATER_EQUAL "7.12.0")
+          set(CAFFE2_USE_HIPSPARSELT ON)
+      endif()
+    endif()
+
+    # ROCM-SMI needed to support symmetric memory
+    if(USE_DISTRIBUTED AND UNIX)
+      list(APPEND Caffe2_PUBLIC_HIP_DEPENDENCY_LIBS
+        rocm_smi64
+      )
     endif()
 
     # ---[ Kernel asserts
@@ -1095,6 +1118,12 @@ if(USE_ROCM)
 
   else()
     caffe2_update_option(USE_ROCM OFF)
+  endif()
+
+  # Add ROCm includes as SYSTEM includes (lower priority than regular includes).
+  # This ensures third_party vendored headers take precedence over ROCm headers.
+  if(USE_ROCM AND ROCM_INCLUDE_DIRS)
+    include_directories(SYSTEM ${ROCM_INCLUDE_DIRS})
   endif()
 endif()
 
@@ -1163,6 +1192,12 @@ if(USE_DISTRIBUTED AND USE_TENSORPIPE)
     # Suppress warning to unblock libnop compilation by clang-17
     # See https://github.com/pytorch/pytorch/issues/151316
     target_compile_options_if_supported(tensorpipe -Wno-missing-template-arg-list-after-template-kw)
+    # Workaround for relocation truncated to fit: R_AARCH64_CALL26 against symbol __aarch64_swp4_relax'
+    # When compiling for ARMv8.0, build uv with embedded atomics, which are slightly slower
+    # But are used only once during shutdown
+    if(CMAKE_SYSTEM_PROCESSOR STREQUAL "aarch64")
+      target_compile_options_if_supported(tensorpipe_uv -mno-outline-atomics)
+    endif()
 
     list(APPEND Caffe2_DEPENDENCY_LIBS tensorpipe)
     list(APPEND Caffe2_DEPENDENCY_LIBS nlohmann)
@@ -1394,6 +1429,9 @@ if(NOT INTERN_BUILD_MOBILE)
   # https://github.com/pytorch/pytorch/pull/55292
   string(APPEND CMAKE_CUDA_FLAGS " -DCUB_WRAPPED_NAMESPACE=at_cuda_detail")
 
+  # Suppress cusparse warnings
+  string(APPEND CMAKE_CUDA_FLAGS " -DDISABLE_CUSPARSE_DEPRECATED")
+
   message(STATUS "Found CUDA with FP16 support, compiling with torch.cuda.HalfTensor")
   string(APPEND CMAKE_CUDA_FLAGS " -DCUDA_HAS_FP16=1"
                                  " -D__CUDA_NO_HALF_OPERATORS__"
@@ -1441,26 +1479,6 @@ if(NOT INTERN_BUILD_MOBILE)
 
   # ARM specific flags
   find_package(ARM)
-  if(ASIMD_FOUND)
-    message(STATUS "asimd/Neon found with compiler flag : -D__NEON__")
-    add_compile_options(-D__NEON__)
-  elseif(NEON_FOUND)
-    if(APPLE)
-      message(STATUS "Neon found with compiler flag : -D__NEON__")
-      add_compile_options(-D__NEON__)
-    else()
-      message(STATUS "Neon found with compiler flag : -mfpu=neon -D__NEON__")
-      add_compile_options(-mfpu=neon -D__NEON__)
-    endif()
-  endif()
-  if(CORTEXA8_FOUND)
-    message(STATUS "Cortex-A8 Found with compiler flag : -mcpu=cortex-a8")
-    add_compile_options(-mcpu=cortex-a8 -fprefetch-loop-arrays)
-  endif()
-  if(CORTEXA9_FOUND)
-    message(STATUS "Cortex-A9 Found with compiler flag : -mcpu=cortex-a9")
-    add_compile_options(-mcpu=cortex-a9)
-  endif()
 
   find_package(LAPACK)
   if(LAPACK_FOUND)
@@ -1637,79 +1655,9 @@ if(USE_KINETO)
   message(STATUS "  KINETO_BUILD_TESTS = ${KINETO_BUILD_TESTS}")
   message(STATUS "  KINETO_LIBRARY_TYPE = ${KINETO_LIBRARY_TYPE}")
 
-  if(NOT LIBKINETO_NOCUPTI)
-    set(CUDA_SOURCE_DIR "${CUDA_TOOLKIT_ROOT_DIR}" CACHE STRING "")
-    message(STATUS "  CUDA_SOURCE_DIR = ${CUDA_SOURCE_DIR}")
-    message(STATUS "  CUDA_INCLUDE_DIRS = ${CUDA_INCLUDE_DIRS}")
-
-    if(NOT MSVC)
-      if(USE_CUPTI_SO)
-        set(CUPTI_LIB_NAME "libcupti.so")
-      else()
-        set(CUPTI_LIB_NAME "libcupti_static.a")
-      endif()
-    else()
-      set(CUPTI_LIB_NAME "cupti.lib")
-    endif()
-
-    find_library(CUPTI_LIBRARY_PATH ${CUPTI_LIB_NAME} PATHS
-        ${CUDA_SOURCE_DIR}
-        ${CUDA_SOURCE_DIR}/extras/CUPTI/lib64
-        ${CUDA_SOURCE_DIR}/lib
-        ${CUDA_SOURCE_DIR}/lib64
-        NO_DEFAULT_PATH)
-
-    find_path(CUPTI_INCLUDE_DIR cupti.h PATHS
-        ${CUDA_SOURCE_DIR}/extras/CUPTI/include
-        ${CUDA_INCLUDE_DIRS}
-        ${CUDA_SOURCE_DIR}
-        ${CUDA_SOURCE_DIR}/include
-        NO_DEFAULT_PATH)
-
-    if(CUPTI_LIBRARY_PATH AND CUPTI_INCLUDE_DIR)
-      message(STATUS "  CUPTI_INCLUDE_DIR = ${CUPTI_INCLUDE_DIR}")
-      set(CUDA_cupti_LIBRARY ${CUPTI_LIBRARY_PATH})
-      message(STATUS "  CUDA_cupti_LIBRARY = ${CUDA_cupti_LIBRARY}")
-      message(STATUS "Found CUPTI")
-      set(LIBKINETO_NOCUPTI OFF CACHE STRING "" FORCE)
-
-      # I've only tested this sanity check on Linux; if someone
-      # runs into this bug on another platform feel free to
-      # generalize it accordingly
-      if(NOT USE_CUPTI_SO AND UNIX)
-        include(CheckCXXSourceRuns)
-        # rt is handled by the CMAKE_REQUIRED_LIBRARIES set above
-        if(NOT APPLE)
-          set(CMAKE_REQUIRED_LIBRARIES ${CMAKE_REQUIRED_LIBRARIES} "dl" "pthread")
-        endif()
-        set(CMAKE_REQUIRED_LINK_OPTIONS "-Wl,--whole-archive,${CUPTI_LIBRARY_PATH},--no-whole-archive")
-        check_cxx_source_runs("#include <stdexcept>
-  int main() {
-    try {
-      throw std::runtime_error(\"error\");
-    } catch (...) {
-      return 0;
-    }
-    return 1;
-  }" EXCEPTIONS_WORK)
-        set(CMAKE_REQUIRED_LINK_OPTIONS "")
-        if(NOT EXCEPTIONS_WORK)
-          message(FATAL_ERROR
-            "Detected that statically linking against CUPTI causes exceptions to stop working.  "
-            "See https://github.com/pytorch/pytorch/issues/57744 for more details.  "
-            "Perhaps try: USE_CUPTI_SO=1 CMAKE_FRESH=1 python -m pip install -e . -v --no-build-isolation")
-        endif()
-      endif()
-
-    else()
-      message(STATUS "Could not find CUPTI library, using CPU-only Kineto build")
-      set(LIBKINETO_NOCUPTI ON CACHE STRING "" FORCE)
-    endif()
-  endif()
-
   if(NOT LIBKINETO_NOROCTRACER)
     if("$ENV{ROCM_SOURCE_DIR}" STREQUAL "")
-      set(ENV{ROCM_SOURCE_DIR} "/opt/rocm")
+      set(ENV{ROCM_SOURCE_DIR} "${ROCM_PATH}")
     endif()
   endif()
 

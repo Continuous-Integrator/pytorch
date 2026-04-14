@@ -145,7 +145,7 @@ bool isSortableListOfObjectsOrTuples(
   why_not << "Only list of Tensors, ints, floats, bools, strs, "
           << "a User Defined Class that defines the __lt__ compare method "
           << "or Tuples of aforementioned types can be sorted, got list of "
-          << type->repr_str() << "\n";
+          << type->repr_str() << '\n';
   return false;
 }
 
@@ -584,56 +584,6 @@ static const std::vector<OperatorGeneratorArgs> opGenArgs{
         },
         aliasAnalysisFromSchema()),
     OperatorGeneratorArgs(
-        TORCH_SELECTIVE_SCHEMA("aten::numel(Tensor self) -> int"),
-        [](Stack& stack) {
-          at::Tensor arg = pop(stack).toTensor();
-          push(stack, arg.numel());
-        },
-        aliasAnalysisFromSchema()),
-    OperatorGeneratorArgs(
-        TORCH_SELECTIVE_SCHEMA("aten::dim(Tensor self) -> int"),
-        dim,
-        aliasAnalysisFromSchema()),
-    OperatorGeneratorArgs(
-        TORCH_SELECTIVE_SCHEMA("aten::get_device(Tensor self) -> int"),
-        [](Stack& stack) {
-          RECORD_FUNCTION("get_device", c10::ArrayRef<const c10::IValue>{});
-          auto result =
-              at::get_device((std::move(peek(stack, 0, 1))).toTensor());
-          drop(stack, 1);
-          pack(stack, result);
-        },
-        aliasAnalysisFromSchema()),
-    OperatorGeneratorArgs(
-        TORCH_SELECTIVE_SCHEMA("aten::storage_offset(Tensor self) -> int"),
-        [](Stack& stack) {
-          RECORD_FUNCTION("storage_offset", c10::ArrayRef<const c10::IValue>{});
-          auto result =
-              ((std::move(peek(stack, 0, 1))).toTensor()).storage_offset();
-          drop(stack, 1);
-          pack(stack, result);
-        },
-        aliasAnalysisFromSchema()),
-    OperatorGeneratorArgs(
-        TORCH_SELECTIVE_SCHEMA("aten::is_contiguous(Tensor self) -> bool"),
-        [](Stack& stack) {
-          RECORD_FUNCTION("is_contiguous", c10::ArrayRef<const c10::IValue>{});
-          auto result =
-              ((std::move(peek(stack, 0, 1))).toTensor()).is_contiguous();
-          drop(stack, 1);
-          pack(stack, result);
-        },
-        aliasAnalysisFromSchema()),
-    OperatorGeneratorArgs(
-        TORCH_SELECTIVE_SCHEMA(
-            "aten::is_contiguous.memory_format(Tensor self, MemoryFormat memory_format) -> bool"),
-        [](Stack& stack) {
-          auto memory_format = pop(stack).toMemoryFormat();
-          auto t = pop(stack).toTensor();
-          push(stack, t.is_contiguous(memory_format));
-        },
-        aliasAnalysisFromSchema()),
-    OperatorGeneratorArgs(
         // NB: intentionally suffixed with extra _format to prevent tests for
         // "_like" suffix from triggering on this
         TORCH_SELECTIVE_SCHEMA(
@@ -820,7 +770,7 @@ static const std::vector<OperatorGeneratorArgs> opGenArgs{
           bool first = true;
           for (const IValue& i : last(stack, num_inputs)) {
             if (!first)
-              ss << " ";
+              ss << ' ';
             first = false;
             ss << i;
           }
@@ -2971,10 +2921,10 @@ static const std::vector<OperatorGeneratorArgs> opGenArgs2{
         auto i = pop(stack).toInt();                     \
         std::stringstream ss;                            \
         if (i < 0) {                                     \
-          ss << "-";                                     \
+          ss << '-';                                     \
           i = -i;                                        \
         }                                                \
-        ss << "0" << prefix << char_op << i;             \
+        ss << '0' << prefix << char_op << i;             \
         push(stack, ss.str());                           \
       },                                                 \
       aliasAnalysisFromSchema())
@@ -2991,7 +2941,7 @@ static const std::vector<OperatorGeneratorArgs> opGenArgs2{
             push(stack, "0b0");
           } else {
             if (i < 0) {
-              ss << "-";
+              ss << '-';
               i = -i;
             }
             std::string str = std::bitset<8 * sizeof(i)>(i).to_string();

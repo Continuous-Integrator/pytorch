@@ -2,39 +2,38 @@
 # flake8: noqa: B950
 """This module implements the user facing API for flex_attention in PyTorch."""
 
+from __future__ import annotations
+
 import functools
 import inspect
 import itertools
 import math
 import operator
+import types
+import typing
 import warnings
 from collections.abc import Callable
 from enum import Enum
-from typing import Any, NamedTuple, Optional, Union
+from typing import Any, cast, Literal, NamedTuple, overload, TypeAlias, TypeVar
+from typing_extensions import deprecated, Never, NotRequired, Self, TypedDict
 
 import torch
 from torch import Tensor
-
-
-try:
-    from typing import TypedDict
-except ImportError:
-    from typing_extensions import TypedDict
-
-try:
-    from typing import NotRequired
-except ImportError:
-    from typing_extensions import NotRequired
-
 from torch._higher_order_ops.flex_attention import flex_attention as flex_attention_hop
-from torch._higher_order_ops.utils import _set_compilation_env
-from torch._prims_common import DeviceLikeType
-from torch.fx.experimental.proxy_tensor import (
-    _temp_remove_metadata_torch_function_mode,
-    _temp_remove_pre_dispatch_torch_function_mode,
-)
+from torch._higher_order_ops.utils import setup_compilation_env
 from torch.nn.attention._utils import _validate_sdpa_input
-from torch.utils._pytree import GetAttrKey, tree_map_only
+from torch.utils._pytree import (
+    GetAttrKey,
+    tree_flatten,
+    tree_map_only,
+    tree_unflatten,
+    TreeSpec,
+)
+
+
+if typing.TYPE_CHECKING:
+    from torch._prims_common import DeviceLikeType
+    from torch.fx.node import BaseArgumentTypes
 
 
 # Private debug flag to disable internal compilation wrapping for debugging purposes.
@@ -63,7 +62,8 @@ def _warn_once(
 ) -> None:
     """Helper to ensure each warning is shown only once per process."""
     if warning_id not in _WARNINGS_SHOWN:
-        warnings.warn(message, category, stacklevel=2)
+        if not torch.compiler.is_compiling():
+            warnings.warn(message, category, stacklevel=2)
         _WARNINGS_SHOWN.add(warning_id)
 
 
@@ -82,9 +82,10 @@ __all__ = [
 
 _score_mod_signature = Callable[[Tensor, Tensor, Tensor, Tensor, Tensor], Tensor]
 _mask_mod_signature = Callable[[Tensor, Tensor, Tensor, Tensor], Tensor]
+_Backend: TypeAlias = Literal["AUTO", "TRITON", "FLASH", "TRITON_DECODE"]
+_R = TypeVar("_R")
 
 
-# pyrefly: ignore [invalid-inheritance]
 class FlexKernelOptions(TypedDict, total=False):
     """Options for controlling the behavior of FlexAttention kernels.
 
@@ -128,104 +129,100 @@ class FlexKernelOptions(TypedDict, total=False):
     """
 
     # Performance tuning options
-    # pyrefly: ignore [invalid-annotation]
+
     num_warps: NotRequired[int]
     """Number of warps to use in the CUDA kernel. Higher values may improve performance
     but increase register pressure. Default is determined by autotuning."""
 
-    # pyrefly: ignore [invalid-annotation]
     num_stages: NotRequired[int]
     """Number of pipeline stages in the CUDA kernel. Higher values may improve performance
     but increase shared memory usage. Default is determined by autotuning."""
 
-    # pyrefly: ignore [invalid-annotation]
     BLOCK_M: NotRequired[int]
     """Thread block size for the sequence length dimension of Q in forward pass.
     Must be a power of 2. Common values: 16, 32, 64, 128. Default is determined by autotuning."""
 
-    # pyrefly: ignore [invalid-annotation]
     BLOCK_N: NotRequired[int]
     """Thread block size for the sequence length dimension of K/V in forward pass.
     Must be a power of 2. Common values: 16, 32, 64, 128. Default is determined by autotuning."""
 
     # Backward-specific block sizes (when prefixed with 'bwd_')
-    # pyrefly: ignore [invalid-annotation]
+
     BLOCK_M1: NotRequired[int]
     """Thread block size for Q dimension in backward pass. Use as 'bwd_BLOCK_M1'.
     Default is determined by autotuning."""
 
-    # pyrefly: ignore [invalid-annotation]
     BLOCK_N1: NotRequired[int]
     """Thread block size for K/V dimension in backward pass. Use as 'bwd_BLOCK_N1'.
     Default is determined by autotuning."""
 
-    # pyrefly: ignore [invalid-annotation]
     BLOCK_M2: NotRequired[int]
     """Thread block size for second Q dimension in backward pass. Use as 'bwd_BLOCK_M2'.
     Default is determined by autotuning."""
 
-    # pyrefly: ignore [invalid-annotation]
     BLOCK_N2: NotRequired[int]
     """Thread block size for second K/V dimension in backward pass. Use as 'bwd_BLOCK_N2'.
     Default is determined by autotuning."""
 
-    # pyrefly: ignore [invalid-annotation]
     PRESCALE_QK: NotRequired[bool]
     """Whether to pre-scale QK by 1/sqrt(d) and change of base. This is slightly faster but
     may have more numerical error. Default: False."""
 
-    # pyrefly: ignore [invalid-annotation]
     ROWS_GUARANTEED_SAFE: NotRequired[bool]
     """If True, guarantees that at least one value in each row is not masked out.
     Allows skipping safety checks for better performance. Only set this if you are certain
     your mask guarantees this property. For example, causal attention is guaranteed safe
     because each query has at least 1 key-value to attend to. Default: False."""
 
-    # pyrefly: ignore [invalid-annotation]
     BLOCKS_ARE_CONTIGUOUS: NotRequired[bool]
     """If True, guarantees that all blocks in the mask are contiguous.
     Allows optimizing block traversal. For example, causal masks would satisfy this,
     but prefix_lm + sliding window would not. Default: False."""
 
-    # pyrefly: ignore [invalid-annotation]
     WRITE_DQ: NotRequired[bool]
     """Controls whether gradient scatters are done in the DQ iteration loop of the backward pass.
     Setting this to False will force this to happen in the DK loop which depending on your
     specific score_mod and mask_mod might be faster. Default: True."""
 
-    # pyrefly: ignore [invalid-annotation]
     FORCE_USE_FLEX_ATTENTION: NotRequired[bool]
     """If True, forces the use of the flex attention kernel instead of potentially using
     the more optimized flex-decoding kernel for short sequences. This can be a helpful
     option for debugging. Default: False."""
 
-    # pyrefly: ignore [invalid-annotation]
     USE_TMA: NotRequired[bool]
     """Whether to use Tensor Memory Accelerator (TMA) on supported hardware.
     This is experimental and may not work on all hardware, currently specific
     to NVIDIA GPUs Hopper+. Default: False."""
 
     # ROCm-specific options
-    # pyrefly: ignore [invalid-annotation]
+
     kpack: NotRequired[int]
     """ROCm-specific kernel packing parameter."""
 
-    # pyrefly: ignore [invalid-annotation]
     matrix_instr_nonkdim: NotRequired[int]
     """ROCm-specific matrix instruction non-K dimension."""
 
-    # pyrefly: ignore [invalid-annotation]
     waves_per_eu: NotRequired[int]
     """ROCm-specific waves per execution unit."""
 
-    # pyrefly: ignore [invalid-annotation]
-    force_flash: NotRequired[bool]
-    """ If True, forces use of the cute-dsl flash attention kernel.
+    BACKEND: NotRequired[_Backend]
+    """Selects a specific kernel backend.
 
-    Raises an error if flash attention cannot be used instead of falling back
-    to the default implementation. Useful for ensuring flash attention is used
-    when expected.
+    Options:
+        - "AUTO": Use current heuristics (typically Triton-based kernels with
+          automatic selection between flex_attention and flex_decoding)
+        - "TRITON": Standard Triton flex_attention kernel
+        - "TRITON_DECODE": Triton flex_decoding kernel, only available for short sequence lengths with specific configurations
+        - "FLASH": Experimental: Flash Attention kernel (cute-dsl), user needs to have flash installed
+
+    This option cannot be combined with legacy knobs such as ``FORCE_USE_FLEX_ATTENTION``.
+    Raises an error if the requested backend cannot be used. Default: "AUTO"
     """
+
+
+class _KernelOptionsWithInternals(FlexKernelOptions, total=False):
+    OUTPUT_LOGSUMEXP: bool
+    OUTPUT_MAX: bool
 
 
 class AuxRequest(NamedTuple):
@@ -244,8 +241,8 @@ class AuxOutput(NamedTuple):
     Fields will be None if not requested, or contain the tensor if requested.
     """
 
-    lse: Optional[Tensor] = None
-    max_scores: Optional[Tensor] = None
+    lse: Tensor | None = None
+    max_scores: Tensor | None = None
 
 
 class _ModificationType(Enum):
@@ -260,7 +257,9 @@ class _ModificationType(Enum):
     UNKNOWN = 3
 
 
-def _get_mod_type(fn: Callable) -> _ModificationType:
+def _get_mod_type(
+    fn: _score_mod_signature | _mask_mod_signature | Callable[..., Any],
+) -> _ModificationType:
     """Get the type of modification function.
     This function inspects the number of positional arguments of the function to determine
     the type of modification function. If the function has 5 positional arguments, it is
@@ -281,7 +280,10 @@ def _get_mod_type(fn: Callable) -> _ModificationType:
             for param in inspect.signature(fn).parameters.values()
             if param.default is inspect.Parameter.empty
         )
-    assert num_positional_args == 5 or num_positional_args == 4
+    if num_positional_args != 5 and num_positional_args != 4:
+        raise AssertionError(
+            f"Expected 4 or 5 positional args, got {num_positional_args}"
+        )
     if num_positional_args == 5:
         return _ModificationType.SCORE_MOD
     elif num_positional_args == 4:
@@ -292,12 +294,12 @@ def _get_mod_type(fn: Callable) -> _ModificationType:
 
 # Need to define it here so that Dynamo doesn't skip it
 def _vmap_for_bhqkv(
-    fn: Callable,
-    prefix: tuple[Optional[int], ...],
-    suffix: tuple[Optional[int], ...] = (),
-    out_dims: Union[int, list[Optional[int]]] = 0,
+    fn: Callable[..., _R],
+    prefix: tuple[int | None, ...],
+    suffix: tuple[int | None, ...] = (),
+    out_dims: int | list[int | None] = 0,
     group_dim: bool = False,
-):
+) -> Callable[..., _R]:
     """Used to vmap both score_mods and mask_mods over 4-dimensional/5-dimension inputs.
     Mapping over the [b, hq, q_idx, kv_idx] or [b, hkv, g, q_idx, kv_idx] dimensions.
 
@@ -316,7 +318,7 @@ def _vmap_for_bhqkv(
         callable: The vmapped function.
     """
     # We vamp a function 4 times, broadcasting the [b, h, q_idx, kv_idx] dimensions
-    dimensions: list[tuple[None | int, None | int, None | int, None | int]] = []
+    dimensions: list[tuple[int | None, int | None, int | None, int | None]] = []
     dimensions = [
         (None, None, None, 0),
         (None, None, 0, None),
@@ -362,7 +364,7 @@ def _sliced_mask_mod_error(
     head: Tensor,
     token_q: Tensor,
     token_kv: Tensor,
-) -> Tensor:
+) -> Never:
     """
     Raises helpful error when using mask_mod from a sliced BlockMask.
 
@@ -388,7 +390,7 @@ _DEFAULT_SPARSE_BLOCK_SIZE = 128
 _LARGE_SPARSE_BLOCK_SIZE = 1 << 30
 
 
-def _ordered_to_dense(num_blocks_in_row: Tensor, col_indices: Tensor):
+def _ordered_to_dense(num_blocks_in_row: Tensor, col_indices: Tensor) -> Tensor:
     num_rows = col_indices.shape[-2]
     num_cols = col_indices.shape[-1]
     batch_dims = num_blocks_in_row.shape[:-1]
@@ -418,7 +420,7 @@ def _ordered_to_dense(num_blocks_in_row: Tensor, col_indices: Tensor):
     return out
 
 
-def _dense_to_ordered(dense_mask) -> tuple[Tensor, Tensor]:
+def _dense_to_ordered(dense_mask: Tensor) -> tuple[Tensor, Tensor]:
     dense_mask = dense_mask.to(dtype=torch.int32)
     num_blocks_in_row = dense_mask.sum(dim=-1)
     col_indices = torch.argsort(dense_mask, dim=-1, descending=True, stable=True)
@@ -428,7 +430,9 @@ def _dense_to_ordered(dense_mask) -> tuple[Tensor, Tensor]:
     )
 
 
-def _transpose_ordered(num_blocks_in_row: Tensor, col_indices: Tensor):
+def _transpose_ordered(
+    num_blocks_in_row: Tensor, col_indices: Tensor
+) -> tuple[Tensor, Tensor]:
     dense = _ordered_to_dense(num_blocks_in_row, col_indices)
     return _dense_to_ordered(dense.transpose(-2, -1))
 
@@ -438,12 +442,242 @@ def _adjust_num_blocks_and_indices(
     indices: Tensor,
     new_num_rows: int,
     new_num_cols: int,
-):
+) -> tuple[Tensor, Tensor]:
     indices = indices[:, :, :new_num_rows, :new_num_cols]
     num_blocks = num_blocks[:, :, :new_num_rows]
     num_blocks = torch.where(num_blocks < new_num_cols, num_blocks, new_num_cols)
     num_blocks = torch.sum(indices < num_blocks[:, :, :, None], dim=-1).to(torch.int32)
     return num_blocks, indices
+
+
+# TreeSpec for an empty tuple — used as the sentinel when there are no closure leaves.
+_EMPTY_CLOSURE_SPEC = tree_flatten(())[1]
+
+
+class _ExtractedLeaf:
+    """Sentinel in _StrippedClosure.leaf_entries marking a position that is
+    filled from the extracted pytree leaves list during reconstruction."""
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:
+        return "_EXTRACTED_LEAF"
+
+
+_EXTRACTED_LEAF = _ExtractedLeaf()
+
+
+class _FunctionLeaf(typing.NamedTuple):
+    """Entry in _StrippedClosure.leaf_entries for a recursively processed
+    function.  Stores enough information to reconstruct the function from
+    the extracted leaves during unflattening."""
+
+    stripped: _StrippedClosure | Callable[..., Any]
+    closure_spec: TreeSpec
+    n_extracted: int  # number of extracted leaves this function contributes
+
+
+class _StrippedClosure(typing.NamedTuple):
+    """Data container holding the parts of a function needed for reconstruction.
+
+    Created by _extract_closure_pytree when closure tensors are lifted into
+    pytree leaves.  Unlike a FunctionType with None-filled cells, this is not
+    callable — it is pure data stored in the pytree context.
+    """
+
+    code: types.CodeType
+    globals_dict: dict[str, Any]
+    name: str
+    qualname: str
+    defaults: tuple[Any, ...] | None
+    kwdefaults: dict[str, Any] | None
+    extra_dict: dict[str, Any]
+    # Per-position info for the closure's flattened leaves.
+    # _EXTRACTED_LEAF → position filled from the extracted leaves list.
+    # _FunctionLeaf   → recursively processed function (not a valid pytree leaf).
+    leaf_entries: tuple[_ExtractedLeaf | _FunctionLeaf, ...]
+
+
+def _extract_closure_pytree(
+    fn, _seen: set[int] | None = None
+) -> tuple[
+    tuple[BaseArgumentTypes, ...], TreeSpec, _StrippedClosure | Callable[..., Any]
+]:
+    """Extract closure contents as a flattened sub-pytree.
+
+    Returns (extracted_leaves, closure_spec, fn_or_stripped) where:
+    - extracted_leaves: flattened non-function contents from the closure,
+      plus any tensors/scalars recursively extracted from nested function
+      closures
+    - closure_spec: TreeSpec describing how to reconstruct the closure contents
+    - fn_or_stripped: either the original fn (no extraction) or a
+      _StrippedClosure carrying the function parts needed for reconstruction
+
+    Functions found among the closure leaves are recursively processed: their
+    own closure tensors are extracted into the leaves list, and their skeleton
+    is stored in _StrippedClosure.leaf_entries as a _FunctionLeaf.  All other
+    values (tensors, scalars, None, etc.) remain as extracted leaves.
+
+    If fn is not a plain function, has no closure, or has empty cells, returns
+    the original function unchanged with no closure leaves.
+
+    Skipped under Dynamo tracing (torch.compiler.is_compiling) because Dynamo
+    can't trace through closure cell introspection and handles freevars via its
+    own lifting mechanism.
+    """
+    if not inspect.isfunction(fn) or torch.compiler.is_compiling():
+        return (), _EMPTY_CLOSURE_SPEC, fn
+
+    # Cycle detection for self-referencing closures.
+    if _seen is None:
+        _seen = set()
+    if id(fn) in _seen:
+        return (), _EMPTY_CLOSURE_SPEC, fn
+    _seen.add(id(fn))
+
+    closure = fn.__closure__
+    if not closure:
+        return (), _EMPTY_CLOSURE_SPEC, fn
+
+    try:
+        contents = tuple(cell.cell_contents for cell in closure)
+    except ValueError:
+        # Empty cell (created but not yet assigned) — can't extract
+        return (), _EMPTY_CLOSURE_SPEC, fn
+
+    closure_leaves, closure_spec = tree_flatten(contents)
+
+    extracted: list[BaseArgumentTypes] = []
+    leaf_entries: list[_ExtractedLeaf | _FunctionLeaf] = []
+    for leaf in closure_leaves:
+        if inspect.isfunction(leaf):
+            child_extracted, child_spec, child_stripped = _extract_closure_pytree(
+                leaf, _seen
+            )
+            extracted.extend(child_extracted)
+            leaf_entries.append(
+                _FunctionLeaf(child_stripped, child_spec, len(child_extracted))
+            )
+        else:
+            extracted.append(leaf)
+            leaf_entries.append(_EXTRACTED_LEAF)
+
+    stripped = _StrippedClosure(
+        code=fn.__code__,
+        globals_dict=fn.__globals__,
+        name=fn.__name__,
+        qualname=fn.__qualname__,
+        defaults=fn.__defaults__,
+        kwdefaults=fn.__kwdefaults__,
+        extra_dict=dict(fn.__dict__) if fn.__dict__ else {},
+        leaf_entries=tuple(leaf_entries),
+    )
+
+    return tuple(extracted), closure_spec, stripped
+
+
+def _reconstruct_closure_fn(stripped, extracted_leaves, closure_spec):
+    """Rebuild a function from a _StrippedClosure and flattened extracted leaves."""
+    if not isinstance(stripped, _StrippedClosure):
+        return stripped
+
+    all_leaves: list[BaseArgumentTypes | Callable[..., Any]] = []
+    idx = 0
+    for entry in stripped.leaf_entries:
+        if isinstance(entry, _FunctionLeaf):
+            child_fn = _reconstruct_closure_fn(
+                entry.stripped,
+                extracted_leaves[idx : idx + entry.n_extracted],
+                entry.closure_spec,
+            )
+            all_leaves.append(child_fn)
+            idx += entry.n_extracted
+        else:
+            # _EXTRACTED_LEAF — take from extracted leaves
+            all_leaves.append(extracted_leaves[idx])
+            idx += 1
+
+    contents = tree_unflatten(all_leaves, closure_spec)
+    new_cells = tuple(types.CellType(v) for v in contents)
+
+    restored = types.FunctionType(
+        stripped.code,
+        stripped.globals_dict,
+        stripped.name,
+        stripped.defaults,
+        new_cells,
+    )
+    restored.__qualname__ = stripped.qualname
+    if stripped.kwdefaults:
+        restored.__kwdefaults__ = stripped.kwdefaults
+    if stripped.extra_dict:
+        restored.__dict__.update(stripped.extra_dict)
+
+    return restored
+
+
+class _MaskModWrapper:
+    """Wraps a mask_mod or _StrippedClosure with value-based equality.
+
+    BlockMask stores an arbitrary callable (mask_mod) in its pytree context.
+    The default __eq__ for functions uses identity comparison, which is too
+    strict when the same closure is recreated (e.g., defined inside forward()).
+
+    When closure tensors have been extracted (by _extract_closure_pytree), fn
+    is a _StrippedClosure (pure data, not callable).  Equality compares the
+    code objects + closure_spec — no tensor dispatch is triggered.
+
+    When extraction is skipped (e.g., under Dynamo), fn is the original
+    callable and equality compares code objects + closure contents (for plain
+    functions) or delegates to __eq__ (for callable objects).
+    """
+
+    __slots__ = ("fn", "closure_spec")
+
+    def __init__(self, fn, closure_spec=None) -> None:
+        self.fn = fn
+        self.closure_spec = closure_spec
+
+    def __call__(self, b: Tensor, h: Tensor, q_idx: Tensor, kv_idx: Tensor) -> Tensor:
+        if isinstance(self.fn, _StrippedClosure):
+            raise RuntimeError(
+                "_MaskModWrapper with _StrippedClosure is not callable — "
+                "use _reconstruct_closure_fn to rebuild the function first"
+            )
+        return self.fn(b, h, q_idx, kv_idx)
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, _MaskModWrapper):
+            return False
+        if self.fn is other.fn and self.closure_spec is other.closure_spec:
+            return True
+        # Extracted case: _StrippedClosure — compare code + closure_spec
+        if isinstance(self.fn, _StrippedClosure) and isinstance(
+            other.fn, _StrippedClosure
+        ):
+            return (
+                self.fn.code == other.fn.code
+                and self.closure_spec == other.closure_spec
+            )
+        # Non-extracted plain functions: compare code + closure contents
+        if inspect.isfunction(self.fn) and inspect.isfunction(other.fn):
+            return self.fn.__code__ == other.fn.__code__
+        # Callable objects: delegate to their __eq__
+        if not isinstance(self.fn, _StrippedClosure) and not isinstance(
+            other.fn, _StrippedClosure
+        ):
+            return self.fn == other.fn
+        return False
+
+    def __hash__(self) -> int:
+        if isinstance(self.fn, _StrippedClosure):
+            return hash(self.fn.code)
+        if inspect.isfunction(self.fn):
+            return hash(self.fn.__code__)
+        return hash(self.fn)
+
+    def __repr__(self) -> str:
+        return f"_MaskModWrapper({self.fn})"
 
 
 class BlockMask:
@@ -510,12 +744,12 @@ class BlockMask:
     seq_lengths: tuple[int, int]
     kv_num_blocks: Tensor
     kv_indices: Tensor
-    full_kv_num_blocks: Optional[Tensor]
-    full_kv_indices: Optional[Tensor]
-    q_num_blocks: Optional[Tensor]
-    q_indices: Optional[Tensor]
-    full_q_num_blocks: Optional[Tensor]
-    full_q_indices: Optional[Tensor]
+    full_kv_num_blocks: Tensor | None
+    full_kv_indices: Tensor | None
+    q_num_blocks: Tensor | None
+    q_indices: Tensor | None
+    full_q_num_blocks: Tensor | None
+    full_q_indices: Tensor | None
     BLOCK_SIZE: tuple[int, int]
     mask_mod: _mask_mod_signature
 
@@ -542,25 +776,29 @@ class BlockMask:
         seq_lengths: tuple[int, int],
         kv_num_blocks: Tensor,
         kv_indices: Tensor,
-        full_kv_num_blocks: Optional[Tensor],
-        full_kv_indices: Optional[Tensor],
-        q_num_blocks: Optional[Tensor],
-        q_indices: Optional[Tensor],
-        full_q_num_blocks: Optional[Tensor],
-        full_q_indices: Optional[Tensor],
+        full_kv_num_blocks: Tensor | None,
+        full_kv_indices: Tensor | None,
+        q_num_blocks: Tensor | None,
+        q_indices: Tensor | None,
+        full_q_num_blocks: Tensor | None,
+        full_q_indices: Tensor | None,
         BLOCK_SIZE: tuple[int, int],
         mask_mod: _mask_mod_signature,
-    ):
+    ) -> None:
         if kv_indices.dim() < 2:
             raise RuntimeError("BlockMask must have at least 2 dimensions")
-        assert kv_num_blocks is not None, "kv_num_blocks must be provided"
-        assert kv_indices is not None, "kv_indices must be provided"
-        assert (full_kv_num_blocks is None) == (full_kv_indices is None), (
-            "full_kv_num_blocks and full_kv_indices must be both provided or omitted"
-        )
-        assert (full_q_num_blocks is None) == (full_q_indices is None), (
-            "full_q_num_blocks and full_q_indices must be both provided or omitted"
-        )
+        if kv_num_blocks is None:
+            raise AssertionError("kv_num_blocks must be provided")
+        if kv_indices is None:
+            raise AssertionError("kv_indices must be provided")
+        if (full_kv_num_blocks is None) != (full_kv_indices is None):
+            raise AssertionError(
+                "full_kv_num_blocks and full_kv_indices must be both provided or omitted"
+            )
+        if (full_q_num_blocks is None) != (full_q_indices is None):
+            raise AssertionError(
+                "full_q_num_blocks and full_q_indices must be both provided or omitted"
+            )
 
         self.seq_lengths = seq_lengths
         self.kv_num_blocks = kv_num_blocks
@@ -579,13 +817,13 @@ class BlockMask:
         cls,
         kv_num_blocks: Tensor,
         kv_indices: Tensor,
-        full_kv_num_blocks: Optional[Tensor] = None,
-        full_kv_indices: Optional[Tensor] = None,
-        BLOCK_SIZE: Union[int, tuple[int, int]] = _DEFAULT_SPARSE_BLOCK_SIZE,
-        mask_mod: Optional[_mask_mod_signature] = None,
-        seq_lengths: Optional[tuple[int, int]] = None,
+        full_kv_num_blocks: Tensor | None = None,
+        full_kv_indices: Tensor | None = None,
+        BLOCK_SIZE: int | tuple[int, int] = _DEFAULT_SPARSE_BLOCK_SIZE,
+        mask_mod: _mask_mod_signature | None = None,
+        seq_lengths: tuple[int, int] | None = None,
         compute_q_blocks: bool = True,
-    ):
+    ) -> Self:
         """
         Creates a BlockMask instance from key-value block information.
 
@@ -607,15 +845,17 @@ class BlockMask:
         if kv_indices.dim() < 2:
             raise RuntimeError("BlockMask must have at least 2 dimensions")
 
-        assert (full_kv_num_blocks is None) == (full_kv_indices is None), (
-            "full_kv_num_blocks and full_kv_indices must be both provided or omitted"
-        )
+        if (full_kv_num_blocks is None) != (full_kv_indices is None):
+            raise AssertionError(
+                "full_kv_num_blocks and full_kv_indices must be both provided or omitted"
+            )
 
         # Generate q_num_blocks and q_indices
         if compute_q_blocks:
             q_num_blocks, q_indices = _transpose_ordered(kv_num_blocks, kv_indices)
             if full_kv_num_blocks is not None:
-                assert full_kv_indices is not None
+                if full_kv_indices is None:
+                    raise AssertionError("full_kv_indices must not be None")
                 full_q_num_blocks, full_q_indices = _transpose_ordered(
                     full_kv_num_blocks, full_kv_indices
                 )
@@ -648,7 +888,43 @@ class BlockMask:
             mask_mod=mask_mod,
         )
 
-    def as_tuple(self, flatten: bool = True):
+    @overload
+    def as_tuple(
+        self, flatten: Literal[True] = ...
+    ) -> tuple[
+        int,
+        int,
+        Tensor,
+        Tensor,
+        Tensor | None,
+        Tensor | None,
+        Tensor | None,
+        Tensor | None,
+        Tensor | None,
+        Tensor | None,
+        int,
+        int,
+        _mask_mod_signature,
+    ]: ...
+
+    @overload
+    def as_tuple(
+        self, flatten: Literal[False]
+    ) -> tuple[
+        tuple[int, int],
+        Tensor,
+        Tensor,
+        Tensor | None,
+        Tensor | None,
+        Tensor | None,
+        Tensor | None,
+        Tensor | None,
+        Tensor | None,
+        int | tuple[int, int],
+        _mask_mod_signature,
+    ]: ...
+
+    def as_tuple(self, flatten: bool = True) -> tuple[Any, ...]:
         """
         Returns a tuple of the attributes of the BlockMask.
 
@@ -678,18 +954,20 @@ class BlockMask:
         )
 
     @property
-    def shape(self):
+    def shape(self) -> tuple[int, ...]:
         *batch_dims, _, _ = self.kv_indices.shape
         return tuple(batch_dims) + self.seq_lengths
 
-    def __str__(self):
+    def __str__(self) -> str:
         s = f"BlockMask(shape={self.shape}, sparsity={self.sparsity():.2f}%, \n"
         mask_str = self.to_string().strip()
         s += mask_str
         s += "\n)"
         return s
 
-    def __getitem__(self, index) -> "BlockMask":
+    def __getitem__(
+        self, index: int | slice | Tensor | tuple[int | slice | Tensor, ...]
+    ) -> Self:
         """
         Returns a new BlockMask instance by getting the mask for the given index position.
 
@@ -738,12 +1016,13 @@ class BlockMask:
             (slice(i + n, i + n + 1) if -n <= i < 0 else slice(i, i + 1))
             if isinstance(i, int)
             else i
-            for i, n in zip(padded, sizes)
+            for i, n in zip(padded, sizes, strict=True)
         )
         new_kv_num_blocks = self.kv_num_blocks[index]
         new_kv_indices = self.kv_indices[index]
         if self.full_kv_num_blocks is not None:
-            assert self.full_kv_indices is not None
+            if self.full_kv_indices is None:
+                raise AssertionError("full_kv_indices must not be None")
             new_full_kv_num_blocks = self.full_kv_num_blocks[index]
             new_full_kv_indices = self.full_kv_indices[index]
         else:
@@ -760,8 +1039,8 @@ class BlockMask:
             compute_q_blocks=self.q_indices is not None,
         )
 
-    def __repr__(self):
-        def shape_or_none(x: Optional[torch.Tensor]):
+    def __repr__(self) -> str:
+        def shape_or_none(x: torch.Tensor | None):
             return x.shape if x is not None else None
 
         return (
@@ -781,14 +1060,15 @@ class BlockMask:
             f")"
         )
 
-    def _adjust(self, new_q_len: int, new_kv_len: int):
+    def _adjust(self, new_q_len: int, new_kv_len: int) -> Self:
         new_num_rows = (new_q_len + self.BLOCK_SIZE[0] - 1) // self.BLOCK_SIZE[0]
         new_num_cols = (new_kv_len + self.BLOCK_SIZE[1] - 1) // self.BLOCK_SIZE[1]
         new_kv_num_blocks, new_kv_indices = _adjust_num_blocks_and_indices(
             self.kv_num_blocks, self.kv_indices, new_num_rows, new_num_cols
         )
         if self.full_kv_num_blocks is not None:
-            assert self.full_kv_indices is not None
+            if self.full_kv_indices is None:
+                raise AssertionError("full_kv_indices must not be None")
             (
                 new_full_kv_num_blocks,
                 new_full_kv_indices,
@@ -810,7 +1090,7 @@ class BlockMask:
             self.mask_mod,
         )
 
-    def numel(self):
+    def numel(self) -> int:
         """Returns the number of elements (not accounting for sparsity) in the mask."""
         shape = self.shape
 
@@ -834,14 +1114,17 @@ class BlockMask:
         """Returns a dense block that is equivalent to the block mask."""
         partial_dense = _ordered_to_dense(self.kv_num_blocks, self.kv_indices)
         if self.full_kv_num_blocks is not None:
-            assert self.full_kv_indices is not None
+            if self.full_kv_indices is None:
+                raise AssertionError("full_kv_indices must not be None")
             # pyrefly: ignore [bad-return]
             return partial_dense | _ordered_to_dense(
                 self.full_kv_num_blocks, self.full_kv_indices
             )
         return partial_dense
 
-    def to_string(self, grid_size=(20, 20), limit=4):
+    def to_string(
+        self, grid_size: int | tuple[int, int] = (20, 20), limit: int = 4
+    ) -> str:
         """Returns a string representation of the block mask. Quite nifty.
 
         If grid_size is -1, prints out an uncompressed version. Warning, it can be quite big!
@@ -864,7 +1147,7 @@ class BlockMask:
 
             vis = ", ".join(reversed(descriptors)) + "\n"
 
-            def summarize_section(section):
+            def summarize_section(section) -> str:
                 percentage = section.float().mean().item()
                 if percentage == 1:
                     return "█"
@@ -907,7 +1190,7 @@ class BlockMask:
 
         return "\n".join(total_vis)
 
-    def to(self, device: Union[torch.device, str]) -> "BlockMask":
+    def to(self, device: torch.device | str) -> BlockMask:
         """Moves the BlockMask to the specified device.
 
         Args:
@@ -931,50 +1214,105 @@ class BlockMask:
         )
         return BlockMask(*mapped_attributes)
 
-    def _flatten(self):
-        """Flatten BlockMask into a list of tensors and context."""
+    @staticmethod
+    def _wrap_context_value(attr: str, value: Any) -> Any:
+        if attr == "mask_mod":
+            return _MaskModWrapper(value)
+        return value
+
+    @staticmethod
+    def _unwrap_context_value(attr: str, value: Any) -> Any:
+        if attr == "mask_mod":
+            if not isinstance(value, _MaskModWrapper):
+                raise AssertionError(f"Expected _MaskModWrapper, got {type(value)}")
+            return value.fn
+        return value
+
+    def _flatten(
+        self,
+    ) -> tuple[tuple[BaseArgumentTypes | None, ...], tuple[Any, ...]]:
+        """Flatten BlockMask into a list of tensors and context.
+
+        Closure tensors from mask_mod are extracted into the leaves via
+        _extract_closure_pytree so they are visible to the tracing
+        infrastructure (instead of being hidden in the pytree context).
+        """
         tensors = tuple(getattr(self, attr) for attr in self._TENSOR_ATTRS)
-        context = tuple(getattr(self, attr) for attr in self._CONTEXT_ATTRS)
-        return tensors, context
+        closure_leaves, closure_spec, stripped = _extract_closure_pytree(self.mask_mod)
+        all_leaves = tensors + closure_leaves
+        context = tuple(
+            self._wrap_context_value(attr, getattr(self, attr))
+            if attr != "mask_mod"
+            else _MaskModWrapper(stripped, closure_spec)
+            for attr in self._CONTEXT_ATTRS
+        )
+        return all_leaves, context
 
     @classmethod
-    def _unflatten(cls, tensors, context):
-        """Unflatten tensors and context back into a BlockMask."""
-        kwargs = {
-            **dict(zip(cls._CONTEXT_ATTRS, context)),
-            **dict(zip(cls._TENSOR_ATTRS, tensors)),
-        }
-        # pyrefly: ignore [bad-argument-type]
+    def _unflatten(
+        cls,
+        leaves: tuple[Any, ...],
+        context: tuple[Any, ...],
+    ) -> Self:
+        """Unflatten leaves and context back into a BlockMask."""
+        n_regular = len(cls._TENSOR_ATTRS)
+        regular_leaves = leaves[:n_regular]
+        closure_leaves = leaves[n_regular:]
+        kwargs = {}
+        for attr, val in zip(cls._CONTEXT_ATTRS, context):
+            if attr == "mask_mod" and isinstance(val, _MaskModWrapper):
+                kwargs[attr] = _reconstruct_closure_fn(
+                    val.fn, closure_leaves, val.closure_spec
+                )
+            else:
+                kwargs[attr] = cls._unwrap_context_value(attr, val)
+        kwargs.update(zip(cls._TENSOR_ATTRS, regular_leaves))
         return cls(**kwargs)
 
-    def _flatten_with_keys(self):
-        """Flatten BlockMask with keys for better tracing."""
+    def _flatten_with_keys(
+        self,
+    ) -> tuple[tuple[tuple[GetAttrKey, Any], ...], tuple[tuple[GetAttrKey, Any], ...]]:
+        """Flatten BlockMask with keys for better tracing.
+
+        Closure tensors from mask_mod are extracted into the leaves via
+        _extract_closure_pytree so they are visible to the tracing
+        infrastructure (instead of being hidden in the pytree context).
+        """
         tensors = tuple(
             (GetAttrKey(attr), getattr(self, attr)) for attr in self._TENSOR_ATTRS
         )
-        context = tuple(
-            (GetAttrKey(attr), getattr(self, attr)) for attr in self._CONTEXT_ATTRS
+        closure_leaves, closure_spec, stripped = _extract_closure_pytree(self.mask_mod)
+        closure_with_keys = tuple(
+            (GetAttrKey(f"_closure_{i}"), leaf) for i, leaf in enumerate(closure_leaves)
         )
-        return tensors, context
+        all_leaves = tensors + closure_with_keys
+        context = tuple(
+            (GetAttrKey(attr), self._wrap_context_value(attr, getattr(self, attr)))
+            if attr != "mask_mod"
+            else (GetAttrKey(attr), _MaskModWrapper(stripped, closure_spec))
+            for attr in self._CONTEXT_ATTRS
+        )
+        return all_leaves, context
 
 
-def _broadcast_to_dim(x, dim):
+def _broadcast_to_dim(x: Tensor, dim: int) -> Tensor:
     while x.dim() < dim:
         x = x.unsqueeze(0)
     return x
 
 
-def _round_up_to_multiple(x, multiple):
+def _round_up_to_multiple(x: int, multiple: int) -> int:
     return (x + multiple - 1) // multiple * multiple
 
 
 def _convert_mask_to_block_mask(
     mask: Tensor,
-    Q_BLOCK_SIZE=_DEFAULT_SPARSE_BLOCK_SIZE,
-    KV_BLOCK_SIZE=_DEFAULT_SPARSE_BLOCK_SIZE,
+    Q_BLOCK_SIZE: int = _DEFAULT_SPARSE_BLOCK_SIZE,
+    KV_BLOCK_SIZE: int = _DEFAULT_SPARSE_BLOCK_SIZE,
     separate_full_blocks: bool = False,
-) -> tuple[Tensor, Optional[Tensor]]:
-    assert mask.dtype == torch.bool
+) -> tuple[Tensor, Tensor | None]:
+    if mask.dtype != torch.bool:
+        raise AssertionError(f"mask.dtype must be torch.bool, got {mask.dtype}")
     mask = _broadcast_to_dim(mask, 4)
 
     def padding_needed_for_multiple(x, multiple):
@@ -990,8 +1328,14 @@ def _convert_mask_to_block_mask(
         ),
     )
     B, H, Q, KV = mask.shape
-    assert Q % Q_BLOCK_SIZE == 0
-    assert KV % KV_BLOCK_SIZE == 0
+    if Q % Q_BLOCK_SIZE != 0:
+        raise AssertionError(
+            f"Q ({Q}) must be divisible by Q_BLOCK_SIZE ({Q_BLOCK_SIZE})"
+        )
+    if KV % KV_BLOCK_SIZE != 0:
+        raise AssertionError(
+            f"KV ({KV}) must be divisible by KV_BLOCK_SIZE ({KV_BLOCK_SIZE})"
+        )
     mask = mask.view(
         B, H, Q // Q_BLOCK_SIZE, Q_BLOCK_SIZE, KV // KV_BLOCK_SIZE, KV_BLOCK_SIZE
     )  # [B, H, Q//Q_BLOCK_SIZE, Q_BLOCK_SIZE, KV//KV_BLOCK_SIZE, KV_BLOCK_SIZE]
@@ -1019,7 +1363,7 @@ def or_masks(*mask_mods: _mask_mod_signature) -> _mask_mod_signature:
     if not all(callable(arg) for arg in mask_mods):
         raise RuntimeError(f"All inputs should be callable mask_mods: {mask_mods}")
 
-    def or_mask(b, h, q_idx, kv_idx):
+    def or_mask(b: Tensor, h: Tensor, q_idx: Tensor, kv_idx: Tensor) -> Tensor:
         result = b.new_zeros((), dtype=torch.bool)
         for mask in mask_mods:
             result = result | mask(b, h, q_idx, kv_idx)
@@ -1033,7 +1377,7 @@ def and_masks(*mask_mods: _mask_mod_signature) -> _mask_mod_signature:
     if not all(callable(arg) for arg in mask_mods):
         raise RuntimeError(f"All inputs should be callable mask_mods: {mask_mods}")
 
-    def and_mask(b, h, q_idx, kv_idx):
+    def and_mask(b: Tensor, h: Tensor, q_idx: Tensor, kv_idx: Tensor) -> Tensor:
         result = b.new_ones((), dtype=torch.bool)
         for mask in mask_mods:
             result = result & mask(b, h, q_idx, kv_idx)
@@ -1043,11 +1387,12 @@ def and_masks(*mask_mods: _mask_mod_signature) -> _mask_mod_signature:
 
 
 def _convert_block_mask_to_mask(
-    block_mask,
-    KV_BLOCK_SIZE=_DEFAULT_SPARSE_BLOCK_SIZE,
-    Q_BLOCK_SIZE=_DEFAULT_SPARSE_BLOCK_SIZE,
+    block_mask: Tensor,
+    KV_BLOCK_SIZE: int = _DEFAULT_SPARSE_BLOCK_SIZE,
+    Q_BLOCK_SIZE: int = _DEFAULT_SPARSE_BLOCK_SIZE,
 ) -> Tensor:
-    assert block_mask.dim() == 4
+    if block_mask.dim() != 4:
+        raise AssertionError(f"block_mask.dim() must be 4, got {block_mask.dim()}")
     B, H, Q, KV = block_mask.shape
     block_mask = block_mask.expand(Q_BLOCK_SIZE, KV_BLOCK_SIZE, *block_mask.shape)
     block_mask = block_mask.permute(2, 3, 4, 0, 5, 1).reshape(
@@ -1057,8 +1402,8 @@ def _convert_block_mask_to_mask(
 
 
 def _create_sparse_block_from_block_mask(
-    block_mask: tuple[Tensor, Optional[Tensor]],
-    mask_mod: Optional[Callable],
+    block_mask: tuple[Tensor, Tensor | None],
+    mask_mod: _mask_mod_signature | None,
     seq_lengths: tuple[int, int],
     Q_BLOCK_SIZE: int = _DEFAULT_SPARSE_BLOCK_SIZE,
     KV_BLOCK_SIZE: int = _DEFAULT_SPARSE_BLOCK_SIZE,
@@ -1067,9 +1412,7 @@ def _create_sparse_block_from_block_mask(
 
     partial_bm = _dense_to_ordered(partial_blocks)
     if full_blocks is not None:
-        full_bm: tuple[Optional[Tensor], Optional[Tensor]] = _dense_to_ordered(
-            full_blocks
-        )
+        full_bm: tuple[Tensor | None, Tensor | None] = _dense_to_ordered(full_blocks)
     else:
         full_bm = (None, None)
 
@@ -1085,12 +1428,12 @@ def _create_sparse_block_from_block_mask(
 
 
 def create_mask(
-    mod_fn: Union[_score_mod_signature, _mask_mod_signature],
-    B: Optional[int],
-    H: Optional[int],
+    mod_fn: _score_mod_signature | _mask_mod_signature,
+    B: int | None,
+    H: int | None,
     Q_LEN: int,
     KV_LEN: int,
-    device: Optional[DeviceLikeType] = None,
+    device: DeviceLikeType | None = None,
 ) -> Tensor:
     r"""This function creates a mask tensor from a mod_fn function.
 
@@ -1137,12 +1480,12 @@ def create_mask(
 
 def create_block_mask(
     mask_mod: _mask_mod_signature,
-    B: Optional[int],
-    H: Optional[int],
+    B: int | None,
+    H: int | None,
     Q_LEN: int,
     KV_LEN: int,
-    device: Optional[DeviceLikeType] = None,
-    BLOCK_SIZE: Union[int, tuple[int, int]] = _DEFAULT_SPARSE_BLOCK_SIZE,
+    device: DeviceLikeType | None = None,
+    BLOCK_SIZE: int | tuple[int, int] = _DEFAULT_SPARSE_BLOCK_SIZE,
     _compile=False,
 ) -> BlockMask:
     r"""This function creates a block mask tuple from a mask_mod function.
@@ -1179,9 +1522,10 @@ def create_block_mask(
     if device is None:
         device = torch.accelerator.current_accelerator() or "cpu"
     mod_type = _get_mod_type(mask_mod)
-    assert mod_type == _ModificationType.MASK_MOD, (
-        f"create-block_mask requires a mask_mod function! Got {mask_mod}"
-    )
+    if mod_type != _ModificationType.MASK_MOD:
+        raise AssertionError(
+            f"create-block_mask requires a mask_mod function! Got {mask_mod}"
+        )
     if B is None:
         B = 1
     if H is None:
@@ -1239,11 +1583,33 @@ def _apply_kernel_options(
     key: Tensor,
     value: Tensor,
     return_lse: bool,
-    kernel_options,
-    return_aux: Optional[AuxRequest] = None,
-):
-    kernel_options = {} if kernel_options is None else dict(kernel_options)
+    kernel_options: FlexKernelOptions | None,
+    return_aux: AuxRequest | None = None,
+) -> _KernelOptionsWithInternals:
+    kernel_options = cast(
+        _KernelOptionsWithInternals,
+        {} if kernel_options is None else dict(kernel_options),
+    )
 
+    if "BACKEND" in kernel_options and kernel_options.get(
+        "FORCE_USE_FLEX_ATTENTION", False
+    ):
+        # TODO: remove FORCE_USE_FLEX_ATTENTION once BACKEND is fully adopted.
+        raise RuntimeError(
+            "BACKEND cannot be combined with legacy FORCE_USE_FLEX_ATTENTION. "
+            "BACKEND supersedes the legacy knob; please drop FORCE_USE_FLEX_ATTENTION "
+            "and only specify the desired BACKEND."
+        )
+
+    if "BACKEND" in kernel_options:
+        valid_backends = typing.get_args(_Backend)
+        if kernel_options["BACKEND"] not in valid_backends:
+            raise ValueError(
+                f"Invalid BACKEND value '{kernel_options['BACKEND']}'. "
+                f"Must be one of {valid_backends}"
+            )
+
+    kernel_options.setdefault("BACKEND", "AUTO")
     kernel_options.setdefault("PRESCALE_QK", False)
     kernel_options.setdefault("ROWS_GUARANTEED_SAFE", False)
     kernel_options.setdefault("BLOCKS_ARE_CONTIGUOUS", False)
@@ -1266,7 +1632,8 @@ def _apply_kernel_options(
         output_max = return_aux.max_scores
 
     # If forward kernel needs to return logsumexp is decided by this rule internally.
-    assert "OUTPUT_LOGSUMEXP" not in kernel_options
+    if "OUTPUT_LOGSUMEXP" in kernel_options:
+        raise AssertionError("OUTPUT_LOGSUMEXP must not be in kernel_options")
     kernel_options["OUTPUT_LOGSUMEXP"] = True
     if not output_lse:
         # We used to check if q,k,v required grads but since captured buffers can require grad
@@ -1278,7 +1645,13 @@ def _apply_kernel_options(
             kernel_options["OUTPUT_LOGSUMEXP"] = False
 
     # If forward kernel needs to return max is decided by this rule internally.
-    assert "OUTPUT_MAX" not in kernel_options
+    if "OUTPUT_MAX" in kernel_options:
+        raise AssertionError("OUTPUT_MAX must not be in kernel_options")
+    if kernel_options["BACKEND"] == "FLASH" and output_max:
+        raise NotImplementedError(
+            "Returning max scores is not supported with BACKEND='FLASH'. "
+            "Use return_aux=AuxRequest(lse=True) or omit max_scores."
+        )
     kernel_options["OUTPUT_MAX"] = output_max
     if any_inputs_on_cpu_device and output_max:
         # CPU doesn't support returning max yet
@@ -1289,7 +1662,7 @@ def _apply_kernel_options(
     return kernel_options
 
 
-def _validate_embed_dim(query: Tensor, key: Tensor, value: Tensor):
+def _validate_embed_dim(query: Tensor, key: Tensor, value: Tensor) -> None:
     if query.size(-1) != key.size(-1):
         raise ValueError(
             f"Expect query and key/value to have the same embedding dimension "
@@ -1297,10 +1670,16 @@ def _validate_embed_dim(query: Tensor, key: Tensor, value: Tensor):
         )
 
 
-def _validate_device(query: Tensor, key: Tensor, value: Tensor):
+def _validate_device(query: Tensor, key: Tensor, value: Tensor) -> None:
     """TODO: Remove once non cuda/cpu devices support is added
     We only need to check query since we have already that q,k,v are on the same device
     """
+    if query.device.type == "cpu" and (
+        query.requires_grad or key.requires_grad or value.requires_grad
+    ):
+        raise NotImplementedError(
+            "FlexAttention does not support backward on CPU. Please set the input requires_grad to False or use another device."
+        )
     supported_devices = {"cuda", "cpu", "xpu", "hpu"}
     if query.device.type not in supported_devices:
         raise ValueError(
@@ -1368,20 +1747,91 @@ def _enforce_mem_layouts(
     return query, key, value
 
 
+@overload
 def flex_attention(
     query: Tensor,
     key: Tensor,
     value: Tensor,
-    score_mod: Optional[_score_mod_signature] = None,
-    block_mask: Optional[BlockMask] = None,
-    scale: Optional[float] = None,
+    score_mod: _score_mod_signature | None = ...,
+    block_mask: BlockMask | None = ...,
+    scale: float | None = ...,
+    enable_gqa: bool = ...,
+    return_lse: Literal[False] = ...,
+    kernel_options: FlexKernelOptions | None = ...,
+    *,
+    return_aux: None = ...,
+) -> Tensor: ...
+
+
+@overload
+@deprecated(
+    "return_lse is deprecated and will be removed in v2.10. "
+    "Use return_aux=AuxRequest(lse=True) instead.",
+    category=FutureWarning,
+)
+def flex_attention(
+    query: Tensor,
+    key: Tensor,
+    value: Tensor,
+    score_mod: _score_mod_signature | None = ...,
+    block_mask: BlockMask | None = ...,
+    scale: float | None = ...,
+    enable_gqa: bool = ...,
+    return_lse: Literal[True] = ...,
+    kernel_options: FlexKernelOptions | None = ...,
+    *,
+    return_aux: None = ...,
+) -> tuple[Tensor, Tensor]: ...
+
+
+@overload
+def flex_attention(
+    query: Tensor,
+    key: Tensor,
+    value: Tensor,
+    score_mod: _score_mod_signature | None = ...,
+    block_mask: BlockMask | None = ...,
+    scale: float | None = ...,
+    enable_gqa: bool = ...,
+    return_lse: bool = ...,
+    kernel_options: FlexKernelOptions | None = ...,
+    *,
+    return_aux: AuxRequest,
+) -> tuple[Tensor, AuxOutput]: ...
+
+
+@overload
+def flex_attention(
+    query: Tensor,
+    key: Tensor,
+    value: Tensor,
+    score_mod: _score_mod_signature | None = ...,
+    block_mask: BlockMask | None = ...,
+    scale: float | None = ...,
+    enable_gqa: bool = ...,
+    return_lse: Literal[True] = ...,
+    kernel_options: FlexKernelOptions | None = ...,
+    *,
+    return_aux: AuxRequest,
+) -> Never: ...
+
+
+def flex_attention(
+    query: Tensor,
+    key: Tensor,
+    value: Tensor,
+    score_mod: _score_mod_signature | None = None,
+    block_mask: BlockMask | None = None,
+    scale: float | None = None,
     enable_gqa: bool = False,
     return_lse: bool = False,
-    kernel_options: Optional[FlexKernelOptions] = None,
+    kernel_options: FlexKernelOptions | None = None,
     *,
-    return_aux: Optional[AuxRequest] = None,
-) -> Union[Tensor, tuple[Tensor, Tensor], tuple[Tensor, AuxOutput]]:
-    r"""This function implements scaled dot product attention with an arbitrary attention score modification function.
+    return_aux: AuxRequest | None = None,
+) -> Tensor | tuple[Tensor, Tensor] | tuple[Tensor, AuxOutput]:
+    r"""This function implements scaled dot product attention with an arbitrary attention score modification function
+    described in the `Flex Attention <https://arxiv.org/abs/2412.05496>`_ paper. See also the
+    `blog post <https://pytorch.org/blog/flexattention/>`_.
 
     This function computes the scaled dot product attention between query, key, and value tensors with a user-defined
     attention score modification function. The attention score modification function will be applied after the attention
@@ -1445,7 +1895,7 @@ def flex_attention(
 
     """
     # Some basic input validation
-    _validate_sdpa_input(query, key, value)
+    _validate_sdpa_input(query, key, value, allow_lowp_kv=True)
     _validate_embed_dim(query, key, value)
     _validate_device(query, key, value)
     query, key, value = _enforce_mem_layouts(query, key, value)
@@ -1512,8 +1962,14 @@ def flex_attention(
                 f"block_mask was created for block_mask.shape={block_mask.shape} but got q_len={query.size(-2)} and kv_len={key.size(-2)}. "
                 "As the block mask was created for a larger length than you're using it for, you can either 1. create a new block mask with the correct length, or 2. 'adjust' the existing block mask to the correct length by calling block_mask._adjust(q_len, kv_len). This essentially 'crops' the block mask to the upper left corner, which does not work for all mask_mods!"
             )
-        assert query.size(-2) == block_mask_q_len
-        assert key.size(-2) == block_mask_kv_len
+        if query.size(-2) != block_mask_q_len:
+            raise AssertionError(
+                f"query.size(-2) ({query.size(-2)}) != block_mask_q_len ({block_mask_q_len})"
+            )
+        if key.size(-2) != block_mask_kv_len:
+            raise AssertionError(
+                f"key.size(-2) ({key.size(-2)}) != block_mask_kv_len ({block_mask_kv_len})"
+            )
 
     if scale is None:
         scale = 1.0 / math.sqrt(query.size(-1))
@@ -1552,7 +2008,7 @@ def flex_attention(
         lse,
         max_scores,
         *,
-        return_aux: Optional[AuxRequest],
+        return_aux: AuxRequest | None,
         return_lse: bool,
     ):
         """Normalize stats and build return value (aux-aware, legacy-compatible)."""
@@ -1610,42 +2066,28 @@ def flex_attention(
     if not torch._dynamo.is_dynamo_supported():
         raise RuntimeError("flex_attention requires dynamo support")
 
-    from torch._dynamo.backends.debugging import (
-        make_eager_backend_with_torch_function_mode,
-    )
-
     # Dynamo is expecting a callable with "__code__" attribute.
     # We cannot directly pass hop to it. So we wrap it in a dummy function.
     def _flex_attention_hop_wrapper(*args, **kwargs):
         return flex_attention_hop(*args, **kwargs)
 
-    with _set_compilation_env():
-        with torch._dynamo.utils.disable_cache_limit():
-            with _temp_remove_pre_dispatch_torch_function_mode():
-                with _temp_remove_metadata_torch_function_mode() as metadata_mode:
-                    if metadata_mode:
-                        backend: Union[str, Callable[..., Any]] = (
-                            make_eager_backend_with_torch_function_mode(metadata_mode)
-                        )
-                    else:
-                        backend = "eager"
+    with setup_compilation_env() as backend:
+        if _FLEX_ATTENTION_DISABLE_COMPILE_DEBUG:
+            flex_fn = _flex_attention_hop_wrapper
+        else:
+            flex_fn = torch.compile(
+                _flex_attention_hop_wrapper, backend=backend, fullgraph=True
+            )
 
-                    if _FLEX_ATTENTION_DISABLE_COMPILE_DEBUG:
-                        flex_fn = _flex_attention_hop_wrapper
-                    else:
-                        flex_fn = torch.compile(
-                            _flex_attention_hop_wrapper, backend=backend, fullgraph=True
-                        )
-
-                    out, lse, max_scores = flex_fn(
-                        query,
-                        key,
-                        value,
-                        score_mod,
-                        block_mask.as_tuple(),  # type: ignore[union-attr]
-                        scale,
-                        kernel_options,
-                    )
+        out, lse, max_scores = flex_fn(
+            query,
+            key,
+            value,
+            score_mod,
+            block_mask.as_tuple(),
+            scale,
+            kernel_options,
+        )
     return _finalize_outputs(
         out, lse, max_scores, return_aux=return_aux, return_lse=return_lse
     )

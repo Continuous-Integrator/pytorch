@@ -1,6 +1,7 @@
 from collections.abc import Callable
-from typing import Any, Optional
+from typing import Any
 
+from .effects import EffectHolder
 from .fake_impl import FakeImplHolder
 from .utils import RegistrationHandle
 
@@ -51,6 +52,8 @@ class SimpleOperatorEntry:
             GenericTorchDispatchRuleHolder(qualname)
         )
 
+        self.effect: EffectHolder = EffectHolder(qualname)
+
     # For compatibility reasons. We can delete this soon.
     @property
     def abstract_impl(self) -> FakeImplHolder:
@@ -76,13 +79,13 @@ class GenericTorchDispatchRuleHolder:
 
         return RegistrationHandle(deregister)
 
-    def find(self, torch_dispatch_class: type) -> Optional[Callable[..., Any]]:
+    def find(self, torch_dispatch_class: type) -> Callable[..., Any] | None:
         return self._data.get(torch_dispatch_class, None)
 
 
 def find_torch_dispatch_rule(
     op: Any, torch_dispatch_class: type
-) -> Optional[Callable[..., Any]]:
+) -> Callable[..., Any] | None:
     return singleton.find(op.__qualname__).torch_dispatch_rules.find(
         torch_dispatch_class
     )

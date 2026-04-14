@@ -5,7 +5,6 @@ import functools
 import sys
 from collections.abc import Callable
 from itertools import chain, product
-from typing import Union
 
 import torch
 import torch.distributed as dist
@@ -256,7 +255,7 @@ class TestStateDict(DTensorTestBase, VerifyStateDictMixin):
     def _test_fsdp2(
         self,
         *,
-        reshard_after_forward: Union[bool, int],
+        reshard_after_forward: bool | int,
         optimizer_class: type[Optimizer],
         compile_model: bool,
         foreach: bool = True,
@@ -769,7 +768,7 @@ class TestStateDict(DTensorTestBase, VerifyStateDictMixin):
         model_state_dict3 = copy.deepcopy(model_state_dict3)
         self.assertEqual(len(model_state_dict2), 2)
         self.assertEqual(len(model_state_dict3), 2)
-        for key in model_state_dict3.keys():
+        for key in model_state_dict3:
             full_fqn = f"l.{key}"
             value1 = model_state_dict1[full_fqn]
             value2 = model_state_dict2[full_fqn]
@@ -886,7 +885,7 @@ class TestStateDict(DTensorTestBase, VerifyStateDictMixin):
             self.assertEqual(cpu_model_value, meta_model_value)
 
     @with_comms
-    @skip_if_lt_x_gpu(2)
+    @skip_if_lt_x_gpu(4)
     def test_setting_meta_device_model_broadcasting_and_memory(self) -> None:
         # This test verifies that we can set model state dict by a meta device model
         # With the correlated changes in state_dict, meta device model should be accepted
@@ -952,7 +951,10 @@ class TestStateDict(DTensorTestBase, VerifyStateDictMixin):
             model.state_dict().items(),
             expected_state_dict.items(),
         ):
-            assert actual_name == expected_name
+            if actual_name != expected_name:
+                raise AssertionError(
+                    f"Expected name {expected_name}, got {actual_name}"
+                )
             torch.testing.assert_close(tensor, expected_tensor, msg=expected_name)
 
     @with_comms

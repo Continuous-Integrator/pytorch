@@ -6,7 +6,7 @@ import traceback
 import warnings
 
 
-MIN_CUDA_VERSION = "11.6"
+MIN_CUDA_VERSION = "12.1"
 MIN_ROCM_VERSION = "5.4"
 MIN_PYTHON_VERSION = (3, 10)
 
@@ -174,6 +174,7 @@ def check_dynamo(backend, device, err_msg) -> None:
                 return x + x
 
         mod = Module()
+        # pyrefly: ignore [bad-argument-type]
         opt_mod = dynamo.optimize(backend, nopython=True)(mod)
 
         for f in (fn, opt_mod):
@@ -216,8 +217,8 @@ def main() -> None:
         f"ROCM version: {rocm_ver}\n"
     )
     for args in _SANITY_CHECK_ARGS:
-        if sys.version_info >= (3, 14):
-            warnings.warn("Dynamo not yet supported in Python 3.14. Skipping check.")
+        if sys.version_info >= (3, 15):
+            warnings.warn("Dynamo not yet supported in Python 3.15.")
         check_dynamo(*args)
     print("All required checks passed")
 

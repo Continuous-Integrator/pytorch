@@ -6,13 +6,14 @@ import functools
 import itertools
 import re
 from enum import auto, Enum
-from typing import Any, Callable, NamedTuple, Optional, TYPE_CHECKING, TypeVar
+from typing import Any, NamedTuple, TYPE_CHECKING, TypeVar
 
 import sympy
 
 import torch.fx
 from torch._dynamo.utils import identity
 from torch.fx.proxy import Scope, TracerBase
+from torch.utils._sympy.functions import Mod
 from torch.utils._sympy.symbol import SymT
 
 from . import config, dependencies
@@ -28,7 +29,7 @@ from .virtualized import ops, V
 
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Callable, Sequence
 
 
 T = TypeVar("T")
@@ -73,8 +74,8 @@ class LightTracer(TracerBase):
 
 class MemoryEntry(NamedTuple):
     index_name: str  # LoopBody.indexing_exprs[index_name]
-    buffer_name: Optional[str]
-    mode: Optional[str]  # V.ops.store(..., mode=mode)
+    buffer_name: str | None
+    mode: str | None  # V.ops.store(..., mode=mode)
 
 
 class MemoryUsageType(Enum):
@@ -95,7 +96,6 @@ class LoopBody:
     """
 
     indexing_exprs: dict[str, sympy.Expr]
-    indexing_exprs_name: dict[sympy.Expr, str]
     submodules: dict[str, Any]
     subblocks: dict[str, LoopBodyBlock]
     indirect_vars: list[sympy.Symbol]
@@ -103,6 +103,9 @@ class LoopBody:
     root_block: LoopBodyBlock
     memory_usage: dict[MemoryUsageType, list[MemoryEntry]]
     op_counts: collections.Counter[str]
+
+    # defined only temporarily
+    indexing_exprs_name: dict[sympy.Expr, str]
 
     def __init__(
         self,
@@ -131,6 +134,14 @@ class LoopBody:
             self._init_with_tracing(fn, args)
 
         self.indexing = None
+
+    def get_original_num_rdims(self) -> int:
+        assert self.has_partial_accumulate
+        node = self.root_block.graph.find_nodes(
+            op="call_method", target="partial_accumulate"
+        )[0]
+        meta = node.args[-1]
+        return meta["num_reduction_dims"]
 
     def extract_pw_from_reduction(self):
         self.root_block = self.root_block.extract_pw_from_reduction()
@@ -258,7 +269,7 @@ class LoopBody:
             reduce_idx = index[len(iter_size) :]
 
             new_iter_idx = list(iter_idx)
-            new_iter_idx[dimension] = iter_idx[dimension] % original_range
+            new_iter_idx[dimension] = Mod(iter_idx[dimension], original_range)
 
             return old_body(new_iter_idx, reduce_idx)
 
@@ -417,8 +428,8 @@ class LoopBody:
         self,
         expr: sympy.Expr,
         mtype: MemoryUsageType,
-        buffer_name: Optional[str] = None,
-        mode: Optional[str] = None,
+        buffer_name: str | None = None,
+        mode: str | None = None,
     ):
         name = self.indexing_exprs_name.get(expr)
         if not name:
@@ -553,9 +564,12 @@ class LoopBodyBlock:
         buf = store.args[1]
         ops = store.args[0]
 
+        extra_meta = {
+            "num_reduction_dims": len(self.body.reduce_vars),
+        }
         with self.graph.inserting_after(store):
             self.graph.call_method(
-                "partial_accumulate", (ops, buf, reduction_type, red_arg)
+                "partial_accumulate", (ops, buf, reduction_type, red_arg, extra_meta)
             )
         self.graph.erase_node(store)
         self.graph.erase_node(red)
@@ -676,8 +690,8 @@ class CaptureIndexing(WrapperHandler):
         boundary_indices: T,
         indexing_dtype: torch.dtype,
         right: bool,
-        sorter: Optional[tuple[str, sympy.Expr]] = None,
-        sorter_indices: Optional[T] = None,
+        sorter: tuple[str, sympy.Expr] | None = None,
+        sorter_indices: T | None = None,
     ) -> T:
         """
         See [Note: Inductor bucketize op]

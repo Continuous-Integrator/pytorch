@@ -113,9 +113,21 @@ if(INTERN_BUILD_ATEN_OPS)
             list(APPEND _file_compile_flags "-gencode;arch=compute_103a,code=sm_103a")
           endif()
         endif()
+        # We will need to gate against CUDA version, because sm_110a is available on CUDA 13.0+
+        if("${_arch}" STREQUAL "110a" AND CUDA_VERSION VERSION_GREATER_EQUAL 13.0)
+          if(_existing_arch_flags MATCHES ".*compute_110.*")
+            list(APPEND _file_compile_flags "-gencode;arch=compute_110a,code=sm_110a")
+          endif()
+        endif()
         if("${_arch}" STREQUAL "120a")
           if(_existing_arch_flags MATCHES ".*compute_120.*")
             list(APPEND _file_compile_flags "-gencode;arch=compute_120a,code=sm_120a")
+          endif()
+        endif()
+        # We will need to gate against CUDA version, sm_121a was introduced in CUDA 12.9
+        if("${_arch}" STREQUAL "121a" AND CUDA_VERSION VERSION_GREATER_EQUAL 12.9)
+          if(_existing_arch_flags MATCHES ".*compute_120.*")
+            list(APPEND _file_compile_flags "-gencode;arch=compute_121a,code=sm_121a")
           endif()
         endif()
       endforeach()
@@ -126,13 +138,13 @@ if(INTERN_BUILD_ATEN_OPS)
 
     _BUILD_FOR_ADDITIONAL_ARCHS(
       "${CMAKE_CURRENT_LIST_DIR}/../aten/src/ATen/native/cuda/RowwiseScaledMM.cu"
-      "89;90a;100a;103a;120a")
+      "89;90a;100a;103a;110a;120a;121a")
     _BUILD_FOR_ADDITIONAL_ARCHS(
       "${CMAKE_CURRENT_LIST_DIR}/../aten/src/ATen/native/cuda/ScaledGroupMM.cu"
       "90a")
     _BUILD_FOR_ADDITIONAL_ARCHS(
       "${CMAKE_CURRENT_LIST_DIR}/../aten/src/ATen/native/cuda/GroupMM.cu"
-      "90a;100a;103a")
+      "90a;100a;103a;110a")
 
   endif()
 
@@ -149,6 +161,11 @@ if(INTERN_BUILD_ATEN_OPS)
   set(GEN_XPU_FLAG)
   if(USE_XPU)
     set(GEN_XPU_FLAG --xpu)
+  endif()
+
+  set(GEN_MTIA_FLAG)
+  if(USE_MTIA)
+    set(GEN_MTIA_FLAG --mtia)
   endif()
 
   set(CUSTOM_BUILD_FLAGS)
@@ -237,6 +254,7 @@ if(INTERN_BUILD_ATEN_OPS)
       ${GEN_ROCM_FLAG}
       ${GEN_MPS_FLAG}
       ${GEN_XPU_FLAG}
+      ${GEN_MTIA_FLAG}
       ${CUSTOM_BUILD_FLAGS}
   )
 
@@ -399,14 +417,10 @@ if(INTERN_BUILD_ATEN_OPS)
     LIST(APPEND CPU_CAPABILITY_FLAGS "${OPT_FLAG}  ${CXX_ZVECTOR_FLAGS}")
   endif(CXX_ZVECTOR_FOUND)
 
-  if(CXX_SVE_FOUND AND CXX_SVE256_FOUND AND CXX_ARM_BF16_FOUND)
+  if(CXX_SVE256_FOUND)
     list(APPEND CPU_CAPABILITY_NAMES "SVE256")
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DHAVE_SVE_CPU_DEFINITION -DHAVE_SVE256_CPU_DEFINITION -DHAVE_ARM_BF16_CPU_DEFINITION")
-    if("${CMAKE_C_COMPILER_ID}" MATCHES "Clang")
-      list(APPEND CPU_CAPABILITY_FLAGS "${OPT_FLAG} -O2 -march=armv8-a+sve+bf16 -D__ARM_FEATURE_BF16 -DCPU_CAPABILITY_SVE -msve-vector-bits=256")
-    else()
-      list(APPEND CPU_CAPABILITY_FLAGS "${OPT_FLAG} -march=armv8-a+sve+bf16 -D__ARM_FEATURE_BF16 -DCPU_CAPABILITY_SVE -msve-vector-bits=256")
-    endif()
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DHAVE_SVE_CPU_DEFINITION")
+    list(APPEND CPU_CAPABILITY_FLAGS "${OPT_FLAG} -march=armv8-a+sve+bf16 -D__ARM_FEATURE_BF16 -msve-vector-bits=256")
   endif()
 
   list(LENGTH CPU_CAPABILITY_NAMES NUM_CPU_CAPABILITY_NAMES)

@@ -203,7 +203,7 @@ std::tuple<Tensor, Tensor, Tensor> mkldnn_linear_backward(
   if (output_mask[1] || output_mask[2]) {
     std::tie(grad_weight, grad_bias) = at::mkldnn_linear_backward_weights(grad_output, input, weight, output_mask[2]);
   }
-  return std::tuple<Tensor, Tensor, Tensor>{grad_input, grad_weight, grad_bias};
+  return std::tuple<Tensor, Tensor, Tensor>{std::move(grad_input), std::move(grad_weight), std::move(grad_bias)};
 }
 
 Tensor mkldnn_linear_pointwise(
@@ -535,7 +535,7 @@ mkldnn_scaled_mm(const Tensor& mat1, const Tensor& mat2,
 
   float input_scale = scale_a.item<float>();
   float weight_scale = scale_b.item<float>();
-  float output_scale = float(1.0);
+  float output_scale = 1.0f;
   if (scale_result.has_value() &&
       (*out_dtype == ScalarType::Float8_e4m3fn ||
        *out_dtype == ScalarType::Float8_e5m2)) {

@@ -105,6 +105,12 @@ struct C10_API StorageImpl : public c10::intrusive_ptr_target {
     data_ptr_.clear();
   }
 
+  void incref_pyobject() const noexcept final;
+
+  void decref_pyobject() const noexcept final;
+
+  bool try_incref_pyobject() const noexcept final;
+
   size_t nbytes() const {
     // OK to do this instead of maybe_as_int as nbytes is guaranteed positive
     TORCH_CHECK(!size_bytes_is_heap_allocated_);
@@ -173,6 +179,24 @@ struct C10_API StorageImpl : public c10::intrusive_ptr_target {
   void set_data_ptr_noswap(at::DataPtr&& data_ptr) {
     data_ptr_ = std::move(data_ptr);
     refresh_has_data_ptr_check();
+  }
+
+  void swap_data_ptr(StorageImpl& other) {
+    maybe_materialize_cow();
+    other.maybe_materialize_cow();
+    std::swap(data_ptr_, other.data_ptr_);
+    std::swap(size_bytes_, other.size_bytes_);
+    std::swap(
+        size_bytes_is_heap_allocated_, other.size_bytes_is_heap_allocated_);
+    std::swap(resizable_, other.resizable_);
+    std::swap(allocator_, other.allocator_);
+    std::swap(throw_on_immutable_data_ptr_, other.throw_on_immutable_data_ptr_);
+    std::swap(throw_on_mutable_data_ptr_, other.throw_on_mutable_data_ptr_);
+    std::swap(
+        warn_deprecated_on_mutable_data_ptr_,
+        other.warn_deprecated_on_mutable_data_ptr_);
+    refresh_has_data_ptr_check();
+    other.refresh_has_data_ptr_check();
   }
 
   const void* data() const {
@@ -288,6 +312,14 @@ struct C10_API StorageImpl : public c10::intrusive_ptr_target {
     refresh_has_data_ptr_check();
   }
 
+  void clear_data_ptr_access_error_msg_() {
+    throw_on_immutable_data_ptr_ = false;
+    if (extra_meta_) {
+      extra_meta_->custom_data_ptr_error_msg_ = std::nullopt;
+    }
+    refresh_has_data_ptr_check();
+  }
+
   void set_throw_on_mutable_data_ptr() {
     throw_on_mutable_data_ptr_ = true;
     refresh_has_data_ptr_check();
@@ -369,5 +401,19 @@ C10_API c10::intrusive_ptr<c10::StorageImpl> make_storage_impl(
     c10::Allocator* allocator,
     bool resizable,
     std::optional<at::Device> device_opt);
+
+namespace detail {
+
+#ifndef C10_MOBILE
+template <class T>
+struct TargetTraits<
+    T,
+    std::enable_if_t<
+        std::is_base_of_v<c10::StorageImpl, std::remove_cv_t<T>>>> {
+  static constexpr bool can_have_pyobject = true;
+};
+#endif
+
+} // namespace detail
 
 } // namespace c10

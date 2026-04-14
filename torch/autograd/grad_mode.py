@@ -1,5 +1,5 @@
 # mypy: allow-untyped-defs
-from typing import Any, Union
+from typing import Any
 
 import torch
 from torch.utils._contextlib import (
@@ -311,20 +311,26 @@ def _exit_inference_mode(mode):
 
 
 class set_multithreading_enabled(_DecoratorContextManager):
-    r"""Context-manager that sets multithreaded backwards on or off.
+    r"""Context-manager that enables or disables multithreaded backward.
 
-    ``set_multithreading_enabled`` will enable or disable multithreaded backwards based on its argument :attr:`mode`.
-    It can be used as a context-manager or as a function.
+    Ordinarily, when :ref:`accelerator<accelerators>` devices are in use,
+    the backward pass runs on device-specific worker threads. The engine
+    creates these threads based on the number of available devices and
+    reuses them across iterations.
 
-    This context manager is thread local; it will not affect computation
-    in other threads.
+    When ``mode=False``, the backward pass runs on the calling thread
+    instead. ``mode=True`` restores the default behavior.
+
+    This can be used as a context-manager or as a function. It is
+    thread-local and will not affect computation in other threads.
 
     Args:
-        mode (bool): Flag whether to enable multithreaded backwards (``True``), or disable
-                     (``False``).
+        mode (bool): Whether to enable multithreaded backward (``True``,
+                    default) or disable (``False``).
 
     .. note::
-        This API does not apply to :ref:`forward-mode AD <forward-mode-ad>`.
+        This API does not apply to :ref:`forward-mode AD <forward-mode-ad>`,
+        which never uses multithreading.
 
     """
 
@@ -370,11 +376,15 @@ class _force_original_view_tracking(_DecoratorContextManager):
 
     def __init__(self, mode: bool) -> None:
         self.prev = torch._C._is_view_replay_enabled()
-        torch._C._set_view_replay_enabled(mode)
         self.mode = mode
+        torch._C._set_view_replay_enabled(mode)
+
+    def __call__(self, orig_func: F) -> F:
+        torch._C._set_view_replay_enabled(self.prev)
+        return super().__call__(orig_func)
 
     def __enter__(self) -> None:
-        pass
+        torch._C._set_view_replay_enabled(self.mode)
 
     def __exit__(self, exc_type: Any, exc_value: Any, traceback: Any) -> None:
         torch._C._set_view_replay_enabled(self.prev)
@@ -406,7 +416,7 @@ class _unsafe_preserve_version_counter(_DecoratorContextManager):
 
     """
 
-    def __init__(self, tensors: Union[torch.Tensor, tuple[torch.Tensor, ...]]) -> None:
+    def __init__(self, tensors: torch.Tensor | tuple[torch.Tensor, ...]) -> None:
         self.tensors = (tensors,) if isinstance(tensors, torch.Tensor) else tensors
         if not isinstance(self.tensors, tuple):
             raise AssertionError("Expected tensors to be a tuple")

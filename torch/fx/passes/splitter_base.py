@@ -2,12 +2,11 @@
 import argparse
 import copy
 import json
-import logging
 import os
 from collections import defaultdict
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
-from typing import Any, Literal, NamedTuple, Optional
+from typing import Any, Literal, NamedTuple
 
 import torch
 from torch._logging import trace_structured
@@ -18,7 +17,7 @@ from torch.fx.passes.graph_manipulation import get_size_of_node
 from .graph_drawer import FxGraphDrawer
 from .operator_support import get_node_target, OperatorSupportBase
 from .shape_prop import ShapeProp
-from .split_utils import split_by_tags
+from .split_utils import move_non_tensor_nodes_on_boundary, split_by_tags
 from .tools_common import (
     CALLABLE_NODE_OPS,
     FxNetAccFusionsFinder,
@@ -38,7 +37,6 @@ __all__ = [
     "NodeEvent",
     "NodeEventTracker",
 ]
-_LOGGER = logging.getLogger(__name__)
 
 DEFAULT_MIN_ACC_MODULE_SIZE = 1
 DEFAULT_SKIP_FUSION = False
@@ -69,6 +67,7 @@ Different modes of the event tracker for local debugging:
 "3": In addition to events dump, track all nodes with more than 1 event recursively and dump to DUMP_PREFIX_nodex.txt
 In addition to the above local dumps, tracker is always enabled and dumps via trace_structured.
 """
+# pyrefly: ignore [bad-assignment]
 TRACKER_MODE: Literal["0", "1", "2", "3"] = os.environ.get(
     ENV_FX_NET_ACC_SPLITTER_TRACKER_MODE, "0"
 )  # type: ignore[assignment]
@@ -81,6 +80,7 @@ class _SplitterSettingBase:
         skip_fusion=DEFAULT_SKIP_FUSION,
         allow_non_tensor=DEFAULT_ALLOW_NON_TENSOR,
         max_acc_splits: int = -1,
+        move_non_tensor_nodes_on_boundary: bool = False,
     ):
         parser = argparse.ArgumentParser()
         parser.add_argument(
@@ -119,6 +119,16 @@ class _SplitterSettingBase:
             "we might not care about non-tensor data flow and we can set this option "
             "to true to disable the functionality that prevent non-tensor data flow.",
         )
+        parser.add_argument(
+            "--move-non-tensor-nodes-on-boundary",
+            "--move_non_tensor_nodes_on_boundary",
+            required=False,
+            action="store_true",
+            help="AOTI does not support non-tensor nodes on acc->acc, acc->gpu and gpu->acc boundary. "
+            "For non-tensor nodes on acc->acc boundary and acc->gpu, we move the nodes from upstream to downstream. "
+            "For non-tensor nodes on gpu->acc boundary, it is handled by the pre-split process. "
+            "(by method reduce_acc_nodes_non_tensor_input). ",
+        )
         args, _unknown = parser.parse_known_args()
 
         self.min_acc_module_size: int = (
@@ -131,6 +141,11 @@ class _SplitterSettingBase:
             args.allow_non_tensor if args.allow_non_tensor else allow_non_tensor
         )
         self.max_acc_splits: int = max_acc_splits
+        self.move_non_tensor_nodes_on_boundary: bool = (
+            args.move_non_tensor_nodes_on_boundary
+            if args.move_non_tensor_nodes_on_boundary
+            else move_non_tensor_nodes_on_boundary
+        )
 
 
 @compatibility(is_backward_compatible=False)
@@ -143,7 +158,7 @@ class NodeEvent:
     """
 
     def __init__(
-        self, source: torch.fx.Node, desc: str, dep: Optional[torch.fx.Node] = None
+        self, source: torch.fx.Node, desc: str, dep: torch.fx.Node | None = None
     ):
         self.source = source
         self.desc = desc
@@ -172,7 +187,7 @@ class NodeEventTracker:
         self.node_events = {}
         self.writer = print
 
-    def add(self, node: torch.fx.Node, desc: str, dep: Optional[torch.fx.Node] = None):
+    def add(self, node: torch.fx.Node, desc: str, dep: torch.fx.Node | None = None):
         """
         Add a new event to the tracker.
         """
@@ -204,7 +219,7 @@ class NodeEventTracker:
         Create dict dump on all events.
         """
         ret: dict[str, list[str]] = {}
-        for name in self.node_events.keys():
+        for name in self.node_events:
             ret[name] = []
             for idx in self.node_events.get(name, []):
                 event = self.events[idx]
@@ -218,7 +233,7 @@ class NodeEventTracker:
         """
         if not writer:
             writer = self.writer
-        for name in self.node_events.keys():
+        for name in self.node_events:
             writer(f"Node: {name}:")
             self.print_node(name, recursive=False, tab="  ", writer=writer)
 
@@ -396,7 +411,7 @@ class FxNetSplitterInternalError(Exception):
 class Subgraph:
     is_acc: bool
     nodes: NodeList
-    device_ordinal: Optional[int] = None
+    device_ordinal: int | None = None
 
 
 @compatibility(is_backward_compatible=False)
@@ -519,7 +534,7 @@ class _SplitterBase:
         settings: _SplitterSettingBase,
         non_acc_submodule_name: str = "_run_on_cpu_",
         return_tuple: bool = False,
-        nodes_finder: Optional[FxNetAccNodesFinder] = None,
+        nodes_finder: FxNetAccNodesFinder | None = None,
     ):
         """
         Preprocesses graph before splitting:
@@ -529,7 +544,8 @@ class _SplitterBase:
         - builds a map of fused nodes to their fusions.
         As a result we get self.acc_nodes, self.deps and self.fusions.
         """
-        assert isinstance(module, torch.fx.GraphModule)
+        if not isinstance(module, torch.fx.GraphModule):
+            raise AssertionError(f"Expected GraphModule, got {type(module)}")
 
         self.module = module
         ShapeProp(self.module).propagate(*sample_input)
@@ -547,6 +563,7 @@ class _SplitterBase:
             self.fusions = {}
         else:
             self.fusions = FxNetAccFusionsFinder(module, self.acc_nodes)()
+            self._merge_overlapping_fusions()
 
         # Modify deps to add more deps for fused nodes
         self.deps = self.find_deps()
@@ -603,6 +620,71 @@ class _SplitterBase:
                 for user in fused_neighbor.users:
                     if user not in fusion:
                         self.deps[user].add(node)
+
+    def _merge_overlapping_fusions(self):
+        """
+        Merge fusion groups that share nodes.
+
+        FxNetAccFusionsFinder can produce overlapping fusion groups when a
+        node is absorbed into multiple groups during expansion. When
+        update_deps_for_fusions() later propagates deps, shared nodes act
+        as bridges between groups, creating bidirectional dependency cycles
+        that crash the splitter with "Subgraph can't be empty".
+
+        This method detects overlapping groups via union-find and merges
+        them into single groups before dep propagation.
+        """
+        if os.environ.get("_SPLITTER_MERGE_OVERLAPPING_FUSIONS", "0") != "1":
+            return
+
+        if not self.fusions:
+            return
+
+        # Collect unique groups by identity.
+        unique_groups: dict[int, NodeSet] = {}
+        for group in self.fusions.values():
+            unique_groups[id(group)] = group
+
+        if len(unique_groups) <= 1:
+            return
+
+        # Map each node to all group IDs it belongs to.
+        node_to_gids: dict[torch.fx.Node, list[int]] = defaultdict(list)
+        for gid, group in unique_groups.items():
+            for node in group:
+                node_to_gids[node].append(gid)
+
+        # Union-find: merge groups that share nodes.
+        parent: dict[int, int] = {gid: gid for gid in unique_groups}
+
+        def find(x: int) -> int:
+            while parent[x] != x:
+                parent[x] = parent[parent[x]]
+                x = parent[x]
+            return x
+
+        needs_merge = False
+        for gids in node_to_gids.values():
+            if len(gids) > 1:
+                root = find(gids[0])
+                for i in range(1, len(gids)):
+                    other = find(gids[i])
+                    if other != root:
+                        parent[other] = root
+                        needs_merge = True
+
+        if not needs_merge:
+            return
+
+        # Build merged groups.
+        merged: dict[int, NodeSet] = defaultdict(set)
+        for gid, group in unique_groups.items():
+            merged[find(gid)].update(group)
+
+        # Rebuild self.fusions so every node points to its merged group.
+        for merged_group in merged.values():
+            for node in merged_group:
+                self.fusions[node] = merged_group
 
     # ===============================================================
     # Helpers for preview
@@ -834,7 +916,7 @@ class _SplitterBase:
     # ===============================================================
 
     def find_reverse_deps(
-        self, tag_id: Optional[int] = None
+        self, tag_id: int | None = None
     ) -> dict[torch.fx.Node, NodeSet]:
         """
         Builds reversed topological node dependencies, if tag_id is specified,
@@ -1091,6 +1173,8 @@ class _SplitterBase:
 
     def __call__(self) -> torch.fx.GraphModule:
         subgraphs = self.put_nodes_into_subgraphs()
+        if self.settings.move_non_tensor_nodes_on_boundary:
+            move_non_tensor_nodes_on_boundary(subgraphs)
         subgraphs = self.remove_small_acc_subgraphs(subgraphs)
         acc_subgraphs_count = len([s for s in subgraphs if s.is_acc])
         non_acc_subgraphs_count = len(subgraphs) - acc_subgraphs_count
