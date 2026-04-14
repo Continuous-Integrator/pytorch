@@ -790,7 +790,7 @@ def use_autoheuristic(name: str) -> bool:
         return autoheuristic_use.mixed_mm
     else:
         # For test compatibility with non-standard ops (e.g. "test", "foo" used in tests)
-        return name in  _parse_autoheuristic_use_env()
+        return name in _parse_autoheuristic_use_env()
 
 
 # If set to "DEFAULT", this will use the default log path specified in autoheuristic.py.
