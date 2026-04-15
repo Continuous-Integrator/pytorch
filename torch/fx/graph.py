@@ -18,7 +18,7 @@ from collections import defaultdict
 from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Any, Literal, NamedTuple, Optional, TYPE_CHECKING
+from typing import Any, cast, Literal, NamedTuple, Optional, TYPE_CHECKING
 
 import torch
 import torch.utils._pytree as pytree
@@ -37,22 +37,19 @@ log = logging.getLogger(__name__)
 
 def _resolve_symints_in_args(graph: "Graph", x: object) -> object:
     """Recursively convert SymInt values to FX nodes in args/kwargs."""
-    if isinstance(x, torch.SymInt):
-        return graph.symint_to_node(x)
-    elif isinstance(x, (torch.SymFloat, torch.SymBool)):
-        raise TypeError(
-            f"Automatic resolution of {type(x).__name__} to FX nodes is not yet supported. "
-            f"Only torch.SymInt is supported."
-        )
-    elif isinstance(x, torch.Size):
-        return [_resolve_symints_in_args(graph, item) for item in x]
-    elif isinstance(x, tuple):
-        return tuple(_resolve_symints_in_args(graph, item) for item in x)
-    elif isinstance(x, list):
-        return [_resolve_symints_in_args(graph, item) for item in x]
-    elif isinstance(x, dict):
-        return {k: _resolve_symints_in_args(graph, v) for k, v in x.items()}
-    return x
+    from torch.utils._pytree import tree_map
+
+    def _resolve(val: object) -> object:
+        if isinstance(val, torch.SymInt):
+            return graph.symint_to_node(val)
+        elif isinstance(val, (torch.SymFloat, torch.SymBool)):
+            raise TypeError(
+                f"Automatic resolution of {type(val).__name__} to FX nodes is not yet supported. "
+                f"Only torch.SymInt is supported."
+            )
+        return val
+
+    return tree_map(_resolve, x)
 
 
 __all__ = ["PythonCode", "CodeGen", "Graph"]
@@ -1509,10 +1506,10 @@ class Graph:
             if not isinstance(kwargs, dict):
                 raise AssertionError(f"kwargs must be a dict, got {type(kwargs)}")
 
-        # Auto-resolve any SymInt literals in args/kwargs to FX nodes
+        # Auto-resolve raw SymInt/SymFloat/SymBool in args/kwargs to FX nodes
         if op in ("call_function", "call_method"):
-            args = _resolve_symints_in_args(self, args)
-            kwargs = _resolve_symints_in_args(self, kwargs)
+            args = cast(tuple, _resolve_symints_in_args(self, args))
+            kwargs = cast(dict, _resolve_symints_in_args(self, kwargs))
 
         candidate = name if name is not None else self._target_to_str(target)
         name = self._graph_namespace.create_name(candidate, None)
@@ -1580,8 +1577,7 @@ class Graph:
         # Invalidate cached symint-to-proxy entries pointing to the erased node
         if self._expr_to_proxy is not None:
             self._expr_to_proxy = {
-                k: v for k, v in self._expr_to_proxy.items()
-                if v.node is not to_erase
+                k: v for k, v in self._expr_to_proxy.items() if v.node is not to_erase
             }
 
         # Null out this Node's argument nodes so that the Nodes referred to
@@ -1913,6 +1909,7 @@ class Graph:
                         torch.ops.aten.sym_size.int, (node, i)
                     )
                     size_node.meta["val"] = s
+                    assert self._expr_to_proxy is not None  # noqa: S101
                     self._expr_to_proxy[sym] = Proxy(
                         size_node, tracer=self._symint_tracer
                     )
@@ -1924,6 +1921,7 @@ class Graph:
                         torch.ops.aten.sym_stride.int, (node, i)
                     )
                     stride_node.meta["val"] = s
+                    assert self._expr_to_proxy is not None  # noqa: S101
                     self._expr_to_proxy[sym] = Proxy(
                         stride_node, tracer=self._symint_tracer
                     )
@@ -1935,6 +1933,7 @@ class Graph:
                     torch.ops.aten.sym_storage_offset.default, (node,)
                 )
                 offset_node.meta["val"] = so
+                assert self._expr_to_proxy is not None  # noqa: S101
                 self._expr_to_proxy[sym] = Proxy(
                     offset_node, tracer=self._symint_tracer
                 )
@@ -1988,7 +1987,7 @@ class Graph:
         from torch.utils._sympy.reference import PythonReferenceAnalysis
 
         self._ensure_symint_resolver()
-        assert self._expr_to_proxy is not None
+        assert self._expr_to_proxy is not None  # noqa: S101
 
         # Resolve any free symbols not yet in the proxy map (single graph scan)
         missing = {sym for sym in expr.free_symbols if sym not in self._expr_to_proxy}
