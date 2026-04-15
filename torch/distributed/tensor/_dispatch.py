@@ -388,9 +388,27 @@ class OpDispatcher:
                             *local_tensor_args,
                             **op_info.local_kwargs,
                         )
+                    elif isinstance(
+                        random._rng_tracker, random.StatelessRNGTracker
+                    ):
+                        # Try unbind-based path for TP-invariant generation.
+                        local_results, handled = (
+                            random._rng_tracker._run_random_op(
+                                first_arg._spec,
+                                op_call,
+                                local_tensor_args,
+                                op_info.local_kwargs,
+                            )
+                        )
+                        if not handled:
+                            with random._rng_tracker._distribute_region(
+                                first_arg._spec
+                            ):
+                                local_results = op_call(
+                                    *local_tensor_args, **op_info.local_kwargs
+                                )
                     else:
-                        # Other trackers (e.g., StatelessRNGTracker):
-                        # fall back to context manager path.
+                        # Other trackers: fall back to context manager path.
                         with random._rng_tracker._distribute_region(
                             first_arg._spec
                         ):

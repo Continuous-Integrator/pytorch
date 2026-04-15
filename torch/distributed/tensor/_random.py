@@ -27,9 +27,42 @@ __all__ = [
     "manual_seed",
     "OffsetBasedRNGTracker",
     "StatelessRNGTracker",
+    "set_rng_tracker",
+    "get_rng_tracker",
 ]
 
 _rng_tracker: Optional["_RNGStateTracker"] = None
+
+
+def set_rng_tracker(tracker: "_RNGStateTracker") -> None:
+    """Set the active DTensor RNG tracker.
+
+    Controls how random ops (``uniform_``, ``normal_``, ``native_dropout``,
+    etc.) behave on DTensors.  The default is
+    :class:`OffsetBasedRNGTracker`; pass a :class:`StatelessRNGTracker` for
+    key-based stateless generation.
+
+    Args:
+        tracker: An instance of :class:`OffsetBasedRNGTracker` or
+            :class:`StatelessRNGTracker`.
+
+    Example::
+
+        >>> import torch.func._random as random
+        >>> from torch.distributed.tensor._random import (
+        ...     StatelessRNGTracker, set_rng_tracker,
+        ... )
+        >>> key = random.key(42, device="cuda")  # doctest: +SKIP
+        >>> mesh = init_device_mesh("cuda", (4,))  # doctest: +SKIP
+        >>> set_rng_tracker(StatelessRNGTracker(key, mesh))  # doctest: +SKIP
+    """
+    global _rng_tracker
+    _rng_tracker = tracker
+
+
+def get_rng_tracker() -> Optional["_RNGStateTracker"]:
+    """Return the currently active DTensor RNG tracker, or ``None``."""
+    return _rng_tracker
 
 
 def is_rng_supported_mesh(device_mesh: DeviceMesh) -> bool:
@@ -616,10 +649,12 @@ class StatelessRNGTracker(_RNGStateTracker):
         op_key = stateless_random.fold_in(self._key, self._counter)
         self._counter += 1
 
-        # Extract (seed, offset) from the derived key.
-        key_data = op_key.cpu().view(torch.int64)
-        derived_seed = key_data[0].item()
-        derived_offset = key_data[1].item()
+        # Extract (seed, offset) from the derived key as raw bytes,
+        # then set them directly on the Philox state to avoid
+        # signed/unsigned overflow issues with large uint64 values.
+        key_bytes = op_key.cpu().view(torch.uint8)
+        derived_seed_bytes = key_bytes[:8]
+        derived_offset_bytes = key_bytes[8:]
 
         # Compute this shard's offset increment (same logic as offset-based).
         start_offset_incr, _ = self._compute_rng_offsets(spec)
@@ -630,12 +665,15 @@ class StatelessRNGTracker(_RNGStateTracker):
         else:
             state = _PhiloxState(self._get_device_state())
 
+        state.seed = derived_seed_bytes.view(torch.uint64)
         # CUDA requires offset to be a multiple of 4. Align the base offset
         # first, then add the shard increment (already aligned) to preserve
         # shard differentiation.
-        aligned_offset = (derived_offset // 4) * 4 + start_offset_incr
-        state.seed = torch.tensor([derived_seed], dtype=torch.uint64)
-        state.offset = torch.tensor([aligned_offset], dtype=torch.int64)
+        raw_offset = derived_offset_bytes.view(torch.int64).item()
+        # Work in unsigned space: mask to uint64 range.
+        unsigned_offset = raw_offset & ((1 << 64) - 1)
+        aligned_offset = (unsigned_offset // 4) * 4 + start_offset_incr
+        state.offset = torch.tensor([aligned_offset & ((1 << 63) - 1)], dtype=torch.int64)
 
         with torch.random.fork_rng(
             devices=[self._device], device_type=self._device.type
@@ -645,6 +683,77 @@ class StatelessRNGTracker(_RNGStateTracker):
 
         if generator is not None:
             generator.set_state(state.state)
+
+    def _run_random_op(
+        self,
+        spec: DTensorSpec,
+        op_call: object,
+        local_tensor_args: tuple,
+        local_kwargs: dict,
+    ) -> tuple[object | None, bool]:
+        """Fill a local tensor with parallelism-invariant random values.
+
+        Generates the full (global) tensor using a single non-batched PRNG
+        key derived from the root key + counter, then extracts this rank's
+        local shard.  Because every rank derives the same key for the same
+        op, the global random values are identical regardless of how the
+        tensor is partitioned — making weight initialisation independent of
+        TP/DP degree.
+
+        Supports ``Shard``, ``_StridedShard``, and ``Replicate`` placements.
+
+        Returns ``(result, True)`` on success, or ``(None, False)`` if the
+        caller should fall back to :meth:`_distribute_region`.
+        """
+        import torch.func._random as stateless_random
+
+        # Only handle the in-place ops used by weight init.
+        if op_call not in (
+            torch.ops.aten.uniform_.default,
+            torch.ops.aten.normal_.default,
+        ):
+            return None, False
+
+        # Reject Partial or unknown placements.
+        for p in spec.placements:
+            if isinstance(p, Partial):
+                return None, False
+            if not isinstance(p, (Shard, _StridedShard, Replicate)):
+                return None, False
+
+        local_tensor = local_tensor_args[0]
+
+        # Derive a unique key for this op.
+        op_key = stateless_random.fold_in(self._key, self._counter)
+        self._counter += 1
+
+        # Generate the full (global) tensor using a non-batched key so that
+        # the random values depend only on (root_key, counter), not on the
+        # parallelism configuration.
+        full = torch.empty(
+            spec.shape, dtype=local_tensor.dtype, device=local_tensor.device
+        )
+        if op_call == torch.ops.aten.uniform_.default:
+            low = float(local_tensor_args[1]) if len(local_tensor_args) > 1 else 0.0
+            high = float(local_tensor_args[2]) if len(local_tensor_args) > 2 else 1.0
+            stateless_random.uniform_(op_key, full, low=low, high=high)
+        elif op_call == torch.ops.aten.normal_.default:
+            mean = float(local_tensor_args[1]) if len(local_tensor_args) > 1 else 0.0
+            std = float(local_tensor_args[2]) if len(local_tensor_args) > 2 else 1.0
+            stateless_random.normal_(op_key, full, mean=mean, std=std)
+
+        # Extract this rank's local shard from the full tensor.  We wrap
+        # the full tensor as a Replicated DTensor and redistribute to the
+        # target placements, letting DTensor's own logic handle _StridedShard,
+        # double-sharding, and any other exotic placement combination.
+        from torch.distributed.tensor import DTensor
+
+        rep_placements = [Replicate()] * spec.mesh.ndim
+        full_dt = DTensor.from_local(full, spec.mesh, rep_placements, run_check=False)
+        target_dt = full_dt.redistribute(spec.mesh, spec.placements)
+        local_tensor.copy_(target_dt._local_tensor)
+        del full, full_dt, target_dt
+        return local_tensor, True
 
     def _compute_rng_offsets(self, spec: DTensorSpec) -> tuple[int, int]:
         """Compute shard offset increments (same formula as offset-based)."""
