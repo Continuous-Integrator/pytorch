@@ -2065,10 +2065,12 @@ def layer_norm_single_dim_strategy(
     return strategies
 
 
-@register_single_dim_strategy(
-    [aten._fused_rms_norm.default],
-    schema_info=RuntimeSchemaInfo(1),
-)
+# TODO: _fused_ prefix causes single_dim infra to misidentify this as a foreach op.
+# @register_single_dim_strategy(
+#     [aten._fused_rms_norm.default],
+#     schema_info=RuntimeSchemaInfo(1),
+#     allow_uneven_sharding=True,
+# )
 def rms_norm_single_dim_strategy(
     op: torch._ops.OpOverload,
     args_schema: tuple[Any, ...],
@@ -2082,7 +2084,6 @@ def rms_norm_single_dim_strategy(
 
     strategies: list[list[Placement | _ShardingPlaceholder]] = []
     for dim in range(axis):
-        # [out, rrms, input, weight?]
         rule: list[Placement | _ShardingPlaceholder] = [
             _ShardingPlaceholder(dim),  # out
             _ShardingPlaceholder(dim),  # rrms
@@ -2092,6 +2093,14 @@ def rms_norm_single_dim_strategy(
             rule.append(Replicate())
         strategies.append(rule)
     return strategies
+
+
+@register_op_strategy(
+    [aten._fused_rms_norm.default],
+    schema_info=RuntimeSchemaInfo(1),
+)
+def fused_rms_norm_strategy(op_schema: OpSchema) -> OpStrategy:
+    return _common_norm_forward_strategy(op_schema, rms_norm=True)
 
 
 def _common_norm_backward_strategy(
@@ -2417,79 +2426,16 @@ def fused_rms_norm_bwd_single_dim_strategy(
     [aten.native_layer_norm_backward.default],
     schema_info=RuntimeSchemaInfo(2),
 )
-def layer_norm_bwd_single_dim_strategy(
-    op: torch._ops.OpOverload,
-    args_schema: tuple[Any, ...],
-    kwargs_schema: dict[str, Any],
-) -> list[list[Placement | _ShardingPlaceholder | None]]:
-    input_meta = args_schema[1]
-    normalized_shape = args_schema[2]
-    # mean = args_schema[3], rstd = args_schema[4]
-    weight_meta = args_schema[5]
-    bias_meta = args_schema[6]
-
-    axis = len(input_meta.shape) - len(normalize_to_torch_size(normalized_shape))
-
-    strategies: list[list[Placement | _ShardingPlaceholder | None]] = []
-    for dim in range(axis):
-        # outputs: [d_input, d_weight, d_bias] — always 3 per schema
-        # d_weight/d_bias use None when weight/bias are None
-        rule: list[Placement | _ShardingPlaceholder | None] = [
-            _ShardingPlaceholder(dim),  # d_input
-            Partial("sum") if weight_meta is not None else None,  # d_weight
-            Partial("sum") if bias_meta is not None else None,  # d_bias
-        ]
-        # inputs: [grad_out, input, mean, rstd, weight?, bias?]
-        rule.extend(
-            [
-                _ShardingPlaceholder(dim),  # grad_out
-                _ShardingPlaceholder(dim),  # input
-                _ShardingPlaceholder(dim),  # mean
-                _ShardingPlaceholder(dim),  # rstd
-            ]
-        )
-        if weight_meta is not None:
-            rule.append(Replicate())
-        if bias_meta is not None:
-            rule.append(Replicate())
-        strategies.append(rule)
-
-    return strategies
+def layer_norm_bwd_strategy(op_schema: OpSchema) -> OpStrategy:
+    return _common_norm_backward_strategy(op_schema)
 
 
-@register_single_dim_strategy(
+@register_op_strategy(
     [aten._fused_rms_norm_backward.default],
     schema_info=RuntimeSchemaInfo(2),
 )
-def rms_norm_bwd_single_dim_strategy(
-    op: torch._ops.OpOverload,
-    args_schema: tuple[Any, ...],
-    kwargs_schema: dict[str, Any],
-) -> list[list[Placement | _ShardingPlaceholder | None]]:
-    input_meta = args_schema[1]
-    normalized_shape = args_schema[2]
-    # rstd = args_schema[3]
-    weight_meta = args_schema[4]
-
-    axis = len(input_meta.shape) - len(normalize_to_torch_size(normalized_shape))
-
-    strategies: list[list[Placement | _ShardingPlaceholder | None]] = []
-    for dim in range(axis):
-        # outputs: [d_input, d_weight] — always 2 per schema
-        # d_weight uses None when weight is None
-        # inputs: [grad_out, input, rstd, weight?]
-        rule: list[Placement | _ShardingPlaceholder | None] = [
-            _ShardingPlaceholder(dim),  # d_input
-            Partial("sum") if weight_meta is not None else None,  # d_weight
-            _ShardingPlaceholder(dim),  # grad_out
-            _ShardingPlaceholder(dim),  # input
-            _ShardingPlaceholder(dim),  # rstd
-        ]
-        if weight_meta is not None:
-            rule.append(Replicate())
-        strategies.append(rule)
-
-    return strategies
+def fused_rms_norm_bwd_strategy(op_schema: OpSchema) -> OpStrategy:
+    return _common_norm_backward_strategy(op_schema, rms_norm=True)
 
 
 @register_single_dim_strategy(
