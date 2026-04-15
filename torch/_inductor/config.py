@@ -1202,10 +1202,6 @@ class aten_distributed_optimizations:
     # With the empirical profiles this should be 1.0; kept for manual tuning.
     pre_bucketing_fsdp_collectives_saturation_calibration_multiplier: float = 1.0
 
-    # Override auto-detected interconnect type for saturation estimation.
-    # Valid values: NVLINK_V100, NVLINK_A100, NVLINK_H100, NVLINK_B200,
-    # IB_HDR, IB_NDR. None means auto-detect from GPU generation.
-    interconnect_type_override: str | None = None
 
 
 def parallel_compile_enabled_internally() -> bool:

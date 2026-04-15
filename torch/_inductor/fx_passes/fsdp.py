@@ -237,7 +237,7 @@ def compute_pre_bucket_cap_mb(
 
     import torch._inductor.config as inductor_config
     from torch._inductor.comm_analysis import (
-        compute_empirical_saturation_bytes,
+        compute_min_saturation_bytes,
         NCCL_COLL,
     )
 
@@ -248,7 +248,7 @@ def compute_pre_bucket_cap_mb(
     floor_mb = dist_opts.pre_bucketing_fsdp_collectives_min_bucket_cap_mb
     ceil_mb = dist_opts.pre_bucketing_fsdp_collectives_max_bucket_cap_mb
 
-    min_bytes = compute_empirical_saturation_bytes(
+    min_bytes = compute_min_saturation_bytes(
         group_size, NCCL_COLL.ALL_GATHER, target_efficiency=0.9
     )
     cap_mb = cal_mult * min_bytes / (1024 * 1024)

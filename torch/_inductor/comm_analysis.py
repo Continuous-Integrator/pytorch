@@ -114,11 +114,6 @@ def get_gpu_type() -> NVIDIA_GPU_TYPE:
 
 def detect_interconnect(group_size: int) -> InterconnectType:
     """Auto-detect interconnect type from GPU generation and group topology."""
-    override = (
-        torch._inductor.config.aten_distributed_optimizations.interconnect_type_override
-    )
-    if override is not None:
-        return InterconnectType[override.upper()]
     gpus_per_node = torch.cuda.device_count() if torch.cuda.is_available() else 8
     gpu_gen = get_gpu_type()
     if math.ceil(group_size / gpus_per_node) == 1:
@@ -558,7 +553,7 @@ def estimate_nccl_collective_runtime_impl(
     return time_us / 1000.0
 
 
-def compute_empirical_saturation_bytes(
+def compute_min_saturation_bytes(
     group_size: int,
     coll: NCCL_COLL,
     target_efficiency: float = 0.9,
