@@ -368,22 +368,6 @@ def _check_custom_op_aliasing(
             warnings.warn(msg, UserWarning, stacklevel=3)
 
 
-@functools.lru_cache(None)
-def _is_fsdp_all_gather_copy_in(func: Any) -> bool:
-    """
-    Check if func is torch.ops.fsdp.all_gather_copy_in.default by comparing
-    namespace and name strings. This avoids accessing torch.ops.fsdp directly,
-    which would fail on platforms where FSDP ops aren't registered (e.g., macOS
-    builds with USE_DISTRIBUTED=0).
-    """
-    return (
-        hasattr(func, "namespace")
-        and func.namespace == "fsdp"
-        and hasattr(func, "__name__")
-        and func.__name__ == "all_gather_copy_in.default"
-    )
-
-
 class _AnalyzeCustomOpInputOutputMode(TorchDispatchMode):
     """
     Checks if inp/out of custom ops alias each other.
@@ -427,8 +411,6 @@ class _AnalyzeCustomOpInputOutputMode(TorchDispatchMode):
             and not is_builtin(func)
             # TODO (https://github.com/pytorch/pytorch/issues/170986)
             and func.namespace not in ("_c10d_functional", "c10d", "onednn")
-            # This op is quite important but has wrong schema, so lets skip for now
-            and not _is_fsdp_all_gather_copy_in(func)
             and not _schema_allows_aliasing(func)
         ):
             _check_custom_op_aliasing(
@@ -1091,7 +1073,7 @@ class AOTDispatchSubclassWrapper(CompilerWrapper):
         *,
         runtime_metadata: ViewAndMutationMeta,
     ) -> Callable[..., Any]:
-        if self.maybe_subclass_meta is None:
+        if self.maybe_subclass_meta is None and not runtime_metadata.act_input_indices:
             return compiled_fn
 
         from .subclass_codegen import codegen_subclass_wrapper
@@ -1102,6 +1084,7 @@ class AOTDispatchSubclassWrapper(CompilerWrapper):
             out_metas=runtime_metadata.subclass_fw_graph_out_meta,
             num_fw_outs_saved_for_bw=self.num_fw_outs_saved_for_bw,
             frozen_inp_indices=self._get_frozen_inp_indices(),
+            act_input_indices=runtime_metadata.act_input_indices,
         )
         inner_fn._boxed_call = True  # type: ignore[attr-defined]
         return inner_fn
@@ -1994,6 +1977,7 @@ def merge_view_inputs(
                 raise AssertionError(
                     "every argument in the inner calling convention should be accounted for"
                 )
+        # pyrefly: ignore [bad-return]
         return (
             args_to_functionalization,
             args_to_functionalization_descs,

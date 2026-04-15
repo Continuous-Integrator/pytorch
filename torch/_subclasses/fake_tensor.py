@@ -664,7 +664,9 @@ class SymNumberMemoDescriptor:
         return r
 
     def __set__(
-        self, obj: FakeTensor, value: torch.SymInt | torch.SymFloat | None
+        self,
+        obj: FakeTensor,
+        value: torch.SymInt | torch.SymFloat | torch.SymBool | int | float | None,
     ) -> None:
         if value is None:
             setattr(obj, self._memo(obj), None)
@@ -2902,8 +2904,10 @@ class FakeTensorMode(TorchDispatchMode):
         # and then afterwards wrapping them to a FakeTensor
         for run_impl_check, op_impl in op_implementations_checks:
             if run_impl_check(func):
+                # pyrefly: ignore [bad-argument-count]
                 op_impl_out = op_impl(self, func, *args, **kwargs)
                 if op_impl_out is not NotImplemented:
+                    # pyrefly: ignore [bad-return]
                     return maybe_propagate_real_tensors(op_impl_out)
 
         def maybe_run_unsafe_fallback(
@@ -3074,7 +3078,7 @@ class FakeTensorMode(TorchDispatchMode):
 
     def create_symbolic_nested_int(
         self, *, nt_tensor_id: int | None = None
-    ) -> torch.SymInt:
+    ) -> IntLikeType:
         # See Note: [Creating symbolic nested int]
         # Returned nested int always has coeff=1; multiply the result by coeff if needed
         import torch.nested._internal.nested_tensor

@@ -72,11 +72,7 @@ class TestCodegenDebugAssert(TestCase):
 
         self.assertEqual(out, x + y)
 
-        self.assertGreaterEqual(
-            len(captured),
-            1,
-            "Expected debug_assert_wrapper codegen artifact to be emitted",
-        )
+        self.assertEqual(len(captured), 1)
 
     @torch._functorch.config.patch(debug_assert=True)
     def test_all_requires_grad(self):
@@ -98,11 +94,7 @@ class TestCodegenDebugAssert(TestCase):
 
         self.assertEqual(out, x + y + z)
 
-        self.assertGreaterEqual(
-            len(captured),
-            1,
-            "Expected debug_assert_wrapper codegen artifact to be emitted",
-        )
+        self.assertEqual(len(captured), 1)
 
     @torch._functorch.config.patch(debug_assert=True)
     def test_some_no_grad_inputs(self):
@@ -124,11 +116,7 @@ class TestCodegenDebugAssert(TestCase):
 
         self.assertEqual(out, x * y + z)
 
-        self.assertGreaterEqual(
-            len(captured),
-            1,
-            "Expected debug_assert_wrapper codegen artifact to be emitted",
-        )
+        self.assertEqual(len(captured), 1)
 
 
 if __name__ == "__main__":
