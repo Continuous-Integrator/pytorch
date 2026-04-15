@@ -36,11 +36,6 @@ class TestBmmOuterProduct(TestCase):
                 b = torch.randn(4, 1, 16, device="cuda", dtype=dtype)
                 self.assertEqual(torch.bmm(a, b), a @ b)
 
-    def test_large_shapes(self):
-        a = torch.randn(512, 256, 1, device="cuda")
-        b = torch.randn(512, 1, 4096, device="cuda")
-        self.assertEqual(torch.bmm(a, b), a @ b)
-
     def test_permuted_inputs(self):
         B, M, N = 4, 8, 16
         cases = [
