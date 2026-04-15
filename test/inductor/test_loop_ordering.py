@@ -478,6 +478,31 @@ class LoopOrderingTest(TestCase):
         self.do_acc_test(f, x)
         self.assertEqual(1, metrics.generated_kernel_count)
 
+    @inductor_config.patch("loop_ordering_after_fusion", False)
+    def test_reshape_reindexing_without_loop_ordering(self):
+        """
+        Reindexing should enable fusion even when loop ordering is
+        disabled. Same RMS norm pattern as test_reshape_reindexing_for_reduction.
+        """
+
+        def f(x):
+            head_dim = 128
+            M, N = x.shape
+            x_reshaped = x.reshape(-1, head_dim)
+            x_f32 = x_reshaped.float()
+            variance = x_f32.pow(2).mean(dim=-1, keepdim=True)
+            x_normed = x_f32 * torch.rsqrt(variance + 1e-5)
+            return x_normed.reshape(M, N).to(x.dtype)
+
+        M = 16
+        qkv = torch.randn(M, 10240, dtype=torch.bfloat16)
+        x = qkv[:, :8192]
+
+        ref = f(x)
+        actual = torch.compile(f)(x)
+        torch.testing.assert_close(actual, ref, atol=1e-2, rtol=1e-2)
+        self.assertEqual(1, metrics.generated_kernel_count)
+
     def test_reindex_unfusable_write_read_dep(self):
         """
         Grouped quantization where a custom op consumes both the

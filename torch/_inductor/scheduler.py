@@ -5581,11 +5581,9 @@ class Scheduler:
 
         """
 
-        # TODO Don't do loop reordering for CPU for now.
+        # TODO Don't do loop reordering/reindexing for CPU for now.
         # Should debug more why it does not work for CPU codegen
-        if not config.loop_ordering_after_fusion or any(
-            n.is_cpu() for n in [node1, node2]
-        ):
+        if any(n.is_cpu() for n in [node1, node2]):
             return -1
 
         # in some rare case, a template can be passed in.
@@ -5600,26 +5598,29 @@ class Scheduler:
         if not common_buffer_names:
             return -1
 
-        score = self._try_reorder_loops_for_candidates(node1, node2)
-        if score >= 0:
-            return score
+        if config.loop_ordering_after_fusion:
+            score = self._try_reorder_loops_for_candidates(node1, node2)
+            if score >= 0:
+                return score
 
-        # No reordering candidates found. Try reindexing the pointwise
-        # to match the reduction's iteration domain (e.g., [1024, 8192] ->
-        # [65536, 128] for RMS norm with reshape), then retry loop reordering.
-        # The retry is needed because FusedSchedulerNodes may have more loop
-        # vars than the reindexed pointwise (e.g., 3 vs 2), and only the
-        # normalize() comparison in _try_reorder_loops_for_candidates handles
-        # that num_vars mismatch.
+        # No reordering candidates found (or loop ordering disabled).
+        # Try reindexing the pointwise to match the reduction's iteration
+        # domain (e.g., [1024, 8192] -> [65536, 128] for RMS norm with
+        # reshape), then retry loop reordering if enabled. The retry is
+        # needed because FusedSchedulerNodes may have more loop vars than
+        # the reindexed pointwise (e.g., 3 vs 2), and only the normalize()
+        # comparison in _try_reorder_loops_for_candidates handles that
+        # num_vars mismatch.
         if (
             not config.loop_reindexing_after_fusion
             or not self._try_reindex_pointwise_for_reduction(node1, node2)
         ):
             return -1
 
-        score = self._try_reorder_loops_for_candidates(node1, node2)
-        if score >= 0:
-            return score
+        if config.loop_ordering_after_fusion:
+            score = self._try_reorder_loops_for_candidates(node1, node2)
+            if score >= 0:
+                return score
 
         return self.score_fusion_memory(node1, node2)
 
@@ -5796,6 +5797,17 @@ class Scheduler:
                 pw_node.group = old_pw_group
                 refresh_group_node_dependencies(pw_node)
             return False
+
+        # When loop ordering is disabled, re-extract deps with
+        # normalize=True so variable names are canonical. This is
+        # safe because no further loop reordering will occur.
+        # Without this, reindexed deps use different var names
+        # (e.g. c0 vs d0) causing exact dep comparisons to fail.
+        if not config.loop_ordering_after_fusion:
+            for sn in snodes:
+                sn.refresh_dependencies(normalize=True, need_clear_tiling_cache=False)
+            if isinstance(pw_node, FusedSchedulerNode):
+                refresh_group_node_dependencies(pw_node)
 
         return True
 
@@ -6179,7 +6191,9 @@ class Scheduler:
         if (
             can_reorder
             and shared_data_score < config.score_fusion_memory_threshold
-            and config.loop_ordering_after_fusion
+            and (
+                config.loop_ordering_after_fusion or config.loop_reindexing_after_fusion
+            )
         ):
             new_shared_data_score = self.shared_data_after_reordering_loop(node1, node2)
             if new_shared_data_score >= 0:
