@@ -374,12 +374,10 @@ class OpDispatcher:
                             local_results = op_call(
                                 *local_tensor_args, **op_info.local_kwargs
                             )
-                    else:
+                    elif isinstance(
+                        random._rng_tracker, random.OffsetBasedRNGTracker
+                    ):
                         # CUDA device without user generator, use HOP for traceability
-                        if not isinstance(
-                            random._rng_tracker, random.OffsetBasedRNGTracker
-                        ):
-                            raise AssertionError
                         start_offset_incr, end_offset_incr = (
                             random._rng_tracker._compute_rng_offsets(first_arg._spec)
                         )
@@ -390,6 +388,15 @@ class OpDispatcher:
                             *local_tensor_args,
                             **op_info.local_kwargs,
                         )
+                    else:
+                        # Other trackers (e.g., StatelessRNGTracker):
+                        # fall back to context manager path.
+                        with random._rng_tracker._distribute_region(
+                            first_arg._spec
+                        ):
+                            local_results = op_call(
+                                *local_tensor_args, **op_info.local_kwargs
+                            )
                 else:
                     # No rng_tracker, meta tensor, or distribute_region disabled
                     local_results = op_call(*local_tensor_args, **op_info.local_kwargs)
