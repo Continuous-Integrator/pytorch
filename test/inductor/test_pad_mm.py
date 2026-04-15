@@ -651,6 +651,29 @@ class PadMMTest(TestCase):
         test_masked_mha(B, H, S, D, device, dtype)
 
 
+    @inductor_config.patch(force_shape_pad=True)
+    def test_pad_mm_user_visible_strides(self):
+        """Verify comprehensive_padding does not leak padded strides to outputs.
+
+        With force_shape_pad, inner dimensions get padded for alignment. The
+        compiled output must still have the same strides as eager, even when
+        the result is a view of a padded buffer internally.
+        """
+        for m, k, n in [(4, 5, 3), (3, 7, 2), (6, 3, 5)]:
+            x = torch.randn(m, k, device=GPU_TYPE)
+            y = torch.randn(k, n, device=GPU_TYPE)
+            eager = torch.mm(x, y)
+            torch.compiler.reset()
+            compiled = torch.compile(torch.mm)(x, y)
+            self.assertEqual(compiled, eager)
+            self.assertEqual(
+                compiled.stride(),
+                eager.stride(),
+                msg=f"Stride mismatch for mm({m},{k}) x ({k},{n}): "
+                f"compiled={compiled.stride()} eager={eager.stride()}",
+            )
+
+
 if __name__ == "__main__":
     if HAS_GPU_AND_TRITON:
         run_tests()

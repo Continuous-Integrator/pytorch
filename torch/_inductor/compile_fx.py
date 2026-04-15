@@ -258,6 +258,12 @@ def get_static_input_idxs(num_fixed: int) -> list[int]:
 
 def record_original_output_strides(gm: GraphModule) -> None:
     output_node = gm.graph.find_nodes(op="output")[0]
+
+    # Don't overwrite strides that were already recorded (e.g., before
+    # joint_graph_passes which can introduce padded strides via pad_mm).
+    if "original_output_strides" in output_node.meta:
+        return
+
     output_strides = []
 
     if not isinstance(output_node.args[0], torch.fx.Node):
@@ -2115,6 +2121,11 @@ def fw_compiler_freezing(
     from torch._inductor.freezing import convert_conv_weights_to_channels_last, freeze
 
     # partition_fn won't be called
+    # Record original output strides BEFORE joint_graph_passes, because
+    # pad_mm (run as part of joint_graph_passes) can introduce views with
+    # padded strides that would be incorrectly captured as "original".
+    _recursive_record_original_output_strides(aot_autograd_model)
+
     inputs_devices = get_inputs_devices(aot_example_inputs, aot_autograd_model)
     aot_autograd_model = _recursive_joint_graph_passes(
         aot_autograd_model,
@@ -2262,6 +2273,11 @@ def partition_fn(
         # We can skip the invoke_subgraph because the
         # entire_partition_fn is called recursively for invoke_subgraph
         # in partitioning.
+        # Record original output strides BEFORE joint_graph_passes, because
+        # pad_mm (run as part of joint_graph_passes) can introduce views with
+        # padded strides that would be incorrectly captured as "original".
+        _recursive_record_original_output_strides(gm)
+
         inputs_devices = get_inputs_devices(joint_inputs, gm)
         gm = _recursive_joint_graph_passes(
             gm,
@@ -2434,6 +2450,11 @@ def compile_fx_forward(
             )
             for arg in output.args[0]  # type: ignore[union-attr]
         ]
+
+        # Record original output strides BEFORE joint_graph_passes, because
+        # pad_mm (run as part of joint_graph_passes) can introduce views with
+        # padded strides that would be incorrectly captured as "original".
+        _recursive_record_original_output_strides(gm)
 
         inputs_devices = get_inputs_devices(example_inputs, gm)
         gm = _recursive_joint_graph_passes(gm, input_device=next(iter(inputs_devices)))
