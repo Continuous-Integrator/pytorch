@@ -176,6 +176,7 @@ jobs:
             -e RUN_DOXYGEN \
             -e WITH_PUSH \
             --env-file="/tmp/github_env_${GITHUB_RUN_ID}" \
+            -e GITHUB_WORKSPACE=/var/lib/jenkins/workspace \
             --security-opt seccomp=unconfined \
             --cap-add=SYS_PTRACE \
             --tty \
