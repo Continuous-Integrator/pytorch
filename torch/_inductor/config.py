@@ -681,9 +681,7 @@ use_pre_grad_passes: bool = True
 #   requires custom passes to implement uuid() for the cache key.
 # "default": resolves to "late" when possible (no custom pass, or custom pass
 #   with uuid), falls back to "early" otherwise.
-pre_grad_pass_timing: Literal["early", "late", "default"] = (
-    "late" if is_fbcode() else "default"
-)
+pre_grad_pass_timing: Literal["early", "late", "default"] = "default"
 
 
 use_joint_graph_passes: bool = True
@@ -743,10 +741,35 @@ coordinate_descent_search_radius = int(
 
 # AutoHeuristic is a framework that allows one to collect data from autotuning, use the data to learn a heuristic, and
 # generate the learned heuristic to code which is shipped with the compiler
-# Specify a list of comma separated optimizations to collect data for
-autoheuristic_collect = os.environ.get("TORCHINDUCTOR_AUTOHEURISTIC_COLLECT", "")
-# Specify a list of comma separated optimizations to use learned heuristics for
-autoheuristic_use = os.environ.get("TORCHINDUCTOR_AUTOHEURISTIC_USE", "mixed_mm")
+
+
+def _parse_autoheuristic_collect_env():
+    collect_env = os.environ.get("TORCHINDUCTOR_AUTOHEURISTIC_COLLECT", "").split(",")
+    return collect_env
+
+
+def _parse_autoheuristic_use_env():
+    use_env = os.environ.get("TORCHINDUCTOR_AUTOHEURISTIC_USE", "mixed_mm").split(",")
+    return use_env
+
+
+class autoheuristic_collect:
+    """
+    Config for which autoheuristic optimizations should collect training data.
+    """
+
+    pad_mm = "pad_mm" in _parse_autoheuristic_collect_env()
+    mixed_mm = "mixed_mm" in _parse_autoheuristic_collect_env()
+
+
+class autoheuristic_use:
+    """
+    Config for which autoheuristic optimizations should use learned heuristics.
+    """
+
+    pad_mm = "pad_mm" in _parse_autoheuristic_use_env()
+    mixed_mm = "mixed_mm" in _parse_autoheuristic_collect_env()
+
 
 # If set to 1, will run a JIT post compile hook if one is set.
 run_jit_post_compile_hook = (
@@ -759,11 +782,23 @@ def run_autoheuristic(name: str) -> bool:
 
 
 def collect_autoheuristic(name: str) -> bool:
-    return name in torch._inductor.config.autoheuristic_collect.split(",")
+    if name == "pad_mm":
+        return autoheuristic_collect.pad_mm
+    elif name == "mixed_mm":
+        return autoheuristic_collect.mixed_mm
+    else:
+        # For test compatibility with non-standard ops (e.g. "test", "foo" used in tests)
+        return name in _parse_autoheuristic_collect_env()
 
 
 def use_autoheuristic(name: str) -> bool:
-    return name in torch._inductor.config.autoheuristic_use.split(",")
+    if name == "pad_mm":
+        return autoheuristic_use.pad_mm
+    elif name == "mixed_mm":
+        return autoheuristic_use.mixed_mm
+    else:
+        # For test compatibility with non-standard ops (e.g. "test", "foo" used in tests)
+        return name in _parse_autoheuristic_use_env()
 
 
 # If set to "DEFAULT", this will use the default log path specified in autoheuristic.py.
@@ -1158,8 +1193,12 @@ class aten_distributed_optimizations:
     # "custom_ops": temporary bucketing using custom ops to hide parts from inductor
     # "custom_ops_multidtype": same as custom_ops but buckets multiple dtypes
     #     (e.g. bf16 and fp32) into one bucket
+    # "coalesced": zero-copy batching via reduce_scatter_tensor_coalesced
+    #     (reduce_scatter only; all_gather falls back to default)
     # None means "auto" — the compiler picks the best mode
-    bucket_mode: Literal["default", "custom_ops", "custom_ops_multidtype"] | None = None
+    bucket_mode: (
+        Literal["default", "custom_ops", "custom_ops_multidtype", "coalesced"] | None
+    ) = None
 
     # Prioritize bucketing during overlap scheduling by grouping candidates by bucket key
     prioritize_bucketing_during_scheduling: bool = True
