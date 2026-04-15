@@ -236,10 +236,7 @@ def compute_pre_bucket_cap_mb(
         return bucket_cap_mb_override
 
     import torch._inductor.config as inductor_config
-    from torch._inductor.comm_analysis import (
-        compute_min_saturation_bytes,
-        NCCL_COLL,
-    )
+    from torch._inductor.comm_analysis import compute_min_saturation_bytes, NCCL_COLL
 
     dist_opts = inductor_config.aten_distributed_optimizations
     cal_mult = (
@@ -257,8 +254,8 @@ def compute_pre_bucket_cap_mb(
     if dist_opts.pre_bucketing_fsdp_collectives_verbose:
         from torch._inductor.comm_analysis import (
             detect_interconnect,
-            get_intra_node_bw,
             get_inter_node_bw,
+            get_intra_node_bw,
         )
 
         logger.info(

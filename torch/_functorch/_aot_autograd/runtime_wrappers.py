@@ -368,22 +368,6 @@ def _check_custom_op_aliasing(
             warnings.warn(msg, UserWarning, stacklevel=3)
 
 
-@functools.lru_cache(None)
-def _is_fsdp_all_gather_copy_in(func: Any) -> bool:
-    """
-    Check if func is torch.ops.fsdp.all_gather_copy_in.default by comparing
-    namespace and name strings. This avoids accessing torch.ops.fsdp directly,
-    which would fail on platforms where FSDP ops aren't registered (e.g., macOS
-    builds with USE_DISTRIBUTED=0).
-    """
-    return (
-        hasattr(func, "namespace")
-        and func.namespace == "fsdp"
-        and hasattr(func, "__name__")
-        and func.__name__ == "all_gather_copy_in.default"
-    )
-
-
 class _AnalyzeCustomOpInputOutputMode(TorchDispatchMode):
     """
     Checks if inp/out of custom ops alias each other.
@@ -427,8 +411,6 @@ class _AnalyzeCustomOpInputOutputMode(TorchDispatchMode):
             and not is_builtin(func)
             # TODO (https://github.com/pytorch/pytorch/issues/170986)
             and func.namespace not in ("_c10d_functional", "c10d", "onednn")
-            # This op is quite important but has wrong schema, so lets skip for now
-            and not _is_fsdp_all_gather_copy_in(func)
             and not _schema_allows_aliasing(func)
         ):
             _check_custom_op_aliasing(
@@ -3165,36 +3147,38 @@ class DebugAssertWrapper(CompilerWrapper):
         *,
         runtime_metadata: ViewAndMutationMeta,
     ) -> Callable[..., Any]:
-        @wraps(compiled_fn)
-        def debug_compiled_function(args: list[Any]) -> Any:
-            # TODO: T253242027 Check aliasing relationships
-            # TODO: Check strides for metadata mutation
-            # (NB: ideally, this logic is factored out of this function and
-            # you move these debug checks there)
+        lines = ["def inner_fn(args):"]
+        globals_dict: dict[str, object] = {"compiled_fn": compiled_fn}
+        for i, can_require_grad in enumerate(self.flat_requires_grad):
+            if can_require_grad is None:
+                lines.append(
+                    f"    if isinstance(args[{i}], Tensor):"
+                    f" raise AssertionError("
+                    f"'expected non-Tensor for arg {i}, got Tensor')"
+                )
+            elif not can_require_grad:
+                msg_name = f"_msg_{i}"
+                globals_dict[msg_name] = format_guard_bug_msg(
+                    aot_config,
+                    f"{describe_input(i, aot_config)} would not require grad",
+                )
+                lines.append(
+                    f"    if args[{i}].requires_grad: raise AssertionError({msg_name})"
+                )
+        lines.append("    return compiled_fn(args)")
 
-            # Check requires grad.  Bad case is when we compiled with
-            # requires_grad = False, but input requires_grad = True
-            # (vice versa is OK; we compute a gradient and then throw
-            # it away when it hits the input.)
-            for i, a in enumerate(args):
-                can_require_grad = self.flat_requires_grad[i]
-                if can_require_grad is None:
-                    if isinstance(a, Tensor):
-                        raise AssertionError(
-                            f"expected non-Tensor for arg {i}, got Tensor"
-                        )
-                elif not can_require_grad:
-                    if a.requires_grad:
-                        raise AssertionError(
-                            format_guard_bug_msg(
-                                aot_config,
-                                f"{describe_input(i, aot_config)} would not require grad",
-                            )
-                        )
+        source = "\n".join(lines)
+        globals_dict["Tensor"] = Tensor
 
-            return compiled_fn(args)
+        from .subclass_codegen import _compile_and_exec_source
 
-        return debug_compiled_function
+        return _compile_and_exec_source(
+            source,
+            globals_dict,
+            "inner_fn",
+            "debug_assert_wrapper",
+            wrapped_fn=compiled_fn,
+        )
 
 
 def pre_compile(

@@ -59,7 +59,7 @@ class InterconnectProfile:
 _MB = 1024 * 1024
 
 # Empirically calibrated per-interconnect profiles for saturation estimation.
-# NVLink bus_bw from NCCL topo.h / nccl-tests bandwidth output.
+# NVLink bus_bw from https://github.com/NVIDIA/nccl/blob/master/src/graph/topo.h
 # IB hop_lat/base_lat from MAST sweep profiles on H100 GrandTeton RoCE
 # (see agent_space/nccl_model_validation.md for calibration data).
 # IB min_saturation_bytes floors the estimate for small group sizes where the
@@ -69,8 +69,12 @@ INTERCONNECT_PROFILES: dict[InterconnectType, InterconnectProfile] = {
     InterconnectType.NVLINK_A100: InterconnectProfile(22.0, 45.0, 10.0),
     InterconnectType.NVLINK_B200: InterconnectProfile(60.0, 30.0, 10.0),
     InterconnectType.NVLINK_V100: InterconnectProfile(14.0, 50.0, 10.0),
-    InterconnectType.IB_NDR: InterconnectProfile(22.0, 12.0, 30.0, min_saturation_bytes=100 * _MB),
-    InterconnectType.IB_HDR: InterconnectProfile(11.0, 14.0, 30.0, min_saturation_bytes=75 * _MB),
+    InterconnectType.IB_NDR: InterconnectProfile(
+        22.0, 12.0, 30.0, min_saturation_bytes=100 * _MB
+    ),
+    InterconnectType.IB_HDR: InterconnectProfile(
+        11.0, 14.0, 30.0, min_saturation_bytes=75 * _MB
+    ),
 }
 
 _GPU_TO_INTRA: dict[NVIDIA_GPU_TYPE, InterconnectType] = {
@@ -273,12 +277,87 @@ perChMaxTreeBws = [
 # https://github.com/NVIDIA/nccl/blob/master/src/graph/tuning.cc (ncclTunerConstantsDefaults)
 treeCorrectionFactor = [
     # LL
-    [1.0, 1.0, 1.0, 1.0, .9, .8, .7, .7, .7, .7, .6, .5, .4, .4, .5, .6, .7, .8, .9, 1.0, 1.0, 1.0, 1.0, 1.0],
+    [
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        0.9,
+        0.8,
+        0.7,
+        0.7,
+        0.7,
+        0.7,
+        0.6,
+        0.5,
+        0.4,
+        0.4,
+        0.5,
+        0.6,
+        0.7,
+        0.8,
+        0.9,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+    ],
     # LL128
-    [1.0, 1.0, 1.0, 1.0, 1.0, .9, .8, .8, .8, .7, .6, .6, .6, .6, .6, .6, .8, .9, .9, .9, .9, 1.0, 1.0, 1.0],
+    [
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        0.9,
+        0.8,
+        0.8,
+        0.8,
+        0.7,
+        0.6,
+        0.6,
+        0.6,
+        0.6,
+        0.6,
+        0.6,
+        0.8,
+        0.9,
+        0.9,
+        0.9,
+        0.9,
+        1.0,
+        1.0,
+        1.0,
+    ],
     # SIMPLE
-    [.9, .9, .9, .9, .9, .9, .9, .8, .7, .6, .6, .5, .5, .5, .5, .6, .7, .8, .7, .7, .8, .9, .9, .9],
-]  # noqa: B950
+    [
+        0.9,
+        0.9,
+        0.9,
+        0.9,
+        0.9,
+        0.9,
+        0.9,
+        0.8,
+        0.7,
+        0.6,
+        0.6,
+        0.5,
+        0.5,
+        0.5,
+        0.5,
+        0.6,
+        0.7,
+        0.8,
+        0.7,
+        0.7,
+        0.8,
+        0.9,
+        0.9,
+        0.9,
+    ],
+]
 
 # Heuristic nChannels per GPU generation.
 # NCCL selects dynamically via topology search (up to MAXCHANNELS/2=32 for ring).
@@ -495,15 +574,16 @@ def _nccl_algo_time(
     intraLat = max(intraLat, netOverhead)
 
     if algo == NCCL_ALGO.RING:
-        nInterSteps = 0 if nNodes == 1 else (
-            2 * (nNodes - 1) if coll == NCCL_COLL.ALL_REDUCE else nNodes - 1
+        nInterSteps = (
+            0
+            if nNodes == 1
+            else (2 * (nNodes - 1) if coll == NCCL_COLL.ALL_REDUCE else nNodes - 1)
         )
         lat += (nsteps - nInterSteps) * intraLat + nInterSteps * interLat
     elif algo == NCCL_ALGO.TREE:
         if coll == NCCL_COLL.ALL_REDUCE:
             lat += 2 * (
-                (nRanks // max(nNodes, 1) - 1) * intraLat
-                + _log2i(nNodes) * interLat
+                (nRanks // max(nNodes, 1) - 1) * intraLat + _log2i(nNodes) * interLat
             )
 
     # --- ncclTopoGetAlgoTime: time = lat + nBytes / (1000 * bandwidth) ---
@@ -653,10 +733,18 @@ def estimate_fx_collective_size(fx_node: torch.fx.Node) -> int:
 
     output_val = fx_node.meta.get("val", None)
 
-    if input_bytes is None or not isinstance(output_val, torch.Tensor):
+    if input_bytes is None or output_val is None:
         return 0
 
-    output_bytes = tensor_bytes(output_val)
+    # Coalesced collectives return a list of tensors
+    if isinstance(output_val, (list, tuple)):
+        output_bytes = sum(
+            tensor_bytes(t) for t in output_val if isinstance(t, torch.Tensor)
+        )
+    elif isinstance(output_val, torch.Tensor):
+        output_bytes = tensor_bytes(output_val)
+    else:
+        return 0
 
     return input_bytes + output_bytes
 
@@ -754,7 +842,12 @@ def estimate_nccl_collective_runtime_from_fx_node(
             group=pg, device=device
         ) as time_estimator:
             w = fn(*real_args, **real_kwargs)
-            torch.ops._c10d_functional.wait_tensor.default(w)
+            # Coalesced collectives return a list of tensors
+            if isinstance(w, (list, tuple)):
+                for t in w:
+                    torch.ops._c10d_functional.wait_tensor.default(t)
+            else:
+                torch.ops._c10d_functional.wait_tensor.default(w)
         est_time_us = time_estimator.estimated_time
         # -1000 constant is NCCL return in case of error during estimations.
         # Observed it for all_to_all estimations.
