@@ -479,9 +479,10 @@ class FSDPParamGroup:
         logger.debug("%s", self._with_fqn("FSDP::pre_forward"))
         with record_function(self._with_fqn("FSDP::pre_forward")):
             self._training_state = TrainingState.FORWARD
-            self.unshard(self.unshard_async_op)
-            self.wait_for_unshard()
-            args, kwargs = self._register_post_backward_hook(args, kwargs)
+            if not self.is_unsharded:
+                self.unshard(self.unshard_async_op)
+                self.wait_for_unshard()
+                args, kwargs = self._register_post_backward_hook(args, kwargs)
             return args, kwargs
 
     def post_forward(self, module: nn.Module, input: Any, output: Any):
