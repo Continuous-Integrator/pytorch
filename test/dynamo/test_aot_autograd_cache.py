@@ -74,19 +74,12 @@ class CustomPreGradPassRemoveIdentMuls(CustomGraphPass):
     """
 
     def __call__(self, g: torch.fx.Graph) -> None:
-        changed = False
         for n in g.nodes:
             if n.op == "call_function" and n.target is operator.mul:
                 lhs, rhs = n.args
                 if lhs == 1:
                     n.replace_all_uses_with(rhs)
                     g.erase_node(n)
-                    changed = True
-        if not changed:
-            raise RuntimeError(
-                "Custom pass did not change the graph. "
-                "All test cases expect the pass to modify the graph."
-            )
 
     def uuid(self):
         return "custom_pre_grad_pass_remove_ident_muls_v1"
@@ -2770,56 +2763,99 @@ class AOTAutogradCacheTests(CacheKeyEquivalenceMixin, InductorTestCase):
             ),
         ],
     )
+    @parametrize(
+        "use_module",
+        [
+            subtest(False, name="function"),
+            subtest(True, name="module"),
+        ],
+    )
     def test_pre_grad_passes_timing(
         self,
         pre_grad_pass_timing: Literal["early", "late", "default"],
         pre_grad_custom_pass: CustomGraphPassType,
         expect_pre_grad_call_count: tuple[int, int],
+        use_module: bool,
     ):
-        from torch._inductor.compile_fx import run_pre_grad_passes
+        from torch._inductor.compile_fx import compile_fx_forward, run_pre_grad_passes
 
         def fn(x, y):
             return 1 * x + y
 
+        class LinearModel(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.linear = torch.nn.Linear(10, 10)
+
+            def forward(self, x):
+                return 1 * self.linear(x)
+
         pre_grad_call_count = 0
+        pre_grad_input_graphs: list[str] = []
+        inductor_input_graphs: list[str] = []
 
         def wrap_run_pre_grad_passes(
             model: GraphModule, example_inputs: Sequence[InputType]
         ) -> GraphModule:
             nonlocal pre_grad_call_count
             pre_grad_call_count += 1
+            pre_grad_input_graphs.append(model.print_readable(print_output=False))
             run_pre_grad_passes(model, example_inputs)
             return model
 
-        x = torch.randn(10)
-        y = torch.randn(10)
+        @torch.utils._typing_utils.copy_func_params(compile_fx_forward)
+        def wrap_compile_fx_forward(gm, *args, **kwargs):
+            inductor_input_graphs.append(gm.print_readable(print_output=False))
+            return compile_fx_forward(gm, *args, **kwargs)
+
+        if use_module:
+            target = LinearModel()
+            inputs = (torch.randn(10),)
+        else:
+            target = fn
+            inputs = (torch.randn(10), torch.randn(10))
 
         with (
             unittest.mock.patch(
                 "torch._inductor.compile_fx.run_pre_grad_passes",
                 wrap_run_pre_grad_passes,
             ),
+            unittest.mock.patch(
+                "torch._inductor.compile_fx.compile_fx_forward",
+                wrap_compile_fx_forward,
+            ),
             inductor_config.patch("pre_grad_pass_timing", pre_grad_pass_timing),
             inductor_config.patch("pre_grad_custom_pass", pre_grad_custom_pass),
+            # Autograd cache doesn't save entries for modules with trainable
+            # parameters, so disable grad to get consistent cache hit counts
+            # across the function and module variants.
+            torch.no_grad(),
         ):
             self._clear_all_caches()
 
             # First compilation - expect cache miss.
-            compiled_fn = torch.compile(fn)
-            result1 = compiled_fn(x, y)
+            compiled = torch.compile(target)
+            result1 = compiled(*inputs)
 
             # Assert cache miss.
             self.assertEqual(counters["aot_autograd"]["autograd_cache_miss"], 1)
             self.assertEqual(counters["aot_autograd"]["autograd_cache_hit"], 0)
 
-            # Assert #invocation of pre-grad passe
+            # Assert #invocation of pre-grad passes.
             self.assertEqual(pre_grad_call_count, expect_pre_grad_call_count[0])
+
+            # The pre-grad graph should contain the identity mul (= 1 * ...)
+            # before the custom pass removes it.
+            self.assertEqual(len(pre_grad_input_graphs), 1)
+            self.assertIn("= 1 * ", pre_grad_input_graphs[0])
+            self.assertEqual(len(inductor_input_graphs), 1)
+            self.assertNotIn("= 1 * ", inductor_input_graphs[0])
 
             torch._dynamo.reset()
 
             # Second compilation - expect cache hit.
-            compiled_fn2 = torch.compile(fn)
-            result2 = compiled_fn2(x, y)
+            compiled2 = torch.compile(target)
+            result2 = compiled2(*inputs)
 
             # Assert cache hit.
             self.assertEqual(counters["aot_autograd"]["autograd_cache_miss"], 1)
@@ -2859,6 +2895,52 @@ class AOTAutogradCacheTests(CacheKeyEquivalenceMixin, InductorTestCase):
                 RuntimeError, "pre_grad_custom_pass must implement uuid"
             ):
                 compiled_fn(x, y)
+
+    @inductor_config.patch("fx_graph_cache", True)
+    @functorch_config.patch("enable_autograd_cache", True)
+    def test_pre_grad_pass_default_timing_without_uuid_warns(self):
+        """
+        Default timing with a pass that has no UUID should log a warning about
+        the pre-grad pass cache being bypassed, only once per pass class.
+        """
+        from torch._inductor.codecache import _warned_pre_grad_pass_missing_uuid
+
+        class NoUuidPass(CustomGraphPass):
+            def __call__(self, g: torch.fx.Graph) -> None:
+                pass
+
+            def uuid(self):
+                return None
+
+        def fn(x, y):
+            return x + y
+
+        x = torch.randn(10)
+        y = torch.randn(10)
+
+        with (
+            inductor_config.patch("pre_grad_custom_pass", NoUuidPass()),
+            inductor_config.patch("pre_grad_pass_timing", "default"),
+        ):
+            _warned_pre_grad_pass_missing_uuid.clear()
+            self._clear_all_caches()
+
+            # First compilation — should warn.
+            compiled_fn = torch.compile(fn)
+            with self.assertLogs(
+                "torch._inductor.codecache", level="WARNING"
+            ) as log_cm:
+                compiled_fn(x, y)
+            uuid_warnings = [
+                m for m in log_cm.output if "does not implement uuid()" in m
+            ]
+            self.assertEqual(len(uuid_warnings), 1)
+
+            # Second compilation — same pass class, should not warn again.
+            torch._dynamo.reset()
+            compiled_fn2 = torch.compile(fn)
+            with self.assertNoLogs("torch._inductor.codecache", level="WARNING"):
+                compiled_fn2(x, y)
 
     @parametrize(
         "pre_grad_pass_timing,has_uuid,expect_miss_on_different_uuid",
@@ -3829,6 +3911,7 @@ class HOPCacheTests(CacheKeyEquivalenceMixin, torch._dynamo.test_case.TestCase):
             self.assertEqual(counters["aot_autograd"]["autograd_cache_hit"], 0)
 
 
+@instantiate_parametrized_tests
 class CacheKeyAPITests(torch._dynamo.test_case.TestCase):
     """
     Verify that the exposed autograd_cache_key API function produces the same
@@ -3928,18 +4011,6 @@ class CacheKeyAPITests(torch._dynamo.test_case.TestCase):
                 ignore_shape_env=True,
             )
 
-    def _standalone_compile_cache_key(
-        self, fx_graph, example_inputs, dynamic_shapes="from_example_inputs"
-    ):
-        """Call standalone_compile.autograd_cache_key, the top-level API
-        that mirrors standalone_compile's dynamic_shapes interface."""
-        with self._tracing_context():
-            return standalone_compile_autograd_cache_key(
-                fx_graph,
-                example_inputs,
-                dynamic_shapes=dynamic_shapes,
-            )
-
     @requires_triton()
     @inductor_config.patch("fx_graph_remote_cache", False)
     @inductor_config.patch("fx_graph_cache", True)
@@ -3956,10 +4027,9 @@ class CacheKeyAPITests(torch._dynamo.test_case.TestCase):
         gt_key, fx_graph, example_inputs = self._compile_and_capture(fn, x)
         api_key, _ = self._aot_autograd_cache_key(fx_graph, example_inputs)
         cfx_key, _ = self._compile_fx_cache_key(fx_graph, example_inputs)
-        sc_key, _ = self._standalone_compile_cache_key(fx_graph, example_inputs)
+
         self.assertEqual(gt_key, api_key)
         self.assertEqual(gt_key, cfx_key)
-        self.assertEqual(gt_key, sc_key)
 
     @requires_triton()
     @inductor_config.patch("fx_graph_remote_cache", False)
@@ -3979,14 +4049,10 @@ class CacheKeyAPITests(torch._dynamo.test_case.TestCase):
         key2, _ = self._aot_autograd_cache_key(fx_graph, example_inputs)
         cfx_key1, _ = self._compile_fx_cache_key(fx_graph, example_inputs)
         cfx_key2, _ = self._compile_fx_cache_key(fx_graph, example_inputs)
-        sc_key1, _ = self._standalone_compile_cache_key(fx_graph, example_inputs)
-        sc_key2, _ = self._standalone_compile_cache_key(fx_graph, example_inputs)
         self.assertEqual(gt_key, key1)
         self.assertEqual(key1, key2)
         self.assertEqual(gt_key, cfx_key1)
         self.assertEqual(cfx_key1, cfx_key2)
-        self.assertEqual(gt_key, sc_key1)
-        self.assertEqual(sc_key1, sc_key2)
 
     @requires_triton()
     @inductor_config.patch("fx_graph_remote_cache", False)
@@ -4009,14 +4075,10 @@ class CacheKeyAPITests(torch._dynamo.test_case.TestCase):
         api_key2, _ = self._aot_autograd_cache_key(graph2, inputs2)
         cfx_key1, _ = self._compile_fx_cache_key(graph1, inputs1)
         cfx_key2, _ = self._compile_fx_cache_key(graph2, inputs2)
-        sc_key1, _ = self._standalone_compile_cache_key(graph1, inputs1)
-        sc_key2, _ = self._standalone_compile_cache_key(graph2, inputs2)
         self.assertEqual(gt_key1, api_key1)
         self.assertEqual(gt_key2, api_key2)
         self.assertEqual(gt_key1, cfx_key1)
         self.assertEqual(gt_key2, cfx_key2)
-        self.assertEqual(gt_key1, sc_key1)
-        self.assertEqual(gt_key2, sc_key2)
         self.assertNotEqual(gt_key1, gt_key2)
 
     @requires_triton()
@@ -4042,14 +4104,10 @@ class CacheKeyAPITests(torch._dynamo.test_case.TestCase):
         api_key2, _ = self._aot_autograd_cache_key(graph2, inputs2)
         cfx_key1, _ = self._compile_fx_cache_key(graph1, inputs1)
         cfx_key2, _ = self._compile_fx_cache_key(graph2, inputs2)
-        sc_key1, _ = self._standalone_compile_cache_key(graph1, inputs1)
-        sc_key2, _ = self._standalone_compile_cache_key(graph2, inputs2)
         self.assertEqual(gt_key1, api_key1)
         self.assertEqual(gt_key2, api_key2)
         self.assertEqual(gt_key1, cfx_key1)
         self.assertEqual(gt_key2, cfx_key2)
-        self.assertEqual(gt_key1, sc_key1)
-        self.assertEqual(gt_key2, sc_key2)
         self.assertNotEqual(gt_key1, gt_key2)
 
     @requires_triton()
@@ -4074,10 +4132,9 @@ class CacheKeyAPITests(torch._dynamo.test_case.TestCase):
         gt_key, fx_graph, example_inputs = self._compile_and_capture(mod, x)
         api_key, _ = self._aot_autograd_cache_key(fx_graph, example_inputs)
         cfx_key, _ = self._compile_fx_cache_key(fx_graph, example_inputs)
-        sc_key, _ = self._standalone_compile_cache_key(fx_graph, example_inputs)
+
         self.assertEqual(gt_key, api_key)
         self.assertEqual(gt_key, cfx_key)
-        self.assertEqual(gt_key, sc_key)
 
     @requires_triton()
     @inductor_config.patch("fx_graph_remote_cache", False)
@@ -4085,36 +4142,6 @@ class CacheKeyAPITests(torch._dynamo.test_case.TestCase):
     @functorch_config.patch(
         {"enable_autograd_cache": True, "strict_autograd_cache": True}
     )
-    def test_standalone_compile_cache_key_varies_with_dynamic_shapes(self):
-        """dynamic_shapes controls ignore_shape_env, which affects the key.
-
-        "from_example_inputs" ignores the shape env (ignore_shape_env=True),
-        while "from_graph" and "from_tracing_context" include it
-        (ignore_shape_env=False). This must produce different cache keys.
-        """
-
-        def fn(x):
-            return x.sin() + x.cos()
-
-        x = torch.randn(4, 4)
-        _, fx_graph, example_inputs = self._compile_and_capture(fn, x)
-
-        ei_key, _ = self._standalone_compile_cache_key(
-            fx_graph, example_inputs, dynamic_shapes="from_example_inputs"
-        )
-        fg_key, _ = self._standalone_compile_cache_key(
-            fx_graph, example_inputs, dynamic_shapes="from_graph"
-        )
-        tc_key, _ = self._standalone_compile_cache_key(
-            fx_graph, example_inputs, dynamic_shapes="from_tracing_context"
-        )
-        # "from_graph" and "from_tracing_context" both resolve to
-        # ignore_shape_env=False, so they produce identical keys.
-        self.assertEqual(fg_key, tc_key)
-        # "from_example_inputs" sets ignore_shape_env=True, producing a
-        # different key than the other two options.
-        self.assertNotEqual(ei_key, fg_key)
-
     def test_cache_key_for_multiple_outputs(self):
         """autograd_cache_key matches compilation for multiple outputs."""
 
@@ -4125,10 +4152,86 @@ class CacheKeyAPITests(torch._dynamo.test_case.TestCase):
         gt_key, fx_graph, example_inputs = self._compile_and_capture(fn, x)
         api_key, _ = self._aot_autograd_cache_key(fx_graph, example_inputs)
         cfx_key, _ = self._compile_fx_cache_key(fx_graph, example_inputs)
-        sc_key, _ = self._standalone_compile_cache_key(fx_graph, example_inputs)
+
         self.assertEqual(gt_key, api_key)
         self.assertEqual(gt_key, cfx_key)
-        self.assertEqual(gt_key, sc_key)
+
+    @requires_triton()
+    @inductor_config.patch("fx_graph_remote_cache", False)
+    @inductor_config.patch("fx_graph_cache", True)
+    @functorch_config.patch(
+        {"enable_autograd_cache": True, "strict_autograd_cache": True}
+    )
+    @parametrize(
+        "dynamic_shapes",
+        ("from_example_inputs", "from_graph", "from_tracing_context"),
+    )
+    @parametrize("aot", (False, True))
+    def test_standalone_compile_cache_key_matches_standalone_compile(
+        self, dynamic_shapes, aot
+    ):
+        """standalone_compile.autograd_cache_key matches the real key
+        produced when running standalone_compile end-to-end."""
+        from contextlib import nullcontext
+
+        from torch._inductor.standalone_compile import standalone_compile
+
+        # Build an FX graph directly: sin(x) + cos(x)
+        fake_mode = FakeTensorMode(shape_env=ShapeEnv())
+        with fake_mode:
+            fake_x = torch.randn(4, 4)
+        graph = torch.fx.Graph()
+        x = graph.placeholder("x")
+        x.meta["example_value"] = fake_x
+        sin = graph.call_method("sin", (x,))
+        sin.meta["example_value"] = fake_x.sin()
+        cos = graph.call_method("cos", (x,))
+        cos.meta["example_value"] = fake_x.cos()
+        add = graph.call_function(operator.add, (sin, cos))
+        add.meta["example_value"] = fake_x.sin() + fake_x.cos()
+        graph.output((add,))
+        fx_graph = GraphModule(torch.nn.Module(), graph)
+        example_inputs = [torch.randn(4, 4)]
+
+        # from_tracing_context requires an ambient TracingContext, simulating
+        # a call from within a torch.compile backend.
+        outer_context = (
+            torch._guards.tracing(torch._guards.TracingContext(fake_mode))
+            if dynamic_shapes == "from_tracing_context"
+            else nullcontext()
+        )
+
+        # Run standalone_compile and capture the real cache key.
+        real_cache_key_fn = autograd_cache.autograd_cache_key
+        captured_key = None
+
+        def capturing_cache_key(mod, ei, config, compiler_config_extra=None):
+            nonlocal captured_key
+            captured_key, _ = real_cache_key_fn(mod, ei, config, compiler_config_extra)
+            return captured_key, _
+
+        with outer_context:
+            with patch(
+                "torch._functorch._aot_autograd.autograd_cache.autograd_cache_key",
+                side_effect=capturing_cache_key,
+            ):
+                standalone_compile(
+                    fx_graph,
+                    example_inputs,
+                    dynamic_shapes=dynamic_shapes,
+                    options={},
+                    aot=aot,
+                )
+
+            self.assertIsNotNone(captured_key)
+
+            sc_key, _ = standalone_compile_autograd_cache_key(
+                fx_graph,
+                example_inputs,
+                dynamic_shapes=dynamic_shapes,
+                aot=aot,
+            )
+            self.assertEqual(captured_key, sc_key)
 
 
 if __name__ == "__main__":
