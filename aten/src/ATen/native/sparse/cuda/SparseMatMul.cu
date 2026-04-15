@@ -476,7 +476,7 @@ void sparse_sparse_matmul_cuda_kernel(
   // Filling the COO column indices
   thrust::for_each(
     policy,
-    cccl_counting_iterator<int64_t>{0ll}),
+    cccl_counting_iterator<int64_t>{0ll},
     cccl_counting_iterator<int64_t>{csr_output.nnz_},
     [output_indices_accessor,
       csr_output_pointers_accessor,
