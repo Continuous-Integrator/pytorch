@@ -14,28 +14,12 @@ Tests verify that a "debug_assert_wrapper" artifact is emitted via
 trace_structured.
 """
 
-import importlib.util
 import logging
 from contextlib import contextmanager
 
 import torch
 import torch._functorch.config
-
-
-_orig_find_spec = importlib.util.find_spec
-
-
-def _no_numba_find_spec(name, *a, **kw):  # type: ignore[no-untyped-def]
-    if name == "numba":
-        return None
-    return _orig_find_spec(name, *a, **kw)
-
-
-importlib.util.find_spec = _no_numba_find_spec  # type: ignore[assignment]
-from torch.testing._internal.common_utils import run_tests, TestCase  # noqa: E402
-
-
-importlib.util.find_spec = _orig_find_spec  # type: ignore[assignment]
+from torch.testing._internal.common_utils import run_tests, TestCase
 
 
 trace_log = logging.getLogger("torch.__trace")
