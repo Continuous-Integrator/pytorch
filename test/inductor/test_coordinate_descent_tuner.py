@@ -133,25 +133,6 @@ class TestCoordinateDescentTuner(TestCase):
         self.assertFalse(tuner.value_too_large("R0_BLOCK_1", 128))
         self.assertTrue(tuner.value_too_large("R0_BLOCK_1", 256))
 
-    def test_combo_tunable_fields_prioritize_ordered_groups(self):
-        tuner = CoordescTuner(
-            inductor_meta={
-                "combo_coordesc_field_order": [
-                    "XBLOCK_1",
-                    "YBLOCK_1",
-                    "XBLOCK_0",
-                    "R1_BLOCK_0",
-                ]
-            }
-        )
-        tuner._combo_tunable_fields = list(
-            tuner.inductor_meta["combo_coordesc_field_order"]
-        )
-        self.assertEqual(
-            tuner.tunable_fields[:4],
-            ["XBLOCK_1", "YBLOCK_1", "XBLOCK_0", "R1_BLOCK_0"],
-        )
-
     def test_combo_metadata_orders_larger_subkernels_first_for_coordesc(self):
         def make_configs(xblock, yblock):
             return [

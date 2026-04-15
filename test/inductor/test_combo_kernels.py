@@ -1340,48 +1340,6 @@ class ComboKernelTestsMaxAutotune(TestCase):
         self.assertEqual(found_hints["reduction_hint_1"], "OUTER")
 
     @requires_gpu_and_triton
-    def test_combo_kernel_coordesc_tuning(self):
-        def fn(a, b, c):
-            a1 = torch.nn.functional.relu(a)
-            b1 = torch.nn.functional.sigmoid(b)
-            c1 = torch.nn.functional.tanh(c)
-            return a1, b1, c1
-
-        inps = [
-            torch.rand(32, 1024, device=GPU_TYPE),
-            torch.rand(64, 512, device=GPU_TYPE),
-            torch.rand(16, 2048, device=GPU_TYPE),
-        ]
-
-        out_eager = fn(*inps)
-
-        logger = logging.getLogger("torch._inductor.runtime.coordinate_descent_tuner")
-        with torch._inductor.config.patch(coordinate_descent_tuning=True):
-            with self.assertLogs(logger, level=logging.DEBUG) as cm:
-                out_compiled = torch.compile(fn)(*inps)
-
-        self.assertEqual(out_eager, out_compiled)
-
-        # Verify coordesc actually tried varying suffixed block keys.
-        # Without the combo kernel coordesc impl, only num_warps is tuned —
-        # suffixed keys like XBLOCK_0 are not in tunable_fields.
-        try_logs = [msg for msg in cm.output if "Try config" in msg]
-        block_values: list[dict[str, int]] = []
-        for msg in try_logs:
-            vals = {
-                m.group(1): int(m.group(2))
-                for m in re.finditer(r"(\w+BLOCK_\d+): (\d+)", msg)
-            }
-            if vals:
-                block_values.append(vals)
-        distinct_block_cfgs = {tuple(sorted(v.items())) for v in block_values}
-        self.assertGreater(
-            len(distinct_block_cfgs),
-            1,
-            "Coordinate descent did not explore different suffixed block sizes. ",
-        )
-
-    @requires_gpu_and_triton
     def test_combo_kernel_coordesc_tunes_largest_subkernel_first(self):
         def fn(a, b, c):
             return (
@@ -1420,6 +1378,14 @@ class ComboKernelTestsMaxAutotune(TestCase):
         ]
         self.assertGreater(
             len(try_logs), 0, "Coordinate descent did not try combo fields"
+        )
+        distinct_block_cfgs = {
+            tuple(sorted(parse_block_cfg(msg).items())) for msg in try_logs
+        }
+        self.assertGreater(
+            len(distinct_block_cfgs),
+            1,
+            "Coordinate descent did not explore different suffixed block sizes.",
         )
 
         first_cfg = parse_block_cfg(try_logs[0])
