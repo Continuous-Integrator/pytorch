@@ -4640,9 +4640,7 @@ class TestCustomOpFastPath(TestCase):
         self.assertEqual(x.grad, 2 * x)
 
     def test_fast_path_autograd_skipped_under_no_grad(self):
-        @torch.library.custom_op(
-            "_torch_testing::fp_nograd_check", mutates_args=()
-        )
+        @torch.library.custom_op("_torch_testing::fp_nograd_check", mutates_args=())
         def fp_nograd_check(x: Tensor) -> Tensor:
             return x**2
 
