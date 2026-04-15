@@ -73,8 +73,8 @@ from ..source import (
     UnspecializedParamBufferSource,
 )
 from ..utils import (
+    check_args_peekable_as_constant,
     check_constant_args,
-    check_constant_args_allow_lazy,
     cmp_name_to_op_mapping,
     dict_methods,
     frozenset_methods,
@@ -783,20 +783,11 @@ class UserDefinedClassVariable(UserDefinedVariable):
             var.call_method(tx, "__init__", list(args), kwargs)  # type: ignore[arg-type]
             return var
 
-        if self.can_constant_fold_through() and constant_args:
-            # constant fold
-            return VariableTracker.build(
-                tx,
-                self.as_python_constant()(  # type: ignore[operator]
-                    *[x.as_python_constant() for x in args],
-                    **{k: v.as_python_constant() for k, v in kwargs.items()},
-                ),
-            )
-        elif self.can_constant_fold_through() and check_constant_args_allow_lazy(
-            args, kwargs
+        if self.can_constant_fold_through() and (
+            constant_args or check_args_peekable_as_constant(args, kwargs)
         ):
-            # constant fold with lazy args - realization may produce SymNodeVariable
-            # (e.g., int with specialize_int=False), so catch that case
+            # constant fold - catch AsPythonConstantNotImplementedError for lazy
+            # args that realize into SymNodeVariable (specialize_int=False)
             try:
                 return VariableTracker.build(
                     tx,
@@ -3216,6 +3207,15 @@ class UserDefinedTupleVariable(UserDefinedObjectVariable):
         can_peek, is_unrealized, _value = self.try_peek_constant()
         return can_peek and not is_unrealized
 
+    def try_peek_constant(self) -> tuple[bool, bool, Any]:
+        from .lists import TupleVariable
+
+        assert isinstance(self._base_vt, TupleVariable)
+        can_peek, any_unrealized, values = self._base_vt._try_peek_items()
+        if not can_peek:
+            return (False, False, None)
+        return (True, any_unrealized, self.get_construct_fn()(values))
+
     def call_method(
         self,
         tx: "InstructionTranslator",
@@ -3389,15 +3389,6 @@ class NamedTupleVariable(UserDefinedTupleVariable):
         items = [x.as_python_constant() for x in self.items]
         return self.tuple_cls(*items)  # type: ignore[arg-type]
 
-    def try_peek_constant(self) -> tuple[bool, bool, Any]:
-        from .lists import TupleVariable
-
-        assert isinstance(self._base_vt, TupleVariable)
-        can_peek, any_unrealized, values = self._base_vt._try_peek_items()
-        if not can_peek:
-            return (False, False, None)
-        return (True, any_unrealized, self.tuple_cls(*values))
-
     def as_proxy(self) -> Any:
         items = [x.as_proxy() for x in self.items]
         return self.tuple_cls(*items)  # type: ignore[arg-type]
@@ -3431,15 +3422,6 @@ class StructSequenceVariable(UserDefinedTupleVariable):
     def as_python_constant(self) -> Any:
         items = [x.as_python_constant() for x in self.items]
         return self.tuple_cls(items)
-
-    def try_peek_constant(self) -> tuple[bool, bool, Any]:
-        from .lists import TupleVariable
-
-        assert isinstance(self._base_vt, TupleVariable)
-        can_peek, any_unrealized, values = self._base_vt._try_peek_items()
-        if not can_peek:
-            return (False, False, None)
-        return (True, any_unrealized, self.tuple_cls(values))
 
     def as_proxy(self) -> Any:
         items = [x.as_proxy() for x in self.items]

@@ -71,8 +71,8 @@ from ..source import (
     TypeSource,
 )
 from ..utils import (
+    check_args_peekable_as_constant,
     check_constant_args,
-    check_constant_args_allow_lazy,
     check_unspec_or_constant_args,
     cmp_name_to_op_mapping,
     identity,
@@ -2715,7 +2715,7 @@ class CollectionsNamedTupleFunction(UserFunctionVariable):
         args: Sequence[VariableTracker],
         kwargs: dict[str, VariableTracker],
     ) -> VariableTracker:
-        if check_constant_args(args, kwargs) or check_constant_args_allow_lazy(
+        if check_constant_args(args, kwargs) or check_args_peekable_as_constant(
             args, kwargs
         ):
             try:

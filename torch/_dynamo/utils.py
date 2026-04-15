@@ -2839,15 +2839,16 @@ def check_constant_args(args: Iterable[Any], kwargs: Mapping[Any, Any]) -> bool:
     return all(x.is_python_constant() for x in itertools.chain(args, kwargs.values()))
 
 
-def check_constant_args_allow_lazy(
+def check_args_peekable_as_constant(
     args: Iterable[Any], kwargs: Mapping[Any, Any]
 ) -> bool:
-    """Like check_constant_args but also accepts unrealized lazy constants.
+    """Check if all args can be peeked as constants, including unrealized lazy constants.
 
-    Use this when constant folding is desired even if args contain lazy
-    constants (e.g., Enum class creation). Calling as_python_constant() on
-    such args will realize them and install guards, which is correct for
-    operations that must execute at trace time.
+    Unlike check_constant_args (which uses is_python_constant and returns False
+    for containers with unrealized lazy items), this uses try_peek_constant to
+    check peekability without triggering realization. Use this when constant
+    folding is desired even if args contain lazy constants (e.g., Enum class
+    creation, namedtuple type creation).
     """
     return all(x.try_peek_constant()[0] for x in itertools.chain(args, kwargs.values()))
 
