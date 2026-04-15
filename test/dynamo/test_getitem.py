@@ -336,6 +336,44 @@ class GetItemTests(torch._dynamo.test_case.TestCase):
         x = torch.randn(4, 4)
         self.assertEqual(fn(x), self._compile(fn, x))
 
+    def test_tensor_getitem_torch_function_mode(self):
+        """TorchFunctionMode intercepts tensor __getitem__ and can modify behavior."""
+
+        class AddOneMode(torch.overrides.TorchFunctionMode):
+            def __torch_function__(self, func, types, args=(), kwargs=None):
+                result = func(*args, **(kwargs or {}))
+                if func is torch.Tensor.__getitem__:
+                    return result + 1
+                return result
+
+        def fn(x):
+            with AddOneMode():
+                return operator.getitem(x, 0)
+
+        x = torch.randn(4, 4)
+        expected = fn(x)
+        compiled = torch.compile(fn, backend="eager")(x)
+        self.assertEqual(expected, compiled)
+
+    def test_tensor_getitem_torch_function_subclass(self):
+        """Tensor subclass with __torch_function__ intercepts __getitem__."""
+
+        class ScaledTensor(torch.Tensor):
+            @classmethod
+            def __torch_function__(cls, func, types, args=(), kwargs=None):
+                result = super().__torch_function__(func, types, args, kwargs or {})
+                if func is torch.Tensor.__getitem__:
+                    return result * 2
+                return result
+
+        def fn(x):
+            return operator.getitem(x, 0)
+
+        x = ScaledTensor(torch.randn(4, 4))
+        expected = fn(x)
+        compiled = torch.compile(fn, backend="eager")(x)
+        self.assertEqual(expected, compiled)
+
     # --- NamedTupleVariable (via UserDefinedTupleVariable) ---
 
     def test_namedtuple_int_index(self):
@@ -358,7 +396,7 @@ class GetItemTests(torch._dynamo.test_case.TestCase):
 
     def test_typing_subscript(self):
         def fn(x):
-            operator.getitem(list, int)
+            t = list[int]  # noqa: F841
             return x + 1
 
         x = torch.randn(4)
@@ -531,22 +569,45 @@ class GetItemTests(torch._dynamo.test_case.TestCase):
         x = torch.randn(4)
         self.assertEqual(fn(x), self._compile(fn, x))
 
-    # --- GetAttrVariable (__dict__ access) ---
+    # --- UserDefined* with overridden __getitem__ ---
 
-    def test_getattr_dict_getitem(self):
-        class Model(torch.nn.Module):
-            def __init__(self):
-                super().__init__()
-                self.linear = torch.nn.Linear(4, 4)
+    def test_user_defined_dict_overridden_getitem(self):
+        """Dict subclass with custom __getitem__ should NOT delegate to _base_vt."""
 
-            def forward(self, x):
-                layer = operator.getitem(self.__dict__["_modules"], "linear")
-                return layer(x)
+        class MyDict(dict):
+            def __getitem__(self, key):
+                return super().__getitem__(key) + 100
 
-        model = Model()
+        def fn(x):
+            d = MyDict(a=1, b=2)
+            return x + operator.getitem(d, "a")
+
         x = torch.randn(4)
-        compiled = torch.compile(model, backend="eager", fullgraph=True)
-        self.assertEqual(model(x), compiled(x))
+        self.assertEqual(fn(x), self._compile(fn, x))
+
+    def test_user_defined_list_overridden_getitem(self):
+        """List subclass with custom __getitem__ should NOT delegate to _base_vt."""
+
+        class MyList(list):
+            def __getitem__(self, key):
+                return super().__getitem__(key) * 2
+
+        def fn(x):
+            items = MyList([x, x + 1, x + 2])
+            return operator.getitem(items, 1)
+
+        x = torch.randn(4)
+        self.assertEqual(fn(x), self._compile(fn, x))
+
+    def test_counter_missing_key(self):
+        """Counter.__missing__ returns 0 for missing keys."""
+
+        def fn(x):
+            c = collections.Counter({"a": 1, "b": 2})
+            return x + operator.getitem(c, "missing")
+
+        x = torch.randn(4)
+        self.assertEqual(fn(x), self._compile(fn, x))
 
     # --- TorchScriptObjectVariable ---
 

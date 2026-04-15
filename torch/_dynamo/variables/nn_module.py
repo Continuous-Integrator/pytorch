@@ -55,6 +55,7 @@ from ..source import (
     UnspecializedNNModuleSource,
 )
 from ..utils import (
+    enumerate_items_with_dict_position,
     get_custom_getattr,
     get_fake_value,
     is_lazy_module,
@@ -220,6 +221,19 @@ class NNModuleVariable(VariableTracker):
 
     def get_real_python_backed_value(self) -> object:
         return self.value
+
+    def bool_impl(self, tx: "InstructionTranslator") -> VariableTracker:
+        """nb_bool for nn.Module.
+
+        nn.Module itself has no __bool__ or __len__, so bare modules are always
+        truthy.  Subclasses like ModuleList/ModuleDict define __len__, so
+        bool(module) calls PyObject_IsTrue which falls through nb_bool (NULL)
+        to sq_length/mp_length.  We evaluate on the real module to capture this.
+        """
+        from .constant import ConstantVariable
+
+        mod = tx.output.get_submodule(self.module_key)
+        return ConstantVariable.create(bool(mod))
 
     def _wrap_submodule(
         self,
@@ -463,7 +477,7 @@ class NNModuleVariable(VariableTracker):
                     ],
                 )
 
-        return variables.GetAttrVariable(self, name, source=source)
+        return super().var_getattr(tx, name)
 
     def call_function(
         self,
@@ -681,7 +695,7 @@ class NNModuleVariable(VariableTracker):
         constant: bool = False,
     ) -> VariableTracker:
         from . import ListIteratorVariable, TupleVariable
-        from .constant import CONSTANT_VARIABLE_TRUE
+        from .constant import ConstantVariable
 
         key = self.module_key
         module = tx.output.get_submodule(key)
@@ -728,7 +742,7 @@ class NNModuleVariable(VariableTracker):
         if name == "_check_input_dim" and trace_rules.is_torch_inline_allowed(
             inspect.getfile(module.__class__._check_input_dim)  # type: ignore[union-attr]
         ):
-            return CONSTANT_VARIABLE_TRUE
+            return ConstantVariable.create(True)
 
         if name == "_get_item_by_idx":
             if not args[1].is_python_constant():
@@ -1300,7 +1314,8 @@ class UnspecializedNNModuleVariable(UserDefinedObjectVariable):
                 return key, value
 
             result = dict(
-                build_key_value(i, k, v) for i, (k, v) in enumerate(hooks_dict.items())
+                build_key_value(i, k, v)
+                for i, k, v in enumerate_items_with_dict_position(hooks_dict)
             )
 
             return variables.NNModuleHooksDictVariable(
