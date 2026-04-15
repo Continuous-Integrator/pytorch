@@ -3205,7 +3205,9 @@ class DefaultDictVariable(UserDefinedDictVariable):
             )
         super().__init__(value, dict_vt=dict_vt, **kwargs)
         if default_factory is None:
-            default_factory = variables.CONSTANT_VARIABLE_NONE
+            from .constant import ConstantVariable
+
+            default_factory = ConstantVariable.create(None)
         self.default_factory = default_factory
 
     @staticmethod
@@ -3323,7 +3325,7 @@ class DefaultDictVariable(UserDefinedDictVariable):
                 tx.output.side_effects.store_attr(
                     self, "default_factory", self.default_factory
                 )
-                return variables.CONSTANT_VARIABLE_NONE
+                return ConstantVariable.create(None)
             return super().call_method(tx, name, args, kwargs)
         elif name == "__eq__":
             if len(args) != 1:
