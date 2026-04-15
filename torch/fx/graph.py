@@ -524,7 +524,7 @@ class CodeGen:
             Returns: the global name that should be used to reference 'obj' in generated source.
             """
             if (
-                callable(obj) and _is_from_torch(obj) and obj != torch.device
+                _is_from_torch(obj) and obj != torch.device
             ):  # to support registering torch.device
                 # HACK: workaround for how torch custom ops are registered. We
                 # can't import them like normal modules so they must retain their
