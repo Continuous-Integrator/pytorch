@@ -59,9 +59,11 @@ class InterconnectProfile:
 _MB = 1024 * 1024
 
 # Empirically calibrated per-interconnect profiles for saturation estimation.
-# IB hop_lat/base_lat reflect effective per-step overhead (RDMA + PCIe + GPU sync),
-# not raw network latency. IB min_saturation_bytes floors the estimate for small
-# group sizes where the ring-step formula underestimates.
+# NVLink bus_bw from NCCL topo.h / nccl-tests bandwidth output.
+# IB hop_lat/base_lat from MAST sweep profiles on H100 GrandTeton RoCE
+# (see agent_space/nccl_model_validation.md for calibration data).
+# IB min_saturation_bytes floors the estimate for small group sizes where the
+# ring-step formula underestimates.
 INTERCONNECT_PROFILES: dict[InterconnectType, InterconnectProfile] = {
     InterconnectType.NVLINK_H100: InterconnectProfile(36.0, 40.0, 10.0),
     InterconnectType.NVLINK_A100: InterconnectProfile(22.0, 45.0, 10.0),
@@ -202,7 +204,8 @@ class NCCL_PROTO(IntEnum):
 _NUM_ALGOS = 2  # TREE, RING
 _NUM_PROTOS = 3  # LL, LL128, SIMPLE
 
-# Base latencies in us — [algo][proto], from NCCL tuning.cc ncclTunerConstantsDefaults
+# Base latencies in us — [algo][proto]
+# https://github.com/NVIDIA/nccl/blob/master/src/graph/tuning.cc (ncclTunerConstantsDefaults)
 baseLat = [
     # Tree
     [6.8, 14.0, 8.4],
@@ -211,6 +214,7 @@ baseLat = [
 ]
 
 # Hardware latencies in us — [hw][algo][proto]
+# https://github.com/NVIDIA/nccl/blob/master/src/graph/tuning.cc (ncclTunerConstantsDefaults)
 hwLat = [
     # NVLINK
     [
@@ -231,6 +235,7 @@ hwLat = [
 
 
 # LL max bus BW — [compCapIndex][scaleIndex(N1/N2/N4+)]
+# https://github.com/NVIDIA/nccl/blob/master/src/graph/tuning.cc (ncclTunerConstantsDefaults)
 llMaxBws = [
     [39.0, 39.0, 20.4],  # Volta
     [87.7, 22.5, 19.0],  # Ampere
@@ -238,7 +243,8 @@ llMaxBws = [
     [282.0, 90.0, 70.0],  # Blackwell
 ]
 
-# Per-channel max BW caps from NCCL — [compCapIndex][scaleIndex]
+# Per-channel max BW caps — [compCapIndex][scaleIndex]
+# https://github.com/NVIDIA/nccl/blob/master/src/graph/tuning.cc (ncclTunerConstantsDefaults)
 perChMaxRingLL128Bws = [
     [20.0, 20.0, 20.0],  # Volta
     [20.0, 20.0, 20.0],  # Ampere
@@ -246,6 +252,7 @@ perChMaxRingLL128Bws = [
     [40.0, 40.0, 40.0],  # Blackwell
 ]
 
+# https://github.com/NVIDIA/nccl/blob/master/src/graph/tuning.cc (ncclTunerConstantsDefaults)
 perChMaxTreeLL128Bws = [
     [20.0, 20.0, 20.0],  # Volta
     [20.0, 20.0, 20.0],  # Ampere
@@ -253,6 +260,7 @@ perChMaxTreeLL128Bws = [
     [55.6, 31.67, 20.0],  # Blackwell
 ]
 
+# https://github.com/NVIDIA/nccl/blob/master/src/graph/tuning.cc (ncclTunerConstantsDefaults)
 perChMaxTreeBws = [
     [26.5, 18.5, 10.0],  # Volta
     [24.0, 23.6, 17.8],  # Ampere
@@ -262,6 +270,7 @@ perChMaxTreeBws = [
 
 # Tree correction factor for medium message sizes — [proto][logSize]
 # logSize = log2(nBytes >> 6), indices 0..23 map to 64B..256MB
+# https://github.com/NVIDIA/nccl/blob/master/src/graph/tuning.cc (ncclTunerConstantsDefaults)
 treeCorrectionFactor = [
     # LL
     [1.0, 1.0, 1.0, 1.0, .9, .8, .7, .7, .7, .7, .6, .5, .4, .4, .5, .6, .7, .8, .9, 1.0, 1.0, 1.0, 1.0, 1.0],
@@ -271,7 +280,9 @@ treeCorrectionFactor = [
     [.9, .9, .9, .9, .9, .9, .9, .8, .7, .6, .6, .5, .5, .5, .5, .6, .7, .8, .7, .7, .8, .9, .9, .9],
 ]  # noqa: B950
 
-# Heuristic nChannels per GPU generation (NCCL selects via topology search).
+# Heuristic nChannels per GPU generation.
+# NCCL selects dynamically via topology search (up to MAXCHANNELS/2=32 for ring).
+# These approximate standard DGX/HGX topologies; see nccl/src/graph/search.cc.
 _GPU_NCHANNELS = {
     NVIDIA_GPU_TYPE.VOLTA: 2,
     NVIDIA_GPU_TYPE.AMPERE: 8,
@@ -279,7 +290,8 @@ _GPU_NCHANNELS = {
     NVIDIA_GPU_TYPE.BLACKWELL: 32,
 }
 
-# NVLink bus bandwidth per GPU (GB/s), from NCCL topo.h link constants.
+# NVLink bus bandwidth per GPU (GB/s).
+# https://github.com/NVIDIA/nccl/blob/master/src/graph/topo.h (link speed constants)
 _GPU_INTRA_NODE_BW: dict[NVIDIA_GPU_TYPE, float] = {
     NVIDIA_GPU_TYPE.VOLTA: 120.0,
     NVIDIA_GPU_TYPE.AMPERE: 240.0,
@@ -288,6 +300,7 @@ _GPU_INTRA_NODE_BW: dict[NVIDIA_GPU_TYPE, float] = {
 }
 
 # Per-GPU inter-node bandwidth (GB/s), assuming 1:1 GPU:NIC ratio.
+# HDR: 200Gbps=25GB/s, NDR: 400Gbps=50GB/s per NIC.
 _GPU_INTER_NODE_BW: dict[NVIDIA_GPU_TYPE, float] = {
     NVIDIA_GPU_TYPE.VOLTA: 12.0,
     NVIDIA_GPU_TYPE.AMPERE: 25.0,
@@ -405,7 +418,8 @@ def _nccl_algo_time(
     else:
         bw = bwIntra if nNodes <= 2 else bwInter
 
-    # IB corrections calibrated against H100 GrandTeton RoCE profiles:
+    # IB corrections calibrated against H100 GrandTeton RoCE profiles
+    # (see agent_space/nccl_model_validation.md for calibration data):
     if is_ib and nNodes > 1:
         # NIC efficiency: fewer nodes → fewer NICs utilized → lower effective BW.
         # 2-node (single inter-hop): ~0.80×; 8+ nodes: ~1.0×
