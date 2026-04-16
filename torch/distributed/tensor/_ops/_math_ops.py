@@ -343,15 +343,12 @@ def _reduction_single_dim_strategy(
         if d in reduce_dims:
             if reduction_linear:
                 # Shard on reduction dim -> Partial output.
-                # Skip for "avg": avg of unequal-sized chunks != overall avg,
-                # and we don't know mesh size at rule-generation time.
-                if reduction_op != "avg":
-                    strategies.append(
-                        [
-                            get_placement_from_reduction_op(reduction_op),
-                            _ShardingPlaceholder(d),
-                        ]
-                    )
+                strategies.append(
+                    [
+                        get_placement_from_reduction_op(reduction_op),
+                        _ShardingPlaceholder(d),
+                    ]
+                )
         else:
             # Shard on non-reduction dim -> shard output (with dim remapping)
             if keep_dim:
