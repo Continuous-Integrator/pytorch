@@ -1479,6 +1479,7 @@ class PythonWrapperCodegen(CodeGen):
         self.kernel_autotune_defs.splice(
             f"""
                 import torch
+                from math import inf, nan
                 from torch._dynamo.testing import rand_strided
                 from torch._dynamo.utils import preserve_rng_state
                 from torch._inductor.select_algorithm import AlgorithmSelectorCache
@@ -1572,7 +1573,7 @@ class PythonWrapperCodegen(CodeGen):
             if isinstance(
                 buf,
                 (
-                    sympy.Expr,
+                    sympy.Basic,
                     ir.TorchBindObject,
                     ir.GeneratorState,
                     ir.OpaqueObjectState,
@@ -1594,7 +1595,7 @@ class PythonWrapperCodegen(CodeGen):
     def codegen_input_nan_asserts(self) -> None:
         self.prefix.writeline("# make sure graph inputs are not nan/inf")
         for name, buf in self.get_graph_inputs().items():
-            if isinstance(buf, (sympy.Expr, ir.TorchBindObject)):
+            if isinstance(buf, (sympy.Basic, ir.TorchBindObject)):
                 continue
             line = f"assert not {name}.isnan().any().item()"
             self.prefix.writeline(line)
@@ -1697,6 +1698,8 @@ class PythonWrapperCodegen(CodeGen):
         if V.graph.cpp_wrapper:
             stmt = f'assert_size_stride({name}, {size}, {stride}, "{op_name}");'
             if V.graph.aot_mode:
+                if V.graph.is_const_graph:
+                    return
                 self.writeline(
                     f"if (_check_aoti_runtime_check_inputs_env()) {{ {stmt} }}"
                 )
@@ -2598,6 +2601,11 @@ class PythonWrapperCodegen(CodeGen):
                     add_expr_input(
                         name, V.graph.sizevars.optimization_hint(value, fallback=42)
                     )
+                elif isinstance(value, sympy.Basic):
+                    # sympy.Boolean (e.g. StrictLessThan from torch.cond predicates)
+                    # is not a sympy.Expr so optimization_hint cannot handle it.
+                    # Use False as a fallback for benchmark harness purposes.
+                    add_expr_input(name, False)
                 elif isinstance(value, ir.GeneratorState):
                     add_expr_input(
                         name,

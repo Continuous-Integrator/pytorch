@@ -4259,6 +4259,36 @@ class AOTInductorTestsTemplate:
             dynamic_shapes=dynamic_shapes,
         )
 
+    @common_utils.parametrize("threshold", [float("inf"), float("-inf"), float("nan")])
+    def test_triton_kernel_inf_float_arg(self, threshold):
+        if self.device != GPU_TYPE or self.device == "mps":
+            raise unittest.SkipTest("requires GPU")
+
+        @triton.jit
+        def clamp_kernel(
+            in_ptr, out_ptr, threshold, n_elements, BLOCK_SIZE: "tl.constexpr"
+        ):
+            pid = tl.program_id(0)
+            offsets = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
+            mask = offsets < n_elements
+            x = tl.load(in_ptr + offsets, mask=mask)
+            out = tl.where(x > threshold, threshold, x)
+            tl.store(out_ptr + offsets, out, mask=mask)
+
+        class Model(torch.nn.Module):
+            def __init__(self, t):
+                super().__init__()
+                self.t = t
+
+            def forward(self, x):
+                out = torch.empty_like(x)
+                n = x.numel()
+                clamp_kernel[(n,)](x, out, self.t, n, BLOCK_SIZE=16)
+                return out
+
+        example_inputs = (torch.randn(16, device=self.device),)
+        self.check_model(Model(threshold), example_inputs)
+
     def test_triton_kernel_weird_param_order(self):
         if self.device != GPU_TYPE:
             raise unittest.SkipTest("requires GPU")
@@ -7630,10 +7660,11 @@ class AOTInductorTestsTemplate:
                 add_18,
                 add_13,
             ):
+                device = add_13.device
                 arange_1 = torch.ops.aten.arange.start(
                     180,
                     181,
-                    device=torch.device(type=GPU_TYPE, index=0),
+                    device=device,
                     pin_memory=False,
                 )
                 add_14 = torch.ops.aten.add.Tensor(arange_1, 198)
