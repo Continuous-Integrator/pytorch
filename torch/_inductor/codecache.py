@@ -523,6 +523,7 @@ class FxGraphCachePickler(pickle.Pickler):
                 torch.Tensor: functools.partial(self._reduce_tensor),
                 torch.nn.parameter.Parameter: functools.partial(self._reduce_tensor),
                 torch.SymInt: functools.partial(self._reduce_symint),
+                torch.SymBool: functools.partial(self._reduce_symbool),
                 torch.fx.experimental._backward_state.BackwardState: functools.partial(
                     self._reduce_unsupported
                 ),
@@ -599,6 +600,14 @@ class FxGraphCachePickler(pickle.Pickler):
         # entity with SymInt args is safe to reuse.
         return (_ident, (str(s),))
 
+    def _reduce_symbool(self, s: torch.SymBool) -> tuple[Callable[[T], T], tuple[str]]:
+        """
+        Custom reducer to pickle SymBools.
+        """
+        # Same approach as _reduce_symint: use the string representation for
+        # hashing.  Guards ensure correctness on cache reload.
+        return (_ident, (str(s),))
+
     def _reduce_unsupported(self, s: Any) -> NoReturn:
         """
         Custom reducer to handle any objects that we don't support and therefore
@@ -639,11 +648,6 @@ class FxGraphCachePickler(pickle.Pickler):
                 and not opaque_object.has_members(cls)
             ):
                 return (_ident, (t.script_class_name,))
-            if opaque_object.is_opaque_type(cls):
-                # Opaque types (e.g., DeviceMesh) may have cyclic references
-                # that fast-mode pickling cannot handle.  Disable fast mode
-                # before the subtree is pickled so the memo table tracks cycles.
-                self.fast = False
         return (_ident, (t.wrapped_obj, t.script_class_name, t.real_obj))
 
     def dumps(self, obj: Any) -> bytes:
@@ -653,10 +657,7 @@ class FxGraphCachePickler(pickle.Pickler):
         try:
             self.dump(obj)
             return self._stream.getvalue()
-        except ValueError as e:
-            log.warning("Failed to pickle cache key", exc_info=True)
-            raise BypassFxGraphCache("Failed to pickle cache key") from e
-        except (TypeError, AttributeError, pickle.PicklingError) as e:
+        except (TypeError, AttributeError, pickle.PicklingError, ValueError) as e:
             # Some configs options may not pickle.
             log.warning("Failed to pickle cache key", exc_info=True)
             raise BypassFxGraphCache("Failed to pickle cache key") from e
@@ -1771,7 +1772,7 @@ class FxGraphCache(GuardedCache[CompiledFxGraph]):
             )
         except BypassFxGraphCache as e:
             counters["inductor"]["fxgraph_cache_bypass"] += 1
-            log.info("Bypassing FX Graph Cache because '%s'", e)  # noqa: G200
+            log.info("Bypassing FX Graph Cache because '%s'", e)
             if remote:
                 log_cache_bypass("bypass_fx_graph", str(e))
             cache_info = {

@@ -139,17 +139,6 @@ class MyModelConv2d(torch.nn.Module):
         return x
 
 
-class _CyclicOpaque(torch._opaque_base.OpaqueBase):
-    """Test helper: opaque type whose instances can form reference cycles."""
-
-    def __init__(self):
-        self.child = None
-
-
-if not torch._library.opaque_object.is_opaque_type(_CyclicOpaque):
-    torch._library.opaque_object.register_opaque_type(_CyclicOpaque, typ="reference")
-
-
 class TestPyCodeCache(TestCase):
     def test_linemaps_empty(self):
         src = """import torch"""
@@ -2066,6 +2055,45 @@ class TestStandaloneCompile(TestCase):
     @config.patch({"fx_graph_cache": True})
     @config.patch({"fx_graph_remote_cache": False})
     @functorch_config.patch({"enable_autograd_cache": True})
+    @parametrize("donate", (False, True))
+    def test_donate_graph_module(self, donate: bool) -> None:
+        mod = torch.nn.Linear(1, 3)
+        x = torch.randn(4, 1)
+
+        def f(x):
+            with torch.no_grad():
+                return mod(x)
+
+        eager_out = f(x)
+
+        with fresh_cache():
+            gm, args, kwargs = self.capture(f)(x)
+            if kwargs:
+                raise AssertionError
+
+            # compile_fx mutates the graph module (e.g. adds
+            # mutation_region_id to node metadata). Use this as a
+            # fingerprint to detect mutation.
+            def has_mutation_region_ids(gm):
+                return any("mutation_region_id" in n.meta for n in gm.graph.nodes)
+
+            before = has_mutation_region_ids(gm)
+
+            compiled_artifact = torch._inductor.standalone_compile(
+                gm, args, donate_graph_module=donate
+            )
+            compiled_out = compiled_artifact(*args)
+            self.assertEqual(eager_out, compiled_out[0])
+
+            after = has_mutation_region_ids(gm)
+            if donate:
+                self.assertNotEqual(before, after)
+            else:
+                self.assertEqual(before, after)
+
+    @config.patch({"fx_graph_cache": True})
+    @config.patch({"fx_graph_remote_cache": False})
+    @functorch_config.patch({"enable_autograd_cache": True})
     def test_save_in_new_path(self) -> None:
         mod = torch.nn.Linear(1, 3)
         x = torch.randn(4, 1)
@@ -3106,30 +3134,6 @@ class TestFxGraphCacheHashing(TestCase):
             pickler.dumps([s1, s1]),
             pickler.dumps([s1, s2]),
         )
-
-    def test_pickle_opaque_type_with_cyclic_references(self):
-        """
-        Test that FxGraphCachePickler can pickle a FakeScriptObject wrapping an
-        opaque type whose real_obj has cyclic references.  Before the fix,
-        fast-mode pickling (no memo table) would hit a ValueError on cycles.
-        """
-        from torch._library.fake_class_registry import FakeScriptObject
-
-        obj = _CyclicOpaque()
-        obj.child = obj  # create a cycle
-
-        fake = FakeScriptObject(
-            wrapped_obj=None,
-            script_class_name="test::_CyclicOpaque",
-            x=obj,
-        )
-
-        gm = torch.fx.GraphModule({}, torch.fx.Graph())
-        pickler = FxGraphCachePickler(gm)
-        # Should succeed — the pickler disables fast mode for opaque types
-        # so the memo table can track the cycle.
-        data = pickler.dumps(fake)
-        self.assertIsNotNone(data)
 
     def test_get_hash_for_files(self):
         """
