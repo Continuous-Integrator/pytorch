@@ -3274,6 +3274,86 @@ def forward(self, arg0_1, arg1_1):
             """aot_autograd() does not yet handle non-differentiable view input mutations. Aliased inputs share storage but have mixed autograd ._base states: ['input 0 (__dummy0)'] have ._base set, while ['input 1 (__dummy1)'] have ._base=None (and are not the synthetic base).""",  # noqa: B950
         )
 
+    def _check_merge_view_inputs_error_e2e(self, make_inputs, expected_error_substr):
+        """Helper: compile a mutation function, assert the Dynamo graph and error message."""
+        from torch._dynamo.testing import EagerAndRecordGraphs
+
+        def fn(a, b):
+            a.mul_(2)
+            return a + b
+
+        # Capture the Dynamo graph (EagerAndRecordGraphs skips AOT).
+        torch._dynamo.reset()
+        backend = EagerAndRecordGraphs()
+        torch.compile(fn, backend=backend)(*make_inputs())
+        self.assertExpectedInline(
+            normalize_gm(backend.graphs[0].print_readable(False)),
+            """\
+class GraphModule(torch.nn.Module):
+    def forward(self, L_a_: "f32[5]", L_b_: "f32[5]"):
+        l_a_ = L_a_
+        l_b_ = L_b_
+
+        mul_: "f32[5]" = l_a_.mul_(2);  mul_ = None
+
+        add: "f32[5]" = l_a_ + l_b_;  l_a_ = l_b_ = None
+        return (add,)
+""",
+        )
+
+        # Now compile with aot_eager to trigger merge_view_inputs error.
+        # The error message should contain Dynamo source names (L['a'], L['b'])
+        # from the graph placeholders above.
+        torch._dynamo.reset()
+        try:
+            torch.compile(fn, backend="aot_eager")(*make_inputs())
+            self.fail("Expected BackendCompilerFailed")
+        except torch._dynamo.exc.BackendCompilerFailed as e:
+            self.assertExpectedInline(str(e.inner_exception), expected_error_substr)
+
+    def test_merge_view_inputs_error_non_differentiable_views_e2e(self):
+        # Training mode (requires_grad) reaches site-1 in merge_view_inputs.
+        def make_inputs():
+            big = torch.randn(10, requires_grad=True)
+            a = big[0:5]  # _base = big
+            b = torch.empty(5)
+            b.set_(big.untyped_storage(), 0, (5,), (1,))  # _base=None
+            return [b, a]
+
+        self._check_merge_view_inputs_error_e2e(
+            make_inputs,
+            """aot_autograd() does not yet handle non-differentiable view input mutations. input 0 (L['a']) and input 1 (L['b']) share storage but are not differentiable views of each other.""",  # noqa: B950
+        )
+
+    def test_merge_view_inputs_error_different_bases_e2e(self):
+        # Inference mode (no requires_grad) skips site-1, reaching site-2.
+        def make_inputs():
+            x = torch.randn(10)
+            y = torch.randn(10)
+            y.set_(x.untyped_storage(), 0, (10,), (1,))
+            v1 = x[0:5]  # _base = x
+            v2 = y[0:5]  # _base = y (different object, same storage)
+            return [v1, v2]
+
+        self._check_merge_view_inputs_error_e2e(
+            make_inputs,
+            """aot_autograd() does not yet handle non-differentiable view input mutations. Aliased inputs share storage but have different autograd ._base tensors: input 0 (L['a']) and input 1 (L['b']) have ._base fields that point to different tensors.""",  # noqa: B950
+        )
+
+    def test_merge_view_inputs_error_mixed_base_states_e2e(self):
+        # Inference mode (no requires_grad) skips site-1, reaching site-3.
+        def make_inputs():
+            x = torch.randn(10)
+            v1 = x[0:5]  # _base = x
+            v2 = torch.empty(5)
+            v2.set_(x.untyped_storage(), 0, (5,), (1,))  # _base=None
+            return [v1, v2]
+
+        self._check_merge_view_inputs_error_e2e(
+            make_inputs,
+            """aot_autograd() does not yet handle non-differentiable view input mutations. Aliased inputs share storage but have mixed autograd ._base states: ["input 0 (L['a'])"] have ._base set, while ["input 1 (L['b'])"] have ._base=None (and are not the synthetic base).""",  # noqa: B950
+        )
+
     @unittest.skipIf(not torch.cuda.is_available(), "CUDA is unavailable")
     def test_mem_leak_from_save_for_bw(self):
         # See a full diagnosis at this issue: https://github.com/pytorch/pytorch/issues/94990
