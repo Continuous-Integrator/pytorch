@@ -15,7 +15,6 @@ import torch.fx as fx
 from torch._C import FileCheck
 from torch._dynamo.utils import counters
 from torch._inductor.fx_passes.profile_guided_estimation import (
-    _rank_stride,
     ProfileData,
     ProfileGuidedEstimator,
 )
@@ -1828,10 +1827,18 @@ class TestProfileGuidedEstimation(TestCase):
                 },
             ],
             matmuls=[
-                {"shapes": [[128, 256], [256, 512]], "dur": 50.0, "dtypes": ["float", "float"]},
+                {
+                    "shapes": [[128, 256], [256, 512]],
+                    "dur": 50.0,
+                    "dtypes": ["float", "float"],
+                },
             ],
             sdpa_ops=[
-                {"input_dims": [[2, 8, 1024, 64]], "dur": 300.0, "dtypes": ["c10::BFloat16"]},
+                {
+                    "input_dims": [[2, 8, 1024, 64]],
+                    "dur": 300.0,
+                    "dtypes": ["c10::BFloat16"],
+                },
             ],
             pg_config={"0": {"ranks": [0, 2, 4, 6]}},
         )
@@ -1851,20 +1858,32 @@ class TestProfileGuidedEstimation(TestCase):
         self.assertAlmostEqual(result[0], 0.1, places=4)
 
         # Collective miss
-        self.assertIsNone(profile.lookup_collective("all_to_all", (0, 2, 4, 6), 1000, "Float"))
+        self.assertIsNone(
+            profile.lookup_collective("all_to_all", (0, 2, 4, 6), 1000, "Float")
+        )
 
         # Op exact match (mm)
         self.assertAlmostEqual(
-            profile.lookup_op("aten::mm", ((128, 256), (256, 512)), "float"), 0.05, places=4
+            profile.lookup_op("aten::mm", ((128, 256), (256, 512)), "float"),
+            0.05,
+            places=4,
         )
         # Op shape miss — no interpolation for non-collectives
-        self.assertIsNone(profile.lookup_op("aten::mm", ((999, 999), (999, 999)), "float"))
+        self.assertIsNone(
+            profile.lookup_op("aten::mm", ((999, 999), (999, 999)), "float")
+        )
         # Op dtype miss
-        self.assertIsNone(profile.lookup_op("aten::mm", ((128, 256), (256, 512)), "c10::Half"))
+        self.assertIsNone(
+            profile.lookup_op("aten::mm", ((128, 256), (256, 512)), "c10::Half")
+        )
 
         # SDPA exact match
         self.assertAlmostEqual(
-            profile.lookup_op("aten::_scaled_dot_product_flash_attention", ((2, 8, 1024, 64),), "c10::BFloat16"),
+            profile.lookup_op(
+                "aten::_scaled_dot_product_flash_attention",
+                ((2, 8, 1024, 64),),
+                "c10::BFloat16",
+            ),
             0.3,
             places=4,
         )
@@ -1873,19 +1892,37 @@ class TestProfileGuidedEstimation(TestCase):
         """Large messages beyond EXTRAPOLATION_CAP use BW-based estimation."""
         trace = _make_pge_trace(
             collectives=[
-                {"name": "allreduce", "dur": 100.0, "nelems": 1000, "dtype": "Float", "ranks": "[0,1,2,3]", "group_size": 4},
-                {"name": "allreduce", "dur": 400.0, "nelems": 4000, "dtype": "Float", "ranks": "[0,1,2,3]", "group_size": 4},
+                {
+                    "name": "allreduce",
+                    "dur": 100.0,
+                    "nelems": 1000,
+                    "dtype": "Float",
+                    "ranks": "[0,1,2,3]",
+                    "group_size": 4,
+                },
+                {
+                    "name": "allreduce",
+                    "dur": 400.0,
+                    "nelems": 4000,
+                    "dtype": "Float",
+                    "ranks": "[0,1,2,3]",
+                    "group_size": 4,
+                },
             ],
             pg_config={"0": {"ranks": [0, 1, 2, 3]}},
         )
         profile = _load_pge_profile(trace)
 
         # Within range: log-log interpolation
-        _, source_in = profile.lookup_collective("all_reduce", (0, 1, 2, 3), 2000, "Float")
+        _, source_in = profile.lookup_collective(
+            "all_reduce", (0, 1, 2, 3), 2000, "Float"
+        )
         self.assertEqual(source_in, "profile")
 
         # Far beyond range: BW-based
-        est_far, source_far = profile.lookup_collective("all_reduce", (0, 1, 2, 3), 100000, "Float")
+        est_far, source_far = profile.lookup_collective(
+            "all_reduce", (0, 1, 2, 3), 100000, "Float"
+        )
         self.assertEqual(source_far, "pg_bandwidth")
         self.assertGreater(est_far, 0)
 

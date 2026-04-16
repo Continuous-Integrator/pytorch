@@ -1,7 +1,6 @@
 import functools
 import heapq
 import itertools
-import json
 import logging
 import sys
 from collections import Counter, defaultdict
@@ -1825,13 +1824,8 @@ def schedule_overlap_bucketing(
         payload_fn=lambda: ret.print_readable(False),
     )
 
-    # Log PGE vs analytical estimations to trace_structured for tlparse.
-    # Only for ProfileGuidedEstimator — not for arbitrary custom estimators.
-    from torch._inductor.fx_passes.profile_guided_estimation import (
-        ProfileGuidedEstimator,
-    )
-
-    if isinstance(custom_runtime_estimation, ProfileGuidedEstimator):
+    # Log PGE vs analytical comparison if using profile-guided estimation
+    if hasattr(custom_runtime_estimation, "log_diagnostics"):
         custom_runtime_estimation.log_diagnostics(ret)
 
     return ret
@@ -1881,42 +1875,9 @@ def schedule_overlap_bucketing_from_inductor_configs(
     pge_path = dist_opts.profile_guided_estimations_profile_path
     if pge_path and "custom_runtime_estimation" not in kwargs:
         from torch._inductor.fx_passes.profile_guided_estimation import (
-            _rank_stride,
             ProfileGuidedEstimator,
         )
 
-        pge_estimator = ProfileGuidedEstimator(pge_path)
-        kwargs["custom_runtime_estimation"] = pge_estimator
-        log.info("PGE: using profile-guided estimation from %s", pge_path)
-
-        # Log profile stats for tlparse
-        profile = pge_estimator.profile
-        coll_keys = profile.get_collective_keys()
-        op_count = profile.op_count
-        op_names = profile.get_op_names()
-        trace_structured(
-            "artifact",
-            metadata_fn=lambda: {
-                "name": "pge_profile_loaded",
-                "encoding": "json",
-            },
-            payload_fn=lambda: json.dumps(
-                {
-                    "path": pge_path,
-                    "collective_keys": [
-                        {
-                            "name": k[0],
-                            "ranks": list(k[1]),
-                            "group_size": len(k[1]),
-                            "stride": _rank_stride(k[1]),
-                            "dtype": k[2],
-                        }
-                        for k in coll_keys
-                    ],
-                    "op_count": op_count,
-                    "op_names": op_names,
-                }
-            ),
-        )
+        kwargs["custom_runtime_estimation"] = ProfileGuidedEstimator(pge_path)
 
     return schedule_overlap_bucketing(gm, **kwargs)  # type: ignore[arg-type]

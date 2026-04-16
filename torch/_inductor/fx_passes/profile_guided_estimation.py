@@ -2,8 +2,8 @@
 Profile-Guided Estimation (PGE) for overlap scheduling.
 
 Parses a Chrome Trace JSON (from torch.profiler) and builds lookup tables
-for collective, matmul, and attention kernel runtimes. These are used as
-a custom_runtime_estimation hook in the overlap scheduler.
+for kernel runtimes (collectives, matmuls, attention, custom ops, etc.).
+Used as a custom_runtime_estimation hook in the overlap scheduler.
 
 When the same profile is loaded on all ranks, estimates are deterministic
 and no cross-rank synchronization is needed.
@@ -20,7 +20,10 @@ from typing import Any
 
 import torch
 import torch.fx as fx
-from torch._inductor.analysis.profile_analysis import _create_extern_mapping
+from torch._inductor.analysis.profile_analysis import (
+    _create_extern_mapping,
+    _get_size_from_string,
+)
 from torch._inductor.fx_passes.bucketing import (
     is_all_gather_into_tensor,
     is_all_reduce_tensor,
@@ -77,18 +80,11 @@ class OpRecord:
     duration_us: float  # sum of all GPU kernels for this CPU op
 
 
-# NCCL dtype strings (CamelCase) to bytes per element, used for collective
-# bandwidth calculations. NCCL uses a different dtype format from TypeMeta.
-_NCCL_DTYPE_BYTES: dict[str, int] = {
-    "Float": 4,
-    "Half": 2,
-    "BFloat16": 2,
-    "Double": 8,
-    "Int": 4,
-    "Long": 8,
-    "Char": 1,
-    "Byte": 1,
-}
+def _to_nested_tuple(x: Any) -> Any:
+    """Recursively convert nested lists to tuples for hashability."""
+    if isinstance(x, (list, tuple)):
+        return tuple(_to_nested_tuple(i) for i in x)
+    return x
 
 
 @dataclass
@@ -166,7 +162,7 @@ class ProfileData:
         # Reuse profile_analysis's External id -> CPU op mapping
         try:
             extern_mapping = _create_extern_mapping(data)
-        except Exception:
+        except (KeyError, IndexError, RuntimeError):
             # _create_extern_mapping raises on malformed traces; build manually
             extern_mapping = defaultdict(list)
             for ev in events:
@@ -178,17 +174,16 @@ class ProfileData:
                 ):
                     extern_mapping[ev["args"]["External id"]].append(ev)
 
-        # Build External id -> list of GPU kernel durations
-        gpu_kernels: dict[int, list[tuple[str, float]]] = defaultdict(list)
+        # Build External id -> total GPU kernel duration
+        gpu_dur: dict[int, float] = defaultdict(float)
         for ev in events:
             if not isinstance(ev, dict) or ev.get("cat") != "kernel":
                 continue
             args = ev.get("args", {})
             eid = args.get("External id")
             dur = ev.get("dur", 0.0)
-            name = ev.get("name", "")
             if eid is not None and dur > 0:
-                gpu_kernels[eid].append((name, dur))
+                gpu_dur[eid] += dur
 
         # Parse collectives from GPU kernel events directly
         # (NCCL kernels carry collective metadata in args)
@@ -227,14 +222,11 @@ class ProfileData:
         for eid, cpu_evs in extern_mapping.items():
             if not cpu_evs:
                 continue
-            cpu_ev = cpu_evs[0]
-            name = cpu_ev.get("name", "")
-            cpu_args = cpu_ev.get("args", {})
-            kernels = gpu_kernels.get(eid, [])
-            if not kernels:
+            total_dur = gpu_dur.get(eid, 0.0)
+            if total_dur <= 0:
                 continue
-            total_dur = sum(dur for _, dur in kernels)
-            self._parse_op(name, cpu_args, total_dur)
+            cpu_ev = cpu_evs[0]
+            self._parse_op(cpu_ev.get("name", ""), cpu_ev.get("args", {}), total_dur)
 
     def _parse_ranks(self, ranks_str: str, pg_name: str) -> tuple[int, ...]:
         """Parse rank list from profile string or fall back to pg_configs."""
@@ -249,13 +241,6 @@ class ProfileData:
             return self.pg_configs[pg_name]
         return ()
 
-    @staticmethod
-    def _to_nested_tuple(x: Any) -> tuple[Any, ...]:
-        """Recursively convert nested lists to tuples for hashability."""
-        if isinstance(x, (list, tuple)):
-            return tuple(ProfileData._to_nested_tuple(i) for i in x)
-        return x
-
     def _parse_op(self, name: str, args: dict[str, Any], total_dur: float) -> None:
         """Parse any CPU op into a generic OpRecord."""
         input_dims = args.get("Input Dims", [])
@@ -263,8 +248,12 @@ class ProfileData:
         if not input_dims:
             return
         dtype = input_types[0] if input_types else ""
+        # Skip empty entries (non-tensor args like scalars/None) so the shape
+        # tuple matches what _get_node_input_shapes extracts from FX nodes.
         shapes = tuple(
-            self._to_nested_tuple(d) for d in input_dims if isinstance(d, (list, tuple))
+            _to_nested_tuple(d)
+            for d in input_dims
+            if isinstance(d, (list, tuple)) and d
         )
         if not shapes:
             return
@@ -375,12 +364,12 @@ class ProfileData:
 
     def get_op_names(self) -> list[str]:
         """Return distinct op names in the op index."""
-        return list(OrderedSet(name for name, _, _ in self._op_index.keys()))
+        return list(OrderedSet(name for name, _, _ in self._op_index))
 
     @staticmethod
     def _dtype_elem_bytes(dtype: str) -> int:
-        """Return bytes per element for NCCL dtype string."""
-        return _NCCL_DTYPE_BYTES.get(dtype, 2)  # default bf16
+        """Return bytes per element for a dtype string (NCCL CamelCase or TypeMeta)."""
+        return _get_size_from_string(dtype.lower())
 
     @staticmethod
     def _normalize_collective_name(name: str) -> str:
@@ -600,11 +589,7 @@ def _fx_target_to_profile_name(node: fx.Node) -> str | None:
         op_name = target._schema.name.split("::")[-1]
         return f"{ns}::{op_name}"
     if hasattr(target, "__name__"):
-        name = target.__name__
-        # Higher-order ops or other callables — use the name directly
-        if "::" in name:
-            return name
-        return name
+        return target.__name__
     return None
 
 
@@ -722,15 +707,44 @@ class ProfileGuidedEstimator:
     profile trace.
     """
 
-    profile: ProfileData
-    estimation_log: list[dict[str, Any]]
-    miss_log: list[dict[str, Any]]
-
     def __init__(self, trace_path: str) -> None:
         self.profile = ProfileData()
         self.estimation_log: list[dict[str, Any]] = []
         self.miss_log: list[dict[str, Any]] = []
         self.profile.load(trace_path)
+        self._log_profile_stats(trace_path)
+
+    def _log_profile_stats(self, trace_path: str) -> None:
+        """Log profile stats to trace_structured for tlparse."""
+        profile = self.profile
+        coll_keys = profile.get_collective_keys()
+        op_count = profile.op_count
+        op_names = profile.get_op_names()
+        trace_structured(
+            "artifact",
+            metadata_fn=lambda: {
+                "name": "pge_profile_loaded",
+                "encoding": "json",
+            },
+            payload_fn=lambda: json.dumps(
+                {
+                    "path": trace_path,
+                    "collective_keys": [
+                        {
+                            "name": k[0],
+                            "ranks": list(k[1]),
+                            "group_size": len(k[1]),
+                            "stride": _rank_stride(k[1]),
+                            "dtype": k[2],
+                        }
+                        for k in coll_keys
+                    ],
+                    "op_count": op_count,
+                    "op_names": op_names,
+                }
+            ),
+        )
+        log.info("PGE: using profile-guided estimation from %s", trace_path)
 
     def __call__(self, node: fx.Node, override_size: int | None = None) -> float | None:
         if _is_collective_node(node):
