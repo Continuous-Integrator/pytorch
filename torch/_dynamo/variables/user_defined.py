@@ -3335,6 +3335,26 @@ class DefaultDictVariable(UserDefinedDictVariable):
             if len(args) != 1:
                 raise_args_mismatch(tx, name, "1 args", f"{len(args)} args")
             return self._missing_impl(tx, args[0])
+        elif name == "copy":
+            # defaultdict.copy() creates a new defaultdict with same factory
+            # https://github.com/python/cpython/blob/v3.13.3/Modules/_collectionsmodule.c#L2282
+            from .builder import SourcelessBuilder
+
+            assert self._base_vt is not None
+            new_dd = tx.output.side_effects.track_new_user_defined_object(
+                SourcelessBuilder.create(tx, dict),
+                SourcelessBuilder.create(tx, collections.defaultdict),
+                [],
+            )
+            new_dd.default_factory = self.default_factory
+            new_dd._base_vt = self._base_vt.clone(
+                mutation_type=ValueMutationNew(),
+                source=None,
+            )
+            tx.output.side_effects.store_attr(
+                new_dd, "default_factory", new_dd.default_factory
+            )
+            return new_dd
         elif name == "__setattr__":
             if len(args) != 2:
                 raise_args_mismatch(tx, name, "2 args", f"{len(args)} args")
