@@ -6798,8 +6798,8 @@ def sample_inputs_linear_cross_entropy(op_info, device, dtype, requires_grad, **
 
     kwargs_list: list[dict[str, Any]] = [
         {},
-        *[dict(reduction=reduction) for reduction in reductions],
-        *[dict(weight=None, reduction=reduction) for reduction in reductions],
+        *[dict(reduction=reduction) for reduction in reductions if reduction != "mean"],
+        *[dict(weight="<to be initialized>", reduction=reduction) for reduction in reductions],
         dict(ignore_index=1),
     ]
 
@@ -6809,17 +6809,34 @@ def sample_inputs_linear_cross_entropy(op_info, device, dtype, requires_grad, **
             if len(linear_sample.args) == 1:
                 linear_weight = linear_sample.args[0]
             else:
-                # skip samples with linear bias because we have
-                #   softmax(input @ linear_weight.T + linear_bias) == softmax(input @ linear_weight.T)
+                # skip samples with linear bias as unsupported
                 continue
 
-            input_shape = (*linear_input.shape[:-1], *linear_weight.shape[:1])
+            num_classes = linear_weight.shape[0]
+            num_batches = linear_input.shape[:-1]
+            input_shape = (*num_batches, num_classes)
             if len(input_shape) <= 2:
-                target_shape = input_shape[:-1]
-                num_classes = input_shape[-1]
+                if probabilities_target:
+                    target_shape = input_shape
+                else:
+                    target_shape = num_batches
             else:
-                # cross_entropy supports only one-dimensional batches
-                continue
+                # cross_entropy supports only one-dimensional
+                # batches. However, linear_cross_entropy supports
+                # multidimensional weights that sample_inputs_linear
+                # would not generate. So, we'll swap linear input and
+                # weights to generate samples with 2-D inputs and N-D
+                # linear weights for linear_cross_entropy:
+                linear_input, linear_weight = linear_weight, linear_input
+                num_classes = linear_weight.shape[0]
+                out_features = linear_weight.shape[1:-1]
+                in_features = linear_weight.shape[-1]
+                num_batches = linear_input.shape[:-1]
+                assert linear_input.shape[-1] == in_features  # noqa: S101
+                if probabilities_target:
+                    target_shape = (*num_batches, num_classes, *out_features)
+                else:
+                    target_shape = (*num_batches, *out_features)
 
             if 0 in target_shape:
                 # skip degenerate samples
@@ -6832,7 +6849,7 @@ def sample_inputs_linear_cross_entropy(op_info, device, dtype, requires_grad, **
                 if "ignore_index" in kwargs:
                     continue
                 target = make_tensor(
-                    input_shape,
+                    target_shape,
                     low=0,
                     high=1,
                     device=device,
@@ -6848,8 +6865,13 @@ def sample_inputs_linear_cross_entropy(op_info, device, dtype, requires_grad, **
                     dtype=torch.long,
                 )
 
-            if "ignore_index" in kwargs and torch.all(target == kwargs["ignore_index"]) and 0 not in target.shape:
-                # make sure at least one item in target is not ignored
+            if (
+                    kwargs.get("reduction", "mean") == "mean"
+                    and "ignore_index" in kwargs and torch.all(target == kwargs["ignore_index"])
+                    and 0 not in target.shape
+            ):
+                # make sure at least one item in target is not
+                # ignored, required for valid normalization
                 t = random.sample(sorted(set(range(num_classes)) - {kwargs["ignore_index"]}), 1)[0]
                 target[0 if target.shape else ()] = t
 
@@ -7066,8 +7088,6 @@ def skips_mvlgamma(skip_redundant=False):
         DecorateInfo(unittest.skip("Skipped!"), 'TestUnaryUfuncs',
                      'test_reference_numerics_small',
                      dtypes=(torch.int8,)),
-        # NotImplementedError: The operator 'aten::mvlgamma.out' is not currently implemented for the MPS device
-        DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_variant_consistency_eager', device_type='mps'),
     )
     if skip_redundant:
         # Redundant tests
@@ -10026,7 +10046,7 @@ class foreach_norm_sample_func(foreach_inputs_sample_func):
         for ord in (0, 1, 2, -1, -2, float('inf'), float('-inf')):
             input = sample_inputs_foreach(None, device, dtype, NUM_SIZE0_TENSORS, zero_size=True, **_foreach_inputs_kwargs)
             disable_fastpath = True
-            if ord in (1, 2, float('inf')) and dtype in floating_types_and(torch.half, torch.bfloat16):
+            if ord in (0, 1, 2, float('inf')) and dtype in floating_types_and(torch.half, torch.bfloat16):
                 disable_fastpath = False
             yield ForeachSampleInput(input, ord=ord, disable_fastpath=disable_fastpath)
 
@@ -10052,7 +10072,7 @@ class foreach_norm_sample_func(foreach_inputs_sample_func):
             _foreach_inputs_kwargs["intersperse_empty_tensors"] = intersperse_empty_tensors
             input = sample_inputs_foreach(None, device, dtype, num_tensors, zero_size=False, **_foreach_inputs_kwargs)
             disable_fastpath = True
-            if ord in (1, 2, float('inf')) and dtype in floating_types_and(torch.half, torch.bfloat16):
+            if ord in (0, 1, 2, float('inf')) and dtype in floating_types_and(torch.half, torch.bfloat16):
                 disable_fastpath = False
             yield ForeachSampleInput(input, ord=ord, disable_fastpath=disable_fastpath, dtype=out_dtype)
 
@@ -10069,7 +10089,7 @@ class foreach_norm_sample_func(foreach_inputs_sample_func):
             for input in nan_inputs:
                 x = torch.tensor(input, device=device)
                 disable_fastpath = True
-                if ord in (1, 2, float('inf')) and dtype in floating_types_and(torch.half, torch.bfloat16):
+                if ord in (0, 1, 2, float('inf')) and dtype in floating_types_and(torch.half, torch.bfloat16):
                     disable_fastpath = False
                 yield ForeachSampleInput([x], ord=ord, disable_fastpath=disable_fastpath)
 
@@ -15568,7 +15588,9 @@ op_db: list[OpInfo] = [
            dtypes=all_types_and(torch.bool, torch.float16, torch.bfloat16),
            dtypesIfHpu=custom_types(torch.float32, torch.bfloat16, torch.int32, torch.int8),
            decorators=(onlyNativeDeviceTypes,),
-           supports_autograd=False,
+           supports_autograd=True,
+           supports_forward_ad=True,
+           supports_fwgrad_bwgrad=True,
            sample_inputs_func=sample_inputs_aminmax,
            skips=(
                # Exception: MPS supports tensors with dimensions <= 16, but got 65.
@@ -16778,7 +16800,6 @@ op_db: list[OpInfo] = [
            supports_out=False,
            skips=(
                DecorateInfo(unittest.expectedFailure, 'TestJit', 'test_variant_consistency_jit'),
-               DecorateInfo(unittest.expectedFailure, 'TestDTensorOps', 'test_dtensor_op_db'),
                DecorateInfo(unittest.expectedFailure, 'TestInductorOpInfo', 'test_comprehensive'),
                DecorateInfo(unittest.expectedFailure, 'TestMathBits', 'test_neg_view'),
                # Error: The operator 'aten::_upsample_bilinear2d_aa_backward.grad_input'
@@ -18150,30 +18171,15 @@ op_db: list[OpInfo] = [
            sample_inputs_func=sample_inputs_mode,),
     make_mvlgamma_opinfo(variant_test_name='mvlgamma_p_1',
                          domain=(1, None),
-                         skips=skips_mvlgamma() + (
-                             # NotImplementedError: The operator 'aten::mvlgamma.out' is not currently
-                             # implemented for the MPS device
-                             DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_out', device_type='mps'),
-                             DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_out_warning', device_type='mps'),
-                         ),
+                         skips=skips_mvlgamma(),
                          sample_kwargs=lambda device, dtype, input: ({'p': 1}, {'d': 1})),
     make_mvlgamma_opinfo(variant_test_name='mvlgamma_p_3',
                          domain=(2, None),
-                         skips=skips_mvlgamma() + (
-                             # NotImplementedError: The operator 'aten::mvlgamma.out' is not currently
-                             # implemented for the MPS device
-                             DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_out', device_type='mps'),
-                             DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_out_warning', device_type='mps'),
-                         ),
+                         skips=skips_mvlgamma(),
                          sample_kwargs=lambda device, dtype, input: ({'p': 3}, {'d': 3})),
     make_mvlgamma_opinfo(variant_test_name='mvlgamma_p_5',
                          domain=(3, None),
-                         skips=skips_mvlgamma() + (
-                             # NotImplementedError: The operator 'aten::mvlgamma.out' is not currently
-                             # implemented for the MPS device
-                             DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_out', device_type='mps'),
-                             DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_out_warning', device_type='mps'),
-                         ),
+                         skips=skips_mvlgamma(),
                          sample_kwargs=lambda device, dtype, input: ({'p': 5}, {'d': 5})),
     BinaryUfuncInfo('ne',
                     ref=np.not_equal,
@@ -21725,7 +21731,6 @@ op_db: list[OpInfo] = [
            sample_inputs_func=sample_inputs_nonzero_static,
            supports_out=False,
            supports_autograd=False,
-           decorators=[onlyCPU],
            skips=(
                DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_out'),
                DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_out_warning'),
@@ -22323,10 +22328,9 @@ op_db: list[OpInfo] = [
         supports_out=False,
         sample_inputs_func=sample_inputs_grid_sample,
         reference_inputs_func=reference_inputs_grid_sample,
-        supports_gradgrad=False,
+        supports_gradgrad=True,
         skips=(
             # Exception: The operator 'aten::grid_sampler_2d_backward' is not currently implemented for the MPS device
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_dtypes', device_type='mps'),
             DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_variant_consistency_eager', device_type='mps'),
             DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_noncontiguous_samples', device_type='mps'),
         ),
@@ -22337,15 +22341,14 @@ op_db: list[OpInfo] = [
         dtypes=floating_types_and(torch.float16, torch.bfloat16),
         supports_out=False,
         sample_inputs_func=sample_inputs_grid_sampler_2d,
-        supports_gradgrad=False,
+        supports_gradgrad=True,
         gradcheck_nondet_tol=1e-15,
         skips=(
             DecorateInfo(slowTest, 'TestDecomp', 'test_comprehensive', dtypes=(torch.float32, torch.float64),
                          active_if=IS_WINDOWS),
-            # Exception: The operator 'aten::grid_sampler_2d_backward' is not currently implemented for the MPS device
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_dtypes', device_type='mps'),
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_variant_consistency_eager', device_type='mps'),
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_noncontiguous_samples', device_type='mps'),
+            DecorateInfo(toleranceOverride({torch.float32: tol(atol=2e-5, rtol=2e-6),
+                                            torch.float16: tol(atol=5e-3, rtol=4e-3)}),
+                         "TestConsistency", "test_output_grad_match", device_type="mps"),
         ),),
     # TODO: Remove grid_sampler_3d tests once `nn.functional.grid_sample` has
     # MPS support for all cases.
@@ -22354,7 +22357,7 @@ op_db: list[OpInfo] = [
         dtypes=floating_types_and(torch.float16, torch.bfloat16),
         supports_out=False,
         sample_inputs_func=sample_inputs_grid_sampler_3d,
-        supports_gradgrad=False,
+        supports_gradgrad=True,
         gradcheck_nondet_tol=1e-15,
         skips=(
             # NOTE: Only run on MPS
