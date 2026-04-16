@@ -1,5 +1,5 @@
 """
-Node runtime estimation: CUDA events benchmarking and profile-guided estimation.
+Collective runtime estimation using CUDA events and power-of-2 rounding.
 """
 
 from __future__ import annotations
