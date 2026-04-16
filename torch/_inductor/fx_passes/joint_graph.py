@@ -522,7 +522,7 @@ def constant_fold_uniform_value(gm: torch.fx.GraphModule):
                         "dtype": fake_tensor.dtype,
                         "layout": torch.strided,
                         "device": fake_tensor.device,
-                        "pin_memory": False,
+                        "pin_memory": node.kwargs.get("pin_memory", False),
                     },
                 )
 
@@ -617,7 +617,8 @@ def canonicalize_aten_ir_passes(gm: torch.fx.GraphModule):
 
 
 def joint_graph_passes(
-    graph: torch.fx.GraphModule, input_device: torch.device | None = None
+    graph: torch.fx.GraphModule,
+    input_device: torch.device | None = None,
 ):
     """
     Run FX transformations on the joint forwards+backwards graph.
@@ -627,7 +628,7 @@ def joint_graph_passes(
         subsystem="joint_graph_passes",
     )
 
-    lazy_init(input_device)  # type: ignore[call-arg]
+    lazy_init(input_device)
     count = 0
 
     # must occur before other passes

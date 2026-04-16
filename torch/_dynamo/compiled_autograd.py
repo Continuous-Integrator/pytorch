@@ -224,8 +224,7 @@ class OpNamespace:
         result = Op(name, fn, is_custom_function)
         if is_traceable:
             # pyrefly: ignore [deprecated]
-            torch._dynamo.nonstrict_trace(result, in_place=True)
-            setattr(self, name, result)
+            setattr(self, name, torch._dynamo.allow_in_graph(result))
         else:
             # C++ autograd function was not marked as traceable
             # Dynamo can't dry run it at compile time, so must fallback to eager
@@ -311,7 +310,7 @@ class AutogradCompilerInstance:
         self,
         inputs: list[torch.Tensor],
         sizes: list[int],
-        scalars: list[int | float],
+        scalars: list[IntLikeType | FloatLikeType],
         origins: list[list[tuple[int, str]]],
         accumulate_grad: bool,
         check_nans: bool,
@@ -383,7 +382,8 @@ class AutogradCompilerInstance:
                 (proxies[i],),
                 {},
             )
-            self.symnode_proxy_lookup[symint.node] = proxies[i]
+            if not isinstance(symint, int):
+                self.symnode_proxy_lookup[symint.node] = proxies[i]
         proxies = self.bind_objects_to_proxies(sym_sizes, proxies, sizes_origins)
 
         for idx, val in enumerate(scalars):
@@ -486,11 +486,12 @@ class AutogradCompilerInstance:
                         "torch.compile does not currently support higher order gradients."
                     )
 
+        @torch._dynamo.allow_in_graph  # type: ignore[misc]
         def call_aot_bwd_prologue(
             ctx_saved_tensors: Sequence[torch.Tensor],
             ctx_symints: Sequence[IntLikeType],
             ctx_opaque_objs: Sequence[Any],
-            *flat_args: Sequence[Any],
+            flat_args: Sequence[Any],
         ) -> Any:
             out = torch._functorch._aot_autograd.runtime_wrappers._backward_prologue_functional(
                 ctx_saved_tensors,
@@ -498,20 +499,19 @@ class AutogradCompilerInstance:
                 ctx_opaque_objs,
                 metadata,
                 maybe_subclass_metadata,
-                *flat_args,
+                flat_args,
             )
             return out
 
-        torch._dynamo.nonstrict_trace(call_aot_bwd_prologue, in_place=True)  # type: ignore[misc]
-
         pgrads = self.fx_tracer.create_proxy(
             kind="call_function",
+            # pyrefly: ignore [bad-argument-type]
             target=call_aot_bwd_prologue,
             args=(
                 psaved_tensors,
                 psymints,
                 popaque_objects,
-                *pinputs,
+                pinputs,
             ),
             kwargs={},
         )
@@ -628,15 +628,15 @@ class AutogradCompilerInstance:
         def proxy_subclass_constructor(
             subclass_meta: Any, is_runtime: bool, unwrapped_args: Sequence[Any]
         ) -> torch.Tensor:
+            @torch._dynamo.allow_in_graph  # type: ignore[misc]
             def make_subclass(*unwrapped_args: Any) -> Any:
                 return subclass_meta.creation_fn(unwrapped_args, is_runtime=is_runtime)
-
-            torch._dynamo.nonstrict_trace(make_subclass, in_place=True)  # type: ignore[misc]
 
             punwrapped_args = pytree.tree_map(self.to_proxy, unwrapped_args)
 
             poutput = self.fx_tracer.create_proxy(
                 kind="call_function",
+                # pyrefly: ignore [bad-argument-type]
                 target=make_subclass,
                 args=tuple(punwrapped_args),
                 kwargs={},
@@ -681,6 +681,11 @@ class AutogradCompilerInstance:
                 opaque_object_indices,
             )
         else:
+            if getattr(ctx._forward_cls, "boxed_grads_call", False):  # type: ignore[attr-defined]
+                raise RuntimeError(
+                    f"boxed_grads_call=True on {ctx._forward_cls.__name__} "  # type: ignore[attr-defined]
+                    "is not supported with compiled autograd. "
+                )
             proxies = self.fx_tracer.create_proxy(
                 kind="call_function",
                 target=call_backward,
@@ -986,7 +991,7 @@ class AutogradCompilerInstance:
         # Dynamo guards will error instead of creating aliasing guards unless we unpack them in the graph
         unpack_nodes: OrderedSet[torch.fx.Node] = OrderedSet()
         i: int | None = None
-        for i, node in enumerate(self.fx_tracer.graph.find_nodes(op="placeholder")):  # noqa: B007
+        for i, node in enumerate(self.fx_tracer.graph.find_nodes(op="placeholder")):
             unpack_nodes.update(node.users.keys())
         assert i == len(_graph_placeholders) - 1
 

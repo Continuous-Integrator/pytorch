@@ -219,11 +219,7 @@ def _check_mutually_exclusive_decorators(fn: Callable, decorator_name: str) -> N
             )
 
 
-def nonstrict_trace(
-    traceable_fn: Callable[_P, _R],
-    *,
-    in_place: bool = False,
-) -> Callable[_P, _R]:
+def nonstrict_trace(traceable_fn: Callable[_P, _R]) -> Callable[_P, _R]:
     """
     Decorator to mark a function as nonstrict-traceable for dynamo.
 
@@ -291,37 +287,19 @@ def nonstrict_trace(
 
     _check_mutually_exclusive_decorators(traceable_fn, "nonstrict_trace")
 
-    if inspect.isclass(traceable_fn):
-        cls_id = id(traceable_fn)
-        trace_rules._disallowed_callable_ids.remove(cls_id)
-        trace_rules._allowed_callable_ids.add(cls_id)
-
-        def deregister() -> None:
-            trace_rules._allowed_callable_ids.remove(cls_id)
-
-        weakref.finalize(traceable_fn, deregister)
-        return traceable_fn
-
-    if in_place:
-        fn_id = id(traceable_fn)
-        trace_rules._disallowed_callable_ids.remove(fn_id)
-        trace_rules._allowed_callable_ids.add(fn_id)
-
-        def deregister() -> None:
-            trace_rules._allowed_callable_ids.remove(fn_id)
-
-        weakref.finalize(traceable_fn, deregister)
-        return traceable_fn
-
     @functools.wraps(traceable_fn)
     def wrapped(*args: _P.args, **kwargs: _P.kwargs) -> _R:
         return traceable_fn(*args, **kwargs)
 
     wrapped_id = id(wrapped)
 
+    # This line allows us to reuse much of the `allow_in_graph` impl.
     trace_rules._allowed_callable_ids.add(wrapped_id)
+
+    # This line allows us to diverge the impl from `allow_in_graph`.
     trace_rules._nonstrict_trace_callable_ids.add(wrapped_id)
 
+    # Avoid id reuse which creates subtle bugs.
     def deregister() -> None:
         trace_rules._allowed_callable_ids.remove(wrapped_id)
         trace_rules._nonstrict_trace_callable_ids.remove(wrapped_id)
@@ -337,6 +315,8 @@ def _invoke_leaf_function_python(
     args: tuple[Any, ...],
     kwargs: dict[str, Any],
     mutates_args: frozenset[str] | None = None,
+    hook_fn: Callable[..., Any] | None = None,
+    hook_fake_fn: Callable[..., Any] | None = None,
 ) -> Any:
     """Call invoke_leaf_function HOP directly from Python.
 
@@ -377,6 +357,10 @@ def _invoke_leaf_function_python(
 
     real_fn_callable = _LeafCallable(wrapped_real)
     fake_fn_callable = _LeafCallable(wrapped_fake)
+
+    if hook_fn is not None:
+        real_fn_callable._leaf_hook_real_fn = hook_fn  # type: ignore[attr-defined]
+        real_fn_callable._leaf_hook_fake_fn = hook_fake_fn  # type: ignore[attr-defined]
 
     mutated_flat_indices = ""
     if mutates_args:
@@ -529,6 +513,37 @@ def leaf_function(
 
         To validate that your fake implementation matches the real function's outputs, set
         ``torch._dynamo.config.leaf_function_validate_outputs = True``.
+
+        **register_multi_grad_hook (optional)**:
+        You can register a backward hook via ``@fn.register_multi_grad_hook``
+        to run code when gradients have been computed
+        for all requires_grad tensor inputs during backward. The hook fires exactly once
+        per backward pass. The hook function has the same signature as the leaf function;
+        each requires_grad tensor argument receives the corresponding gradient instead
+        of the original tensor. Non-tensor arguments and tensors without requires_grad
+        are passed through unchanged. The hook must return ``None``. The hook is called
+        as a leaf function itself, so it is also opaque to the compiler.
+
+        Example::
+
+            >>> @leaf_function
+            ... def debug_log(t, tag):
+            ...     print(f"[{tag}][fwd] norm={t.norm().item()}")
+            ...     return None
+            ...
+            >>> @debug_log.register_fake
+            ... def debug_log_fake(t, tag):
+            ...     return None
+            ...
+            >>> @debug_log.register_multi_grad_hook
+            ... def debug_log_hook(t_grad, tag):
+            ...     print(f"[{tag}][bwd] norm={t_grad.norm().item()}")
+            ...
+            >>> x = torch.randn(4, requires_grad=True)
+            >>> debug_log(x, "intermediate")  # no assignment needed
+            [intermediate][fwd] norm=...
+            >>> (x * 2).sum().backward()
+            [intermediate][bwd] norm=...
 
     Limitations:
         Currently, inductor backend and :func:`torch.export.export` are not yet supported.
@@ -731,6 +746,8 @@ def leaf_function(
             args,
             kwargs,
             mutates_args=inner._torchdynamo_leaf_mutates_args,  # pyrefly: ignore [missing-attribute]
+            hook_fn=inner._torchdynamo_leaf_hook_fn,  # type: ignore[attr-defined]
+            hook_fake_fn=inner._torchdynamo_leaf_hook_fake_fn,  # type: ignore[attr-defined]
         )  # type: ignore[attr-defined]
 
     inner._torchdynamo_leaf_real_fn = fn  # type: ignore[attr-defined]
@@ -738,6 +755,8 @@ def leaf_function(
     inner._torchdynamo_leaf_mutates_args = (  # pyrefly: ignore [missing-attribute]
         frozenset(mutates_args) if mutates_args else frozenset()
     )  # type: ignore[attr-defined]
+    inner._torchdynamo_leaf_hook_fn = None  # type: ignore[attr-defined]
+    inner._torchdynamo_leaf_hook_fake_fn = None  # type: ignore[attr-defined]
 
     # Follow nonstrict_trace implementation
     wrapped_id = id(inner)
@@ -755,6 +774,13 @@ def leaf_function(
         return inner
 
     inner.register_fake = register_fake_setter  # type: ignore[attr-defined]
+
+    def register_hook_setter(hook_fn: Callable[..., Any]) -> Callable[..., Any]:
+        inner._torchdynamo_leaf_hook_fn = hook_fn  # type: ignore[attr-defined]
+        inner._torchdynamo_leaf_hook_fake_fn = lambda *args, **kwargs: None  # type: ignore[attr-defined]
+        return inner
+
+    inner.register_multi_grad_hook = register_hook_setter  # type: ignore[attr-defined]
 
     return inner
 
@@ -1424,16 +1450,16 @@ def _allow_in_graph_einops() -> None:
         # helpers. Backport the try/except TypeError fallback from einops 0.7.0+
         # so allow_in_graph works during fake tensor validation.
         _patch_einops_symint_compat(einops.einops)  # type: ignore[attr-defined]
-        nonstrict_trace(einops.rearrange, in_place=True)
-        nonstrict_trace(einops.reduce, in_place=True)
+        allow_in_graph(einops.rearrange)
+        allow_in_graph(einops.reduce)
         if hasattr(einops, "repeat"):
-            nonstrict_trace(einops.repeat, in_place=True)
+            allow_in_graph(einops.repeat)  # available since einops 0.2.0
         if hasattr(einops, "einsum"):
-            nonstrict_trace(einops.einsum, in_place=True)
+            allow_in_graph(einops.einsum)  # available since einops 0.5.0
         if hasattr(einops, "pack"):
-            nonstrict_trace(einops.pack, in_place=True)
+            allow_in_graph(einops.pack)  # available since einops 0.6.0
         if hasattr(einops, "unpack"):
-            nonstrict_trace(einops.unpack, in_place=True)
+            allow_in_graph(einops.unpack)  # available since einops 0.6.0
 
 
 # Note: this carefully avoids eagerly import einops.

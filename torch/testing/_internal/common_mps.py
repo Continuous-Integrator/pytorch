@@ -55,6 +55,9 @@ if torch.backends.mps.is_available():
             "cos",
             "cosh",
             "cross",
+            "cumsum",
+            "cumprod",
+            "cumulative_trapezoid",
             "diag",
             "diag_embed",
             "diagflat",
@@ -96,6 +99,7 @@ if torch.backends.mps.is_available():
             "linalg.diagonal",
             "linalg.householder_product",
             "linalg.svd",
+            "linalg.vander",
             "linalg.vecdot",
             "linalg.vector_norm",
             "log10",
@@ -104,6 +108,7 @@ if torch.backends.mps.is_available():
             "log",
             "logaddexp",
             "logaddexp2",
+            "logcumsumexp",
             "mH",
             "mT",
             "masked_fill",
@@ -126,6 +131,7 @@ if torch.backends.mps.is_available():
             "nn.functional.conv_transpose3d",
             "nn.functional.feature_alpha_dropoutwithout_train",
             "nn.functional.l1_loss",
+            "nn.functional.linear",
             "nn.functional.normalize",
             "nn.functional.padcircular",
             "nn.functional.pairwise_distance",
@@ -136,6 +142,7 @@ if torch.backends.mps.is_available():
             "nn.functional.triplet_margin_with_distance_loss",
             "nn.functional.unfold",
             "nonzero",
+            "nonzero_static",
             "norm",
             "normfro",
             "norminf",
@@ -281,6 +288,8 @@ if torch.backends.mps.is_available():
             "logical_xor",
             "logsumexp",
             "long",
+            "masked.cumsum",
+            "masked.cumprod",
             "masked.mean",
             "masked.normalize",
             "masked.prod",
@@ -624,7 +633,6 @@ if torch.backends.mps.is_available():
             "float_power": None,
             "linalg.matrix_rankhermitian": None,
             "linalg.pinvhermitian": None,
-            "nonzero_static": None,
             # MPS: input sizes must be divisible by output sizes
             "nn.functional.adaptive_avg_pool1d": None,
             "nn.functional.adaptive_avg_pool2d": None,
@@ -918,11 +926,9 @@ if torch.backends.mps.is_available():
             "scalar_tensor": [torch.float16, torch.float32],
             "cdist": None,
             "masked.scatter": [torch.float16, torch.float32],
-            "grid_sampler_2d": None,
             "grid_sampler_3d": None,
             "igamma": None,  # currently not supported for any device
             "igammac": None,  # currently not supported for any device
-            "aminmax": [torch.float32, torch.float16],
             "special.i1": [torch.float16],  # "i1_backward" not implemented for 'Half'
             "special.i1e": [torch.float16],  # "i1e_backward" not implemented for 'Half'
             # Correctness issues
