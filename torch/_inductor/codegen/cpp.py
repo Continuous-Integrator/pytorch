@@ -2187,14 +2187,24 @@ class CppKernel(Kernel):
             csevar = ops.index_expr(expr, torch.int64).value
             buffer = V.kernel.compute
         else:
-            # indexing in loads
-            prior_compute = V.kernel.compute
-            try:
-                V.kernel.compute = self.loads
+            # Prefer to put the assert in loads so it runs before the actual
+            # memory access.  However, if the index expression may have already
+            # been CSE'd into compute by a prior ops.index_expr call, placing a
+            # reference to it in loads would be a forward reference (loads are
+            # emitted before compute in the kernel body).  In that case fall
+            # back to compute.
+            idx_str = cexpr(self.rename_indexing(expr))
+            if self.cse.try_get(idx_str) is not None:
                 csevar = ops.index_expr(expr, torch.int64).value
-            finally:
-                V.kernel.compute = prior_compute
-            buffer = self.loads
+                buffer = V.kernel.compute
+            else:
+                prior_compute = V.kernel.compute
+                try:
+                    V.kernel.compute = self.loads
+                    csevar = ops.index_expr(expr, torch.int64).value
+                finally:
+                    V.kernel.compute = prior_compute
+                buffer = self.loads
 
         size_str = V.kernel.sexpr(self.rename_indexing(size)) if upper else None
 
@@ -3676,6 +3686,10 @@ class CppTile2DKernel(CppVecKernel):
     def need_vec_transpose(self, index):
         outer_var = self.itervars[self.outer_idx]
         inner_var = self.itervars[self.tiling_idx]
+        # Indirect indexing (SymT.TMP) variables are declared inside the inner
+        # loop, but transpose_mxn is emitted into preloads (before the loop).
+        if free_symbol_is_type(index, SymT.TMP):
+            return False
         outer_stride = stride_at_vec_range(index, outer_var, self.tiling_factor)
         inner_stride = stride_at_vec_range(index, inner_var, self.tiling_factor)
         return (
@@ -5246,7 +5260,7 @@ class CppScheduling(BaseScheduling):
                 for _node in node.get_outer_nodes()
             ):
                 # Ref to the typical case of local buffer in
-                # https://github.com/pytorch/pytorch/blob/1115a25c36340554442f28f9570abd42f0aface2/aten/src/ATen/native/cpu/SoftMaxKernel.cpp#L159 # noqa: B950
+                # https://github.com/pytorch/pytorch/blob/1115a25c36340554442f28f9570abd42f0aface2/aten/src/ATen/native/cpu/SoftMaxKernel.cpp#L159
                 # where the buffer is with size of last dim and contiguous.
                 # Only support this typical case at first.
                 visited_scheduler_nodes: OrderedSet[str] = OrderedSet()
