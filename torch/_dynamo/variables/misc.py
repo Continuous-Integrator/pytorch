@@ -358,8 +358,8 @@ class SuperVariable(VariableTracker):
             attr_value = None
             try:
                 attr_value = object.__getattribute__(
-                    self.objvar.value,
-                    attr_name,  # pyrefly: ignore[missing-attribute]
+                    self.objvar.value,  # pyrefly: ignore[missing-attribute]
+                    attr_name,
                 )
             except AttributeError:
                 raise_observed_exception(AttributeError, tx)
