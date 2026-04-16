@@ -144,7 +144,7 @@ jobs:
 
       - name: Install PyYAML
         if: steps.pr.outputs.eligible == 'true'
-        run: pip install PyYAML
+        run: pip install pyyaml==6.0.2
 
       - name: Determine reviewers from merge rules
         if: steps.pr.outputs.eligible == 'true'
@@ -175,15 +175,31 @@ jobs:
               return;
             }
 
-            try {
-              await github.rest.pulls.requestReviewers({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                pull_number: prNumber,
-                reviewers: reviewers,
-                team_reviewers: teams,
-              });
-              core.info(`Requested reviews from: ${reviewers.concat(teams.map(t => 'pytorch/' + t)).join(', ')}`);
-            } catch (error) {
-              core.warning(`Failed to request some reviewers: ${error.message}`);
+            // Request reviews individually so a single stale username doesn't
+            // prevent all other valid reviewers from being assigned.
+            for (const reviewer of reviewers) {
+              try {
+                await github.rest.pulls.requestReviewers({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  pull_number: prNumber,
+                  reviewers: [reviewer],
+                });
+                core.info(`Requested review from ${reviewer}`);
+              } catch (error) {
+                core.warning(`Failed to request review from ${reviewer}: ${error.message}`);
+              }
+            }
+            for (const team of teams) {
+              try {
+                await github.rest.pulls.requestReviewers({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  pull_number: prNumber,
+                  team_reviewers: [team],
+                });
+                core.info(`Requested review from team pytorch/${team}`);
+              } catch (error) {
+                core.warning(`Failed to request review from team pytorch/${team}: ${error.message}`);
+              }
             }
