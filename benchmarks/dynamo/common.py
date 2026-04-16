@@ -2504,6 +2504,132 @@ class BenchmarkRunner:
 
         return record_status(accuracy_status, dynamo_start_stats=start_stats)
 
+    def check_batch_invariance(
+        self, name, model, example_inputs, optimize_ctx, experiment, tag
+    ):
+        """
+        Batch invariance check: run the compiled model at N, N/2, ..., 1 and
+        verify each output matches the reference sliced to that range bitwise.
+        """
+        start_stats = get_dynamo_stats()
+
+        def record_status(status, dynamo_start_stats):
+            headers = ["dev", "name", "batch_size", "accuracy"]
+            fields = [current_device, current_name, current_batch_size, status]
+            if tag is not None:
+                headers.insert(3, "tag")
+                fields.insert(3, tag)
+
+            o_headers = list(headers)
+            o_fields = list(fields)
+
+            dynamo_stats = get_dynamo_stats()
+            dynamo_stats.subtract(dynamo_start_stats)
+            for k, v in dynamo_stats.items():
+                headers.append(k)
+                fields.append(v)
+
+            total_wall_time = output_signpost(
+                dict(zip(o_headers, o_fields)),
+                self.args,
+                self.suite_name,
+            )
+            headers.append("compilation_latency")
+            fields.append(total_wall_time)
+            write_outputs(output_filename, headers, fields)
+            return status
+
+        if name in self.skip_accuracy_checks_large_models_dashboard:
+            return record_status("pass_due_to_skip", dynamo_start_stats=start_stats)
+
+        full_batch = current_batch_size
+        if full_batch is None or full_batch < 2:
+            return record_status("pass_due_to_skip", dynamo_start_stats=start_stats)
+
+        def make_slicer(target):
+            def slicer(x):
+                if (
+                    isinstance(x, torch.Tensor)
+                    and x.dim() > 0
+                    and x.shape[0] == full_batch
+                ):
+                    return x[:target].contiguous()
+                return x
+
+            return slicer
+
+        with self.pick_grad(name, self.args.training):
+            model, example_inputs = self.maybe_cast(model, example_inputs)
+
+            try:
+                reset_rng_state()
+                torch._dynamo.reset()
+                torch._dynamo.utils.counters.clear()
+                model_copy = self.deepcopy_and_maybe_parallelize(model)
+                self.init_optimizer(name, current_device, model_copy.parameters())
+                optimized_model_iter_fn = optimize_ctx(self.model_iter_fn)
+                reference = self.run_n_iterations(
+                    model_copy, clone_inputs(example_inputs), optimized_model_iter_fn
+                )
+            except Exception as e:
+                log.exception("")
+                status = (
+                    "OOM"
+                    if isinstance(e, torch.cuda.OutOfMemoryError)
+                    else "fail_to_run"
+                )
+                return record_status(status, dynamo_start_stats=start_stats)
+
+            size = full_batch // 2
+            try:
+                while size >= 1:
+                    slicer = make_slicer(size)
+                    sliced_inputs = tree_map_only(
+                        torch.Tensor, slicer, clone_inputs(example_inputs)
+                    )
+                    reset_rng_state()
+                    out = self.run_n_iterations(
+                        model_copy, sliced_inputs, optimized_model_iter_fn
+                    )
+                    reference_sliced = tree_map_only(torch.Tensor, slicer, reference)
+
+                    try:
+                        is_same = same(
+                            reference_sliced,
+                            out,
+                            fp64_ref=None,
+                            cos_similarity=False,
+                            tol=0,
+                            equal_nan=self.equal_nan,
+                        )
+                    except Exception:
+                        is_same = False
+
+                    if not is_same:
+                        if self.args.skip_accuracy_check:
+                            return record_status(
+                                "pass_due_to_skip", dynamo_start_stats=start_stats
+                            )
+                        return record_status(
+                            f"fail_batch_invariance_at_{size}",
+                            dynamo_start_stats=start_stats,
+                        )
+
+                    size //= 2
+            except Exception as e:
+                log.exception("")
+                status = (
+                    "OOM"
+                    if isinstance(e, torch.cuda.OutOfMemoryError)
+                    else f"fail_to_run_at_batch_{size}"
+                )
+                return record_status(status, dynamo_start_stats=start_stats)
+            finally:
+                del model_copy
+                empty_gpu_cache(current_device)
+
+        return record_status("pass", dynamo_start_stats=start_stats)
+
     def check_tolerance(
         self, name, model, example_inputs, optimize_ctx, base_device="cpu"
     ):
@@ -3022,9 +3148,14 @@ class BenchmarkRunner:
         start_stats = get_dynamo_stats()
 
         if self.args.accuracy:
-            status = self.check_accuracy(
-                name, model, example_inputs, optimize_ctx, experiment, tag
-            )
+            if self.args.batch_invariant:
+                status = self.check_batch_invariance(
+                    name, model, example_inputs, optimize_ctx, experiment, tag
+                )
+            else:
+                status = self.check_accuracy(
+                    name, model, example_inputs, optimize_ctx, experiment, tag
+                )
             print(status)
             if status == "fail_accuracy" and self.args.minify:
                 self.minify_model(
@@ -3209,6 +3340,12 @@ def parse_args(args=None):
         "--deterministic",
         action="store_true",
         help="Enable deterministic mode (torch.use_deterministic_algorithms, cudnn.deterministic, etc.)",
+    )
+    parser.add_argument(
+        "--batch-invariant",
+        action="store_true",
+        help="Check batch invariance: compare compiled model outputs at full vs half batch "
+        "size and verify they match bitwise. Only valid with --accuracy.",
     )
     parser.add_argument(
         "--inductor-config",
@@ -4039,6 +4176,15 @@ def setup_determinism(args):
     patch_torch_manual_seed()
 
 
+def setup_batch_invariant(args):
+    """Configure CUDA backend so matmul/reduction results do not depend on batch size."""
+    if not torch.cuda.is_available():
+        return
+    torch.backends.cuda.preferred_blas_library("cublaslt")
+    torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction = (False, False)
+    torch.backends.cuda.matmul.allow_bf16_reduced_precision_reduction = (False, False)
+
+
 def run(runner, args, original_dir=None):
     # Pass the parsed args object to benchmark runner object
     torch._dynamo.reset()
@@ -4100,12 +4246,26 @@ def run(runner, args, original_dir=None):
     if args.deterministic and not args.accuracy:
         setup_determinism(args)
 
+    if args.batch_invariant and not args.accuracy:
+        raise AssertionError("--batch-invariant requires --accuracy")
+
     if args.accuracy:
         # Use small batch size. We use >1 batch size to ensure we test
         # batch_norm type of operators that work on batch dims.
         # TODO - Go through the failures for batch size = 2
         if args.batch_size is None:
-            if runner.suite_name == "huggingface":
+            if args.batch_invariant:
+                if runner.suite_name == "huggingface":
+                    args.batch_size = 8
+                elif runner.suite_name == "torchbench":
+                    args.batch_size = 8
+                else:
+                    if runner.suite_name != "timm_models":
+                        raise AssertionError(
+                            f"expected runner.suite_name to be 'timm_models', got {runner.suite_name}"
+                        )
+                    args.batch_size = 16
+            elif runner.suite_name == "huggingface":
                 args.batch_size = 1
             elif runner.suite_name == "torchbench":
                 args.batch_size = 4
@@ -4124,6 +4284,8 @@ def run(runner, args, original_dir=None):
         inductor_config.fallback_random = True
 
         setup_determinism(args)
+        if args.batch_invariant:
+            setup_batch_invariant(args)
 
         if args.only is not None and args.only in {
             "nvidia_deeprecommender",
