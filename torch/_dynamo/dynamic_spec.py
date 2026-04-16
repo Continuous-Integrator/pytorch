@@ -198,29 +198,6 @@ class IntSpec:
         self._validate()
         return self
 
-    # -- matching ----------------------------------------------------------
-
-    def match_assumptions(self, value: int) -> bool:
-        """Return ``True`` if *value* satisfies this spec's assumptions.
-
-        For STATIC, checks exact equality (requires *value* to be set).
-        For BACKED/UNBACKED, checks min/max bounds.
-        """
-        if self._type is None:
-            raise ValueError("IntSpec type must be set before matching")
-        if self._type == IntSpecType.STATIC:
-            if self._value is None:
-                raise ValueError(
-                    "STATIC IntSpec has no value set; cannot match. "
-                    "Use IntSpec().static(val) to set an explicit value."
-                )
-            return value == self._value
-        if self._min is not None and value < self._min:
-            return False
-        if self._max is not None and value > self._max:
-            return False
-        return True
-
     # -- lowering to existing Dim infrastructure ---------------------------
 
     def _to_dim(self) -> Any:
@@ -326,16 +303,26 @@ def _apply_intspec_to_tensor(tensor: Any, shape_spec: Any) -> None:
 def _apply_dynamic_shapes(
     compiled: Any, original: Any, dynamic_shapes: dict[str, Any]
 ) -> Any:
-    """Wrap a compiled callable to apply dynamic_shapes IntSpec on each call."""
+    """Wrap a compiled callable to apply dynamic_shapes IntSpec on each call.
+
+    The wrapper is decorated with ``torch._dynamo.disable`` so that dynamo
+    does not attempt to trace the tensor-marking logic.  The inner
+    ``compiled()`` call re-enters dynamo normally.
+    """
     import functools
     import inspect
 
     import torch
+    import torch._dynamo
 
     sig = inspect.signature(
         original.forward if isinstance(original, torch.nn.Module) else original
     )
 
+    # torch._dynamo.disable prevents dynamo from tracing the wrapper itself.
+    # When the wrapper calls compiled(), the compiled function re-enables
+    # dynamo's frame evaluation for actual tracing.
+    @torch._dynamo.disable
     @functools.wraps(
         compiled if not isinstance(compiled, torch.nn.Module) else compiled.forward
     )
