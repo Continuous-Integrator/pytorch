@@ -364,16 +364,6 @@ class CKGroupedConvFwdTemplate(CKTemplate):
                     return std::accumulate(
                         mLens.begin(), mLens.end(), std::size_t{1}, std::multiplies<std::size_t>());
                 }
-                void ck::HostTensorDescriptor::CalculateStrides() {
-                    mStrides.clear();
-                    mStrides.resize(mLens.size(), 0);
-                    if(mStrides.empty())
-                        return;
-
-                    mStrides.back() = 1;
-                    std::partial_sum(
-                        mLens.rbegin(), mLens.rend() - 1, mStrides.rbegin() + 1, std::multiplies<std::size_t>());
-                }
             """
         )
         return res
