@@ -82,7 +82,7 @@ elif [[ "$image" == *riscv* ]]; then
 fi
 
 # For benchmark images built via merge, both BASE_IMAGE and TORCHBENCH_IMAGE
-# must be set. This uses torchbench/Dockerfile.benchmark which COPYs
+# must be set. This uses torchbench/Dockerfile.benchmark which `COPY`
 # pre-built benchmark deps from the torchbench image into the base image.
 if [[ -n "${TORCHBENCH_IMAGE:-}" ]]; then
   DOCKERFILE="torchbench/Dockerfile.benchmark"

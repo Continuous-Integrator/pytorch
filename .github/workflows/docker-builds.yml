@@ -52,7 +52,6 @@ jobs:
         runner: [linux.12xlarge]
         docker-image-name: [
           pytorch-linux-jammy-cuda12.8-cudnn9-py3-gcc11,
-          pytorch-linux-jammy-cuda13.0-cudnn9-py3-gcc11,
           pytorch-linux-jammy-cuda13.0-cudnn9-py3.12-gcc11-vllm,
           pytorch-linux-jammy-py3.10-clang18,
           pytorch-linux-jammy-py3.11-clang18,
@@ -65,7 +64,6 @@ jobs:
           pytorch-linux-noble-rocm-nightly-py3,
           pytorch-linux-jammy-rocm-n-py3-benchmarks,
           pytorch-linux-jammy-cuda12.8-cudnn9-py3.10-clang18,
-          pytorch-linux-jammy-py3-gcc11,
           pytorch-linux-jammy-py3.12-halide,
           pytorch-linux-jammy-py3.12-pallas,
           pytorch-linux-jammy-cuda12.8-py3.12-pallas,
@@ -80,6 +78,94 @@ jobs:
           # pytorch-linux-jammy-py3-clang18-executorch,
           pytorch-linux-jammy-py3.12-triton-cpu,
           pytorch-linux-noble-riscv64-py3.12-gcc14
+        ]
+    # Docker uploads fail from LF runners, see https://github.com/pytorch/pytorch/pull/137358
+    # runs-on: "${{ needs.get-label-type.outputs.label-type }}${{ matrix.runner }}"
+    runs-on: "${{ matrix.runner }}"
+    steps:
+      - name: Clean workspace
+        shell: bash
+        run: |
+          echo "${GITHUB_WORKSPACE}"
+          sudo rm -rf "${GITHUB_WORKSPACE}"
+          mkdir "${GITHUB_WORKSPACE}"
+
+      - name: Setup Linux
+        uses: pytorch/pytorch/.github/actions/setup-linux@main
+
+      - name: Login to ECR
+        uses: ./.github/actions/ecr-login
+
+      - name: Build docker image
+        id: build-docker-image
+        uses: pytorch/test-infra/.github/actions/calculate-docker-image@main
+        with:
+          docker-image-name: ci-image:${{ matrix.docker-image-name }}
+          always-rebuild: true
+          push: true
+
+      - name: Pull docker image
+        uses: pytorch/test-infra/.github/actions/pull-docker-image@main
+        with:
+          docker-image: ${{ steps.build-docker-image.outputs.docker-image }}
+
+      - name: Generate output
+        if: contains(matrix.docker-image-name, 'rocm')
+        id: generate_output
+        run: |
+          docker_image_name="${{ matrix.docker-image-name }}"
+          docker_image_tag="${{ steps.build-docker-image.outputs.docker-image }}"
+          echo "${docker_image_name}=${docker_image_tag}" >> docker-builds-output-${docker_image_name}.txt
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4.4.0
+        if: contains(matrix.docker-image-name, 'rocm')
+        with:
+          name: docker-builds-artifacts-${{ matrix.docker-image-name }}
+          retention-days: 14
+          path: ./docker-builds-output-${{ matrix.docker-image-name }}.txt
+
+      - uses: nick-fields/retry@7152eba30c6575329ac0576536151aca5a72780e # v3.0.0
+        name: Push to https://ghcr.io/
+        id: push-to-ghcr-io
+        if: ${{ github.event_name == 'push' }}
+        env:
+          ECR_DOCKER_IMAGE: ${{ steps.build-docker-image.outputs.docker-image }}
+          GHCR_PAT: ${{ secrets.GHCR_PAT }}
+        with:
+          shell: bash
+          timeout_minutes: 60
+          max_attempts: 5
+          retry_wait_seconds: 90
+          command: |
+            ghcr_image="ghcr.io/pytorch/ci-image"
+            tag=${ECR_DOCKER_IMAGE##*:}
+            # Push docker image to the ghcr.io
+            echo $GHCR_PAT | docker login ghcr.io -u pytorch --password-stdin
+            docker tag "${ECR_DOCKER_IMAGE}" "${ghcr_image}:${tag}"
+            docker push "${ghcr_image}:${tag}"
+            # Also push a tag without the hash for easier reference
+            docker tag "${ECR_DOCKER_IMAGE}" "${ghcr_image}:${{ matrix.docker-image-name }}"
+            docker push "${ghcr_image}:${{ matrix.docker-image-name }}"
+
+      - name: Teardown Linux
+        uses: pytorch/test-infra/.github/actions/teardown-linux@main
+        if: always()
+
+  # Base images needed by the benchmark merge job. Split out so
+  # docker-build-benchmark can start as soon as these finish,
+  # without waiting for the full docker-build matrix.
+  docker-build-benchmark-base:
+    environment: ${{ (github.ref == 'refs/heads/main' || startsWith(github.event.ref, 'refs/tags/v')) && 'docker-build' || '' }}
+    needs: get-label-type
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [linux.12xlarge]
+        docker-image-name: [
+          pytorch-linux-jammy-cuda13.0-cudnn9-py3-gcc11,
+          pytorch-linux-jammy-py3-gcc11,
         ]
         include:
           - docker-image-name: pytorch-linux-jammy-aarch64-py3.10-gcc13
@@ -153,12 +239,6 @@ jobs:
             docker tag "${ECR_DOCKER_IMAGE}" "${ghcr_image}:${{ matrix.docker-image-name }}"
             docker push "${ghcr_image}:${{ matrix.docker-image-name }}"
 
-      - name: Chown workspace
-        uses: ./.github/actions/chown-workspace
-        with:
-          ALPINE_IMAGE: 308535385114.dkr.ecr.us-east-1.amazonaws.com/${{ contains(matrix.runner, 'arm64') && 'arm64v8' || 'tool' }}/alpine
-        if: always()
-
       - name: Teardown Linux
         uses: pytorch/test-infra/.github/actions/teardown-linux@main
         if: always()
@@ -231,12 +311,6 @@ jobs:
         if: steps.check.outputs.exists == 'false'
         run: docker push "${{ steps.tag.outputs.image }}"
 
-      - name: Chown workspace
-        uses: ./.github/actions/chown-workspace
-        with:
-          ALPINE_IMAGE: 308535385114.dkr.ecr.us-east-1.amazonaws.com/${{ contains(matrix.runner, 'arm64') && 'arm64v8' || 'tool' }}/alpine
-        if: always()
-
       - name: Teardown Linux
         uses: pytorch/test-infra/.github/actions/teardown-linux@main
         if: always()
@@ -245,7 +319,7 @@ jobs:
     # Merges base CI images with the pre-built torchbench deps image.
     # This is fast (just COPY, no installs) so always-rebuild is fine.
     environment: ${{ (github.ref == 'refs/heads/main' || startsWith(github.event.ref, 'refs/tags/v')) && 'docker-build' || '' }}
-    needs: [get-label-type, docker-build, docker-build-torchbench]
+    needs: [get-label-type, docker-build-benchmark-base, docker-build-torchbench]
     timeout-minutes: 240
     strategy:
       fail-fast: false
@@ -362,12 +436,6 @@ jobs:
             # Also push a tag without the hash for easier reference
             docker tag "${ECR_DOCKER_IMAGE}" "${ghcr_image}:${{ matrix.docker-image-name }}"
             docker push "${ghcr_image}:${{ matrix.docker-image-name }}"
-
-      - name: Chown workspace
-        uses: ./.github/actions/chown-workspace
-        with:
-          ALPINE_IMAGE: 308535385114.dkr.ecr.us-east-1.amazonaws.com/${{ contains(matrix.runner, 'arm64') && 'arm64v8' || 'tool' }}/alpine
-        if: always()
 
       - name: Teardown Linux
         uses: pytorch/test-infra/.github/actions/teardown-linux@main
