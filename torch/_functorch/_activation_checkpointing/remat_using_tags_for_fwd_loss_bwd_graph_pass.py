@@ -1,6 +1,5 @@
 """AC rematerialize pass: Duplicates recompute nodes for backward, then DCE removes unused forward versions."""
 
-import dataclasses
 import itertools
 import logging
 from typing import Any, overload
@@ -58,32 +57,31 @@ def _has_user_phase_annotation(gm: fx.GraphModule) -> bool:
     )
 
 
-@dataclasses.dataclass
-class BackwardRegions:
-    use_phase: bool
-    nodes: list[fx.Node]
-    regions: list[tuple[int, int]]
+def _collect_backward_regions(
+    gm: fx.GraphModule, use_phase: bool
+) -> list[tuple[int, int, bool]]:
+    """Returns (bwd_start, bwd_end, needs_remat) for each backward region."""
+    regions: list[tuple[int, int, bool]] = []
+    bwd_start: int | None = None
+    needs_remat = False
 
-
-def _collect_backward_regions(gm: fx.GraphModule) -> BackwardRegions:
-    use_phase = _has_user_phase_annotation(gm)
-    nodes = list(gm.graph.nodes)
-    regions = []
-    bwd_start = None
-
-    for idx, node in enumerate(nodes):
-        is_bwd = _is_backward_node(node, use_phase=use_phase)
-        if is_bwd:
+    for idx, node in enumerate(gm.graph.nodes):
+        if _is_backward_node(node, use_phase=use_phase):
             if bwd_start is None:
                 bwd_start = idx
+                needs_remat = False
+            if not needs_remat and any(
+                must_recompute(inp) for inp in node.all_input_nodes
+            ):
+                needs_remat = True
         elif bwd_start is not None:
-            regions.append((bwd_start, idx))
+            regions.append((bwd_start, idx, needs_remat))
             bwd_start = None
 
     if bwd_start is not None:
-        regions.append((bwd_start, len(nodes)))
+        regions.append((bwd_start, idx + 1, needs_remat))
 
-    return BackwardRegions(use_phase=use_phase, nodes=nodes, regions=regions)
+    return regions
 
 
 def remat_using_tags_for_fwd_loss_bwd_graph(gm: fx.GraphModule) -> fx.GraphModule:
@@ -103,20 +101,6 @@ def remat_using_tags_for_fwd_loss_bwd_graph(gm: fx.GraphModule) -> fx.GraphModul
     if not has_recomputable_ops(gm):
         return gm
 
-    bwd = _collect_backward_regions(gm)
-    if not bwd.regions:
-        return gm
-
-    # User-annotated phase regions: multiple annotations is always an error.
-    if bwd.use_phase and len(bwd.regions) > 1:
-        raise RuntimeError(
-            f"Detected {len(bwd.regions)} disjoint backward regions annotated with "
-            'phase: "backward" but remat only supports a single backward region. '
-            "Please ensure only one contiguous region is annotated."
-        )
-
-    order = {node: idx for idx, node in enumerate(gm.graph.nodes)}
-
     if has_recomputable_rng_ops(gm):
         raise RuntimeError(
             "Activation checkpoint rematerialization in `forward-loss-backward` graph does not support RNG ops "
@@ -129,16 +113,20 @@ def remat_using_tags_for_fwd_loss_bwd_graph(gm: fx.GraphModule) -> fx.GraphModul
 
     force_save_bw_mutation_src(gm)
 
-    def _region_needs_remat(start: int, end: int) -> bool:
-        return any(
-            must_recompute(inp)
-            for node in itertools.islice(gm.graph.nodes, start, end)
-            for inp in node.all_input_nodes
+    use_phase = _has_user_phase_annotation(gm)
+    regions = _collect_backward_regions(gm, use_phase)
+    if not regions:
+        return gm
+
+    # User-annotated phase regions: multiple annotations is always an error.
+    if use_phase and len(regions) > 1:
+        raise RuntimeError(
+            f"Detected {len(regions)} disjoint backward regions annotated with "
+            'phase: "backward" but remat only supports a single backward region. '
+            "Please ensure only one contiguous region is annotated."
         )
 
-    remat_regions = [
-        i for i, (s, e) in enumerate(bwd.regions) if _region_needs_remat(s, e)
-    ]
+    remat_regions = [(s, e) for s, e, needs in regions if needs]
 
     if len(remat_regions) > 1:
         raise RuntimeError(
@@ -149,8 +137,9 @@ def remat_using_tags_for_fwd_loss_bwd_graph(gm: fx.GraphModule) -> fx.GraphModul
     if not remat_regions:
         return gm
 
-    bwd_start, bwd_end = bwd.regions[remat_regions[0]]
+    bwd_start, bwd_end = remat_regions[0]
 
+    order = {node: idx for idx, node in enumerate(gm.graph.nodes)}
     new_graph = fx.Graph()
     env: dict[fx.Node, fx.Node] = {}
     recomputed_nodes: dict[fx.Node, fx.Node] = {}
