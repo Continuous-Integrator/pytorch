@@ -323,7 +323,10 @@ auto PyNode::release_variables() -> void {
 }
 
 void PyNode::release_resources() {
+  // NB: Node::release_resources calls into release_variables(), which
+  // accesses the Python object so it must be called first.
   Node::release_resources();
+
   // Release the Python object so that it can be freed when the C++ Node
   // outlives all strong references (weak_intrusive_ptr may keep the
   // allocation alive, but shouldn't prevent the PyObject from being freed).
