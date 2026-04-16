@@ -3192,8 +3192,8 @@ class DefaultDictVariable(UserDefinedDictVariable):
     def __init__(
         self,
         value: object,
-        default_factory: "VariableTracker | None" = None,
-        dict_vt: "ConstDictVariable | None" = None,
+        default_factory: VariableTracker | None = None,
+        dict_vt: ConstDictVariable | None = None,
         **kwargs: Any,
     ) -> None:
         if dict_vt is None:
@@ -3346,6 +3346,7 @@ class DefaultDictVariable(UserDefinedDictVariable):
                 SourcelessBuilder.create(tx, collections.defaultdict),
                 [],
             )
+            assert isinstance(new_dd, DefaultDictVariable)
             new_dd.default_factory = self.default_factory
             new_dd._base_vt = self._base_vt.clone(
                 mutation_type=ValueMutationNew(),
