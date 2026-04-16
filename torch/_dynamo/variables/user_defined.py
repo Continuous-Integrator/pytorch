@@ -3211,17 +3211,31 @@ class DefaultDictVariable(UserDefinedDictVariable):
         self.default_factory = default_factory
 
     @staticmethod
-    def is_supported_factory(arg: "VariableTracker") -> bool:
+    def is_supported_factory(arg: VariableTracker) -> bool:
         """Check if arg is a valid default_factory (callable or None).
 
-        In CPython, defaultdict.__init__ accepts any callable or None.
-        We accept any VT that could plausibly be called — if it's not
-        actually callable, the error surfaces when __getitem__ invokes it.
+        CPython's defaultdict.__init__ checks ``callable(factory)`` and
+        raises TypeError if not.  We mirror this by checking the
+        underlying Python value when possible.
         """
         if isinstance(arg, variables.ConstantVariable):
             return arg.value is None
-        # Anything other than a constant is assumed callable
-        return True
+        # Check the real Python value for callable()
+        try:
+            val = arg.as_python_constant()
+            return val is None or callable(val)
+        except Exception:
+            pass
+        # Callables (functions, builtins, classes) are supported
+        return isinstance(
+            arg,
+            (
+                variables.BaseBuiltinVariable,
+                variables.functions.BaseUserFunctionVariable,
+                variables.functions.PolyfilledFunctionVariable,
+                variables.UserDefinedClassVariable,
+            ),
+        )
 
     def is_python_constant(self) -> bool:
         assert self._base_vt is not None
@@ -3295,16 +3309,22 @@ class DefaultDictVariable(UserDefinedDictVariable):
             # defaultdict.__init__(self, default_factory=None, *args, **kwargs)
             # https://github.com/python/cpython/blob/v3.13.3/Modules/_collectionsmodule.c#L2072
             # Extract default_factory, delegate rest to dict.__init__
-            if len(args) >= 1 and self.is_supported_factory(args[0]):
-                self.default_factory = args[0]
-                # Record as attr mutation so codegen emits
-                # obj.default_factory = factory after __new__
-                tx.output.side_effects.store_attr(
-                    self,
-                    "default_factory",
-                    self.default_factory,
-                )
-                args = list(args[1:])
+            if len(args) >= 1:
+                if self.is_supported_factory(args[0]):
+                    self.default_factory = args[0]
+                    tx.output.side_effects.store_attr(
+                        self,
+                        "default_factory",
+                        self.default_factory,
+                    )
+                    args = list(args[1:])
+                else:
+                    # CPython raises TypeError for non-callable first arg
+                    raise_observed_exception(
+                        TypeError,
+                        tx,
+                        args=["first argument must be callable or None"],
+                    )
             assert self._base_vt is not None
             return self._base_vt.call_method(tx, "__init__", args, kwargs)
         elif name == "__getitem__":
