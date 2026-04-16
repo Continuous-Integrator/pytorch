@@ -1715,6 +1715,17 @@ def merge_view_inputs(
             return False
         return True
 
+    def _format_input(idx: int) -> str:
+        if (
+            aot_config.aot_autograd_arg_pos_to_source is not None
+            and idx < len(aot_config.aot_autograd_arg_pos_to_source)
+            and aot_config.aot_autograd_arg_pos_to_source[idx] is not None
+        ):
+            name = aot_config.aot_autograd_arg_pos_to_source[idx].name
+        else:
+            name = fwd_inputs_descs[idx].expr()
+        return f"input {idx} ({name})"
+
     if len(fwd_inputs) != len(mutated_input_info):
         raise AssertionError(
             f"expected len(fwd_inputs) == len(mutated_input_info), "
@@ -1793,7 +1804,9 @@ def merge_view_inputs(
             if not is_inference:
                 if not _are_differentiable_views(view1, view2):
                     raise AssertionError(
-                        "aot_autograd() does not yet handle non-differentiable view input mutations."
+                        f"aot_autograd() does not yet handle non-differentiable view input mutations. "
+                        f"{_format_input(idx1)} and {_format_input(idx2)} share storage but are "
+                        f"not differentiable views of each other."
                     )
             # Regenerating views when reinterpreting complex / real tensors seems non-trivial,
             # not handling for now
@@ -1849,15 +1862,30 @@ def merge_view_inputs(
             # Case where all of the aliases require gradients, and have the same _base.
             i, synthetic_base = non_none_bases[0]
             synthetic_base_desc = ViewBaseAOTInput(fwd_inputs_descs[i])
-            for _, other_base in non_none_bases[1:]:
+            for j, other_base in non_none_bases[1:]:
                 if other_base is not synthetic_base:
                     raise AssertionError(
-                        "aot_autograd() does not yet handle non-differentiable view input mutations."
+                        f"aot_autograd() does not yet handle non-differentiable view input mutations. "
+                        f"Aliased inputs share storage but have different autograd ._base tensors: "
+                        f"{_format_input(i)} and {_format_input(j)} have ._base fields that point to different tensors."
                     )
             for alias in aliases_with_none_bases:
                 if alias is not synthetic_base:
+                    none_base_indices = [
+                        _format_input(k)
+                        for k in aliased_input_indices
+                        if fwd_inputs[k]._base is None
+                    ]
+                    has_base_indices = [
+                        _format_input(k)
+                        for k in aliased_input_indices
+                        if fwd_inputs[k]._base is not None
+                    ]
                     raise AssertionError(
-                        "aot_autograd() does not yet handle non-differentiable view input mutations."
+                        f"aot_autograd() does not yet handle non-differentiable view input mutations. "
+                        f"Aliased inputs share storage but have mixed autograd ._base states: "
+                        f"{has_base_indices} have ._base set, while "
+                        f"{none_base_indices} have ._base=None (and are not the synthetic base)."
                     )
         base_args.append(synthetic_base)
         base_args_descs.append(synthetic_base_desc)
@@ -1971,7 +1999,7 @@ def _backward_prologue_functional(
     ctx_opaque_objects: Sequence[Any],
     metadata: ViewAndMutationMeta,
     maybe_subclass_metadata: SubclassMeta | None,
-    *flat_args: Any,
+    flat_args: Sequence[Any],
     codegen_unwrap_fn: Callable[..., Any] | None = None,
 ) -> list[Any]:
     # Calling convention: we expect a grad_out passed to the backward:
@@ -2016,6 +2044,12 @@ def _backward_prologue_functional(
         ],
         flat_args[num_mutated_runtime_inps + metadata.num_outputs :],
     )
+    # Release grad refs from the caller's list (boxed calling convention).
+    # Slicing already copied refs into sub-lists above, so clearing the
+    # original list only drops redundant refs. The isinstance guard skips
+    # this when flat_args is a tuple (non-boxed path from compiled_autograd).
+    if isinstance(flat_args, list):
+        flat_args.clear()
     # input_info contains info on *every* input,
     # But in the backward(), we are only given grad outputs for every mutated input
     # We then need to filter out the grad outputs that correspond to metadata-only mutations or don't require grad
@@ -2815,6 +2849,7 @@ class _AOTDispatchAutogradFunctionFactory:
             _lazy_backward_info = lazy_backward_info
             _bw_epilogue_wrap_fn = _codegen_bw_wrap_fn
             _bw_prologue_unwrap_fn = _codegen_bw_unwrap_fn
+            boxed_grads_call = True
 
             @staticmethod
             def _compiled_autograd_key(ctx: Any) -> tuple[Any, ...]:
@@ -2853,13 +2888,31 @@ class _AOTDispatchAutogradFunctionFactory:
 
             @staticmethod
             def backward(ctx: Any, *flat_args: Any) -> tuple[Any, ...]:
+                # With boxed_grads_call, grads arrive as a single mutable
+                # list (not *args) so backward can free them individually
+                # to reduce peak memory.
+                if CompiledFunction.boxed_grads_call:
+                    if len(flat_args) != 1 or not isinstance(flat_args[0], list):
+                        raise AssertionError(
+                            "boxed_grads_call is set but backward received "
+                            f"{len(flat_args)} args instead of a single mutable "
+                            "list. When boxed_grads_call=True, grads must be "
+                            "passed as a single list argument [grad0, grad1, ...] "
+                            "to allow freeing individual grads mid-backward."
+                        )
+                    grad_args = flat_args[0]
+                else:
+                    # Non-boxed path: used by subclasses of CompiledFunction
+                    # that override boxed_grads_call to False.
+                    grad_args = list(flat_args)
+                del flat_args
                 all_args = _backward_prologue_functional(
                     saved_state.load_tensors(ctx),
                     ctx.symints,
                     ctx.opaque_objects,
                     CompiledFunction.metadata,
                     CompiledFunction.maybe_subclass_metadata,
-                    *flat_args,
+                    grad_args,
                     codegen_unwrap_fn=CompiledFunction._bw_prologue_unwrap_fn,
                 )
                 rng_state.add_backward_args(ctx, all_args)
@@ -3165,36 +3218,38 @@ class DebugAssertWrapper(CompilerWrapper):
         *,
         runtime_metadata: ViewAndMutationMeta,
     ) -> Callable[..., Any]:
-        @wraps(compiled_fn)
-        def debug_compiled_function(args: list[Any]) -> Any:
-            # TODO: T253242027 Check aliasing relationships
-            # TODO: Check strides for metadata mutation
-            # (NB: ideally, this logic is factored out of this function and
-            # you move these debug checks there)
+        lines = ["def inner_fn(args):"]
+        globals_dict: dict[str, object] = {"compiled_fn": compiled_fn}
+        for i, can_require_grad in enumerate(self.flat_requires_grad):
+            if can_require_grad is None:
+                lines.append(
+                    f"    if isinstance(args[{i}], Tensor):"
+                    f" raise AssertionError("
+                    f"'expected non-Tensor for arg {i}, got Tensor')"
+                )
+            elif not can_require_grad:
+                msg_name = f"_msg_{i}"
+                globals_dict[msg_name] = format_guard_bug_msg(
+                    aot_config,
+                    f"{describe_input(i, aot_config)} would not require grad",
+                )
+                lines.append(
+                    f"    if args[{i}].requires_grad: raise AssertionError({msg_name})"
+                )
+        lines.append("    return compiled_fn(args)")
 
-            # Check requires grad.  Bad case is when we compiled with
-            # requires_grad = False, but input requires_grad = True
-            # (vice versa is OK; we compute a gradient and then throw
-            # it away when it hits the input.)
-            for i, a in enumerate(args):
-                can_require_grad = self.flat_requires_grad[i]
-                if can_require_grad is None:
-                    if isinstance(a, Tensor):
-                        raise AssertionError(
-                            f"expected non-Tensor for arg {i}, got Tensor"
-                        )
-                elif not can_require_grad:
-                    if a.requires_grad:
-                        raise AssertionError(
-                            format_guard_bug_msg(
-                                aot_config,
-                                f"{describe_input(i, aot_config)} would not require grad",
-                            )
-                        )
+        source = "\n".join(lines)
+        globals_dict["Tensor"] = Tensor
 
-            return compiled_fn(args)
+        from .subclass_codegen import _compile_and_exec_source
 
-        return debug_compiled_function
+        return _compile_and_exec_source(
+            source,
+            globals_dict,
+            "inner_fn",
+            "debug_assert_wrapper",
+            wrapped_fn=compiled_fn,
+        )
 
 
 def pre_compile(
