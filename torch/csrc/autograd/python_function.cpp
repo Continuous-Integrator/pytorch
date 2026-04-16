@@ -318,8 +318,10 @@ auto PyNode::release_variables() -> void {
   if (Py_IsInitialized()) {
     pybind11::gil_scoped_acquire gil;
     auto* f = reinterpret_cast<THPFunction*>(pyobj());
-    f->saved_variables.clear();
-    f->has_freed_buffers = 1;
+    if (f) {
+      f->saved_variables.clear();
+      f->has_freed_buffers = 1;
+    }
   }
 }
 
