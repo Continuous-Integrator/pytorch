@@ -357,17 +357,10 @@ class CKGroupedConvFwdTemplate(CKTemplate):
                 // NOTE: HostTensorDescriptor methods are declared in CK headers but defined
                 // in CK's utility library. For architectural reasons, generated code doesn't
                 // link with this library, so we provide local definitions here.
+                // CalculateStrides is omitted as it became a template method in CK 4266f867.
                 const std::vector<std::size_t>& ck::HostTensorDescriptor::GetLengths() const { return mLens; }
                 const std::vector<std::size_t>& ck::HostTensorDescriptor::GetStrides() const { return mStrides; }
                 std::size_t ck::HostTensorDescriptor::GetNumOfDimension() const { return mLens.size(); }
-                std::size_t ck::HostTensorDescriptor::GetElementSpaceSize() const {
-                    std::size_t space = 1;
-                    for(std::size_t i = 0; i < mLens.size(); ++i) {
-                        if(mLens[i] == 0) continue;
-                        space += (mLens[i] - 1) * mStrides[i];
-                    }
-                    return space;
-                }
             """
         )
         return res
