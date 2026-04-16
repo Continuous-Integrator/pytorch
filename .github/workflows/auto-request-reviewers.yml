@@ -1,0 +1,172 @@
+name: Auto Request Reviewers
+
+on:
+  pull_request_target:
+    types: [opened, synchronize]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "PR number to request reviewers for"
+        type: string
+        required: true
+
+jobs:
+  request-reviewers:
+    if: github.repository == 'pytorch/pytorch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      pull-requests: write
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github/merge_rules.yaml
+
+      - name: Resolve PR and check eligibility
+        id: pr
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const prNumber = ${{ inputs.pr_number || 0 }} || context.payload.pull_request.number;
+            const {data: pr} = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber,
+            });
+
+            const labels = pr.labels.map(l => l.name);
+            const title = pr.title.toUpperCase();
+
+            // Filter criteria based on:
+            // is:open base:main draft:false label:"open source" -label:triaged
+            // -review:approved NOT WIP NOT TESTING in:title
+            const skip = (reason) => {
+              core.info(`Skipping PR #${prNumber}: ${reason}`);
+              core.setOutput('eligible', 'false');
+            };
+
+            if (pr.state !== 'open') return skip('PR is not open');
+            if (pr.base.ref !== 'main') return skip(`base branch is '${pr.base.ref}', not 'main'`);
+            if (pr.draft) return skip('PR is a draft');
+            if (!labels.includes('open source')) return skip('missing "open source" label');
+            if (labels.includes('triaged')) return skip('already has "triaged" label');
+            if (title.includes('WIP') || title.includes('TESTING')) return skip('title contains WIP or TESTING');
+
+            // Check if PR already has an approving review
+            const reviews = await github.rest.pulls.listReviews({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber,
+            });
+            const approved = reviews.data.some(r => r.state === 'APPROVED');
+            if (approved) return skip('PR already has an approving review');
+
+            core.info(`PR #${prNumber} is eligible for auto reviewer request`);
+            core.setOutput('eligible', 'true');
+            core.setOutput('number', prNumber);
+            core.setOutput('author', pr.user.login);
+
+      - name: Get changed files
+        if: steps.pr.outputs.eligible == 'true'
+        id: changed
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const prNumber = ${{ steps.pr.outputs.number }};
+            const files = [];
+            const per_page = 100;
+            let page = 1;
+            while (true) {
+              const resp = await github.rest.pulls.listFiles({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: prNumber,
+                per_page,
+                page,
+              });
+              for (const f of resp.data) {
+                files.push(f.filename);
+              }
+              if (resp.data.length < per_page) break;
+              page++;
+            }
+            core.setOutput('files', JSON.stringify(files));
+
+      - name: Determine reviewers from merge rules
+        if: steps.pr.outputs.eligible == 'true'
+        id: reviewers
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const yaml = require('js-yaml');
+            const {minimatch} = require('minimatch');
+
+            const rules = yaml.load(fs.readFileSync('.github/merge_rules.yaml', 'utf8'));
+            const changedFiles = JSON.parse('${{ steps.changed.outputs.files }}');
+            const prAuthor = '${{ steps.pr.outputs.author }}'.toLowerCase();
+
+            // Skip wildcard-only rules and bot accounts
+            const SKIP_RULES = new Set(['superuser', 'Core Reviewers', 'Core Maintainers']);
+            const SKIP_USERS = new Set(['pytorchbot']);
+
+            const reviewers = new Set();
+            const teams = new Set();
+
+            for (const rule of rules) {
+              if (SKIP_RULES.has(rule.name)) continue;
+
+              const patterns = rule.patterns || [];
+              const approvers = rule.approved_by || [];
+
+              // Check if any changed file matches any pattern in this rule
+              const matched = changedFiles.some(file =>
+                patterns.some(pattern => minimatch(file, pattern, {matchBase: false}))
+              );
+
+              if (matched) {
+                for (const approver of approvers) {
+                  if (SKIP_USERS.has(approver)) continue;
+                  if (approver.startsWith('pytorch/')) {
+                    teams.add(approver.replace('pytorch/', ''));
+                  } else if (approver.toLowerCase() !== prAuthor) {
+                    reviewers.add(approver);
+                  }
+                }
+              }
+            }
+
+            core.info(`Matched reviewers: ${[...reviewers].join(', ')}`);
+            core.info(`Matched teams: ${[...teams].join(', ')}`);
+            core.setOutput('reviewers', JSON.stringify([...reviewers]));
+            core.setOutput('teams', JSON.stringify([...teams]));
+
+      - name: Request reviews
+        if: steps.pr.outputs.eligible == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const prNumber = ${{ steps.pr.outputs.number }};
+            const reviewers = JSON.parse('${{ steps.reviewers.outputs.reviewers }}');
+            const teams = JSON.parse('${{ steps.reviewers.outputs.teams }}');
+
+            if (reviewers.length === 0 && teams.length === 0) {
+              core.info('No reviewers to request.');
+              return;
+            }
+
+            try {
+              await github.rest.pulls.requestReviewers({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: prNumber,
+                reviewers: reviewers,
+                team_reviewers: teams,
+              });
+              core.info(`Requested reviews from: ${reviewers.concat(teams.map(t => 'pytorch/' + t)).join(', ')}`);
+            } catch (error) {
+              core.warning(`Failed to request some reviewers: ${error.message}`);
+            }
