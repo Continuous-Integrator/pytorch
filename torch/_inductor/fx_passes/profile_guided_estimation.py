@@ -319,10 +319,15 @@ class ProfileData:
             k: len(pgs) for k, pgs in pg_sets_by_mesh_dim.items()
         }
 
-        # Generic op index: (op_name, input_shapes, dtype) -> avg_dur_us
-        op_groups: dict[tuple[str, tuple[tuple[int, ...], ...], str], list[float]] = (
-            defaultdict(list)
-        )
+        op_groups: defaultdict[
+            tuple[
+                str,
+                tuple[tuple[int, ...], ...],
+                tuple[tuple[int, ...], ...],
+                torch.dtype | None,
+            ],
+            list[float],
+        ] = defaultdict(list)
         for rec in self.ops:
             key = (rec.op_name, rec.input_shapes, rec.input_strides, rec.dtype)
             op_groups[key].append(rec.duration_us)
@@ -760,7 +765,7 @@ class ProfileGuidedEstimator:
                                 node
                             )
                         )
-                    except Exception:
+                    except (RuntimeError, ValueError, TypeError):
                         pass
                 else:
                     analytical = estimate_roofline_runtime_ms(node)
