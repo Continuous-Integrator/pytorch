@@ -67,13 +67,12 @@ reference to avoid holding onto memory after forward.
 
 
 class FSDPCommContext:
-    """Communication state shared across FSDP states/parameter groups, and
-    optionally across multiple FSDP roots via `share_comm_ctx` (e.g., for
-    Pipeline Parallelism). Cross-layer lifetime fields (all_gather_state,
-    reduce_scatter_states, mp_cast_all_reduce_state) hold buffers/events
-    across layers within a single backward pass and are drained before the
-    next pass — this assumes backward passes sharing the context run
-    serially, not concurrently."""
+    """Communication state shared across FSDP states/parameter groups.
+
+    Cross-layer fields (all_gather_state, reduce_scatter_states,
+    mp_cast_all_reduce_state) assume backward passes sharing the context
+    run serially, not concurrently.
+    """
 
     def lazy_init(self, device: torch.device):
         self.device_handle = _get_device_handle(device.type)
@@ -102,11 +101,10 @@ class FSDPCommContext:
         # CUDA events for synchronization
         self.all_gather_state: AllGatherState | None = None
         self.reduce_scatter_states: list[ReduceScatterState] = []
-        # When orig_dtype != reduce_dtype, the post-reduce cast to orig_dtype
-        # creates a new tensor, so the higher-precision all-reduce buffer has
-        # no refs from param grads. Kept on the shared comm_ctx (not per-group)
-        # so each layer's backward can free the previous layer's buffer on the
-        # all-reduce stream — avoids O(n_layers) accumulation.
+        # When the post-reduce dtype cast creates a new tensor, the HSDP
+        # all-reduce buffer loses refs from param grads. Kept on the shared
+        # comm_ctx so each layer frees its predecessor's buffer on the
+        # all-reduce stream (avoids O(n_layers) accumulation).
         self.mp_cast_all_reduce_state: AllReduceState | None = None
         # Post-forward order for explicit backward prefetching
         self.post_forward_order: list[FSDPParamGroup] = []  # will cause ref cycles
@@ -124,11 +122,9 @@ class FSDPCommContext:
         return current_stream, current_stream
 
     def flush_mp_cast_all_reduce_state(self):
-        # Called from FSDPParamGroup.finalize_backward, which runs in
-        # autograd's post-backward final callback on the default stream.
-        # The first group to finalize drains the shared state; later groups
-        # see None. Safe because backward callbacks are serialized by
-        # autograd — don't call this from other contexts.
+        """Drain the last layer's state at end of backward. Safe because
+        autograd serializes finalize callbacks; first group drains, rest no-op.
+        """
         if (
             self.mp_cast_all_reduce_state is not None
             and self.mp_cast_all_reduce_state.event is not None
@@ -603,18 +599,13 @@ class FSDPParamGroup:
                 all_reduce_stream = self.comm_ctx.all_reduce_stream
 
             self._wait_for_post_backward()
-            # Match foreach_reduce's cast check: the post-reduce cast creates
-            # a new tensor iff the reduce dtype (reduce_dtype if set, else
-            # grad dtype = param_dtype if set, else orig) differs from orig.
-            post_reduce_dtype = (
-                self._reduce_dtype
-                or self.mp_policy.param_dtype
-                or self._orig_dtype
-            )
-            # Always drain so a no-cast layer following a cast layer still
-            # frees the predecessor's buffer on the all-reduce stream.
+            # Always drain: a no-cast layer following a cast layer must still
+            # free the predecessor's buffer on the all-reduce stream.
             prev_all_reduce_state = self.comm_ctx.mp_cast_all_reduce_state
             self.comm_ctx.mp_cast_all_reduce_state = None
+            prev_all_reduce_event = (
+                prev_all_reduce_state.event if prev_all_reduce_state else None
+            )
             (
                 reduce_scatter_input,
                 reduce_scatter_event,
@@ -648,11 +639,14 @@ class FSDPParamGroup:
                 self._all_reduce_hook,
                 self.force_sum_reduction_for_comms,
                 self._label_suffix,
-                prev_all_reduce_state,
+                prev_all_reduce_event,
             )
             if prev_all_reduce_state is not None:
-                # Drop the last ref inside the all-reduce stream context so
-                # the caching allocator records the free against that stream.
+                # Stream context is load-bearing: the caching allocator uses
+                # the current stream at free time to pick the reuse pool.
+                # Dropping outside this `with` would let a different stream
+                # reuse the block before all_reduce_stream's wait_event on
+                # it has completed.
                 with self.device_handle.stream(all_reduce_stream):
                     del prev_all_reduce_state
             self.comm_ctx.reduce_scatter_states.append(
@@ -664,12 +658,9 @@ class FSDPParamGroup:
                         raise AssertionError(
                             "Expected all_reduce_event to be set for non-CPU device"
                         )
-                # Only track state in the cast case: the buffer becomes
-                # orphaned when _to_dtype_if_needed creates a new tensor.
-                # In the no-cast case, param grads hold refs via the
-                # reduce_output view; _post_reduce_event syncs the default
-                # stream with the reduce work.
-                if self._orig_dtype != post_reduce_dtype:
+                # Only the cast case orphans the buffer. No-cast: param grads
+                # hold refs via reduce_output, and _post_reduce_event syncs.
+                if all_reduce_input.dtype != self._orig_dtype:
                     self.comm_ctx.mp_cast_all_reduce_state = AllReduceState(
                         all_reduce_input, all_reduce_event
                     )

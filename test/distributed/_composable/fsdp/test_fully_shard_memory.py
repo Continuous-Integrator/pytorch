@@ -406,6 +406,8 @@ class TestFullyShardHSDPMemory(FSDPTest):
 
         def tracking_foreach_reduce(*args, **kwargs):
             result = orig_foreach_reduce(*args, **kwargs)
+            # foreach_reduce returns (rs_input, rs_event, post_reduce_event,
+            # all_reduce_input, all_reduce_event, partial_reduce_output).
             all_reduce_input = result[3]
             if all_reduce_input is not None:
                 alive[0] += 1
