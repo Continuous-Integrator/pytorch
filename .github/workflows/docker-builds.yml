@@ -260,7 +260,7 @@ jobs:
       - name: Login to ECR
         uses: ./.github/actions/ecr-login
 
-      # Phase 1: Build the base image
+      # Phase 1: Build the base image and publish it
       - name: Build base docker image
         id: build-base-image
         uses: pytorch/test-infra/.github/actions/calculate-docker-image@main
@@ -269,10 +269,26 @@ jobs:
           always-rebuild: true
           push: true
 
-      - name: Pull base docker image
-        uses: pytorch/test-infra/.github/actions/pull-docker-image@main
+      - uses: nick-fields/retry@7152eba30c6575329ac0576536151aca5a72780e # v3.0.0
+        name: Push base to https://ghcr.io/
+        id: push-base-to-ghcr-io
+        if: ${{ github.event_name == 'push' }}
+        env:
+          ECR_DOCKER_IMAGE: ${{ steps.build-base-image.outputs.docker-image }}
+          GHCR_PAT: ${{ secrets.GHCR_PAT }}
         with:
-          docker-image: ${{ steps.build-base-image.outputs.docker-image }}
+          shell: bash
+          timeout_minutes: 60
+          max_attempts: 5
+          retry_wait_seconds: 90
+          command: |
+            ghcr_image="ghcr.io/pytorch/ci-image"
+            tag=${ECR_DOCKER_IMAGE##*:}
+            echo $GHCR_PAT | docker login ghcr.io -u pytorch --password-stdin
+            docker tag "${ECR_DOCKER_IMAGE}" "${ghcr_image}:${tag}"
+            docker push "${ghcr_image}:${tag}"
+            docker tag "${ECR_DOCKER_IMAGE}" "${ghcr_image}:${{ matrix.docker-image-name }}"
+            docker push "${ghcr_image}:${{ matrix.docker-image-name }}"
 
       # Phase 2: Resolve and pull the torchbench deps image
       - name: Resolve torchbench image
@@ -306,32 +322,6 @@ jobs:
         env:
           BASE_IMAGE: ${{ steps.build-base-image.outputs.docker-image }}
           TORCHBENCH_IMAGE: ${{ steps.torchbench-image.outputs.image }}
-
-      - name: Pull benchmark docker image
-        uses: pytorch/test-infra/.github/actions/pull-docker-image@main
-        with:
-          docker-image: ${{ steps.build-benchmark-image.outputs.docker-image }}
-
-      - uses: nick-fields/retry@7152eba30c6575329ac0576536151aca5a72780e # v3.0.0
-        name: Push base to https://ghcr.io/
-        id: push-base-to-ghcr-io
-        if: ${{ github.event_name == 'push' }}
-        env:
-          ECR_DOCKER_IMAGE: ${{ steps.build-base-image.outputs.docker-image }}
-          GHCR_PAT: ${{ secrets.GHCR_PAT }}
-        with:
-          shell: bash
-          timeout_minutes: 60
-          max_attempts: 5
-          retry_wait_seconds: 90
-          command: |
-            ghcr_image="ghcr.io/pytorch/ci-image"
-            tag=${ECR_DOCKER_IMAGE##*:}
-            echo $GHCR_PAT | docker login ghcr.io -u pytorch --password-stdin
-            docker tag "${ECR_DOCKER_IMAGE}" "${ghcr_image}:${tag}"
-            docker push "${ghcr_image}:${tag}"
-            docker tag "${ECR_DOCKER_IMAGE}" "${ghcr_image}:${{ matrix.docker-image-name }}"
-            docker push "${ghcr_image}:${{ matrix.docker-image-name }}"
 
       - uses: nick-fields/retry@7152eba30c6575329ac0576536151aca5a72780e # v3.0.0
         name: Push benchmark to https://ghcr.io/
