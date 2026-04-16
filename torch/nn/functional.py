@@ -147,7 +147,7 @@ Examples::
     >>> inputs = torch.randn(1, 4, 5, 5)
     >>> F.conv2d(inputs, filters, padding=1)
 """,
-)  # noqa: E501
+)
 
 conv3d = _add_docstr(
     torch.conv3d,
@@ -197,7 +197,7 @@ Examples::
     >>> inputs = torch.randn(20, 16, 50, 10, 20)
     >>> F.conv3d(inputs, filters)
 """,
-)  # noqa: E501
+)
 
 conv_transpose1d = _add_docstr(
     torch.conv_transpose1d,
@@ -281,7 +281,7 @@ Examples::
     >>> weights = torch.randn(4, 8, 3, 3)
     >>> F.conv_transpose2d(inputs, weights, padding=1)
 """,
-)  # noqa: E501
+)
 
 conv_transpose3d = _add_docstr(
     torch.conv_transpose3d,
@@ -323,7 +323,7 @@ Examples::
     >>> weights = torch.randn(16, 33, 3, 3, 3)
     >>> F.conv_transpose3d(inputs, weights)
 """,
-)  # noqa: E501
+)
 
 conv_tbc = _add_docstr(
     torch.conv_tbc,
@@ -444,7 +444,7 @@ def fractional_max_pool2d_with_indices(
     output_ratio: Optional[BroadcastingList2[float]] = None,  # noqa: UP045
     return_indices: bool = False,
     _random_samples: Tensor | None = None,
-) -> tuple[Tensor, Tensor]:  # noqa: D400
+) -> tuple[Tensor, Tensor]:
     r"""
     fractional_max_pool2d(input, kernel_size, output_size=None, output_ratio=None, return_indices=False, _random_samples=None)
 
@@ -557,7 +557,7 @@ def fractional_max_pool3d_with_indices(
     output_ratio: Optional[BroadcastingList3[float]] = None,  # noqa: UP045
     return_indices: bool = False,
     _random_samples: Tensor | None = None,
-) -> tuple[Tensor, Tensor]:  # noqa: D400
+) -> tuple[Tensor, Tensor]:
     r"""
     fractional_max_pool3d(input, kernel_size, output_size=None, output_ratio=None, return_indices=False, _random_samples=None)
 
@@ -675,7 +675,7 @@ def max_pool1d_with_indices(
     dilation: BroadcastingList1[int] = 1,
     ceil_mode: bool = False,
     return_indices: bool = False,
-) -> tuple[Tensor, Tensor]:  # noqa: D400
+) -> tuple[Tensor, Tensor]:
     r"""
     max_pool1d(input, kernel_size, stride=None, padding=0, dilation=1, ceil_mode=False, return_indices=False)
 
@@ -765,7 +765,7 @@ def max_pool2d_with_indices(
     dilation: BroadcastingList2[int] = 1,
     ceil_mode: bool = False,
     return_indices: bool = False,
-) -> tuple[Tensor, Tensor]:  # noqa: D400
+) -> tuple[Tensor, Tensor]:
     r"""
     max_pool2d(input, kernel_size, stride=None, padding=0, dilation=1, ceil_mode=False, return_indices=False)
 
@@ -855,7 +855,7 @@ def max_pool3d_with_indices(
     dilation: BroadcastingList3[int] = 1,
     ceil_mode: bool = False,
     return_indices: bool = False,
-) -> tuple[Tensor, Tensor]:  # noqa: D400
+) -> tuple[Tensor, Tensor]:
     r"""
     max_pool3d(input, kernel_size, stride=None, padding=0, dilation=1, ceil_mode=False, return_indices=False)
 
@@ -1202,7 +1202,7 @@ def adaptive_max_pool1d_with_indices(
     input: Tensor,
     output_size: BroadcastingList1[int],
     return_indices: bool = False,
-) -> tuple[Tensor, Tensor]:  # noqa: D400
+) -> tuple[Tensor, Tensor]:
     r"""
     adaptive_max_pool1d(input, output_size, return_indices=False)
 
@@ -1257,7 +1257,7 @@ def adaptive_max_pool2d_with_indices(
     input: Tensor,
     output_size: BroadcastingList2[int],
     return_indices: bool = False,
-) -> tuple[Tensor, Tensor]:  # noqa: D400
+) -> tuple[Tensor, Tensor]:
     r"""adaptive_max_pool2d(input, output_size, return_indices=False)
 
     Applies a 2D adaptive max pooling over an input signal composed of
@@ -1314,7 +1314,7 @@ def adaptive_max_pool3d_with_indices(
     input: Tensor,
     output_size: BroadcastingList3[int],
     return_indices: bool = False,
-) -> tuple[Tensor, Tensor]:  # noqa: D400
+) -> tuple[Tensor, Tensor]:
     r"""
     adaptive_max_pool3d(input, output_size, return_indices=False)
 
@@ -1710,7 +1710,7 @@ In-place version of :func:`~threshold`.
 )
 
 
-def relu(input: Tensor, inplace: bool = False) -> Tensor:  # noqa: D400,D402
+def relu(input: Tensor, inplace: bool = False) -> Tensor:
     r"""relu(input, inplace=False) -> Tensor
 
     Applies the rectified linear unit function element-wise. See
@@ -1735,7 +1735,7 @@ In-place version of :func:`~relu`.
 )
 
 
-def glu(input: Tensor, dim: int = -1) -> Tensor:  # noqa: D400,D402
+def glu(input: Tensor, dim: int = -1) -> Tensor:
     r"""
     glu(input, dim=-1) -> Tensor
 
@@ -1767,7 +1767,7 @@ def hardtanh(
     min_val: float = -1.0,
     max_val: float = 1.0,
     inplace: bool = False,
-) -> Tensor:  # noqa: D400,D402
+) -> Tensor:
     r"""
     hardtanh(input, min_val=-1., max_val=1., inplace=False) -> Tensor
 
@@ -1797,7 +1797,7 @@ In-place version of :func:`~hardtanh`.
 )
 
 
-def relu6(input: Tensor, inplace: bool = False) -> Tensor:  # noqa: D400,D402
+def relu6(input: Tensor, inplace: bool = False) -> Tensor:
     r"""relu6(input, inplace=False) -> Tensor
 
     Applies the element-wise function :math:`\text{ReLU6}(x) = \min(\max(0,x), 6)`.
@@ -1837,7 +1837,7 @@ In-place version of :func:`~elu`.
 )
 
 
-def selu(input: Tensor, inplace: bool = False) -> Tensor:  # noqa: D400,D402
+def selu(input: Tensor, inplace: bool = False) -> Tensor:
     r"""selu(input, inplace=False) -> Tensor
 
     Applies element-wise,
@@ -1870,7 +1870,7 @@ def celu(
     input: Tensor,
     alpha: float = 1.0,
     inplace: bool = False,
-) -> Tensor:  # noqa: D400,D402
+) -> Tensor:
     r"""celu(input, alpha=1., inplace=False) -> Tensor
 
     Applies element-wise,
@@ -1903,7 +1903,7 @@ def leaky_relu(
     input: Tensor,
     negative_slope: float = 0.01,
     inplace: bool = False,
-) -> Tensor:  # noqa: D400,D402
+) -> Tensor:
     r"""
     leaky_relu(input, negative_slope=0.01, inplace=False) -> Tensor
 
@@ -1960,7 +1960,7 @@ def rrelu(
     upper: float = 1.0 / 3,
     training: bool = False,
     inplace: bool = False,
-) -> Tensor:  # noqa: D400,D402
+) -> Tensor:
     r"""rrelu(input, lower=1./8, upper=1./3, training=False, inplace=False) -> Tensor
 
     Randomized leaky ReLU.
@@ -2035,7 +2035,7 @@ See :class:`~torch.nn.Hardshrink` for more details.
 )
 
 
-def tanhshrink(input):  # noqa: D400,D402
+def tanhshrink(input):
     r"""tanhshrink(input) -> Tensor
 
     Applies element-wise, :math:`\text{Tanhshrink}(x) = x - \text{Tanh}(x)`
@@ -2047,7 +2047,7 @@ def tanhshrink(input):  # noqa: D400,D402
     return input - input.tanh()
 
 
-def softsign(input):  # noqa: D400,D402
+def softsign(input):
     r"""softsign(input) -> Tensor
 
     Applies element-wise, the function :math:`\text{SoftSign}(x) = \frac{x}{1 + |x|}`
@@ -2283,7 +2283,7 @@ See :class:`~torch.nn.Softshrink` for more details.
 )
 
 
-def tanh(input):  # noqa: D400,D402
+def tanh(input):
     r"""tanh(input) -> Tensor
 
     Applies element-wise,
@@ -2294,7 +2294,7 @@ def tanh(input):  # noqa: D400,D402
     return input.tanh()
 
 
-def sigmoid(input):  # noqa: D400,D402
+def sigmoid(input):
     r"""sigmoid(input) -> Tensor
 
     Applies the element-wise function :math:`\text{Sigmoid}(x) = \frac{1}{1 + \exp(-x)}`
@@ -3830,20 +3830,20 @@ def linear_cross_entropy(
             ``None``.
     Shape:
         - Input: :math:`(in_features)` or :math:`(N, in_features)`.
-        - Linear weight: :math:`(C, d_1, ..., d_K, in_features)`.
+        - Linear weight: :math:`(C, in_features)` or :math:`(C, d_1, ..., d_K, in_features)`.
         - Target: If containing class indices, :math:`()`,
           :math:`(N)` or :math:`(N, d_1, d_2, ..., d_K)` with :math:`K\geq 1`
           in the case of K-dimensional loss where each value
           should be between :math:`[0, C)`. The target data type is
           required to be long when using class indices.
           If containing class probabilities, the target must have
-          shape :math:`(C)` or :math:`(N, C, d_1, d_2, ..., d_K)`, and
-          each value should be between :math:`[0, 1]`. This means the
-          target data type is required to be float when using class
-          probabilities. Note that PyTorch does not strictly enforce
-          probability constraints on the class probabilities and that
-          it is the user's responsibility to ensure ``target``
-          contains valid probability distributions.
+          shape :math:`(C)`, :math:`(N, C)`, or :math:`(N, C, d_1,
+          d_2, ..., d_K)`, and each value should be between :math:`[0,
+          1]`. This means the target data type is required to be float
+          when using class probabilities. Note that PyTorch does not
+          strictly enforce probability constraints on the class
+          probabilities and that it is the user's responsibility to
+          ensure ``target`` contains valid probability distributions.
         - Weight: :math:`(C)`.
         - Output: If reduction is 'none', shape :math:`()`,
           :math:`(N)` or :math:`(N, d_1, d_2, ..., d_K)` with :math:`K\geq 1`
@@ -3866,14 +3866,42 @@ def linear_cross_entropy(
             label_smoothing=label_smoothing,
             options=options,
         )
-
-    out_features = linear_weight.shape[:-2]
-    num_classes = linear_weight.shape[-2]
+    if linear_weight.dim() < 2:
+        raise ValueError(
+            f"expected linear_weight with dimensionality at least 2, got {linear_weight.dim()}"
+        )
+    num_batches = input.shape[:-1]
     in_features = input.shape[-1]
+    if in_features != linear_weight.shape[-1]:
+        raise ValueError(
+            "expected equal input and linear_weight last dimensions (in_features), "
+            f"got {input.shape[-1]} and {linear_weight.shape[-1]}, respectively"
+        )
+    num_classes = linear_weight.shape[0]
+    out_features = linear_weight.shape[1:-1]
+    if target.dtype.is_floating_point:
+        # target contains probabilities
+        expected_target_shape = (*num_batches, num_classes, *out_features)
+        logits_shape = expected_target_shape
+        if ignore_index >= 0:
+            raise ValueError(
+                "ignore_index cannot be specified when target contains probabilities"
+            )
+    else:
+        # target contains class indices
+        expected_target_shape = (*num_batches, *out_features)
+        logits_shape = (*num_batches, num_classes, *out_features)
+    if target.shape != expected_target_shape:
+        raise ValueError(
+            f"expected target with shape {expected_target_shape}, got {target.shape}"
+        )
+
     if out_features:
+        # reshape linear_weight to 2D required by linear
         linear_weight = linear_weight.reshape(
             (math.prod(out_features, start=num_classes), in_features)
         )
+
     if (
         options is not None
         and reduction in {"mean", "sum"}
@@ -3925,17 +3953,8 @@ def linear_cross_entropy(
     logits = linear(input, linear_weight)
     # recover logits shape that corresponds to the shape of specified
     # linear_weight:
-    if target.dtype.is_floating_point:
-        logits_shape = target.shape
-    elif target.shape:
-        if input.dim() == 1:
-            logits_shape = (num_classes, *out_features)
-        else:
-            num_batches = input.shape[0]
-            logits_shape = (num_batches, num_classes, *out_features)
-    else:
-        logits_shape = (num_classes,)
     logits = logits.reshape(logits_shape)
+
     return cross_entropy(
         logits,
         target,
@@ -4112,7 +4131,7 @@ def l1_loss(
     reduce: bool | None = None,
     reduction: str = "mean",
     weight: Tensor | None = None,
-) -> Tensor:  # noqa: D400,D402
+) -> Tensor:
     r"""Compute the L1 loss, with optional weighting.
 
     Function that takes the mean element-wise absolute value difference.
@@ -4267,7 +4286,7 @@ def margin_ranking_loss(
     size_average: bool | None = None,
     reduce: bool | None = None,
     reduction: str = "mean",
-) -> Tensor:  # noqa: D400,D402
+) -> Tensor:
     r"""Compute the margin ranking loss.
 
     See :class:`~torch.nn.MarginRankingLoss` for details.
@@ -4317,7 +4336,7 @@ def hinge_embedding_loss(
     size_average: bool | None = None,
     reduce: bool | None = None,
     reduction: str = "mean",
-) -> Tensor:  # noqa: D400,D402
+) -> Tensor:
     r"""Compute the hinge embedding loss.
 
     See :class:`~torch.nn.HingeEmbeddingLoss` for details.
@@ -4360,7 +4379,7 @@ def multilabel_margin_loss(
     size_average: bool | None = None,
     reduce: bool | None = None,
     reduction: str = "mean",
-) -> Tensor:  # noqa: D400,D402
+) -> Tensor:
     r"""Compute the multilabel margin loss.
 
     See :class:`~torch.nn.MultiLabelMarginLoss` for details.
@@ -4402,7 +4421,7 @@ def soft_margin_loss(
     size_average: bool | None = None,
     reduce: bool | None = None,
     reduction: str = "mean",
-) -> Tensor:  # noqa: D400,D402
+) -> Tensor:
     r"""Compute the soft margin loss.
 
     See :class:`~torch.nn.SoftMarginLoss` for details.
@@ -4445,7 +4464,7 @@ def multilabel_soft_margin_loss(
     size_average: bool | None = None,
     reduce: bool | None = None,
     reduction: str = "mean",
-) -> Tensor:  # noqa: D400,D402
+) -> Tensor:
     r"""Compute the multilabel soft margin loss.
 
     See :class:`~torch.nn.MultiLabelSoftMarginLoss` for details.
@@ -4506,7 +4525,7 @@ def cosine_embedding_loss(
     size_average: bool | None = None,
     reduce: bool | None = None,
     reduction: str = "mean",
-) -> Tensor:  # noqa: D400,D402
+) -> Tensor:
     r"""Compute the cosine embedding loss.
 
     See :class:`~torch.nn.CosineEmbeddingLoss` for details.
@@ -4554,7 +4573,7 @@ def multi_margin_loss(
     size_average: bool | None = None,
     reduce: bool | None = None,
     reduction: str = "mean",
-) -> Tensor:  # noqa: D400,D402
+) -> Tensor:
     r"""Compute the multi margin loss, with optional weighting.
 
     See :class:`~torch.nn.MultiMarginLoss` for details.
@@ -4745,14 +4764,14 @@ Examples::
 
 
 @_overload
-def upsample(  # noqa: F811
+def upsample(
     input: Tensor,
     size: int | None = None,
     scale_factor: float | None = None,
     mode: str = "nearest",
     align_corners: bool | None = None,
     # pyrefly: ignore [bad-return]
-) -> Tensor:  # noqa: B950
+) -> Tensor:
     pass
 
 
@@ -4764,7 +4783,7 @@ def upsample(  # noqa: F811
     mode: str = "nearest",
     align_corners: bool | None = None,
     # pyrefly: ignore [bad-return]
-) -> Tensor:  # noqa: B950
+) -> Tensor:
     pass
 
 
@@ -4858,7 +4877,7 @@ def _is_integer(x) -> bool:
 
 
 @_overload
-def interpolate(  # noqa: F811
+def interpolate(
     input: Tensor,
     size: int | None = None,
     scale_factor: list[float] | None = None,
@@ -4867,7 +4886,7 @@ def interpolate(  # noqa: F811
     recompute_scale_factor: bool | None = None,
     antialias: bool = False,
     # pyrefly: ignore [bad-return]
-) -> Tensor:  # noqa: B950
+) -> Tensor:
     pass
 
 
@@ -4881,7 +4900,7 @@ def interpolate(  # noqa: F811
     recompute_scale_factor: bool | None = None,
     antialias: bool = False,
     # pyrefly: ignore [bad-return]
-) -> Tensor:  # noqa: B950
+) -> Tensor:
     pass
 
 
@@ -4895,7 +4914,7 @@ def interpolate(  # noqa: F811
     recompute_scale_factor: bool | None = None,
     antialias: bool = False,
     # pyrefly: ignore [bad-return]
-) -> Tensor:  # noqa: B950
+) -> Tensor:
     pass
 
 
@@ -4921,7 +4940,7 @@ def interpolate(  # noqa: F811
     align_corners: bool | None = None,
     recompute_scale_factor: bool | None = None,
     antialias: bool = False,
-) -> Tensor:  # noqa: B950
+) -> Tensor:
     r"""Down/up samples the input.
 
     Tensor interpolated to either the given :attr:`size` or the given
@@ -5269,7 +5288,7 @@ if interpolate.__doc__:
 
 
 @_overload
-def upsample_nearest(  # noqa: F811
+def upsample_nearest(
     input: Tensor,
     size: int | None = None,
     scale_factor: float | None = None,
@@ -5321,7 +5340,7 @@ if upsample_nearest.__doc__:
 
 
 @_overload
-def upsample_bilinear(  # noqa: F811
+def upsample_bilinear(
     input: Tensor,
     size: int | None = None,
     scale_factor: float | None = None,
@@ -6881,10 +6900,10 @@ def multi_head_attention_forward(
     #
     # reshape q, k, v for multihead attention and make them batch first
     #
-    # pyrefly: ignore [no-matching-overload]
+    # pyrefly: ignore [bad-argument-type, no-matching-overload]
     q = q.view(tgt_len, bsz * num_heads, head_dim).transpose(0, 1)
     if static_k is None:
-        # pyrefly: ignore [no-matching-overload]
+        # pyrefly: ignore [bad-argument-type, no-matching-overload]
         k = k.view(k.shape[0], bsz * num_heads, head_dim).transpose(0, 1)
     else:
         # TODO finish disentangling control flow so we don't do in-projections when statics are passed
@@ -6898,7 +6917,7 @@ def multi_head_attention_forward(
             )
         k = static_k
     if static_v is None:
-        # pyrefly: ignore [no-matching-overload]
+        # pyrefly: ignore [bad-argument-type, no-matching-overload]
         v = v.view(v.shape[0], bsz * num_heads, head_dim).transpose(0, 1)
     else:
         # TODO finish disentangling control flow so we don't do in-projections when statics are passed
@@ -7007,10 +7026,11 @@ def multi_head_attention_forward(
             else:
                 attn_mask = attn_mask.view(bsz, num_heads, -1, src_len)
 
+        # pyrefly: ignore [bad-argument-type]
         q = q.view(bsz, num_heads, tgt_len, head_dim)
-        # pyrefly: ignore [no-matching-overload]
+        # pyrefly: ignore [bad-argument-type]
         k = k.view(bsz, num_heads, src_len, head_dim)
-        # pyrefly: ignore [no-matching-overload]
+        # pyrefly: ignore [bad-argument-type]
         v = v.view(bsz, num_heads, src_len, head_dim)
 
         attn_output = scaled_dot_product_attention(
