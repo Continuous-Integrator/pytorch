@@ -33,6 +33,7 @@ from .graphs import (
     graph_pool_handle,
     is_current_stream_capturing,
     make_graphed_callables,
+    opaque_function,
 )
 from .green_contexts import GreenContext
 from .streams import Event, ExternalStream, Stream

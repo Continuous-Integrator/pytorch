@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import gc
+import threading
 import typing
 from collections.abc import Callable
 from typing import overload, TYPE_CHECKING, TypeAlias, Union
@@ -24,6 +25,7 @@ __all__ = [
     "CUDAGraph",
     "graph",
     "make_graphed_callables",
+    "opaque_function",
 ]
 
 
@@ -136,7 +138,11 @@ class CUDAGraph(_CUDAGraph):
 
     def replay(self) -> None:
         r"""Replay the CUDA work captured by this graph."""
-        super().replay()
+        composite = getattr(self, "_composite", None)
+        if composite is not None:
+            composite.replay()
+        else:
+            super().replay()
 
     def reset(self) -> None:
         r"""Delete the graph currently held by this instance."""
@@ -267,12 +273,10 @@ class graph:
         # https://stackoverflow.com/questions/26635684/calling-enter-and-exit-manually#39172487
         self.stream_ctx.__enter__()
 
-        self.cuda_graph.capture_begin(
-            # type: ignore[misc]
-            *self.pool,
-            # pyrefly: ignore [bad-keyword-argument]
-            capture_error_mode=self.capture_error_mode,
-        )
+        self._composite = _CompositeGraph(self.capture_error_mode)
+        pool = self.pool[0] if self.pool else None
+        self._composite._begin_segment(self.cuda_graph, pool=pool)
+        _capture_tls._active_composite = self._composite
 
     def __exit__(self, *args: object) -> None:
         if self._enable_annotations:
@@ -280,14 +284,137 @@ class graph:
 
             resolve_pending_annotations()
 
-        self.cuda_graph.capture_end()
+        composite = self._composite
+        _capture_tls._active_composite = None
+        composite._end_current_segment()
+        if composite._has_opaque_calls:
+            self.cuda_graph._composite = composite
         self.stream_ctx.__exit__(*args)
 
         if self._enable_annotations:
             from torch.cuda._graph_annotations import remap_to_exec_graph
 
             remap_to_exec_graph(self.cuda_graph)
-        # returning None should propagate exceptions from either capture_end or stream_ctx.__exit__()
+
+
+_capture_tls = threading.local()
+
+
+class _OpaqueCall:
+    __slots__ = ("fn", "args", "kwargs", "static_output_buffers", "tensor_leaf_indices")
+
+    def __init__(
+        self,
+        fn: Callable[..., object],
+        args: tuple[object, ...],
+        kwargs: dict[str, object],
+        static_output_buffers: list[Tensor],
+        tensor_leaf_indices: list[int],
+    ):
+        self.fn = fn
+        self.args = args
+        self.kwargs = kwargs
+        self.static_output_buffers = static_output_buffers
+        self.tensor_leaf_indices = tensor_leaf_indices
+
+
+class _CompositeGraph:
+    def __init__(self, capture_error_mode: str):
+        self.segments: list[CUDAGraph | _OpaqueCall] = []
+        self.capture_error_mode = capture_error_mode
+        self._current_graph: CUDAGraph | None = None
+        self._pool: _POOL_HANDLE | None = None
+        self._has_opaque_calls = False
+
+    def _begin_segment(
+        self, cuda_graph: CUDAGraph, pool: _POOL_HANDLE | None = None
+    ) -> None:
+        if self._pool is None:
+            self._pool = pool if pool is not None else graph_pool_handle()
+        cuda_graph.capture_begin(
+            pool=self._pool, capture_error_mode=self.capture_error_mode
+        )
+        self._current_graph = cuda_graph
+
+    def _end_current_segment(self) -> None:
+        if self._current_graph is not None:
+            self._current_graph.capture_end()
+            self.segments.append(self._current_graph)
+            self._current_graph = None
+
+    def replay(self) -> None:
+        for segment in self.segments:
+            if isinstance(segment, _OpaqueCall):
+                torch.cuda.synchronize()
+                result = segment.fn(*segment.args, **segment.kwargs)
+                flat_result = torch.utils._pytree.tree_leaves(result)
+                for buf_idx, leaf_idx in enumerate(segment.tensor_leaf_indices):
+                    segment.static_output_buffers[buf_idx].copy_(flat_result[leaf_idx])
+            else:
+                _CUDAGraph.replay(segment)
+
+
+def opaque_function(fn: Callable[..., object], *args: object, **kwargs: object) -> object:
+    r"""Escape hatch for non-CUDA-graph-safe functions during graph capture.
+
+    When called inside a :class:`torch.cuda.graph` context, splits the graph
+    capture around ``fn``: the current segment is finalized, ``fn`` is called
+    eagerly, and a new capture segment begins. On :meth:`CUDAGraph.replay`,
+    each graph segment is replayed and ``fn`` is called again between them.
+
+    When called outside a capture context, simply calls ``fn(*args, **kwargs)``.
+
+    Arguments:
+        fn: The callable to execute outside graph capture.
+        *args: Positional arguments forwarded to ``fn``.
+        **kwargs: Keyword arguments forwarded to ``fn``.
+
+    Returns:
+        The return value of ``fn(*args, **kwargs)``, with tensor outputs
+        replaced by static buffers whose addresses are baked into the
+        subsequent graph segment.
+
+    .. warning::
+        This API is in beta and may change in future releases.
+    """
+    if not is_current_stream_capturing():
+        return fn(*args, **kwargs)
+
+    composite: _CompositeGraph | None = getattr(
+        _capture_tls, "_active_composite", None
+    )
+    if composite is None:
+        raise RuntimeError(
+            "opaque_function called during CUDA graph capture but no active "
+            "torch.cuda.graph context manager found"
+        )
+
+    composite._end_current_segment()
+    torch.cuda.synchronize()
+    result = fn(*args, **kwargs)
+
+    flat_result, spec = torch.utils._pytree.tree_flatten(result)
+    static_output_buffers: list[Tensor] = []
+    tensor_leaf_indices: list[int] = []
+    static_leaves: list[object] = []
+    for i, leaf in enumerate(flat_result):
+        if isinstance(leaf, Tensor):
+            static_buf = leaf.clone()
+            static_output_buffers.append(static_buf)
+            tensor_leaf_indices.append(i)
+            static_leaves.append(static_buf)
+        else:
+            static_leaves.append(leaf)
+
+    composite.segments.append(
+        _OpaqueCall(fn, args, kwargs, static_output_buffers, tensor_leaf_indices)
+    )
+    composite._has_opaque_calls = True
+
+    new_graph = CUDAGraph()
+    composite._begin_segment(new_graph)
+
+    return torch.utils._pytree.tree_unflatten(static_leaves, spec)
 
 
 _ModuleOrCallable: TypeAlias = Union["torch.nn.Module", Callable[..., object]]
