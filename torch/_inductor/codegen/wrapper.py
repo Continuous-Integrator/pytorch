@@ -1697,6 +1697,8 @@ class PythonWrapperCodegen(CodeGen):
         if V.graph.cpp_wrapper:
             stmt = f'assert_size_stride({name}, {size}, {stride}, "{op_name}");'
             if V.graph.aot_mode:
+                if V.graph.is_const_graph:
+                    return
                 self.writeline(
                     f"if (_check_aoti_runtime_check_inputs_env()) {{ {stmt} }}"
                 )
