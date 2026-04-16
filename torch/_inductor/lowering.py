@@ -1507,6 +1507,7 @@ def slice_(x, dim=0, start=0, end=2**63, step=1, clamp=True):
 def as_strided(x, size, stride, storage_offset=None):
     new_device = None
     new_dtype = None
+    inherited_storage_offset = None
     if isinstance(x, TensorBox) and isinstance(x.data, ir.BaseView):
         # Note: Merging views
         # When we use as_strided, we can rewrite the size/stride/offset
@@ -1517,17 +1518,23 @@ def as_strided(x, size, stride, storage_offset=None):
         # to have a cross-device view today.
         new_device = x.get_device()
         new_dtype = x.dtype
+        if storage_offset is None and x.maybe_get_layout() is not None:
+            inherited_storage_offset = x.get_layout().offset
         x = x.data.unwrap_view()
     x.realize()
     if not ir.is_storage_and_layout(x):
         raise NotImplementedError(f"unrealized as_strided({x}, ...)")
     storage, old_layout = ir.as_storage_and_layout(x)
+    if storage_offset is None:
+        storage_offset = inherited_storage_offset
+        if storage_offset is None:
+            storage_offset = old_layout.offset
     new_layout = ir.FixedLayout(
         new_device if new_device else old_layout.device,
         new_dtype if new_dtype else old_layout.dtype,
         [sympy.expand(s) for s in size],
         [sympy.expand(s) for s in stride],
-        sympy.expand(storage_offset or 0),
+        sympy.expand(storage_offset),
     )
     return TensorBox(ir.ReinterpretView(data=storage, layout=new_layout))
 
