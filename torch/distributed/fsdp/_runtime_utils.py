@@ -1353,7 +1353,7 @@ def _register_root_pre_forward_hook(
     FSDP root.
 
     NOTE: For the current composable FSDP design, we have each application of
-    ``fully_shard()`` to a module to indicate that that module is the local
+    ``fully_shard()`` to a module to indicate that module is the local
     FSDP root. We may remove this assumption in the future, in which case we
     will need to register this root pre-forward hook on any candidate module
     that may be the local FSDP root.

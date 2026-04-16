@@ -7853,7 +7853,7 @@ class ShapeEnv:
         fallback_value: bool | None = None,
     ) -> sympy.Basic:
         """
-        Given a a SymNode, evaluates sym_node.expr, adding guards if necessary.
+        Given a SymNode, evaluates sym_node.expr, adding guards if necessary.
         """
 
         self._expr_sym_node_id = id(sym_node)
