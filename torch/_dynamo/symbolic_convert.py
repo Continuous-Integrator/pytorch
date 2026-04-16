@@ -144,7 +144,7 @@ from .utils import (
 from .variables.base import typestr, ValueMutationNew, VariableTracker
 from .variables.builder import FrameStateSizeEntry, VariableBuilder, wrap_fx_proxy
 from .variables.builtin import BuiltinVariable, DictBuiltinVariable
-from .variables.constant import CONSTANT_VARIABLE_NONE, ConstantVariable
+from .variables.constant import ConstantVariable
 from .variables.ctx_manager import (
     ContextWrappingVariable,
     GenericContextWrappingVariable,
@@ -767,12 +767,7 @@ def generic_jump(
             self.output.add_output_instructions([create_instruction("TO_BOOL")])
 
         jump_inst = create_instruction(inst.opname, target=if_jump[0])
-        # For inlined frames, use the root frame's current instruction
-        # positions so the output code maps to the correct source line.
-        positions_inst = (
-            self.output.root_tx.current_instruction if self.parent is not None else inst
-        )
-        jump_inst.copy_positions(positions_inst)
+        jump_inst.copy_positions(inst)
         self.output.add_output_instructions([jump_inst] + if_next + if_jump)
 
     def inner(self: InstructionTranslatorBase, inst: Instruction) -> None:
@@ -1094,16 +1089,6 @@ def break_graph_if_unsupported(
             self.output.add_output_instructions(cg.get_instructions())
             del cg
 
-            # For inlined frames, use the root frame's current instruction
-            # positions so the output code maps to the correct source line.
-            # The output code is always for the root function, so line numbers
-            # from inlined child frames would be wrong.
-            positions_inst = (
-                self.output.root_tx.current_instruction
-                if self.parent is not None
-                else inst
-            )
-
             if sys.version_info >= (3, 11) and inst.opname == "CALL":
                 kw_names = (
                     self.kw_names.as_python_constant()
@@ -1118,14 +1103,13 @@ def break_graph_if_unsupported(
                     )
                 assert inst.arg is not None
                 call_insts = create_call_function(inst.arg, False)
-                call_insts[-1].copy_positions(positions_inst)
+                call_insts[-1].copy_positions(inst)
                 self.output.add_output_instructions(call_insts)
             else:
                 # copy instruction, but without exception table data
                 assert inst.target is None
                 inst_copy = copy.copy(inst)
                 inst_copy.exn_tab_entry = None
-                inst_copy.copy_positions(positions_inst)
                 self.output.add_output_instructions([inst_copy])
 
             self.output.add_output_instructions(cleanup)
@@ -1231,7 +1215,7 @@ class ExceptionStack:
                 break
 
             if context is val:
-                o.set_context(CONSTANT_VARIABLE_NONE)  # type: ignore[union-attr, arg-type]
+                o.set_context(ConstantVariable.create(None))  # type: ignore[union-attr, arg-type]
                 break
 
             o = context  # type: ignore[assignment]
@@ -2312,7 +2296,7 @@ class InstructionTranslatorBase(
                 # and performs the action of END_FOR as part of FOR_ITER. We jump
                 # to the END_FOR and run it, so we need to make sure 2 values are
                 # on the stack for it to pop.
-                self.push(CONSTANT_VARIABLE_NONE)
+                self.push(ConstantVariable.create(None))
             else:
                 # pop the iterator in Python < 3.12
                 self.pop()
@@ -2623,9 +2607,9 @@ class InstructionTranslatorBase(
                     self.push(variables.BuiltinVariable(old_exception.exc_type))
                 else:
                     # Push empty exception tb, value, type
-                    self.push(variables.CONSTANT_VARIABLE_NONE)
-                    self.push(variables.CONSTANT_VARIABLE_NONE)
-                    self.push(variables.CONSTANT_VARIABLE_NONE)
+                    self.push(ConstantVariable.create(None))
+                    self.push(ConstantVariable.create(None))
+                    self.push(ConstantVariable.create(None))
 
                 # Push new exception - tb, val, type
                 # Traceback is currently mapped to UnknownVariable
@@ -2666,7 +2650,7 @@ class InstructionTranslatorBase(
 
         val = self.pop()
         if len(self.exn_vt_stack) == 0:
-            prev_exc: VariableTracker = CONSTANT_VARIABLE_NONE
+            prev_exc: VariableTracker = ConstantVariable.create(None)
         else:
             prev_exc = self.exn_vt_stack[-1]
         self.push(prev_exc)
@@ -5127,7 +5111,6 @@ class InstructionTranslator(InstructionTranslatorBase):
             and not self.error_on_graph_break
             and not self.is_tracing_resume_prologue
         ):
-            # TODO graph break if one_graph is set - this might break things
             raise exc.SkipFrame(
                 "No ops traced for the FX graph. `torch.compile` will skip the frame and fall back to eager.\n"
                 f"Frame info: {format_frame_info(self.f_code)}"
@@ -5499,7 +5482,7 @@ class InliningInstructionTranslator(InstructionTranslatorBase):
 
         if self.output.should_exit:
             # graph break
-            return CONSTANT_VARIABLE_NONE  # return dummy variable
+            return ConstantVariable.create(None)  # return dummy variable
 
         assert self.symbolic_result is not None
 
@@ -5758,7 +5741,7 @@ class InliningGeneratorInstructionTranslator(InliningInstructionTranslator):
         self.generated_items.append(top)
         if len(self.generated_items) > MAX_ITERATOR_LIMIT:
             raise exc.InfiniteGeneratorError
-        self.push(CONSTANT_VARIABLE_NONE)
+        self.push(ConstantVariable.create(None))
         if (
             config.enable_faithful_generator_behavior
             or self.is_generator_from_ctx_manager
