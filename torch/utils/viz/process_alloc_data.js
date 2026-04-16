@@ -55,8 +55,12 @@
 //
 //   Block-level views ("Active Memory Timeline", "Allocated Memory (incl. Private Pools)"):
 //     - process_alloc_data matches "alloc" and "free_completed" from device_traces.
-//     - segment_alloc/segment_free/segment_map/segment_unmap are ignored (skipped in switch).
-//     - The segments snapshot is used only to resolve pool_id via find_pool_id().
+//     - segment_alloc/segment_free/segment_map/segment_unmap are skipped in the main
+//       alloc/free switch, but when include_private_inactive=true, segment events for
+//       private pools are captured separately (pool_segment_events) and used to drive
+//       pool envelope sizing based on reserved memory rather than active allocations.
+//     - The segments snapshot is used to resolve pool_id via find_pool_id() and to
+//       compute initial reserved memory per pool for envelope sizing.
 //
 //   Segment-level view ("Active Cached Segment Timeline"):
 //     - process_alloc_data is called with plot_segments=true.
@@ -320,9 +324,13 @@ function format_frames(frames) {
  *
  * 5. PRIVATE POOL ENVELOPES (include_private_inactive=true): Each private pool
  *    (e.g. FSDP's MemPool) gets a single gray "envelope" rectangle whose
- *    height is the pool's high-water mark. Active blocks within the pool are
+ *    height is the pool's reserved memory (from segment_map/segment_unmap
+ *    events and the segment snapshot). Active blocks within the pool are
  *    rendered as colored stripes inside the envelope. The envelope only grows
- *    (never shrinks), representing reserved capacity.
+ *    (never shrinks), representing the pool's actual GPU memory footprint.
+ *    This correctly handles fragmentation: when a large alloc triggers a
+ *    segment_map because existing free blocks aren't contiguous, the envelope
+ *    grows by the reserved amount, not just the active allocation.
  *
  *    Initially-allocated private pool blocks are PRE-LOADED into pool state
  *    so that when their free event appears in the trace, they are correctly
@@ -740,8 +748,21 @@ function process_alloc_data(snapshot, device, plot_segments, max_entries, includ
   }
 
   // --- Initialize pool reserved memory from snapshot ---
-  // reserved = snapshot_total - net_trace_delta, so that replaying segment
-  // events from the trace brings it to the correct final value.
+  // The envelope height for each private pool should reflect its reserved
+  // (segment) memory, not just active allocations. We compute the initial
+  // reserved value so that replaying segment_map/segment_unmap events from
+  // the trace arrives at the correct final value (the snapshot total).
+  //
+  // Formula: initial = snapshot_total - net_trace_delta
+  //   - snapshot_total: sum of segment total_size for this pool (ground truth
+  //     at snapshot time)
+  //   - net_trace_delta: sum of segment_map sizes minus segment_unmap sizes
+  //     for this pool in the trace
+  //
+  // This works regardless of trace truncation (ring buffer overflow): the
+  // initial value represents the reserved memory at the start of the trace
+  // window, not at program start. If there are no segment events in the
+  // trace for a pool, net_trace_delta is 0 and initial = snapshot_total.
   if (include_private_inactive) {
     const snapshot_reserved = {};
     for (const seg of device_segments) {
