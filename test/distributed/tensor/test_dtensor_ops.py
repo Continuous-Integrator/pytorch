@@ -260,6 +260,7 @@ dtensor_multi_threaded_fails = {
     xfail("nn.functional.max_unpool3d", "grad"),
     xfail("nn.functional.threshold"),
     skip("nn.functional.multi_head_attention_forward"),
+    xfail("multinomial"),
 }
 
 # Ops that fail to compile with DTensor + torch.compile(fullgraph=True).
