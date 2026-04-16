@@ -1521,6 +1521,12 @@ class CppVecOverrides(CppOverrides):
         assert a.dtype == b.dtype, (
             "remainder vec implementation expect the same inputs' dtype."
         )
+        if is_integer_dtype(a.dtype):
+            # Doing blend to set the remaining bits of b to non-zero
+            _t = f"decltype({a})"
+            if V.kernel._get_raw_num_vectors(b.dtype) < 1:
+                b = f"{_t}::blend<{(1 << V.kernel.tiling_factor) - 1}>({_t}(1), {b})"
+            return f"remainder_integral({a}, {b})"
         return f"{a} - ({CppVecOverrides.floordiv(a, b)}) * {b}"
 
     @staticmethod
@@ -3076,6 +3082,9 @@ class CppVecKernel(CppKernel):
         else:
             raise NotImplementedError(f"store mode={mode}")
 
+    def _adjust_argreduce_index(self, index: sympy.Expr) -> sympy.Expr:
+        return index
+
     def reduction(self, dtype, src_dtype, reduction_type, value):
         """
         Perform vectorized reduction operation.
@@ -3535,7 +3544,7 @@ class CppVecKernel(CppKernel):
             if index is not None:
                 assert horizontal_reduction is not None
                 t_extra = f", {str(horizontal_reduction).lower()}"
-                arg_extra = f", {index}"
+                arg_extra = f", {self._adjust_argreduce_index(index)}"
             if self.tail_size:
                 return (
                     f"{reduction_type}_combine_vec<{cdtype}, {n_src}, {n_idx}{t_extra}>"
@@ -3848,6 +3857,9 @@ class CppTile2DKernel(CppVecKernel):
             itervar_idx=self.outer_idx,
             offset=self.inner_itervar(),
         )
+
+    def _adjust_argreduce_index(self, index: sympy.Expr) -> sympy.Expr:
+        return self.transform_indexing(index)
 
 
 def get_loop_body_lowp_fp(_body: LoopBody) -> tuple[torch.dtype | None, bool]:
@@ -5675,6 +5687,10 @@ class KernelGroup:
 
         # 3. Function body
         with code.indent():
+            code.writeline("std::atomic<int> inductor_cpu_integer_div_error{0};")
+            code.writeline(
+                "inductor_cpu_integer_div_error_flag = &inductor_cpu_integer_div_error;"
+            )
             if enable_kernel_profile:
                 graph_id = V.graph.graph_id
                 prefix = "graph_" + str(graph_id) + "_" if graph_id is not None else ""
@@ -5689,6 +5705,10 @@ class KernelGroup:
             for old, new in self.args.aliases():
                 code.writeline(f"auto {old} = {new};")
             code.splice(self.loops_code)
+            code.writeline("inductor_cpu_integer_div_error_flag = nullptr;")
+            code.writeline(
+                "inductor_cpu_throw_if_integer_div_error(inductor_cpu_integer_div_error);"
+            )
         return code.getvalue()
 
     def call_kernel(self, wrapper, kernel_name):
