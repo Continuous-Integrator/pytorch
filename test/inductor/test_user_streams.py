@@ -1180,7 +1180,6 @@ arg0_1, = args
 with torch.cuda._DeviceGuard(0):
     torch.cuda.set_device(0)
     default_stream = torch.cuda.current_stream()
-    from torch._dynamo.graph_bytecode_inputs import get_external_object_by_index
     stream1 = get_external_object_by_index(1)
     with torch.cuda.stream(stream1):
         arg0_1 = copy_misaligned(arg0_1)

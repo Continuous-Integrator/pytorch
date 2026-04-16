@@ -742,6 +742,7 @@ class CUDAWarmupNode:
             _use_cuda_memory_pool_manager(
                 self.device_index, self.cuda_graphs_pool, self.stream
             ),
+            # NB: must go after _use_cuda_memory_pool_manager which switches the stream
             _update_current_stream_external_object(),
             ControlFlowOpWarmupDispatchMode(),
             get_history_recording(),
@@ -1352,6 +1353,7 @@ class CUDAGraphNode:
                 pool=self.cuda_graphs_pool,
                 capture_error_mode="thread_local",
             ),
+            # NB: must go after torch.cuda.graph which switches the stream
             _update_current_stream_external_object(),
             CUDAGraphCaptureControlFlowOpDispatchMode(),
             get_history_recording(),
