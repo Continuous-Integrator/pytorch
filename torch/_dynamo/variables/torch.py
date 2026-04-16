@@ -42,12 +42,7 @@ import torch.fx
 import torch.nn
 import torch.utils._pytree as _pytree
 from torch._C import DispatchKeySet
-from torch._dynamo.variables.constant import (
-    CONSTANT_VARIABLE_FALSE,
-    CONSTANT_VARIABLE_NONE,
-    CONSTANT_VARIABLE_TRUE,
-    ConstantVariable,
-)
+from torch._dynamo.variables.constant import ConstantVariable
 from torch._dynamo.variables.streams import StreamVariable
 from torch._dynamo.variables.torch_function import TorchFunctionModeVariable
 from torch._guards import Guard, Source, TracingContext
@@ -906,9 +901,9 @@ class TorchInGraphFunctionVariable(BaseTorchVariable):
                 and isinstance(arg, UserDefinedObjectVariable)
                 and hasattr(arg.value, "__torch_function__")
             ):
-                return CONSTANT_VARIABLE_TRUE
+                return ConstantVariable.create(True)
             else:
-                return CONSTANT_VARIABLE_FALSE
+                return ConstantVariable.create(False)
 
         @register(
             torch.is_floating_point,
@@ -1030,7 +1025,7 @@ class TorchInGraphFunctionVariable(BaseTorchVariable):
                 "call_function", torch._C._set_deterministic_algorithms, (value,), {}
             )
             torch._C._set_deterministic_algorithms(value)
-            return CONSTANT_VARIABLE_NONE
+            return ConstantVariable.create(None)
 
         @register(torch.autocast_increment_nesting)
         def handle_autocast_increment_nesting(
@@ -1072,7 +1067,7 @@ class TorchInGraphFunctionVariable(BaseTorchVariable):
             tx.output.add_cleanup_hook(
                 lambda: torch.set_autocast_enabled(dev_py_const, prev)
             )
-            return CONSTANT_VARIABLE_NONE
+            return ConstantVariable.create(None)
 
         @register(torch.set_autocast_cache_enabled)
         def handle_set_autocast_cache_enabled(
@@ -1084,7 +1079,7 @@ class TorchInGraphFunctionVariable(BaseTorchVariable):
             prev = torch.is_autocast_cache_enabled()
             torch.set_autocast_cache_enabled(enabled.as_python_constant())
             tx.output.add_cleanup_hook(lambda: torch.set_autocast_cache_enabled(prev))
-            return CONSTANT_VARIABLE_NONE
+            return ConstantVariable.create(None)
 
         @register(torch._C._functorch._grad_increment_nesting)
         def handle_grad_increment_nesting(
@@ -1124,7 +1119,7 @@ class TorchInGraphFunctionVariable(BaseTorchVariable):
             tx.output.add_cleanup_hook(
                 lambda: torch._C._functorch.set_inplace_requires_grad_allowed(prev)
             )
-            return CONSTANT_VARIABLE_NONE
+            return ConstantVariable.create(None)
 
         @register(torch.are_deterministic_algorithms_enabled)
         def handle_are_deterministic_algorithms_enabled(
@@ -1396,7 +1391,7 @@ class TorchInGraphFunctionVariable(BaseTorchVariable):
                 isinstance(condition, variables.SymNodeVariable)
                 and condition.evaluate_expr()
             ):
-                return CONSTANT_VARIABLE_NONE
+                return ConstantVariable.create(None)
             return None
 
         @register(SDPAParams)
@@ -1854,7 +1849,7 @@ class TorchInGraphFunctionVariable(BaseTorchVariable):
             TorchFunctionModeStackVariable.register_mutation(tx)
             # type: ignore[arg-type]
             tx.symbolic_torch_function_state.push_torch_function_mode(args[0])
-            return CONSTANT_VARIABLE_NONE
+            return ConstantVariable.create(None)
 
         @register(torch._C._len_torch_function_stack)
         def handle_len_torch_function(
@@ -2012,7 +2007,7 @@ class TorchInGraphFunctionVariable(BaseTorchVariable):
 
             # CPU synchronize is a no-op, skip emitting the op
             if device.type == "cpu":
-                return CONSTANT_VARIABLE_NONE
+                return ConstantVariable.create(None)
 
             tx.output.create_proxy(
                 "call_function",
@@ -2020,7 +2015,7 @@ class TorchInGraphFunctionVariable(BaseTorchVariable):
                 (device.type, device.index or 0),
                 {},
             )
-            return CONSTANT_VARIABLE_NONE
+            return ConstantVariable.create(None)
 
         @register(torch.set_default_device)
         def handle_set_default_device(
@@ -2042,7 +2037,7 @@ class TorchInGraphFunctionVariable(BaseTorchVariable):
             else:
                 TorchFunctionModeStackVariable.register_device_context_insertion(tx)
 
-            return CONSTANT_VARIABLE_NONE
+            return ConstantVariable.create(None)
 
         from torch._prims_common import elementwise_dtypes
 
@@ -2142,7 +2137,7 @@ class TorchInGraphFunctionVariable(BaseTorchVariable):
 
             if predicate_vt.is_python_constant():
                 self.value(predicate_vt.as_python_constant(), message_eager)
-                return CONSTANT_VARIABLE_NONE
+                return ConstantVariable.create(None)
 
             predicate_proxy = predicate_vt.as_proxy()
 
@@ -2468,7 +2463,7 @@ class TorchInGraphFunctionVariable(BaseTorchVariable):
 
             with (
                 torch.fx.traceback.preserve_node_meta(),
-                torch.fx.traceback.annotate({"autograd_backward": True}),
+                torch.fx.traceback._set_autograd_backward(),
             ):
                 proxy = tx.output.create_proxy(
                     "call_function",
@@ -3179,6 +3174,11 @@ For now, dynamo will explicitly graph break when it encounters user code with th
 
         real_impl_callable = _LeafCallable(wrapped_real_impl)
         fake_impl_callable = _LeafCallable(wrapped_fake_impl)
+        hook_fn = getattr(decorated_fn, "_torchdynamo_leaf_hook_fn", None)
+        if hook_fn is not None:
+            hook_fake_fn = getattr(decorated_fn, "_torchdynamo_leaf_hook_fake_fn", None)
+            real_impl_callable._leaf_hook_real_fn = hook_fn  # type: ignore[attr-defined]
+            real_impl_callable._leaf_hook_fake_fn = hook_fake_fn  # type: ignore[attr-defined]
 
         def make_callable_proxy(name: str, spec: Any) -> Any:
             proxy = tx.output.register_static_attr_and_return_proxy(name, spec)
