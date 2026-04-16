@@ -3193,12 +3193,11 @@ class GraphModule(torch.nn.Module):
 """,
         )
 
-        # Error message contains Dynamo source names (L['a'], L['b'])
-        # from the graph placeholders above.
+        # Error message names (a, b) match the graph placeholders (L_a_, L_b_).
         self._check_merge_view_inputs_error(
             fn,
             make_inputs,
-            """aot_autograd() does not yet handle non-differentiable view input mutations. input 0 (L['a']) and input 1 (L['b']) share storage but are not differentiable views of each other.""",  # noqa: B950
+            """aot_autograd() does not yet handle non-differentiable view input mutations. input 0 (a) and input 1 (b) share storage but are not differentiable views of each other.""",  # noqa: B950
         )
 
     def test_merge_view_inputs_error_different_bases(self):
@@ -3238,7 +3237,7 @@ class GraphModule(torch.nn.Module):
         self._check_merge_view_inputs_error(
             fn,
             make_inputs,
-            """aot_autograd() does not yet handle non-differentiable view input mutations. Aliased inputs share storage but have different autograd ._base tensors: input 0 (L['a']) and input 1 (L['b']) have ._base fields that point to different tensors.""",  # noqa: B950
+            """aot_autograd() does not yet handle non-differentiable view input mutations. Aliased inputs share storage but have different autograd ._base tensors: input 0 (a) and input 1 (b) have ._base fields that point to different tensors.""",  # noqa: B950
         )
 
     def test_merge_view_inputs_error_mixed_base_states(self):
@@ -3277,7 +3276,7 @@ class GraphModule(torch.nn.Module):
         self._check_merge_view_inputs_error(
             fn,
             make_inputs,
-            """aot_autograd() does not yet handle non-differentiable view input mutations. Aliased inputs share storage but have mixed autograd ._base states: ["input 0 (L['a'])"] have ._base set, while ["input 1 (L['b'])"] have ._base=None (and are not the synthetic base).""",  # noqa: B950
+            """aot_autograd() does not yet handle non-differentiable view input mutations. Aliased inputs share storage but have mixed autograd ._base states: ['input 0 (a)'] have ._base set, while ['input 1 (b)'] have ._base=None (and are not the synthetic base).""",  # noqa: B950
         )
 
     @unittest.skipIf(not torch.cuda.is_available(), "CUDA is unavailable")

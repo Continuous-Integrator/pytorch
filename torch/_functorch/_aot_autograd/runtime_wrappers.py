@@ -1721,7 +1721,8 @@ def merge_view_inputs(
             and idx < len(aot_config.aot_autograd_arg_pos_to_source)
             and aot_config.aot_autograd_arg_pos_to_source[idx] is not None
         ):
-            name = aot_config.aot_autograd_arg_pos_to_source[idx].name
+            source = aot_config.aot_autograd_arg_pos_to_source[idx]
+            name = getattr(source, "local_name", source.name)
         else:
             name = fwd_inputs_descs[idx].expr()
         return f"input {idx} ({name})"
