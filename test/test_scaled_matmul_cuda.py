@@ -2250,6 +2250,78 @@ class TestFP8Matmul(TestCase):
             )
 
 
+    @onlyCUDA
+    @unittest.skipIf(not PLATFORM_SUPPORTS_MX_GEMM or IS_WINDOWS, mx_skip_msg)
+    @unittest.skipIf(not torch.version.hip, "ROCm-only test")
+    def test_rocm_rejects_swizzle(self, device) -> None:
+        # On ROCm, scales are not swizzled. Passing SWIZZLE_32_4_4 should error.
+        M, N, K = 128, 128, 128
+
+        # MXFP8
+        x = torch.randn(M, K, device=device).to(torch.float8_e4m3fn)
+        w = torch.randn(N, K, device=device).to(torch.float8_e4m3fn)
+        x_scale = torch.full((M, K // 32), 1., dtype=torch.float8_e8m0fnu, device=device)
+        w_scale = torch.full((N, K // 32), 1., dtype=torch.float8_e8m0fnu, device=device)
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "swizzle",
+        ):
+            _ = torch.nn.functional.scaled_mm(
+                x,
+                w.t(),
+                x_scale,
+                ScalingType.BlockWise1x32,
+                w_scale,
+                ScalingType.BlockWise1x32,
+                swizzle_a=SwizzleType.SWIZZLE_32_4_4,
+                swizzle_b=SwizzleType.SWIZZLE_32_4_4,
+            )
+
+        # Also test that only swizzle_a being wrong is caught
+        with self.assertRaisesRegex(
+            ValueError,
+            "swizzle",
+        ):
+            _ = torch.nn.functional.scaled_mm(
+                x,
+                w.t(),
+                x_scale,
+                ScalingType.BlockWise1x32,
+                w_scale,
+                ScalingType.BlockWise1x32,
+                swizzle_a=SwizzleType.SWIZZLE_32_4_4,
+                swizzle_b=SwizzleType.NO_SWIZZLE,
+            )
+
+        # And swizzle_b only
+        with self.assertRaisesRegex(
+            ValueError,
+            "swizzle",
+        ):
+            _ = torch.nn.functional.scaled_mm(
+                x,
+                w.t(),
+                x_scale,
+                ScalingType.BlockWise1x32,
+                w_scale,
+                ScalingType.BlockWise1x32,
+                swizzle_a=SwizzleType.NO_SWIZZLE,
+                swizzle_b=SwizzleType.SWIZZLE_32_4_4,
+            )
+
+        # NO_SWIZZLE for both should be accepted (no error)
+        _ = torch.nn.functional.scaled_mm(
+            x,
+            w.t(),
+            x_scale,
+            ScalingType.BlockWise1x32,
+            w_scale,
+            ScalingType.BlockWise1x32,
+            swizzle_a=SwizzleType.NO_SWIZZLE,
+            swizzle_b=SwizzleType.NO_SWIZZLE,
+        )
+
     @unittest.skipIf(not PLATFORM_SUPPORTS_MX_GEMM or IS_WINDOWS, mx_skip_msg)
     @parametrize("recipe", ["mxfp8", "mxfp4" if torch.version.hip else "nvfp4"])
     def test_blockwise_mxfp8_nvfp4_error_messages(self, device, recipe) -> None:

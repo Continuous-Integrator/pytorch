@@ -1230,7 +1230,15 @@ void check_swizzle_lengths(ScaledGemmImplementation impl,
                            std::vector<SwizzleType>& swizzle_a,
                            std::vector<SwizzleType>& swizzle_b) {
 #ifdef USE_ROCM
-  // ROCM doesn't swizzle their formats - we don't care what's passed.
+  // ROCm doesn't swizzle scale formats - reject any non-NO_SWIZZLE values.
+  for (auto s : swizzle_a) {
+    TORCH_CHECK_VALUE(s == SwizzleType::NO_SWIZZLE,
+        "ROCm does not support swizzled scales, but swizzle_a has value ", static_cast<int>(s));
+  }
+  for (auto s : swizzle_b) {
+    TORCH_CHECK_VALUE(s == SwizzleType::NO_SWIZZLE,
+        "ROCm does not support swizzled scales, but swizzle_b has value ", static_cast<int>(s));
+  }
   return;
 #else
   // Store implementations that care about swizzling, and how many swizzle arguments
