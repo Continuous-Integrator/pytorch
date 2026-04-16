@@ -858,33 +858,37 @@ class GetItemTests(torch._dynamo.test_case.TestCase):
         self.assertEqual(fn(x), self._compile(fn, x))
 
     def test_deque_slice_should_reject(self):
-        """deque does not support slicing in CPython — only sq_item (int index)."""
+        """deque[0:2] → TypeError — sq_item does not accept slices."""
 
         def fn(x):
             d = collections.deque([x, x + 1, x + 2])
             return operator.getitem(d, slice(0, 2))
 
         x = torch.randn(4)
-        with self.assertRaises(torch._dynamo.exc.Unsupported):
-            self._compile(fn, x)
+        with self.assertRaises(TypeError):
+            torch.compile(fn, backend="eager")(x)
 
     def test_deque_invalid_index_type(self):
+        """deque['a'] → TypeError, matching CPython's branch 2 _PyIndex_Check."""
+
         def fn(x):
             d = collections.deque([x, x + 1, x + 2])
             return operator.getitem(d, "a")
 
         x = torch.randn(4)
-        with self.assertRaises(torch._dynamo.exc.Unsupported):
-            self._compile(fn, x)
+        with self.assertRaises(TypeError):
+            torch.compile(fn, backend="eager")(x)
 
     def test_deque_out_of_range(self):
+        """deque[100] → IndexError('deque index out of range')."""
+
         def fn(x):
             d = collections.deque([x, x + 1, x + 2])
             return operator.getitem(d, 100)
 
         x = torch.randn(4)
-        with self.assertRaises(torch._dynamo.exc.Unsupported):
-            self._compile(fn, x)
+        with self.assertRaises(IndexError):
+            torch.compile(fn, backend="eager")(x)
 
     # --- (b) reversed() → vt_sequence_getitem (natural dispatch) ---
     # str/bytes lack __reversed__, so reversed() falls back to
@@ -926,44 +930,7 @@ class GetItemTests(torch._dynamo.test_case.TestCase):
         x = torch.randn(4)
         self.assertEqual(fn(x), self._compile_and_assert_sq_item_path(fn, x))
 
-    # --- (c) sq_item error handling ---
-    # Verify that vt_getitem branch 2 and vt_sequence_getitem produce
-    # the correct TypeError / IndexError matching CPython.
-
-    def test_deque_index_out_of_range_error(self):
-        """deque[100] → IndexError('deque index out of range')."""
-
-        def fn(x):
-            d = collections.deque([x])
-            return operator.getitem(d, 100)
-
-        x = torch.randn(4)
-        with self.assertRaises(IndexError):
-            torch.compile(fn, backend="eager")(x)
-
-    def test_deque_non_integer_key_error(self):
-        """deque['a'] → TypeError, matching CPython's branch 2 _PyIndex_Check."""
-
-        def fn(x):
-            d = collections.deque([x])
-            return operator.getitem(d, "a")
-
-        x = torch.randn(4)
-        with self.assertRaises(TypeError):
-            torch.compile(fn, backend="eager")(x)
-
-    def test_deque_slice_key_error(self):
-        """deque[0:2] → TypeError — sq_item does not accept slices."""
-
-        def fn(x):
-            d = collections.deque([x, x + 1])
-            return operator.getitem(d, slice(0, 2))
-
-        x = torch.randn(4)
-        with self.assertRaises(TypeError):
-            torch.compile(fn, backend="eager")(x)
-
-    # --- (d) Sequence protocol fallback (in operator) ---
+    # --- (c) Sequence protocol fallback (in operator) ---
     # A user-defined class with __getitem__ + __len__ but no __iter__
     # exercises the sequence protocol in CPython and the __getitem__
     # fallback in Dynamo's CONTAINS_OP polyfill.

@@ -2023,6 +2023,7 @@ class BuiltinVariable(BaseBuiltinVariable):
             if (
                 obj_type is not None
                 and not hasattr(obj_type, "__iter__")
+                and hasattr(obj_type, "__len__")
                 and type_implements_sq_item(obj_type)
             ):
                 try:
@@ -3472,6 +3473,7 @@ class IterBuiltinVariable(BaseBuiltinVariable):
             if (
                 obj_type is not None
                 and not hasattr(obj_type, "__iter__")
+                and hasattr(obj_type, "__len__")
                 and type_implements_sq_item(obj_type)
             ):
                 try:
@@ -3576,6 +3578,7 @@ class ListBuiltinVariable(BaseBuiltinVariable):
             if (
                 obj_type is not None
                 and not hasattr(obj_type, "__iter__")
+                and hasattr(obj_type, "__len__")
                 and type_implements_sq_item(obj_type)
             ):
                 try:
