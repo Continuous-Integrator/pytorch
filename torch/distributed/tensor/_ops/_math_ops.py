@@ -2348,17 +2348,17 @@ def _norm_backward_single_dim_strategy(
     for d in range(axis):
         rule: list[Placement | _ShardingPlaceholder] = []
 
-        # Outputs: d_input shards on d, d_weight/d_bias are Partial("sum")
+        # Outputs: d_input shards on d, d_weight/d_bias are Partial("sum") or None
         rule.append(_ShardingPlaceholder(d))  # d_input
         if output_mask[1]:
             rule.append(Partial("sum"))  # d_weight
         else:
-            rule.append(Replicate())  # d_weight masked out
+            rule.append(None)  # d_weight masked out
         if not rms_norm:
             if output_mask[2]:
                 rule.append(Partial("sum"))  # d_bias
             else:
-                rule.append(Replicate())  # d_bias masked out
+                rule.append(None)  # d_bias masked out
 
         # Inputs: grad_out and input shard on d, mean/rstd shard on d,
         # weight/bias are Replicate
