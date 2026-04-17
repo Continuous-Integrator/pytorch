@@ -18,12 +18,11 @@ import dataclasses
 import dis
 import functools
 import itertools
-import operator
 import sys
 import types
 import uuid
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
-from typing import Any, cast, Optional, TYPE_CHECKING, Union
+from typing import Any, cast, Optional, TYPE_CHECKING
 
 from . import config
 from .bytecode_analysis import (
@@ -73,17 +72,17 @@ class Instruction:
 
     opcode: int
     opname: str
-    arg: Optional[int]
+    arg: int | None
     argval: Any
-    offset: Optional[int] = None
-    starts_line: Optional[int] = None
+    offset: int | None = None
+    starts_line: int | None = None
     is_jump_target: bool = False
 
     positions: Optional["dis.Positions"] = None
     # extra fields to make modification easier:
     target: Optional["Instruction"] = None
-    exn_tab_entry: Optional[InstructionExnTabEntry] = None
-    argrepr: Optional[str] = None
+    exn_tab_entry: InstructionExnTabEntry | None = None
+    argrepr: str | None = None
 
     def __hash__(self) -> int:
         return id(self)
@@ -166,9 +165,9 @@ else:
 def create_instruction(
     name: str,
     *,
-    arg: Optional[int] = None,
-    argval: Optional[Any] = _NotProvided,
-    target: Optional[Instruction] = None,
+    arg: int | None = None,
+    argval: Any | None = _NotProvided,
+    target: Instruction | None = None,
 ) -> Instruction:
     """
     At most one of `arg`, `argval`, and `target` can be not None/_NotProvided.
@@ -226,6 +225,24 @@ def create_load_const(val: Any, checked: bool = True) -> Instruction:
     return create_instruction("LOAD_CONST", argval=val)
 
 
+def create_breakpoint() -> list[Instruction]:
+    """
+    Create instructions that trigger the bytecode debugger to stop.
+
+    Usage:
+        codegen.extend_output(create_breakpoint())
+
+    When the bytecode debugger is active, execution will pause at this point.
+    At runtime, these instructions have no effect on program state.
+    """
+    from .bytecode_debugger import BREAKPOINT_MARKER
+
+    return [
+        create_instruction("LOAD_CONST", argval=BREAKPOINT_MARKER),
+        create_instruction("POP_TOP"),
+    ]
+
+
 def create_dup_top() -> Instruction:
     if sys.version_info >= (3, 11):
         return create_instruction("COPY", arg=1)
@@ -256,7 +273,7 @@ def create_rot_n(n: int) -> list[Instruction]:
 
 
 def add_push_null(
-    inst_or_insts: Union[Instruction, list[Instruction]],
+    inst_or_insts: Instruction | list[Instruction],
 ) -> list[Instruction]:
     """
     Appends or prepends a PUSH_NULL instruction to `inst_or_insts`,
@@ -315,7 +332,7 @@ def add_push_null(
 
 
 def add_push_null_call_function_ex(
-    inst_or_insts: Union[Instruction, list[Instruction]],
+    inst_or_insts: Instruction | list[Instruction],
 ) -> list[Instruction]:
     """Like add_push_null, but the low bit of LOAD_ATTR/LOAD_SUPER_ATTR
     is not set, due to an expected CALL_FUNCTION_EX instruction.
@@ -503,7 +520,7 @@ def create_swap(n: int) -> list[Instruction]:
 
 
 def create_binary_slice(
-    start: Optional[int], end: Optional[int], store: bool = False
+    start: int | None, end: int | None, store: bool = False
 ) -> list[Instruction]:
     """
     BINARY_SLICE and STORE_SLICE (if `set` is True) for all Python versions
@@ -577,105 +594,6 @@ def create_binary_subscr() -> Instruction:
         return create_instruction("BINARY_SUBSCR")
     # https://github.com/python/cpython/blob/0e46c0499413bc5f9f8336fe76e2e67cf93f64d8/Include/opcode.h#L36
     return create_instruction("BINARY_OP", arg=26)
-
-
-# Map operator functions to BINARY_OP arg values (Python 3.11+)
-# or to pre-3.11 opnames. Used by create_binary_op and symbolic_convert.
-if sys.version_info >= (3, 11):
-    _NB_OP_TO_ARG: dict[str, int] = {
-        name: idx
-        for idx, (name, _) in enumerate(
-            dis._nb_ops  # pyrefly: ignore[missing-attribute]
-        )
-    }
-    # List of opnames indexed by arg value, for use by symbolic_convert.BINARY_OP
-    _NB_OP_NAMES: list[str] = [
-        name
-        for name, _ in dis._nb_ops  # pyrefly: ignore[missing-attribute]
-    ]
-    _OPERATOR_TO_BINARY_OP_ARG: dict[Callable[..., Any], int] = {
-        operator.add: _NB_OP_TO_ARG["NB_ADD"],
-        operator.and_: _NB_OP_TO_ARG["NB_AND"],
-        operator.floordiv: _NB_OP_TO_ARG["NB_FLOOR_DIVIDE"],
-        operator.lshift: _NB_OP_TO_ARG["NB_LSHIFT"],
-        operator.matmul: _NB_OP_TO_ARG["NB_MATRIX_MULTIPLY"],
-        operator.mul: _NB_OP_TO_ARG["NB_MULTIPLY"],
-        operator.mod: _NB_OP_TO_ARG["NB_REMAINDER"],
-        operator.or_: _NB_OP_TO_ARG["NB_OR"],
-        operator.pow: _NB_OP_TO_ARG["NB_POWER"],
-        operator.rshift: _NB_OP_TO_ARG["NB_RSHIFT"],
-        operator.sub: _NB_OP_TO_ARG["NB_SUBTRACT"],
-        operator.truediv: _NB_OP_TO_ARG["NB_TRUE_DIVIDE"],
-        operator.xor: _NB_OP_TO_ARG["NB_XOR"],
-    }
-    _OPERATOR_TO_BINARY_OPNAME: dict[Callable[..., Any], str] = {}
-else:
-    _NB_OP_TO_ARG = {}
-    _NB_OP_NAMES: list[str] = []
-    _OPERATOR_TO_BINARY_OP_ARG: dict[Callable[..., Any], int] = {}
-    _OPERATOR_TO_BINARY_OPNAME: dict[Callable[..., Any], str] = {
-        operator.add: "BINARY_ADD",
-        operator.and_: "BINARY_AND",
-        operator.floordiv: "BINARY_FLOOR_DIVIDE",
-        operator.lshift: "BINARY_LSHIFT",
-        operator.matmul: "BINARY_MATRIX_MULTIPLY",
-        operator.mul: "BINARY_MULTIPLY",
-        operator.mod: "BINARY_MODULO",
-        operator.or_: "BINARY_OR",
-        operator.pow: "BINARY_POWER",
-        operator.rshift: "BINARY_RSHIFT",
-        operator.sub: "BINARY_SUBTRACT",
-        operator.truediv: "BINARY_TRUE_DIVIDE",
-        operator.xor: "BINARY_XOR",
-    }
-
-
-def create_binary_op(op: Callable[..., Any]) -> Instruction | None:
-    """Create a BINARY_OP instruction for the given operator function.
-
-    Returns None if the operator is not a supported binary operation.
-    """
-    if sys.version_info >= (3, 11):
-        if op not in _OPERATOR_TO_BINARY_OP_ARG:
-            return None
-        return create_instruction("BINARY_OP", arg=_OPERATOR_TO_BINARY_OP_ARG[op])
-    else:
-        if op not in _OPERATOR_TO_BINARY_OPNAME:
-            return None
-        return create_instruction(_OPERATOR_TO_BINARY_OPNAME[op])
-
-
-# Comparison operator to COMPARE_OP arg mapping.
-# The arg encoding changed between Python versions (3.12 vs 3.13), so we
-# compute the values dynamically at import time by disassembling actual bytecode.
-def _get_compare_op_arg(op_str: str) -> int:
-    """Get the COMPARE_OP arg for a comparison operator by disassembling bytecode."""
-    code = compile(f"a {op_str} b", "<compare>", "eval")
-    for instr in dis.get_instructions(code):
-        if instr.opname == "COMPARE_OP":
-            assert instr.arg is not None
-            return instr.arg
-    raise RuntimeError(f"Could not find COMPARE_OP for {op_str}")
-
-
-_OPERATOR_TO_COMPARE_OP_ARG: dict[Callable[..., Any], int] = {
-    operator.lt: _get_compare_op_arg("<"),
-    operator.le: _get_compare_op_arg("<="),
-    operator.eq: _get_compare_op_arg("=="),
-    operator.ne: _get_compare_op_arg("!="),
-    operator.gt: _get_compare_op_arg(">"),
-    operator.ge: _get_compare_op_arg(">="),
-}
-
-
-def create_compare_op(op: Callable[..., Any]) -> Instruction | None:
-    """Create a COMPARE_OP instruction for the given comparison operator function.
-
-    Returns None if the operator is not a supported comparison operation.
-    """
-    if op not in _OPERATOR_TO_COMPARE_OP_ARG:
-        return None
-    return create_instruction("COMPARE_OP", arg=_OPERATOR_TO_COMPARE_OP_ARG[op])
 
 
 def create_build_tuple(n: int) -> Instruction:
@@ -930,7 +848,7 @@ def assemble(instructions: list[Instruction], firstlineno: int) -> tuple[bytes, 
 
 def _get_instruction_by_offset(
     offset_to_inst: dict[int, Instruction], offset: int
-) -> Optional[Instruction]:
+) -> Instruction | None:
     """
     Get the instruction located at a given offset, accounting for EXTENDED_ARGs
     """
@@ -1528,7 +1446,7 @@ def get_const_index(code_options: dict[str, Any], val: Any) -> int:
 def fix_vars(
     instructions: list[Instruction],
     code_options: dict[str, Any],
-    varname_from_oparg: Optional[Callable[..., Any]] = None,
+    varname_from_oparg: Callable[..., Any] | None = None,
 ) -> None:
     # compute instruction arg from argval if arg is not provided
     names = {name: idx for idx, name in enumerate(code_options["co_names"])}
@@ -1851,7 +1769,7 @@ def is_generator(code: types.CodeType) -> bool:
 
 def bytecode_from_template(
     fn: Callable[..., Any],
-    varname_map: Optional[Mapping[Any, Any]] = None,
+    varname_map: Mapping[Any, Any] | None = None,
     noreturn: bool = True,
     noprefix: bool = True,
 ) -> list[Instruction]:
@@ -1920,6 +1838,7 @@ def bytecode_from_template(
                     new_insts.append(inst)
             insts = new_insts
 
+        # pyrefly: ignore [implicit-any]
         returns = []
         for inst in insts:
             if inst.opname == "RETURN_VALUE":

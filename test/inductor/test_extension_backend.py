@@ -11,7 +11,7 @@ from torch.testing._internal.common_utils import skipIfWindows
 
 
 try:
-    from extension_backends.cpp.extension_codegen_backend import (  # @manual=fbcode//caffe2/test/inductor/extension_backends:extension_codegen_backend  # noqa: B950
+    from extension_backends.cpp.extension_codegen_backend import (  # @manual=fbcode//caffe2/test/inductor/extension_backends:extension_codegen_backend
         ExtensionCppWrapperCodegen,
         ExtensionScheduling,
         ExtensionWrapperCodegen,
@@ -103,7 +103,8 @@ class BaseExtensionBackendTests(TestCase):
         # this file, so we'll change the working directory temporarily
         self.old_working_dir = os.getcwd()
         os.chdir(os.path.dirname(os.path.abspath(__file__)))
-        assert self.module is not None
+        if self.module is None:
+            raise AssertionError
 
     def tearDown(self):
         super().tearDown()
