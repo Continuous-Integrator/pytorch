@@ -106,6 +106,7 @@ from torch.testing._internal.common_utils import (
     NAVI_ARCH,
     parametrize,
     serialTest,
+    skipIfNoLapack,
     skipIfRocm,
     skipIfRocmArch,
     skipIfWindows,
@@ -1058,6 +1059,11 @@ def xfail_if_triton_cpu(fn):
     return fn
 
 
+def xfail_if_pallas(fn):
+    fn._expected_failure_pallas = True
+    return fn
+
+
 def skip_if_gpu_halide(fn):
     @functools.wraps(fn)
     def wrapper(self, *args, **kwargs):
@@ -1088,6 +1094,38 @@ class skip_if_cpp_wrapper:
 def is_dynamic_shape_enabled():
     # What's the best way to decide this?
     return not torch._dynamo.config.assume_static_by_default
+
+
+def target_assert_size_stride_str(
+    name, sizes, strides, dynamic_sizes=None, dynamic_strides=None
+):
+    """Build expected assert_size_stride check string for generated code.
+
+    Handles cpp_wrapper ({}/L suffix) vs Python wrapper (()). When dynamic_sizes
+    and dynamic_strides are provided, uses them if dynamic shapes are enabled.
+    Values that are ints get the L suffix in cpp_wrapper mode; strings are kept as-is.
+
+    If name is None, returns just the tuple pair (e.g. "(16, 32), (32, 1)")
+    for substring matching when the buffer name is unknown.
+    """
+    if is_dynamic_shape_enabled() and dynamic_sizes is not None:
+        sizes, strides = dynamic_sizes, dynamic_strides
+
+    if config.cpp_wrapper:
+        suffix = "LL" if sys.platform in ["darwin", "win32"] else "L"
+
+        def fmt(v):
+            return f"{v}{suffix}" if isinstance(v, int) else str(v)
+
+        size_str = "{" + ", ".join(fmt(s) for s in sizes) + "}"
+        stride_str = "{" + ", ".join(fmt(s) for s in strides) + "}"
+    else:
+        size_str = "(" + ", ".join(str(s) for s in sizes) + ")"
+        stride_str = "(" + ", ".join(str(s) for s in strides) + ")"
+
+    if name is not None:
+        return f"assert_size_stride({name}, {size_str}, {stride_str}"
+    return f"{size_str}, {stride_str}"
 
 
 @instantiate_parametrized_tests
@@ -2604,6 +2642,8 @@ class CommonTemplate:
     @xfail_if_triton_cpu
     @skipCUDAIf(True, "No _dyn_quant_pack_4bit_weight implementation on CUDA")
     @skipIfXpu(msg="No _dyn_quant_pack_4bit_weight implementation on XPU")
+    # Pallas codegen doesn't handle reduction axis after FloorDiv(ModularIndexing) simplification
+    @xfail_if_pallas
     def test__dyn_quant_pack_4bit_weight_fp32(self):
         q_group = 32
         k = 128
@@ -2640,6 +2680,8 @@ class CommonTemplate:
     @skipCUDAIf(True, "No _dyn_quant_pack_4bit_weight implementation on CUDA")
     @skipIfXpu(msg="No _dyn_quant_pack_4bit_weight implementation on XPU")
     @skip_if_halide  # bf16
+    # Pallas codegen doesn't handle reduction axis after FloorDiv(ModularIndexing) simplification
+    @xfail_if_pallas
     def test__dyn_quant_pack_4bit_weight_bf16(self):
         k = 128
         n = 128
@@ -2678,6 +2720,8 @@ class CommonTemplate:
 
     @xfail_if_mps_unimplemented
     @xfail_if_triton_cpu
+    # Pallas codegen doesn't handle reduction axis after FloorDiv(ModularIndexing) simplification
+    @xfail_if_pallas
     @skipCUDAIf(True, "No _dyn_quant_matmul_4bit implementation on CUDA")
     @skipIfXpu(msg="No _dyn_quant_matmul_4bit implementation on XPU")
     def test__dyn_quant_matmul_4bit_fp32_input(self):
@@ -3189,6 +3233,15 @@ class CommonTemplate:
         )
         self.common(fn, (make_arg(1, dtype=torch.float32),))
         self.common(fn, (make_arg(1, dtype=torch.int64),))
+
+    def test_arange7(self):
+        def fn(x):
+            # Test aten.arange.start_step lowering with integer dtypes
+            return x + torch.ops.aten.arange.start_step(
+                0, 10, 2, dtype=torch.int64, device=x.device
+            )
+
+        self.common(fn, (torch.zeros(5, dtype=torch.int64),), check_lowp=False)
 
     def test_linspace1(self):
         def fn(x):
@@ -6557,6 +6610,7 @@ class CommonTemplate:
         "ROCm hipsolver backend does not currently support eig",
     )
     @xfail_if_mps_unimplemented  # aten::linalg_eig not implemented for MPS
+    @skipIfNoLapack
     def test_linalg_eig_stride_consistency(self):
         def fn(x):
             eigenvals, eigenvecs = torch.linalg.eig(x)
@@ -6811,7 +6865,6 @@ class CommonTemplate:
             )
             self.assertEqual(fn(*inputs), opt_fn(*inputs))
 
-    @xfail_if_mps  # 'NullHandler' object has no attribute 'wrapper_code'
     def test_masked_scatter(self):
         def fn(value, mask, source):
             return torch.masked_scatter(value, mask, source)
@@ -7832,6 +7885,46 @@ def forward(self, arg0_1: "Sym(s77)", arg1_1: "Sym(s27)", arg2_1: "Sym(s53)", ar
             )
 
         self.common(fn, (torch.randn(64), torch.randn(64)))
+
+    @skip_if_halide  # cpp-only RuntimeError contract
+    @skip_if_pallas  # cpp-only RuntimeError contract
+    @skip_if_triton_cpu  # cpp-only RuntimeError contract
+    def test_fmod_uint8_zero_divisor_cpu_inductor_raises_error(self):
+        if self.device != "cpu":
+            raise unittest.SkipTest(
+                "CPU-only: uint8 Inductor integer divide-by-zero RuntimeError check"
+            )
+        torch.manual_seed(0)
+        device = self.device
+        divisor = torch.randint(0, 255, (8,), dtype=torch.uint8, device=device)
+        inp = torch.randint(1, 255, (16, 8), dtype=torch.uint8, device=device)
+        divisor[2] = 0  # ensure a divisor is 0
+
+        torch._dynamo.reset()
+        opt = torch.compile(torch.fmod, fullgraph=True, backend="inductor", mode=None)
+        with self.assertRaisesRegex(RuntimeError, "ZeroDivisionError"):
+            opt(inp, divisor)
+
+    @skip_if_halide  # cpp-only RuntimeError contract
+    @skip_if_pallas  # cpp-only RuntimeError contract
+    @skip_if_triton_cpu  # cpp-only RuntimeError contract
+    def test_remainder_uint8_zero_divisor_cpu_inductor_raises_error(self):
+        if self.device != "cpu":
+            raise unittest.SkipTest(
+                "CPU-only: uint8 Inductor integer divide-by-zero RuntimeError check"
+            )
+        torch.manual_seed(0)
+        device = self.device
+        divisor = torch.randint(0, 255, (8,), dtype=torch.uint8, device=device)
+        inp = torch.randint(1, 255, (16, 8), dtype=torch.uint8, device=device)
+        divisor[2] = 0  # ensure a divisor is 0
+
+        torch._dynamo.reset()
+        opt = torch.compile(
+            torch.remainder, fullgraph=True, backend="inductor", mode=None
+        )
+        with self.assertRaisesRegex(RuntimeError, "ZeroDivisionError"):
+            opt(inp, divisor)
 
     def test_zeros(self):
         def fn(a):
@@ -9458,6 +9551,30 @@ def forward(self, arg0_1: "Sym(s77)", arg1_1: "Sym(s27)", arg2_1: "Sym(s53)", ar
             ],
         )
 
+    @skip_if_gpu_halide  # accuracy issue
+    def test_slice_scatter_backward_with_overlapping_base(self):
+        def fn(x, y):
+            return torch.slice_scatter(x, y, dim=1, start=0, end=6).sum(dim=1)
+
+        torch.manual_seed(0)
+        x = torch.randn(4, 13, 33, device=self.device, requires_grad=True)
+        y = torch.randn(4, 6, 33, device=self.device, requires_grad=True)
+        grad = torch.randn(4, 33, device=self.device)
+
+        x_ref = x.detach().clone().requires_grad_(True)
+        y_ref = y.detach().clone().requires_grad_(True)
+
+        out_ref = fn(x_ref, y_ref)
+        out_ref.backward(grad)
+
+        compiled_fn = torch.compile(fn, backend="inductor", fullgraph=True)
+        out = compiled_fn(x, y)
+        out.backward(grad)
+
+        self.assertEqual(out, out_ref)
+        self.assertEqual(x.grad, x_ref.grad)
+        self.assertEqual(y.grad, y_ref.grad)
+
     def test_slice_scatter2(self):
         def fn(a, b):
             return aten.slice_scatter(a, b, 0, 0, 9223372036854775807)
@@ -9858,18 +9975,35 @@ def forward(self, arg0_1: "Sym(s77)", arg1_1: "Sym(s27)", arg2_1: "Sym(s53)", ar
     @requires_gpu()
     @unittest.skipIf(IS_MACOS, "fails on macos")
     @parametrize(
-        "constructor",
-        [torch.empty, torch.ones, torch.zeros, torch.rand, torch.randn],
-        name_fn=lambda constructor: constructor.__name__,
+        "constructor_and_args",
+        [
+            (torch.empty, ([1, 128, 128],)),
+            (torch.ones, ([1, 128, 128],)),
+            (torch.zeros, ([1, 128, 128],)),
+            (
+                torch.full,
+                (
+                    [1, 128, 128],
+                    2,
+                ),
+            ),
+            (torch.rand, ([1, 128, 128],)),
+            (torch.randn, ([1, 128, 128],)),
+        ],
+        name_fn=lambda constructor_and_args: constructor_and_args[0].__name__,
     )
-    def test_constructors_pin_memory(self, constructor):
+    def test_constructors_pin_memory(self, constructor_and_args):
         if self.device != "cpu":
             raise unittest.SkipTest("pin_memory is not supported on non-CPU devices")
 
-        failing_constructors = [torch.rand, torch.ones, torch.zeros]
+        constructor, args = constructor_and_args
+
+        failing_constructors = [
+            torch.rand,
+        ]
 
         def fn():
-            return constructor([1, 128, 128], pin_memory=True, device=self.device)
+            return constructor(*args, pin_memory=True, device=self.device)
 
         result = torch.compile(fn, backend="inductor")()
         if constructor in failing_constructors:
@@ -13415,18 +13549,11 @@ def forward(self, arg0_1: "Sym(s77)", arg1_1: "Sym(s27)", arg2_1: "Sym(s53)", ar
             torch.compile(fn),
             a,
         )
-        if not is_dynamic_shape_enabled():
-            if code and len(code) > 0 and "assert_size_stride(" in code[0]:
-                try:
-                    FileCheck().check_regex(
-                        r"assert_size_stride\s*\(\s*[^,]+,\s*\([^\)]*\),\s*\([^\)]*\),\s*'[^']+'\s*\)"
-                    ).run(code[0])
-                except Exception as e:
-                    print(f"Failed regex match for assert_size_stride: {e}")
-                    print(code[0])
-                    raise e
-            else:
-                print("Skipping: No assert_size_stride found.")
+        FileCheck().check("assert_size_stride(").check(
+            target_assert_size_stride_str(
+                None, [16, 32], [32, 1], ["s77", "s27"], ["s27", 1]
+            )
+        ).run(code[0])
 
     @requires_gpu()
     @skip_if_not_triton
@@ -13455,7 +13582,7 @@ def forward(self, arg0_1: "Sym(s77)", arg1_1: "Sym(s27)", arg2_1: "Sym(s53)", ar
             if code and len(code) > 0 and "assert_alignment(" in code[0]:
                 try:
                     FileCheck().check_regex(
-                        r"assert_alignment\s*\(\s*[^,]+,\s*[^,]+,\s*'[^']+'\s*\)"
+                        r"assert_alignment\s*\(\s*[^,]+,\s*[^,]+,\s*['\"][^'\"]+['\"]\s*\)"
                     ).run(code[0])
                 except Exception as e:
                     print(f"Failed regex match for assert_alignment: {e}")
@@ -13484,10 +13611,6 @@ def forward(self, arg0_1: "Sym(s77)", arg1_1: "Sym(s27)", arg2_1: "Sym(s53)", ar
 
     @requires_gpu()
     @skip_if_not_triton
-    @unittest.skipIf(
-        config.cpp_wrapper,
-        "Inductor does not generate size/stride asserts for cpp_wrapper",
-    )
     def test_input_asserts_deferred_to_first_use(self):
         def fn(x, y, z):
             a = torch.mm(x, y)
@@ -13501,9 +13624,14 @@ def forward(self, arg0_1: "Sym(s77)", arg1_1: "Sym(s27)", arg2_1: "Sym(s53)", ar
         _, code = run_and_get_code(torch.compile(fn), x, y, z)
         # z's assert should appear after the first mm, not at the top
         # with all the other asserts
-        FileCheck().check("def call").check_count(
-            "assert_size_stride", 2, exactly=True
-        ).check("extern_kernels.mm(").run(code[0])
+        if config.cpp_wrapper:
+            FileCheck().check("inductor_entry_impl").check_count(
+                "assert_size_stride", 2, exactly=True
+            ).check("mm_out").run(code[0])
+        else:
+            FileCheck().check("def call").check_count(
+                "assert_size_stride", 2, exactly=True
+            ).check("extern_kernels.mm(").run(code[0])
 
     @requires_gpu()
     @skip_if_not_triton
@@ -14673,10 +14801,6 @@ def forward(self, arg0_1: "Sym(s77)", arg1_1: "Sym(s27)", arg2_1: "Sym(s53)", ar
 
     @requires_gpu()
     @config.patch(fallback_random=True)
-    @unittest.skipIf(
-        config.cpp_wrapper,
-        "cpp wrapper does not support sort properly: https://gist.github.com/shunting314/e58f637f9972f1ad1a033d73cee6e42a",
-    )
     def test_mix_device_index(self):
         """
         A tiny repro for this meta internal issue: https://fb.workplace.com/groups/1075192433118967/posts/1567334737238065
@@ -14714,10 +14838,17 @@ def forward(self, arg0_1: "Sym(s77)", arg1_1: "Sym(s27)", arg2_1: "Sym(s53)", ar
         torch.testing.assert_close(ref, act, atol=1e-3, rtol=1e-3)
 
         if is_dynamic_shape_enabled():
-            size_assert_pattern = r"assert_size_stride.[a-z]+[0-9]+, .2, 3, s12, s80, s80., .3\*s12\*s80\*s80, s12\*s80\*s80, 1, s12\*s80, s1.."  # noqa: B950
+            # Dynamic shapes have compound sympy expressions (e.g. 3*s12*s80*s80)
+            # whose C++ formatting (3L*s12*...) requires regex matching.
+            suffix = "L?" if config.cpp_wrapper else ""
+            size_assert_pattern = rf"assert_size_stride.[a-z]+[0-9]+, .2{suffix}, 3{suffix}, s12, s80, s80., .3{suffix}\*s12\*s80\*s80, s12\*s80\*s80, 1{suffix}, s12\*s80, s1.."  # noqa: B950
+            FileCheck().check_regex(size_assert_pattern).run(code)
         else:
-            size_assert_pattern = r"assert_size_stride.[a-z]+[0-9]+, .2, 3, 16, 32, 32., .49152, 16384, 1, 512, 16.."
-        FileCheck().check_regex(size_assert_pattern).run(code)
+            FileCheck().check("assert_size_stride(").check(
+                target_assert_size_stride_str(
+                    None, [2, 3, 16, 32, 32], [49152, 16384, 1, 512, 16]
+                )
+            ).run(code)
 
     def test_lite_mode_fallback(self):
         def f(x):
@@ -14939,10 +15070,6 @@ def forward(self, arg0_1: "Sym(s77)", arg1_1: "Sym(s27)", arg2_1: "Sym(s53)", ar
                 r"raise RuntimeError\('u.* >= 0'\)"
             ).run(code[0])
 
-    @unittest.skipIf(
-        config.cpp_wrapper,
-        "Inductor does not generate size/stride asserts for cpp_wrapper",
-    )
     @lowering.force_fallback(aten.sort.default)
     def test_size_asserts_for_multi_output_fallback(self):
         @torch.compile
@@ -14952,14 +15079,13 @@ def forward(self, arg0_1: "Sym(s77)", arg1_1: "Sym(s27)", arg2_1: "Sym(s53)", ar
         x = torch.randn(16, 32, device=self.device)
         code = run_and_get_triton_code(f, x)
 
-        if is_dynamic_shape_enabled():
-            FileCheck().check("assert_size_stride(buf1, (s77, s27), (s27, 1)").check(
-                "assert_size_stride(buf2, (s77, s27), (s27, 1)"
-            ).run(code)
-        else:
-            FileCheck().check("assert_size_stride(buf1, (16, 32), (32, 1)").check(
-                "assert_size_stride(buf2, (16, 32), (32, 1)"
-            ).run(code)
+        check1 = target_assert_size_stride_str(
+            "buf1", [16, 32], [32, 1], ["s77", "s27"], ["s27", 1]
+        )
+        check2 = target_assert_size_stride_str(
+            "buf2", [16, 32], [32, 1], ["s77", "s27"], ["s27", 1]
+        )
+        FileCheck().check(check1).check(check2).run(code)
 
     @requires_gpu_and_triton
     @config.patch(use_fast_math=True)
@@ -17996,6 +18122,83 @@ if RUN_GPU:
             # There's no pointwise work to do, so xnumel should be 1...
             fc.check("xnumel = 1")
             fc.run(code[0])
+
+        @config.patch({"triton.decompose_sort_ops": True})
+        def test_median_decompose_sort_ops(self):
+            def fn_default(a):
+                return torch.median(a)
+
+            def fn_dim(a):
+                return torch.median(a, dim=1)
+
+            inp = torch.randn(8, 16, device=GPU_TYPE)
+            for fn in (fn_default, fn_dim):
+                torch._dynamo.reset()
+                result, code = run_and_get_code(torch.compile(fn), inp)
+                self.assertIn(
+                    "sort_with_index",
+                    " ".join(code),
+                    "Expected Triton sort codegen for median",
+                )
+                torch.testing.assert_close(result, fn(inp))
+
+        @config.patch({"triton.decompose_sort_ops": True})
+        def test_mode_decompose_sort_ops(self):
+            def fn(a):
+                return torch.mode(a, dim=1)
+
+            # Use integers so ties are common, exercising run-length logic
+            inp = torch.randint(
+                0, 5, size=[8, 16], dtype=torch.float32, device=GPU_TYPE
+            )
+            torch._dynamo.reset()
+            result, code = run_and_get_code(torch.compile(fn), inp)
+            self.assertIn(
+                "sort_with_index",
+                " ".join(code),
+                "Expected Triton sort codegen for mode",
+            )
+            expected = fn(inp)
+            torch.testing.assert_close(result[0], expected[0])
+            torch.testing.assert_close(result[1], expected[1])
+
+        @config.patch({"triton.decompose_sort_ops": True})
+        def test_topk_decompose_sort_ops(self):
+            def fn(a):
+                return torch.topk(a, 3, dim=-1)
+
+            def fn_largest_false(a):
+                return torch.topk(a, 3, dim=-1, largest=False)
+
+            inp = torch.randn(8, 16, device=GPU_TYPE)
+            for test_fn in (fn, fn_largest_false):
+                torch._dynamo.reset()
+                result, code = run_and_get_code(torch.compile(test_fn), inp)
+                self.assertIn(
+                    "sort_with_index",
+                    " ".join(code),
+                    "Expected Triton sort codegen for topk",
+                )
+                expected = test_fn(inp)
+                torch.testing.assert_close(result[0], expected[0])
+                torch.testing.assert_close(result[1], expected[1])
+
+        @config.patch({"triton.decompose_sort_ops": True})
+        def test_kthvalue_decompose_sort_ops(self):
+            def fn(a):
+                return torch.kthvalue(a, 3, dim=-1)
+
+            inp = torch.randn(8, 16, device=GPU_TYPE)
+            torch._dynamo.reset()
+            result, code = run_and_get_code(torch.compile(fn), inp)
+            self.assertIn(
+                "sort_with_index",
+                " ".join(code),
+                "Expected Triton sort codegen for kthvalue",
+            )
+            expected = fn(inp)
+            torch.testing.assert_close(result[0], expected[0])
+            torch.testing.assert_close(result[1], expected[1])
 
     class RNNTest(TestCase):
         device_type = GPU_TYPE
