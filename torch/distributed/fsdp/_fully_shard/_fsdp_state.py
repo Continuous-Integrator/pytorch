@@ -348,8 +348,9 @@ class FSDPState(_State):
         # casts apply before outer ones, matching the natural unwinding in
         # normal ``_post_forward``. Hook registration happens before the cast
         # so grads flow back through the pre-cast tensor. ``_modules_to_run``
-        # is cleared only after post_forward succeeds so a mid-call exception
-        # leaves the state retryable.
+        # is cleared last per state; if an exception aborts this path mid-way,
+        # the post-backward callback's defensive clear drains any stragglers
+        # so the next forward iteration is not blocked by stale state.
         for state in reversed(self._state_ctx.all_states):
             if state is self or not state._modules_to_run_forward:
                 continue
@@ -476,10 +477,10 @@ def _register_group_forward_hooks(
     module pre-forward (``FSDPParamGroup.unshard`` short-circuits via
     ``is_unsharded`` when already unsharded, and
     ``FSDPParamGroup.pre_forward`` gates post-backward hook registration
-    via ``first_in_pass``). The post-hook runs upon the last module to
-    complete. If at least one module does not run forward, the post-hook
-    does not run; ``_force_complete_incomplete_states`` handles that case
-    from the root's post-forward.
+    via ``group_first_in_pass``). The post-hook runs upon the last module
+    to complete. If at least one module does not run forward, the
+    post-hook does not run; ``_force_complete_incomplete_states`` handles
+    that case from the root's post-forward.
     """
     modules_set = set(modules)
 

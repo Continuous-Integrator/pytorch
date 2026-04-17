@@ -1464,6 +1464,82 @@ class TestFullyShard1DTrainingCompose(FSDPTest):
             )
 
     @skip_if_lt_x_gpu(2, allow_cpu=True)
+    def test_partial_group_forward_compile_smoke(self):
+        """
+        Smoke test: ``torch.compile`` on a grouped ``fully_shard`` model with
+        partial-forward + per-chunk backward. The new paths in
+        ``_fsdp_state._pre_forward`` / ``_post_forward`` /
+        ``_force_complete_incomplete_states`` and
+        ``FSDPParamGroup.pre_forward`` all carry ``@_dynamo_disable``; this
+        test verifies dynamo tracing over the user module (with those paths
+        marked disabled) does not error, and that grads are produced.
+
+        Uses ``backend="eager"`` so the test exercises dynamo tracing +
+        graph breaks without depending on inductor.
+        """
+        self.run_subtests(
+            {"reshard_after_forward": [True, False]},
+            self._test_partial_group_forward_compile_smoke,
+        )
+
+    def _test_partial_group_forward_compile_smoke(
+        self,
+        reshard_after_forward: bool,
+    ):
+        import torch._dynamo
+
+        dim, vocab_size, n_chunks = 32, 128, 2
+
+        class Model(nn.Module):
+            def __init__(self) -> None:
+                super().__init__()
+                self.embed = nn.Embedding(vocab_size, dim)
+                self.norm = nn.RMSNorm(dim)
+                self.head = nn.Linear(dim, vocab_size, bias=False)
+
+            def forward(
+                self, tokens: torch.Tensor, *, skip_head: bool = False
+            ) -> torch.Tensor:
+                h = self.norm(self.embed(tokens))
+                if skip_head:
+                    return h
+                return self.head(h)
+
+        torch.manual_seed(42)
+        model = Model().to(device_type)
+        with torch.no_grad():
+            for param in model.parameters():
+                dist.broadcast(param, src=0)
+        fully_shard(model.embed, reshard_after_forward=reshard_after_forward)
+        fully_shard(
+            [model.norm, model.head], reshard_after_forward=reshard_after_forward
+        )
+        fully_shard(model, reshard_after_forward=reshard_after_forward)
+
+        torch._dynamo.reset()
+        compiled_model = torch.compile(model, backend="eager")
+
+        tokens = torch.randint(0, vocab_size, (2, 16), device=device_type.type)
+
+        # Run twice to exercise the re-entry path (iter_forward_root clear,
+        # second-pass state_first_in_pass gating).
+        for _ in range(2):
+            h = compiled_model(tokens, skip_head=True)
+            h_detached = h.detach().requires_grad_(True)
+            chunks = torch.chunk(h_detached, n_chunks, dim=1)
+            h_grads: list[torch.Tensor] = []
+            for chunk in chunks:
+                chunk = chunk.contiguous().detach().requires_grad_(True)
+                loss = model.head(chunk).sum()
+                loss.backward()
+                h_grads.append(chunk.grad.detach())
+            h.backward(torch.cat(h_grads, dim=1))
+
+            for name, param in model.named_parameters():
+                self.assertIsNotNone(param.grad, f"grad is None for {name}")
+                param.grad = None
+
+    @skip_if_lt_x_gpu(2, allow_cpu=True)
     def test_double_forward_with_nested_fsdp_and_checkpoint(self):
         """
         Tests that calling model.forward() twice before backward() works correctly

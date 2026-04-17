@@ -150,6 +150,13 @@ def fully_shard(
     ``output_dtype`` cast) is completed from the root's post-forward for any
     incomplete group.
 
+    Note on ``mp_policy.cast_forward_inputs`` with grouped ``fully_shard``:
+    the input cast applies to every module in the group. Previously the
+    group pre-hook only fired on the first module to run, which silently
+    skipped the cast for subsequent modules — a latent bug that could
+    surface as a dtype mismatch when an intermediate user op between
+    grouped modules ran in a different dtype.
+
     Args:
         module (Union[nn.Module, List[nn.Module]): The module or modules to
             shard with FSDP and group together for communication.
