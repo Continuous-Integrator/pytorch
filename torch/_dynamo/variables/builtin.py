@@ -3300,6 +3300,12 @@ class SetAttrBuiltinVariable(BaseBuiltinVariable):
         args: Sequence[VariableTracker],
         kwargs: dict[str, VariableTracker],
     ) -> VariableTracker:
+        from .lazy import LazyVariableTracker
+
+        if any(isinstance(a, LazyVariableTracker) for a in args):
+            args = [
+                a.realize() if isinstance(a, LazyVariableTracker) else a for a in args
+            ]
         if len(args) != 3 or kwargs:
             raise_observed_exception(TypeError, tx)
         obj, name_var, val = args
