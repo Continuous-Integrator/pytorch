@@ -842,8 +842,8 @@ class TestFullyShard1DTrainingCompose(FSDPTest):
         never fires and ``_force_complete_incomplete_states`` must complete
         post-forward from the root.
 
-        Uses separate ``fully_shard()`` calls as reference to verify gradient
-        correctness end-to-end.
+        Uses a plain (non-FSDP) model with all-reduced grads as reference to
+        verify gradient correctness end-to-end.
         """
         self.run_subtests(
             {
@@ -889,9 +889,9 @@ class TestFullyShard1DTrainingCompose(FSDPTest):
         def _run_chunked(model: nn.Module):
             """
             Run chunked-loss pattern. Returns (total_loss, final_grads,
-            head_grad_after_chunks). The head_grad_after_chunks snapshot
-            isolates chunk accumulation correctness from h.backward
-            propagation so failures localize to the right code path.
+            head_grad_after_chunks); the last captures head.weight.grad
+            after the chunk loop but before h.backward, so failures there
+            isolate chunk accumulation from h.backward propagation.
             """
             h = model(tokens, skip_head=True)
             h_detached = h.detach()
@@ -1014,10 +1014,9 @@ class TestFullyShard1DTrainingCompose(FSDPTest):
         """
         Tests that partial-group-forward + chunked-loss works when the
         grouped FSDP state uses ``mp_policy.output_dtype`` different from
-        ``param_dtype``. The pre-backward hooks registered by the root
-        force-complete path in ``_post_forward`` run on the pre-cast output
-        tensors; after the cast, autograd chain rule must still route
-        gradients back through those hooks.
+        ``param_dtype``. pre_backward hooks are registered on the pre-cast
+        output; after the cast, autograd must still route gradients back
+        through those hooks.
         """
         self.run_subtests(
             {
@@ -1267,11 +1266,10 @@ class TestFullyShard1DTrainingCompose(FSDPTest):
         """
         Tests partial-group-forward + chunked-loss composed with activation
         checkpointing on a preceding block. Backward re-runs the AC'd
-        block, which re-enters FSDP's ``_pre_forward`` with
-        ``training_state == PRE_BACKWARD``. This exercises that the
-        root-callback's unconditional ``iter_forward_root`` clear and the
-        force-complete path remain correct when backward triggers AC
-        recomputation between the chunk loop and the root backward.
+        block, which re-enters FSDP's pre-forward in PRE_BACKWARD state.
+        This exercises that the force-complete path and per-iteration state
+        reset remain correct when backward triggers AC recomputation between
+        the chunk loop and the root backward.
         """
         self.run_subtests(
             {
@@ -1360,10 +1358,8 @@ class TestFullyShard1DTrainingCompose(FSDPTest):
         """
         Tests the chunked-loss pattern combined with gradient accumulation
         via ``set_is_last_backward(False)`` / ``set_requires_gradient_sync``
-        across micro-batches. Validates that the unconditional
-        ``iter_forward_root`` clear in the post-backward callback and the
-        per-chunk post_backward hook registration correctly accumulate
-        gradients across micro-batches without over-reducing.
+        across micro-batches. Validates that grads accumulate correctly
+        across micro-batches without over-reducing.
         """
         self.run_subtests(
             {
@@ -1471,15 +1467,10 @@ class TestFullyShard1DTrainingCompose(FSDPTest):
     def test_partial_group_forward_compile_smoke(self):
         """
         Smoke test: ``torch.compile`` on a grouped ``fully_shard`` model with
-        partial-forward + per-chunk backward. The new paths in
-        ``_fsdp_state._pre_forward`` / ``_post_forward`` /
-        ``_force_complete_incomplete_states`` and
-        ``FSDPParamGroup.pre_forward`` all carry ``@_dynamo_disable``; this
-        test verifies dynamo tracing over the user module (with those paths
-        marked disabled) does not error, and that grads are produced.
-
-        Uses ``backend="eager"`` so the test exercises dynamo tracing +
-        graph breaks without depending on inductor.
+        partial-forward + per-chunk backward. FSDP hook paths carry
+        ``@_dynamo_disable``; this verifies dynamo tracing over the user
+        module does not error and grads are produced. Uses ``backend="eager"``
+        to exercise tracing + graph breaks without depending on inductor.
         """
         self.run_subtests(
             {"reshard_after_forward": [True, False]},
@@ -1525,8 +1516,8 @@ class TestFullyShard1DTrainingCompose(FSDPTest):
 
         tokens = torch.randint(0, vocab_size, (2, 16), device=device_type.type)
 
-        # Run twice to exercise the re-entry path (iter_forward_root clear,
-        # second-pass state_first_in_pass gating).
+        # Run twice to exercise the re-entry path (second-pass state reset
+        # and per-module pre-hook gating).
         for _ in range(2):
             h = compiled_model(tokens, skip_head=True)
             h_detached = h.detach()

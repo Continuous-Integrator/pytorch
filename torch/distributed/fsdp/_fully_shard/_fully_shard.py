@@ -142,29 +142,24 @@ def fully_shard(
     overlap. Users generally should *not* call :meth:`fully_shard` only on the
     topmost root module.
 
-    When called with a list (``fully_shard([a, b, ...])``), the model's forward
-    may invoke only a subset of the grouped modules; the remaining modules may
-    be called later in the same iteration (e.g. chunked-loss patterns where a
-    norm+head group is split between the main forward and a per-chunk head
-    call). Post-forward work (reshard, pre-backward hook registration,
-    ``output_dtype`` cast) is completed from the root's post-forward for any
-    incomplete group. Caveats:
+    When called with a list (``fully_shard([a, b, ...])``), the model's
+    forward may invoke only a subset of the grouped modules; the remaining
+    modules may be called later in the same iteration. For example, in
+    chunked-loss training with ``fully_shard([norm, head])``, the main
+    forward runs norm only, and head is invoked per chunk afterwards.
+    Reshard, pre-backward hook registration, and ``output_dtype`` cast are
+    completed from the root's post-forward for any incomplete group.
+    Caveats:
 
     - Each standalone per-chunk invocation registers its own post_backward
       autograd node, so N chunk calls produce N reduce-scatters for that
-      group — acceptable for correctness but observable in comm volume.
-    - ``output_dtype`` on an inner group's policy is applied to the root's
-      output (via force-complete), not to the output of standalone per-chunk
-      calls; users who need the cast on per-chunk outputs should apply it
-      explicitly.
-    - If the main forward runs under ``torch.no_grad`` (so no backward fires)
-      *and* standalone group modules are invoked for probing,
-      ``iter_forward_root`` may remain stale since the post-backward final
-      callback does not run. A subsequent training forward will self-heal.
+      group.
+    - ``mp_policy.output_dtype`` on an inner group's policy is applied to the
+      root's output via the post-forward completion, not to the output of
+      standalone per-chunk calls; apply the cast explicitly if needed.
 
     ``mp_policy.cast_forward_inputs`` applies to every module in a grouped
-    ``fully_shard``, and the input cast fires per module rather than only on
-    the group's first-called module.
+    ``fully_shard``.
 
     Args:
         module (Union[nn.Module, List[nn.Module]): The module or modules to

@@ -1399,21 +1399,14 @@ class TestFullyShardPrefetch(FSDPTest):
                 self.assertEqual(events, expected_events)
                 events.clear()
                 loss.sum().backward()
-                # Both `model[0]` and `model[1]` have `unused_lin` that never
-                # ran forward; `_force_complete_incomplete_states` completes
-                # post-forward for these incomplete groups, which reshards
-                # after forward and registers pre-backward hooks on the root
-                # output. Both pre_backward hooks fire at the start of
-                # backward (unshard events), then autograd walks the graph
-                # producing post_backward reduce-scatters in reverse module
-                # order (group1 → group0 → root).
-                # Both `model[0]` and `model[1]` have `unused_lin` that never
-                # ran forward; `_force_complete_incomplete_states` completes
-                # post-forward for these incomplete groups, which reshards
-                # after forward and registers pre-backward hooks on the root
-                # output. Both pre_backward hooks fire at the start of
-                # backward (unshard events), then autograd walks the graph
-                # producing post_backward events.
+                # `_force_complete_incomplete_states` completes post-forward
+                # for the incomplete groups (both `model[0]` and `model[1]`
+                # have `unused_lin` that never ran forward), reshards, and
+                # registers pre-backward hooks on the root output; those
+                # hooks fire at backward start (unshard events). Only
+                # group1's post_backward fires via autograd (model[1]'s
+                # input requires grad); root and group0's post_backwards
+                # fire in the final callback in all-states pre-order.
                 expected_events = [
                     ("unshard", "1.unused_lin, 1.lin", TrainingState.PRE_BACKWARD),
                     ("unshard", "0.unused_lin, 0.lin", TrainingState.PRE_BACKWARD),

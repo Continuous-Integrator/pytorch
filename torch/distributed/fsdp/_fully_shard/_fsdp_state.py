@@ -36,10 +36,9 @@ class FSDPStateContext(Generic[_StateType]):
     """This has state shared across FSDP states."""
 
     def __init__(self) -> None:
-        # All FSDP states in the root state's module tree, populated in
-        # pre-order via ``named_modules()`` in ``_lazy_init``. Consumers
-        # (e.g. ``_force_complete_incomplete_states``) rely on this
-        # ordering: ``reversed(all_states)`` yields inner-first.
+        # All FSDP states in the root state's module tree, in
+        # ``named_modules()`` pre-order; ``_force_complete_incomplete_states``
+        # iterates ``reversed`` for inner-first.
         self.all_states: list[_StateType] = []
         # Iteration's forward root runs the once-per-forward logic; this root
         # may not be the overall root set by lazy initialization in cases where
@@ -285,9 +284,9 @@ class FSDPState(_State):
                     fsdp_param_group.wait_for_unshard()
             return args, kwargs
         # With grouped ``fully_shard([a, b, ...])`` the pre-hook fires per
-        # module so ``cast_forward_inputs`` and ``fsdp_param_group.pre_forward``
-        # run for each. Gate one-shot work (root setup, forward prefetch) on
-        # the first module's entry via state-level ``_training_state``.
+        # module (so ``cast_forward_inputs`` and ``fsdp_param_group.pre_forward``
+        # run for each). Root setup and forward prefetch are one-shot, gated
+        # on the first module's entry.
         state_first_in_pass = self._training_state != TrainingState.FORWARD
         self._training_state = TrainingState.FORWARD
         if state_first_in_pass:
@@ -319,10 +318,10 @@ class FSDPState(_State):
             return output
         for fsdp_param_group in self._fsdp_param_groups:
             output = fsdp_param_group.post_forward(module, input, output)
-        # Register this state's pre_backward hook BEFORE force_complete so it
-        # fires on the pre-cast tensor; inner states registered by
-        # force_complete attach their own hooks on the same tensor, giving
-        # LIFO order (innermost first) during backward.
+        # Register pre_backward before force_complete so the hook attaches
+        # to the pre-cast tensor; inner states add their own hooks on the
+        # same tensor in force_complete. pre_backward is idempotent so hook
+        # fire order does not affect correctness.
         output = self._register_pre_backward_hook(output)
         self._training_state = TrainingState.IDLE
         if self._state_ctx.iter_forward_root is self:
@@ -348,21 +347,16 @@ class FSDPState(_State):
     def _force_complete_incomplete_states(self, output: Any) -> Any:
         # Complete post-forward for any state whose group forward did not run
         # all modules (e.g. chunked loss where model.forward skips head).
-        # ``all_states`` is populated in ``_lazy_init`` via ``named_modules()``
-        # pre-order; ``reversed`` therefore yields inner-first so inner
-        # ``output_dtype`` casts apply before outer ones, matching natural
-        # ``_post_forward`` unwinding. Hook registration precedes the cast so
-        # grads flow back through the pre-cast tensor. Root (``self``) is
-        # skipped because it has already run its own ``_post_forward`` above.
+        # ``all_states`` is pre-order from ``named_modules()``; ``reversed``
+        # yields inner-first so inner ``output_dtype`` casts apply before
+        # outer, matching natural ``_post_forward`` unwinding.
         for state in reversed(self._state_ctx.all_states):
             if state is self or not state._modules_to_run_forward:
                 continue
             logger.debug("FSDP::force_complete_post_forward")
             try:
                 for fsdp_param_group in state._fsdp_param_groups:
-                    # module/input are unused by ``post_forward``; pass None
-                    # to make the "not called via forward hook" intent explicit.
-                    fsdp_param_group.post_forward(None, None, output)
+                    output = fsdp_param_group.post_forward(None, None, output)
                 output = state._register_pre_backward_hook(output)
                 state._training_state = TrainingState.IDLE
                 if state._mp_policy.output_dtype is not None:
@@ -374,11 +368,8 @@ class FSDPState(_State):
                             output,
                         )
             finally:
-                # Clear unconditionally so a mid-loop exception does not leave
-                # the set populated — a stale non-empty set would suppress
-                # the next iteration's force-complete (which guards on
-                # non-empty) and also trigger a misleading warning in
-                # ``_finalize_backward``.
+                # Clear even on exception so the next iteration's
+                # force-complete (which guards on non-empty) can run.
                 state._modules_to_run_forward.clear()
         return output
 
@@ -400,17 +391,11 @@ class FSDPState(_State):
     def _root_post_backward_final_callback(self) -> None:
         logger.debug("FSDP::root_post_backward")
         with torch.profiler.record_function("FSDP::root_post_backward_callback"):
-            # Clear _modules_to_run_forward BEFORE _finalize_backward so the
-            # chunked-loss pattern does not trigger a false
-            # "modules did not run forward" warning. In that pattern, each
-            # standalone ``model.head(chunk)`` re-populates the set via the
-            # group pre-hook; only the called module is drained by the
-            # post-hook, leaving residuals (e.g. ``{norm}``) that are
-            # bookkeeping artifacts — force_complete already handled the
-            # actual reshard + hook registration at root's post_forward.
-            # Also clears iter_forward_root unconditionally since
-            # partial-group + standalone-call patterns can leave it stale
-            # between gradient-accumulation backwards too.
+            # Reset per-iteration state. Partial-group + standalone-call
+            # patterns (chunked loss) can leave ``iter_forward_root`` set
+            # to an inner state and ``_modules_to_run_forward`` populated
+            # when force-complete handled post-forward instead of the
+            # group post-hook.
             self._state_ctx.iter_forward_root = None
             for state in self._state_ctx.all_states:
                 state._modules_to_run_forward.clear()
@@ -439,11 +424,6 @@ class FSDPState(_State):
             self._state_ctx.post_backward_final_callback_queued = False
 
     def _finalize_backward(self) -> None:
-        # ``_modules_to_run_forward`` is cleared by
-        # ``_root_post_backward_final_callback`` before this runs, so no
-        # residual bookkeeping to surface here. Partial-group-forward
-        # (e.g. chunked loss) is now handled by
-        # ``_force_complete_incomplete_states`` at root's post_forward.
         for fsdp_param_group in self._fsdp_param_groups:
             fsdp_param_group.finalize_backward()
 
@@ -481,13 +461,12 @@ def _register_group_forward_hooks(
 ):
     """
     Registers group forward pre and post-hooks. The pre-hook runs on every
-    module pre-forward (``FSDPParamGroup.unshard`` short-circuits via
-    ``is_unsharded`` when already unsharded, and
-    ``FSDPParamGroup.pre_forward`` gates post-backward hook registration
-    via ``group_first_in_pass``). The post-hook runs upon the last module
-    to complete. If at least one module does not run forward, the
-    post-hook does not run; ``_force_complete_incomplete_states`` handles
-    that case from the root's post-forward.
+    module pre-forward; downstream state gating ensures one-shot work
+    (root setup, post_backward hook registration) fires once per group
+    pass. The post-hook runs upon the last module to complete; if at
+    least one module does not run forward, the post-hook does not run
+    and ``_force_complete_incomplete_states`` handles that case from the
+    root's post-forward.
     """
     modules_set = set(modules)
 
@@ -503,8 +482,8 @@ def _register_group_forward_hooks(
         @functools.wraps(post_hook)
         def wrapped_post_hook(*args: Any, **kwargs: Any):
             # Skip if the set was already cleared by force-complete or
-            # finalize-backward, or if ``always_call=True`` double-fires
-            # during exception unwind. ``module not in`` covers both.
+            # the root post-backward callback, or if ``always_call=True``
+            # double-fires during exception unwind.
             if module not in modules_to_run:
                 return
             modules_to_run.remove(module)
