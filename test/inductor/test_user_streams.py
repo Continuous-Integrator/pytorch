@@ -1183,7 +1183,7 @@ with torch.cuda._DeviceGuard(0):
     from torch._dynamo.graph_bytecode_inputs import get_external_object_by_index
     stream1 = get_external_object_by_index(0)
     with torch.cuda.stream(stream1):
-        arg0_1 = copy_misaligned(arg0_1)
+        arg0_1 = copy_if_misaligned(arg0_1)
         buf0 = empty_strided_cuda((1024, ), (1, ), torch.float32)
         raw_stream = get_raw_stream(0)
         triton_kernel.run(arg0_1, buf0, 1024, stream=raw_stream)
@@ -1243,19 +1243,19 @@ class GraphModule(torch.nn.Module):
 
         synchronize_stream = torch.ops.streams.synchronize_stream(0);  synchronize_stream = None
         return (b,)
-""",  # noqa: B950
+""",
         )
 
         wrapper_body = _extract_wrapper_body(code)
         FileCheck().run(
             """\
 # CHECK: with torch.cuda.stream(default_stream):
-# CHECK: copy_misaligned
+# CHECK: copy_if_misaligned
 # CHECK: extern_kernels.mm(
 # CHECK: record_event
 # CHECK: with torch.cuda.stream(stream1):
 # CHECK: wait_event
-# CHECK: copy_misaligned
+# CHECK: copy_if_misaligned
 # CHECK: extern_kernels.mm(
 # CHECK: with torch.cuda.stream(default_stream):
 # CHECK: synchronize_stream""",
@@ -1337,24 +1337,24 @@ class GraphModule(torch.nn.Module):
 
         synchronize_stream_2 = torch.ops.streams.synchronize_stream(2);  synchronize_stream_2 = None
         return (c,)
-""",  # noqa: B950
+""",
         )
 
         wrapper_body = _extract_wrapper_body(code)
         FileCheck().run(
             """\
 # CHECK: with torch.cuda.stream(stream1):
-# CHECK: copy_misaligned
+# CHECK: copy_if_misaligned
 # CHECK: extern_kernels.mm(
 # CHECK: record_event
 # CHECK: with torch.cuda.stream(stream2):
 # CHECK: wait_event
-# CHECK: copy_misaligned
+# CHECK: copy_if_misaligned
 # CHECK: extern_kernels.mm(
 # CHECK: record_event
 # CHECK: with torch.cuda.stream(stream3):
 # CHECK: wait_event
-# CHECK: copy_misaligned
+# CHECK: copy_if_misaligned
 # CHECK: extern_kernels.mm(
 # CHECK: with torch.cuda.stream(default_stream):
 # CHECK: synchronize_stream
@@ -1430,18 +1430,18 @@ class GraphModule(torch.nn.Module):
 
         synchronize_stream_1 = torch.ops.streams.synchronize_stream(1);  synchronize_stream_1 = None
         return (c,)
-""",  # noqa: B950
+""",
         )
 
         wrapper_body = _extract_wrapper_body(code)
         FileCheck().run(
             """\
 # CHECK: with torch.cuda.stream(stream1):
-# CHECK: copy_misaligned
+# CHECK: copy_if_misaligned
 # CHECK: extern_kernels.mm(
 # CHECK: record_event
 # CHECK: with torch.cuda.stream(stream2):
-# CHECK: copy_misaligned
+# CHECK: copy_if_misaligned
 # CHECK: extern_kernels.mm(
 # CHECK: record_event
 # CHECK: with torch.cuda.stream(default_stream):
