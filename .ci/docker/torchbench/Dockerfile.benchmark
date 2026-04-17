@@ -16,14 +16,8 @@ ARG TORCHBENCH_IMAGE
 FROM ${TORCHBENCH_IMAGE} AS torchbench
 FROM ${BASE_IMAGE}
 
-USER root
-
 COPY --from=torchbench /torchbench /torchbench
 COPY --from=torchbench /opt/conda/envs/py_3.10/ /opt/conda/envs/py_3.10/
 
 ENV BUILD_AOT_INDUCTOR_TEST=yes
-
-RUN chown -R jenkins:jenkins /torchbench
-
-USER jenkins
 CMD ["bash"]
