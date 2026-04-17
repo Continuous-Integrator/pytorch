@@ -17,7 +17,13 @@ allows Dynamo to accurately trace and optimize Python code while preserving its 
 """
 
 from .base import VariableTracker
-from .builtin import BaseBuiltinVariable, BuiltinVariable, DictBuiltinVariable
+from .builtin import (
+    BaseBuiltinVariable,
+    BuiltinVariable,
+    DictBuiltinVariable,
+    IterBuiltinVariable,
+    ListBuiltinVariable,
+)
 from .constant import (
     CONSTANT_VARIABLE_FALSE,
     CONSTANT_VARIABLE_NONE,
@@ -52,14 +58,9 @@ from .dicts import (
     ConstDictVariable,
     DefaultDictVariable,
     DictItemsVariable,
-    DictKeySetVariable,
     DunderDictVariable,
-    FrozensetVariable,
     MappingProxyVariable,
     NNModuleHooksDictVariable,
-    OrderedSetClassVariable,
-    OrderedSetVariable,
-    SetVariable,
 )
 from .distributed import BackwardHookVariable, DistributedVariable
 from .functions import (
@@ -143,6 +144,13 @@ from .nn_module import (
 )
 from .optimizer import OptimizerVariable
 from .sdpa import SDPAParamsVariable
+from .sets import (
+    DictKeySetVariable,
+    FrozensetVariable,
+    OrderedSetClassVariable,
+    OrderedSetVariable,
+    SetVariable,
+)
 from .streams import (
     CudaStreamVariable,
     EventVariable,
@@ -164,9 +172,11 @@ from .user_defined import (
     InspectVariable,
     MutableMappingVariable,
     NamedTupleVariable,
+    OrderedDictVariable,
     RemovableHandleVariable,
     StructSequenceVariable,
     UserDefinedClassVariable,
+    UserDefinedConstantVariable,
     UserDefinedDictVariable,
     UserDefinedExceptionClassVariable,
     UserDefinedExceptionObjectVariable,
@@ -186,9 +196,6 @@ __all__ = [
     "BaseListVariable",
     "BuiltinVariable",
     "CatchWarningsCtxManagerVariable",
-    "CONSTANT_VARIABLE_FALSE",
-    "CONSTANT_VARIABLE_NONE",
-    "CONSTANT_VARIABLE_TRUE",
     "ConstantVariable",
     "ConstDictVariable",
     "DictBuiltinVariable",
@@ -213,6 +220,7 @@ __all__ = [
     "LambdaVariable",
     "LazyConstantVariable",
     "LazyVariableTracker",
+    "ListBuiltinVariable",
     "ListIteratorVariable",
     "ListVariable",
     "NestedUserFunctionVariable",
@@ -220,6 +228,7 @@ __all__ = [
     "NewGlobalVariable",
     "NNModuleVariable",
     "NumpyNdarrayVariable",
+    "OrderedDictVariable",
     "NumpyVariable",
     "OptimizerVariable",
     "PolyfilledFunctionVariable",

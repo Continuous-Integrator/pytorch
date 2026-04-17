@@ -78,10 +78,10 @@ def try_import_cutlass() -> bool:
     """
     if config.is_fbcode():
         try:
-            import cutlass_cppgen  # type: ignore[import-not-found]  # noqa: F401
+            import cutlass_cppgen  # type: ignore[import-not-found]
             import cutlass_library  # type: ignore[import-not-found]
         except ImportError as e:
-            log.warning(  # noqa: G200
+            log.warning(
                 "Failed to import CUTLASS packages in fbcode: %s, ignoring the CUTLASS backend.",
                 e,
             )
@@ -100,7 +100,12 @@ def try_import_cutlass() -> bool:
 
     # contains both cutlass and cutlass_library
     # we need cutlass for eVT
-    cutlass_python_path = path_join(config.cutlass.cutlass_dir, "python")
+    cutlass_dir = (
+        config.xpu.cutlass_dir
+        if torch.xpu._is_compiled()
+        else config.cutlass.cutlass_dir
+    )
+    cutlass_python_path = path_join(cutlass_dir, "python")
     torch_root = os.path.abspath(os.path.dirname(torch.__file__))
     mock_src_path = os.path.join(
         torch_root,
@@ -158,15 +163,15 @@ def try_import_cutlass() -> bool:
                 )
 
         try:
-            import cutlass_cppgen  # type: ignore[import-not-found]  # noqa: F401, F811
-            import cutlass_library.generator  # noqa: F401
-            import cutlass_library.library  # noqa: F401
+            import cutlass_cppgen  # type: ignore[import-not-found]  # noqa: F401
+            import cutlass_library.generator
+            import cutlass_library.library
             import cutlass_library.manifest  # noqa: F401
             import pycute  # type: ignore[import-not-found]  # noqa: F401
 
             return True
         except ImportError as e:
-            log.debug(  # noqa: G200
+            log.debug(
                 "Failed to import CUTLASS packages: %s, ignoring the CUTLASS backend.",
                 e,
             )

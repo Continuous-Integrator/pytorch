@@ -15,7 +15,7 @@ handling of iterator operations during code transformation and optimization.
 
 import itertools
 import sys
-from collections.abc import Callable, KeysView, Sequence
+from collections.abc import Callable, Sequence
 from typing import Any, TYPE_CHECKING
 
 from .. import graph_break_hints, polyfills, variables
@@ -34,7 +34,7 @@ from ..exc import (
 )
 from .base import ValueMutationNew, VariableTracker
 from .constant import ConstantVariable
-from .dicts import ConstDictVariable
+from .hashable import HashableTracker
 
 
 if TYPE_CHECKING:
@@ -278,10 +278,10 @@ class IteratorVariable(VariableTracker):
         self, tx: "InstructionTranslator", name: str
     ) -> "ConstantVariable":
         if name == "__iter__" or name == "__next__":
-            return variables.CONSTANT_VARIABLE_TRUE
+            return variables.ConstantVariable.create(True)
         return super().call_obj_hasattr(tx, name)
 
-    def tp_iter(self, tx: "InstructionTranslator") -> "VariableTracker":
+    def tp_iter_impl(self, tx: "InstructionTranslator") -> "VariableTracker":
         """Iterators are their own iterator."""
         return self
 
@@ -290,6 +290,9 @@ class RepeatIteratorVariable(IteratorVariable):
     def __init__(self, item: VariableTracker, **kwargs: Any) -> None:
         super().__init__(**kwargs)
         self.item = item
+
+    def python_type(self) -> type:
+        return itertools.repeat
 
     # Repeat needs no mutation, clone self
     def tp_iternext(self, tx: "InstructionTranslator") -> VariableTracker:
@@ -307,9 +310,6 @@ class RepeatIteratorVariable(IteratorVariable):
         codegen(self.item)
         codegen.extend_output(create_call_function(1, False))
 
-    def python_type(self) -> type:
-        return itertools.repeat
-
 
 class CountIteratorVariable(IteratorVariable):
     # advance_count tracks how many next() calls were made during tracing,
@@ -318,6 +318,9 @@ class CountIteratorVariable(IteratorVariable):
         "advance_count",
         *IteratorVariable._nonvar_fields,
     }
+
+    def python_type(self) -> type:
+        return itertools.count
 
     def __init__(
         self,
@@ -356,14 +359,14 @@ class CountIteratorVariable(IteratorVariable):
         codegen(self.step)
         codegen.extend_output(create_call_function(2, False))
 
-    def python_type(self) -> type:
-        return itertools.count
-
 
 class ZipVariable(IteratorVariable):
     """
     Represents zip(*iterables)
     """
+
+    # PyZip_Type: https://github.com/python/cpython/blob/v3.13.0/Python/bltinmodule.c#L3011
+    _cpython_type = zip
 
     _nonvar_fields = {
         "index",
@@ -428,7 +431,7 @@ class ZipVariable(IteratorVariable):
 
         idx: int | None = None
         try:
-            for idx, it in enumerate(self.iterables):  # noqa:B007
+            for idx, it in enumerate(self.iterables):
                 args.append(get_item(it))
         except ObservedUserStopIteration:
             if self.strict:
@@ -486,6 +489,9 @@ class MapVariable(ZipVariable):
     Represents map(fn, *iterables)
     """
 
+    # PyMap_Type: https://github.com/python/cpython/blob/v3.13.0/Python/bltinmodule.c#L1484
+    _cpython_type = map
+
     def __init__(
         self,
         fn: VariableTracker,
@@ -532,6 +538,9 @@ class FilterVariable(IteratorVariable):
     """
     Represents filter(fn, iterable)
     """
+
+    # PyFilter_Type: https://github.com/python/cpython/blob/v3.13.0/Python/bltinmodule.c#L630
+    _cpython_type = filter
 
     _nonvar_fields = {
         "index",
@@ -608,18 +617,42 @@ class FilterVariable(IteratorVariable):
         codegen.extend_output(create_call_function(2, False))
 
 
-class DictIterator(IteratorVariable):
+class DictViewIterator(IteratorVariable):
+    """Base class for dict view iterators (keys, values, or items)."""
+
+    _nonvar_fields = {
+        "view_type",
+        *IteratorVariable._nonvar_fields,
+    }
+
+    view_type: str = "keys"
+
     def __init__(
-        self, items: KeysView[ConstDictVariable._HashableTracker], **kwargs: Any
+        self,
+        items: dict[HashableTracker, VariableTracker],
+        **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
-        self.iter_items = iter(items)
+        if self.view_type == "keys":
+            self._iter = iter(items)
+        elif self.view_type == "values":
+            self._iter = iter(items.values())  # type: ignore[bad-assignment]
+        else:
+            assert self.view_type == "items"
+            self._iter = iter(items.items())  # type: ignore[bad-assignment]
 
     def tp_iternext(self, tx: "InstructionTranslator") -> VariableTracker:
         try:
-            return next(self.iter_items).vt
+            item = next(self._iter)
+
+            if self.view_type == "keys":
+                return item.vt
+            elif self.view_type == "values":
+                return item  # type: ignore[bad-return]
+            else:  # items
+                k, v = item  # type: ignore[not-iterable]
+                return VariableTracker.build(tx, (k.vt, v))
         except (RuntimeError, StopIteration) as e:
-            # RuntimeError can be raised if the dict is mutated during iteration
             raise_observed_exception(
                 type(e),
                 tx,
@@ -627,4 +660,34 @@ class DictIterator(IteratorVariable):
             )
 
     def python_type(self) -> type:
-        return type(iter({}))
+        if self.view_type == "keys":
+            return type(iter({}))
+        elif self.view_type == "values":
+            return type(iter({}.values()))
+        else:  # items
+            return type(iter({}.items()))
+
+
+class DictIterator(DictViewIterator):
+    _cpython_type = type(iter({}))
+    view_type = "keys"
+
+
+class DictKeysIterator(DictViewIterator):
+    _cpython_type = type(iter({}.keys()))
+    view_type = "keys"
+
+
+class DictValuesIterator(DictViewIterator):
+    _cpython_type = type(iter({}.values()))
+    view_type = "values"
+
+
+class DictItemsIterator(DictViewIterator):
+    _cpython_type = type(iter({}.items()))
+    view_type = "items"
+
+
+class SetIterator(DictViewIterator):
+    _cpython_type = type(iter(set()))
+    view_type = "keys"

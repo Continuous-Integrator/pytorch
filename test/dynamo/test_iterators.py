@@ -727,6 +727,13 @@ class CustomSetWithFilteredIter(set):
                 yield item
 
 
+class CustomSetWith123Iter(set):
+    def __iter__(self):
+        yield 1
+        yield 2
+        yield 3
+
+
 class CustomDictWithKeyLengthIter(dict):
     """Custom dict that only iterates keys with length > 1"""
 
@@ -788,6 +795,13 @@ class TestCustomIteratorMethods(torch._dynamo.test_case.TestCase):
         s = CustomSetWithFilteredIter([1, 2, 3, 4, 5, 6])
         result = sorted(s.__iter__())
         self.assertEqual(result, [2, 4, 6])
+
+    @make_dynamo_test
+    def test_custom_set_with_123_iter(self):
+        """Test custom set that only iterates even numbers"""
+        s = CustomSetWith123Iter([1, 2, 3, 4, 5, 6])
+        result = sorted(s.__iter__())
+        self.assertEqual(result, [1, 2, 3])
 
     @make_dynamo_test
     def test_custom_dict_with_key_length_iter(self):
@@ -1259,6 +1273,39 @@ class TestIterErrors(torch._dynamo.test_case.TestCase):
         it = iter([])
         result = next(it, "default")
         self.assertEqual(result, "default")
+
+    @make_dynamo_test
+    def test_error_on_dict_keys_mutation_during_iteration(self):
+        """Test that mutating a dict during iteration raises RuntimeError"""
+        d = {"a": 1, "b": 2, "c": 3}
+        it = iter(d.keys())
+        next(it)  # Get first key
+        # Mutate dict during iteration - should raise RuntimeError
+        with self.assertRaises(RuntimeError):
+            d["d"] = 4
+            next(it)
+
+    @make_dynamo_test
+    def test_error_on_dict_values_mutation_during_iteration(self):
+        """Test that mutating a dict during values() iteration raises RuntimeError"""
+        d = {"a": 1, "b": 2, "c": 3}
+        it = iter(d.values())
+        next(it)  # Get first value
+        # Mutate dict during iteration - should raise RuntimeError
+        with self.assertRaises(RuntimeError):
+            d["d"] = 4
+            next(it)
+
+    @make_dynamo_test
+    def test_error_on_dict_items_mutation_during_iteration(self):
+        """Test that mutating a dict during items() iteration raises RuntimeError"""
+        d = {"a": 1, "b": 2, "c": 3}
+        it = iter(d.items())
+        next(it)  # Get first item
+        # Mutate dict during iteration - should raise RuntimeError
+        with self.assertRaises(RuntimeError):
+            d["d"] = 4
+            next(it)
 
 
 if __name__ == "__main__":
