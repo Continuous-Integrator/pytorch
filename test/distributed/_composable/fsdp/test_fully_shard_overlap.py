@@ -560,9 +560,10 @@ class TestFullyShardHSDPStreamBehavior(FSDPTest):
             device_module._sleep(int(sleep_ms * get_cycles_per_ms()))
         device_module.current_stream().wait_stream(comm_stream)
 
-    def _make_hsdp_model_pair(
+    def _make_model_pair(
         self,
         *,
+        mesh_shape: tuple[int, ...] = (2, 2),
         n_layers: int = 2,
         dim: int = 4,
         mp: MixedPrecisionPolicy | None = None,
@@ -570,14 +571,16 @@ class TestFullyShardHSDPStreamBehavior(FSDPTest):
     ) -> tuple[nn.Module, nn.Module, torch.Tensor]:
         """Build a (ref, off, inp) triple where ``off`` has
         ``CPUOffloadPolicy`` and ``ref`` does not, with otherwise
-        identical init and topology on a 2×2 HSDP mesh. Returns an input
-        tensor in the param dtype.
+        identical init and topology on the given mesh shape. 1D ``(N,)``
+        shapes yield plain FSDP; 2D ``(R, S)`` shapes yield HSDP. Returns
+        an input tensor in the param dtype.
         """
         torch.manual_seed(42)
+        mesh_dim_names = (
+            ("fsdp",) if len(mesh_shape) == 1 else ("dp_replicate", "dp_shard")
+        )
         mesh = init_device_mesh(
-            device_type.type,
-            (2, 2),
-            mesh_dim_names=("dp_replicate", "dp_shard"),
+            device_type.type, mesh_shape, mesh_dim_names=mesh_dim_names
         )
         param_dtype = mp.param_dtype if mp is not None else torch.float32
         torch.manual_seed(0)
@@ -1123,7 +1126,7 @@ class TestFullyShardHSDPStreamBehavior(FSDPTest):
         mp = MixedPrecisionPolicy(
             param_dtype=torch.bfloat16, reduce_dtype=torch.float32
         )
-        _, off, inp = self._make_hsdp_model_pair(n_layers=3, mp=mp)
+        _, off, inp = self._make_model_pair(n_layers=3, mp=mp)
         # Warmup (lazy init)
         off(inp).sum().backward()
         off.zero_grad(set_to_none=True)
@@ -1144,7 +1147,7 @@ class TestFullyShardHSDPStreamBehavior(FSDPTest):
         mp = MixedPrecisionPolicy(
             param_dtype=torch.bfloat16, reduce_dtype=torch.float32
         )
-        _, off, inp = self._make_hsdp_model_pair(n_layers=3, mp=mp)
+        _, off, inp = self._make_model_pair(n_layers=3, mp=mp)
         off(inp).sum().backward()  # warmup
         off.zero_grad(set_to_none=True)
 
@@ -1277,7 +1280,7 @@ class TestFullyShardHSDPStreamBehavior(FSDPTest):
         mp = MixedPrecisionPolicy(
             param_dtype=torch.bfloat16, reduce_dtype=torch.float32
         )
-        ref, off, inp = self._make_hsdp_model_pair(
+        ref, off, inp = self._make_model_pair(
             n_layers=3, mp=mp, reshard_after_forward=False
         )
         ref(inp).sum().backward()
@@ -1393,7 +1396,7 @@ class TestFullyShardHSDPStreamBehavior(FSDPTest):
         mp = MixedPrecisionPolicy(
             param_dtype=torch.bfloat16, reduce_dtype=torch.float32
         )
-        ref, off, inp1 = self._make_hsdp_model_pair(n_layers=2, mp=mp)
+        ref, off, inp1 = self._make_model_pair(n_layers=2, mp=mp)
         inp2 = torch.randn(inp1.shape, device=inp1.device, dtype=inp1.dtype)
         off.set_is_last_backward(False)
         ref(inp1).sum().backward()
@@ -1471,7 +1474,7 @@ class TestFullyShardHSDPStreamBehavior(FSDPTest):
         mp = MixedPrecisionPolicy(
             param_dtype=torch.bfloat16, reduce_dtype=torch.float32
         )
-        ref, off, inp = self._make_hsdp_model_pair(n_layers=2, mp=mp)
+        ref, off, inp = self._make_model_pair(n_layers=2, mp=mp)
         off._set_unshard_async_op(True)
         ref(inp).sum().backward()
         off(inp).sum().backward()
@@ -1480,28 +1483,35 @@ class TestFullyShardHSDPStreamBehavior(FSDPTest):
     @skip_if_lt_x_gpu(4)
     @unittest.skipIf(TEST_HPU, "Sleep is not supported on HPU")
     def test_three_fsdp_roots_sharing_mesh(self):
-        """(22) Three independent FSDP roots on the same HSDP mesh. Each
-        root has its own comm_ctx, but they share the underlying
-        ProcessGroups. Serial backward (i.e., running backward on each
-        root one after the other) must not cross-contaminate comm_ctx
-        state — a pre-condition for the single-slot invariants of
-        ``mp_cast_all_reduce_state`` and ``grad_offload_state``."""
+        """(22) Three independent FSDP roots on the same mesh. Each root
+        has its own comm_ctx, but they share the underlying
+        ProcessGroups. Serial backward must not cross-contaminate
+        comm_ctx state — a pre-condition for the single-slot invariants
+        of ``mp_cast_all_reduce_state`` and ``grad_offload_state``.
+        Parameterized over 1D FSDP and HSDP 2×2: the invariant is mesh-
+        agnostic, and the HSDP case additionally exercises the
+        single-slot fields that only exist there."""
+        self.run_subtests(
+            {"mesh_shape": [(self.world_size,), (2, 2)]},
+            self._test_three_fsdp_roots_sharing_mesh,
+        )
+
+    def _test_three_fsdp_roots_sharing_mesh(self, mesh_shape: tuple[int, ...]):
         mp = MixedPrecisionPolicy(
             param_dtype=torch.bfloat16, reduce_dtype=torch.float32
         )
-        # Four structurally identical offloaded roots on the same mesh.
-        # Reuse the pair helper four times (ref is discarded each time;
-        # we keep only the offloaded models).
-        _, ref, inp = self._make_hsdp_model_pair(n_layers=2, mp=mp)
-        models = [self._make_hsdp_model_pair(n_layers=2, mp=mp)[1] for _ in range(3)]
-
+        _, ref, inp = self._make_model_pair(mesh_shape=mesh_shape, mp=mp)
+        models = [
+            self._make_model_pair(mesh_shape=mesh_shape, mp=mp)[1]
+            for _ in range(3)
+        ]
         ref(inp).sum().backward()
         for m in models:
             m(inp).sum().backward()
-
+        tag = f"mesh_shape={mesh_shape} "
         for i, m in enumerate(models):
-            self._assert_grad_parity(ref, m, msg_tag=f"root {i} vs ref: ")
-            self._assert_comm_ctx_drained(m, msg_tag=f"root {i}: ")
+            self._assert_grad_parity(ref, m, msg_tag=f"{tag}root {i} vs ref: ")
+            self._assert_comm_ctx_drained(m, msg_tag=f"{tag}root {i}: ")
 
     @skip_if_lt_x_gpu(4)
     @unittest.skipIf(TEST_HPU, "Sleep is not supported on HPU")
@@ -1518,7 +1528,7 @@ class TestFullyShardHSDPStreamBehavior(FSDPTest):
         mp = MixedPrecisionPolicy(
             param_dtype=torch.bfloat16, reduce_dtype=torch.float32
         )
-        ref, off, inp = self._make_hsdp_model_pair(n_layers=3, mp=mp)
+        ref, off, inp = self._make_model_pair(n_layers=3, mp=mp)
         ref(inp).sum().backward()
         off(inp).sum().backward()
         self._assert_grad_parity(ref, off, msg_tag="HSDP+MP+offload combined: ")
