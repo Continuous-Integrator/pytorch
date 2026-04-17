@@ -120,6 +120,14 @@ struct THPFunction {
   // https://github.com/pytorch/pytorch/pull/98659#pullrequestreview-1376822560
   bool materialize_non_diff_grads;
 
+  // When true, PyNode::apply passes grads as a single mutable list argument
+  // instead of individual args in an immutable tuple, allowing backward to
+  // free individual grads mid-execution and reduce peak memory.
+  // Used by pt2 compiled AutogradFunctions: the standard calling convention
+  // keeps a reference to all grads (via the immutable args tuple) for the
+  // entire backward, preventing deallocation after last use.
+  bool boxed_grads_call = false;
+
   PyObject* compiled_autograd_backward_state;
   std::vector<c10::SymInt> compiled_autograd_symints;
 
@@ -129,6 +137,10 @@ struct THPFunction {
   // For each input, true if the input is a THPVariable
   std::vector<bool> is_variable_input;
   char has_freed_buffers;
+
+  // Flag for clear_saved_tensors_on_access feature
+  bool clear_saved_tensors_on_access;
+  bool saved_tensors_accessed_and_cleared;
 
   PyObject* saved_for_forward;
   // The actual PyNode (in the autograd graph) that this data was

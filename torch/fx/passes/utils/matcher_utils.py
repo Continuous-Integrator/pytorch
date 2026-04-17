@@ -1,10 +1,9 @@
-# mypy: allow-untyped-defs
 import copy
 import logging
 import os
 from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import Any, Union
+from typing import Any
 
 import torch
 from torch.fx import Graph, Node
@@ -15,7 +14,7 @@ __all__ = ["SubgraphMatcher", "InternalMatch"]
 
 
 # Set`PYTORCH_MATCHER_LOGLEVEL=INFO` to see debug logs
-def _init_logger():
+def _init_logger() -> logging.Logger:
     logger = logging.getLogger(__name__)
 
     level = os.environ.get("PYTORCH_MATCHER_LOGLEVEL", "WARNING").upper()
@@ -51,7 +50,7 @@ class InternalMatch:
     # only available if the matcher is `SubgraphMatcherWithNameNodesMap`
     name_node_map: dict[str, Node] = field(default_factory=dict)
 
-    def __copy__(self):
+    def __copy__(self) -> "InternalMatch":
         return InternalMatch(
             anchors=self.anchors,
             nodes_map=self.nodes_map.copy(),
@@ -96,9 +95,10 @@ class SubgraphMatcher:
 
         for node in pattern.nodes:
             if node.op != "output" and not node.is_impure():
-                assert len(node.users) > 0, (
-                    "SubgraphMatcher cannot be initialized with an pattern with dead code"
-                )
+                if len(node.users) == 0:
+                    raise AssertionError(
+                        "SubgraphMatcher cannot be initialized with an pattern with dead code"
+                    )
 
         # TODO: assert pattern is a connected graph
 
@@ -121,8 +121,10 @@ class SubgraphMatcher:
 
     def _match_attributes(self, pn: Node, gn: Node) -> bool:
         # Attributes matching is complicated. Right now we only support matching constant tensor
-        assert isinstance(pn.target, str), f"pn.target {pn.target} must be a string."
-        assert isinstance(gn.target, str), f"gn.target {gn.target} must be a string."
+        if not isinstance(pn.target, str):
+            raise AssertionError(f"pn.target {pn.target} must be a string.")
+        if not isinstance(gn.target, str):
+            raise AssertionError(f"gn.target {gn.target} must be a string.")
 
         pn_value = torch.fx.graph_module._get_attr(pn.graph.owning_module, pn.target)
         gn_value = torch.fx.graph_module._get_attr(gn.graph.owning_module, gn.target)
@@ -135,6 +137,7 @@ class SubgraphMatcher:
             return isinstance(gn_value, torch.Tensor)
         else:
             raise RuntimeError(f"Unsupported type {pn_value} when matching attributes")
+        # pyrefly: ignore [unreachable]
         return False
 
     def _nodes_are_equal(self, pn: Node, gn: Node, node_name_match: str = "") -> bool:
@@ -195,9 +198,8 @@ class SubgraphMatcher:
         return non_overlapping_matches
 
     def _match_literals(self, pn: Any, gn: Any, match: InternalMatch) -> bool:
-        assert not (isinstance(pn, Node) and isinstance(gn, Node)), (
-            "pn and gn cannot both be Node"
-        )
+        if isinstance(pn, Node) and isinstance(gn, Node):
+            raise AssertionError("pn and gn cannot both be Node")
 
         if isinstance(pn, Node) and not isinstance(gn, Node):
             if pn.op == "placeholder":
@@ -220,9 +222,8 @@ class SubgraphMatcher:
     ) -> bool:
         logger.info("  matching %s to %s", pn, gn)
 
-        assert isinstance(pn, Node) and isinstance(gn, Node), str(
-            f"pn and gn must be Node, pn: {pn}, gn: {gn}"
-        )
+        if not (isinstance(pn, Node) and isinstance(gn, Node)):
+            raise AssertionError(f"pn and gn must be Node, pn: {pn}, gn: {gn}")
 
         # Check if we've already matched these nodes in the current
         # traversal
@@ -249,7 +250,9 @@ class SubgraphMatcher:
         # match for `gn`
         match_found = True
 
-        def _match_args(args1: Union[list, tuple], args2: Union[list, tuple]) -> bool:
+        def _match_args(
+            args1: list[Any] | tuple[Any, ...], args2: list[Any] | tuple[Any, ...]
+        ) -> bool:
             if len(args1) != len(args2):
                 return False
 
@@ -269,7 +272,8 @@ class SubgraphMatcher:
             return True
 
         # Flatten all args/kwargs into 1 list of args
-        pn_args, gn_args = None, None
+        pn_args: list[Any] | None = None
+        gn_args: list[Any] | None = None
         if (
             (
                 len(pn.args) != len(gn.args)
@@ -280,7 +284,9 @@ class SubgraphMatcher:
         ):
             args_schema = pn.target._schema.arguments
 
-            def get_all_arguments(orig_args, orig_kwargs):
+            def get_all_arguments(
+                orig_args: tuple[Any, ...], orig_kwargs: dict[str, Any]
+            ) -> list[Any]:
                 all_args = []
                 for i, schema in enumerate(args_schema):
                     if schema.name in orig_kwargs:
@@ -368,7 +374,7 @@ class SubgraphMatcher:
 
         matches: list[InternalMatch] = []
 
-        def backtracking(anchor_index, match):
+        def backtracking(anchor_index: int, match: InternalMatch) -> None:
             if anchor_index == len(match_candidates_list):
                 match.placeholder_nodes = [
                     match.nodes_map[pn] for pn in self.pattern_placeholder_nodes
@@ -416,7 +422,7 @@ class SubgraphMatcher:
             )
 
         # filter out the matches that form a cycle if the subgraph is fused
-        valid_matches = []
+        valid_matches: list[InternalMatch] = []
         for match in matches:
             matched_compute_nodes = [
                 gn
