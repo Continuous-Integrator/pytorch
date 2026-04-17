@@ -4064,8 +4064,7 @@
   structured: True
   device_check: NoCheck   # TensorIterator
   dispatch:
-    CPU, CUDA: mean_out
-    MPS: mean_out_mps
+    CPU, CUDA, MPS: mean_out
     QuantizedCPU: mean_out_quantized_cpu
   tags: reduction
 

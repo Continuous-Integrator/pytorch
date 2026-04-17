@@ -56,12 +56,10 @@ enum MPSReductionType {
   MIN,
   AMAX,
   AMIN,
-  SUM,
   PROD,
   MEAN,
   COUNT_NONZERO,
   TRACE,
-  NANSUM,
 };
 
 static void set_apparent_shapes(NSMutableArray<NSNumber*>*& apparent_out_shape,
@@ -205,8 +203,6 @@ static void reduction_out_mps(const Tensor& input_t,
       case MPSReductionType::MEAN:
         output_t.fill_(std::numeric_limits<float>::quiet_NaN());
         break;
-      case MPSReductionType::SUM:
-      case MPSReductionType::NANSUM:
       case MPSReductionType::COUNT_NONZERO:
         output_t.zero_();
         break;
@@ -250,9 +246,7 @@ static void reduction_out_mps(const Tensor& input_t,
 
       MPSGraphTensor* castOutputTensor = nil;
 
-      if (reduction_type == MPSReductionType::SUM) {
-        castOutputTensor = [mpsGraph reductionSumWithTensor:castInputTensor axes:wrappedAxes name:nil];
-      } else if (reduction_type == MPSReductionType::PROD) {
+      if (reduction_type == MPSReductionType::PROD) {
         castOutputTensor = [mpsGraph reductionProductWithTensor:castInputTensor axes:wrappedAxes name:nil];
       } else if (reduction_type == MPSReductionType::MEAN) {
         castOutputTensor = [mpsGraph meanOfTensor:castInputTensor axes:wrappedAxes name:nil];
@@ -272,23 +266,6 @@ static void reduction_out_mps(const Tensor& input_t,
                                                                  numUpper:0
                                                                      name:nil];
         castOutputTensor = [mpsGraph reductionSumWithTensor:bandPartWithTensor axes:@[ @0, @1 ] name:nil];
-      } else if (reduction_type == MPSReductionType::NANSUM) {
-        // Integral types cannot contain NaN, so just do regular sum
-        if (([castInputTensor dataType] & MPSDataTypeFloatBit) == 0) {
-          castOutputTensor = [mpsGraph reductionSumWithTensor:castInputTensor axes:wrappedAxes name:nil];
-        } else {
-          // Create a 0 tensor of the same shape as inputTensor
-          auto zeros = [mpsGraph constantWithScalar:0.0 dataType:castInputTensor.dataType];
-          // Find NaNs
-          auto nanMask = [mpsGraph isNaNWithTensor:castInputTensor name:nil];
-          // Replace NaNs with 0
-          auto nanReplaced = [mpsGraph selectWithPredicateTensor:nanMask
-                                             truePredicateTensor:zeros
-                                            falsePredicateTensor:castInputTensor
-                                                            name:nil];
-          // Sum
-          castOutputTensor = [mpsGraph reductionSumWithTensor:nanReplaced axes:wrappedAxes name:nil];
-        }
       }
 
       MPSGraphTensor* outputTensor = castOutputTensor;
@@ -1101,6 +1078,13 @@ static void nansum_kernel_mps(TensorIterator& iter) {
   sum_nansum_kernel_mps(iter, is_float ? "nansum_" : "sum_");
 }
 
+static void mean_kernel_mps(TensorIterator& iter) {
+  sum_nansum_kernel_mps(iter, "sum_");
+  auto output = iter.output(0);
+  auto reduction_size = iter.input(0).numel() / output.numel();
+  output.div_(reduction_size);
+}
+
 } // namespace mps
 
 using namespace mps;
@@ -1200,15 +1184,6 @@ Tensor count_nonzero_mps(const Tensor& self, IntArrayRef dims) {
                     "count_nonzero_mps");
 
   return output_t;
-}
-
-TORCH_IMPL_FUNC(mean_out_mps)
-(const Tensor& input_t,
- OptionalIntArrayRef opt_dim,
- bool keepdim,
- std::optional<ScalarType> dtype,
- const Tensor& output_t) {
-  reduction_out_mps(input_t, opt_dim, keepdim, dtype, output_t, MPSReductionType::MEAN, "mean_out_mps");
 }
 
 Tensor _cdist_forward_mps(const Tensor& x1, const Tensor& x2, const double p, std::optional<int64_t> compute_mode) {
@@ -1700,5 +1675,6 @@ std::tuple<Tensor, Tensor> var_mean_mps(const Tensor& self,
 REGISTER_DISPATCH(norm_stub, &mps::norm_kernel_mps)
 REGISTER_DISPATCH(sum_stub, &mps::sum_kernel_mps)
 REGISTER_DISPATCH(nansum_stub, &mps::nansum_kernel_mps)
+REGISTER_DISPATCH(mean_stub, &mps::mean_kernel_mps)
 
 } // namespace at::native
