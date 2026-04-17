@@ -912,10 +912,10 @@ static void sum_nansum_kernel_mps(TensorIterator& iter, const std::string& kerne
   // (reduced dims have size 1 in output)
   TORCH_INTERNAL_ASSERT(output.dim() == input.dim());
 
-  constexpr uint32_t NCHAINS = 4;
+  constexpr uint32_t NCHAINS = SUM_NCHAINS;
 
-  auto kernel_name = fmt::format(
-      "{}reduction_{}_{}_{}", kernel_prefix, scalarToMetalTypeString(input), scalarToMetalTypeString(output), NCHAINS);
+  auto kernel_name =
+      fmt::format("{}reduction_{}_{}", kernel_prefix, scalarToMetalTypeString(input), scalarToMetalTypeString(output));
 
   MPSStream* stream = getCurrentMPSStream();
 
@@ -931,9 +931,8 @@ static void sum_nansum_kernel_mps(TensorIterator& iter, const std::string& kerne
     uint32_t elems_per_group = (reduction_size + num_groups - 1) / num_groups;
 
     auto out_metal = scalarToMetalTypeString(output);
-    auto p1_kernel =
-        fmt::format("{}reduction_{}_{}_{}", kernel_prefix, scalarToMetalTypeString(input), out_metal, NCHAINS);
-    auto p2_kernel = fmt::format("{}reduction_{}_{}_{}", kernel_prefix, out_metal, out_metal, NCHAINS);
+    auto p1_kernel = fmt::format("{}reduction_{}_{}", kernel_prefix, scalarToMetalTypeString(input), out_metal);
+    auto p2_kernel = fmt::format("{}reduction_{}_{}", kernel_prefix, out_metal, out_metal);
 
     // Model as 2D: input is [num_groups, elems_per_group], reduce dim=1
     // Dim 0 (non-reduced): size=num_groups, input_stride=elems_per_group, output_stride=1
