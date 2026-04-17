@@ -15,6 +15,7 @@ from ..graph_bytecode_inputs import (
     get_external_object_by_index,
     register_graph_created_object,
     register_user_object,
+    reset_user_object_tracking,
 )
 from ..source import CurrentStreamSource
 from .base import VariableTracker
@@ -267,6 +268,8 @@ class SymbolicStreamState:
 
         cur_stack: list[StreamVariable] = []
         if torch.accelerator.is_available():
+            # Reset the registry so the current stream is guaranteed index 0.
+            reset_user_object_tracking()
             stream = torch.accelerator.current_stream()
             source = CurrentStreamSource(stream.device)
             # Register the current stream so it gets index 0 (registry is
