@@ -1975,26 +1975,6 @@
       ]
     }
   ],
-  "GB2738": [
-    {
-      "Gb_type": "hasattr() with non-constant name argument",
-      "Context": "hasattr({obj}, {attr})",
-      "Explanation": "hasattr() with non-constant name argument is not supported",
-      "Hints": [
-        "Ensure the name argument of hasattr() is a string"
-      ]
-    }
-  ],
-  "GB9522": [
-    {
-      "Gb_type": "hasattr() on unsupported type",
-      "Context": "hasattr({obj}, {attr})",
-      "Explanation": "hasattr() is not supported on type {type(obj).__name__}",
-      "Hints": [
-        "It may be possible to write Dynamo tracing rules for this code. Please report an issue to PyTorch if you encounter this graph break often and it is causing performance issues."
-      ]
-    }
-  ],
   "GB0156": [
     {
       "Gb_type": "Unsupported method call",
