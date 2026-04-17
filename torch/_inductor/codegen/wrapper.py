@@ -15,7 +15,7 @@ import re
 import tempfile
 from collections.abc import Callable
 from itertools import chain, count
-from typing import Any, TYPE_CHECKING
+from typing import Any, Protocol, TYPE_CHECKING
 
 import sympy
 from sympy import Expr
@@ -51,6 +51,7 @@ from ..stream_constants import DEFAULT_STREAM, DEFAULT_STREAM_IDX, STREAM_NAME_T
 from ..stream_utils import get_stream_name
 from ..utils import (
     cache_on_self,
+    DeferredLineBase,
     DelayReplaceLine,
     get_benchmark_name,
     get_dtype_size,
@@ -93,7 +94,7 @@ log = logging.getLogger(__name__)
 pexpr = PythonPrinter().doprint
 
 
-ReuseKey = tuple[torch.device, torch.dtype, str, bool]
+ReuseKey = tuple[torch.device, torch.dtype, str, bool, int]
 CommBufferReuseKey = tuple[torch.device, torch.dtype, str, "ir.CommBufferType", str]
 BufferLike = ir.Buffer | WorkspaceArg
 FxConversionFunc = Callable[["WrapperLine"], None]
@@ -102,6 +103,7 @@ FxConversionFunc = Callable[["WrapperLine"], None]
 def buffer_reuse_key(node: BufferLike) -> ReuseKey:
     storage_size = V.graph.get_allocation_storage_size(node)
     alignment = node.get_name() not in V.graph.unaligned_buffers
+    stream = V.graph.scheduler.get_buf_stream(node.get_name())
     return (
         node.get_device_or_error(),
         node.get_dtype(),
@@ -110,6 +112,7 @@ def buffer_reuse_key(node: BufferLike) -> ReuseKey:
         # size hint
         sympy_str(V.graph.sizevars.simplify(storage_size)),
         alignment,
+        stream,
     )
 
 
@@ -473,6 +476,10 @@ class MemoryPlanningState:
     ) -> None:
         assert not item.is_reused
         self.comm_buffer_reuse_pool[key].append(item)
+
+
+class HasWriteLine(Protocol):
+    def writeline(self, line: LineContext | DeferredLineBase | str) -> None: ...
 
 
 class WrapperLine:
@@ -917,26 +924,10 @@ class AllocateLine(MemoryPlanningLine):
             return self
 
         # Regular buffer reuse
+        # Stream is part of the key, so cross-stream reuse is naturally prevented.
         key = buffer_reuse_key(self.node)
         if config.allow_buffer_reuse and key in state:
             free_line = state.pop(key)
-            # In multi-stream graphs, only reuse buffers from the same stream
-            # to avoid races where a stream is still reading a buffer whose
-            # memory slot gets reused by a different stream.
-            if V.graph.scheduler._has_multi_stream_nodes():
-                alloc_stream = V.graph.scheduler.buff_to_stream.get(
-                    self.node.get_name()
-                )
-                free_stream = V.graph.scheduler.buff_to_stream.get(
-                    free_line.node.get_name()
-                )
-                if (
-                    alloc_stream is not None
-                    and free_stream is not None
-                    and alloc_stream != free_stream
-                ):
-                    state.push(key, free_line)
-                    return self
             size = V.graph.sizevars.optimization_hint(
                 V.graph.get_allocation_storage_size(self.node), fallback=0
             ) * get_dtype_size(self.node.get_dtype())
@@ -1221,12 +1212,15 @@ class UnbackedSymbolDefsLine(WrapperLine):
 
 @dataclasses.dataclass
 class AssertSizeStrideLine(WrapperLine):
+    wrapper: PythonWrapperCodegen
     name: str
     size: str
     stride: str
 
     def codegen(self, code: IndentedBuffer) -> None:
-        code.writeline(f"assert_size_stride({self.name}, {self.size}, {self.stride})")
+        self.wrapper.write_assert_size_stride(
+            self.name, self.size, self.stride, "input"
+        )
 
     @staticmethod
     def codegen_fx(converter: FxConverter) -> FxConversionFunc:
@@ -1485,6 +1479,7 @@ class PythonWrapperCodegen(CodeGen):
         self.kernel_autotune_defs.splice(
             f"""
                 import torch
+                from math import inf, nan
                 from torch._dynamo.testing import rand_strided
                 from torch._dynamo.utils import preserve_rng_state
                 from torch._inductor.select_algorithm import AlgorithmSelectorCache
@@ -1593,8 +1588,8 @@ class PythonWrapperCodegen(CodeGen):
             # comparing strides for 0 size tensor is tricky. Ignore them for now.
             if sympy_product(buf.get_size()) == 0:
                 continue
-            size = self.codegen_python_shape_tuple(buf.get_size())
-            stride = self.codegen_python_shape_tuple(buf.get_stride())
+            size = self.codegen_shape_tuple(buf.get_size())
+            stride = self.codegen_shape_tuple(buf.get_stride())
             self._pending_input_asserts[name] = (size, stride)
 
     def codegen_input_nan_asserts(self) -> None:
@@ -1695,7 +1690,23 @@ class PythonWrapperCodegen(CodeGen):
         for name in input_names:
             if name in self._pending_input_asserts:
                 size, stride = self._pending_input_asserts.pop(name)
-                self.writeline(AssertSizeStrideLine(name, size, stride))
+                self.writeline(AssertSizeStrideLine(self, name, size, stride))
+
+    def write_assert_size_stride(
+        self, name: str, size: str, stride: str, op_name: str
+    ) -> None:
+        if V.graph.cpp_wrapper:
+            stmt = f'assert_size_stride({name}, {size}, {stride}, "{op_name}");'
+            if V.graph.aot_mode:
+                if V.graph.is_const_graph:
+                    return
+                self.writeline(
+                    f"if (_check_aoti_runtime_check_inputs_env()) {{ {stmt} }}"
+                )
+            else:
+                self.writeline(stmt)
+        else:
+            self.writeline(f"assert_size_stride({name}, {size}, {stride}, {op_name!r})")
 
     def register_alignment_check_inputs(self) -> None:
         """Populate pending alignment copies for non-mutated inputs.
@@ -3295,9 +3306,7 @@ class PythonWrapperCodegen(CodeGen):
                 self.writeline(self.wrap_kernel_call(kernel_name, call_args))
             elif device.type == "mps":
                 # TODO: Fix me, MPS does not expose streams now
-                self.writeline(
-                    self.wrap_kernel_call(f"{kernel_name}.generated_kernel", call_args)
-                )
+                self.writeline(self.wrap_kernel_call(kernel_name, call_args))
             else:
                 raise RuntimeError(f"device {device.type} nyi")
             return
