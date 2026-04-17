@@ -44,13 +44,6 @@ except (unittest.SkipTest, ImportError) as e:
         sys.exit(0)
     raise
 
-if torch.version.hip:
-    if __name__ == "__main__":
-        sys.exit(0)
-    raise unittest.SkipTest(
-        "PR180277 will fix the combo-kernel hip config issue on ROCm"
-    )
-
 
 @instantiate_parametrized_tests
 class ComboKernelTests(TestCase):
@@ -624,6 +617,32 @@ class ComboKernelTests(TestCase):
             self.assertEqual(
                 torch._inductor.metrics.generated_kernel_count, expected_kernel_count
             )
+
+    # waves_per_eu, matrix_instr_nonkdim, and kpack are HIP-only Triton
+    # compile options, so only ROCm exercises this combo-kernel rewrite path.
+    @unittest.skipIf(not torch.version.hip, "ROCm only")
+    @requires_gpu_and_triton
+    @parametrize("max_autotune", [False, True])
+    def test_combo_kernel_amd_special_config_args(self, max_autotune):
+        if not torch._inductor.config.combo_kernel_per_subkernel_blocks:
+            self.skipTest("requires combo_kernel_per_subkernel_blocks")
+
+        def fn(a, b):
+            return a * 2.0, b + 1.0
+
+        inps = [
+            torch.rand(1024, device=GPU_TYPE),
+            torch.rand(1024, device=GPU_TYPE),
+        ]
+        out_eager = fn(*inps)
+
+        torch._inductor.metrics.reset()
+        with torch._inductor.config.patch("max_autotune", max_autotune):
+            fn_c = torch.compile(fn)
+            out_compiled, _ = run_and_get_code(fn_c, *inps)
+
+        self.assertEqual(out_eager, out_compiled)
+        self.assertEqual(torch._inductor.metrics.generated_kernel_count, 1)
 
     @skipIfXpu(msg="Profiler JSON traceEvents is not supported on XPU")
     @requires_gpu_and_triton

@@ -546,7 +546,7 @@ class TensorVariable(VariableTracker):
                 tx, [self, VariableTracker.build(tx, name)], {}
             )
             # in the event that TensorVariable returns NotImplemented
-            # BuiltinVariable.call_getattr returns GetAttrVariable
+            # GetAttrBuiltinVariable.call_function returns GetAttrVariable
             ret_val = not isinstance(var, GetAttrVariable)
         except (AttributeError, ObservedAttributeError):
             ret_val = False
@@ -2638,7 +2638,7 @@ class UntypedStorageVariable(VariableTracker):
         args: list[VariableTracker],
         kwargs: dict[str, VariableTracker],
     ) -> VariableTracker:
-        if name in ("size", "nbytes"):
+        if name == "size":
             if args or kwargs:
                 raise_args_mismatch(
                     tx,
