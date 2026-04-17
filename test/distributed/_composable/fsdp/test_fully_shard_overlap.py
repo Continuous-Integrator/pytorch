@@ -665,8 +665,8 @@ class TestFullyShardHSDPStreamBehavior(FSDPTest):
                     )
                 if mp_cast:
                     self.assertIsNone(
-                        ctx.mp_cast_all_reduce_state,
-                        f"{msg_tag}mp_cast_all_reduce_state leaked",
+                        ctx.all_reduce_state,
+                        f"{msg_tag}all_reduce_state leaked",
                     )
                 if grad_offload:
                     self.assertIsNone(
@@ -1120,9 +1120,9 @@ class TestFullyShardHSDPStreamBehavior(FSDPTest):
     def test_multi_iteration_no_comm_state_leak(self):
         """(13) Across iterations, every cross-layer comm_ctx slot must be
         drained — ``reduce_scatter_states``, ``all_gather_state``,
-        ``mp_cast_all_reduce_state``, ``grad_offload_state``. Regression
-        guard for iteration-boundary leaks like #179128. Uses HSDP + bf16
-        mp + CPU offload so all four slots are exercised."""
+        ``all_reduce_state``, ``grad_offload_state``. Regression guard for
+        iteration-boundary leaks like #179128. Uses HSDP + bf16 mp + CPU
+        offload so all four slots are exercised."""
         mp = MixedPrecisionPolicy(
             param_dtype=torch.bfloat16, reduce_dtype=torch.float32
         )
@@ -1139,7 +1139,7 @@ class TestFullyShardHSDPStreamBehavior(FSDPTest):
     @unittest.skipIf(TEST_HPU, "Sleep is not supported on HPU")
     def test_exception_in_backward_does_not_leak_comm_state(self):
         """(14) An exception raised mid-backward must not leave
-        ``comm_ctx.mp_cast_all_reduce_state`` or ``comm_ctx.grad_offload_state``
+        ``comm_ctx.all_reduce_state`` or ``comm_ctx.grad_offload_state``
         pointing at a dangling GPU buffer. Both fields are single shared
         slots on comm_ctx; a missed cleanup would persist across
         iterations. Uses HSDP + bf16 mp + CPU offload so both slots are
@@ -1487,7 +1487,7 @@ class TestFullyShardHSDPStreamBehavior(FSDPTest):
         has its own comm_ctx, but they share the underlying
         ProcessGroups. Serial backward must not cross-contaminate
         comm_ctx state — a pre-condition for the single-slot invariants
-        of ``mp_cast_all_reduce_state`` and ``grad_offload_state``.
+        of ``all_reduce_state`` and ``grad_offload_state``.
         Parameterized over 1D FSDP and HSDP 2×2: the invariant is mesh-
         agnostic, and the HSDP case additionally exercises the
         single-slot fields that only exist there."""
@@ -1502,8 +1502,7 @@ class TestFullyShardHSDPStreamBehavior(FSDPTest):
         )
         _, ref, inp = self._make_model_pair(mesh_shape=mesh_shape, mp=mp)
         models = [
-            self._make_model_pair(mesh_shape=mesh_shape, mp=mp)[1]
-            for _ in range(3)
+            self._make_model_pair(mesh_shape=mesh_shape, mp=mp)[1] for _ in range(3)
         ]
         ref(inp).sum().backward()
         for m in models:
@@ -1517,7 +1516,7 @@ class TestFullyShardHSDPStreamBehavior(FSDPTest):
     @unittest.skipIf(TEST_HPU, "Sleep is not supported on HPU")
     def test_hsdp_mp_offload_combined_lifetime(self):
         """(15) HSDP + ``MixedPrecisionPolicy(bf16, fp32)`` + ``CPUOffloadPolicy``
-        is the only config where both ``mp_cast_all_reduce_state`` and
+        is the only config where both ``all_reduce_state`` and
         ``grad_offload_state`` comm_ctx slots are populated simultaneously.
         Both drain paths use ``del prev_<state> inside
         with stream(all_reduce_stream):`` — a subtle ordering bug in either

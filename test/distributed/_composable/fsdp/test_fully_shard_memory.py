@@ -423,7 +423,7 @@ class TestFullyShardHSDPMemory(FSDPTest):
         #   - 2x fp32 reduce-scatter input (current block + previous block
         #     still held in reduce_scatter_states)
         #   - 2x fp32 all-reduce output (current block + previous block's
-        #     orphaned buffer held by comm_ctx.mp_cast_all_reduce_state).
+        #     orphaned buffer held by comm_ctx.all_reduce_state).
         #     THIS is the term the fix bounds at 2; the bug made it O(n_layers).
         per_layer_fp32_mb = block_numel * 4 / dp_shard_size / 1e6
         expected_peak_mb = (
