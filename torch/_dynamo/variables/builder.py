@@ -171,6 +171,7 @@ from ..utils import (
     set_example_value,
     tensor_always_has_static_shape,
     tuple_iterator,
+    is_pybind11_enum_member,
     tuple_iterator_getitem,
     tuple_iterator_len,
     unwrap_with_attr_name_if_wrapper,
@@ -970,7 +971,7 @@ class VariableBuilder:
         elif isinstance(
             value,
             (enum.Enum, torch.DispatchKey, torch._C._functorch.TransformType),
-        ):
+        ) or is_pybind11_enum_member(value):
             self.install_guards(GuardBuilder.ID_MATCH)
             return UserDefinedObjectVariable(value, source=self.source)
         elif DebuggingVariable.is_reorderable_logging_function(value):
@@ -4256,7 +4257,7 @@ class SourcelessBuilder:
         if isinstance(value, VariableTracker):
             # This is always valid to call, and useful for recursive calls.
             return value
-        elif is_opaque_value_type(type(value)) and not isinstance(value, enum.Enum):
+        elif is_opaque_value_type(type(value)) and not isinstance(value, enum.Enum) and not is_pybind11_enum_member(value):
             return TorchScriptObjectVariable.create(value, value)
         elif is_opaque_reference_type(type(value)):
             # This is for handling opaque objects in custom ops
@@ -4290,7 +4291,7 @@ class SourcelessBuilder:
         elif isinstance(
             value,
             (enum.Enum, torch.DispatchKey, torch._C._functorch.TransformType),
-        ):
+        ) or is_pybind11_enum_member(value):
             return UserDefinedObjectVariable(value)
         elif isinstance(value, (type, abc.ABCMeta)):
             if issubclass(type(value), type) and issubclass(value, BaseException):
