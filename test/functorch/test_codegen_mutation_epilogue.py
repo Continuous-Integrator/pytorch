@@ -146,7 +146,9 @@ class TestCodegenMutationEpilogue(TestCase):
         )
         self.assertIn("detach().copy_", captured[0])
 
-    @skipIfTorchDynamo("aot_function uses FX tracing which conflicts with dynamo wrapping")
+    @skipIfTorchDynamo(
+        "aot_function uses FX tracing which conflicts with dynamo wrapping"
+    )
     def test_metadata_only_mutation(self):
         """
         Metadata-only mutation via transpose_(). Codegen should emit
@@ -171,7 +173,9 @@ class TestCodegenMutationEpilogue(TestCase):
         self.assertIn("as_strided_", captured[0])
         self.assertNotIn("copy_", captured[0])
 
-    @skipIfTorchDynamo("aot_function uses FX tracing which conflicts with dynamo wrapping")
+    @skipIfTorchDynamo(
+        "aot_function uses FX tracing which conflicts with dynamo wrapping"
+    )
     def test_data_and_metadata_mutation(self):
         """
         Both data and metadata mutated (transpose_ then mul_). Codegen
