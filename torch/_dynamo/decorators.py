@@ -315,6 +315,8 @@ def _invoke_leaf_function_python(
     args: tuple[Any, ...],
     kwargs: dict[str, Any],
     mutates_args: frozenset[str] | None = None,
+    hook_fn: Callable[..., Any] | None = None,
+    hook_fake_fn: Callable[..., Any] | None = None,
 ) -> Any:
     """Call invoke_leaf_function HOP directly from Python.
 
@@ -355,6 +357,10 @@ def _invoke_leaf_function_python(
 
     real_fn_callable = _LeafCallable(wrapped_real)
     fake_fn_callable = _LeafCallable(wrapped_fake)
+
+    if hook_fn is not None:
+        real_fn_callable._leaf_hook_real_fn = hook_fn  # type: ignore[attr-defined]
+        real_fn_callable._leaf_hook_fake_fn = hook_fake_fn  # type: ignore[attr-defined]
 
     mutated_flat_indices = ""
     if mutates_args:
@@ -507,6 +513,37 @@ def leaf_function(
 
         To validate that your fake implementation matches the real function's outputs, set
         ``torch._dynamo.config.leaf_function_validate_outputs = True``.
+
+        **register_multi_grad_hook (optional)**:
+        You can register a backward hook via ``@fn.register_multi_grad_hook``
+        to run code when gradients have been computed
+        for all requires_grad tensor inputs during backward. The hook fires exactly once
+        per backward pass. The hook function has the same signature as the leaf function;
+        each requires_grad tensor argument receives the corresponding gradient instead
+        of the original tensor. Non-tensor arguments and tensors without requires_grad
+        are passed through unchanged. The hook must return ``None``. The hook is called
+        as a leaf function itself, so it is also opaque to the compiler.
+
+        Example::
+
+            >>> @leaf_function
+            ... def debug_log(t, tag):
+            ...     print(f"[{tag}][fwd] norm={t.norm().item()}")
+            ...     return None
+            ...
+            >>> @debug_log.register_fake
+            ... def debug_log_fake(t, tag):
+            ...     return None
+            ...
+            >>> @debug_log.register_multi_grad_hook
+            ... def debug_log_hook(t_grad, tag):
+            ...     print(f"[{tag}][bwd] norm={t_grad.norm().item()}")
+            ...
+            >>> x = torch.randn(4, requires_grad=True)
+            >>> debug_log(x, "intermediate")  # no assignment needed
+            [intermediate][fwd] norm=...
+            >>> (x * 2).sum().backward()
+            [intermediate][bwd] norm=...
 
     Limitations:
         Currently, inductor backend and :func:`torch.export.export` are not yet supported.
@@ -709,6 +746,8 @@ def leaf_function(
             args,
             kwargs,
             mutates_args=inner._torchdynamo_leaf_mutates_args,  # pyrefly: ignore [missing-attribute]
+            hook_fn=inner._torchdynamo_leaf_hook_fn,  # type: ignore[attr-defined]
+            hook_fake_fn=inner._torchdynamo_leaf_hook_fake_fn,  # type: ignore[attr-defined]
         )  # type: ignore[attr-defined]
 
     inner._torchdynamo_leaf_real_fn = fn  # type: ignore[attr-defined]
@@ -716,6 +755,8 @@ def leaf_function(
     inner._torchdynamo_leaf_mutates_args = (  # pyrefly: ignore [missing-attribute]
         frozenset(mutates_args) if mutates_args else frozenset()
     )  # type: ignore[attr-defined]
+    inner._torchdynamo_leaf_hook_fn = None  # type: ignore[attr-defined]
+    inner._torchdynamo_leaf_hook_fake_fn = None  # type: ignore[attr-defined]
 
     # Follow nonstrict_trace implementation
     wrapped_id = id(inner)
@@ -733,6 +774,13 @@ def leaf_function(
         return inner
 
     inner.register_fake = register_fake_setter  # type: ignore[attr-defined]
+
+    def register_hook_setter(hook_fn: Callable[..., Any]) -> Callable[..., Any]:
+        inner._torchdynamo_leaf_hook_fn = hook_fn  # type: ignore[attr-defined]
+        inner._torchdynamo_leaf_hook_fake_fn = lambda *args, **kwargs: None  # type: ignore[attr-defined]
+        return inner
+
+    inner.register_multi_grad_hook = register_hook_setter  # type: ignore[attr-defined]
 
     return inner
 
@@ -1065,6 +1113,8 @@ def mark_unbacked(
     strict: bool = False,
     specialize_on: list[Any] | None = None,
     shape_id: str | None = None,
+    min: int | None = None,
+    max: int | None = None,
 ) -> None:
     """
     Mark a tensor as having an unbacked dimension. This changes the semantics of operations:
@@ -1089,6 +1139,10 @@ def mark_unbacked(
             All unbacked dimensions with the same shape_id will share the same unbacked symbol. This is useful when multiple tensors
             are known to have the same batch size at runtime. A runtime assertion is added
             to ensure this property at runtime.
+        min (Optional[int], default=None): Minimum value constraint for this dimension.
+            If provided, a runtime check will be added to ensure the dimension is >= min.
+        max (Optional[int], default=None): Maximum value constraint for this dimension.
+            If provided, a runtime check will be added to ensure the dimension is <= max.
     """
     if torch.distributed.is_available() and isinstance(
         t, torch.distributed.tensor.DTensor
@@ -1122,6 +1176,12 @@ def mark_unbacked(
         if hint_override:
             t._dynamo_hint_overrides[index] = hint_override
 
+        if min is not None or max is not None:
+            if not hasattr(t, "_dynamo_unbacked_bounds"):
+                # pyrefly: ignore [implicit-any]
+                t._dynamo_unbacked_bounds = {}
+            t._dynamo_unbacked_bounds[index] = (min, max)
+
         if shape_id is not None:
             if not hasattr(t, "_dynamo_shape_ids"):
                 # pyrefly: ignore [implicit-any]
@@ -1139,7 +1199,7 @@ def mark_unbacked(
 
     assert isinstance(index, (list, tuple))
     for i in index:
-        mark_unbacked(t, i, shape_id=shape_id)
+        mark_unbacked(t, i, shape_id=shape_id, min=min, max=max)
 
 
 @forbid_in_graph
@@ -1343,6 +1403,25 @@ def mark_static_address(t: Any, guard: bool = False) -> None:
         t._dynamo_static_input_type = "unguarded"  # type: ignore[attr-defined]
 
 
+def _patch_einops_symint_compat(einops_mod: Any) -> None:
+    """Backport the SymInt lru_cache fix from einops 0.7.0 into einops <= 0.6.1."""
+    for name in ("_reconstruct_from_shape", "_prepare_transformation_recipe"):
+        cached = getattr(einops_mod, name)
+        uncached = cached.__wrapped__
+
+        def make_wrapper(cached_fn: Any, uncached_fn: Any) -> Any:
+            @functools.wraps(cached_fn)
+            def wrapper(*args: Any, **kwargs: Any) -> Any:
+                try:
+                    return cached_fn(*args, **kwargs)
+                except TypeError:
+                    return uncached_fn(*args, **kwargs)
+
+            return wrapper
+
+        setattr(einops_mod, name, make_wrapper(cached, uncached))
+
+
 # One day, Dynamo will support tracing into einops directly (no allow_in_graph needed)
 # Note that PyTorch supports multiple versions of einops, so when that day comes,
 # we still need to be really careful about version matches.
@@ -1367,7 +1446,10 @@ def _allow_in_graph_einops() -> None:
 
         # einops > 0.6.1 will call the op registration logic as it is imported.
     except ImportError:
-        # einops <= 0.6.1
+        # einops <= 0.6.1 doesn't handle unhashable SymInt in its lru_cache'd
+        # helpers. Backport the try/except TypeError fallback from einops 0.7.0+
+        # so allow_in_graph works during fake tensor validation.
+        _patch_einops_symint_compat(einops.einops)  # type: ignore[attr-defined]
         allow_in_graph(einops.rearrange)
         allow_in_graph(einops.reduce)
         if hasattr(einops, "repeat"):
