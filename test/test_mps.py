@@ -77,8 +77,8 @@ _ref_test_ops = tuple(
 # Same logic as test_cuda.py
 if not torch.backends.mps.is_available():
     print('MPS not available, skipping tests', file=sys.stderr)
-    TestCase = NoTest  # noqa: F811
-    NNTestCase = NoTest  # noqa: F811
+    TestCase = NoTest
+    NNTestCase = NoTest
 
 total_memory = int(subprocess.check_output(["sysctl", "-n", "hw.memsize"]))
 
@@ -8434,6 +8434,19 @@ class TestMPS(TestCaseMPS):
         # we should get different samples rather than the same value repeated,
         # indicating the sampling is working properly on non-contiguous tensors
         self.assertNotEqual(len(samples), 1)
+
+    def test_multinomial_large_input_no_segfault(self):
+        # Regression test for https://github.com/pytorch/pytorch/issues/178579
+        # The previous MPSGraph kernel materialized an N x N ones matrix and
+        # segfaulted for N >= 2**17
+        # this test just checks that it doesn't segfault so we don't regress
+        n = 2**17
+        probs = torch.rand(n, device="mps")
+        out = torch.multinomial(probs, 100, replacement=True)
+        torch.mps.synchronize()
+        self.assertEqual(out.shape, torch.Size([100]))
+        self.assertEqual(out.dtype, torch.int64)
+        self.assertEqual(out.device.type, "mps")
 
     def test_cumsum_dim_check(self):
         x = torch.rand((3, 3), device="mps")
