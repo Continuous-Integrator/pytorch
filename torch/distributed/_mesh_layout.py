@@ -6,7 +6,7 @@ import math
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from itertools import product
-from typing import NoReturn
+from typing import NoReturn, overload
 
 import torch
 from torch.distributed._pycute import (
@@ -99,7 +99,7 @@ class _FlatLayout:
     def numel(self) -> int:
         return math.prod(self.shape)
 
-    def composition(self, layout: "_ListOfFlatLayouts") -> "_ListOfFlatLayouts":
+    def composition(self, layout: "_MeshLayout") -> "_MeshLayout":
         """
         By-dimension composition allows one layout to "select from" or "filter through" another layout.
         Think of it as function composition: (self ∘ layout)(input) = self(layout(input))
@@ -127,7 +127,7 @@ class _FlatLayout:
             _FlatLayout(shape, stride)
             for shape, stride in zip(as_tuple(result.shape), as_tuple(result.stride))
         ]
-        return _ListOfFlatLayouts(result_axes)
+        return _MeshLayout(result_axes)
 
     def complement(self, world_size: int) -> "_FlatLayout":
         """
@@ -235,7 +235,7 @@ class _FlatLayout:
 
 
 @dataclass(frozen=True)
-class _ListOfFlatLayouts(Sequence[_FlatLayout]):
+class _MeshLayout(Sequence[_FlatLayout]):
     """
     A multi-dimensional structure consisting of a series of dimension-less layouts
 
@@ -257,17 +257,26 @@ class _ListOfFlatLayouts(Sequence[_FlatLayout]):
     @classmethod
     def from_sizes_strides(
         cls, sizes: tuple[int, ...], strides: tuple[int, ...] | None = None
-    ) -> "_ListOfFlatLayouts":
+    ) -> "_MeshLayout":
         if strides is None:
             strides = flatten(suffix_product(sizes))
-        assert len(sizes) == len(strides)
+        if len(sizes) != len(strides):
+            raise ValueError(
+                f"sizes and strides must have the same length, got {len(sizes)} and {len(strides)}"
+            )
         axes = tuple(_FlatLayout((s,), (d,)) for s, d in zip(sizes, strides))
         return cls(axes)
 
     def __len__(self) -> int:
         return len(self.axes)
 
-    def __getitem__(self, i: int) -> _FlatLayout:
+    @overload
+    def __getitem__(self, i: int) -> _FlatLayout: ...
+
+    @overload
+    def __getitem__(self, i: slice) -> Sequence[_FlatLayout]: ...
+
+    def __getitem__(self, i: int | slice) -> _FlatLayout | Sequence[_FlatLayout]:
         return self.axes[i]
 
     def __iter__(self) -> Iterator[_FlatLayout]:
@@ -299,9 +308,7 @@ class _ListOfFlatLayouts(Sequence[_FlatLayout]):
         strides = tuple(axis.stride for axis in self.axes)
         return _FlatLayout(shapes, strides)
 
-    def splice(
-        self, start: int, end: int, layout: "_ListOfFlatLayouts"
-    ) -> "_ListOfFlatLayouts":
+    def splice(self, start: int, end: int, layout: "_MeshLayout") -> "_MeshLayout":
         """
         Replace (out-of-place) the start:end slice with the given list of layouts
 
@@ -309,7 +316,7 @@ class _ListOfFlatLayouts(Sequence[_FlatLayout]):
         """
         new_axes = list(self.axes)
         new_axes[start:end] = list(layout.axes)
-        return _ListOfFlatLayouts(new_axes)
+        return _MeshLayout(new_axes)
 
     def remap_to_tensor(self, rank_map: torch.Tensor) -> torch.Tensor:
         """
@@ -359,7 +366,3 @@ class _ListOfFlatLayouts(Sequence[_FlatLayout]):
             complement_layout.shape + self_layout.shape,
             complement_layout.stride + self_layout.stride,
         ).reshape(-1, *self.top_level_sizes)
-
-
-# Alias for backwards compatibility
-_MeshLayout = _ListOfFlatLayouts
