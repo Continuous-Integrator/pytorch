@@ -307,9 +307,11 @@ class _MeshLayout(Sequence[_FlatLayout]):
     def __getitem__(self, i: int) -> _FlatLayout: ...
 
     @overload
-    def __getitem__(self, i: slice) -> Sequence[_FlatLayout]: ...
+    def __getitem__(self, i: slice) -> "_MeshLayout": ...
 
-    def __getitem__(self, i: int | slice) -> _FlatLayout | Sequence[_FlatLayout]:
+    def __getitem__(self, i: int | slice) -> "_FlatLayout | _MeshLayout":
+        if isinstance(i, slice):
+            return _MeshLayout(self.axes[i])
         return self.axes[i]
 
     def __iter__(self) -> Iterator[_FlatLayout]:

@@ -2169,9 +2169,7 @@ class TestFP8Matmul(TestCase):
         # No swizzle passed - must fail on swizzle_a
         with self.assertRaisesRegex(
             ValueError,
-            "swizzle_a and swizzle_b must each have 1 value"
-            if torch.version.hip
-            else "swizzle_a must have 1 value, got 0",
+            "swizzle_a must have 1 values, got 0",
         ):
             _ = torch.nn.functional.scaled_mm(
                 x,
@@ -2185,9 +2183,7 @@ class TestFP8Matmul(TestCase):
         # swizzle_a passed, not b, must fail on swizzle_b
         with self.assertRaisesRegex(
             ValueError,
-            "swizzle_a and swizzle_b must each have 1 value"
-            if torch.version.hip
-            else "swizzle_b must have 1 value, got 0",
+            "swizzle_b must have 1 values, got 0",
         ):
             _ = torch.nn.functional.scaled_mm(
                 x,
@@ -2198,21 +2194,6 @@ class TestFP8Matmul(TestCase):
                 ScalingType.BlockWise1x32,
                 swizzle_a=SwizzleType.SWIZZLE_32_4_4,
             )
-        if torch.version.hip:
-            with self.assertRaisesRegex(
-                ValueError,
-                "swizzle_a and swizzle_b must both be NO_SWIZZLE",
-            ):
-                _ = torch.nn.functional.scaled_mm(
-                    x,
-                    w.t(),
-                    x_scale,
-                    ScalingType.BlockWise1x32,
-                    w_scale,
-                    ScalingType.BlockWise1x32,
-                    swizzle_a=SwizzleType.NO_SWIZZLE,
-                    swizzle_b=SwizzleType.SWIZZLE_32_4_4,
-                )
 
         # NVFP4 two-level: swizzle=[SWIZZLE_32_4_4, NO_SWIZZLE]
         x = _bfloat16_to_float4_e2m1fn_x2(x.to(torch.bfloat16))
@@ -2225,10 +2206,8 @@ class TestFP8Matmul(TestCase):
 
         # No swizzles passed - must fail on swizzle_a
         with self.assertRaisesRegex(
-            NotImplementedError if torch.version.hip else ValueError,
-            "NVFP4 scaling not supported on ROCM"
-            if torch.version.hip
-            else "swizzle_a must have 2 values, got 0",
+            ValueError,
+            "swizzle_a must have 2 values, got 0",
         ):
             _ = torch.nn.functional.scaled_mm(
                 x,
@@ -2241,10 +2220,8 @@ class TestFP8Matmul(TestCase):
 
         # Not enough swizzles passed - must fail on swizzle_a
         with self.assertRaisesRegex(
-            NotImplementedError if torch.version.hip else ValueError,
-            "NVFP4 scaling not supported on ROCM"
-            if torch.version.hip
-            else "swizzle_a must have 2 values, got 1",
+            ValueError,
+            "swizzle_a must have 2 values, got 1",
         ):
             _ = torch.nn.functional.scaled_mm(
                 x,
@@ -2258,10 +2235,8 @@ class TestFP8Matmul(TestCase):
 
         # Not enough swizzles passed to b - must fail on swizzle_b
         with self.assertRaisesRegex(
-            NotImplementedError if torch.version.hip else ValueError,
-            "NVFP4 scaling not supported on ROCM"
-            if torch.version.hip
-            else "swizzle_b must have 2 values, got 1",
+            ValueError,
+            "swizzle_b must have 2 values, got 1",
         ):
             _ = torch.nn.functional.scaled_mm(
                 x,

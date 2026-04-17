@@ -1,10 +1,12 @@
 # Owner(s): ["module: dynamo"]
+# flake8: noqa: B950
+# flake8: noqa: E731
 import contextlib
 import copy
 import functools
 import math
 import re
-import unittest
+import unittest  # noqa: F811
 from importlib import import_module
 
 import torch
