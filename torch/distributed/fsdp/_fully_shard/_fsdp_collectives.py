@@ -550,12 +550,14 @@ def foreach_reduce(
     all_reduce_hook: Callable[[torch.Tensor], None] | None,
     force_sum_reduction_for_comms: bool = False,
     label_suffix: str = "",
+    prev_all_reduce_event: torch.Event | None = None,
 ) -> tuple[
     torch.Tensor,
     torch.Event,
     torch.Event,
     torch.Tensor | None,
     torch.Event | None,
+    torch.Tensor | None,
     torch.Tensor | None,
 ]:
     """
@@ -662,6 +664,7 @@ def foreach_reduce(
                     all_reduce_input,
                     all_reduce_event,
                     partial_reduce_output,
+                    None,
                 )
             if partial_reduce_output is not None:
                 reduce_output += partial_reduce_output
@@ -693,9 +696,22 @@ def foreach_reduce(
             all_reduce_hook(reduce_output)
     # -- END: ops post reduce_scatter
 
+    if prev_all_reduce_event is not None:
+        all_reduce_stream.wait_event(prev_all_reduce_event)
+
     with device_handle.stream(post_reduce_stream):
         _div_if_needed(reduce_output, postdivide_factor)
         reduce_output = _to_dtype_if_needed(reduce_output, orig_dtype)
+        if all_reduce_input is not None:
+            if reduce_output is not all_reduce_input:
+                # Cast created a new tensor: the orphaned all_reduce_input's
+                # free must wait for the cast to finish reading it, not just
+                # all-reduce. Returned as a keep-alive to the caller.
+                all_reduce_event = post_reduce_stream.record_event()
+            else:
+                # No cast: reduce_output aliases all_reduce_input and param
+                # grads hold refs to it, so no keep-alive is needed.
+                all_reduce_input = None
         # View out and accumulate sharded gradients
         flat_grad_offset = 0  # [0, reduce_scatter_output_numel - 1]
         for padded_unsharded_size, fsdp_param in zip(
@@ -744,10 +760,24 @@ def foreach_reduce(
             padded_sharded_numel = padded_unsharded_size.numel() // world_size
             flat_grad_offset += padded_sharded_numel
         post_reduce_event = post_reduce_stream.record_event()
-    # The RS output is allocated in the RS stream and used in the default
-    # stream (for optimizer). To ensure its memory is not reused for later
-    # RSs, we do not need extra synchronization since the sharded parameters
-    # hold refs through the end of backward.
+    # Non-offload path: the RS output is allocated in the RS stream and
+    # sharded_param.grad is a DTensor over a view of reduce_output, which
+    # keeps the GPU storage alive through the end of backward. No extra
+    # synchronization is required.
+    #
+    # Offload path: sharded_param.grad is a separate CPU tensor, so the GPU
+    # reduce_output has no surviving reference once we return. For 1D FSDP
+    # this is still safe (post_reduce_stream IS reduce_scatter_stream, so
+    # the CUDA caching allocator's alloc-stream tracking covers the D2H
+    # memcpy). For HSDP, the memcpy ran on all_reduce_stream, and a
+    # later RS-stream allocation can reuse reduce_output's block before
+    # the memcpy drains. Return reduce_output as a keep-alive so the
+    # caller can defer the free onto the all-reduce stream's pool.
+    grad_offload_keepalive: torch.Tensor | None = None
+    if post_reduce_stream is not reduce_scatter_stream and any(
+        p.offload_to_cpu for p in fsdp_params
+    ):
+        grad_offload_keepalive = reduce_output
     return (
         reduce_scatter_input,
         reduce_scatter_event,
@@ -755,6 +785,7 @@ def foreach_reduce(
         all_reduce_input,
         all_reduce_event,
         None,
+        grad_offload_keepalive,
     )
 
 

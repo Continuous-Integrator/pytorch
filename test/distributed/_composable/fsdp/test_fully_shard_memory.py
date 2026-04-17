@@ -5,7 +5,13 @@ import gc
 import unittest
 
 import torch
-from torch.distributed.fsdp import CPUOffloadPolicy, fully_shard, OffloadPolicy
+from torch.distributed.fsdp import (
+    CPUOffloadPolicy,
+    fully_shard,
+    MixedPrecisionPolicy,
+    OffloadPolicy,
+)
+from torch.distributed.tensor import init_device_mesh
 from torch.testing._internal.common_distributed import skip_if_lt_x_gpu
 from torch.testing._internal.common_fsdp import FSDPTest, get_devtype
 from torch.testing._internal.common_utils import (
@@ -22,6 +28,22 @@ from torch.testing._internal.distributed._tensor.common_dtensor import (
 
 
 device_type = torch.device(get_devtype())
+
+
+def _get_peak_active_memory_mb() -> int:
+    mem_stats = torch.get_device_module(device_type).memory_stats()
+    if TEST_CUDA or TEST_XPU:
+        return round(mem_stats["active_bytes.all.peak"] / 1e6)
+    if TEST_HPU:
+        return round(mem_stats["MaxInUse"] / 1e6)
+
+
+def _get_curr_active_memory_mb() -> int:
+    mem_stats = torch.get_device_module(device_type).memory_stats()
+    if TEST_CUDA or TEST_XPU:
+        return round(mem_stats["active_bytes.all.current"] / 1e6)
+    if TEST_HPU:
+        return round(mem_stats["InUse"] / 1e6)
 
 
 class TestFullyShardMemory(FSDPTest):
@@ -85,7 +107,7 @@ class TestFullyShardMemory(FSDPTest):
         inp = torch.randn(2, 768, device=device_type)
         lin(inp).sum().backward()
         torch.get_device_module(device_type).empty_cache()
-        base_mem_mb = self._get_peak_active_memory_mb()
+        base_mem_mb = _get_peak_active_memory_mb()
         vocab_size = 32
         model_args = ModelArgs(
             vocab_size=vocab_size, n_layers=3, dim=768, n_heads=12, weight_tying=False
@@ -119,8 +141,8 @@ class TestFullyShardMemory(FSDPTest):
             optim = torch.optim.Adam(model.parameters(), lr=1e-2, foreach=False)
 
         # Init: Each module is moved to GPU before sharding parameters
-        peak_mem_mb = self._get_peak_active_memory_mb()
-        curr_mem_mb = self._get_curr_active_memory_mb()
+        peak_mem_mb = _get_peak_active_memory_mb()
+        curr_mem_mb = _get_curr_active_memory_mb()
         # Allow for some buffer for the peak memory since original parameters
         # are not freed until a `fully_shard` call returns
         buffer_mb = 4
@@ -137,7 +159,7 @@ class TestFullyShardMemory(FSDPTest):
 
         # Forward:
         loss = model(inp)
-        mem_mb = self._get_peak_active_memory_mb()
+        mem_mb = _get_peak_active_memory_mb()
         # Allow for some buffer for fragmentation/activations (where this
         # number is kept much smaller than the actual memory usage, which is on
         # the order of 100-200+ MB)
@@ -166,7 +188,7 @@ class TestFullyShardMemory(FSDPTest):
 
         # Backward:
         loss.sum().backward()
-        mem_mb = self._get_peak_active_memory_mb()
+        mem_mb = _get_peak_active_memory_mb()
         if reshard_after_forward:
             # 2x max unsharded block parameters (all-gather + copy-out), 2x max
             # unsharded block gradients (gradients, reduce-scatter input),
@@ -201,7 +223,7 @@ class TestFullyShardMemory(FSDPTest):
         # Optimizer step: unsharded parameters/gradients freed
         if not run_optim_in_backward:
             optim.step()
-        mem_mb = self._get_peak_active_memory_mb()
+        mem_mb = _get_peak_active_memory_mb()
         expected_mem_mb = buffer_mb
         if not use_cpu_offload:
             # 1x sharded parameters, 2x sharded optimizer states
@@ -217,7 +239,7 @@ class TestFullyShardMemory(FSDPTest):
         torch.get_device_module(
             device_type
         ).reset_peak_memory_stats()  # reset after freeing
-        mem_mb = self._get_peak_active_memory_mb()
+        mem_mb = _get_peak_active_memory_mb()
         expected_mem_mb = 0
         if not use_cpu_offload:
             # 1x sharded parameters
@@ -262,7 +284,7 @@ class TestFullyShardMemory(FSDPTest):
             optim.zero_grad()
             gc.collect()  # one-time collection after warm-up
             torch.get_device_module(device_type).synchronize()
-            mem_after_warmup = self._get_curr_active_memory_mb()
+            mem_after_warmup = _get_curr_active_memory_mb()
 
             num_steps = 10
             for _ in range(num_steps):
@@ -272,7 +294,7 @@ class TestFullyShardMemory(FSDPTest):
                 optim.zero_grad()
 
             torch.get_device_module(device_type).synchronize()
-            mem_after_steps = self._get_curr_active_memory_mb()
+            mem_after_steps = _get_curr_active_memory_mb()
             # Allow a small buffer (2 MB) for non-determinism, but no
             # per-step growth should occur.
             self.assertLessEqual(
@@ -287,14 +309,14 @@ class TestFullyShardMemory(FSDPTest):
 
     @skip_if_lt_x_gpu(2)
     def test_fully_shard_del_memory(self):
-        base_mem_mb = self._get_peak_active_memory_mb()
+        base_mem_mb = _get_peak_active_memory_mb()
         vocab_size = 32
         model_args = ModelArgs(
             vocab_size=vocab_size, n_layers=3, dim=768, n_heads=12, weight_tying=False
         )
         model = Transformer(model_args)
         # Initializing the model on CPU should not change the GPU memory usage
-        post_model_init_mem_mb = self._get_peak_active_memory_mb()
+        post_model_init_mem_mb = _get_peak_active_memory_mb()
         self.assertEqual(base_mem_mb, post_model_init_mem_mb)
 
         for module in model.modules():
@@ -304,7 +326,7 @@ class TestFullyShardMemory(FSDPTest):
         unsharded_numel = sum(p.numel() for p in model.parameters())
         sharded_numel = unsharded_numel // self.world_size
         buffer_mb = 4
-        mem_mb = self._get_curr_active_memory_mb()
+        mem_mb = _get_curr_active_memory_mb()
         expected_mb = sharded_numel * 4 / 1e6 + buffer_mb
         self.assertLessEqual(mem_mb - base_mem_mb, expected_mb)
 
@@ -312,23 +334,8 @@ class TestFullyShardMemory(FSDPTest):
         del model
         # Manually call garbage collection since there are ref cycles in FSDP
         gc.collect()
-        mem_mb = self._get_curr_active_memory_mb()
+        mem_mb = _get_curr_active_memory_mb()
         self.assertEqual(mem_mb, base_mem_mb)
-
-    def _get_peak_active_memory_mb(self) -> int:
-        mem_stats = torch.get_device_module(device_type).memory_stats()
-
-        if TEST_CUDA or TEST_XPU:
-            return round(mem_stats["active_bytes.all.peak"] / 1e6)
-        if TEST_HPU:
-            return round(mem_stats["MaxInUse"] / 1e6)
-
-    def _get_curr_active_memory_mb(self) -> int:
-        mem_stats = torch.get_device_module(device_type).memory_stats()
-        if TEST_CUDA or TEST_XPU:
-            return round(mem_stats["active_bytes.all.current"] / 1e6)
-        if TEST_HPU:
-            return round(mem_stats["InUse"] / 1e6)
 
     def _register_optim_in_backward(
         self, model: torch.nn.Module, **optim_kwargs
@@ -343,6 +350,97 @@ class TestFullyShardMemory(FSDPTest):
 
         for param in model.parameters():
             param.register_post_accumulate_grad_hook(optim_hook)
+
+
+class TestFullyShardHSDPMemory(FSDPTest):
+    @property
+    def world_size(self) -> int:
+        return min(4, torch.get_device_module(device_type).device_count())
+
+    @skip_if_lt_x_gpu(4)
+    @unittest.skipIf(
+        TEST_HPU or TEST_XPU, "HSDP mixed-precision memory test is CUDA-only"
+    )
+    def test_hsdp_mixed_precision_no_buffer_accumulation(self):
+        """Regression guard for https://github.com/pytorch/pytorch/issues/179128:
+        under HSDP with bf16 params + fp32 reduce, the fp32 reduce-scatter
+        output buffers must not accumulate across layers within a single
+        backward pass. The buggy path held O(n_layers) fp32 buffers; the fix
+        limits it to at most 2 simultaneously. Each extra live buffer is
+        ``block_numel / dp_shard_size * 4`` bytes, so peak active GPU memory
+        during backward distinguishes the two paths.
+        """
+        torch.manual_seed(42)
+        # Warm up cuBLAS workspaces before measuring the baseline.
+        lin = torch.nn.Linear(768, 768, device=device_type)
+        lin(torch.randn(2, 768, device=device_type)).sum().backward()
+        del lin
+        torch.get_device_module(device_type).empty_cache()
+        torch.get_device_module(device_type).reset_peak_memory_stats()
+        base_mem_mb = _get_peak_active_memory_mb()
+
+        mesh = init_device_mesh(
+            device_type.type, (2, 2), mesh_dim_names=("dp_replicate", "dp_shard")
+        )
+        dp_shard_size = mesh["dp_shard"].size()
+        mp = MixedPrecisionPolicy(
+            param_dtype=torch.bfloat16, reduce_dtype=torch.float32
+        )
+
+        n_layers = 8
+        # bf16 params with fp32 reduce: orig_dtype != reduce_dtype, so the
+        # post-reduce cast allocates a new tensor and orphans the fp32
+        # reduce-scatter output — the path under test.
+        model = Transformer(
+            ModelArgs(
+                vocab_size=32,
+                n_layers=n_layers,
+                dim=768,
+                n_heads=12,
+                weight_tying=False,
+            )
+        ).to(device_type, dtype=torch.bfloat16)
+        model_numel = sum(p.numel() for p in model.parameters())
+        block_numel = sum(p.numel() for p in model.layers[0].parameters())
+        for m in model.modules():
+            if isinstance(m, TransformerBlock):
+                fully_shard(m, mesh=mesh, mp_policy=mp)
+        fully_shard(model, mesh=mesh, mp_policy=mp)
+
+        inp = torch.randint(0, 32, (1, 4), device=device_type.type)
+        torch.get_device_module(device_type).reset_peak_memory_stats()
+        model(inp).sum().backward()
+        peak_delta_mb = _get_peak_active_memory_mb() - base_mem_mb
+
+        # Breakdown of the expected peak during HSDP + MP backward (all bf16
+        # params, fp32 reduce). Under the fix, the following components are
+        # simultaneously alive at the peak instant (during a mid-backward
+        # layer's post-reduce):
+        #   - 1x sharded bf16 params (resident for the whole step)
+        #   - 1x sharded bf16 grads (fully accumulated at peak)
+        #   - 1x unsharded bf16 block params (prefetched all-gather for the
+        #     next block's backward compute)
+        #   - 2x fp32 reduce-scatter input (current block + previous block
+        #     still held in reduce_scatter_states)
+        #   - 2x fp32 all-reduce output (current block + previous block's
+        #     orphaned buffer held by comm_ctx.mp_cast_all_reduce_state).
+        #     THIS is the term the fix bounds at 2; the bug made it O(n_layers).
+        per_layer_fp32_mb = block_numel * 4 / dp_shard_size / 1e6
+        expected_peak_mb = (
+            2 * model_numel * 2 / dp_shard_size
+            + 1 * block_numel * 2
+            + 2 * block_numel * 4
+            + 2 * block_numel * 4 / dp_shard_size
+        ) / 1e6
+
+        self.assertLessEqual(
+            peak_delta_mb,
+            expected_peak_mb,
+            f"peak backward memory delta {peak_delta_mb} MB exceeds bound "
+            f"{expected_peak_mb:.1f} MB. fp32 reduce-scatter output buffers "
+            f"may be accumulating across layers (each ~{per_layer_fp32_mb:.1f} "
+            f"MB, n_layers={n_layers}).",
+        )
 
 
 if __name__ == "__main__":
