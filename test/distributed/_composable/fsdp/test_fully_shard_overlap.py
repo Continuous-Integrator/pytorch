@@ -560,6 +560,117 @@ class TestFullyShardHSDPStreamBehavior(FSDPTest):
             device_module._sleep(int(sleep_ms * get_cycles_per_ms()))
         device_module.current_stream().wait_stream(comm_stream)
 
+    def _make_hsdp_model_pair(
+        self,
+        *,
+        n_layers: int = 2,
+        dim: int = 4,
+        mp: MixedPrecisionPolicy | None = None,
+        reshard_after_forward: bool = True,
+    ) -> tuple[nn.Module, nn.Module, torch.Tensor]:
+        """Build a (ref, off, inp) triple where ``off`` has
+        ``CPUOffloadPolicy`` and ``ref`` does not, with otherwise
+        identical init and topology on a 2×2 HSDP mesh. Returns an input
+        tensor in the param dtype.
+        """
+        torch.manual_seed(42)
+        mesh = init_device_mesh(
+            device_type.type,
+            (2, 2),
+            mesh_dim_names=("dp_replicate", "dp_shard"),
+        )
+        param_dtype = mp.param_dtype if mp is not None else torch.float32
+        torch.manual_seed(0)
+        base = nn.Sequential(
+            *[nn.Linear(dim, dim, device=device_type) for _ in range(n_layers)]
+        )
+        ref = copy.deepcopy(base).to(device_type).to(param_dtype)
+        off = copy.deepcopy(base).to(device_type).to(param_dtype)
+        shard_kwargs = {
+            "mesh": mesh,
+            "reshard_after_forward": reshard_after_forward,
+        }
+        if mp is not None:
+            shard_kwargs["mp_policy"] = mp
+        for lin in ref:
+            fully_shard(lin, **shard_kwargs)
+        fully_shard(ref, **shard_kwargs)
+        off_kwargs = {**shard_kwargs, "offload_policy": CPUOffloadPolicy()}
+        for lin in off:
+            fully_shard(lin, **off_kwargs)
+        fully_shard(off, **off_kwargs)
+        inp = torch.randn((2, dim), device=device_type.type, dtype=param_dtype)
+        return ref, off, inp
+
+    def _assert_grad_parity(
+        self,
+        ref_model: nn.Module,
+        off_model: nn.Module,
+        *,
+        atol: float = 1e-3,
+        rtol: float = 1e-2,
+        msg_tag: str = "",
+    ) -> None:
+        """Assert ``.grad`` parity across a ref+off pair, handling DTensor
+        and CPU vs GPU tensor placement transparently.
+        """
+        for ref_p, off_p in zip(ref_model.parameters(), off_model.parameters()):
+            if ref_p.grad is None:
+                continue
+            ref_local = (
+                ref_p.grad.to_local() if hasattr(ref_p.grad, "to_local") else ref_p.grad
+            )
+            off_local = (
+                off_p.grad.to_local() if hasattr(off_p.grad, "to_local") else off_p.grad
+            )
+            torch.testing.assert_close(
+                off_local.cpu(),
+                ref_local.cpu(),
+                atol=atol,
+                rtol=rtol,
+                msg=lambda m, _tag=msg_tag: f"{_tag}grad mismatch: {m}",
+            )
+
+    def _assert_comm_ctx_drained(
+        self,
+        model: nn.Module,
+        *,
+        mp_cast: bool = True,
+        grad_offload: bool = True,
+        all_gather: bool = True,
+        reduce_scatter: bool = True,
+        msg_tag: str = "",
+    ) -> None:
+        """Walk every FSDP state in ``model`` and assert the selected
+        cross-layer ``comm_ctx`` slots are drained.
+        """
+        for module in model.modules():
+            if getattr(module, "_get_fsdp_state", None) is None:
+                continue
+            for pg in module._get_fsdp_state()._fsdp_param_groups:
+                ctx = pg.comm_ctx
+                if all_gather:
+                    self.assertIsNone(
+                        ctx.all_gather_state, f"{msg_tag}all_gather_state leaked"
+                    )
+                if reduce_scatter:
+                    self.assertEqual(
+                        len(ctx.reduce_scatter_states),
+                        0,
+                        f"{msg_tag}reduce_scatter_states leaked "
+                        f"({len(ctx.reduce_scatter_states)})",
+                    )
+                if mp_cast:
+                    self.assertIsNone(
+                        ctx.mp_cast_all_reduce_state,
+                        f"{msg_tag}mp_cast_all_reduce_state leaked",
+                    )
+                if grad_offload:
+                    self.assertIsNone(
+                        ctx.grad_offload_state,
+                        f"{msg_tag}grad_offload_state leaked",
+                    )
+
     @skip_if_lt_x_gpu(4)
     @unittest.skipIf(TEST_HPU, "Sleep is not supported on HPU")
     def test_all_reduce_waits_on_reduce_scatter(self):
@@ -995,22 +1106,11 @@ class TestFullyShardHSDPStreamBehavior(FSDPTest):
         # Read CPU grads immediately after backward; correctness depends
         # on the full offload sync chain (grad_offload_event sync and
         # reduce_output keep-alive on HSDP).
+        tag = f"[mesh_shape={mesh_shape}, n_models={n_models}] "
         for off_model in off_models:
-            for ref_p, off_p in zip(ref_model.parameters(), off_model.parameters()):
-                if ref_p.grad is None:
-                    continue
-                torch.testing.assert_close(
-                    off_p.grad,
-                    ref_p.grad.cpu(),
-                    atol=1e-5,
-                    rtol=1e-4,
-                    msg=lambda msg: (
-                        f"[mesh_shape={mesh_shape}, n_models={n_models}] "
-                        f"CPU-offloaded grad mismatch: {msg}. Likely the "
-                        f"grad_offload sync chain or reduce_output "
-                        f"keep-alive is broken."
-                    ),
-                )
+            self._assert_grad_parity(
+                ref_model, off_model, atol=1e-5, rtol=1e-4, msg_tag=tag
+            )
 
     @skip_if_lt_x_gpu(4)
     @unittest.skipIf(TEST_HPU, "Sleep is not supported on HPU")
@@ -1020,70 +1120,17 @@ class TestFullyShardHSDPStreamBehavior(FSDPTest):
         ``mp_cast_all_reduce_state``, ``grad_offload_state``. Regression
         guard for iteration-boundary leaks like #179128. Uses HSDP + bf16
         mp + CPU offload so all four slots are exercised."""
-        torch.manual_seed(42)
-        dim, n_layers = 4, 3
-        mesh = init_device_mesh(
-            device_type.type,
-            (2, 2),
-            mesh_dim_names=("dp_replicate", "dp_shard"),
-        )
         mp = MixedPrecisionPolicy(
             param_dtype=torch.bfloat16, reduce_dtype=torch.float32
         )
-        model = nn.Sequential(
-            *[nn.Linear(dim, dim, device=device_type) for _ in range(n_layers)]
-        ).to(torch.bfloat16)
-        for lin in model:
-            fully_shard(
-                lin,
-                mesh=mesh,
-                mp_policy=mp,
-                reshard_after_forward=True,
-                offload_policy=CPUOffloadPolicy(),
-            )
-        fully_shard(
-            model,
-            mesh=mesh,
-            mp_policy=mp,
-            reshard_after_forward=True,
-            offload_policy=CPUOffloadPolicy(),
-        )
-        inp = torch.randn((2, dim), device=device_type.type, dtype=torch.bfloat16)
-
+        _, off, inp = self._make_hsdp_model_pair(n_layers=3, mp=mp)
         # Warmup (lazy init)
-        model(inp).sum().backward()
-        model.zero_grad(set_to_none=True)
-
+        off(inp).sum().backward()
+        off.zero_grad(set_to_none=True)
         for iter_idx in range(3):
-            model(inp).sum().backward()
-            model.zero_grad(set_to_none=True)
-            # Walk every FSDP state and its shared comm_ctx; all cross-
-            # layer transient fields must be None / empty.
-            for module in model.modules():
-                state = getattr(module, "_get_fsdp_state", None)
-                if state is None:
-                    continue
-                fsdp_state = module._get_fsdp_state()
-                for pg in fsdp_state._fsdp_param_groups:
-                    comm_ctx = pg.comm_ctx
-                    self.assertIsNone(
-                        comm_ctx.all_gather_state,
-                        f"iter {iter_idx}: all_gather_state leaked",
-                    )
-                    self.assertEqual(
-                        len(comm_ctx.reduce_scatter_states),
-                        0,
-                        f"iter {iter_idx}: reduce_scatter_states leaked "
-                        f"({len(comm_ctx.reduce_scatter_states)} states)",
-                    )
-                    self.assertIsNone(
-                        comm_ctx.mp_cast_all_reduce_state,
-                        f"iter {iter_idx}: mp_cast_all_reduce_state leaked",
-                    )
-                    self.assertIsNone(
-                        comm_ctx.grad_offload_state,
-                        f"iter {iter_idx}: grad_offload_state leaked",
-                    )
+            off(inp).sum().backward()
+            off.zero_grad(set_to_none=True)
+            self._assert_comm_ctx_drained(off, msg_tag=f"iter {iter_idx}: ")
 
     @skip_if_lt_x_gpu(4)
     @unittest.skipIf(TEST_HPU, "Sleep is not supported on HPU")
@@ -1094,39 +1141,12 @@ class TestFullyShardHSDPStreamBehavior(FSDPTest):
         slots on comm_ctx; a missed cleanup would persist across
         iterations. Uses HSDP + bf16 mp + CPU offload so both slots are
         populated before the failure point."""
-        torch.manual_seed(42)
-        dim, n_layers = 4, 3
-        mesh = init_device_mesh(
-            device_type.type,
-            (2, 2),
-            mesh_dim_names=("dp_replicate", "dp_shard"),
-        )
         mp = MixedPrecisionPolicy(
             param_dtype=torch.bfloat16, reduce_dtype=torch.float32
         )
-        model = nn.Sequential(
-            *[nn.Linear(dim, dim, device=device_type) for _ in range(n_layers)]
-        ).to(torch.bfloat16)
-        for lin in model:
-            fully_shard(
-                lin,
-                mesh=mesh,
-                mp_policy=mp,
-                reshard_after_forward=True,
-                offload_policy=CPUOffloadPolicy(),
-            )
-        fully_shard(
-            model,
-            mesh=mesh,
-            mp_policy=mp,
-            reshard_after_forward=True,
-            offload_policy=CPUOffloadPolicy(),
-        )
-        inp = torch.randn((2, dim), device=device_type.type, dtype=torch.bfloat16)
-
-        # Warmup
-        model(inp).sum().backward()
-        model.zero_grad(set_to_none=True)
+        _, off, inp = self._make_hsdp_model_pair(n_layers=3, mp=mp)
+        off(inp).sum().backward()  # warmup
+        off.zero_grad(set_to_none=True)
 
         orig_ar = dist.all_reduce
         call_count = [0]
@@ -1141,28 +1161,13 @@ class TestFullyShardHSDPStreamBehavior(FSDPTest):
 
         with self.assertRaises(RuntimeError):
             with patch_all_reduce(raising_ar):
-                model(inp).sum().backward()
+                off(inp).sum().backward()
 
         # After the exception, both comm_ctx slots must be clean so the
         # next iteration starts fresh.
-        for module in model.modules():
-            get_state = getattr(module, "_get_fsdp_state", None)
-            if get_state is None:
-                continue
-            fsdp_state = module._get_fsdp_state()
-            for pg in fsdp_state._fsdp_param_groups:
-                self.assertIsNone(
-                    pg.comm_ctx.mp_cast_all_reduce_state,
-                    "mp_cast_all_reduce_state leaked after backward "
-                    "exception; next iteration will observe a dangling "
-                    "fp32 buffer reference",
-                )
-                self.assertIsNone(
-                    pg.comm_ctx.grad_offload_state,
-                    "grad_offload_state leaked after backward exception; "
-                    "next iteration will observe a dangling GPU "
-                    "reduce_output reference",
-                )
+        self._assert_comm_ctx_drained(
+            off, msg_tag="post-exception: ", all_gather=False, reduce_scatter=False
+        )
 
     @skip_if_lt_x_gpu(4)
     @unittest.skipIf(TEST_HPU, "Sleep is not supported on HPU")
@@ -1269,64 +1274,16 @@ class TestFullyShardHSDPStreamBehavior(FSDPTest):
         stay gathered after forward so backward uses them directly — no
         re-AG. The ``grad_offload_state`` drain mechanism must still work
         even though the AG timing differs from the `=True` default."""
-        torch.manual_seed(42)
-        dim, n_layers = 4, 3
-        mesh = init_device_mesh(
-            device_type.type,
-            (2, 2),
-            mesh_dim_names=("dp_replicate", "dp_shard"),
-        )
         mp = MixedPrecisionPolicy(
             param_dtype=torch.bfloat16, reduce_dtype=torch.float32
         )
-        torch.manual_seed(0)
-        base = nn.Sequential(
-            *[nn.Linear(dim, dim, device=device_type) for _ in range(n_layers)]
+        ref, off, inp = self._make_hsdp_model_pair(
+            n_layers=3, mp=mp, reshard_after_forward=False
         )
-        ref_model = copy.deepcopy(base).to(device_type).to(torch.bfloat16)
-        off_model = copy.deepcopy(base).to(device_type).to(torch.bfloat16)
-        for lin in ref_model:
-            fully_shard(lin, mesh=mesh, mp_policy=mp, reshard_after_forward=False)
-        fully_shard(ref_model, mesh=mesh, mp_policy=mp, reshard_after_forward=False)
-        for lin in off_model:
-            fully_shard(
-                lin,
-                mesh=mesh,
-                mp_policy=mp,
-                reshard_after_forward=False,
-                offload_policy=CPUOffloadPolicy(),
-            )
-        fully_shard(
-            off_model,
-            mesh=mesh,
-            mp_policy=mp,
-            reshard_after_forward=False,
-            offload_policy=CPUOffloadPolicy(),
-        )
-
-        inp = torch.randn((2, dim), device=device_type.type, dtype=torch.bfloat16)
-        ref_model(inp).sum().backward()
-        off_model(inp).sum().backward()
-
-        for ref_p, off_p in zip(ref_model.parameters(), off_model.parameters()):
-            if ref_p.grad is None:
-                continue
-            torch.testing.assert_close(
-                off_p.grad,
-                ref_p.grad.cpu(),
-                atol=1e-3,
-                rtol=1e-2,
-                msg=lambda msg: (
-                    f"grad mismatch with reshard_after_forward=False + offload: {msg}"
-                ),
-            )
-        for module in off_model.modules():
-            get_state = getattr(module, "_get_fsdp_state", None)
-            if get_state is None:
-                continue
-            fsdp_state = module._get_fsdp_state()
-            for pg in fsdp_state._fsdp_param_groups:
-                self.assertIsNone(pg.comm_ctx.grad_offload_state)
+        ref(inp).sum().backward()
+        off(inp).sum().backward()
+        self._assert_grad_parity(ref, off)
+        self._assert_comm_ctx_drained(off)
 
     @skip_if_lt_x_gpu(4)
     @unittest.skipIf(TEST_HPU, "Sleep is not supported on HPU")
@@ -1335,34 +1292,11 @@ class TestFullyShardHSDPStreamBehavior(FSDPTest):
         registered ``post_accumulate_grad_hook`` must have its D2H copy
         forced synchronous — otherwise the hook (e.g. optimizer-in-
         backward) reads stale pinned memory while the async memcpy is
-        still in flight on the all-reduce stream.
-
-        FSDP's ``foreach_reduce`` extends its ``non_blocking`` gate to
-        disable async offload when a hook is registered. This test
-        verifies the gate: the hook always sees the fully-reduced grad
-        that matches a non-offloaded reference.
+        still in flight on the all-reduce stream. ``foreach_reduce``
+        extends its ``non_blocking`` gate to disable async offload when
+        a hook is registered.
         """
-        torch.manual_seed(42)
-        dim, n_layers = 4, 3
-        mesh = init_device_mesh(
-            device_type.type,
-            (2, 2),
-            mesh_dim_names=("dp_replicate", "dp_shard"),
-        )
-        torch.manual_seed(0)
-        base = nn.Sequential(
-            *[nn.Linear(dim, dim, device=device_type) for _ in range(n_layers)]
-        )
-        ref_model = copy.deepcopy(base).to(device_type)
-        off_model = copy.deepcopy(base).to(device_type)
-        for lin in ref_model:
-            fully_shard(lin, mesh=mesh)
-        fully_shard(ref_model, mesh=mesh)
-        for lin in off_model:
-            fully_shard(lin, mesh=mesh, offload_policy=CPUOffloadPolicy())
-        fully_shard(off_model, mesh=mesh, offload_policy=CPUOffloadPolicy())
-
-        # Record every grad value the hook observes.
+        ref, off, inp = self._make_hsdp_model_pair(n_layers=3)
         hook_observed: dict[int, torch.Tensor] = {}
 
         def _hook(p: torch.Tensor) -> None:
@@ -1370,25 +1304,23 @@ class TestFullyShardHSDPStreamBehavior(FSDPTest):
             local = g.to_local() if hasattr(g, "to_local") else g
             hook_observed[id(p)] = local.detach().cpu().clone()
 
-        for p in off_model.parameters():
+        for p in off.parameters():
             p.register_post_accumulate_grad_hook(_hook)
 
-        inp = torch.randn((2, dim), device=device_type.type)
-        ref_model(inp).sum().backward()
-        off_model(inp).sum().backward()
+        ref(inp).sum().backward()
+        off(inp).sum().backward()
 
         # Every param's hook-observed value must match the non-offloaded
         # reference. Before the non_blocking gate was extended to account
         # for hooks, this was ~2/3 runs flaky with diffs up to 2.0.
-        for ref_p, off_p in zip(ref_model.parameters(), off_model.parameters()):
+        for ref_p, off_p in zip(ref.parameters(), off.parameters()):
             if ref_p.grad is None or id(off_p) not in hook_observed:
                 continue
-            hook_val = hook_observed[id(off_p)]
             ref_local = (
                 ref_p.grad.to_local() if hasattr(ref_p.grad, "to_local") else ref_p.grad
             )
             torch.testing.assert_close(
-                hook_val,
+                hook_observed[id(off_p)],
                 ref_local.cpu(),
                 atol=1e-5,
                 rtol=1e-4,
@@ -1485,19 +1417,13 @@ class TestFullyShardHSDPStreamBehavior(FSDPTest):
         inp = torch.randn((2, dim), device=device_type.type)
         ref_model(inp).sum().backward()
         test_model(inp).sum().backward()
-
-        for ref_p, test_p in zip(ref_model.parameters(), test_model.parameters()):
-            if ref_p.grad is None:
-                continue
-            torch.testing.assert_close(
-                test_p.grad,
-                ref_p.grad,
-                atol=1e-5,
-                rtol=1e-4,
-                msg=lambda msg: (
-                    f"grad mismatch under explicit fwd/bwd prefetch: {msg}"
-                ),
-            )
+        self._assert_grad_parity(
+            ref_model,
+            test_model,
+            atol=1e-5,
+            rtol=1e-4,
+            msg_tag="explicit fwd/bwd prefetch: ",
+        )
 
     @skip_if_lt_x_gpu(4)
     @unittest.skipIf(TEST_HPU, "Sleep is not supported on HPU")
@@ -1506,73 +1432,23 @@ class TestFullyShardHSDPStreamBehavior(FSDPTest):
         ``finalize_backward`` on that backward. For HSDP + offload, the
         ``grad_offload_state`` slot must survive to the next backward and
         be drained via the prev-slot mechanism when the subsequent
-        foreach_reduce runs. Verify:
-          (a) grads across two iterations (first: is_last=False, second:
-              is_last=True) match a non-offloaded HSDP reference,
-          (b) after the final (is_last=True) iteration, both comm_ctx
-              slots are None.
+        foreach_reduce runs. Verify across two iterations (False → True):
+        grads match a non-offloaded reference and both comm_ctx slots are
+        None after the final iteration.
         """
-        torch.manual_seed(42)
-        dim, n_layers = 4, 2
-        mesh = init_device_mesh(
-            device_type.type,
-            (2, 2),
-            mesh_dim_names=("dp_replicate", "dp_shard"),
-        )
         mp = MixedPrecisionPolicy(
             param_dtype=torch.bfloat16, reduce_dtype=torch.float32
         )
-        torch.manual_seed(0)
-        base = nn.Sequential(
-            *[nn.Linear(dim, dim, device=device_type) for _ in range(n_layers)]
-        )
-        ref_model = copy.deepcopy(base).to(device_type).to(torch.bfloat16)
-        off_model = copy.deepcopy(base).to(device_type).to(torch.bfloat16)
-        for lin in ref_model:
-            fully_shard(lin, mesh=mesh, mp_policy=mp)
-        fully_shard(ref_model, mesh=mesh, mp_policy=mp)
-        for lin in off_model:
-            fully_shard(lin, mesh=mesh, mp_policy=mp, offload_policy=CPUOffloadPolicy())
-        fully_shard(
-            off_model, mesh=mesh, mp_policy=mp, offload_policy=CPUOffloadPolicy()
-        )
-
-        inp1 = torch.randn((2, dim), device=device_type.type, dtype=torch.bfloat16)
-        inp2 = torch.randn((2, dim), device=device_type.type, dtype=torch.bfloat16)
-
-        # Iter 1: accumulate, finalize deferred
-        off_model.set_is_last_backward(False)
-        ref_model(inp1).sum().backward()
-        off_model(inp1).sum().backward()
-        # Iter 2: finalize fires
-        off_model.set_is_last_backward(True)
-        ref_model(inp2).sum().backward()
-        off_model(inp2).sum().backward()
-
-        # (a) Accumulated grads match (both models accumulated over 2 iters)
-        for ref_p, off_p in zip(ref_model.parameters(), off_model.parameters()):
-            if ref_p.grad is None:
-                continue
-            torch.testing.assert_close(
-                off_p.grad,
-                ref_p.grad.cpu(),
-                atol=1e-3,
-                rtol=1e-2,
-                msg=lambda msg: (
-                    f"grad mismatch under deferred finalize: {msg}. The "
-                    f"grad_offload state may not be carrying correctly "
-                    f"across is_last_backward=False → True."
-                ),
-            )
-        # (b) Both comm_ctx slots drained after last backward
-        for module in off_model.modules():
-            get_state = getattr(module, "_get_fsdp_state", None)
-            if get_state is None:
-                continue
-            fsdp_state = module._get_fsdp_state()
-            for pg in fsdp_state._fsdp_param_groups:
-                self.assertIsNone(pg.comm_ctx.mp_cast_all_reduce_state)
-                self.assertIsNone(pg.comm_ctx.grad_offload_state)
+        ref, off, inp1 = self._make_hsdp_model_pair(n_layers=2, mp=mp)
+        inp2 = torch.randn(inp1.shape, device=inp1.device, dtype=inp1.dtype)
+        off.set_is_last_backward(False)
+        ref(inp1).sum().backward()
+        off(inp1).sum().backward()
+        off.set_is_last_backward(True)
+        ref(inp2).sum().backward()
+        off(inp2).sum().backward()
+        self._assert_grad_parity(ref, off, msg_tag="deferred finalize: ")
+        self._assert_comm_ctx_drained(off, msg_tag="post deferred finalize: ")
 
     @skip_if_lt_x_gpu(4)
     @unittest.skipIf(TEST_HPU, "Sleep is not supported on HPU")
@@ -1638,50 +1514,14 @@ class TestFullyShardHSDPStreamBehavior(FSDPTest):
         Async unshard routes AG copy-in through the default stream rather
         than the dedicated copy-in stream. Verify this config still
         produces correct grads under offload."""
-        torch.manual_seed(42)
-        dim, n_layers = 4, 2
-        mesh = init_device_mesh(
-            device_type.type,
-            (2, 2),
-            mesh_dim_names=("dp_replicate", "dp_shard"),
-        )
         mp = MixedPrecisionPolicy(
             param_dtype=torch.bfloat16, reduce_dtype=torch.float32
         )
-        torch.manual_seed(0)
-        base = nn.Sequential(
-            *[nn.Linear(dim, dim, device=device_type) for _ in range(n_layers)]
-        )
-        ref_model = copy.deepcopy(base).to(device_type).to(torch.bfloat16)
-        off_model = copy.deepcopy(base).to(device_type).to(torch.bfloat16)
-        for lin in ref_model:
-            fully_shard(lin, mesh=mesh, mp_policy=mp)
-        fully_shard(ref_model, mesh=mesh, mp_policy=mp)
-        for lin in off_model:
-            fully_shard(lin, mesh=mesh, mp_policy=mp, offload_policy=CPUOffloadPolicy())
-        fully_shard(
-            off_model, mesh=mesh, mp_policy=mp, offload_policy=CPUOffloadPolicy()
-        )
-        off_model._set_unshard_async_op(True)
-
-        inp = torch.randn((2, dim), device=device_type.type, dtype=torch.bfloat16)
-        ref_model(inp).sum().backward()
-        off_model(inp).sum().backward()
-
-        for ref_p, off_p in zip(ref_model.parameters(), off_model.parameters()):
-            if ref_p.grad is None:
-                continue
-            torch.testing.assert_close(
-                off_p.grad,
-                ref_p.grad.cpu(),
-                atol=1e-3,
-                rtol=1e-2,
-                msg=lambda msg: (
-                    f"grad mismatch with async_op=True + offload: {msg}. "
-                    f"Async unshard may interact with the grad_offload "
-                    f"keep-alive path."
-                ),
-            )
+        ref, off, inp = self._make_hsdp_model_pair(n_layers=2, mp=mp)
+        off._set_unshard_async_op(True)
+        ref(inp).sum().backward()
+        off(inp).sum().backward()
+        self._assert_grad_parity(ref, off, msg_tag="async_op=True + offload: ")
 
     @skip_if_lt_x_gpu(4)
     @unittest.skipIf(TEST_HPU, "Sleep is not supported on HPU")
@@ -1692,74 +1532,22 @@ class TestFullyShardHSDPStreamBehavior(FSDPTest):
         root one after the other) must not cross-contaminate comm_ctx
         state — a pre-condition for the single-slot invariants of
         ``mp_cast_all_reduce_state`` and ``grad_offload_state``."""
-        torch.manual_seed(42)
-        dim, n_layers = 4, 2
-        mesh = init_device_mesh(
-            device_type.type,
-            (2, 2),
-            mesh_dim_names=("dp_replicate", "dp_shard"),
-        )
         mp = MixedPrecisionPolicy(
             param_dtype=torch.bfloat16, reduce_dtype=torch.float32
         )
+        # Four structurally identical offloaded roots on the same mesh.
+        # Reuse the pair helper four times (ref is discarded each time;
+        # we keep only the offloaded models).
+        _, ref, inp = self._make_hsdp_model_pair(n_layers=2, mp=mp)
+        models = [self._make_hsdp_model_pair(n_layers=2, mp=mp)[1] for _ in range(3)]
 
-        def _make_offload_model() -> nn.Module:
-            torch.manual_seed(0)
-            model = nn.Sequential(
-                *[nn.Linear(dim, dim, device=device_type) for _ in range(n_layers)]
-            ).to(torch.bfloat16)
-            for lin in model:
-                fully_shard(
-                    lin,
-                    mesh=mesh,
-                    mp_policy=mp,
-                    offload_policy=CPUOffloadPolicy(),
-                )
-            fully_shard(
-                model, mesh=mesh, mp_policy=mp, offload_policy=CPUOffloadPolicy()
-            )
-            return model
-
-        ref_model = _make_offload_model()
-        models = [_make_offload_model() for _ in range(3)]
-
-        inp = torch.randn((2, dim), device=device_type.type, dtype=torch.bfloat16)
-        ref_model(inp).sum().backward()
+        ref(inp).sum().backward()
         for m in models:
             m(inp).sum().backward()
 
-        # All three roots must produce the reference grad
         for i, m in enumerate(models):
-            for ref_p, p in zip(ref_model.parameters(), m.parameters()):
-                if ref_p.grad is None:
-                    continue
-                torch.testing.assert_close(
-                    p.grad,
-                    ref_p.grad,
-                    atol=1e-5,
-                    rtol=1e-4,
-                    msg=lambda msg: (
-                        f"root {i} grad mismatch vs ref: {msg}. Three-root "
-                        f"serial backward may be cross-contaminating "
-                        f"comm_ctx state."
-                    ),
-                )
-        # Verify each root's comm_ctx slots are drained
-        for i, m in enumerate(models):
-            for module in m.modules():
-                get_state = getattr(module, "_get_fsdp_state", None)
-                if get_state is None:
-                    continue
-                fsdp_state = module._get_fsdp_state()
-                for pg in fsdp_state._fsdp_param_groups:
-                    self.assertIsNone(
-                        pg.comm_ctx.mp_cast_all_reduce_state,
-                        f"root {i}: mp_cast_all_reduce_state leaked",
-                    )
-                    self.assertIsNone(
-                        pg.comm_ctx.grad_offload_state,
-                        f"root {i}: grad_offload_state leaked",
-                    )
+            self._assert_grad_parity(ref, m, msg_tag=f"root {i} vs ref: ")
+            self._assert_comm_ctx_drained(m, msg_tag=f"root {i}: ")
 
     @skip_if_lt_x_gpu(4)
     @unittest.skipIf(TEST_HPU, "Sleep is not supported on HPU")
@@ -1769,81 +1557,18 @@ class TestFullyShardHSDPStreamBehavior(FSDPTest):
         ``grad_offload_state`` comm_ctx slots are populated simultaneously.
         Both drain paths use ``del prev_<state> inside
         with stream(all_reduce_stream):`` — a subtle ordering bug in either
-        would only surface here. Verify:
-          (a) grads match a non-offloaded HSDP+MP reference,
-          (b) both comm_ctx slots are None after finalize_backward.
+        would only surface here. Verify (a) grads match a non-offloaded
+        HSDP+MP reference, (b) both comm_ctx slots are None after
+        finalize_backward.
         """
-        torch.manual_seed(42)
-        dim, n_layers = 4, 3
-        mesh = init_device_mesh(
-            device_type.type,
-            (2, 2),
-            mesh_dim_names=("dp_replicate", "dp_shard"),
-        )
         mp = MixedPrecisionPolicy(
             param_dtype=torch.bfloat16, reduce_dtype=torch.float32
         )
-        torch.manual_seed(0)
-        base = nn.Sequential(
-            *[nn.Linear(dim, dim, device=device_type) for _ in range(n_layers)]
-        )
-        ref_model = copy.deepcopy(base).to(device_type).to(torch.bfloat16)
-        off_model = copy.deepcopy(base).to(device_type).to(torch.bfloat16)
-        for lin in ref_model:
-            fully_shard(lin, mesh=mesh, mp_policy=mp, reshard_after_forward=True)
-        fully_shard(ref_model, mesh=mesh, mp_policy=mp, reshard_after_forward=True)
-        for lin in off_model:
-            fully_shard(
-                lin,
-                mesh=mesh,
-                mp_policy=mp,
-                reshard_after_forward=True,
-                offload_policy=CPUOffloadPolicy(),
-            )
-        fully_shard(
-            off_model,
-            mesh=mesh,
-            mp_policy=mp,
-            reshard_after_forward=True,
-            offload_policy=CPUOffloadPolicy(),
-        )
-
-        inp = torch.randn((2, dim), device=device_type.type, dtype=torch.bfloat16)
-        ref_model(inp).sum().backward()
-        off_model(inp).sum().backward()
-
-        # (a) Grad parity
-        for ref_p, off_p in zip(ref_model.parameters(), off_model.parameters()):
-            if ref_p.grad is None:
-                continue
-            torch.testing.assert_close(
-                off_p.grad,
-                ref_p.grad.cpu(),
-                atol=1e-3,
-                rtol=1e-2,
-                msg=lambda msg: (
-                    f"HSDP+MP+offload grad mismatch: {msg}. Either the "
-                    f"mp_cast or grad_offload keep-alive is broken in the "
-                    f"combined path."
-                ),
-            )
-        # (b) Both comm_ctx slots drained by finalize_backward
-        for module in off_model.modules():
-            get_state = getattr(module, "_get_fsdp_state", None)
-            if get_state is None:
-                continue
-            fsdp_state = module._get_fsdp_state()
-            for pg in fsdp_state._fsdp_param_groups:
-                self.assertIsNone(
-                    pg.comm_ctx.mp_cast_all_reduce_state,
-                    "mp_cast_all_reduce_state not drained under combined "
-                    "HSDP+MP+offload path",
-                )
-                self.assertIsNone(
-                    pg.comm_ctx.grad_offload_state,
-                    "grad_offload_state not drained under combined "
-                    "HSDP+MP+offload path",
-                )
+        ref, off, inp = self._make_hsdp_model_pair(n_layers=3, mp=mp)
+        ref(inp).sum().backward()
+        off(inp).sum().backward()
+        self._assert_grad_parity(ref, off, msg_tag="HSDP+MP+offload combined: ")
+        self._assert_comm_ctx_drained(off, msg_tag="combined lifetime: ")
 
     @skip_if_lt_x_gpu(4)
     @unittest.skipIf(TEST_HPU, "Sleep is not supported on HPU")
