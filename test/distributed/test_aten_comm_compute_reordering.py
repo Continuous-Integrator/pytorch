@@ -1,3 +1,4 @@
+# flake8: noqa: B950
 # Owner(s): ["module: inductor"]
 import unittest
 from unittest.mock import patch
