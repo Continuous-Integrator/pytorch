@@ -645,7 +645,11 @@ else:
                 if self._mesh_dim_names
                 else f"{self._layout.top_level_sizes}"
             )
-            device_mesh_repr = f"DeviceMesh({device_mesh_repr}, '{self.device_type}', stride={self._layout.to_pycute().stride}"
+            stride = self._layout.to_pycute().stride
+            stride = tuple(s[0] if len(s) == 1 else s for s in stride)
+            device_mesh_repr = (
+                f"DeviceMesh({device_mesh_repr}, '{self.device_type}', stride={stride}"
+            )
             # We only print the mesh tensor if the debug mode is turned on.
             if os.environ.get("TORCH_DISTRIBUTED_DEBUG", "") == "DETAIL":
                 device_mesh_repr += f", Mesh: {self.mesh.tolist()}"
