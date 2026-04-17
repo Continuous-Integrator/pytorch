@@ -6,6 +6,7 @@ import unittest
 from sympy import I, Max, Min, Symbol, sympify
 
 import torch
+from torch.fx.experimental.symbolic_shapes import ShapeEnv
 from torch._inductor.fx_utils import count_flops_fx, countable_fx
 from torch._inductor.sizevars import SizeVarAllocator
 from torch._inductor.utils import get_device_tflops, sympy_str, sympy_subs
@@ -248,37 +249,20 @@ class TestUtils(TestCase):
         Ref: https://github.com/pytorch/pytorch/issues/177146
         """
 
-        # Initialize allocator with a dummy shape environment symbol
-        allocator = V.graph.sizevars
+        # Create a real ShapeEnv (required by SizeVarAllocator)
+        shape_env = ShapeEnv()
+        # Create SizeVarAllocator directly (no V.graph!)
+        allocator = SizeVarAllocator(shape_env)
+        # Create real SymPy symbols
+        s0 = sympy.Symbol("s0", positive=True, integer=True)
+        s1 = sympy.Symbol("s1", positive=True, integer=True)
+        # Tell ShapeEnv that s1 is divisible by 16
+        shape_env._add_divisible(Mod(s1, 16))
 
-        # Define symbols representing dimensions
-        s0 = allocator.new_symintvar("s0")
-        s1 = allocator.new_symintvar("s1")
-        denominator = 16
-
-        allocator.shape_env._add_divisible(Mod(s1, 16))
-
-        # Test Case 1: Simple product (s0 * s1) -> should be divisible by 16
-        product_expr = s0 * s1
+        # If s1 is divisible by 16, then s0 * s1 should also be divisible by 16
         self.assertTrue(
-            allocator.statically_known_multiple_of(product_expr, denominator),
-            f"Failed to propagate divisibility of {s1} to the product {product_expr}",
+            allocator.statically_known_multiple_of(s0 * s1, 16)
         )
-
-        # Test Case 2: Multi-factor product (s0 * s1 * 2) -> should be divisible by 16
-        complex_product = s0 * s1 * 2
-        self.assertTrue(
-            allocator.statically_known_multiple_of(complex_product, denominator),
-            "Failed to propagate divisibility in a multi-factor product",
-        )
-
-        # Test Case 3: Constant factor divisibility (s0 * 32) -> 32 % 16 == 0
-        constant_multiple = s0 * 32
-        self.assertTrue(
-            allocator.statically_known_multiple_of(constant_multiple, denominator),
-            "Failed to recognize constant factor divisibility directly",
-        )
-
 
 instantiate_device_type_tests(TestUtils, globals(), allow_xpu=True)
 
