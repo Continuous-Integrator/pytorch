@@ -815,7 +815,7 @@ class CppWrapperGpu(CppWrapperCpu):
         self._lazy_kernel_names: list[str] = []
 
     def generate_debug_sync(self, buffer):
-        buffer.writeline("cudaDeviceSynchronize();")
+        buffer.writeline(maybe_hipify_code_wrapper("cudaDeviceSynchronize();"))
 
     @staticmethod
     def create(
