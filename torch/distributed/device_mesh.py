@@ -645,8 +645,10 @@ else:
                 if self._mesh_dim_names
                 else f"{self._layout.top_level_sizes}"
             )
-            stride = self._layout.to_pycute().stride
-            stride = tuple(s[0] if len(s) == 1 else s for s in stride)
+            stride = tuple(
+                axis.stride[0] if len(axis.stride) == 1 else axis.stride
+                for axis in self._layout
+            )
             device_mesh_repr = (
                 f"DeviceMesh({device_mesh_repr}, '{self.device_type}', stride={stride}"
             )
