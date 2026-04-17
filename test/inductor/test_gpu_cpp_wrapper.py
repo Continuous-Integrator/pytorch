@@ -79,6 +79,8 @@ class TestGpuWrapper(InductorTestCase):
     def test_debug_sync_graph(self):
         if not RUN_GPU:
             self.skipTest("GPU not available")
+        if GPU_TYPE == "xpu":
+            self.skipTest("XPU not supported")
 
         def test_fn(x):
             return x * 2
@@ -93,6 +95,8 @@ class TestGpuWrapper(InductorTestCase):
     def test_debug_sync_kernel(self):
         if not RUN_GPU:
             self.skipTest("GPU not available")
+        if GPU_TYPE == "xpu":
+            self.skipTest("XPU not supported")
 
         def test_fn(x):
             return x * 2
