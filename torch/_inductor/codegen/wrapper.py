@@ -1573,7 +1573,7 @@ class PythonWrapperCodegen(CodeGen):
             if isinstance(
                 buf,
                 (
-                    sympy.Expr,
+                    sympy.Basic,
                     ir.TorchBindObject,
                     ir.GeneratorState,
                     ir.OpaqueObjectState,
@@ -1595,7 +1595,7 @@ class PythonWrapperCodegen(CodeGen):
     def codegen_input_nan_asserts(self) -> None:
         self.prefix.writeline("# make sure graph inputs are not nan/inf")
         for name, buf in self.get_graph_inputs().items():
-            if isinstance(buf, (sympy.Expr, ir.TorchBindObject)):
+            if isinstance(buf, (sympy.Basic, ir.TorchBindObject)):
                 continue
             line = f"assert not {name}.isnan().any().item()"
             self.prefix.writeline(line)
@@ -1726,7 +1726,7 @@ class PythonWrapperCodegen(CodeGen):
         if self._pending_alignment_copies:
             V.graph._defers_input_alignment = True
             self.imports.writeline(
-                "from torch._C._dynamo.guards import copy_misaligned"
+                "from torch._C._dynamo.guards import copy_if_misaligned"
             )
 
     def codegen_deferred_alignment_copies(self, input_names: Iterable[str]) -> None:
@@ -1737,7 +1737,7 @@ class PythonWrapperCodegen(CodeGen):
         for name in input_names:
             if name in self._pending_alignment_copies:
                 self._pending_alignment_copies.discard(name)
-                self.writeline(f"{name} = copy_misaligned({name})")
+                self.writeline(f"{name} = copy_if_misaligned({name})")
 
     # this function (and below) takes the graph name as input so
     # that stream caching happens per graph instance. this
@@ -2601,6 +2601,11 @@ class PythonWrapperCodegen(CodeGen):
                     add_expr_input(
                         name, V.graph.sizevars.optimization_hint(value, fallback=42)
                     )
+                elif isinstance(value, sympy.Basic):
+                    # sympy.Boolean (e.g. StrictLessThan from torch.cond predicates)
+                    # is not a sympy.Expr so optimization_hint cannot handle it.
+                    # Use False as a fallback for benchmark harness purposes.
+                    add_expr_input(name, False)
                 elif isinstance(value, ir.GeneratorState):
                     add_expr_input(
                         name,
@@ -2951,6 +2956,10 @@ class PythonWrapperCodegen(CodeGen):
                     cache_key.append(arg)
         cache_key.append(str(triton_meta))
         cache_key.extend(str(inductor_meta))
+
+        if epilogue_fusion is not None:
+            cache_key.append((epilogue_fusion[0].get_name(), epilogue_fusion[1]))
+
         cache_key = tuple(cache_key)
         if cache_key in self.user_defined_kernel_cache:
             name, triton_meta, cached_inductor_meta = self.user_defined_kernel_cache[
