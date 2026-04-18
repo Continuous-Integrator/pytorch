@@ -113,6 +113,9 @@ test_failures = {
     "test_as_strided_on_views_dynamic_shapes": TestFailure(
         ("cpu", "cuda", "xpu"), is_skip=True
     ),
+    "test_as_strided_on_split_view_dynamic_shapes": TestFailure(
+        ("cpu", "cuda", "xpu"), is_skip=True
+    ),
     #
     # Failed to find dynamic for loop variable:
     #
