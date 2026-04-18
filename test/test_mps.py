@@ -12950,6 +12950,10 @@ class TestConsistency(TestCaseMPS):
         'matmul', '__rmatmul__',
         'linalg.multi_dot',
         'addbmm',
+        # Accumulates sigmoid + log + weighted sum rounding; CPU and MPS
+        # end up within ~3e-5 of fp64 but differ from each other by more
+        # than the default fp32 tolerance.
+        'nn.functional.binary_cross_entropy_with_logits',
     }
 
     def _compute_tolerances(self, op, dtype):
@@ -12965,8 +12969,10 @@ class TestConsistency(TestCaseMPS):
         if op.name in ['nn.functional.conv_transpose1d',
                        'nn.functional.conv_transpose2d',
                        'nn.functional.conv_transpose3d',
-                       '__rmatmul__', 'addbmm', 'addmv',
-                       'baddbmm', 'cov', 'matmul', 'mv'] and dtype in [torch.float16, torch.bfloat16]:
+                       '__rmatmul__', 'addbmm', 'addmm', 'addmv',
+                       'baddbmm', 'corrcoef', 'cov', 'linalg.multi_dot',
+                       'matmul', 'mv',
+                       'nn.functional.linear'] and dtype in [torch.float16, torch.bfloat16]:
             return (5e-2, 5e-2) if dtype == torch.float16 else (5e-2, 1e-1)
         if op.name == "masked.mean":
             return (7e-4, 2e-3)
