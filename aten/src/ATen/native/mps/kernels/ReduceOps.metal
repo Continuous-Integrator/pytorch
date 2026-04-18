@@ -217,12 +217,18 @@ inline opmath_t<TI> load_val(TI v) {
   return r;
 }
 
+// LOAD_NONZERO returns uint: MPS tensor numel fits in uint32, so per-TG
+// (and per-output-element) non-zero counts cannot overflow. This lets
+// count_nonzero accumulate in 32-bit integer instead of 64-bit, which is a
+// meaningful speedup for small inputs (especially bool) where compute
+// overhead dominates. The final cast back to long happens at the output
+// store in the kernel.
 template <
     LoadMode MODE,
     typename TI,
     ::metal::enable_if_t<MODE == LOAD_NONZERO, bool> = true>
-inline long load_val(TI v) {
-  return load_is_nonzero(v) ? 1 : 0;
+inline uint load_val(TI v) {
+  return load_is_nonzero(v) ? 1u : 0u;
 }
 
 // Sum reduction kernel with multiple independent accumulation chains (ILP).
@@ -251,7 +257,7 @@ kernel void sum_reduction(
     uint simd_lane_id [[thread_index_in_simdgroup]],
     uint simdgroup_id [[simdgroup_index_in_threadgroup]],
     uint simdgroup_size [[threads_per_simdgroup]]) {
-  using TA = opmath_t<TO>;
+  using TA = ::metal::conditional_t<MODE == LOAD_NONZERO, uint, opmath_t<TO>>;
 
   // Compute input_base (once per TG) and detect reduction pattern.
   // For single reduced dim: input_base + k * reduction_stride gives
@@ -382,7 +388,7 @@ kernel void sum_reduction_outer(
     constant float& divisor [[buffer(3)]], // >0 divides accumulator before cast
     uint2 tid_tg [[thread_position_in_threadgroup]],
     uint2 tg_pos [[threadgroup_position_in_grid]]) {
-  using TA = opmath_t<TO>;
+  using TA = ::metal::conditional_t<MODE == LOAD_NONZERO, uint, opmath_t<TO>>;
   const uint M = sizes.x;
   const uint N = sizes.y;
   const uint out_stride = sizes.z;
@@ -490,7 +496,7 @@ kernel void sum_reduction_inner(
     uint tgid [[threadgroup_position_in_grid]],
     uint simd_lane_id [[thread_index_in_simdgroup]],
     uint simdgroup_id [[simdgroup_index_in_threadgroup]]) {
-  using TA = opmath_t<TO>;
+  using TA = ::metal::conditional_t<MODE == LOAD_NONZERO, uint, opmath_t<TO>>;
   const uint M = sizes.x;
   const uint N = sizes.y;
   const uint num_simd_groups = tptg / 32;
