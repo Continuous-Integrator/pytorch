@@ -6162,8 +6162,8 @@ def rotary_embedding_frequencies(
     end: int,
     theta: float = 10000.0,
     *,
-    device: Optional[torch.device] = None,
-    dtype: Optional[torch.dtype] = None,
+    device: torch.device | None = None,
+    dtype: torch.dtype | None = None,
 ) -> tuple[Tensor, Tensor]:
     r"""Precompute cosine and sine frequencies for rotary position embedding.
 

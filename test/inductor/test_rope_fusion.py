@@ -10,11 +10,11 @@ from torch.testing._internal.common_utils import IS_LINUX
 from torch.testing._internal.inductor_utils import GPU_TYPE, HAS_CUDA_AND_TRITON
 
 
-class TestRoPEFusionTemplate(TestCase):
+class RoPEFusionTemplate(TestCase):
     device = None
 
     @config.patch(expand_dimension_for_pointwise_nodes=True)
-    def test_rope_F_api_fusion(self):
+    def _test_rope_F_api_fusion(self):
         batch_size, seq_length = 4, 128
         num_heads, head_dim = 8, 64
 
@@ -41,7 +41,7 @@ class TestRoPEFusionTemplate(TestCase):
         self.assertEqual(code.count(".run("), 1)
 
     @config.patch(expand_dimension_for_pointwise_nodes=True)
-    def test_rope_linear_epilogue_fusion(self):
+    def _test_rope_linear_epilogue_fusion(self):
         batch_size, seq_length = 4, 128
         num_heads, head_dim = 8, 64
         embed_dim = num_heads * head_dim
@@ -71,8 +71,13 @@ class TestRoPEFusionTemplate(TestCase):
 
 if HAS_CUDA_AND_TRITON:
 
-    class RoPEFusionGpuTests(TestRoPEFusionTemplate):
+    class RoPEFusionGpuTests(RoPEFusionTemplate):
         device = GPU_TYPE
+
+        test_rope_F_api_fusion = RoPEFusionTemplate._test_rope_F_api_fusion
+        test_rope_linear_epilogue_fusion = (
+            RoPEFusionTemplate._test_rope_linear_epilogue_fusion
+        )
 
 
 if IS_LINUX and HAS_CUDA_AND_TRITON:
