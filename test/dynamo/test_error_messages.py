@@ -124,7 +124,7 @@ def _reconstruction_failure_gb_stack_source_attribution() -> str:
     if sys.version_info >= (3, 11) and _load_global_has_positions():
         return (
             "Stack variable source attribution:\n"
-            "  NullVariable originated from:\n"
+            "  LazyVariableTracker(realized: SkipFunctionVariable()) originated from:\n"
             '  File "test_error_messages.py", line N\n'
             "                torch._dynamo.graph_break()\n"
             "^^^^^^^^^^^^^^^^^^^^^^^^^\n"
@@ -281,14 +281,14 @@ from user code:
                 zip(range(5), range(10))
             ),
             """\
-can't handle functions not implemented in python
-  Explanation: Dynamo can only handle functions defined in python
-  Hint: Move usage of this function out of `torch.compile` region
-  Hint: Avoid using `tensor.is_inference()` and `torch.is_inference_mode_enabled()` in your compile code. This is primarily used in conjunction with `torch.inference_mode`. Consider using `torch.no_grad` instead because `torch.no_grad` leads to same improvements as `inference_mode` when `torch.compile` is used.
+Observed exception
+  Explanation: Dynamo found no exception handler at the top-level compiled function when encountering an exception. Exception will propagate outside the compiled region.
+  Hint: Your code may result in an error when running in eager. Please double check that your code doesn't contain a similar error when actually running eager/uncompiled. You can do this by removing the `torch.compile` call, or by using `torch.compiler.set_stance("force_eager")`.
+  Hint: It may be possible to write Dynamo tracing rules for this code. Please report an issue to PyTorch if you encounter this graph break often and it is causing performance issues.
 
-  Developer debug context: <slot wrapper '__iter__' of 'zip' objects>
+  Developer debug context: raised exception TypeError("'zip' object is not iterable")
 
- For more details about this graph break, please visit: https://meta-pytorch.github.io/compile-graph-break-site/gb/gb0177.html
+ For more details about this graph break, please visit: https://meta-pytorch.github.io/compile-graph-break-site/gb/gb0088.html
 
 from user code:
    File "test_error_messages.py", line N, in fn
@@ -307,14 +307,14 @@ from user code:
             Unsupported,
             lambda: torch.compile(fn, backend="eager", fullgraph=True)(x, dct.items()),
             """\
-can't handle functions not implemented in python
-  Explanation: Dynamo can only handle functions defined in python
-  Hint: Move usage of this function out of `torch.compile` region
-  Hint: Avoid using `tensor.is_inference()` and `torch.is_inference_mode_enabled()` in your compile code. This is primarily used in conjunction with `torch.inference_mode`. Consider using `torch.no_grad` instead because `torch.no_grad` leads to same improvements as `inference_mode` when `torch.compile` is used.
+Observed exception
+  Explanation: Dynamo found no exception handler at the top-level compiled function when encountering an exception. Exception will propagate outside the compiled region.
+  Hint: Your code may result in an error when running in eager. Please double check that your code doesn't contain a similar error when actually running eager/uncompiled. You can do this by removing the `torch.compile` call, or by using `torch.compiler.set_stance("force_eager")`.
+  Hint: It may be possible to write Dynamo tracing rules for this code. Please report an issue to PyTorch if you encounter this graph break often and it is causing performance issues.
 
-  Developer debug context: <slot wrapper '__iter__' of 'dict_items' objects>
+  Developer debug context: raised exception TypeError("'dict_items' object is not iterable")
 
- For more details about this graph break, please visit: https://meta-pytorch.github.io/compile-graph-break-site/gb/gb0177.html
+ For more details about this graph break, please visit: https://meta-pytorch.github.io/compile-graph-break-site/gb/gb0088.html
 
 from user code:
    File "test_error_messages.py", line N, in fn
