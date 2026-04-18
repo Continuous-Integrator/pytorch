@@ -143,26 +143,23 @@ def fully_shard(
     topmost root module.
 
     When called with a list (``fully_shard([a, b, ...])``), the model's
-    forward may invoke only a subset of the grouped modules; the remaining
-    modules may be called later in the same iteration. For example, in
-    chunked-loss training with ``fully_shard([norm, head])``, the main
-    forward runs norm only, and head is invoked per chunk afterwards.
-    Reshard, pre-backward hook registration, and ``output_dtype`` cast are
-    completed from the root's post-forward for any incomplete group.
-    Caveats:
+    forward may run only a subset of the grouped modules, with the rest
+    called later in the same iteration. Chunked-loss training with
+    ``fully_shard([norm, head])`` is the motivating case: the main forward
+    runs norm only, then head is invoked per chunk. Caveats:
 
     - Each standalone per-chunk invocation registers its own post_backward
       autograd node, so N chunk calls produce N reduce-scatters for that
       group.
-    - ``mp_policy.output_dtype`` on an inner group's policy is applied to the
-      root's output via the post-forward completion, not to the output of
-      standalone per-chunk calls; apply the cast explicitly if needed.
-
-    ``mp_policy.cast_forward_inputs`` applies to every module in a grouped
-    ``fully_shard``.
+    - ``mp_policy.output_dtype`` on the group's policy is applied to the
+      output of the model's forward (via root post-forward completion),
+      not to the output of standalone per-chunk calls; apply the cast
+      explicitly if needed.
+    - ``mp_policy.cast_forward_inputs`` applies to every module in the
+      group, not just the first to run.
 
     Args:
-        module (Union[nn.Module, List[nn.Module]): The module or modules to
+        module (Union[nn.Module, List[nn.Module]]): The module or modules to
             shard with FSDP and group together for communication.
         mesh (Optional[DeviceMesh]): This data parallel mesh defines the
             sharding and device. If 1D, then parameters are fully sharded

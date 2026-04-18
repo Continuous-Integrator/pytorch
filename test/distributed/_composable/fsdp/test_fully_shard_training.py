@@ -719,6 +719,12 @@ class TestFullyShard1DTrainingCompose(FSDPTest):
             return min_world_size
         return min(min_world_size, torch.get_device_module(device_type).device_count())
 
+    @staticmethod
+    def _materialize_grad(grad: torch.Tensor) -> torch.Tensor:
+        if isinstance(grad, DTensor):
+            return grad.full_tensor().clone()
+        return grad.clone()
+
     @skip_if_lt_x_gpu(2)
     @compiled_fsdp_test(compile_compute_on_module=Transformer)
     @xfailIf(TEST_XPU)  # https://github.com/intel/torch-xpu-ops/issues/1661
@@ -881,11 +887,6 @@ class TestFullyShard1DTrainingCompose(FSDPTest):
         dim, vocab_size, n_chunks = 32, 128, 4
         fsdp_kwargs: dict = {"reshard_after_forward": reshard_after_forward}
 
-        def _materialize_grad(grad):
-            if isinstance(grad, DTensor):
-                return grad.full_tensor().clone()
-            return grad.clone()
-
         def _run_chunked(model: nn.Module):
             """
             Run chunked-loss pattern. Returns (total_loss, final_grads,
@@ -906,7 +907,9 @@ class TestFullyShard1DTrainingCompose(FSDPTest):
                 total_loss += loss.detach()
                 loss.backward()
                 h_grads.append(chunk.grad.detach())
-                per_chunk_head_grads.append(_materialize_grad(model.head.weight.grad))
+                per_chunk_head_grads.append(
+                    self._materialize_grad(model.head.weight.grad)
+                )
             # Each chunk must contribute a non-zero delta — catches the bug
             # where chunks 2+ are silently dropped due to unregistered
             # post_backward hooks.
@@ -922,7 +925,7 @@ class TestFullyShard1DTrainingCompose(FSDPTest):
             grads = {}
             for name, param in model.named_parameters():
                 self.assertIsNotNone(param.grad, f"grad is None for {name}")
-                grads[name] = _materialize_grad(param.grad)
+                grads[name] = self._materialize_grad(param.grad)
             return total_loss, grads, head_grad_after_chunks
 
         torch.manual_seed(42)
@@ -1389,11 +1392,6 @@ class TestFullyShard1DTrainingCompose(FSDPTest):
                     return h
                 return self.head(h)
 
-        def _materialize_grad(grad):
-            if isinstance(grad, DTensor):
-                return grad.full_tensor().clone()
-            return grad.clone()
-
         def _run_chunked_microbatch(m: nn.Module, tokens: torch.Tensor) -> None:
             h = m(tokens, skip_head=True)
             h_detached = h.detach()
@@ -1451,8 +1449,8 @@ class TestFullyShard1DTrainingCompose(FSDPTest):
         ):
             self.assertIsNotNone(ref_param.grad, f"ref grad None for {ref_name}")
             self.assertIsNotNone(fsdp_param.grad, f"fsdp grad None for {ref_name}")
-            ref_full = _materialize_grad(ref_param.grad)
-            fsdp_full = _materialize_grad(fsdp_param.grad)
+            ref_full = self._materialize_grad(ref_param.grad)
+            fsdp_full = self._materialize_grad(fsdp_param.grad)
             self.assertTrue(
                 torch.isfinite(fsdp_full).all().item(),
                 f"non-finite grad for {ref_name}",

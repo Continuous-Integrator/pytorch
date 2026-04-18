@@ -37,8 +37,10 @@ class FSDPStateContext(Generic[_StateType]):
 
     def __init__(self) -> None:
         # All FSDP states in the root state's module tree, in
-        # ``named_modules()`` pre-order; ``_force_complete_incomplete_states``
-        # iterates ``reversed`` for inner-first.
+        # ``named_modules()`` pre-order. ``_force_complete_incomplete_states``
+        # iterates ``reversed`` so within a nesting chain the deepest
+        # state's ``output_dtype`` cast applies first, matching the order
+        # ``_post_forward`` would unwind in the non-partial case.
         self.all_states: list[_StateType] = []
         # Iteration's forward root runs the once-per-forward logic; this root
         # may not be the overall root set by lazy initialization in cases where
@@ -319,9 +321,10 @@ class FSDPState(_State):
         for fsdp_param_group in self._fsdp_param_groups:
             output = fsdp_param_group.post_forward(module, input, output)
         # Register pre_backward before force_complete so the hook attaches
-        # to the pre-cast tensor; inner states add their own hooks on the
-        # same tensor in force_complete. pre_backward is idempotent so hook
-        # fire order does not affect correctness.
+        # to the pre-cast tensor; force_complete registers inner states'
+        # hooks on the output as it threads through inner casts. Hook
+        # fire order does not matter: each state's pre_backward is
+        # idempotent (guarded by training_state).
         output = self._register_pre_backward_hook(output)
         self._training_state = TrainingState.IDLE
         if self._state_ctx.iter_forward_root is self:
@@ -335,21 +338,22 @@ class FSDPState(_State):
                 self._comm_ctx.all_gather_stream.wait_event(all_gather_state.event)
                 self._comm_ctx.all_gather_state = None  # free the all-gather result
             self._state_ctx.iter_forward_root = None
-        if self._mp_policy.output_dtype is not None:
-            with torch.profiler.record_function("FSDP::cast_forward_outputs"):
-                output = _apply_to_tensors(
-                    functools.partial(_cast_fp_tensor, self._mp_policy.output_dtype),
-                    output,
-                )
-        return output
+        return self._cast_output_dtype(output)
+
+    def _cast_output_dtype(self, output: Any) -> Any:
+        if self._mp_policy.output_dtype is None:
+            return output
+        with torch.profiler.record_function("FSDP::cast_forward_outputs"):
+            return _apply_to_tensors(
+                functools.partial(_cast_fp_tensor, self._mp_policy.output_dtype),
+                output,
+            )
 
     @_dynamo_disable
     def _force_complete_incomplete_states(self, output: Any) -> Any:
-        # Complete post-forward for any state whose group forward did not run
-        # all modules (e.g. chunked loss where model.forward skips head).
-        # ``all_states`` is pre-order from ``named_modules()``; ``reversed``
-        # yields inner-first so inner ``output_dtype`` casts apply before
-        # outer, matching natural ``_post_forward`` unwinding.
+        # Complete post-forward for any state whose group forward did not
+        # run all modules (e.g. chunked loss where model.forward skips
+        # head). See ``all_states`` init for why we iterate ``reversed``.
         for state in reversed(self._state_ctx.all_states):
             if state is self or not state._modules_to_run_forward:
                 continue
@@ -359,14 +363,7 @@ class FSDPState(_State):
                     output = fsdp_param_group.post_forward(None, None, output)
                 output = state._register_pre_backward_hook(output)
                 state._training_state = TrainingState.IDLE
-                if state._mp_policy.output_dtype is not None:
-                    with torch.profiler.record_function("FSDP::cast_forward_outputs"):
-                        output = _apply_to_tensors(
-                            functools.partial(
-                                _cast_fp_tensor, state._mp_policy.output_dtype
-                            ),
-                            output,
-                        )
+                output = state._cast_output_dtype(output)
             finally:
                 # Clear even on exception so the next iteration's
                 # force-complete (which guards on non-empty) can run.
@@ -391,15 +388,15 @@ class FSDPState(_State):
     def _root_post_backward_final_callback(self) -> None:
         logger.debug("FSDP::root_post_backward")
         with torch.profiler.record_function("FSDP::root_post_backward_callback"):
-            # Reset per-iteration state. Partial-group + standalone-call
-            # patterns (chunked loss) can leave ``iter_forward_root`` set
-            # to an inner state and ``_modules_to_run_forward`` populated
-            # when force-complete handled post-forward instead of the
-            # group post-hook.
+            # Reset per-iteration state. With chunked loss, each standalone
+            # per-chunk call repopulates an inner state's
+            # ``_modules_to_run_forward`` (and claims ``iter_forward_root``)
+            # but the group post-hook never empties it because not all
+            # modules run; clear both here so the next iteration starts
+            # fresh.
             self._state_ctx.iter_forward_root = None
             for state in self._state_ctx.all_states:
                 state._modules_to_run_forward.clear()
-            for state in self._state_ctx.all_states:
                 # Reverse so that the last param group (which gates the
                 # reduce-scatter wait/clear) fires first, matching the
                 # autograd backward order and preserving RS overlap for
@@ -412,7 +409,8 @@ class FSDPState(_State):
                     fsdp_param_group._training_state = TrainingState.IDLE
                 state._training_state = TrainingState.IDLE
                 if self._state_ctx.is_last_backward:
-                    state._finalize_backward()
+                    for fsdp_param_group in state._fsdp_param_groups:
+                        fsdp_param_group.finalize_backward()
             if self._state_ctx.is_last_backward:
                 self._comm_ctx.post_forward_order.clear()
                 # Catch the last module's RS states that no subsequent
@@ -422,10 +420,6 @@ class FSDPState(_State):
                         self._device_handle.current_stream().wait_event(rs_state.event)
                 self._comm_ctx.reduce_scatter_states.clear()
             self._state_ctx.post_backward_final_callback_queued = False
-
-    def _finalize_backward(self) -> None:
-        for fsdp_param_group in self._fsdp_param_groups:
-            fsdp_param_group.finalize_backward()
 
     def _register_pre_backward_hook(self, output: Any) -> Any:
         if not torch.is_grad_enabled():
@@ -458,7 +452,7 @@ def _register_group_forward_hooks(
     pre_hook: Callable,
     post_hook: Callable,
     modules_to_run: set[nn.Module],
-):
+) -> _MultiHandle:
     """
     Registers group forward pre and post-hooks. The pre-hook runs on every
     module pre-forward; downstream state gating ensures one-shot work
@@ -477,8 +471,8 @@ def _register_group_forward_hooks(
             modules_to_run.update(modules_set)
         return pre_hook(*args, **kwargs)
 
-    @_dynamo_disable
     def get_wrapped_post_hook(module: nn.Module):
+        @_dynamo_disable
         @functools.wraps(post_hook)
         def wrapped_post_hook(*args: Any, **kwargs: Any):
             # Skip if the set was already cleared by force-complete or
