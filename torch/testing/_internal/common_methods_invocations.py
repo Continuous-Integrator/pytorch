@@ -3183,7 +3183,14 @@ def sample_inputs_histc(op_info, device, dtype, requires_grad, **kwargs):
 
     sizes = ((), (S,), (S, S), (S, S, S), (S, 1, S), (S, 0, S))
 
-    for size, min, max in product(sizes, [0, -10], [0, 10]):
+    minima = [0]
+    maxima = [10]
+
+    if dtype.is_signed:
+        minima.append(-10)
+        maxima.append(0)
+
+    for size, min, max in product(sizes, minima, maxima):
         # construct sample input omitting bins arg
         yield SampleInput(make_arg(size), min=min, max=max)
 
@@ -6830,9 +6837,7 @@ def sample_inputs_linear_cross_entropy(op_info, device, dtype, requires_grad, **
                 linear_input, linear_weight = linear_weight, linear_input
                 num_classes = linear_weight.shape[0]
                 out_features = linear_weight.shape[1:-1]
-                in_features = linear_weight.shape[-1]
                 num_batches = linear_input.shape[:-1]
-                assert linear_input.shape[-1] == in_features  # noqa: S101
                 if probabilities_target:
                     target_shape = (*num_batches, num_classes, *out_features)
                 else:
@@ -6876,6 +6881,25 @@ def sample_inputs_linear_cross_entropy(op_info, device, dtype, requires_grad, **
                 target[0 if target.shape else ()] = t
 
             yield SampleInput(linear_input, linear_weight, target, **kwargs)
+
+
+def error_inputs_linear_cross_entropy(op_info, device, **kwargs):
+    make_arg = partial(make_tensor, device=device, dtype=torch.float)
+
+    yield ErrorInput(SampleInput(make_arg(2, 3, 3), make_arg(2, 3), make_arg(3, 2)),
+                     error_regex="expected input with dimensionality 1 or 2, got 3")
+
+    yield ErrorInput(SampleInput(make_arg(2, 3), make_arg(2), make_arg(2, 2)),
+                     error_regex="expected linear_weight with dimensionality at least 2, got 1")
+
+    yield ErrorInput(SampleInput(make_arg(2, 3), make_arg(2, 4), make_arg(2, 2)),
+                     error_regex="expected equal input and linear_weight last dimensions [(]in_features[)], got 3 and 4, respectively")
+
+    yield ErrorInput(SampleInput(make_arg(2, 3), make_arg(2, 3), make_arg(2, 2), ignore_index=0),
+                     error_regex="ignore_index cannot be specified when target contains probabilities")
+
+    yield ErrorInput(SampleInput(make_arg(2, 3), make_arg(2, 3), make_arg(4, 2)),
+                     error_regex="expected target with shape [(]2, 2[)], got [(]4, 2[)]")
 
 
 def sample_inputs_logit(op_info, device, dtype, requires_grad, **kwargs):
@@ -15499,6 +15523,7 @@ op_db: list[OpInfo] = [
         "nn.functional.linear_cross_entropy",
         dtypes=floating_types_and(torch.float16, torch.bfloat16),
         sample_inputs_func=sample_inputs_linear_cross_entropy,
+        error_inputs_func=error_inputs_linear_cross_entropy,
         supports_out=False,
         supports_forward_ad=True,
         supports_fwgrad_bwgrad=True,
@@ -20816,6 +20841,9 @@ op_db: list[OpInfo] = [
     OpInfo('histc',
            dtypes=floating_types_and(torch.bfloat16, torch.float16),
            dtypesIfCUDA=floating_types_and(torch.int8, torch.uint8, torch.int16, torch.int32, torch.int64),
+           dtypesIfMPS=floating_types_and(
+               torch.bfloat16, torch.float16, torch.int8, torch.uint8, torch.int16, torch.int32, torch.int64
+           ),
            sample_inputs_func=sample_inputs_histc,
            supports_out=True,
            supports_autograd=False,
@@ -25469,15 +25497,6 @@ python_ref_db = [
             DecorateInfo(
                 unittest.expectedFailure, 'TestCommon', 'test_python_ref_torch_fallback',
                 dtypes=(torch.complex32,), device_type='cuda'
-            ),
-            # TypeError: Trying to convert ComplexDouble to the MPS backend but it does not have support for that dtype
-            DecorateInfo(
-                unittest.expectedFailure, 'TestCommon', 'test_python_ref',
-                device_type='mps', dtypes=(torch.complex32,)
-            ),
-            DecorateInfo(
-                unittest.expectedFailure, 'TestCommon', 'test_python_ref_torch_fallback',
-                device_type='mps', dtypes=(torch.complex32,)
             ),
         )
     ),

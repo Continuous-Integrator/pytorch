@@ -10,7 +10,6 @@ import torch
 from torch import _VF, sym_int as _sym_int, Tensor
 from torch._C import (
     _add_docstr,
-    _infer_size,
     _ScalingType as ScalingType,  # pyrefly: ignore [missing-module-attribute]
     _SwizzleType as SwizzleType,  # pyrefly: ignore [missing-module-attribute]
 )
@@ -3570,7 +3569,7 @@ def binary_cross_entropy(
         )
 
     if weight is not None:
-        new_size = _infer_size(target.size(), weight.size())
+        new_size = torch.broadcast_shapes(target.size(), weight.size())
         weight = weight.expand(new_size)
 
     # pyrefly: ignore [bad-argument-type]
@@ -3733,14 +3732,18 @@ def linear_cross_entropy(
             reduction=reduction,
             label_smoothing=label_smoothing,
         )
+    if input.dim() not in {1, 2}:
+        raise RuntimeError(
+            f"expected input with dimensionality 1 or 2, got {input.dim()}"
+        )
     if linear_weight.dim() < 2:
-        raise ValueError(
+        raise RuntimeError(
             f"expected linear_weight with dimensionality at least 2, got {linear_weight.dim()}"
         )
     num_batches = input.shape[:-1]
     in_features = input.shape[-1]
     if in_features != linear_weight.shape[-1]:
-        raise ValueError(
+        raise RuntimeError(
             "expected equal input and linear_weight last dimensions (in_features), "
             f"got {input.shape[-1]} and {linear_weight.shape[-1]}, respectively"
         )
@@ -3750,8 +3753,8 @@ def linear_cross_entropy(
         # target contains probabilities
         expected_target_shape = (*num_batches, num_classes, *out_features)
         logits_shape = expected_target_shape
-        if ignore_index >= 0:
-            raise ValueError(
+        if ignore_index != -100:
+            raise RuntimeError(
                 "ignore_index cannot be specified when target contains probabilities"
             )
     else:
@@ -3759,8 +3762,8 @@ def linear_cross_entropy(
         expected_target_shape = (*num_batches, *out_features)
         logits_shape = (*num_batches, num_classes, *out_features)
     if target.shape != expected_target_shape:
-        raise ValueError(
-            f"expected target with shape {expected_target_shape}, got {target.shape}"
+        raise RuntimeError(
+            f"expected target with shape {expected_target_shape}, got {tuple(target.shape)}"
         )
 
     if out_features:
