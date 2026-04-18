@@ -4514,18 +4514,18 @@ class GridExpr:
         exec(f"grid_2 = {self.z_grid}", scope)
         return scope["grid_0"], scope["grid_1"], scope["grid_2"]
 
-    def generate_lazy(self, kernel_name: str) -> None:
+    def generate_lazy(self, kernel_result_name: str) -> None:
         """
         Creates a GridExpr for lazy compile, where config values are not known
         at codegen time and are instead referenced by variable names.
         """
         meta: dict[str, Any] = {
-            "XBLOCK": f"{kernel_name}_result.xblock",
-            "YBLOCK": f"{kernel_name}_result.yblock",
-            "ZBLOCK": f"{kernel_name}_result.zblock",
-            "R0_BLOCK": f"{kernel_name}_result.r0block",
-            "RSPLIT": f"{kernel_name}_result.rsplit",
-            "RSPLIT_SIZE": f"{kernel_name}_result.rsplit_size",
+            "XBLOCK": f"{kernel_result_name}.xblock",
+            "YBLOCK": f"{kernel_result_name}.yblock",
+            "ZBLOCK": f"{kernel_result_name}.zblock",
+            "R0_BLOCK": f"{kernel_result_name}.r0block",
+            "RSPLIT": f"{kernel_result_name}.rsplit",
+            "RSPLIT_SIZE": f"{kernel_result_name}.rsplit_size",
         }
         # assertions are done based on real values, so we can skip here
         self.generate(meta, is_lazy=True)
@@ -4534,7 +4534,7 @@ class GridExpr:
     def from_meta_lazy(
         cls,
         inductor_meta: dict[str, Any] | None,
-        kernel_name: str,
+        kernel_result_name: str,
     ) -> GridExpr:
         """Factory method for lazy compile mode."""
         assert inductor_meta is not None, (
@@ -4545,7 +4545,7 @@ class GridExpr:
         grid_cls = globals()[grid_type]
         assert issubclass(grid_cls, GridExpr)
         grid = grid_cls(inductor_meta=inductor_meta, mode="cpp")
-        grid.generate_lazy(kernel_name)
+        grid.generate_lazy(kernel_result_name)
         return grid
 
 
