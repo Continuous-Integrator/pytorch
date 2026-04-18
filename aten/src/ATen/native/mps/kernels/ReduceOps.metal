@@ -322,6 +322,12 @@ kernel void sum_reduction(
         output_offset += index_in_dim * params.output_strides[dim];
       }
     }
+    // params.p > 0 means "divide the accumulator by p before casting"
+    // (used by mean to keep the division in opmath_t precision so the
+    // fp32 accumulation isn't lost when TO is fp16/bf16/half2).
+    if (params.p > 0) {
+      output_val /= static_cast<TA>(params.p);
+    }
     output[output_offset] = static_cast<TO>(output_val);
   }
 }
@@ -345,6 +351,7 @@ kernel void sum_reduction_outer(
     constant TI* input [[buffer(0)]],
     device TO* output [[buffer(1)]],
     constant uint3& sizes [[buffer(2)]], // [M, N, output_stride]
+    constant float& divisor [[buffer(3)]], // >0 divides accumulator before cast
     uint2 tid_tg [[thread_position_in_threadgroup]],
     uint2 tg_pos [[threadgroup_position_in_grid]]) {
   using TA = opmath_t<TO>;
@@ -392,7 +399,11 @@ kernel void sum_reduction_outer(
   }
 
   if (tid_tg.y == 0) {
-    output[col * out_stride] = static_cast<TO>(shmem[0][tid_tg.x]);
+    TA final_val = shmem[0][tid_tg.x];
+    if (divisor > 0) {
+      final_val /= static_cast<TA>(divisor);
+    }
+    output[col * out_stride] = static_cast<TO>(final_val);
   }
 }
 
@@ -402,6 +413,7 @@ kernel void sum_reduction_outer(
       constant TI * input [[buffer(0)]],                             \
       device TO * output [[buffer(1)]],                              \
       constant uint3 & sizes [[buffer(2)]],                          \
+      constant float& divisor [[buffer(3)]],                         \
       uint2 tid_tg [[thread_position_in_threadgroup]],               \
       uint2 tg_pos [[threadgroup_position_in_grid]]);
 
@@ -442,6 +454,7 @@ kernel void sum_reduction_inner(
     constant TI* input [[buffer(0)]],
     device TO* output [[buffer(1)]],
     constant uint2& sizes [[buffer(2)]], // [M, N]
+    constant float& divisor [[buffer(3)]], // >0 divides accumulator before cast
     uint tid [[thread_position_in_threadgroup]],
     uint tptg [[threads_per_threadgroup]],
     uint tgid [[threadgroup_position_in_grid]],
@@ -485,6 +498,9 @@ kernel void sum_reduction_inner(
   sum = c10::metal::simd_sum(sum);
 
   if (simd_lane_id == 0) {
+    if (divisor > 0) {
+      sum /= static_cast<TA>(divisor);
+    }
     output[row] = static_cast<TO>(sum);
   }
 }
@@ -495,6 +511,7 @@ kernel void sum_reduction_inner(
       constant TI * input [[buffer(0)]],                        \
       device TO * output [[buffer(1)]],                         \
       constant uint2 & sizes [[buffer(2)]],                     \
+      constant float& divisor [[buffer(3)]],                    \
       uint tid [[thread_position_in_threadgroup]],              \
       uint tptg [[threads_per_threadgroup]],                    \
       uint tgid [[threadgroup_position_in_grid]],               \

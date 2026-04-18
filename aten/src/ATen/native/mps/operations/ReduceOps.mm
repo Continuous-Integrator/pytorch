@@ -868,9 +868,12 @@ static void argmax_argmin_out_mps(const Tensor& input_t,
   }
 }
 
-// Shared implementation for sum and nansum Metal kernels.
-// `kernel_prefix` is "sum_" or "nansum_" — selects which kernel variant to dispatch.
-static void sum_nansum_kernel_mps(TensorIterator& iter, const std::string& kernel_prefix) {
+// Shared implementation for sum/nansum/count_nonzero/mean Metal kernels.
+// `kernel_prefix` is "sum_", "nansum_" or "count_nonzero_" — selects the
+// kernel variant to dispatch.  `divisor` > 0 divides the accumulator (in
+// opmath_t) before casting to output, enabling fused mean without losing the
+// fp32 accumulation precision for fp16/bf16/half2 outputs.
+static void sum_nansum_kernel_mps(TensorIterator& iter, const std::string& kernel_prefix, float divisor = 0.0f) {
   const Tensor& output = iter.output(0);
   const Tensor& input = iter.input(0);
 
@@ -904,8 +907,16 @@ static void sum_nansum_kernel_mps(TensorIterator& iter, const std::string& kerne
         std::min(static_cast<uint32_t>(512),
                  (reduction_size + MAX_THREADGROUP_SIZE * NCHAINS - 1) / (MAX_THREADGROUP_SIZE * NCHAINS));
 
+    // elems_per_group * num_groups must equal reduction_size exactly,
+    // otherwise pass 1's last TG reads past the input's logical end.
+    // Reduce num_groups down to a divisor of reduction_size (falling back
+    // to 1 is always safe — the inner loop still parallelizes via threads).
+    while (num_groups > 1 && reduction_size % num_groups != 0) {
+      num_groups--;
+    }
+
     auto partials = at::empty({num_groups}, output.options());
-    uint32_t elems_per_group = (reduction_size + num_groups - 1) / num_groups;
+    uint32_t elems_per_group = reduction_size / num_groups;
 
     auto out_metal = scalarToMetalTypeString(output);
     auto p1_kernel = fmt::format("{}reduction_{}_{}", kernel_prefix, scalarToMetalTypeString(input), out_metal);
@@ -927,10 +938,12 @@ static void sum_nansum_kernel_mps(TensorIterator& iter, const std::string& kerne
     params1.output_sizes[1] = 1;
     params1.output_strides[1] = 0;
 
-    // Pass 2: partials[num_groups] -> output[1], reduce dim=0
+    // Pass 2: partials[num_groups] -> output[1], reduce dim=0.
+    // divisor applies here (not on pass 1), so pass 2 produces
+    // accumulator/divisor before the final cast to output dtype.
     NormParams params2;
     params2.ndim = 1;
-    params2.p = 0;
+    params2.p = divisor;
     params2.reduction_size = num_groups;
     params2.input_sizes[0] = num_groups;
     params2.input_strides[0] = 1;
@@ -997,7 +1010,7 @@ static void sum_nansum_kernel_mps(TensorIterator& iter, const std::string& kerne
             uint32_t M, N, out_stride;
           } sizes_s = {M, N, 1};
           [compute_encoder setComputePipelineState:ps];
-          mtl_setArgs(compute_encoder, input, output, sizes_s);
+          mtl_setArgs(compute_encoder, input, output, sizes_s, divisor);
           [compute_encoder dispatchThreads:MTLSizeMake(num_tg_x * TG_X, TG_Y, 1)
                      threadsPerThreadgroup:MTLSizeMake(TG_X, TG_Y, 1)];
           getMPSProfiler().endProfileKernel(ps);
@@ -1027,7 +1040,7 @@ static void sum_nansum_kernel_mps(TensorIterator& iter, const std::string& kerne
             uint32_t M, N;
           } sizes_s = {M, N};
           [compute_encoder setComputePipelineState:ps];
-          mtl_setArgs(compute_encoder, input, output, sizes_s);
+          mtl_setArgs(compute_encoder, input, output, sizes_s, divisor);
           [compute_encoder dispatchThreads:MTLSizeMake(num_tgs * TG_SIZE, 1, 1)
                      threadsPerThreadgroup:MTLSizeMake(TG_SIZE, 1, 1)];
           getMPSProfiler().endProfileKernel(ps);
@@ -1039,7 +1052,7 @@ static void sum_nansum_kernel_mps(TensorIterator& iter, const std::string& kerne
 
   NormParams params;
   params.ndim = input.dim();
-  params.p = 0;
+  params.p = divisor;
   params.reduction_size = reduction_size;
 
   for (const auto dim_idx : c10::irange(input.dim())) {
@@ -1081,23 +1094,15 @@ static void nansum_kernel_mps(TensorIterator& iter) {
 static void mean_kernel_mps(TensorIterator& iter) {
   auto output = iter.output(0);
   auto input = iter.input(0);
-  auto out_dtype = output.scalar_type();
-  int64_t reduction_size = input.numel() / output.numel();
-
-  // For low-precision outputs, dividing after casting to fp16/bf16 loses the
-  // benefit of the fp32 accumulation done inside the sum kernel.  Route via a
-  // float intermediate so the division happens before the cast.
-  if (out_dtype == kHalf || out_dtype == kBFloat16) {
-    auto float_out = at::empty(output.sizes(), output.options().dtype(kFloat));
-    auto float_iter = TensorIterator::reduce_op(float_out, input);
-    sum_nansum_kernel_mps(float_iter, "sum_");
-    float_out.div_(reduction_size);
-    output.copy_(float_out);
+  if (input.numel() == 0 || output.numel() == 0) {
+    sum_nansum_kernel_mps(iter, "sum_");
     return;
   }
-
-  sum_nansum_kernel_mps(iter, "sum_");
-  output.div_(reduction_size);
+  int64_t reduction_size = input.numel() / output.numel();
+  // Fused divide: the sum kernel divides the accumulator (in opmath_t)
+  // before casting to output, so fp32 accumulation precision is preserved
+  // for fp16/bf16/half2 without an intermediate tensor.
+  sum_nansum_kernel_mps(iter, "sum_", static_cast<float>(reduction_size));
 }
 
 } // namespace mps
