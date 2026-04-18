@@ -77,7 +77,7 @@ from torch._inductor.cpp_builder import (
     normalize_path_separator,
     run_asm_build_object,
 )
-from torch._inductor.cpu_vec_isa import pick_vec_isa
+from torch._inductor.cpu_vec_isa import invalid_vec_isa, pick_vec_isa
 from torch._inductor.custom_graph_pass import (
     CustomGraphModulePass,
     CustomGraphPass,
@@ -2492,6 +2492,7 @@ end
                 wrapper_build_options.precompiled_header = _precompile_header(
                     header_file,
                     cpp_command,
+                    phase_name="CppCodeCache.precompile_aot_wrapper_header",
                     min_optimize=not config.aot_inductor.package_cpp_only,
                     **compile_command,
                 )
@@ -2499,6 +2500,7 @@ end
                     kernel_build_options.precompiled_header = _precompile_header(
                         cpp_prefix,
                         cpp_command,
+                        phase_name="CppCodeCache.precompile_aot_prefix_header",
                         **compile_command,
                     )
 
@@ -2960,12 +2962,14 @@ def custom_op_wrapper(op: str, *args: Any) -> list[c_void_p] | c_void_p | None:
 # because these headers need to be global, rather than ignored by fresh_cache.
 _HEADER_DIR = os.path.join(default_cache_dir(), "precompiled_headers")
 _HEADER_LOCK_DIR = os.path.join(_HEADER_DIR, "locks")
+_VEC_ISA_CPP_SOURCE_MARKERS = ("at::vec::", "prod_masked_reduce(")
 
 
 @functools.cache
 def _precompile_header(
     header: str,
     hashable_cmd_line: str,
+    phase_name: str = "CppCodeCache.precompile_header",
     **compile_command: Any,
 ) -> str:
     assert not _IS_WINDOWS, (
@@ -2978,26 +2982,29 @@ def _precompile_header(
     #
     # N.B. we can't use NamedTemporaryFile here because Windows errors out on attempts
     # to read from a file with an open write handle.
-    with tempfile.TemporaryDirectory() as preprocessing_dir:
-        preprocessing_header = Path(preprocessing_dir) / "header.hpp"
-        preprocessing_header.write_text(f"#include <{header}>\n")
-        preprocessor = CppBuilder(
-            name=str(preprocessing_header)[:-4],  # strip off the .hpp extension
-            sources=str(preprocessing_header),
-            BuildOption=CppTorchDeviceOptions(**compile_command, preprocessing=True),
-        )
-        preprocessor.build()
-
-        def _get_file_checksum(filename: str) -> str:
-            """Reading the whole preprocessed header in for hashing is very expensive,
-            but calling a fast hashing utility in a subprocess is cheap."""
-            # If Windows support needs to be added here, use certutil -hashfile.
-            cmd_output = subprocess.run(
-                ("openssl", "sha512", filename), capture_output=True, text=True
+    with dynamo_timed(f"{phase_name}.preprocess"):
+        with tempfile.TemporaryDirectory() as preprocessing_dir:
+            preprocessing_header = Path(preprocessing_dir) / "header.hpp"
+            preprocessing_header.write_text(f"#include <{header}>\n")
+            preprocessor = CppBuilder(
+                name=str(preprocessing_header)[:-4],  # strip off the .hpp extension
+                sources=str(preprocessing_header),
+                BuildOption=CppTorchDeviceOptions(
+                    **compile_command, preprocessing=True
+                ),
             )
-            return cmd_output.stdout.split()[-1]
+            preprocessor.build()
 
-        preprocessor_hash = _get_file_checksum(preprocessor.get_target_file_path())
+            def _get_file_checksum(filename: str) -> str:
+                """Reading the whole preprocessed header in for hashing is very expensive,
+                but calling a fast hashing utility in a subprocess is cheap."""
+                # If Windows support needs to be added here, use certutil -hashfile.
+                cmd_output = subprocess.run(
+                    ("openssl", "sha512", filename), capture_output=True, text=True
+                )
+                return cmd_output.stdout.split()[-1]
+
+            preprocessor_hash = _get_file_checksum(preprocessor.get_target_file_path())
 
     header_build_option = CppTorchDeviceOptions(**compile_command, precompiling=True)
     header_hash, header_full_path = write(
@@ -3018,9 +3025,9 @@ def _precompile_header(
     # _worker_compile_cpp will automatically ignore any compilation whose result already
     # exists, so this is always safe.
     os.makedirs(_HEADER_LOCK_DIR, exist_ok=True)
-    _worker_compile_cpp(
+    _worker_compile_cpp_with_timing(
         os.path.join(_HEADER_LOCK_DIR, f"{header_hash}.lock"),
-        (cpp_builder,),
+        ((f"{phase_name}.compile", cpp_builder),),
     )
 
     return header_full_path
@@ -3042,6 +3049,25 @@ def _get_cpp_wrapper_header(device: str, aot_mode: bool = False) -> str:
         f"{'aoti_include' if aot_mode else 'cpp_wrapper'}/"
         f"{'array_ref' if is_array_ref else base_device}.h"
     )
+
+
+def _source_uses_vec_isa(*sources: str | None) -> bool:
+    for source in sources:
+        if source is None:
+            continue
+        if any(marker in source for marker in _VEC_ISA_CPP_SOURCE_MARKERS):
+            return True
+    return False
+
+
+def _resolve_needs_vec_isa(
+    base_device_type: str, source: str | None, explicit: bool | None
+) -> bool:
+    if explicit is not None:
+        return explicit
+    if source is None:
+        return False
+    return base_device_type == "cpu" or _source_uses_vec_isa(source)
 
 
 @clear_on_fresh_cache
@@ -3095,15 +3121,38 @@ class CppCodeCache:
         submit_fn: Any = None,
         extra_flags: Sequence[str] = (),
         optimized_code: str | None = None,
+        needs_vec_isa: bool | None = None,
+        optimized_needs_vec_isa: bool | None = None,
     ) -> Any:
         """Compile and load a C++ library.  Returns a callable that returns the loaded
         library."""
-        compile_command = {
+        base_device_type = device_type.split(":", maxsplit=1)[0]
+        main_needs_vec_isa = _resolve_needs_vec_isa(
+            base_device_type, main_code, needs_vec_isa
+        )
+        optimized_needs_vec_isa = _resolve_needs_vec_isa(
+            base_device_type, optimized_code, optimized_needs_vec_isa
+        )
+        picked_vec_isa = (
+            pick_vec_isa()
+            if main_needs_vec_isa or optimized_needs_vec_isa
+            else invalid_vec_isa
+        )
+        shared_compile_command = {
             **cls.cpp_compile_command_flags,
             "device_type": device_type,
             "extra_flags": extra_flags,
             "use_relative_path": config.is_fbcode(),
-            "vec_isa": pick_vec_isa(),
+        }
+        main_compile_command = {
+            **shared_compile_command,
+            "vec_isa": picked_vec_isa if main_needs_vec_isa else invalid_vec_isa,
+        }
+        optimized_compile_command = {
+            **shared_compile_command,
+            "vec_isa": (
+                picked_vec_isa if optimized_needs_vec_isa else invalid_vec_isa
+            ),
         }
 
         _set_gpu_runtime_env()  # cpp_extension consults the env
@@ -3119,13 +3168,13 @@ class CppCodeCache:
             compile_only=bool(optimized_code),
             min_optimize=min_optimize,
             # pyrefly: ignore [bad-argument-type]
-            **compile_command,
+            **main_compile_command,
         )
         optimized_build_option = CppTorchDeviceOptions(
             # pyrefly: ignore [bad-argument-type]
             compile_only=True,
             # pyrefly: ignore [bad-argument-type]
-            **compile_command,
+            **optimized_compile_command,
         )
 
         def get_hashable_command_line(build_option: BuildOptionsBase) -> str:
@@ -3139,15 +3188,17 @@ class CppCodeCache:
         main_cmd_line = get_hashable_command_line(main_build_option)
         optimized_cmd_line = get_hashable_command_line(optimized_build_option)
 
-        key, main_path = write(
-            main_code, "main.cpp", extra=f"{optimized_code} {main_cmd_line}"
-        )
+        with dynamo_timed("CppCodeCache.write_main_source"):
+            key, main_path = write(
+                main_code, "main.cpp", extra=f"{optimized_code} {main_cmd_line}"
+            )
 
         # Don't bother writing if the argument is empty.
         if optimized_code:
-            _, optimized_path = write(
-                optimized_code, "optimized.cpp", extra=optimized_cmd_line
-            )
+            with dynamo_timed("CppCodeCache.write_optimized_source"):
+                _, optimized_path = write(
+                    optimized_code, "optimized.cpp", extra=optimized_cmd_line
+                )
         else:
             # Unused, but makes type checkers happy.
             optimized_path = os.devnull
@@ -3165,8 +3216,9 @@ class CppCodeCache:
                     main_build_option.precompiled_header = _precompile_header(
                         header,
                         main_cmd_line,
+                        phase_name="CppCodeCache.precompile_main_header",
                         min_optimize=min_optimize,
-                        **compile_command,
+                        **main_compile_command,
                     )
 
                 # Currently, the optimized_code field is only used for cpp kernel code,
@@ -3177,7 +3229,8 @@ class CppCodeCache:
                         # pyrefly: ignore [unbound-name]
                         header,
                         optimized_cmd_line,
-                        **compile_command,
+                        phase_name="CppCodeCache.precompile_optimized_header",
+                        **optimized_compile_command,
                     )
 
             main_name, output_dir = get_name_and_dir_from_output_file_path(main_path)
@@ -3206,19 +3259,25 @@ class CppCodeCache:
                         optimized_builder.get_target_file_path(),
                     ],
                     # pyrefly: ignore [bad-argument-type]
-                    BuildOption=CppTorchDeviceOptions(**compile_command),
+                    BuildOption=CppTorchDeviceOptions(**shared_compile_command),
                     output_dir=output_dir,
                 )
 
                 worker_fn = functools.partial(
-                    _worker_compile_cpp,
+                    _worker_compile_cpp_with_timing,
                     lock_path,
-                    (main_builder, optimized_builder, linker),
+                    (
+                        ("CppCodeCache.compile_main", main_builder),
+                        ("CppCodeCache.compile_optimized", optimized_builder),
+                        ("CppCodeCache.link", linker),
+                    ),
                 )
                 binary_path = normalize_path_separator(linker.get_target_file_path())
             else:
                 worker_fn = functools.partial(
-                    _worker_compile_cpp, lock_path, (main_builder,)
+                    _worker_compile_cpp_with_timing,
+                    lock_path,
+                    (("CppCodeCache.compile_main", main_builder),),
                 )
                 binary_path = normalize_path_separator(
                     main_builder.get_target_file_path()
@@ -3231,7 +3290,8 @@ class CppCodeCache:
                         future.result()
                     result = worker_fn()
                     assert result is None
-                    lib = cls._load_library(binary_path, key)
+                    with dynamo_timed("CppCodeCache.load_library"):
+                        lib = cls._load_library(binary_path, key)
                     assert lib is not None
                 return lib
 
@@ -3259,6 +3319,19 @@ def _worker_compile_cpp(
         for builder in cpp_builders:
             if not os.path.exists(builder.get_target_file_path()):
                 builder.build()
+
+
+def _worker_compile_cpp_with_timing(
+    lock_path: str,
+    cpp_builders: Sequence[tuple[str, CppBuilder]],
+) -> None:
+    from torch.utils._filelock import FileLock
+
+    with FileLock(lock_path, timeout=LOCK_TIMEOUT):
+        for phase_name, builder in cpp_builders:
+            if not os.path.exists(builder.get_target_file_path()):
+                with dynamo_timed(phase_name):
+                    builder.build()
 
 
 # Customized Python binding for cpp kernels
@@ -3401,6 +3474,8 @@ class CppPythonBindingsCodeCache(CppCodeCache):
         argtypes: Sequence[str],
         main_code: str,
         device_type: str = "cpu",
+        needs_vec_isa: bool | None = None,
+        kernel_needs_vec_isa: bool | None = None,
         num_outputs: int = -1,
         submit_fn: Any = None,
         extra_flags: Sequence[str] = (),
@@ -3414,6 +3489,12 @@ class CppPythonBindingsCodeCache(CppCodeCache):
             main_code: C++ source code containing ENTRY_FUNCTION().  Will be built at
                 -O3 if kernel_code is None (to maximize performance in any kernels that
                 are present), or -O1 otherwise (to minimize compile time).
+            needs_vec_isa: Whether the generated wrapper requires CPU vectorized
+                host helpers such as at::vec. If omitted, this is inferred from
+                the generated source as a conservative fallback.
+            kernel_needs_vec_isa: Whether the separately compiled kernel source
+                requires CPU vectorized host helpers. Only relevant when
+                kernel_code is provided.
             kernel_code: If present, C++ source code that will be built at -O3 and
                 linked to main_code.
 
@@ -3436,6 +3517,8 @@ class CppPythonBindingsCodeCache(CppCodeCache):
             submit_fn=submit_fn,
             extra_flags=extra_flags,
             optimized_code=kernel_code,
+            needs_vec_isa=needs_vec_isa,
+            optimized_needs_vec_isa=kernel_needs_vec_isa,
         )
         result = None
 
@@ -3973,7 +4056,8 @@ class PyCodeCache:
             return cls.modules_no_attr[path]
 
         in_toplevel = in_toplevel_process()
-        mod = _reload_python_module(key, path, set_sys_modules=in_toplevel)
+        with dynamo_timed("PyCodeCache.reload_module"):
+            mod = _reload_python_module(key, path, set_sys_modules=in_toplevel)
 
         # unzip into separate lines/nodes lists
         if in_toplevel:
