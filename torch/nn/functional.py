@@ -3864,8 +3864,8 @@ def linear_cross_entropy(
             linear_weight,
             target,
             weight=weight,
-            ignore_index=ignore_index,
             reduction=reduction,
+            ignore_index=ignore_index,
             label_smoothing=label_smoothing,
             options=options,
         )

@@ -1463,12 +1463,6 @@ class LinearCrossEntropyLoss(_WeightedLinearLoss):
             linear weight and bias. Default: ``None``.
         weight (Tensor, optional): a manual rescaling weight given to
             each class.  If given, has to be a Tensor of size `C`.
-        ignore_index (int, optional): Specifies a target value that is
-            ignored and does not contribute to the input
-            gradient. When :attr:`size_average` is ``True``, the loss
-            is averaged over non-ignored targets. Note that
-            :attr:`ignore_index` is only applicable when the target
-            contains class indices.
         reduction (str, optional): Specifies the reduction to apply to
             the output: ``'none'`` | ``'mean'`` | ``'sum'``.
             ``'none'``: no reduction will be applied,
@@ -1479,6 +1473,12 @@ class LinearCrossEntropyLoss(_WeightedLinearLoss):
             specifying either of those two args will override
             :attr:`reduction`.
             Default: ``'mean'``.
+        ignore_index (int, optional): Specifies a target value that is
+            ignored and does not contribute to the input
+            gradient. When :attr:`size_average` is ``True``, the loss
+            is averaged over non-ignored targets. Note that
+            :attr:`ignore_index` is only applicable when the target
+            contains class indices.
         label_smoothing (float, optional): A float in [0.0, 1.0].
             Specifies the amount of smoothing when computing the loss,
             where 0.0 means no smoothing. The targets become a mixture
@@ -1561,11 +1561,12 @@ class LinearCrossEntropyLoss(_WeightedLinearLoss):
 
     def forward(self, input: Tensor, target: Tensor) -> Tensor:
         """Runs the forward pass."""
+        linear_weight = self.linear.weight.reshape(
+            (self.num_classes, *self.out_features, self.linear.in_features)
+        )
         return F.linear_cross_entropy(  # pyrefly: ignore [missing-attribute]
             input,
-            self.linear.weight.reshape(
-                (*self.out_features, self.num_classes, self.linear.in_features)
-            ),
+            linear_weight,
             target,
             weight=self.loss_weight,
             reduction=self.reduction,
