@@ -569,6 +569,10 @@ class EnumTests(torch._dynamo.test_case.TestCase):
         res = compiled_fn(x, 1)
         self.assertEqual(ref, res)
 
+    @unittest.skipIf(
+        not torch.distributed.is_available(),
+        "torch.distributed not available",
+    )
     def test_pybind11_enum_as_dict_key(self):
         """Test pybind11 enum (RedOpType) works as dict key without graph break."""
         import torch.distributed as dist
@@ -590,6 +594,10 @@ class EnumTests(torch._dynamo.test_case.TestCase):
             res = opt_fn(x, op)
             self.assertEqual(ref, res)
 
+    @unittest.skipIf(
+        not torch.distributed.is_available(),
+        "torch.distributed not available",
+    )
     def test_pybind11_enum_equality(self):
         """Test pybind11 enum comparison without graph break."""
         import torch.distributed as dist
@@ -612,6 +620,10 @@ class EnumTests(torch._dynamo.test_case.TestCase):
         res = opt_fn(x, dist.ReduceOp.PREMUL_SUM)
         self.assertEqual(ref, res)
 
+    @unittest.skipIf(
+        not torch.distributed.is_available(),
+        "torch.distributed not available",
+    )
     def test_pybind11_enum_identity(self):
         """Test pybind11 enum identity check without graph break."""
         import torch.distributed as dist
