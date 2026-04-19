@@ -3696,21 +3696,25 @@ def linear_cross_entropy(
             Default: :math:`0.0`.
 
     Shape:
-        - Input: :math:`(in_features)` or :math:`(N, in_features)`.
-        - Linear weight: :math:`(C, in_features)` or :math:`(C, d_1, ..., d_K, in_features)`.
+        - Input: :math:`(in_features)` or :math:`(N, in\_features)`.
+        - Linear weight: :math:`(C, in\_features)` or :math:`(C, d_1,
+          ..., d_K, in\_features)` with :math:`K \geq 1` in the case of
+          K-dimensional loss.  Note: multi-dimensional weights (K > 0)
+          require batched input :math:`(N, in\_features)`.
         - Target: If containing class indices, :math:`()`,
-          :math:`(N)` or :math:`(N, d_1, d_2, ..., d_K)` with :math:`K\geq 1`
-          in the case of K-dimensional loss where each value
-          should be between :math:`[0, C)`. The target data type is
-          required to be long when using class indices.
+          :math:`(N)`, or :math:`(N, d_1, d_2, ..., d_K)` when
+          :math:`K\geq 1`, where each value should be between
+          :math:`[0, C)`. The target data type is required to be long
+          when using class indices.
           If containing class probabilities, the target must have
           shape :math:`(C)`, :math:`(N, C)`, or :math:`(N, C, d_1,
-          d_2, ..., d_K)`, and each value should be between :math:`[0,
-          1]`. This means the target data type is required to be float
-          when using class probabilities. Note that PyTorch does not
-          strictly enforce probability constraints on the class
-          probabilities and that it is the user's responsibility to
-          ensure ``target`` contains valid probability distributions.
+          d_2, ..., d_K)` when :math:`K\geq 1`, and each value should
+          be between :math:`[0, 1]`. This means the target data type
+          is required to be float when using class probabilities. Note
+          that PyTorch does not strictly enforce probability
+          constraints on the class probabilities and that it is the
+          user's responsibility to ensure ``target`` contains valid
+          probability distributions.
         - Weight: :math:`(C)`.
         - Output: If reduction is 'none', shape :math:`()`,
           :math:`(N)` or :math:`(N, d_1, d_2, ..., d_K)` with :math:`K\geq 1`
@@ -3749,6 +3753,12 @@ def linear_cross_entropy(
         )
     num_classes = linear_weight.shape[0]
     out_features = linear_weight.shape[1:-1]
+    if len(out_features) > 0 and len(num_batches) == 0:
+        raise RuntimeError(
+            f"K-dimensional loss defined by linear_weight shape {tuple(linear_weight.shape)} requires"
+            f" batched input, (N, {in_features}), got unbatched"
+            f" input with shape {tuple(input.shape)}"
+        )
     if target.dtype.is_floating_point:
         # target contains probabilities
         expected_target_shape = (*num_batches, num_classes, *out_features)
