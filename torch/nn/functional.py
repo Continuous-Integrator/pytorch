@@ -3770,7 +3770,7 @@ def linear_cross_entropy(
     else:
         # target contains class indices
         expected_target_shape = (*num_batches, *out_features)
-    ignore_index=ignore_index if ignore_index is not None else -100
+    ignore_index = ignore_index if ignore_index is not None else -100
 
     if target.shape != expected_target_shape:
         raise RuntimeError(
