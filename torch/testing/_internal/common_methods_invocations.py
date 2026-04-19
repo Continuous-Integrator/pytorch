@@ -6901,6 +6901,9 @@ def error_inputs_linear_cross_entropy(op_info, device, **kwargs):
     yield ErrorInput(SampleInput(make_arg(2, 3), make_arg(2, 3), make_arg(4, 2)),
                      error_regex="expected target with shape [(]2, 2[)], got [(]4, 2[)]")
 
+    yield ErrorInput(SampleInput(make_arg(3), make_arg(2, 4, 3), make_arg(2, 4)),
+                     error_regex=("K-dimensional loss defined by linear_weight shape [(]2, 4, 3[)]"
+                                  " requires batched input, [(]N, 3[)], got unbatched input with shape [(]3,[)]"))
 
 def sample_inputs_logit(op_info, device, dtype, requires_grad, **kwargs):
     low, high = op_info.domain
@@ -22357,11 +22360,6 @@ op_db: list[OpInfo] = [
         sample_inputs_func=sample_inputs_grid_sample,
         reference_inputs_func=reference_inputs_grid_sample,
         supports_gradgrad=True,
-        skips=(
-            # Exception: The operator 'aten::grid_sampler_2d_backward' is not currently implemented for the MPS device
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_variant_consistency_eager', device_type='mps'),
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_noncontiguous_samples', device_type='mps'),
-        ),
         gradcheck_nondet_tol=1e-15),
     # TODO: delete this OpInfo once we add meta support for grid_sampler_3d
     OpInfo(
@@ -22393,14 +22391,13 @@ op_db: list[OpInfo] = [
             DecorateInfo(unittest.skip('Skipped!'), device_type='cuda'),
             DecorateInfo(unittest.skip('Skipped!'), device_type='xpu'),
             DecorateInfo(unittest.skip('Skipped!'), device_type='meta'),
-            # Error: The operator 'aten::grid_sampler_3d_backward' is not currently implemented for the MPS device.
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_dtypes', device_type='mps'),
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_variant_consistency_eager', device_type='mps'),
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_noncontiguous_samples', device_type='mps'),
-            DecorateInfo(toleranceOverride({torch.float32: tol(atol=1e-4, rtol=1e-4),
-                                            torch.float16: tol(atol=1e-4, rtol=1e-4),
-                                            torch.bfloat16: tol(atol=1e-4, rtol=1e-4)}),
+            DecorateInfo(toleranceOverride({torch.float32: tol(atol=1e-4, rtol=1e-4)}),
                          "TestConsistency", "test_output_match", device_type="mps"),
+            DecorateInfo(toleranceOverride({torch.float32: tol(atol=1e-3, rtol=2e-6),
+                                            torch.float16: tol(atol=5e-3, rtol=2e-2)}),
+                         "TestConsistency", "test_output_grad_match", device_type="mps"),
+            DecorateInfo(toleranceOverride({torch.float32: tol(atol=5e-5, rtol=5e-4)}),
+                         "TestCommon", "test_noncontiguous_samples", device_type="mps"),
         ),),
     OpInfo(
         "argwhere",
@@ -22901,6 +22898,8 @@ op_db: list[OpInfo] = [
             DecorateInfo(unittest.expectedFailure, 'TestDTensorOps', 'test_dtensor_op_db'),
             # Error: The operator 'aten::hash_tensor.out' is not currently implemented for the MPS device
             DecorateInfo(unittest.expectedFailure, 'TestCommon', device_type='mps'),
+            # NotImplementedError: aten::hash_tensor.out
+            DecorateInfo(unittest.expectedFailure, 'TestReductions', 'test_dim_default', device_type='mps'),
         )
     ),
     OpInfo(
