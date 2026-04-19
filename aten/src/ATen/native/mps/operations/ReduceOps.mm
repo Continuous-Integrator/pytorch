@@ -41,7 +41,7 @@
 #endif
 
 namespace at::native {
-namespace mps {
+using namespace mps;
 
 #ifndef PYTORCH_JIT_COMPILE_SHADERS
 static auto& lib = MetalShaderLibrary::getBundledLibrary();
@@ -903,9 +903,8 @@ static void sum_nansum_kernel_mps(TensorIterator& iter, const std::string& kerne
   // two-pass approach: first pass splits work across num_groups TGs writing
   // partial sums, second pass reduces the partials to the final scalar.
   if (output.numel() == 1 && reduction_size > MAX_THREADGROUP_SIZE) {
-    uint32_t num_groups =
-        std::min(static_cast<uint32_t>(512),
-                 (reduction_size + MAX_THREADGROUP_SIZE * NCHAINS - 1) / (MAX_THREADGROUP_SIZE * NCHAINS));
+    auto num_groups = std::min(static_cast<uint32_t>(512),
+                               c10::metal::ceil_div(reduction_size, MAX_THREADGROUP_SIZE * NCHAINS));
 
     // elems_per_group * num_groups must equal reduction_size exactly,
     // otherwise pass 1's last TG reads past the input's logical end.
@@ -916,7 +915,7 @@ static void sum_nansum_kernel_mps(TensorIterator& iter, const std::string& kerne
     }
 
     auto partials = at::empty({num_groups}, output.options());
-    uint32_t elems_per_group = reduction_size / num_groups;
+    const auto elems_per_group = reduction_size / num_groups;
 
     auto out_metal = scalarToMetalTypeString(output);
     auto p1_kernel = fmt::format("{}reduction_{}_{}", kernel_prefix, scalarToMetalTypeString(input), out_metal);
@@ -999,7 +998,7 @@ static void sum_nansum_kernel_mps(TensorIterator& iter, const std::string& kerne
       auto outer_kernel = fmt::format(
           "{}reduction_outer_{}_{}", kernel_prefix, scalarToMetalTypeString(input), scalarToMetalTypeString(output));
       constexpr uint32_t TG_X = 32, TG_Y = 32;
-      uint32_t num_tg_x = (N + TG_X - 1) / TG_X;
+      const auto num_tg_x = c10::metal::ceil_div(N, TG_X);
 
       dispatch_sync_with_rethrow(stream->queue(), ^() {
         @autoreleasepool {
@@ -1028,8 +1027,8 @@ static void sum_nansum_kernel_mps(TensorIterator& iter, const std::string& kerne
           "{}reduction_inner_{}_{}", kernel_prefix, scalarToMetalTypeString(input), scalarToMetalTypeString(output));
       // Pack multiple rows per TG: each SIMD group (32 threads) handles one row
       constexpr uint32_t TG_SIZE = 256; // 8 SIMD groups = 8 rows per TG
-      uint32_t rows_per_tg = TG_SIZE / 32;
-      uint32_t num_tgs = (M + rows_per_tg - 1) / rows_per_tg;
+      constexpr uint32_t rows_per_tg = TG_SIZE / 32;
+      const auto num_tgs = c10::metal::ceil_div(M, rows_per_tg);
 
       dispatch_sync_with_rethrow(stream->queue(), ^() {
         @autoreleasepool {
@@ -1104,10 +1103,6 @@ static void mean_kernel_mps(TensorIterator& iter) {
   // for fp16/bf16/half2 without an intermediate tensor.
   sum_nansum_kernel_mps(iter, "sum_", static_cast<float>(reduction_size));
 }
-
-} // namespace mps
-
-using namespace mps;
 
 Tensor trace_mps(const Tensor& self) {
   TORCH_CHECK(self.dim() == 2, "trace: expected a matrix, but got tensor with dim ", self.dim());
@@ -1692,9 +1687,9 @@ std::tuple<Tensor, Tensor> var_mean_mps(const Tensor& self,
   return {var, mean};
 }
 
-REGISTER_DISPATCH(norm_stub, &mps::norm_kernel_mps)
-REGISTER_DISPATCH(sum_stub, &mps::sum_kernel_mps)
-REGISTER_DISPATCH(nansum_stub, &mps::nansum_kernel_mps)
-REGISTER_DISPATCH(mean_stub, &mps::mean_kernel_mps)
+REGISTER_DISPATCH(norm_stub, &norm_kernel_mps)
+REGISTER_DISPATCH(sum_stub, &sum_kernel_mps)
+REGISTER_DISPATCH(nansum_stub, &nansum_kernel_mps)
+REGISTER_DISPATCH(mean_stub, &mean_kernel_mps)
 
 } // namespace at::native
