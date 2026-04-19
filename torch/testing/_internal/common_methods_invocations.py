@@ -6797,7 +6797,6 @@ def sample_inputs_cross_entropy(op_info, device, dtype, requires_grad, **kwargs)
 
         yield SampleInput(input, target, **kwargs)
 
-
 def sample_inputs_linear_cross_entropy(op_info, device, dtype, requires_grad, **kwargs_unused):
     if not dtype.is_floating_point:
         raise ValueError(f"linear_cross_entropy requires floating point type inputs, got {dtype}")
@@ -6881,7 +6880,6 @@ def sample_inputs_linear_cross_entropy(op_info, device, dtype, requires_grad, **
                 target[0 if target.shape else ()] = t
 
             yield SampleInput(linear_input, linear_weight, target, **kwargs)
-
 
 def error_inputs_linear_cross_entropy(op_info, device, **kwargs):
     make_arg = partial(make_tensor, device=device, dtype=torch.float)
