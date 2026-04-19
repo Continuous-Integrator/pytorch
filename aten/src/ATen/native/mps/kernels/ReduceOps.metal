@@ -114,8 +114,7 @@ kernel void norm(
       output_val = simd_sum(output_val);
     }
 
-    threads_remaining =
-        (threads_remaining + simdgroup_size - 1) / simdgroup_size;
+    threads_remaining = ceil_div(threads_remaining, simdgroup_size);
 
     if (threads_remaining > 1) {
       // One thread from each SIMD group writes to a shared buffer
@@ -294,8 +293,7 @@ kernel void sum_reduction(
 
   while (threads_remaining > 1) {
     output_val = c10::metal::simd_sum(output_val);
-    threads_remaining =
-        (threads_remaining + simdgroup_size - 1) / simdgroup_size;
+    threads_remaining = ceil_div(threads_remaining, simdgroup_size);
 
     if (threads_remaining > 1) {
       if (simd_lane_id == 0) {
@@ -364,7 +362,7 @@ kernel void sum_reduction_outer(
     return;
 
   // Split rows among TG_Y workers
-  uint rows_per_y = (M + TG_Y - 1) / TG_Y;
+  uint rows_per_y = ceil_div(M, TG_Y);
   uint row_start = tid_tg.y * rows_per_y;
   uint row_end = min(row_start + rows_per_y, M);
 
