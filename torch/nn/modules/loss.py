@@ -1516,7 +1516,7 @@ class LinearCrossEntropyLoss(_WeightedLinearLoss):
     ]
     num_classes: int
     out_features: tuple[int, ...]
-    ignore_index: int
+    ignore_index: int | None
     label_smoothing: float
 
     def __init__(
@@ -1529,7 +1529,7 @@ class LinearCrossEntropyLoss(_WeightedLinearLoss):
         dtype=None,
         reduction: str = "mean",
         weight: Tensor | None = None,
-        ignore_index: int = -100,
+        ignore_index: int | None = None,
         label_smoothing: float = 0.0,
     ) -> None:
         bias = False  # linear_cross_entropy does not depend on bias

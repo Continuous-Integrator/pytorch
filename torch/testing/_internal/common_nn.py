@@ -2846,7 +2846,7 @@ def cross_entropy_loss_reference(input, target, weight=None, ignore_index=-100, 
 
 def linear_cross_entropy_loss_reference(input, linear_weight, target,
                                         weight=None,
-                                        ignore_index=-100,
+                                        ignore_index=None,
                                         reduction='mean',
                                         label_smoothing=0.0):
     num_classes = linear_weight.shape[0]
@@ -2860,6 +2860,7 @@ def linear_cross_entropy_loss_reference(input, linear_weight, target,
     else:
         logits_shape = (num_classes,)
     logits = logits.reshape(logits_shape)
+    ignore_index = ignore_index if ignore_index is not None else -100
     return F.cross_entropy(
         logits, target, weight=weight,
         reduction=reduction, ignore_index=ignore_index,

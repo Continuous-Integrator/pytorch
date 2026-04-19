@@ -3653,7 +3653,7 @@ def linear_cross_entropy(
     *,
     weight: Tensor | None = None,
     reduction: str = "mean",
-    ignore_index: int = -100,
+    ignore_index: int | None = None,
     label_smoothing: float = 0.0,
 ) -> Tensor:
     r"""Compute the cross entropy loss between inputs, transformed linearly, and target.
@@ -3759,18 +3759,19 @@ def linear_cross_entropy(
             f" batched input, (N, {in_features}), got unbatched"
             f" input with shape {tuple(input.shape)}"
         )
+    logits_shape = (*num_batches, num_classes, *out_features)
     if target.dtype.is_floating_point:
         # target contains probabilities
         expected_target_shape = (*num_batches, num_classes, *out_features)
-        logits_shape = expected_target_shape
-        if ignore_index != -100:
+        if ignore_index is not None:
             raise RuntimeError(
                 "ignore_index cannot be specified when target contains probabilities"
             )
     else:
         # target contains class indices
         expected_target_shape = (*num_batches, *out_features)
-        logits_shape = (*num_batches, num_classes, *out_features)
+    ignore_index=ignore_index if ignore_index is not None else -100
+
     if target.shape != expected_target_shape:
         raise RuntimeError(
             f"expected target with shape {expected_target_shape}, got {tuple(target.shape)}"
