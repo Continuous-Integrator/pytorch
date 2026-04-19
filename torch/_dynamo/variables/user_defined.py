@@ -1362,10 +1362,12 @@ class UserDefinedObjectVariable(UserDefinedVariable):
         return self.value
 
     def as_python_constant(self) -> object:
+        from ..utils import is_pybind11_enum_member
+
         if isinstance(
             self.value,
             (enum.Enum, torch.DispatchKey, torch._C._functorch.TransformType),
-        ):
+        ) or is_pybind11_enum_member(self.value):
             return self.value
 
         if self.is_pytree_constant_class and self.source:
