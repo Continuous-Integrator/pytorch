@@ -949,7 +949,9 @@ class BuiltinVariable(BaseBuiltinVariable):
 
     # Builtins that have been promoted to their own VT classes. Creating a
     # BuiltinVariable for these is a bug; use the specialized class instead.
-    MUST_USE_SPECIALIZED: frozenset[Any] = frozenset({dict, getattr, iter, list, setattr})
+    MUST_USE_SPECIALIZED: frozenset[Any] = frozenset(
+        {dict, getattr, iter, list, setattr}
+    )
 
     def __init__(self, fn: Any, **kwargs: Any) -> None:
         assert fn not in self.MUST_USE_SPECIALIZED, (
