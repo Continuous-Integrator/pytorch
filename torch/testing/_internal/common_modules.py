@@ -1797,7 +1797,7 @@ def module_inputs_torch_nn_LinearCrossEntropyLoss(module_info, device, dtype, re
         return target
 
     def reference_fn(m, p, i, t):
-        linear_weight = p[0].reshape(*m.out_features, m.num_classes, i.shape[-1])
+        linear_weight = p[0].reshape(m.num_classes, *m.out_features, i.shape[-1])
         return linear_cross_entropy_loss_reference(
             i, linear_weight, t,
             weight=m.weight,
