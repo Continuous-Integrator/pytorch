@@ -3263,7 +3263,9 @@ class DefaultDictVariable(UserDefinedDictVariable):
 
     def is_python_constant(self) -> bool:
         assert self._base_vt is not None
-        if self.default_factory not in [list, tuple, dict] and not self._base_vt.items:  # type: ignore[union-attr]
+        # An empty defaultdict with a non-constant factory can't be
+        # constant-folded (we can't serialize the factory).
+        if not self.default_factory.is_python_constant() and not self._base_vt.items:  # type: ignore[union-attr]
             return False
         return self._base_vt.is_python_constant()
 

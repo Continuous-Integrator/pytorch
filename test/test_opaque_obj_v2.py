@@ -52,7 +52,7 @@ from torch.testing._internal.common_utils import (
     instantiate_parametrized_tests,
     parametrize,
 )
-from torch.testing._internal.inductor_utils import HAS_GPU
+from torch.testing._internal.inductor_utils import GPU_TYPE, HAS_GPU
 
 
 class Color(OpaqueBase):
@@ -439,6 +439,11 @@ class TensorWithCounter(torch.Tensor):
 
 class TestOpaqueObject(TestCase):
     def setUp(self):
+        # Must run first: super().setUp() can raise SkipTest (e.g. under
+        # PYTORCH_TEST_SKIP_FAST), and unittest skips tearDown when setUp
+        # raises. Any registrations before this would leak into the next test.
+        super().setUp()
+
         self.lib = torch.library.Library("_TestOpaqueObject", "FRAGMENT")  # noqa: TOR901
         self._opaque_types_before_test = set(_OPAQUE_TYPES_BY_NAME.keys())
 
@@ -881,8 +886,6 @@ class TestOpaqueObject(TestCase):
         @torch.library.register_fake("_TestOpaqueObject::counter_start", lib=self.lib)
         def counter_start_fake(a: Counter) -> torch.Tensor:
             return torch.scalar_tensor(0, dtype=torch.int64)
-
-        super().setUp()
 
     def tearDown(self):
         self.lib._destroy()
@@ -3760,8 +3763,8 @@ class GraphModule(torch.nn.Module):
     @unittest.skipIf(not HAS_GPU, "Inductor+gpu needs triton and recent GPU arch")
     def test_benchmark_harness_no_pickle_for_opaque_inputs(self):
         """Opaque graph inputs must not be pickled in the benchmark harness."""
-        a = torch.randn(4, 4, device="cuda")
-        b = torch.randn(4, 4, device="cuda")
+        a = torch.randn(4, 4, device=GPU_TYPE)
+        b = torch.randn(4, 4, device=GPU_TYPE)
         twc = TensorWithCounter(a, b, Counter(0, 10), SizeStore(4))
 
         def fn(x):

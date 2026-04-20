@@ -50,11 +50,11 @@ from torch.testing._internal.common_utils import (
 )
 from torch.testing._utils import wrapper_set_seed
 
-import torch._refs as refs  # noqa: F401
+import torch._refs as refs
 import torch._refs.nn.functional
 import torch._refs.special
 import torch._refs.linalg
-import torch._prims as prims  # noqa: F401
+import torch._prims as prims
 from torch.utils import _pytree as pytree
 
 
@@ -13631,7 +13631,7 @@ op_db: list[OpInfo] = [
                # undefined value tensor:
                #   File "<string>", line 3
                # def the_method(i0):
-               #     return torch.cov(i0, correction=0, fweights=None, aweights=tensor([0.0518, 0.4681], dtype=torch.float32, requires_grad=True)) # noqa: B950
+               #     return torch.cov(i0, correction=0, fweights=None, aweights=tensor([0.0518, 0.4681], dtype=torch.float32, requires_grad=True))
                #                                                                ~~~~~~ <--- HERE
                DecorateInfo(unittest.expectedFailure, 'TestJit', 'test_variant_consistency_jit'),
                DecorateInfo(toleranceOverride({torch.float16: tol(atol=8e-3, rtol=1.4e-3)}),
@@ -14376,7 +14376,7 @@ op_db: list[OpInfo] = [
                # see discussion : https://github.com/pytorch/pytorch/issues/56660
                # RuntimeError:
                # Arguments for call are not valid.
-               DecorateInfo(unittest.skip("Skipped!"), 'TestJit', 'test_variant_consistency_jit', dtypes=(torch.float32, torch.complex64)),  # noqa: B950
+               DecorateInfo(unittest.skip("Skipped!"), 'TestJit', 'test_variant_consistency_jit', dtypes=(torch.float32, torch.complex64)),
                DecorateInfo(unittest.skip("Skipped!"), 'TestNNCOpInfo', 'test_nnc_correctness'),
                DecorateInfo(unittest.skip("Skipped!"), 'TestCudaFuserOpInfo'),
            ),
@@ -15530,8 +15530,8 @@ op_db: list[OpInfo] = [
            sample_inputs_func=sample_inputs_as_strided_scatter,
            error_inputs_func=error_inputs_as_strided_scatter,
            skips=(
-               DecorateInfo(unittest.skip('Works for int64, fails for everything else'), 'TestCommon', 'test_noncontiguous_samples'),  # noqa: B950
-               DecorateInfo(unittest.skip('Fails in most cases, passes on LAZY for some reason'), 'TestCommon', 'test_variant_consistency_eager'),  # noqa: B950
+               DecorateInfo(unittest.skip('Works for int64, fails for everything else'), 'TestCommon', 'test_noncontiguous_samples'),
+               DecorateInfo(unittest.skip('Fails in most cases, passes on LAZY for some reason'), 'TestCommon', 'test_variant_consistency_eager'),
                DecorateInfo(unittest.skip('Fails on cuda'), 'TestCommon', 'test_complex_half_reference_testing',
                             active_if=not TEST_WITH_ROCM),
                DecorateInfo(unittest.expectedFailure, 'TestBwdGradients', 'test_fn_grad'),
@@ -17685,7 +17685,8 @@ op_db: list[OpInfo] = [
     ),
     BinaryUfuncInfo('nextafter',
                     dtypes=floating_types_and(torch.bfloat16, torch.half),
-                    supports_autograd=False,
+                    supports_forward_ad=True,
+                    supports_fwgrad_bwgrad=True,
                     supports_rhs_python_scalar=False),
     OpInfo(
         "to",
@@ -22169,11 +22170,6 @@ op_db: list[OpInfo] = [
         sample_inputs_func=sample_inputs_grid_sample,
         reference_inputs_func=reference_inputs_grid_sample,
         supports_gradgrad=True,
-        skips=(
-            # Exception: The operator 'aten::grid_sampler_2d_backward' is not currently implemented for the MPS device
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_variant_consistency_eager', device_type='mps'),
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_noncontiguous_samples', device_type='mps'),
-        ),
         gradcheck_nondet_tol=1e-15),
     # TODO: delete this OpInfo once we add meta support for grid_sampler_3d
     OpInfo(
@@ -22205,14 +22201,13 @@ op_db: list[OpInfo] = [
             DecorateInfo(unittest.skip('Skipped!'), device_type='cuda'),
             DecorateInfo(unittest.skip('Skipped!'), device_type='xpu'),
             DecorateInfo(unittest.skip('Skipped!'), device_type='meta'),
-            # Error: The operator 'aten::grid_sampler_3d_backward' is not currently implemented for the MPS device.
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_dtypes', device_type='mps'),
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_variant_consistency_eager', device_type='mps'),
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_noncontiguous_samples', device_type='mps'),
-            DecorateInfo(toleranceOverride({torch.float32: tol(atol=1e-4, rtol=1e-4),
-                                            torch.float16: tol(atol=1e-4, rtol=1e-4),
-                                            torch.bfloat16: tol(atol=1e-4, rtol=1e-4)}),
+            DecorateInfo(toleranceOverride({torch.float32: tol(atol=1e-4, rtol=1e-4)}),
                          "TestConsistency", "test_output_match", device_type="mps"),
+            DecorateInfo(toleranceOverride({torch.float32: tol(atol=1e-3, rtol=2e-6),
+                                            torch.float16: tol(atol=5e-3, rtol=2e-2)}),
+                         "TestConsistency", "test_output_grad_match", device_type="mps"),
+            DecorateInfo(toleranceOverride({torch.float32: tol(atol=5e-5, rtol=5e-4)}),
+                         "TestCommon", "test_noncontiguous_samples", device_type="mps"),
         ),),
     OpInfo(
         "argwhere",
@@ -22713,6 +22708,8 @@ op_db: list[OpInfo] = [
             DecorateInfo(unittest.expectedFailure, 'TestDTensorOps', 'test_dtensor_op_db'),
             # Error: The operator 'aten::hash_tensor.out' is not currently implemented for the MPS device
             DecorateInfo(unittest.expectedFailure, 'TestCommon', device_type='mps'),
+            # NotImplementedError: aten::hash_tensor.out
+            DecorateInfo(unittest.expectedFailure, 'TestReductions', 'test_dim_default', device_type='mps'),
         )
     ),
     OpInfo(
@@ -25309,15 +25306,6 @@ python_ref_db = [
             DecorateInfo(
                 unittest.expectedFailure, 'TestCommon', 'test_python_ref_torch_fallback',
                 dtypes=(torch.complex32,), device_type='cuda'
-            ),
-            # TypeError: Trying to convert ComplexDouble to the MPS backend but it does not have support for that dtype
-            DecorateInfo(
-                unittest.expectedFailure, 'TestCommon', 'test_python_ref',
-                device_type='mps', dtypes=(torch.complex32,)
-            ),
-            DecorateInfo(
-                unittest.expectedFailure, 'TestCommon', 'test_python_ref_torch_fallback',
-                device_type='mps', dtypes=(torch.complex32,)
             ),
         )
     ),
