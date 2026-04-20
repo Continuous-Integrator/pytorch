@@ -255,6 +255,66 @@ class TestFullyShardOverlap(FSDPTest):
         # the test time rather than the expected test time
         self.assertGreater(baseline_time, test_time)
 
+    @skip_if_lt_x_gpu(2)
+    @unittest.skipIf(TEST_HPU, "pin_memory requires GPU")
+    def test_offload_post_accumulate_grad_hook_sees_reduced_grad(self):
+        """A param with a registered ``post_accumulate_grad_hook`` under
+        ``CPUOffloadPolicy`` must have its D2H copy forced synchronous —
+        otherwise the hook (e.g. optimizer-in-backward, see
+        ``torch/_tensor.py``) reads stale pinned memory while the async
+        memcpy is still in flight. ``foreach_reduce`` extends its
+        ``non_blocking`` gate to disable async offload when a hook is
+        registered. Reproducibility was ~2/3 runs with diffs up to 2.0
+        before the fix.
+        """
+        from torch.distributed.fsdp import CPUOffloadPolicy
+
+        torch.manual_seed(42)
+        dim = 4
+        model = nn.Sequential(
+            *[nn.Linear(dim, dim, device=device_type) for _ in range(3)]
+        )
+        ref = copy.deepcopy(model).to(device_type)
+        off = copy.deepcopy(model).to(device_type)
+        for lin in ref:
+            fully_shard(lin)
+        fully_shard(ref)
+        for lin in off:
+            fully_shard(lin, offload_policy=CPUOffloadPolicy())
+        fully_shard(off, offload_policy=CPUOffloadPolicy())
+
+        hook_observed: dict[int, torch.Tensor] = {}
+
+        def _hook(p: torch.Tensor) -> None:
+            g = p.grad
+            local = g.to_local() if hasattr(g, "to_local") else g
+            hook_observed[id(p)] = local.detach().cpu().clone()
+
+        for p in off.parameters():
+            p.register_post_accumulate_grad_hook(_hook)
+
+        inp = torch.randn((2, dim), device=device_type)
+        ref(inp).sum().backward()
+        off(inp).sum().backward()
+
+        for ref_p, off_p in zip(ref.parameters(), off.parameters()):
+            if ref_p.grad is None or id(off_p) not in hook_observed:
+                continue
+            ref_local = (
+                ref_p.grad.to_local() if hasattr(ref_p.grad, "to_local") else ref_p.grad
+            )
+            torch.testing.assert_close(
+                hook_observed[id(off_p)],
+                ref_local.cpu(),
+                atol=1e-5,
+                rtol=1e-4,
+                msg=lambda msg: (
+                    f"post_accumulate_grad_hook observed stale grad: {msg}. "
+                    f"foreach_reduce should force non_blocking=False for the "
+                    f"D2H copy when a hook is registered."
+                ),
+            )
+
 
 class Matmul(torch.autograd.Function):
     # Use CUDA sleeps to emulate compute time
