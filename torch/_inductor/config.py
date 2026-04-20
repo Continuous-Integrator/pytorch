@@ -1232,7 +1232,37 @@ class aten_distributed_optimizations:
 
     # Minimum per-rank bytes for LC replacement. Below this, LC barrier
     # overhead exceeds the benefit. Set to 0 to disable.
-    low_contention_min_bytes_per_rank: int = 16 * 1024 * 1024
+    low_contention_min_bytes_per_rank: int = 1024 * 1024
+
+    # Use v2 all-gather (stream_write/wait_value32 instead of barrier kernels).
+    low_contention_all_gather_v2: bool = False
+
+    # Use NCCL's internal Copy Engine path for all-gather instead of the
+    # custom P2P CE implementation. Requires NCCL backend for symm_mem.
+    # Uses a zero-CTA process group so NCCL routes AG through CE hardware.
+    low_contention_use_nccl_ce: bool = False
+
+    # Clone CE AG output from persistent ncclMemAlloc'd buffer to regular
+    # memory. Enables buffer sharing (1 per shape instead of 1 per AG),
+    # reducing rendezvous count at the cost of an extra copy.
+    low_contention_ce_clone_output: bool = False
+
+    # CE buffer pool size per (group, shape, dtype). 0 = auto: compute
+    # minimum safe pool size from the graph (max concurrent same-shape
+    # AGs started but not waited). >0 = fixed cap (may be unsafe if too
+    # small, or wasteful if too large).
+    low_contention_ce_buffer_pool_size: int = 0
+
+    # Maximum number of AGs in a single coalesced CE call. 0 = unlimited.
+    # Smaller groups allow NCCL work to pipeline with CPU setup of the
+    # next group, reducing CPU-side overhead for large models.
+    low_contention_ce_max_coalesce_size: int = 0
+
+    # Use flat P2P buffers for coalesced CE AG. Instead of N separate
+    # ncclMemAlloc'd buffer pairs, allocates 2 flat buffers and uses
+    # views for each AG. Reduces P2P allocations/rendezvous from N*2
+    # to 2 and replaces N copy_ kernels with 1 torch.cat kernel.
+    low_contention_ce_flat_buffer: bool = True
 
 
 def parallel_compile_enabled_internally() -> bool:

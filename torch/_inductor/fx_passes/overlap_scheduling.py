@@ -1533,6 +1533,11 @@ class OverlapScheduler:
             self.wasted_compute,
         )
 
+        # Stamp overlap info onto collective start nodes for downstream passes
+        # (e.g., LC pass needs to know which collectives are hidden)
+        for start_node, info in self.collective_info.items():
+            start_node.meta["overlap_hidden"] = info.exposed_time_ms < info.estimated_time_ms
+
         self.reorder_graph()
 
     def _bucket_collectives(self) -> None:

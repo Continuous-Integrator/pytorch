@@ -470,9 +470,23 @@ lib.define(
     "bool use_fast_accum = False) -> Tensor",
     tags=[torch._C.Tag.needs_fixed_stride_order],
 )
-lib.define("_low_contention_all_gather(Tensor tensor, str group_name) -> Tensor")
+lib.define(
+    "_low_contention_all_gather(Tensor tensor, str group_name) -> Tensor"
+)
 lib.define(
     "_low_contention_reduce_scatter(Tensor tensor, str reduce_op, str group_name) -> Tensor"
+)
+lib.define(
+    "_low_contention_all_gather_v2(Tensor tensor, str group_name) -> Tensor"
+)
+lib.define(
+    "_nccl_ce_all_gather(Tensor(a) tensor, str group_name, int buffer_id) -> Tensor(a)"
+)
+lib.define(
+    "_nccl_ce_all_gather_coalesced(Tensor(a)[] tensors, str group_name, int[] buffer_ids) -> Tensor(a)[]"
+)
+lib.define(
+    "_nccl_efficiency_reduce_scatter(Tensor tensor, str reduce_op, str group_name) -> Tensor"
 )
 
 lib.define("get_remote_tensors(Tensor x, str group_name) -> Tensor[]")
@@ -1727,6 +1741,500 @@ def _low_contention_all_gather(
         symm_mem.barrier()
         torch._C._distributed_c10d._register_work(output, Work())
         return output
+
+
+@torch.library.impl(lib, "_low_contention_all_gather_v2", "Meta")
+def _low_contention_all_gather_v2_meta(
+    tensor: torch.Tensor,
+    group_name: c10d.GroupName,
+) -> torch.Tensor:
+    group_size = c10d._get_group_size_by_name(group_name)
+    return tensor.new_empty(tensor.shape[0] * group_size, *tensor.shape[1:])
+
+
+# Monotonic counter for v2 signal pad synchronization (no reset needed).
+_v2_counter: dict[str, int] = {}
+
+
+@torch.library.impl(lib, "_low_contention_all_gather_v2", "CUDA")
+def _low_contention_all_gather_v2(
+    tensor: torch.Tensor,
+    group_name: c10d.GroupName,
+) -> torch.Tensor:
+    """
+    All-gather using stream_write/wait_value32 instead of barrier kernels.
+
+    Uses monotonically increasing counters with GEQ wait mode to avoid
+    the reset-vs-write race that occurs with 0/1 signaling.
+    """
+    symm_mem = rendezvous(tensor, group_name)
+    if symm_mem is not None:
+        input_is_symm_mem = True
+    else:
+        symm_mem = get_symm_mem_workspace(
+            group_name, tensor.numel() * tensor.element_size()
+        )
+        input_is_symm_mem = False
+
+    rank = symm_mem.rank
+    world_size = symm_mem.world_size
+
+    # Increment counter for this call
+    counter = _v2_counter.get(group_name, 0) + 1
+    _v2_counter[group_name] = counter
+
+    output = tensor.new_empty(tensor.shape[0] * world_size, *tensor.shape[1:])
+    chunks = output.chunk(world_size)
+
+    # Signal pad layout (channel 1, 2 * world_size slots):
+    #   [ws..2ws-1]  = barrier 1 slots (data ready)
+    #   [2ws..3ws-1] = barrier 2 slots (reads complete)
+    channel = 1
+    b1_base = world_size * channel
+    b2_base = world_size * channel + world_size
+
+    _get_backend_stream().wait_stream(torch.cuda.current_stream())
+    with _get_backend_stream():
+        if not input_is_symm_mem:
+            local_buf = symm_mem.get_buffer(rank, tensor.shape, tensor.dtype)
+            local_buf.copy_(tensor)
+
+        # Barrier 1: signal data ready, wait for all peers
+        for peer in range(world_size):
+            if peer != rank:
+                remote_signal_pad = symm_mem.get_signal_pad(peer)
+                _SymmetricMemory.stream_write_value32(
+                    remote_signal_pad, b1_base + rank, counter
+                )
+
+        local_signal_pad = symm_mem.get_signal_pad(rank)
+        for peer in range(world_size):
+            if peer != rank:
+                torch.ops.symm_mem.stream_wait_value32(
+                    local_signal_pad, b1_base + peer, counter
+                )
+
+        # CE copies: pull from all ranks
+        for step in range(world_size):
+            remote_rank = (rank - step) % world_size
+            src_buf = symm_mem.get_buffer(remote_rank, tensor.shape, tensor.dtype)
+            chunks[remote_rank].copy_(src_buf)
+
+        # Barrier 2: signal reads complete, wait for all peers
+        for peer in range(world_size):
+            if peer != rank:
+                remote_signal_pad = symm_mem.get_signal_pad(peer)
+                _SymmetricMemory.stream_write_value32(
+                    remote_signal_pad, b2_base + rank, counter
+                )
+
+        for peer in range(world_size):
+            if peer != rank:
+                torch.ops.symm_mem.stream_wait_value32(
+                    local_signal_pad, b2_base + peer, counter
+                )
+
+        torch._C._distributed_c10d._register_work(output, Work())
+        return output
+
+
+# --- NCCL CE All-Gather ---
+# Uses NCCL's internal Copy Engine path via dist.all_gather_into_tensor on a
+# zero-CTA process group. Both input shard and output must be ncclMemAlloc'd
+# and ncclCommWindowRegister'd for NCCL to use the CE hardware path.
+
+_nccl_ce_groups: dict[str, c10d.ProcessGroup] = {}
+_nccl_ce_buffers: dict[
+    tuple, tuple[torch.Tensor, torch.Tensor]
+] = {}  # (ce_gn, shape, dtype) -> (shard_buf, output_buf)
+
+
+def _split_nccl_pg(
+    parent_group: c10d.ProcessGroup,
+    cta_policy: int,
+    prefix: str,
+) -> c10d.ProcessGroup:
+    """Create a new PG by splitting parent's NCCL comm with a different CTA policy.
+
+    Unlike new_group(), this is a collective only on the parent group's members,
+    not the entire world. Safe for sub-groups in mixed parallelism (TP+FSDP).
+    """
+    # Get parent's NCCL backend, peeling wrappers if needed
+    parent_nccl = parent_group._get_backend(torch.device("cuda"))
+    from torch.distributed.distributed_c10d import (
+        _GLOO_AVAILABLE,
+        _ProcessGroupWrapper,
+    )
+
+    while _GLOO_AVAILABLE and isinstance(parent_nccl, _ProcessGroupWrapper):
+        parent_nccl = parent_nccl.wrapped_pg
+
+    if not parent_nccl.supports_splitting:
+        raise RuntimeError(
+            f"Parent NCCL backend does not support splitting (NCCL too old?)"
+        )
+
+    default_store = c10d._get_default_store()
+    store = c10d.PrefixStore(prefix, default_store)
+
+    opts = c10d.ProcessGroupNCCL.Options()
+    opts.config.cta_policy = cta_policy
+    opts.split_from = parent_nccl
+    opts.split_color = 0  # all ranks in parent participate
+
+    rank = parent_group.rank()
+    size = parent_group.size()
+
+    backend_store = c10d.PrefixStore("cuda/", store)
+    nccl_backend = c10d.ProcessGroupNCCL(backend_store, rank, size, opts)
+
+    pg = c10d.ProcessGroup(store, rank, size)
+    pg._set_default_backend(c10d.ProcessGroup.BackendType.NCCL)
+    pg._register_backend(
+        torch.device("cuda"),
+        c10d.ProcessGroup.BackendType.NCCL,
+        nccl_backend,
+    )
+
+    # Register in global PG state so _resolve_process_group and
+    # _SymmetricMemory.rendezvous can find it by name.
+    from torch.distributed.distributed_c10d import (
+        _register_process_group,
+        _world,
+    )
+
+    group_name = f"{prefix}"
+    pg._set_group_name(group_name)
+    _world.pg_map[pg] = ("nccl", store)
+    _world.pg_names[pg] = group_name
+    # Copy rank mapping from parent — split PG has identical ranks
+    _world.pg_group_ranks[pg] = dict(_world.pg_group_ranks[parent_group])
+    _world.pg_backend_config[pg] = _world.pg_backend_config.get(
+        parent_group, "nccl"
+    )
+    _register_process_group(group_name, pg)
+
+    return pg
+
+
+def _get_nccl_ce_group(group_name: c10d.GroupName) -> c10d.ProcessGroup:
+    """Get or create a zero-CTA process group for NCCL CE all-gather."""
+    if group_name in _nccl_ce_groups:
+        return _nccl_ce_groups[group_name]
+    group = c10d._resolve_process_group(group_name)
+    ce_group = _split_nccl_pg(
+        group,
+        c10d.ProcessGroupNCCL.NCCL_CTA_POLICY_ZERO,
+        f"nccl_ce/{group_name}",
+    )
+    # Warm up the NCCL communicator
+    device = torch.device("cuda", torch.cuda.current_device())
+    c10d.all_reduce(torch.ones(1, device=device), group=ce_group)
+    _nccl_ce_groups[group_name] = ce_group
+    return ce_group
+
+
+def _get_nccl_ce_buffers(
+    shape: torch.Size,
+    dtype: torch.dtype,
+    device: torch.device,
+    ce_group: c10d.ProcessGroup,
+    buffer_id: int = 0,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Get or create rendezvous'd symm_mem buffers for NCCL CE AG."""
+    ce_gn = ce_group.group_name
+    key = (ce_gn, buffer_id, tuple(shape), dtype)
+    if key in _nccl_ce_buffers:
+        return _nccl_ce_buffers[key]
+    world_size = ce_group.size()
+    out_shape = (shape[0] * world_size, *shape[1:])
+    shard = _SymmetricMemory.empty_strided_p2p(
+        shape, list(torch.empty(shape, dtype=dtype).stride()), dtype, device, ce_gn
+    )
+    output = _SymmetricMemory.empty_strided_p2p(
+        out_shape,
+        list(torch.empty(out_shape, dtype=dtype).stride()),
+        dtype,
+        device,
+        ce_gn,
+    )
+    _SymmetricMemory.rendezvous(shard, ce_gn)
+    _SymmetricMemory.rendezvous(output, ce_gn)
+    _nccl_ce_buffers[key] = (shard, output)
+    return shard, output
+
+
+@torch.library.impl(lib, "_nccl_ce_all_gather", "Meta")
+def _nccl_ce_all_gather_meta(
+    tensor: torch.Tensor,
+    group_name: c10d.GroupName,
+    buffer_id: int = 0,
+) -> torch.Tensor:
+    group_size = c10d._get_group_size_by_name(group_name)
+    return tensor.new_empty(tensor.shape[0] * group_size, *tensor.shape[1:])
+
+
+@torch.library.impl(lib, "_nccl_ce_all_gather", "CUDA")
+def _nccl_ce_all_gather(
+    tensor: torch.Tensor,
+    group_name: c10d.GroupName,
+    buffer_id: int = 0,
+) -> torch.Tensor:
+    """
+    All-gather using NCCL's internal Copy Engine path.
+
+    Uses a zero-CTA process group with ncclMemAlloc'd buffers so that
+    dist.all_gather_into_tensor routes through NCCL's CE hardware —
+    zero SM usage, allowing full compute overlap.
+
+    buffer_id: unique ID per AG call site in the compiled graph.
+    Prevents buffer sharing between different AGs with the same shape
+    when overlap scheduling reorders consumers after the next AG starts.
+    """
+    ce_group = _get_nccl_ce_group(group_name)
+
+    # When clone_output is enabled, always use buffer_id=0 (shared per shape)
+    # since the output is cloned to regular memory immediately.
+    clone_output = torch._inductor.config.aten_distributed_optimizations.low_contention_ce_clone_output
+    effective_id = 0 if clone_output else buffer_id
+    shard_buf, output_buf = _get_nccl_ce_buffers(
+        tensor.shape, tensor.dtype, tensor.device, ce_group, effective_id
+    )
+
+    # Copy shard on the backend stream (not default) to avoid a race:
+    # with buffer pooling, the next AG reusing this shard_buf would
+    # overwrite it on the default stream while the current all_gather
+    # is still reading it on the backend stream.
+    _get_backend_stream().wait_stream(torch.cuda.current_stream())
+    with _get_backend_stream():
+        shard_buf.copy_(tensor)
+        c10d.all_gather_into_tensor(output_buf, shard_buf, group=ce_group)
+        result = output_buf.clone() if clone_output else output_buf
+        torch._C._distributed_c10d._register_work(result, Work())
+        return result
+
+
+@torch.library.impl(lib, "_nccl_ce_all_gather_coalesced", "Meta")
+def _nccl_ce_all_gather_coalesced_meta(
+    tensors: list[torch.Tensor],
+    group_name: c10d.GroupName,
+    buffer_ids: list[int],
+) -> list[torch.Tensor]:
+    group_size = c10d._get_group_size_by_name(group_name)
+    return [
+        t.new_empty(t.shape[0] * group_size, *t.shape[1:])
+        for t in tensors
+    ]
+
+
+_nccl_ce_flat_buffers: dict[tuple, tuple[torch.Tensor, torch.Tensor]] = {}
+
+
+def _get_flat_ce_buffers(
+    total_numel: int,
+    dtype: torch.dtype,
+    device: torch.device,
+    ce_group: c10d.ProcessGroup,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Get or create a flat P2P buffer pair for coalesced CE AG."""
+    ce_gn = ce_group.group_name
+    key = (ce_gn, total_numel, dtype)
+    if key in _nccl_ce_flat_buffers:
+        return _nccl_ce_flat_buffers[key]
+    world_size = ce_group.size()
+    shard = _SymmetricMemory.empty_strided_p2p(
+        (total_numel,), [1], dtype, device, ce_gn
+    )
+    output = _SymmetricMemory.empty_strided_p2p(
+        (total_numel * world_size,), [1], dtype, device, ce_gn
+    )
+    _SymmetricMemory.rendezvous(shard, ce_gn)
+    _SymmetricMemory.rendezvous(output, ce_gn)
+    _nccl_ce_flat_buffers[key] = (shard, output)
+    return shard, output
+
+
+@torch.library.impl(lib, "_nccl_ce_all_gather_coalesced", "CUDA")
+def _nccl_ce_all_gather_coalesced(
+    tensors: list[torch.Tensor],
+    group_name: c10d.GroupName,
+    buffer_ids: list[int],
+) -> list[torch.Tensor]:
+    """Coalesced CE all-gather: single wait_stream + batched copies + NCCL group."""
+    ce_group = _get_nccl_ce_group(group_name)
+    clone_output = torch._inductor.config.aten_distributed_optimizations.low_contention_ce_clone_output
+    use_flat = torch._inductor.config.aten_distributed_optimizations.low_contention_ce_flat_buffer
+
+    if use_flat:
+        return _nccl_ce_all_gather_coalesced_flat(
+            tensors, ce_group, clone_output,
+        )
+
+    # Per-tensor buffer path (original)
+    buf_pairs = []
+    for tensor, bid in zip(tensors, buffer_ids):
+        effective_id = 0 if clone_output else bid
+        shard_buf, output_buf = _get_nccl_ce_buffers(
+            tensor.shape, tensor.dtype, tensor.device, ce_group, effective_id
+        )
+        buf_pairs.append((shard_buf, output_buf))
+
+    _get_backend_stream().wait_stream(torch.cuda.current_stream())
+    with _get_backend_stream():
+        for tensor, (shard_buf, _) in zip(tensors, buf_pairs):
+            shard_buf.copy_(tensor)
+
+        with c10d._coalescing_manager(group=ce_group):
+            for shard_buf, output_buf in buf_pairs:
+                c10d.all_gather_into_tensor(output_buf, shard_buf, group=ce_group)
+
+        results = []
+        for shard_buf, output_buf in buf_pairs:
+            result = output_buf.clone() if clone_output else output_buf
+            torch._C._distributed_c10d._register_work(result, Work())
+            results.append(result)
+        return results
+
+
+def _nccl_ce_all_gather_coalesced_flat(
+    tensors: list[torch.Tensor],
+    ce_group: c10d.ProcessGroup,
+    clone_output: bool,
+) -> list[torch.Tensor]:
+    """Flat-buffer coalesced CE AG: 2 P2P allocs, 1 cat, N coalesced AGs.
+
+    Uses a single flat P2P shard buffer + flat P2P output buffer instead of
+    N separate buffer pairs. Each per-tensor AG uses a view into the flat
+    buffers, maintaining correct per-tensor output layout while reducing:
+    - P2P allocations: N*2 → 2
+    - P2P rendezvous: N*2 → 2
+    - Copy kernels: N → 1 (torch.cat)
+    - Memory: ~proportional (same total bytes, but 2 allocations not N*2)
+    """
+    world_size = ce_group.size()
+    sizes = [t.numel() for t in tensors]
+    total_shard_numel = sum(sizes)
+    total_output_numel = total_shard_numel * world_size
+    dtype = tensors[0].dtype
+    device = tensors[0].device
+
+    flat_shard, flat_output = _get_flat_ce_buffers(
+        total_shard_numel, dtype, device, ce_group,
+    )
+
+    # Compute offsets for shard views and output views
+    shard_offset = 0
+    shard_views = []
+    for n in sizes:
+        shard_views.append(flat_shard[shard_offset:shard_offset + n])
+        shard_offset += n
+
+    output_offset = 0
+    output_views = []
+    for n in sizes:
+        out_n = n * world_size
+        output_views.append(flat_output[output_offset:output_offset + out_n])
+        output_offset += out_n
+
+    _get_backend_stream().wait_stream(torch.cuda.current_stream())
+    with _get_backend_stream():
+        # Single cat packs all inputs into flat P2P shard buffer
+        torch.cat([t.reshape(-1) for t in tensors], out=flat_shard)
+
+        # Coalesced AG: each AG uses views into the flat P2P buffers.
+        # NCCL sees valid device pointers within ncclMemAlloc'd memory.
+        with c10d._coalescing_manager(group=ce_group):
+            for sv, ov in zip(shard_views, output_views):
+                c10d.all_gather_into_tensor(ov, sv, group=ce_group)
+
+        results = []
+        work = Work()
+        for i, tensor in enumerate(tensors):
+            out_shape = (tensor.shape[0] * world_size, *tensor.shape[1:])
+            result = output_views[i].view(out_shape)
+            if clone_output:
+                result = result.clone()
+            torch._C._distributed_c10d._register_work(result, work)
+            results.append(result)
+
+        return results
+
+
+# NCCL Efficiency Reduce-Scatter — uses EFFICIENCY CTA policy (reduced SMs)
+# for reduce-scatter. Unlike zero-CTA (which breaks RS correctness because
+# reduction needs SMs), EFFICIENCY reduces SM usage while keeping reduction
+# functional, giving better compute-communication overlap.
+
+_nccl_eff_groups: dict[str, c10d.ProcessGroup] = {}
+_nccl_eff_stream: torch.cuda.Stream | None = None
+
+
+def _get_nccl_eff_stream() -> torch.cuda.Stream:
+    """Get a dedicated stream for efficiency RS (separate from CE AG stream)."""
+    global _nccl_eff_stream
+    if _nccl_eff_stream is None:
+        _nccl_eff_stream = torch.cuda.Stream()
+    return _nccl_eff_stream
+
+
+def _get_nccl_eff_group(group_name: c10d.GroupName) -> c10d.ProcessGroup:
+    """Get or create an EFFICIENCY CTA process group for NCCL RS."""
+    if group_name in _nccl_eff_groups:
+        return _nccl_eff_groups[group_name]
+    group = c10d._resolve_process_group(group_name)
+    eff_group = _split_nccl_pg(
+        group,
+        c10d.ProcessGroupNCCL.NCCL_CTA_POLICY_EFFICIENCY,
+        f"nccl_eff/{group_name}",
+    )
+    device = torch.device("cuda", torch.cuda.current_device())
+    c10d.all_reduce(torch.ones(1, device=device), group=eff_group)
+    _nccl_eff_groups[group_name] = eff_group
+    return eff_group
+
+
+@torch.library.impl(lib, "_nccl_efficiency_reduce_scatter", "Meta")
+def _nccl_efficiency_reduce_scatter_meta(
+    tensor: torch.Tensor,
+    reduce_op: str,
+    group_name: c10d.GroupName,
+) -> torch.Tensor:
+    group_size = c10d._get_group_size_by_name(group_name)
+    return tensor.unflatten(0, (group_size, -1)).mean(dim=0)
+
+
+@torch.library.impl(lib, "_nccl_efficiency_reduce_scatter", "CUDA")
+def _nccl_efficiency_reduce_scatter(
+    tensor: torch.Tensor,
+    reduce_op: str,
+    group_name: c10d.GroupName,
+) -> torch.Tensor:
+    """
+    Reduce-scatter using NCCL's EFFICIENCY CTA policy.
+
+    Uses an efficiency-mode process group with regular (non-ncclMemAlloc)
+    buffers. ncclMemAlloc'd buffers cause NCCL to route through CE even for
+    reduction, producing incorrect results. Regular tensors + EFFICIENCY CTA
+    gives reduced SM usage while keeping reduction correct.
+    """
+    eff_group = _get_nccl_eff_group(group_name)
+    world_size = eff_group.size()
+    shard_shape = (tensor.shape[0] // world_size, *tensor.shape[1:])
+    output = torch.empty(shard_shape, dtype=tensor.dtype, device=tensor.device)
+
+    op = c10d.ReduceOp.AVG if reduce_op == "avg" else c10d.ReduceOp.SUM
+    # During CUDA graph capture, stay on the capture stream so the RS
+    # kernels are recorded. Otherwise use a dedicated stream for overlap.
+    if torch.cuda.is_current_stream_capturing():
+        c10d.reduce_scatter_tensor(output, tensor, op=op, group=eff_group)
+        torch._C._distributed_c10d._register_work(output, Work())
+    else:
+        eff_stream = _get_nccl_eff_stream()
+        eff_stream.wait_stream(torch.cuda.current_stream())
+        with torch.cuda.stream(eff_stream):
+            c10d.reduce_scatter_tensor(output, tensor, op=op, group=eff_group)
+            torch._C._distributed_c10d._register_work(output, Work())
+    return output
 
 
 @torch.library.impl(lib, "_low_contention_reduce_scatter", "Meta")

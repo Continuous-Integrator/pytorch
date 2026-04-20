@@ -38,13 +38,21 @@ struct NCCLAllocation {
   void* ptr;
   size_t buffer_size;
   int device_idx;
+  std::optional<std::string> default_group_name;
   std::mutex mutex;
   // Map of group name to peer alloc info
   ska::flat_hash_map<std::string, c10::intrusive_ptr<NCCLPeerAllocInfo>>
       peer_alloc_infos_;
 
-  NCCLAllocation(void* ptr, size_t buffer_size, int device_idx)
-      : ptr(ptr), buffer_size(buffer_size), device_idx(device_idx) {}
+  NCCLAllocation(
+      void* ptr,
+      size_t buffer_size,
+      int device_idx,
+      const std::optional<std::string>& group_name = std::nullopt)
+      : ptr(ptr),
+        buffer_size(buffer_size),
+        device_idx(device_idx),
+        default_group_name(group_name) {}
 
   ~NCCLAllocation() {
     // Avoid calling CUDA functions after driver shutting down
@@ -444,11 +452,10 @@ class NCCLSymmetricMemoryAllocator : public SymmetricMemoryAllocator {
       size_t size,
       int device_idx,
       const std::optional<std::string>& group_name) override {
-    TORCH_CHECK(
-        group_name == std::nullopt,
-        "NCCLSymmetricMemoryAllocator::alloc "
-        "must not be called with a group_name");
-
+    // NCCL allocations via ncclMemAlloc are global (not per-group).
+    // group_name is stored as default_group_name on the allocation so that
+    // rendezvous() can use it when called without an explicit group_name
+    // (e.g., from get_symm_mem_workspace).
     c10::cuda::CUDAGuard guard(device_idx);
     // TODO: we might need to use a roundup or mempool for mem allocation.
     void* ptr;
@@ -456,7 +463,8 @@ class NCCLSymmetricMemoryAllocator : public SymmetricMemoryAllocator {
     {
       std::lock_guard<std::mutex> lock(mutex_);
       allocations_.emplace(
-          ptr, std::make_unique<NCCLAllocation>(ptr, size, device_idx));
+          ptr,
+          std::make_unique<NCCLAllocation>(ptr, size, device_idx, group_name));
     }
     return ptr;
   }
@@ -490,25 +498,38 @@ class NCCLSymmetricMemoryAllocator : public SymmetricMemoryAllocator {
   c10::intrusive_ptr<SymmetricMemory> rendezvous(
       void* ptr,
       const std::optional<std::string>& group_name) override {
-    TORCH_CHECK(group_name.has_value(), "group_name must be provided");
     NCCLAllocation* allocation;
-    SymmMemKey key{ptr, *group_name};
+    // Resolve group_name: explicit argument takes precedence, then fall back
+    // to default_group_name from allocation (set by empty_strided_p2p).
+    std::string resolved_group_name;
     {
       std::lock_guard<std::mutex> lock(mutex_);
+
+      // Find the allocation covering the ptr under the allocator lock.
+      auto alloc_it = find_allocation_covering(ptr, allocations_);
+      if (alloc_it == allocations_.end()) {
+        // Match CUDASymmetricMemory behavior: return nullptr for tensors
+        // not allocated via ncclMemAlloc, allowing callers to fall back to
+        // workspace-based paths.
+        return nullptr;
+      }
+      allocation = alloc_it->second.get();
+
+      if (group_name.has_value() && !group_name->empty()) {
+        resolved_group_name = *group_name;
+      } else {
+        TORCH_CHECK(
+            allocation->default_group_name.has_value(),
+            "NCCLSymmetricMemory::rendezvous: `group_name` is neither "
+            "specified during allocation nor passed to rendezvous().");
+        resolved_group_name = *allocation->default_group_name;
+      }
+
+      SymmMemKey key{ptr, resolved_group_name};
       auto it = symm_mems_.find(key);
       if (it != symm_mems_.end()) {
         return it->second;
       }
-
-      // Find the allocation covering the ptr under the allocator lock.
-      // We grab a raw pointer to the NCCLAllocation so we can release the
-      // allocator lock before doing expensive per-allocation work.
-      auto alloc_it = find_allocation_covering(ptr, allocations_);
-      TORCH_CHECK(
-          alloc_it != allocations_.end(),
-          "Pointer not within any SymmetricMemory allocation, "
-          "is the tensor allocated from SymmetricMemory?");
-      allocation = alloc_it->second.get();
     }
 
     // Get or create peer alloc info for the group under the per-allocation
@@ -516,15 +537,17 @@ class NCCLSymmetricMemoryAllocator : public SymmetricMemoryAllocator {
     // for different groups (e.g., forward vs backward).
     std::lock_guard<std::mutex> alloc_lock(allocation->mutex);
     auto& peer_alloc_infos = allocation->peer_alloc_infos_;
-    auto& pai = peer_alloc_infos[*group_name];
+    auto& pai = peer_alloc_infos[resolved_group_name];
     if (!pai) {
-      pai = c10::make_intrusive<NCCLPeerAllocInfo>(allocation, *group_name);
+      pai = c10::make_intrusive<NCCLPeerAllocInfo>(
+          allocation, resolved_group_name);
     }
     size_t offset =
         reinterpret_cast<uintptr_t>(ptr) -
         reinterpret_cast<uintptr_t>(allocation->ptr);
     // Create the SymmetricMemory handle.
     auto symm_mem = c10::make_intrusive<NCCLSymmetricMemory>(pai, offset);
+    SymmMemKey key{ptr, resolved_group_name};
     {
       std::lock_guard<std::mutex> lock(mutex_);
       // Insert the SymmetricMemory handle into the map (cache), keyed by the

@@ -3641,6 +3641,14 @@ class Scheduler:
         for node in self.nodes:
             log.debug("scheduling %s", node.node)
 
+            # Collect all fake deps for this node, then apply them in a
+            # single set_read_writes call. This avoids O(N*D) cost from
+            # calling add_fake_dep → set_read_writes → prune_deps per dep.
+            # With CE flat buffers, nodes can accumulate 800+ deps and
+            # 290K total add_fake_dep calls, making the per-call prune
+            # the dominant compile cost.
+            pending_fake_deps: list[Dep] = []
+
             if has_non_input_unbacked_defs:
                 assert node.node is not None
 
@@ -3655,7 +3663,7 @@ class Scheduler:
                     )
                     if (r := unbacked_symbol_to_origin_node[s]) is not None:
                         for buf in self.name_to_node[r].get_outputs():
-                            node.add_fake_dep(StarDep(buf.get_name()))
+                            pending_fake_deps.append(StarDep(buf.get_name()))
 
             if (
                 len(node.read_writes.writes) == 1
@@ -3674,7 +3682,7 @@ class Scheduler:
                     alt_name = rename(alt_name)
                     # this node must run after the prior writer
                     add_user(alt_name, node)
-                    node.add_fake_dep(StarDep(alt_name, mode=node_mode))
+                    pending_fake_deps.append(StarDep(alt_name, mode=node_mode))
                     for user in name_to_users[alt_name].items:
                         if user.get_name() == node.get_name():
                             continue
@@ -3691,7 +3699,7 @@ class Scheduler:
                             # independent storage, so we only need an ordering dependency
                             # (is_fake=True) that won't extend their buffer lifetime.
                             is_alias = alt_name in out_buf.get_aliases()
-                            node.add_fake_dep(
+                            pending_fake_deps.append(
                                 WeakDep(
                                     other_name,
                                     mutating_buf=buf.get_name(),
@@ -3704,11 +3712,19 @@ class Scheduler:
                 add_user(add_dep, node, is_weak=True)
                 # is_fake=True because these are control dependencies for ordering only,
                 # they should not extend buffer lifetimes
-                node.add_fake_dep(WeakDep(add_dep, node.get_name(), is_fake=True))
+                pending_fake_deps.append(
+                    WeakDep(add_dep, node.get_name(), is_fake=True)
+                )
 
             for add_dep in V.graph.additional_star_deps[node.get_name()]:
                 add_user(add_dep, node, is_weak=False)  # Strong dependency
-                node.add_fake_dep(StarDep(add_dep))
+                pending_fake_deps.append(StarDep(add_dep))
+
+            # Apply all collected fake deps in one batch
+            if pending_fake_deps:
+                node.set_read_writes(
+                    node.read_writes.with_read(OrderedSet(pending_fake_deps))
+                )
 
             # add normal non-mutation dependencies
             for read in node.read_writes.reads:
