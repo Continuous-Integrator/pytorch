@@ -1225,7 +1225,7 @@ class _VersionWrapper:
         return self.val
 
 
-def _maybe_detach(x):
+def _detach_with_unexclude(x):
     if isinstance(x, torch.Tensor):
         with torch._C._SetExcludeDispatchKeyGuard(torch._C.DispatchKey.ADInplaceOrView, False):
             # Ensure that view performed beneath autograd properly propagates
@@ -1358,7 +1358,7 @@ class _CachingTorchDispatchMode(TorchDispatchMode):
                     node.meta["recompute"] = policy
 
         if policy in (CheckpointPolicy.MUST_SAVE, CheckpointPolicy.PREFER_SAVE) or is_compiling:
-            self.storage[func][idx] = tree_map(lambda x: _VersionWrapper(_maybe_detach(x)), out)
+            self.storage[func][idx] = tree_map(lambda x: _VersionWrapper(_detach_with_unexclude(x)), out)
         return out
 
 class _CachedTorchDispatchMode(TorchDispatchMode):
