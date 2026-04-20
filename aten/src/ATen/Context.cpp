@@ -85,6 +85,29 @@ std::string precision2str(Float32Precision prec) {
   TORCH_CHECK(false, "Invalid enum Float32Precision(", static_cast<int>(prec), ")");
 }
 
+CuDNNDepthwiseKernel str2cudnn_depthwise(const std::string& name) {
+  if (name == "auto")
+    return CuDNNDepthwiseKernel::AUTO;
+  else if (name == "cudnn")
+    return CuDNNDepthwiseKernel::CUDNN;
+  else if (name == "native")
+    return CuDNNDepthwiseKernel::NATIVE;
+  TORCH_CHECK(false, "Unknown cuDNN depthwise kernel mode: ", name,
+              ". Expected one of: auto, cudnn, native");
+}
+
+std::string cudnn_depthwise2str(CuDNNDepthwiseKernel k) {
+  switch (k) {
+    case CuDNNDepthwiseKernel::AUTO:
+      return "auto";
+    case CuDNNDepthwiseKernel::CUDNN:
+      return "cudnn";
+    case CuDNNDepthwiseKernel::NATIVE:
+      return "native";
+  }
+  TORCH_CHECK(false, "Invalid enum CuDNNDepthwiseKernel(", static_cast<int>(k), ")");
+}
+
 #ifdef USE_ROCM
 static constexpr const auto rocm_allow_group_gemm_ck = "ROCM_ALLOW_GROUP_GEMM_CK";
 #endif
@@ -180,6 +203,14 @@ bool Context::userEnabledNNPACK() const {
 
 void Context::setUserEnabledNNPACK(bool e) {
   enabled_nnpack = e;
+}
+
+CuDNNDepthwiseKernel Context::cudnnDepthwiseKernel() const {
+  return depthwise_kernel_cudnn;
+}
+
+void Context::setCuDNNDepthwiseKernel(CuDNNDepthwiseKernel k) {
+  depthwise_kernel_cudnn = k;
 }
 
 bool Context::allowTF32CuDNN(std::optional<Float32Op> op) const {
@@ -691,7 +722,7 @@ at::QEngine Context::qEngine() const {
     qengine = at::kONEDNN;
 #endif
 
-#ifdef USE_FBGEMM
+#if defined(USE_FBGEMM) && defined(__x86_64__)
     if (fbgemm::fbgemmSupportedCPU()) {
       /* X86 is enabled if and only if fbgemm is available.
        * It combines goodness of fbgemm and onednn by dispatching.
@@ -730,7 +761,7 @@ const std::vector<at::QEngine>& Context::supportedQEngines() {
     engines.push_back(at::kONEDNN);
 #endif
 
-#ifdef USE_FBGEMM
+#if defined(USE_FBGEMM) && defined(__x86_64__)
     if (fbgemm::fbgemmSupportedCPU()) {
       engines.push_back(at::kX86);
       // The X86 qengine is available if and only if FBGEMM is available

@@ -45,6 +45,7 @@ import torch
 from torch import SymInt
 from torch._dispatch.python import enable_python_dispatcher
 from torch._dynamo.graph_bytecode_inputs import (
+    CURRENT_STREAM_INDEX,
     get_external_object_by_index,
     register_user_object,
 )
@@ -117,6 +118,7 @@ from ..source import (
     ChainedSource,
     ConstDictKeySource,
     ConvertIntSource,
+    CurrentStreamSource,
     DictGetItemSource,
     DictSubclassGetItemSource,
     DynamicScalarSource,
@@ -297,6 +299,7 @@ from .user_defined import (
     IntWrapperVariable,
     KeyedJaggedTensorVariable,
     MutableMappingVariable,
+    OrderedDictVariable,
     SourcelessGraphModuleVariable,
     UserDefinedClassVariable,
     UserDefinedConstantVariable,
@@ -889,10 +892,18 @@ class VariableBuilder:
                     ),
                     source=self.source,
                 )
+            elif istype(value, collections.OrderedDict):
+                dict_vt = ConstDictVariable(
+                    result,  # type: ignore[arg-type]
+                    user_cls=collections.OrderedDict,
+                    mutation_type=ValueMutationExisting(),
+                    source=self.source,
+                )
+                result = OrderedDictVariable(value, dict_vt=dict_vt, source=self.source)
+                return self.tx.output.side_effects.track_object_existing(value, result)
             else:
                 result = ConstDictVariable(
                     result,  # type: ignore[arg-type]
-                    user_cls=type(value),
                     source=self.source,
                 )
 
@@ -1185,7 +1196,11 @@ class VariableBuilder:
             return StreamContextVariable.create(self.tx, stream_var)
         elif isinstance(value, torch.Stream):
             self.install_guards(GuardBuilder.TYPE_MATCH)
-            index = register_user_object(value, self.source)
+            if isinstance(self.source, CurrentStreamSource):
+                # Reuse the index pre-allocated in SymbolicStreamState.__init__
+                index = CURRENT_STREAM_INDEX
+            else:
+                index = register_user_object(value, self.source)
             stream_proxy = self.tx.output.create_proxy(
                 "call_function", get_external_object_by_index, (index,), {}
             )
@@ -1684,13 +1699,10 @@ class VariableBuilder:
                 for i, k, v in enumerate_items_with_dict_position(value)
             )
 
+            is_ordered_dict = isinstance(value, collections.OrderedDict)
             dict_vt = ConstDictVariable(
                 result,
-                user_cls=(
-                    collections.OrderedDict
-                    if isinstance(value, collections.OrderedDict)
-                    else dict
-                ),
+                user_cls=(collections.OrderedDict if is_ordered_dict else dict),
                 mutation_type=ValueMutationExisting(),
                 source=self.source,
             )
@@ -1698,7 +1710,12 @@ class VariableBuilder:
             # bytecode simple
             dict_vt.should_reconstruct_all = True
 
-            result = UserDefinedDictVariable(value, dict_vt=dict_vt, source=self.source)
+            if is_ordered_dict:
+                result = OrderedDictVariable(value, dict_vt=dict_vt, source=self.source)
+            else:
+                result = UserDefinedDictVariable(
+                    value, dict_vt=dict_vt, source=self.source
+                )
             return self.tx.output.side_effects.track_object_existing(value, result)
         elif isinstance(value, tuple):
             self.install_guards(GuardBuilder.TYPE_MATCH)
