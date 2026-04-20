@@ -714,7 +714,7 @@ class _RuntimeForwardEpilogue:
             )
         return [
             handler(orig_inputs, fw_outs, out)
-            for out, handler in builtins.zip(fw_outs, self.output_handlers)
+            for out, handler in zip(fw_outs, self.output_handlers)
         ]
 
 
