@@ -14,28 +14,12 @@ Tests verify that a "debug_assert_wrapper" artifact is emitted via
 trace_structured.
 """
 
-import importlib.util
 import logging
 from contextlib import contextmanager
 
 import torch
 import torch._functorch.config
-
-
-_orig_find_spec = importlib.util.find_spec
-
-
-def _no_numba_find_spec(name, *a, **kw):  # type: ignore[no-untyped-def]
-    if name == "numba":
-        return None
-    return _orig_find_spec(name, *a, **kw)
-
-
-importlib.util.find_spec = _no_numba_find_spec  # type: ignore[assignment]
-from torch.testing._internal.common_utils import run_tests, TestCase  # noqa: E402
-
-
-importlib.util.find_spec = _orig_find_spec  # type: ignore[assignment]
+from torch.testing._internal.common_utils import run_tests, TestCase
 
 
 trace_log = logging.getLogger("torch.__trace")
@@ -88,11 +72,7 @@ class TestCodegenDebugAssert(TestCase):
 
         self.assertEqual(out, x + y)
 
-        self.assertGreaterEqual(
-            len(captured),
-            1,
-            "Expected debug_assert_wrapper codegen artifact to be emitted",
-        )
+        self.assertEqual(len(captured), 1)
 
     @torch._functorch.config.patch(debug_assert=True)
     def test_all_requires_grad(self):
@@ -114,11 +94,7 @@ class TestCodegenDebugAssert(TestCase):
 
         self.assertEqual(out, x + y + z)
 
-        self.assertGreaterEqual(
-            len(captured),
-            1,
-            "Expected debug_assert_wrapper codegen artifact to be emitted",
-        )
+        self.assertEqual(len(captured), 1)
 
     @torch._functorch.config.patch(debug_assert=True)
     def test_some_no_grad_inputs(self):
@@ -140,11 +116,7 @@ class TestCodegenDebugAssert(TestCase):
 
         self.assertEqual(out, x * y + z)
 
-        self.assertGreaterEqual(
-            len(captured),
-            1,
-            "Expected debug_assert_wrapper codegen artifact to be emitted",
-        )
+        self.assertEqual(len(captured), 1)
 
 
 if __name__ == "__main__":

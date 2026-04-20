@@ -3,42 +3,29 @@
 """
 Tests for codegen'ing the mutation epilogue in _create_runtime_wrapper.
 
-The codegen'd mutation epilogue emits one of set_(), as_strided_(), copy_(),
+The codegen'd mutation epilogue emits one of as_strided_(), copy_(),
 or detach().copy_() per mutated input, with the branch resolved at codegen
-time from each input's mutation metadata (mutates_storage_metadata,
-mutates_metadata, mutates_data, is_leaf).
+time from each input's mutation metadata (mutates_metadata, mutates_data,
+is_leaf).
 
-Note: for inference (no requires_grad), mutations are kept inside the graph
-via keep_input_mutations, so the runtime epilogue is not used. These tests
-use requires_grad inputs to trigger the training path where the epilogue
-runs.
+Tests that exercise data-only mutations use torch.compile (dynamo handles
+metadata mutations in-graph, so only data mutations reach the epilogue).
+
+Tests that exercise metadata mutations (metadata-only, data+metadata)
+use aot_function directly so metadata mutations flow through the epilogue.
 
 Tests verify that a "mutation_epilogue" artifact is emitted via
 trace_structured.
 """
 
-import importlib.util
 import logging
 from contextlib import contextmanager
 
 import torch
 import torch._functorch.config
-
-
-_orig_find_spec = importlib.util.find_spec
-
-
-def _no_numba_find_spec(name, *a, **kw):  # type: ignore[no-untyped-def]
-    if name == "numba":
-        return None
-    return _orig_find_spec(name, *a, **kw)
-
-
-importlib.util.find_spec = _no_numba_find_spec  # type: ignore[assignment]
-from torch.testing._internal.common_utils import run_tests, TestCase  # noqa: E402
-
-
-importlib.util.find_spec = _orig_find_spec  # type: ignore[assignment]
+from functorch.compile import nop
+from torch._functorch.aot_autograd import aot_function
+from torch.testing._internal.common_utils import run_tests, skipIfTorchDynamo, TestCase
 
 
 trace_log = logging.getLogger("torch.__trace")
@@ -94,11 +81,12 @@ class TestCodegenMutationEpilogue(TestCase):
         self.assertEqual(x.detach(), x_ref * 2)
         self.assertEqual(out, x_ref * 2 + y_ref)
 
-        self.assertGreaterEqual(
+        self.assertEqual(
             len(captured),
             1,
             "Expected mutation_epilogue codegen artifact to be emitted",
         )
+        self.assertIn("copy_", captured[0])
 
     def test_multiple_data_mutations(self):
         """
@@ -125,11 +113,12 @@ class TestCodegenMutationEpilogue(TestCase):
         self.assertEqual(c.detach(), c_ref + 1)
         self.assertEqual(out, a_ref * 2 + b + c_ref + 1)
 
-        self.assertGreaterEqual(
+        self.assertEqual(
             len(captured),
             1,
             "Expected mutation_epilogue codegen artifact to be emitted",
         )
+        self.assertIn("copy_", captured[0])
 
     def test_leaf_mutation_under_no_grad(self):
         """
@@ -150,11 +139,86 @@ class TestCodegenMutationEpilogue(TestCase):
         self.assertEqual(x.detach(), x_ref * 2)
         self.assertEqual(out, x_ref * 2 + 1)
 
-        self.assertGreaterEqual(
+        self.assertEqual(
             len(captured),
             1,
             "Expected mutation_epilogue codegen artifact to be emitted",
         )
+        self.assertIn("detach().copy_", captured[0])
+
+    @skipIfTorchDynamo(
+        "aot_function uses FX tracing which conflicts with dynamo wrapping"
+    )
+    def test_metadata_only_mutation(self):
+        """
+        Metadata-only mutation via transpose_(). Codegen should emit
+        as_strided_() without copy_(). Uses aot_function directly because
+        dynamo handles metadata mutations in-graph.
+        """
+        with self._capture_codegen_source("mutation_epilogue") as captured:
+
+            def f(a, b):
+                a.transpose_(1, 0)
+                return a + b
+
+            a = torch.randn(3, 4, requires_grad=True).add(0)
+            b = torch.randn(4, 3)
+            compiled_f = aot_function(f, nop)
+            out = compiled_f(a, b)
+
+        self.assertEqual(a.shape, (4, 3))
+        self.assertEqual(out.shape, (4, 3))
+
+        self.assertEqual(len(captured), 1)
+        self.assertIn("as_strided_", captured[0])
+        self.assertNotIn("copy_", captured[0])
+
+    @skipIfTorchDynamo(
+        "aot_function uses FX tracing which conflicts with dynamo wrapping"
+    )
+    def test_data_and_metadata_mutation(self):
+        """
+        Both data and metadata mutated (transpose_ then mul_). Codegen
+        should emit as_strided_() followed by copy_(). Uses aot_function
+        directly because dynamo handles metadata mutations in-graph.
+        """
+        with self._capture_codegen_source("mutation_epilogue") as captured:
+
+            def f(a):
+                a.transpose_(1, 0)
+                a.mul_(2)
+                return a + 1
+
+            a = torch.randn(3, 4, requires_grad=True).add(0)
+            a_ref = a.detach().clone()
+            compiled_f = aot_function(f, nop)
+            out = compiled_f(a)
+
+        self.assertEqual(a.shape, (4, 3))
+        self.assertEqual(a.detach(), a_ref.transpose(1, 0) * 2)
+        self.assertEqual(out, a_ref.transpose(1, 0) * 2 + 1)
+
+        self.assertEqual(len(captured), 1)
+        self.assertIn("as_strided_", captured[0])
+        self.assertIn("copy_", captured[0])
+
+    def test_no_mutation_no_epilogue(self):
+        """
+        No mutations at all. No mutation_epilogue artifact should be
+        emitted.
+        """
+        with self._capture_codegen_source("mutation_epilogue") as captured:
+
+            @torch.compile(backend="aot_eager")
+            def f(x, y):
+                return x + y
+
+            x = torch.randn(4, requires_grad=True)
+            y = torch.randn(4)
+            out = f(x, y)
+
+        self.assertEqual(out, x + y)
+        self.assertEqual(len(captured), 0)
 
 
 if __name__ == "__main__":

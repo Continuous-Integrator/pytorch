@@ -1,8 +1,17 @@
 import functools
+import importlib.util
 
 import torch
 
 from ... import triton_utils as tu
+
+
+@functools.cache
+def _has_triton() -> bool:
+    try:
+        return importlib.util.find_spec("triton") is not None
+    except ModuleNotFoundError:
+        return False
 
 
 def _is_outer_product(a: torch.Tensor, b: torch.Tensor) -> bool:
@@ -26,7 +35,7 @@ def _bmm_outer_product_impl(
 ) -> torch.Tensor:
     a_is_cow = torch._C._is_cow_tensor(a)  # pyrefly: ignore[missing-attribute]
     b_is_cow = torch._C._is_cow_tensor(b)  # pyrefly: ignore[missing-attribute]
-    if _is_outer_product(a, b) and not (a_is_cow or b_is_cow):
+    if _has_triton() and _is_outer_product(a, b) and not (a_is_cow or b_is_cow):
         from .triton_kernels import bmm_outer_product
 
         return bmm_outer_product(a, b)
@@ -34,6 +43,9 @@ def _bmm_outer_product_impl(
 
 
 def register_to_dispatch() -> None:
+    if not _has_triton():
+        return
+
     fallback_kernel = torch.library.get_kernel("aten::bmm", "CUDA")
     tu.register_op_override(
         "aten",
