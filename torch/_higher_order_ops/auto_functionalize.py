@@ -460,12 +460,17 @@ def can_auto_functionalize(
         # Skip schema returns -> None
         return True
     if isinstance(op, OpOverload):
-        # The returns of OpOverload must not alias anything
-        for ret in schema.returns:
-            if ret.alias_info is None and type(ret.type) is torch.TensorType:
-                continue
-            # Not yet supported: List[Tensor] return.
-            return False
+        if torch._library.utils.is_out(op):
+            # Out ops have aliased returns (returns alias the mutable args).
+            # This is fine because the mutable args are write-only output buffers.
+            pass
+        else:
+            # The returns of OpOverload must not alias anything
+            for ret in schema.returns:
+                if ret.alias_info is None and type(ret.type) is torch.TensorType:
+                    continue
+                # Not yet supported: List[Tensor] return.
+                return False
         if torch._C._dispatch_has_kernel_for_dispatch_key(op.name(), "Functionalize"):
             return False
     return True
@@ -832,6 +837,7 @@ def auto_functionalized_dense(
     new_kwargs = dict(**kwargs)
     result = []
 
+    _is_out = torch._library.utils.is_out(_mutable_op)
     _mutable_args_names, _ = get_mutable_args(_mutable_op)
     for name in _mutable_args_names:
         if (
@@ -839,6 +845,15 @@ def auto_functionalized_dense(
             and name not in _only_clone_these_tensors
         ):
             new_kwargs[name] = kwargs[name]
+        elif _is_out:
+            # Out args are write-only; no need to preserve old values
+            new_kwargs[name] = (
+                [torch.empty_like(x) for x in kwargs[name]]
+                if kwargs[name] is not None and isinstance(kwargs[name], list)
+                else (
+                    torch.empty_like(kwargs[name]) if kwargs[name] is not None else None
+                )
+            )
         else:
             new_kwargs[name] = (
                 [clone_preserve_strides(x) for x in kwargs[name]]

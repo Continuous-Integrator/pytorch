@@ -3,7 +3,12 @@ import torch
 from torch import Tensor
 from torch._library._out_variant import check_out_variant, to_out_variant
 from torch._library.utils import is_out
-from torch.testing._internal.common_utils import run_tests, TestCase
+from torch.testing._internal.common_utils import (
+    instantiate_parametrized_tests,
+    parametrize,
+    run_tests,
+    TestCase,
+)
 
 
 class TestOutVariant(TestCase):
@@ -257,6 +262,85 @@ class TestOutVariant(TestCase):
                 tags=[torch.Tag.out],
             )
 
+    def _define_multi_out_op(self):
+        """Helper: defines an op with two out tensors."""
+        self.lib.define(
+            "add_mul.out(Tensor x, Tensor y, *, Tensor(a!) add_out, Tensor(b!) mul_out) -> (Tensor(a!), Tensor(b!))",
+            tags=[torch.Tag.out],
+        )
+
+        def add_mul_out_impl(
+            x: Tensor, y: Tensor, *, add_out: Tensor, mul_out: Tensor
+        ) -> tuple[Tensor, Tensor]:
+            add_out.copy_(x + y)
+            mul_out.copy_(x * y)
+            return add_out, mul_out
+
+        def add_mul_out_meta(
+            x: Tensor, y: Tensor, *, add_out: Tensor, mul_out: Tensor
+        ) -> tuple[Tensor, Tensor]:
+            return add_out, mul_out
+
+        self.lib.impl("add_mul.out", add_mul_out_impl, "CompositeExplicitAutograd")
+        self.lib.impl("add_mul.out", add_mul_out_meta, "Meta")
+
+    def _define_simple_out_op(self):
+        """Helper: defines mylib::add_out with CompositeExplicitAutograd + Meta impls."""
+        self.lib.define("add(Tensor x, Tensor y) -> Tensor")
+        self.lib.define(
+            "add.out(Tensor x, Tensor y, *, Tensor(a!) out) -> Tensor(a!)",
+            tags=[torch.Tag.out],
+        )
+
+        def add_out_impl(x: Tensor, y: Tensor, *, out: Tensor) -> Tensor:
+            out.copy_(x + y)
+            return out
+
+        def add_out_meta(x: Tensor, y: Tensor, *, out: Tensor) -> Tensor:
+            return out
+
+        self.lib.impl("add.out", add_out_impl, "CompositeExplicitAutograd")
+        self.lib.impl("add.out", add_out_meta, "Meta")
+
+    @parametrize("backend", ("aot_eager", "inductor"))
+    def test_compile_out(self, backend):
+        self._define_simple_out_op()
+
+        def fn(x, y, out):
+            return torch.ops._TestOutVariant.add.out(x, y, out=out)
+
+        x = torch.randn(3, 4)
+        y = torch.randn(3, 4)
+        out = torch.empty(3, 4)
+
+        compiled_fn = torch.compile(fn, backend=backend, fullgraph=True)
+        result = compiled_fn(x, y, out)
+        self.assertEqual(result, x + y)
+        self.assertEqual(out, x + y)
+
+    @parametrize("backend", ("aot_eager", "inductor"))
+    def test_compile_multi_out(self, backend):
+        self._define_multi_out_op()
+
+        def fn(x, y, add_out, mul_out):
+            return torch.ops._TestOutVariant.add_mul.out(
+                x, y, add_out=add_out, mul_out=mul_out
+            )
+
+        x = torch.randn(3, 4)
+        y = torch.randn(3, 4)
+        add_out = torch.empty(3, 4)
+        mul_out = torch.empty(3, 4)
+
+        compiled_fn = torch.compile(fn, backend=backend, fullgraph=True)
+        result = compiled_fn(x, y, add_out, mul_out)
+        self.assertEqual(result[0], x + y)
+        self.assertEqual(result[1], x * y)
+        self.assertEqual(add_out, x + y)
+        self.assertEqual(mul_out, x * y)
+
+
+instantiate_parametrized_tests(TestOutVariant)
 
 if __name__ == "__main__":
     run_tests()
