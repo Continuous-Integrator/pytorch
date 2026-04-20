@@ -1214,7 +1214,10 @@ def _is_compiling(func, args, kwargs):
 class _VersionWrapper:
     def __init__(self, val, hooks=None) -> None:
         if isinstance(val, torch.Tensor):
-            self.version: int | None = val._version
+            # Skip version tracking when hooks are present, since hooks
+            # transform the tensor and the packed representation's version
+            # counter has no relationship to the original.
+            self.version: int | None = val._version if hooks is None else None
             if hooks is not None:
                 pack_hook, _ = hooks
                 val = pack_hook(val)
