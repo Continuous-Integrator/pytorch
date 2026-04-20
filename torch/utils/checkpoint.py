@@ -1227,21 +1227,11 @@ class _VersionWrapper:
         return self.val
 
 
-def _maybe_detach(x, any_ret_has_alias_info):
-    # We detach for two separate reasons:
-    # - For view ops, we need to ensure that when the tensor is returned from
-    #   CachedDispatchMode, as_view sees that the AutogradMeta is nullptr
-    # - Avoid reference cycles
-    # For case 1, it is not enough to check whether x has differentiable dtype
-    # because non-differentiable dtype can have non-nullptr AutogradMeta, e.g.
-    # when the tensor is a view.
-    if isinstance(x, torch.Tensor) and (x.is_floating_point() or x.is_complex() or any_ret_has_alias_info):
+def _maybe_detach(x):
+    if isinstance(x, torch.Tensor):
         with torch._C._SetExcludeDispatchKeyGuard(torch._C.DispatchKey.ADInplaceOrView, False):
             # Ensure that view performed beneath autograd properly propagates
-            # version counter. TODO: Use reentrant_dispatch instead of
-            # manually manipulating dispatch keys. Using reentrant_dispatch
-            # would respect inference_mode, though that is not relevant for
-            # this case.
+            # version counter.
             x = x.detach()
     return x
 
@@ -1342,9 +1332,9 @@ def save_tensor(tensor: torch.Tensor) -> None:
     info = mode.tensor_tracker.get(tensor)
     if info is None:
         return
-    func, idx, any_ret_has_alias_info = info
+    func, idx = info
     mode.storage[func][idx] = tree_map(
-        lambda x: _VersionWrapper(_maybe_detach(x, any_ret_has_alias_info)),
+        lambda x: _VersionWrapper(_maybe_detach(x)),
         tensor,
     )
 
@@ -1383,24 +1373,16 @@ class _CachingTorchDispatchMode(TorchDispatchMode):
 
         out = func(*args, **kwargs)
 
-        # HOPs don't support func._schema
-        # HOPs don't alias -> this is always true today and will be always true for a long time
-        # TODO HOPs don't mutate -> this is always true today but will not be true forever
-        if isinstance(func, torch._ops.HigherOrderOperator):
-            any_ret_has_alias_info = False
-        else:
-            any_ret_has_alias_info = any(ret.alias_info is not None for ret in func._schema.returns)
-
         idx = self.func_counter[func]
         self.func_counter[func] += 1
 
         # Track outputs so save_tensor() can retroactively save them.
         if isinstance(out, torch.Tensor):
-            self.tensor_tracker[out] = (func, idx, any_ret_has_alias_info)
+            self.tensor_tracker[out] = (func, idx)
         elif isinstance(out, (tuple, list)):
             for o in out:
                 if isinstance(o, torch.Tensor):
-                    self.tensor_tracker[o] = (func, idx, any_ret_has_alias_info)
+                    self.tensor_tracker[o] = (func, idx)
 
         policy = self.policy_fn(SelectiveCheckpointContext(is_recompute=False, op_output=out),
                                 func, *args, **kwargs)
@@ -1415,7 +1397,7 @@ class _CachingTorchDispatchMode(TorchDispatchMode):
                     node.meta["recompute"] = policy
 
         if policy in (CheckpointPolicy.MUST_SAVE, CheckpointPolicy.PREFER_SAVE) or is_compiling:
-            self.storage[func][idx] = tree_map(lambda x: _VersionWrapper(_maybe_detach(x, any_ret_has_alias_info)), out)
+            self.storage[func][idx] = tree_map(lambda x: _VersionWrapper(_maybe_detach(x)), out)
         return out
 
 class _CachedTorchDispatchMode(TorchDispatchMode):
