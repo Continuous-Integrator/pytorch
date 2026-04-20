@@ -1236,6 +1236,23 @@ class _VersionWrapper:
         return val
 
 
+class _OffloadWrapper:
+    def __init__(self, val) -> None:
+        if isinstance(val, torch.Tensor) and val.device.type != "cpu":
+            self.device = val.device
+            cpu = torch.empty(val.shape, dtype=val.dtype, layout=val.layout, pin_memory=True)
+            cpu.copy_(val)
+            self.val = cpu
+        else:
+            self.device = None
+            self.val = val
+
+    def get_val(self, allow_cache_entry_mutation):
+        if self.device is not None:
+            return self.val.to(self.device, non_blocking=True)
+        return self.val
+
+
 def _maybe_detach(x, any_ret_has_alias_info):
     # We detach for two separate reasons:
     # - For view ops, we need to ensure that when the tensor is returned from
@@ -1446,6 +1463,9 @@ class _CachingTorchDispatchMode(TorchDispatchMode):
             hooks = self.user_hooks
             self.storage[func][idx] = tree_map(
                 lambda x: _VersionWrapper(_maybe_detach(x, any_ret_has_alias_info), hooks), out)
+        elif policy in (CheckpointPolicy.MUST_CPU_OFFLOAD, CheckpointPolicy.PREFER_CPU_OFFLOAD):
+            self.storage[func][idx] = tree_map(
+                lambda x: _OffloadWrapper(_maybe_detach(x, any_ret_has_alias_info)), out)
         return out
 
 class _CachedTorchDispatchMode(TorchDispatchMode):
