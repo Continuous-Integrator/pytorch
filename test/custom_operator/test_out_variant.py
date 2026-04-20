@@ -238,8 +238,16 @@ class TestOutVariant(TestCase):
         self.assertFalse(is_out(torch.ops._TestOutVariant.is_out_func.default))
 
     def test_is_out_native(self):
+        # Hand-written out= op (defined in native_functions.yaml)
         self.assertTrue(is_out(torch.ops.aten.abs.out))
         self.assertFalse(is_out(torch.ops.aten.abs.default))
+        # Auto-generated out= op (via autogen directive)
+        self.assertTrue(is_out(torch.ops.aten.randn_like.out))
+        self.assertFalse(is_out(torch.ops.aten.randn_like.default))
+        # In-place op (not an out op)
+        self.assertFalse(is_out(torch.ops.aten.abs_.default))
+        # Mutable op (has mutable positional args, not an out op)
+        self.assertFalse(is_out(torch.ops.aten._native_batch_norm_legit.default))
 
     def test_define_out_tag_no_mutable_args(self):
         with self.assertRaisesRegex(ValueError, "at least one mutable argument"):
