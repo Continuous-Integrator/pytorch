@@ -758,6 +758,81 @@ def _create_runtime_wrapper(
         if cm is not None:
             cm.__exit__(None, None, None)
 
+    # Codegen mutation epilogue: emit straight-line code per mutated input
+    # with all branches resolved at compile time.
+    if runtime_metadata.num_mutated_inp_runtime_indices > 0:
+        mut_lines = ["def _apply_mutations(orig_inputs, updated_inputs):"]
+        mut_globals: dict[str, object] = {
+            "torch": torch,
+            "_unwrap_tensoralias": _unwrap_tensoralias,
+        }
+        for i, inpt_idx in enumerate(runtime_metadata.mutated_inp_runtime_indices):
+            meta = runtime_metadata.input_info[inpt_idx]
+            if not meta.mutates_data and not meta.mutates_metadata:
+                continue
+            oi = f"orig_inputs[{inpt_idx}]"
+            ui = f"updated_inputs[{i}]"
+            if meta.mutates_storage_metadata:
+                if trace_joint:
+                    mut_lines.append(f"    _u{i} = _unwrap_tensoralias({ui})")
+                else:
+                    mut_lines.append(f"    _u{i} = {ui}")
+                mut_lines.append(f"    with torch.no_grad(): {oi}.set_(_u{i})")
+            elif meta.mutates_metadata and not meta.mutates_data:
+                if trace_joint:
+                    mut_lines.append(f"    _u{i} = _unwrap_tensoralias({ui})")
+                else:
+                    mut_lines.append(f"    _u{i} = {ui}")
+                mut_lines.append(
+                    f"    {oi}.as_strided_(_u{i}.size(), _u{i}.stride(), _u{i}.storage_offset())"
+                )
+            else:
+                if meta.mutates_data and meta.mutates_metadata:
+                    mut_lines.append(
+                        f"    {oi}.as_strided_({ui}.size(), {ui}.stride(), {ui}.storage_offset())"
+                    )
+                else:
+                    assert meta.mutates_data, (  # noqa: S101
+                        f"expected mutates_data for input {inpt_idx}"
+                    )
+                if meta.is_leaf:
+                    mut_lines.append(
+                        f"    if {oi}.requires_grad: {oi}.detach().copy_({ui})"
+                    )
+                    mut_lines.append(f"    else: {oi}.copy_({ui})")
+                else:
+                    has_stream = (
+                        runtime_metadata.mutated_inp_stream_indices is not None
+                        and i < len(runtime_metadata.mutated_inp_stream_indices)
+                        and runtime_metadata.mutated_inp_stream_indices[i] is not None
+                    )
+                    if has_stream:
+                        msg_name = f"_stream_err_{i}"
+                        mut_globals[msg_name] = (
+                            "Mutations on inputs with user-specified streams are not yet supported. "
+                            "See: https://github.com/pytorch/pytorch/issues/172522"
+                        )
+                        mut_lines.append(f"    raise RuntimeError({msg_name})")
+                    else:
+                        mut_lines.append(f"    {oi}.copy_({ui})")
+        if len(mut_lines) == 1:
+            mut_lines.append("    pass")
+        mut_source = "\n".join(mut_lines)
+
+        from .subclass_codegen import _compile_and_exec_source
+
+        codegen_apply_mutations = _compile_and_exec_source(
+            mut_source, mut_globals, "_apply_mutations", "mutation_epilogue"
+        )
+        import types
+
+        runtime_epilogue._apply_input_mutations = types.MethodType(  # type: ignore[attr-defined]
+            lambda self, orig_inputs, updated_inputs: codegen_apply_mutations(
+                orig_inputs, updated_inputs
+            ),
+            runtime_epilogue,
+        )
+
     @simple_wraps(compiled_invoker.compiled_fn)
     def runtime_wrapper(args: list[Any]) -> Any:
         # Create context manager for profiler
@@ -1971,7 +2046,7 @@ def _backward_prologue_functional(
     ctx_opaque_objects: Sequence[Any],
     metadata: ViewAndMutationMeta,
     maybe_subclass_metadata: SubclassMeta | None,
-    *flat_args: Any,
+    flat_args: Sequence[Any],
     codegen_unwrap_fn: Callable[..., Any] | None = None,
 ) -> list[Any]:
     # Calling convention: we expect a grad_out passed to the backward:
@@ -2016,6 +2091,12 @@ def _backward_prologue_functional(
         ],
         flat_args[num_mutated_runtime_inps + metadata.num_outputs :],
     )
+    # Release grad refs from the caller's list (boxed calling convention).
+    # Slicing already copied refs into sub-lists above, so clearing the
+    # original list only drops redundant refs. The isinstance guard skips
+    # this when flat_args is a tuple (non-boxed path from compiled_autograd).
+    if isinstance(flat_args, list):
+        flat_args.clear()
     # input_info contains info on *every* input,
     # But in the backward(), we are only given grad outputs for every mutated input
     # We then need to filter out the grad outputs that correspond to metadata-only mutations or don't require grad
@@ -2815,6 +2896,7 @@ class _AOTDispatchAutogradFunctionFactory:
             _lazy_backward_info = lazy_backward_info
             _bw_epilogue_wrap_fn = _codegen_bw_wrap_fn
             _bw_prologue_unwrap_fn = _codegen_bw_unwrap_fn
+            boxed_grads_call = True
 
             @staticmethod
             def _compiled_autograd_key(ctx: Any) -> tuple[Any, ...]:
@@ -2853,13 +2935,31 @@ class _AOTDispatchAutogradFunctionFactory:
 
             @staticmethod
             def backward(ctx: Any, *flat_args: Any) -> tuple[Any, ...]:
+                # With boxed_grads_call, grads arrive as a single mutable
+                # list (not *args) so backward can free them individually
+                # to reduce peak memory.
+                if CompiledFunction.boxed_grads_call:
+                    if len(flat_args) != 1 or not isinstance(flat_args[0], list):
+                        raise AssertionError(
+                            "boxed_grads_call is set but backward received "
+                            f"{len(flat_args)} args instead of a single mutable "
+                            "list. When boxed_grads_call=True, grads must be "
+                            "passed as a single list argument [grad0, grad1, ...] "
+                            "to allow freeing individual grads mid-backward."
+                        )
+                    grad_args = flat_args[0]
+                else:
+                    # Non-boxed path: used by subclasses of CompiledFunction
+                    # that override boxed_grads_call to False.
+                    grad_args = list(flat_args)
+                del flat_args
                 all_args = _backward_prologue_functional(
                     saved_state.load_tensors(ctx),
                     ctx.symints,
                     ctx.opaque_objects,
                     CompiledFunction.metadata,
                     CompiledFunction.maybe_subclass_metadata,
-                    *flat_args,
+                    grad_args,
                     codegen_unwrap_fn=CompiledFunction._bw_prologue_unwrap_fn,
                 )
                 rng_state.add_backward_args(ctx, all_args)
