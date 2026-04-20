@@ -572,11 +572,17 @@ def max_min_dim_single_dim_strategy(
     return _shard_non_reduction_dim(args_schema, dim, keep_dim, n_outputs=2)
 
 
-@register_single_dim_strategy(
-    list(ARGMAX_ARGMIN_OPS.keys()),
-    schema_info=RuntimeSchemaInfo(1),
-    allow_uneven_sharding=True,
-)
+# TODO: re-enable once argminmax_handler is updated to honor the propagator's
+# redistribute plan. The custom handler in _nonlinear_redux.py bypasses
+# redistribute_local_args, so a single-dim Shard output_spec from this strategy
+# is not actually materialized (handler produces a Replicate-shaped local),
+# leading to mismatched placement/local-shape and a crash in full_tensor().
+# See discussion in the PR thread.
+# @register_single_dim_strategy(
+#     list(ARGMAX_ARGMIN_OPS.keys()),
+#     schema_info=RuntimeSchemaInfo(1),
+#     allow_uneven_sharding=True,
+# )
 def argmax_argmin_single_dim_strategy(
     op: torch._ops.OpOverload,
     args_schema: tuple[Any, ...],
