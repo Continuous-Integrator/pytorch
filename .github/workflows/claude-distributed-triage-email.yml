@@ -109,31 +109,39 @@ jobs:
 
           # Add LLM-triaged details
           if [ "$LLM_COUNT" -gt 0 ]; then
-            echo "LLM-Triaged Issues:" >> "$SUMMARY_FILE"
-            grep '"llm-triage"' "$MANIFEST_FILE" | while IFS= read -r line; do
-              ISSUE_NUM=$(echo "$line" | jq -r '.issue')
-              TITLE=$(echo "$line" | jq -r '.title')
-              LABELS=$(echo "$line" | jq -r '.labels | join(", ")')
-              echo "  - #${ISSUE_NUM}: ${TITLE}" >> "$SUMMARY_FILE"
-              echo "    Labels: ${LABELS}" >> "$SUMMARY_FILE"
-            done
-            echo "" >> "$SUMMARY_FILE"
+            {
+              echo "LLM-Triaged Issues:"
+              grep '"llm-triage"' "$MANIFEST_FILE" | while IFS= read -r line; do
+                ISSUE_NUM=$(echo "$line" | jq -r '.issue')
+                TITLE=$(echo "$line" | jq -r '.title')
+                LABELS=$(echo "$line" | jq -r '.labels | join(", ")')
+                echo "  - #${ISSUE_NUM}: ${TITLE}"
+                echo "    Labels: ${LABELS}"
+              done
+              echo ""
+            } >> "$SUMMARY_FILE"
           fi
 
           # Add triage review section
           if [ -n "$TRIAGE_REVIEW_ISSUES" ]; then
-            echo "Needs Human Review (triage review):" >> "$SUMMARY_FILE"
-            echo "$TRIAGE_REVIEW_ISSUES" >> "$SUMMARY_FILE"
-            echo "" >> "$SUMMARY_FILE"
+            {
+              echo "Needs Human Review (triage review):"
+              echo "$TRIAGE_REVIEW_ISSUES"
+              echo ""
+            } >> "$SUMMARY_FILE"
           else
-            echo "Needs Human Review: None" >> "$SUMMARY_FILE"
-            echo "" >> "$SUMMARY_FILE"
+            {
+              echo "Needs Human Review: None"
+              echo ""
+            } >> "$SUMMARY_FILE"
           fi
 
           # Add queue status
-          echo "Queue Status:" >> "$SUMMARY_FILE"
-          echo "  - Total open with oncall:distributed: ${REMAINING}" >> "$SUMMARY_FILE"
-          echo "  - Marked ptd-bot-triaged: ${TRIAGED_COUNT}" >> "$SUMMARY_FILE"
+          {
+            echo "Queue Status:"
+            echo "  - Total open with oncall:distributed: ${REMAINING}"
+            echo "  - Marked ptd-bot-triaged: ${TRIAGED_COUNT}"
+          } >> "$SUMMARY_FILE"
 
           # Store summary for email step
           # Use a delimiter to handle multiline output

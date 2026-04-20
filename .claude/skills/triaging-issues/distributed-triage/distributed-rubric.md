@@ -14,11 +14,9 @@ Covers the parallel training APIs that users interact with directly:
 - **FSDP** (FSDP1 and FSDP2): `FullyShardedDataParallel`, `fully_shard`, sharding strategies, mixed precision
 - **DDP**: `DistributedDataParallel`, gradient synchronization, parameter broadcasting
 - **DTensor**: `distribute_tensor`, placements (`Shard`, `Replicate`), tensor redistribution
-- **DeviceMesh**: `init_device_mesh`, mesh dimensions, multi-dimensional parallelism
 - **Tensor Parallel**: column/row parallel, sequence parallel
 - **Context Parallel**: context parallelism for long sequences
 - **Pipeline Parallel**: `PipelineSchedule`, `PipelineStage`, pipeline schedules
-- **Symmetric Memory**: `SymmetricMemory`, `symm_mem`
 - **Activation Checkpointing** (when used with distributed training)
 
 ### `oncall: distributed infra`
@@ -30,6 +28,8 @@ Covers the communication infrastructure layer:
 - **Elastic / torchrun**: `torch.distributed.elastic`, `torchrun`, rendezvous, agent, worker management
 - **RPC**: `torch.distributed.rpc`, RRef, distributed autograd
 - **Distributed tools**: debugging utilities, flight recorder, distributed logging
+- **DeviceMesh**: `init_device_mesh`, mesh dimensions, multi-dimensional parallelism
+- **Symmetric Memory**: `SymmetricMemory`, `symm_mem`
 
 ### `oncall: distributed checkpointing`
 
@@ -39,18 +39,13 @@ Covers saving/loading distributed model state:
 - **Checkpoint format**: file system planner, HDF5, resharding across different world sizes
 - **Async checkpointing**: non-blocking checkpoint operations
 
-### Routing Decision Tree
+### Routing Precedence
 
-```
-Is the issue about saving/loading distributed checkpoints or state_dicts?
-  YES → oncall: distributed checkpointing
+Match the issue against the three sections above. When an issue could fit more than one bucket, apply in this order:
 
-Is the issue about the communication layer (process groups, collectives, backends,
-   NCCL errors, torchrun/elastic, RPC)?
-  YES → oncall: distributed infra
-
-Otherwise → oncall: distributed parallelisms
-```
+1. `oncall: distributed checkpointing` — if the issue is about saving/loading distributed state.
+2. `oncall: distributed infra` — otherwise, if the issue is about the communication/infra layer.
+3. `oncall: distributed parallelisms` — otherwise (also the default when unsure).
 
 ### Edge Cases
 
@@ -141,7 +136,6 @@ For each module label, here are the signals to look for:
 ### HIGH Confidence Examples
 
 - Issue title: "FSDP2 crashes with `fully_shard` when using `MixedPrecision`" → `module: fsdp` (explicit API mention)
-- Stack trace shows `torch/distributed/fsdp/fully_sharded_data_parallel.py:423` → `module: fsdp`
 - Code snippet: `model = DDP(model, device_ids=[rank])` and it hangs → `module: ddp`
 - Error: `ncclSystemError: Connection refused` during `all_reduce` → `module: nccl` + `module: c10d`
 

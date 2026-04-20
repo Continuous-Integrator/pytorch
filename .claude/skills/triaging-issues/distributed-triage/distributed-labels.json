@@ -67,10 +67,6 @@
       "description": "Activation checkpointing (when used with distributed)"
     },
     {
-      "name": "module: multi-gpu",
-      "description": "Generic multi-GPU issues (when no specific module applies)"
-    },
-    {
       "name": "module: mpi",
       "description": "MPI backend"
     },
@@ -95,10 +91,6 @@
       "description": "Improvement to something that already works"
     },
     {
-      "name": "function request",
-      "description": "A new function or new arguments/modes for an existing function"
-    },
-    {
       "name": "module: performance",
       "description": "Issues related to performance"
     },
@@ -109,10 +101,6 @@
     {
       "name": "needs reproduction",
       "description": "Needs a minimal reproduction script"
-    },
-    {
-      "name": "ptd-bot-triaged",
-      "description": "Bot has processed this issue"
     }
   ]
 }

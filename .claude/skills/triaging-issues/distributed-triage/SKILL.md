@@ -45,8 +45,7 @@ Use these GitHub MCP tools for triage:
 
 ### 0) Already Triaged by Human?
 
-Check if the issue already has a distributed `module:` label from [distributed-labels.json](distributed-labels.json). The distributed module labels are:
-`module: fsdp`, `module: ddp`, `module: dtensor`, `module: c10d`, `module: DeviceMesh`, `module: pipelining`, `module: rpc`, `module: nccl`, `module: elastic`, `module: data parallel`, `module: symm_mem`, `module: context parallel`, `module: activation checkpointing`, `module: multi-gpu`, `module: mpi`, `module: threaded pg`, `module: distributed_tool`
+Check if the issue already has any `module:` label listed in [distributed-labels.json](distributed-labels.json).
 
 If the issue already has one or more of these labels:
 - Add `ptd-bot-triaged` label
@@ -65,7 +64,7 @@ Read the issue title, description, and comments. Determine whether the issue is 
 - Issue about a domain library (vision, text, audio) that happens to mention "distributed"
 
 **If NOT a distributed issue:**
-1. Add `triage review` label
+1. Add `triage review` + `ptd-bot-triaged` labels
 2. Post a comment using the `not_distributed` template from [templates.json](templates.json)
 3. Do **NOT** remove `oncall: distributed` — let the human oncall re-route
 4. **STOP**
@@ -76,8 +75,8 @@ Apply exactly ONE sub-oncall label based on the routing rules in [distributed-ru
 
 | Sub-Oncall Label | When to Apply |
 |-----------------|---------------|
-| `oncall: distributed parallelisms` | FSDP, DDP, DTensor, DeviceMesh, tensor parallel, context parallel, pipeline parallel, symmetric memory. **This is the default** when unsure. |
-| `oncall: distributed infra` | c10d, process groups, collectives, NCCL/Gloo/MPI backends, elastic/torchrun, RPC, stores, distributed tools |
+| `oncall: distributed parallelisms` | FSDP, DDP, DTensor, tensor parallel, context parallel, pipeline parallel. **This is the default** when unsure. |
+| `oncall: distributed infra` | c10d, process groups, collectives, NCCL/Gloo/MPI backends, elastic/torchrun, RPC, stores, distributed tools, DeviceMesh, symmetric memory |
 | `oncall: distributed checkpointing` | Distributed checkpoint save/load, DCP, state_dict utilities, async checkpointing |
 
 Use the routing decision tree and edge cases in [distributed-rubric.md](distributed-rubric.md) Section 1 to determine the correct sub-oncall.
@@ -97,21 +96,19 @@ From the issue description, comments, code snippets, and stack traces, classify 
 
 | Confidence | Criteria | Action |
 |-----------|---------|--------|
-| **HIGH or MEDIUM** | Explicit module mention, clear stack trace, obvious API usage, or probable module based on context | Add `module:` label(s) + `ptd-bot-triaged` |
-| **LOW** | Cannot determine module — vague description, no code, no stack trace | Add `triage review` only |
+| **HIGH or MEDIUM** | Explicit module mention, obvious API usage, or probable module based on context | Add `module:` label(s) + `ptd-bot-triaged` |
+| **LOW** | Cannot determine module — vague description, no code, no stack trace | Add `triage review` + `ptd-bot-triaged` |
 
 **Rules:**
-- Prefer specific labels over general ones. `module: fsdp` is better than `module: multi-gpu`.
 - You can apply multiple module labels when the issue spans modules (e.g., `module: fsdp` + `module: dtensor` for FSDP2 issues that hit DTensor bugs).
 - When an issue has `oncall: pt2` already applied, do NOT remove it. Add distributed module labels alongside it.
-- `module: multi-gpu` is for issues that genuinely involve multiple GPUs but don't map to a specific distributed module. Do NOT use it as a catch-all fallback — use `triage review` instead when the module is unclear.
+- When the module is unclear, add `triage review` + `ptd-bot-triaged` — do NOT guess a module label.
 
 ### 4) Type Labels
 
 If the issue is not a bug report, add the appropriate type label:
 - `feature` — wholly new functionality that does not exist today in any form
 - `enhancement` — improvement to something that already works (e.g., performance optimization, better error messages, adding a native backend for an op that already runs via fallback)
-- `function request` — a new function or new arguments/modes for an existing function
 
 Most distributed issues are bug reports — do not add a type label for bugs. If the issue says the operation "currently works" or "falls back to" a slower path, that is `enhancement`, not `feature`. If the enhancement is about performance, also add `module: performance`.
 
@@ -135,7 +132,7 @@ High priority criteria for distributed issues:
 
 If the issue lacks a minimal reproduction script:
 
-1. Add `needs reproduction` label
+1. Add `needs reproduction` + `ptd-bot-triaged` labels
 2. Post a comment using the `needs_distributed_reproduction` template from [templates.json](templates.json)
 
 **Do NOT request reproduction when:**
@@ -152,6 +149,7 @@ If the issue lacks a minimal reproduction script:
 - Remove existing labels — only add labels
 - Remove `oncall: distributed` — it stays even if the issue is mislabeled
 - Remove `oncall: pt2` — if already present, keep it
+- Remove `bot-triaged` — it is applied by the parent skill and must stay
 - Add labels not in [distributed-labels.json](distributed-labels.json)
 - Add comments to issues except when using the templates in Step 1 (mislabel) or Step 6 (reproduction)
 - Assign issues to users
@@ -159,7 +157,7 @@ If the issue lacks a minimal reproduction script:
 
 **DO:**
 - Be conservative — when in doubt, add `triage review` for human attention
-- Add `ptd-bot-triaged` only when you are confident in the classification (HIGH confidence)
+- Add `ptd-bot-triaged` whenever the bot has processed the issue, regardless of confidence. Pair with `triage review` for LOW-confidence or uncertain cases so the cron sweep won't re-pick it. (Exception: §5 high-priority flow intentionally omits `ptd-bot-triaged`.)
 - Always add a sub-oncall label (Step 2) before module labels (Step 3)
 - Read the full issue including comments before classifying
 - Check the rubric's "Common Mislabel Traps" section before finalizing

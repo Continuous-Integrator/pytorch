@@ -47,26 +47,16 @@ jobs:
         run: |
           echo "=== Phase 1: Sweeping for issues with oncall:distributed + module label but missing triaged ==="
 
-          # Distributed module labels to check for
-          MODULE_LABELS=(
-            "module: fsdp"
-            "module: ddp"
-            "module: dtensor"
-            "module: c10d"
-            "module: DeviceMesh"
-            "module: pipelining"
-            "module: rpc"
-            "module: nccl"
-            "module: elastic"
-            "module: data parallel"
-            "module: symm_mem"
-            "module: context parallel"
-            "module: activation checkpointing"
-            "module: multi-gpu"
-            "module: mpi"
-            "module: threaded pg"
-            "module: distributed_tool"
+          # Load primary distributed module labels from the skill's label manifest.
+          # module: performance is a secondary tag, not a primary module classifier.
+          LABELS_FILE=".claude/skills/triaging-issues/distributed-triage/distributed-labels.json"
+          mapfile -t MODULE_LABELS < <(
+            jq -r '.labels[].name
+                   | select(startswith("module: "))
+                   | select(. != "module: performance")' \
+              "$LABELS_FILE"
           )
+          echo "Loaded ${#MODULE_LABELS[@]} module labels: ${MODULE_LABELS[*]}"
 
           # Find open issues with oncall:distributed but without ptd-bot-triaged
           ISSUES=$(gh issue list \
@@ -172,4 +162,3 @@ jobs:
           done
 
           echo "Phase 2 complete: triggered triage for $(echo "$ISSUES" | jq 'length') issues"
-
