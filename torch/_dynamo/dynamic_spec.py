@@ -17,10 +17,11 @@ Usage::
 """
 
 import enum
+from collections.abc import Iterator
 from typing import Any
 
 
-__all__ = ["IntSpecType", "IntSpec"]
+__all__ = ["IntSpecType", "IntSpec", "TensorSpec"]
 
 
 class IntSpecType(enum.Enum):
@@ -272,11 +273,83 @@ class IntSpec:
         )
 
 
+class TensorSpec:
+    """Per-dimension shape specification for a tensor.
+
+    A list-like container of ``IntSpec | None`` with length equal to the
+    tensor's rank.  ``None`` entries inherit the default dynamism policy.
+
+    ::
+
+        ts = TensorSpec(3)
+        ts.set(0, IntSpec("batch").backed(min=1, max=64))
+        # dims 1 and 2 are None -> inherit context default
+    """
+
+    def __init__(self, rank: int) -> None:
+        if rank < 0:
+            raise ValueError(f"rank must be non-negative, got {rank}")
+        self._rank = rank
+        self._specs: list[IntSpec | None] = [None] * rank
+
+    @classmethod
+    def from_list(cls, specs: list[IntSpec | None]) -> "TensorSpec":
+        """Construct from an existing list of specs."""
+        ts = cls(len(specs))
+        ts._specs = list(specs)
+        return ts
+
+    @property
+    def rank(self) -> int:
+        return self._rank
+
+    # -- fluent setter -----------------------------------------------------
+
+    def set(self, index: int, spec: IntSpec) -> "TensorSpec":
+        """Set the spec at *index* and return ``self`` for chaining."""
+        self._specs[index] = spec
+        return self
+
+    # -- list-like interface -----------------------------------------------
+
+    def __getitem__(self, index: int) -> IntSpec | None:
+        return self._specs[index]
+
+    def __setitem__(self, index: int, spec: IntSpec | None) -> None:
+        self._specs[index] = spec
+
+    def __len__(self) -> int:
+        return self._rank
+
+    def __iter__(self) -> Iterator[IntSpec | None]:
+        return iter(self._specs)
+
+    # -- dunder ------------------------------------------------------------
+
+    def __repr__(self) -> str:
+        specified = [
+            f"{i}: {spec!r}"
+            for i, spec in enumerate(self._specs)
+            if spec is not None
+        ]
+        return f"TensorSpec(rank={self._rank}, {{{', '.join(specified)}}})"
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, TensorSpec):
+            return NotImplemented
+        return self._rank == other._rank and self._specs == other._specs
+
+    def __hash__(self) -> int:
+        return hash((self._rank, tuple(self._specs)))
+
+
 def _apply_intspec_to_tensor(tensor: Any, shape_spec: Any) -> None:
     """Apply per-dimension IntSpec entries to a tensor via mark_static/mark_dynamic/mark_unbacked."""
     from torch._dynamo.decorators import mark_static, mark_unbacked, maybe_mark_dynamic
 
-    if isinstance(shape_spec, dict):
+    if isinstance(shape_spec, TensorSpec):
+        items = enumerate(shape_spec)
+    elif isinstance(shape_spec, dict):
         items = shape_spec.items()
     elif isinstance(shape_spec, (list, tuple)):
         items = enumerate(shape_spec)
