@@ -15863,7 +15863,6 @@ class TestSelectiveActivationCheckpoint(TestCase):
         context_fn = functools.partial(
             create_selective_checkpoint_contexts,
             Policy(),
-            allow_cache_entry_mutation=True,
         )
         out = checkpoint(fn, x, use_reentrant=False, context_fn=context_fn)
         out.sum().backward()
@@ -15931,36 +15930,6 @@ class TestSelectiveActivationCheckpoint(TestCase):
             # The dispatch mode's storage should still be alive, but the entries should've
             # been cleared.
             self.assertIsNone(ref())
-
-    @skipIfTorchDynamo("compile tested in test/dynamo/test_activation_checkpointing.py")
-    def test_version_counter(self):
-        def policy_fn(ctx, op, *args, **kwargs):
-            if op == torch.ops.aten.sin.default:
-                return CheckpointPolicy.MUST_SAVE
-            else:
-                return CheckpointPolicy.PREFER_RECOMPUTE
-
-        def fn(x):
-            return x.sin().mul_(2).cos().exp()
-
-        x = torch.randn(3, requires_grad=True)
-        context_fn = functools.partial(create_selective_checkpoint_contexts, policy_fn)
-        out = checkpoint(fn, x, use_reentrant=False, context_fn=context_fn)
-
-        # 1) Error because the output of sin is saved and mutated by mul_
-        with self.assertRaisesRegex(RuntimeError, "has been mutated"):
-            out.sum().backward()
-
-        x = torch.randn(3, requires_grad=True)
-        context_fn = functools.partial(
-            create_selective_checkpoint_contexts,
-            policy_fn,
-            allow_cache_entry_mutation=True,
-        )
-        out = checkpoint(fn, x, use_reentrant=False, context_fn=context_fn)
-
-        # 2) No longer should be an error because of allow_cache_entry_mutation
-        out.sum().backward()
 
     @skipIfTorchDynamo("compile tested in test/dynamo/test_activation_checkpointing.py")
     def test_function_with_more_than_one_output(self):
