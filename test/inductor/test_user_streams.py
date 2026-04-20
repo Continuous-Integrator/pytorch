@@ -1003,13 +1003,14 @@ class TestUserStreamCompile(InductorTestCase):
         self.assertEqual(result, expected)
         self.assertEqual(torch._inductor.metrics.generated_kernel_count, 2)
 
-        # Verify: s1 gets the pointwise (x+1), s2 gets the copy + add.
-        # The contiguous copy (copy_misaligned) must be on s2 (consumer),
-        # not s1 (producer).
+        # Verify: s1 gets the pointwise (x+1), s2 gets the fused copy + add.
+        # The contiguous copy is fused into the s2 triton kernel (which reads
+        # from the s1 output buffer with strided indexing).  If the copy were
+        # incorrectly placed on s1, we'd see 2 kernels on s1 instead of 1.
         wrapper = _extract_wrapper_body(code)
         lines = wrapper.split("\n")
         current_stream = None
-        stream_ops: dict[str | None, list[str]] = {}
+        stream_kernels: dict[str | None, list[str]] = {}
         for line in lines:
             stripped = line.strip()
             if "with torch.cuda.stream(" in stripped:
@@ -1019,19 +1020,18 @@ class TestUserStreamCompile(InductorTestCase):
                     current_stream = "s2"
                 elif "default_stream" in stripped:
                     current_stream = "default"
-                stream_ops.setdefault(current_stream, [])
-            elif ".run(" in stripped or "copy_misaligned" in stripped:
-                stream_ops.setdefault(current_stream, []).append(stripped)
+            elif ".run(" in stripped:
+                stream_kernels.setdefault(current_stream, []).append(stripped)
 
         self.assertEqual(
-            len(stream_ops.get("s1", [])),
+            len(stream_kernels.get("s1", [])),
             1,
-            f"Expected 1 kernel on s1, got: {stream_ops}",
+            f"Expected 1 kernel on s1, got: {stream_kernels}",
         )
-        s2_ops = stream_ops.get("s2", [])
-        self.assertTrue(
-            any("copy_misaligned" in op for op in s2_ops),
-            f"Expected copy_misaligned on s2 (consumer stream), got: {s2_ops}",
+        self.assertEqual(
+            len(stream_kernels.get("s2", [])),
+            1,
+            f"Expected 1 kernel on s2, got: {stream_kernels}",
         )
 
     def test_no_buffer_reuse_across_streams(self):

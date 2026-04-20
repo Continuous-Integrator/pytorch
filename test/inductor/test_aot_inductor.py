@@ -36,7 +36,6 @@ from torch._inductor.utils import (
 )
 from torch._library import capture_triton
 from torch._utils_internal import full_aoti_runtime_assert
-from torch.cuda import caching_allocator_disabled
 from torch.export import Dim, export
 from torch.export.pt2_archive._package import load_pt2
 from torch.nn.attention import (
@@ -110,6 +109,19 @@ from torch.utils._triton import (
 
 
 f8_msg = "FP8 is only supported on H100+, SM 8.9 and MI300+, XPU and CPU devices"
+
+
+@contextlib.contextmanager
+def caching_allocator_disabled():
+    if GPU_TYPE == "cuda":
+        from torch.cuda import (
+            caching_allocator_disabled as _cuda_caching_allocator_disabled,
+        )
+
+        with _cuda_caching_allocator_disabled():
+            yield
+    else:
+        yield
 
 
 @contextlib.contextmanager
@@ -5171,6 +5183,26 @@ class AOTInductorTestsTemplate:
             ).run(src_code)
 
         self.check_model(m, inputs)
+
+    @unittest.skipIf(not PLATFORM_SUPPORTS_FP8, f8_msg)
+    def test_assert_size_stride_guarded_by_env_check(self):
+        # Verify that assert_size_stride and assert_alignment calls in
+        # AOTI-generated code are guarded by _check_aoti_runtime_check_inputs_env()
+        # so they only fire when AOTI_RUNTIME_CHECK_INPUTS is set.
+        class Model(torch.nn.Module):
+            def forward(self, x):
+                return torch.linalg.qr(x)[0]
+
+        example_inputs = (torch.randn(4, 4, device=self.device),)
+        _, code = run_and_get_cpp_code(AOTIRunnerUtil.compile, Model(), example_inputs)
+        FileCheck().check(
+            "if (_check_aoti_runtime_check_inputs_env()) { assert_size_stride("
+        ).run(code)
+        # assert_alignment is only emitted on GPU
+        if self.device != "cpu":
+            FileCheck().check(
+                "if (_check_aoti_runtime_check_inputs_env()) { assert_alignment("
+            ).run(code)
 
     @unittest.skipIf(not PLATFORM_SUPPORTS_FP8, f8_msg)
     @patch.dict(os.environ, {"AOTI_RUNTIME_CHECK_INPUTS": "1"})
