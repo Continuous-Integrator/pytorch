@@ -408,6 +408,13 @@ cmake_dependent_option(USE_KLEIDIAI "Use KleidiAI for the ARM CPU & AARCH64 arch
 set(USE_PRIORITIZED_TEXT_DEFAULT OFF)
 if(LINUX AND CPU_AARCH64)
   set(USE_PRIORITIZED_TEXT_DEFAULT ON)
+  set(USE_PRIORITIZED_TEXT_FOR_LD OFF CACHE BOOL "Use prioritized text linker for ld." FORCE)
+  append_cxx_flag_if_supported("-Wno-error=free-nonheap-object" CMAKE_CXX_FLAGS)
+  append_cxx_flag_if_supported("-Wno-error=deprecated-declarations" CMAKE_CXX_FLAGS)
+  append_cxx_flag_if_supported("-Wno-dangling-reference" CMAKE_CXX_FLAGS)
+  append_cxx_flag_if_supported("-Wno-error=dangling-reference" CMAKE_CXX_FLAGS)
+  append_cxx_flag_if_supported("-Wno-error=restrict" CMAKE_CXX_FLAGS)
+  append_cxx_flag_if_supported("-Wno-error=uninitialized" CMAKE_CXX_FLAGS)
 endif()
 cmake_dependent_option(USE_PRIORITIZED_TEXT_FOR_LD "Use prioritized text linker for ld."
   "${USE_PRIORITIZED_TEXT_DEFAULT}" "CPU_INTEL OR CPU_AARCH64 OR CPU_POWER" OFF)
@@ -700,6 +707,7 @@ string(APPEND CMAKE_CUDA_FLAGS " -Xfatbin -compress-all")
 # Set linker max-page-size to 64KiB on AArch64 Linux
 if(LINUX AND CPU_AARCH64)
   add_link_options_if_supported("-z,max-page-size=0x10000")
+  add_compile_options(-mlong-calls)
 endif()
 
 # Set INTERN_BUILD_MOBILE for all mobile builds. Components that are not

@@ -65,7 +65,7 @@ class Vectorized<BFloat16> {
   static Vectorized<BFloat16> arange(
       BFloat16 base = 0.f,
       step_t step = static_cast<step_t>(1)) {
-    __at_align__ BFloat16 buffer[size()];
+    __at_align__ BFloat16 buffer[size()] = {};
     for (int64_t i = 0; i < size(); i++) {
       buffer[i] = base + i * step;
     }
