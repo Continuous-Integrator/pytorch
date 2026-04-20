@@ -896,6 +896,9 @@ loop_ordering_after_fusion: bool = (
     )
     == "1"
 )
+loop_reindexing_after_fusion: bool = (
+    os.environ.get("TORCHINDUCTOR_LOOP_REINDEXING_AFTER_FUSION", "1") == "1"
+)
 
 
 # When trying to fuse two nodes, one with:
@@ -1007,10 +1010,15 @@ combo_kernel_allow_mixed_sizes = 1
 combo_kernel_foreach_dynamic_shapes = True
 # Maximum number of arguments (read/write buffers) allowed in a combo kernel
 combo_kernel_max_num_args = 250
+# Maximum number of sub-kernels allowed in a single combo kernel
+combo_kernel_max_num_nodes = 8
 # When True, each combo sub-kernel gets its own block sizes (XBLOCK_0, YBLOCK_0, etc.)
 # allowing different sub-kernels to use different tile sizes based on their heuristics.
 # When False, all sub-kernels share block sizes (XBLOCK, YBLOCK, etc.)
 combo_kernel_per_subkernel_blocks = False
+# When True, combo-kernel autotuning groups sub-kernels that share the same
+# candidate config set and kernel-analysis signature. Disabled by default.
+combo_kernel_autotune_grouping = False
 # When True, only pointwise kernels are eligible for combo kernel fusion.
 combo_kernels_pointwise_only = False
 
@@ -1164,6 +1172,9 @@ class aten_distributed_optimizations:
     # In deterministic mode, this setting is ignored and "analytical" is used.
     compute_estimator: Literal["analytical", "benchmark"] = "benchmark"
 
+    # Chrome Trace JSON path for profile-guided runtime estimation.
+    profile_guided_estimations_profile_path: str | None = None
+
     # Maximum memory increase above baseline for prefetch operations
     # Uses minimum of absolute cap and ratio of baseline
     max_memory_increase_gb: float | None = None  # Absolute cap in GB
@@ -1217,6 +1228,14 @@ class aten_distributed_optimizations:
     # raising an error.  Set this to True as a workaround if overlap scheduling
     # fails with a cycle error, and file a bug so the root cause can be fixed.
     overlap_scheduling_autofix_cycles: bool = False
+
+    # Replace NCCL collectives with low-contention variants that use
+    # copy engine instead of SMs, freeing SMs for overlapping compute.
+    enable_low_contention_collectives: bool = False
+
+    # Minimum per-rank bytes for LC replacement. Below this, LC barrier
+    # overhead exceeds the benefit. Set to 0 to disable.
+    low_contention_min_bytes_per_rank: int = 16 * 1024 * 1024
 
 
 def parallel_compile_enabled_internally() -> bool:
@@ -1860,6 +1879,13 @@ class triton:
 
     # hint to Triton when arguments are divisible by 16
     divisible_by_16 = os.environ.get("TORCHINDUCTOR_DIVISIBLE_BY_16", "1") == "1"
+
+    # On AMD/HIP, annotate pointer args with tt.pointer_range=32 when the
+    # tensor storage provably fits in 2 GB. This lets Triton emit efficient
+    # buffer load/store ops. Disable if a Triton compiler bug is triggered.
+    emit_pointer_range_32 = (
+        os.environ.get("TORCHINDUCTOR_EMIT_POINTER_RANGE_32", "1") == "1"
+    )
 
     # Minimum R0_BLOCK to be used for a TritonSplitScanKernel
     # NOTE: This also indirectly controls the size of workspace buffer required
@@ -2700,7 +2726,7 @@ class test_configs:
 
 
 if TYPE_CHECKING:
-    from torch.utils._config_typing import *  # noqa: F401, F403
+    from torch.utils._config_typing import *  # noqa: F403
 
 
 class eager_numerics:

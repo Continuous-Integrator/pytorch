@@ -32,7 +32,7 @@ import sympy
 import torch._numpy as tnp
 import torch.fx
 import torch.random
-from torch import sym_int
+from torch import sym_float, sym_int
 from torch._dynamo import compiled_autograd
 from torch._library.opaque_object import is_opaque_reference_type
 from torch._opaque_base import OpaqueBase
@@ -546,7 +546,7 @@ class TensorVariable(VariableTracker):
                 tx, [self, VariableTracker.build(tx, name)], {}
             )
             # in the event that TensorVariable returns NotImplemented
-            # BuiltinVariable.call_getattr returns GetAttrVariable
+            # GetAttrBuiltinVariable.call_function returns GetAttrVariable
             ret_val = not isinstance(var, GetAttrVariable)
         except (AttributeError, ObservedAttributeError):
             ret_val = False
@@ -574,7 +574,7 @@ class TensorVariable(VariableTracker):
                 )
             elif name in self._strict_mode_conditional_banned_ops():
                 raise UnknownPropertiesDuringBackwardTrace(
-                    f"Unknown property {name} during speculating backward, dynamo will insert contiguous call ahead and speculate it again"  # noqa: B950
+                    f"Unknown property {name} during speculating backward, dynamo will insert contiguous call ahead and speculate it again"
                 )
 
         if name == "__class__":
@@ -1444,6 +1444,14 @@ class TensorVariable(VariableTracker):
     ) -> "DataPtrVariable":
         return DataPtrVariable(self)
 
+    def method_const_data_ptr(
+        self,
+        tx: "InstructionTranslator",
+        *args: VariableTracker,
+        **kwargs: VariableTracker,
+    ) -> "DataPtrVariable":
+        return DataPtrVariable(self, method_name="const_data_ptr")
+
     def method_record_stream(
         self,
         tx: "InstructionTranslator",
@@ -1545,6 +1553,34 @@ class TensorVariable(VariableTracker):
 
     def method___int__(self, tx: "InstructionTranslator") -> VariableTracker:
         return self.nb_int_impl(tx)
+
+    def nb_float_impl(
+        self,
+        tx: "InstructionTranslator",
+    ) -> VariableTracker:
+        # CPython: THPVariable_float_scalar dispatches to double.
+        # Complex tensors raise RuntimeError at runtime.
+        if self.dtype is not None and self.dtype.is_complex:
+            raise_observed_exception(
+                RuntimeError,
+                tx,
+                args=["value cannot be converted to type double without overflow"],
+            )
+        item = self.call_method(tx, "item", [], {})
+        from .builder import wrap_fx_proxy
+
+        return wrap_fx_proxy(
+            tx=tx,
+            proxy=tx.output.create_proxy(
+                "call_function",
+                sym_float,
+                (item.as_proxy(),),
+                {},
+            ),
+        )
+
+    def method___float__(self, tx: "InstructionTranslator") -> VariableTracker:
+        return self.nb_float_impl(tx)
 
     def method___getitem__(
         self,
@@ -2264,6 +2300,28 @@ class SymNodeVariable(VariableTracker):
     ) -> VariableTracker:
         return self.nb_int_impl(tx)
 
+    def nb_float_impl(
+        self,
+        tx: "InstructionTranslator",
+    ) -> VariableTracker:
+        # SymFloat.__float__: https://github.com/pytorch/pytorch/blob/ee336ca5440939b8ad65e916d47421f849e56178/torch/__init__.py#L679
+        from .builder import wrap_fx_proxy
+
+        return wrap_fx_proxy(
+            tx=tx,
+            proxy=tx.output.create_proxy(
+                "call_function",
+                sym_float,
+                (self.as_proxy(),),
+                {},
+            ),
+        )
+
+    def method___float__(
+        self, tx: "InstructionTranslator", *args: Any, **kwargs: Any
+    ) -> VariableTracker:
+        return self.nb_float_impl(tx)
+
     def is_python_hashable(self) -> bool:
         return True
 
@@ -2628,15 +2686,17 @@ class DataPtrVariable(VariableTracker):
     def __init__(
         self,
         from_tensor: TensorVariable,
+        method_name: str = "data_ptr",
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
         self.from_tensor = from_tensor
+        self.method_name = method_name
 
     def python_type(self) -> type:
         return int
 
     def reconstruct(self, codegen: "PyCodegen") -> None:
         codegen(self.from_tensor)
-        codegen.load_method("data_ptr")
+        codegen.load_method(self.method_name)
         codegen.call_method(0)

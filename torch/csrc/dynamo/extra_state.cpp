@@ -187,7 +187,7 @@ static CacheEntry* lookup_in_list(
     PyObject** maybe_cached_code) {
   size_t index = 0;
   for (CacheEntry& cache_entry : entries) {
-    bool valid = backend == Py_False ||
+    bool valid = Py_IsFalse(backend) ||
         backend_match(cache_entry.backend.ptr(), backend);
 
     if (valid) {
