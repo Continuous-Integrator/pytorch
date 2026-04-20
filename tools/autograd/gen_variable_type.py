@@ -1903,12 +1903,14 @@ def emit_body(
                                 )
                             )
                         cur_derivative_conditions.append(
+                            # pyrefly: ignore [bad-argument-type]
                             FW_DERIVATIVE_CHECK_TEMPLATE.substitute(
                                 req_inp=inp_name + "[i]"
                             )
                         )
                     else:
                         cur_derivative_conditions.append(
+                            # pyrefly: ignore [bad-argument-type]
                             FW_DERIVATIVE_CHECK_TEMPLATE.substitute(req_inp=inp_name)
                         )
 
