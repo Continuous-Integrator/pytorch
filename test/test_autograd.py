@@ -16159,6 +16159,40 @@ class TestSelectiveActivationCheckpoint(TestCase):
         a = torch.sin(x)
         save_tensor(a)
 
+    @skipIfTorchDynamo("compile tested in test/dynamo/test_activation_checkpointing.py")
+    def test_sac_saved_tensor_hooks(self):
+        packed = []
+        unpacked = []
+
+        def pack(t):
+            packed.append(t)
+            return t
+
+        def unpack(t):
+            unpacked.append(t)
+            return t
+
+        def policy_fn(ctx, op, *args, **kwargs):
+            if op == torch.ops.aten.sin.default:
+                return CheckpointPolicy.MUST_SAVE
+            return CheckpointPolicy.PREFER_RECOMPUTE
+
+        def fn(x):
+            return torch.cos(torch.sin(x))
+
+        x = torch.randn(3, requires_grad=True)
+        context_fn = functools.partial(create_selective_checkpoint_contexts, policy_fn)
+        with torch.autograd.graph.saved_tensors_hooks(pack, unpack):
+            out = checkpoint(fn, x, use_reentrant=False, context_fn=context_fn)
+            out.sum().backward()
+
+        self.assertTrue(len(packed) > 0, "pack hook should have been called")
+        self.assertTrue(len(unpacked) > 0, "unpack hook should have been called")
+
+        x2 = x.detach().clone().requires_grad_(True)
+        torch.cos(torch.sin(x2)).sum().backward()
+        self.assertEqual(x.grad, x2.grad)
+
 
 class TestAutogradMultipleDispatch(TestCase):
     def test_autograd_multiple_dispatch_registrations(self, device):

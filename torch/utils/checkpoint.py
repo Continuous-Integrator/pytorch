@@ -1246,6 +1246,19 @@ def _maybe_detach(x, any_ret_has_alias_info):
     return x
 
 
+def _detach_and_save(x, any_ret_has_alias_info):
+    x = _maybe_detach(x, any_ret_has_alias_info)
+    if isinstance(x, torch.Tensor):
+        return _make_saved_tensor(x, is_output=False)
+    return x
+
+
+def _unpack_saved(x):
+    if isinstance(x, SavedTensor):
+        return x.unpack()
+    return x
+
+
 class SelectiveCheckpointContext:
     """
     Context passed to policy function during selective checkpointing.
@@ -1343,10 +1356,16 @@ def save_tensor(tensor: torch.Tensor) -> None:
     if info is None:
         return
     func, idx, any_ret_has_alias_info = info
-    mode.storage[func][idx] = tree_map(
-        lambda x: _VersionWrapper(_maybe_detach(x, any_ret_has_alias_info)),
-        tensor,
-    )
+    if mode.allow_cache_entry_mutation:
+        mode.storage[func][idx] = tree_map(
+            lambda x: _VersionWrapper(_maybe_detach(x, any_ret_has_alias_info)),
+            tensor,
+        )
+    else:
+        mode.storage[func][idx] = tree_map(
+            lambda x: _detach_and_save(x, any_ret_has_alias_info),
+            tensor,
+        )
 
 
 class _CachingTorchDispatchMode(TorchDispatchMode):
@@ -1355,10 +1374,11 @@ class _CachingTorchDispatchMode(TorchDispatchMode):
         return True
 
     # Used together with _CachedTorchDispatchMode to implement SAC.
-    def __init__(self, policy_fn, storage, ac_graph_id=None) -> None:
+    def __init__(self, policy_fn, storage, ac_graph_id=None, allow_cache_entry_mutation=False) -> None:
         self.policy_fn = policy_fn
         self.storage = storage
         self.ac_graph_id = ac_graph_id
+        self.allow_cache_entry_mutation = allow_cache_entry_mutation
         self.func_counter: Dict[Any, int] = defaultdict(int)
         self.tensor_tracker: WeakTensorKeyDictionary = WeakTensorKeyDictionary()
 
@@ -1415,7 +1435,10 @@ class _CachingTorchDispatchMode(TorchDispatchMode):
                     node.meta["recompute"] = policy
 
         if policy in (CheckpointPolicy.MUST_SAVE, CheckpointPolicy.PREFER_SAVE) or is_compiling:
-            self.storage[func][idx] = tree_map(lambda x: _VersionWrapper(_maybe_detach(x, any_ret_has_alias_info)), out)
+            if self.allow_cache_entry_mutation:
+                self.storage[func][idx] = tree_map(lambda x: _VersionWrapper(_maybe_detach(x, any_ret_has_alias_info)), out)
+            else:
+                self.storage[func][idx] = tree_map(lambda x: _detach_and_save(x, any_ret_has_alias_info), out)
         return out
 
 class _CachedTorchDispatchMode(TorchDispatchMode):
@@ -1447,7 +1470,10 @@ class _CachedTorchDispatchMode(TorchDispatchMode):
 
         cached = self.storage.get(func, {}).pop(idx, None)
         if cached is not None:
-            out = tree_map(lambda x: x.get_val(self.allow_cache_entry_mutation), cached)
+            if self.allow_cache_entry_mutation:
+                out = tree_map(lambda x: x.get_val(True), cached)
+            else:
+                out = tree_map(_unpack_saved, cached)
         elif policy in (CheckpointPolicy.MUST_SAVE, CheckpointPolicy.PREFER_SAVE) or is_compiling:
             if func not in self.storage:
                 raise RuntimeError(f"{func} encountered during backward, but not found in storage")
@@ -1541,7 +1567,7 @@ def create_selective_checkpoint_contexts(policy_fn_or_list, allow_cache_entry_mu
 
     storage: Dict[Any, Dict[int, Any]] = defaultdict(dict)
     return (
-        _CachingTorchDispatchMode(policy_fn, storage),
+        _CachingTorchDispatchMode(policy_fn, storage, allow_cache_entry_mutation=allow_cache_entry_mutation),
         _CachedTorchDispatchMode(policy_fn, storage, allow_cache_entry_mutation),
     )
 
