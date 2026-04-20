@@ -5,10 +5,19 @@ import gc
 import unittest
 
 import torch
-from torch.distributed.fsdp import CPUOffloadPolicy, fully_shard, OffloadPolicy
+import torch.distributed as dist
+import torch.nn as nn
+from torch.distributed.fsdp import (
+    CPUOffloadPolicy,
+    fully_shard,
+    MixedPrecisionPolicy,
+    OffloadPolicy,
+)
+from torch.distributed.tensor import init_device_mesh
 from torch.testing._internal.common_distributed import skip_if_lt_x_gpu
 from torch.testing._internal.common_fsdp import FSDPTest, get_devtype
 from torch.testing._internal.common_utils import (
+    get_cycles_per_ms,
     run_tests,
     TEST_CUDA,
     TEST_HPU,
@@ -343,6 +352,159 @@ class TestFullyShardMemory(FSDPTest):
 
         for param in model.parameters():
             param.register_post_accumulate_grad_hook(optim_hook)
+
+
+class TestFullyShardHSDPSyncCorrectness(FSDPTest):
+    """Sync-correctness guards for HSDP+AR buffer lifetime.
+
+    These tests exercise cases where the AR output buffer could be reclaimed
+    too early by the caching allocator — specifically when `reduce_dtype !=
+    orig_dtype`, so the dtype cast at `_fsdp_collectives.py:_to_dtype_if_needed`
+    materializes a new tensor and makes the original AR buffer refless inside
+    `foreach_reduce`.
+    """
+
+    @property
+    def world_size(self) -> int:
+        return min(4, torch.get_device_module(device_type).device_count())
+
+    @skip_if_lt_x_gpu(4)
+    @unittest.skipIf(TEST_HPU or TEST_XPU, "HSDP sync correctness test is CUDA-only")
+    def test_hsdp_bf16_ar_buffer_lifetime_under_allocator_pressure(self):
+        """Regression guard for PR #140044 (`[FSDP2] Fix CUDA sync for bf16
+        HSDP AR, fp32 params`).
+
+        Config: HSDP (2x2 mesh) + `MixedPrecisionPolicy(param_dtype=bf16,
+        reduce_dtype=bf16)` with fp32-stored parameters. The dtype cast at
+        `_to_dtype_if_needed(reduce_output, orig_dtype)` creates a new fp32
+        tensor and orphans the original reduce_output buffer.
+
+        Without PR #140044's `_all_reduce_state` ref tracking, the caching
+        allocator can reclaim `reduce_output` too early. Under memory pressure,
+        the allocator hands the same physical block to multiple layers'
+        `reduce_output` allocations, causing all `sharded_param.grad` views
+        to alias the same storage — all layers end up with the same (last
+        layer's) gradient.
+
+        This test surfaces the race by:
+        1. Injecting `torch.cuda._sleep` before each `dist.all_reduce` to
+           keep the AR kernel active on the AR stream for ~500 ms.
+        2. Allocating ~200 bf16 tensors on the default stream immediately
+           after backward returns, pressuring the allocator to reuse freed
+           blocks.
+        3. Comparing sharded grads against a reference (no sleep, no stress).
+
+        Passes on current code (PR #140044 active). Would fail if
+        `_all_reduce_state` / equivalent cross-layer ref tracking were
+        removed.
+        """
+        torch.manual_seed(0)
+        mesh = init_device_mesh(
+            device_type.type,
+            (2, 2),
+            mesh_dim_names=("dp_replicate", "dp_shard"),
+        )
+        # bf16 reduce + fp32-stored params — the MP config from PR #140044.
+        mp = MixedPrecisionPolicy(
+            param_dtype=torch.bfloat16, reduce_dtype=torch.bfloat16
+        )
+
+        dim = 512
+        model = nn.Sequential(
+            nn.Linear(dim, dim, bias=False),
+            nn.ReLU(),
+            nn.Linear(dim, dim, bias=False),
+            nn.ReLU(),
+            nn.Linear(dim, dim, bias=False),
+        ).to(device_type, dtype=torch.float32)
+        for layer in model:
+            if isinstance(layer, nn.Linear):
+                fully_shard(layer, mesh=mesh, mp_policy=mp)
+        fully_shard(model, mesh=mesh, mp_policy=mp)
+
+        torch.manual_seed(42)
+        inp = torch.randn(4, dim, device=device_type.type, dtype=torch.float32)
+
+        def run_one(slow_ar: bool):
+            for p in model.parameters():
+                if p.grad is not None:
+                    p.grad = None
+
+            orig_all_reduce = dist.all_reduce
+            ar_sleep_ms = 500 if slow_ar else 0
+
+            def slow_all_reduce(*args, **kwargs):
+                if ar_sleep_ms > 0:
+                    torch.get_device_module(device_type)._sleep(
+                        int(ar_sleep_ms * get_cycles_per_ms())
+                    )
+                return orig_all_reduce(*args, **kwargs)
+
+            if slow_ar:
+                dist.all_reduce = slow_all_reduce
+
+            try:
+                out = model(inp)
+                loss = out.sum()
+                loss.backward()
+                if slow_ar:
+                    # Aggressively allocate on default stream while AR is
+                    # still sleeping on AR stream. If the fp32 reduce_output
+                    # buffer is marked free before AR completes, the allocator
+                    # may hand it to these stress allocations, corrupting the
+                    # sharded grad's underlying storage.
+                    stress = []
+                    for i in range(200):
+                        t = torch.empty(
+                            1024 * (i + 1),
+                            device=device_type.type,
+                            dtype=torch.bfloat16,
+                        )
+                        t.fill_(float("nan"))
+                        stress.append(t)
+                    torch.get_device_module(device_type).synchronize()
+                    del stress
+            finally:
+                if slow_ar:
+                    dist.all_reduce = orig_all_reduce
+
+            return {
+                name: (
+                    p.grad.to_local().float().sum().item()
+                    if hasattr(p.grad, "to_local")
+                    else p.grad.float().sum().item()
+                )
+                for name, p in model.named_parameters()
+                if p.grad is not None
+            }
+
+        ref = run_one(slow_ar=False)
+        for _ in range(3):
+            stressed = run_one(slow_ar=True)
+            for name, ref_sum in ref.items():
+                stressed_sum = stressed[name]
+                # If the fp32 reduce_output buffer is being reused across
+                # layers, the sharded grads will all collapse to the same
+                # value (the last-executed layer's grad sum). Reference
+                # values for the three layers differ by orders of magnitude;
+                # any aliasing corruption shows as a large mismatch here.
+                self.assertFalse(
+                    torch.isnan(torch.tensor(stressed_sum)).item(),
+                    f"NaN in stressed grad for {name}",
+                )
+                self.assertAlmostEqual(
+                    stressed_sum,
+                    ref_sum,
+                    delta=max(abs(ref_sum) * 1e-3, 1e-3),
+                    msg=(
+                        f"HSDP AR buffer lifetime regression: grad sum for "
+                        f"{name} differs under allocator pressure. "
+                        f"reference={ref_sum:.4f}, stressed={stressed_sum:.4f}. "
+                        f"All layers collapsing to the same value indicates "
+                        f"reduce_output buffer is being reused across layers "
+                        f"(see PR #140044)."
+                    ),
+                )
 
 
 if __name__ == "__main__":
