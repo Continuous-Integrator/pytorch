@@ -347,6 +347,7 @@ def compute_memory_timeline(
     nodes: list[BaseSchedulerNode],
     name_to_freeable_input_buf: dict[str, FreeableInputBuffer],
     graph_outputs: OrderedSet[str],
+    node_step_override: dict[BaseSchedulerNode, int] | None = None,
 ) -> tuple[
     list[BufferInfo],
     dict[BaseSchedulerNode, int],
@@ -354,7 +355,12 @@ def compute_memory_timeline(
 ]:
     """
     Compute buffer allocation and deallocation sizes and map their
-    lifetime to the node schedule
+    lifetime to the node schedule.
+
+    node_step_override maps additional nodes to step indices, merged into
+    node_to_step. Used when buffers' mpi_buffer.succ_nodes reference nodes
+    not in the current schedule (e.g., pre-fusion sub-nodes replaced by a
+    combo node).
     """
 
     # get the execution step of each node, this will be used to determine
@@ -362,6 +368,8 @@ def compute_memory_timeline(
     node_to_step: dict[BaseSchedulerNode, int] = {
         node: step for step, node in enumerate(nodes)
     }
+    if node_step_override:
+        node_to_step.update(node_step_override)
 
     # get buffers' size and liveliness information
     buf_info_list: list[BufferInfo] = []
@@ -436,10 +444,14 @@ def estimate_peak_memory(
     nodes: list[BaseSchedulerNode],
     name_to_freeable_input_buf: dict[str, FreeableInputBuffer],
     graph_outputs: OrderedSet[str],
+    node_step_override: dict[BaseSchedulerNode, int] | None = None,
 ) -> tuple[int, list[int]]:
     """
     Given a list of nodes in their execution order, estimate the peak memory, by
     keeping track of the liveliness of SchedulerBuffers and FreeableInputBuffers.
+
+    node_step_override: optional mapping of extra nodes to step indices,
+    merged into the internal node_to_step. See compute_memory_timeline.
 
     Returns:
         int: peak memory
@@ -447,7 +459,7 @@ def estimate_peak_memory(
     """
 
     buf_info_list, _, _ = compute_memory_timeline(
-        nodes, name_to_freeable_input_buf, graph_outputs
+        nodes, name_to_freeable_input_buf, graph_outputs, node_step_override
     )
 
     # incremental memory changes at each step

@@ -1549,6 +1549,39 @@ class TestMaxAutotune(TestCase):
         act = f(x, y)
         torch.testing.assert_close(act, ref, atol=2e-2, rtol=1e-2)
 
+    def test_broadcast_batch_bmm(self):
+        # Batch size > 1 with stride[0]=0 to exercise the broadcast batch
+        # guard that skips the Triton bmm template for stride-0 inputs.
+        x = rand_strided((4, 32, 64), (0, 64, 1), dtype=torch.bfloat16, device=GPU_TYPE)
+        y = rand_strided(
+            (4, 64, 16), (1024, 16, 1), dtype=torch.bfloat16, device=GPU_TYPE
+        )
+
+        @torch.compile(mode="max-autotune")
+        def f(x, y):
+            return torch.bmm(x, y)
+
+        ref = torch.bmm(x, y)
+        act = f(x, y)
+        torch.testing.assert_close(act, ref, atol=2e-2, rtol=1e-2)
+
+    def test_broadcast_batch_baddbmm(self):
+        # Batch size > 1 with stride[0]=0 to exercise the broadcast batch
+        # guard that skips the Triton bmm template for stride-0 inputs.
+        x = rand_strided((4, 32, 64), (0, 64, 1), dtype=torch.bfloat16, device=GPU_TYPE)
+        y = rand_strided(
+            (4, 64, 16), (1024, 16, 1), dtype=torch.bfloat16, device=GPU_TYPE
+        )
+        inp = torch.randn(4, 32, 16, dtype=torch.bfloat16, device=GPU_TYPE)
+
+        @torch.compile(mode="max-autotune")
+        def f(inp, x, y):
+            return torch.baddbmm(inp, x, y)
+
+        ref = torch.baddbmm(inp, x, y)
+        act = f(inp, x, y)
+        torch.testing.assert_close(act, ref, atol=2e-2, rtol=1e-2)
+
     @unittest.skipIf(
         config.triton.native_matmul,
         "native matmul and Triton template both have accuracy fail (2.2%)",
@@ -4765,6 +4798,9 @@ class TestEpilogueFusionStaticAnalysis(TestCase):
 
     @unittest.skipIf(not has_triton_tma_device(), "Need TMA support in Triton")
     @skipIfXpu(msg="Bad tma config can be covered by XPU TMA")
+    @unittest.skipIf(
+        config.cpp_wrapper, "Skip static analysis codegen checks on cpp_wrapper"
+    )
     @parametrize("use_async_compile", (True, False))
     def test_template_bad_epilogue_fusion(self, use_async_compile: bool):
         def f(a, b):
@@ -4859,8 +4895,7 @@ class TestEpilogueFusionStaticAnalysis(TestCase):
                             "triton_poi_fused__to_copy"
                         ).run(code[0])
 
-                    if not config.cpp_wrapper:
-                        torch.testing.assert_close(out, f(a, b), atol=1e-2, rtol=1e-2)
+                    torch.testing.assert_close(out, f(a, b), atol=1e-2, rtol=1e-2)
             finally:
                 # Restore original configs
                 tma_heuristic.mm_configs = original_tma_mm_configs
@@ -4868,6 +4903,9 @@ class TestEpilogueFusionStaticAnalysis(TestCase):
 
     @unittest.skipIf(
         not HAS_CUDA_AND_TRITON, "Scheduler static analysis only tested on cuda"
+    )
+    @unittest.skipIf(
+        config.cpp_wrapper, "Skip static analysis codegen checks on cpp_wrapper"
     )
     @parametrize(
         "test_case",
@@ -4941,6 +4979,9 @@ class TestEpilogueFusionStaticAnalysis(TestCase):
     @unittest.skipIf(
         not HAS_CUDA_AND_TRITON, "Scheduler static analysis only tested on cuda"
     )
+    @unittest.skipIf(
+        config.cpp_wrapper, "Skip static analysis codegen checks on cpp_wrapper"
+    )
     @skipIfRocm(msg="Scheduler static analysis needs investigation on ROCm")
     @parametrize("fuse_epilogue", (True, False))
     @parametrize("use_async_compile", (True, False))
@@ -4993,6 +5034,9 @@ class TestEpilogueFusionStaticAnalysis(TestCase):
 
     @unittest.skipIf(
         not HAS_CUDA_AND_TRITON, "Scheduler static analysis only tested on cuda"
+    )
+    @unittest.skipIf(
+        config.cpp_wrapper, "Skip static analysis codegen checks on cpp_wrapper"
     )
     @skipIfRocm(msg="Scheduler static analysis needs investigation on ROCm")
     @parametrize(
@@ -5056,6 +5100,9 @@ class TestEpilogueFusionStaticAnalysis(TestCase):
 
     @unittest.skipIf(
         not HAS_CUDA_AND_TRITON, "Scheduler static analysis only tested on cuda"
+    )
+    @unittest.skipIf(
+        config.cpp_wrapper, "Skip static analysis codegen checks on cpp_wrapper"
     )
     @skipIfRocm(msg="Scheduler static analysis needs investigation on ROCm")
     @parametrize(
@@ -5181,12 +5228,6 @@ class TestMaxAutotuneAsyncPipelined(TestMaxAutotune, TestEpilogueFusionStaticAna
         "test_autotune_device_guard": "Flaky on trunk",
         "test_template_bad_epilogue_fusion": "Benchmarking path is different",
         "test_persistent_tma_epilogue_fusion_store_cache": "Epilogue fusion disabled in async pipelining",
-        # XPU specific skips due to lack of multiprocess tensor reduction support (issue #170636)
-        "test_max_autotune_addmm_persistent_tma": "No XPU implementation for multiprocess tensor reduction",
-        "test_max_autotune_regular_mm_persistent_tma": "No XPU implementation for multiprocess tensor reduction",
-        "test_max_autotune_regular_mm_persistent_tma_strided": "No XPU implementation for multiprocess tensor reduction",
-        "test_max_autotune_addmm_tma_dynamic_outer_dim": "No XPU implementation for multiprocess tensor reduction",
-        "test_max_autotune_regular_mm_tma_dynamic_outer_dim": "No XPU implementation for multiprocess tensor reduction",
     }
 
     @classmethod
@@ -5210,7 +5251,7 @@ class TestMaxAutotuneAsyncPipelined(TestMaxAutotune, TestEpilogueFusionStaticAna
         super().setUp()
         test_name = self._testMethodName
         for skip_test_name in self.SKIP_TESTS:
-            if skip_test_name in test_name or TEST_XPU:
+            if skip_test_name in test_name or TEST_XPU or config.cpp_wrapper:
                 self.skipTest(self.SKIP_TESTS[skip_test_name])
 
     def tearDown(self):
