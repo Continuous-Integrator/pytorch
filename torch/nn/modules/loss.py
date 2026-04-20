@@ -1414,13 +1414,12 @@ class LinearCrossEntropyLoss(_WeightedLoss):
         in_features (int): Size of each input sample.
         num_classes (int): Number of classes, :math:`C`.
         out_features (tuple[int], optional): specifies dimensions
-            :math:`(d_1, d_2, ..., d_K)` for K-dimensional loss. Note
-            that :attr:`out_features` is only applicable when the
-            target contains class probabilities.  Default: ``()``.
+            :math:`(d_1, d_2, ..., d_K)` for K-dimensional loss.
+            Default: ``()``.
         device (:class:`torch.device`, optional): the desired device
-            of linear weight and bias.  Default: ``None``.
+            of linear weight.  Default: ``None``.
         dtype (:class:`torch.dtype`, optional): the desired dtype of
-            linear weight and bias. Default: ``None``.
+            linear weight. Default: ``None``.
         weight (Tensor, optional): a manual rescaling weight given to
             each class.  If given, has to be a Tensor of size `C`.
         reduction (str, optional): Specifies the reduction to apply to
@@ -1509,7 +1508,6 @@ class LinearCrossEntropyLoss(_WeightedLoss):
         )
 
     def forward(self, input: Tensor, target: Tensor) -> Tensor:
-        """Runs the forward pass."""
         linear_weight = self.linear.weight.reshape(
             (self.num_classes, *self.out_features, self.linear.in_features)
         )
