@@ -346,7 +346,7 @@ def generic_iternext(
     """
     Implements PyIter_Next / tp_iternext semantics for VariableTracker objects.
 
-    Calls obj.tp_iternext(tx) if the object is an iterator, otherwise raises
+    Calls obj.tp_iternext_impl(tx) if the object is an iterator, otherwise raises
     TypeError. StopIteration propagation is left to the caller (mirrors
     CPython's iternext contract where NULL return signals exhaustion).
     """
@@ -356,7 +356,7 @@ def generic_iternext(
     if not type_implements_tp_iternext(T):
         raise_type_error(tx, f"'{obj.python_type_name()}' object is not an iterator")
 
-    return obj.tp_iternext(tx)
+    return obj.tp_iternext_impl(tx)
 
 
 # TODO(guilhermeleobas): should we narrow the return type to IteratorVariable?

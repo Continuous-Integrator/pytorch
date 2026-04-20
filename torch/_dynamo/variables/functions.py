@@ -1156,7 +1156,7 @@ class LocalGeneratorObjectVariable(VariableTracker):
     def python_type(self) -> type:
         return types.GeneratorType
 
-    def tp_iternext(self, tx: "InstructionTranslatorBase") -> VariableTracker:
+    def tp_iternext_impl(self, tx: "InstructionTranslatorBase") -> VariableTracker:
         tracer = self.inline_tracer
 
         if self._is_generator_exhausted():
@@ -1218,7 +1218,7 @@ class LocalGeneratorObjectVariable(VariableTracker):
     ) -> None:
         while True:
             try:
-                fn(self.tp_iternext(tx))
+                fn(self.tp_iternext_impl(tx))
             except ObservedUserStopIteration:
                 handle_observed_exception(tx)
                 break
@@ -1262,7 +1262,7 @@ class LocalGeneratorObjectVariable(VariableTracker):
                     raise_observed_exception(TypeError, tx)
             tracer = self.inline_tracer
             tracer.push_many(args)
-            return self.tp_iternext(tx)
+            return self.tp_iternext_impl(tx)
         elif name == "close":
             # * Raises a GeneratorExit at the point where the generator function was paused.
             # * If the generator function catches the exception and returns a
@@ -1317,7 +1317,7 @@ class LocalGeneratorObjectVariable(VariableTracker):
 
             try:
                 # Raise RuntimeError if the generator yields any other value
-                if self.tp_iternext(tx):
+                if self.tp_iternext_impl(tx):
                     raise_observed_exception(RuntimeError, tx)
             except ObservedGeneratorExit:
                 tracer.generator_exhausted = True
@@ -1348,7 +1348,7 @@ class LocalGeneratorObjectVariable(VariableTracker):
                 # propagate the exception back to the parent caller
                 raise
 
-            retval = self.tp_iternext(tx)
+            retval = self.tp_iternext_impl(tx)
 
             # The exception raised before is still active. We need to check the exception
             # table one more time to find the next target. But why? Let's walk

@@ -936,7 +936,7 @@ class VariableTracker(metaclass=VariableTrackerMeta):
         """Used by LazyVariableTracker to indicate an unrealized node"""
         return True
 
-    def tp_iternext(self, tx: Any) -> VariableTracker:
+    def tp_iternext_impl(self, tx: Any) -> VariableTracker:
         """
         Implements tp_iternext slot semantics.
         Subclasses override this to support next(). Reaching this base is a
@@ -953,7 +953,7 @@ class VariableTracker(metaclass=VariableTrackerMeta):
         )
 
     def next_variable(self, tx: Any) -> VariableTracker:
-        return self.tp_iternext(tx)
+        return self.tp_iternext_impl(tx)
 
     def is_strict_mode(self, tx: Any) -> bool:
         return bool(tx.strict_checks_fn and tx.strict_checks_fn(self))

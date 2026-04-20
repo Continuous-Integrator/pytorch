@@ -1885,14 +1885,14 @@ class UserDefinedObjectVariable(UserDefinedVariable):
 
         while True:
             try:
-                r = iter_.tp_iternext(tx)
+                r = iter_.tp_iternext_impl(tx)
                 result.append(r)
             except ObservedUserStopIteration:
                 handle_observed_exception(tx)
                 break
         return result
 
-    def tp_iternext(self, tx: "InstructionTranslator") -> VariableTracker:
+    def tp_iternext_impl(self, tx: "InstructionTranslator") -> VariableTracker:
         iter_fn = self._maybe_get_baseclass_method("__next__")
         if iter_fn:
             return variables.UserMethodVariable(
@@ -1900,7 +1900,7 @@ class UserDefinedObjectVariable(UserDefinedVariable):
                 self,
                 source=self.source and AttrSource(self.source, "__next__"),
             ).call_function(tx, [], {})
-        return super().tp_iternext(tx)
+        return super().tp_iternext_impl(tx)
 
     def is_supported_random(self) -> bool:
         try:
