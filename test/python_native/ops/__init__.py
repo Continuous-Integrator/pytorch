@@ -5,11 +5,15 @@ This module automatically discovers and imports OpInfo definitions from all
 subdirectories containing DSL operation tests.
 """
 
+import logging
 import os
 import sys
 from pathlib import Path
 
 from torch.testing._internal.opinfo.core import OpInfo
+
+
+log = logging.getLogger(__name__)
 
 
 def discover_dsl_opinfos() -> list[OpInfo]:
@@ -50,13 +54,15 @@ def discover_dsl_opinfos() -> list[OpInfo]:
                         attr_value = getattr(module, attr_name)
                         if isinstance(attr_value, OpInfo):
                             opinfos.append(attr_value)
-                            print(
-                                f"Discovered DSL OpInfo: {attr_value.name} from {module_path}"
+                            log.info(
+                                "Discovered DSL OpInfo: %s from %s",
+                                attr_value.name,
+                                module_path,
                             )
 
             except ImportError as e:
                 # Skip modules that can't be imported (missing dependencies, etc.)
-                print(f"Skipping {module_path}: {e}")
+                log.info("Skipping %s: %s", module_path, e)
                 continue
 
     return opinfos

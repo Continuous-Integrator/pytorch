@@ -314,6 +314,9 @@ OPINFO_SAMPLE_INPUT_INDEX: int | None = TestEnvironment.def_setting(
     parse_fn=lambda val: None if val is None else int(val),
 )
 
+# Possibly restrict OpInfo tests to a single DSL runtime.
+# Example inputs: "triton", "cutedsl", all possible values
+# given by: torch.backends.python_native.all_dsls
 OPINFO_RESTRICT_TO_DSL: str | None = TestEnvironment.def_setting(
     "OPINFO_RESTRICT_TO_DSL",
     env_var="OPINFO_RESTRICT_TO_DSL",

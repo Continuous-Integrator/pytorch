@@ -26847,7 +26847,7 @@ ops_and_refs = op_db + python_ref_db
 
 # Extract DSL-specific OpInfos for filtering
 # Look for any OpInfo with dsl_name attribute (DSL variants)
-dsl_ops = [op for op in op_db if hasattr(op, 'dsl_name') and op.dsl_name is not None]
+_dsl_ops = [op for op in op_db if hasattr(op, 'dsl_name') and op.dsl_name is not None]
 
 dsl_ops_by_dsl = {}
 
@@ -26856,14 +26856,14 @@ OPINFO_RESTRICT_TO_DSL = os.environ.get('OPINFO_RESTRICT_TO_DSL')
 
 # Always use manual DSL grouping for consistent behavior
 # Group DSL ops by their actual dsl_name
-manual_dsl_ops_by_dsl = {}
-for op in dsl_ops:
+_manual_dsl_ops_by_dsl: dict[str, OpInfo] = {}
+for op in _dsl_ops:
     dsl_name = getattr(op, 'dsl_name', 'unknown')
-    if dsl_name not in manual_dsl_ops_by_dsl:
-        manual_dsl_ops_by_dsl[dsl_name] = []
-    manual_dsl_ops_by_dsl[dsl_name].append(op)
+    if dsl_name not in _manual_dsl_ops_by_dsl:
+        _manual_dsl_ops_by_dsl[dsl_name] = []
+    _manual_dsl_ops_by_dsl[dsl_name].append(op)
 
-dsl_ops_by_dsl = manual_dsl_ops_by_dsl
+dsl_ops_by_dsl = _manual_dsl_ops_by_dsl
 
 # If specified, restrict only to specified DSL OpInfo entries.
 if OPINFO_RESTRICT_TO_DSL:
