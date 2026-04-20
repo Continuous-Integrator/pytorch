@@ -5604,13 +5604,43 @@ class LocalMapWrappedHigherOrderVariable(WrapHigherOrderVariable):
         assert actual_input_nodes[0].op == "get_attr"
         assert "subgraph" in actual_input_nodes[0].target  # type: ignore[attr-defined]
         assert len(expected_input_nodes) == len(actual_input_nodes) - 1
-        for expected_order, actual_order in zip(
-            expected_input_nodes, actual_input_nodes[1:]
-        ):
-            assert expected_order == actual_order, (
-                "Dynamo changed the order of inputs to the local_map function, please adjust "
-                f"the order of inputs and input_placements from {expected_input_nodes}, to: {actual_input_nodes[1:]}"
+
+        # Dynamo lifts freevars in first-use order inside the subgraph body,
+        # which can differ from the user's call-site order (e.g. `x.shape[-1]`
+        # early in the body lifts `x` first under dynamic shapes, but not under
+        # static shapes where shape accesses constant-fold). Reorder the
+        # outer-call args and the subgraph placeholders so they always match
+        # the user's call-site order, which is what `in_placements` is written
+        # against.
+        if expected_input_nodes != actual_input_nodes[1:]:
+            actual_set = set(actual_input_nodes[1:])
+            expected_set = set(expected_input_nodes)
+            assert actual_set == expected_set, (
+                "local_map: subgraph freevars do not match user args. "
+                f"expected={expected_input_nodes}, actual={actual_input_nodes[1:]}. "
+                "Dynamo may have flattened inputs or captured extra tensors via closure."
             )
+            # p_args[1:] (parent proxies in lift order) is parallel to the
+            # subgraph's placeholder list (both come from insertion order into
+            # body_lifted_freevars). Pair them up, then reindex by user order.
+            body_phs = list(body_gmod.graph.find_nodes(op="placeholder"))
+            assert len(body_phs) == len(p_args) - 1
+            parent_to_phs_and_parg = {
+                parent_proxy.node: (ph, parent_proxy)
+                for parent_proxy, ph in zip(p_args[1:], body_phs)
+            }
+            p_args = (p_args[0],) + tuple(
+                parent_to_phs_and_parg[n][1] for n in expected_input_nodes
+            )
+            # Reorder placeholders in body_gmod.graph to match expected order.
+            # Iterate in reverse, prepending each to the first non-placeholder
+            # node, which lands them in forward order.
+            anchor = next(n for n in body_gmod.graph.nodes if n.op != "placeholder")
+            for parent_node in reversed(expected_input_nodes):
+                ph = parent_to_phs_and_parg[parent_node][0]
+                anchor.prepend(ph)
+                anchor = ph
+            body_gmod.recompile()
         assert len(p_kwargs) == 0
 
         # Step 5: Install local_map subgraph
