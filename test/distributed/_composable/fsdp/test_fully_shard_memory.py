@@ -1,8 +1,11 @@
 # Owner(s): ["oncall: distributed"]
 
+import contextlib
 import functools
 import gc
+import math
 import unittest
+from unittest import mock
 
 import torch
 import torch.distributed as dist
@@ -438,24 +441,22 @@ class TestFullyShardHSDPSyncCorrectness(FSDPTest):
                     p.grad = None
 
             orig_all_reduce = dist.all_reduce
-            ar_sleep_ms = 500 if slow_ar else 0
 
             def slow_all_reduce(*args, **kwargs):
-                if ar_sleep_ms > 0:
-                    torch.get_device_module(device_type)._sleep(
-                        int(ar_sleep_ms * get_cycles_per_ms())
-                    )
+                torch.get_device_module(device_type)._sleep(
+                    int(500 * get_cycles_per_ms())
+                )
                 return orig_all_reduce(*args, **kwargs)
 
-            if slow_ar:
-                dist.all_reduce = slow_all_reduce
-            try:
+            patch_ctx = (
+                mock.patch.object(dist, "all_reduce", slow_all_reduce)
+                if slow_ar
+                else contextlib.nullcontext()
+            )
+            with patch_ctx:
                 out = model(inp)
                 loss = out.sum()
                 loss.backward()
-            finally:
-                if slow_ar:
-                    dist.all_reduce = orig_all_reduce
 
             return {
                 name: (
@@ -468,19 +469,22 @@ class TestFullyShardHSDPSyncCorrectness(FSDPTest):
             }
 
         ref = run_one(slow_ar=False)
+        # Repeat the slow-AR run to flush out non-deterministic allocator
+        # scheduling: the race depends on the allocator picking the freed
+        # block for the next layer's RS, which may not fire on every call.
         for _ in range(3):
             slow = run_one(slow_ar=True)
             for name, ref_sum in ref.items():
                 slow_sum = slow[name]
-                # When the bf16/fp16 RS-output block is shared across layers
-                # (no `_all_reduce_state` ref holding it alive), slow AR lets
-                # later-layer RSes overwrite the block before earlier layers'
-                # AR completes → every layer's grad collapses to the last-
-                # executed layer's value. Reference values across the three
-                # layers differ by orders of magnitude; any collapse shows
-                # up as a large mismatch here.
+                # When the reduce-dtype RS-output block is shared across
+                # layers (no `_all_reduce_state` ref holding it alive), slow
+                # AR lets later-layer RSes overwrite the block before
+                # earlier layers' AR completes → every layer's grad
+                # collapses to the last-executed layer's value. Reference
+                # values across the three layers differ by orders of
+                # magnitude; any collapse shows up as a large mismatch here.
                 self.assertFalse(
-                    torch.isnan(torch.tensor(slow_sum)).item(),
+                    math.isnan(slow_sum),
                     f"NaN in slow-AR grad for {name}",
                 )
                 self.assertAlmostEqual(
