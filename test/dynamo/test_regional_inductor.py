@@ -75,18 +75,24 @@ def aot_eager_regional_inductor(
     if serialize:
 
         def regional_inductor_pickle(gm, *example_args):
-            result = regional_inductor_fn(gm, *example_args)
+            with torch._functorch.config.patch(force_autograd_cache=True):
+                result = regional_inductor_fn(gm, *example_args)
             serialized = GraphPickler.dumps(result)
 
             fake_mode = detect_fake_mode(example_args)
-            assert fake_mode is not None
+            if fake_mode is None:
+                raise AssertionError("Expected fake_mode to be set")
             # Serialize and deserialize the result to confirm pickling works
             # Use a fresh tracing context on the new process
             context = torch._guards.TracingContext(fake_mode)
             with torch._guards.tracing(context):
                 result = GraphPickler.loads(serialized, fake_mode)
-                assert isinstance(result, torch.fx.GraphModule)
-                result.recompile()
+                if isinstance(result, torch.fx.GraphModule):
+                    result.recompile()
+                elif isinstance(result, RegionalOutputCode):
+                    result._graph_module.recompile()
+                else:
+                    raise RuntimeError(f"Unexpected type: {type(result)}")
                 return result
 
         return aot_autograd(
@@ -309,10 +315,10 @@ class RegionalInductorTests(torch._inductor.test_case.TestCase):
             captured_options.append(options)
 
             # Verify config is set as expected from explicit options
-            assert inductor_config.max_autotune, "max_autotune should be True"
-            assert not inductor_config.triton.cudagraphs, (
-                "triton.cudagraphs should be False"
-            )
+            if not inductor_config.max_autotune:
+                raise AssertionError("max_autotune should be True")
+            if inductor_config.triton.cudagraphs:
+                raise AssertionError("triton.cudagraphs should be False")
 
             return original_compile(*args, **kwargs)
 
@@ -519,8 +525,9 @@ class RegionalInductorTests(torch._inductor.test_case.TestCase):
         )
 
         _, codes = run_fw_bw_and_get_code(lambda: compiled_module(x))
-        # flex in forward and flex_backward in backward
-        self.assertEqual(len(codes), 2)
+        # flex in forward and flex_backward in backward; contiguous partitioning
+        # may split non-contiguous annotated nodes into separate regions
+        self.assertGreaterEqual(len(codes), 2)
 
     def test_refcounts(self):
         """Tests that activations can be cleared before the end of graph"""
@@ -530,10 +537,12 @@ class RegionalInductorTests(torch._inductor.test_case.TestCase):
 
         def regional_inductor_with_refcounting(gm, *example_args):
             fn = regional_inductor(gm, *example_args)
-            assert fn._boxed_call
+            if not fn._boxed_call:
+                raise AssertionError("Expected fn._boxed_call to be True")
 
             def run(args: Any) -> Any:
-                assert type(args) is list
+                if type(args) is not list:
+                    raise AssertionError(f"Expected args to be list, got {type(args)}")
 
                 # NOTE: sys.getrefcount adds a temporary reference to the object
                 # So sys.getrefcount(x) == 2 actually means we hold the single reference to x
@@ -826,7 +835,7 @@ def forward(self, primals_1, primals_2):
     getitem_10 = invoke_subgraph_6[1]
     getitem_1 = invoke_subgraph_6[0];  invoke_subgraph_6 = None
     sin_3 = torch.ops.aten.sin.default(getitem_1)
-    return (sin_3, primals_1, getitem_9, getitem_8, getitem, sin_1, getitem_11, getitem_10, getitem_1)""",  # noqa: B950
+    return (sin_3, primals_1, getitem_9, getitem_8, getitem, sin_1, getitem_11, getitem_10, getitem_1)""",
             ignore_comments=True,
             ignore_empty_lines=True,
         )
@@ -851,7 +860,7 @@ def forward(self, primals_1, getitem_9, getitem_8, getitem, sin_1, getitem_11, g
     add = torch.ops.aten.add.Tensor(getitem_3, getitem_6);  getitem_3 = getitem_6 = None
     cos_3 = torch.ops.aten.cos.default(primals_1);  primals_1 = None
     mul_3 = torch.ops.aten.mul.Tensor(getitem_5, cos_3);  getitem_5 = cos_3 = None
-    return (mul_3, add)""",  # noqa: B950
+    return (mul_3, add)""",
             ignore_comments=True,
             ignore_empty_lines=True,
         )
@@ -982,7 +991,7 @@ def forward(self, primals_0, primals_1, primals_2, primals_3, primals_4, primals
     alias_1 = torch.ops.aten.alias.default(getitem_1);  getitem_1 = None
     alias_2 = torch.ops.aten.alias.default(alias);  alias = None
     alias_3 = torch.ops.aten.alias.default(alias_1);  alias_1 = None
-    return (getitem, primals_0, primals_1, primals_2, primals_3, primals_4, primals_5, primals_6, primals_7, primals_8, alias_2, alias_3)""",  # noqa: B950
+    return (getitem, primals_0, primals_1, primals_2, primals_3, primals_4, primals_5, primals_6, primals_7, primals_8, alias_2, alias_3)""",
                 ignore_comments=True,
                 ignore_empty_lines=True,
             )
@@ -991,17 +1000,16 @@ def forward(self, primals_0, primals_1, primals_2, primals_3, primals_4, primals
                 captured_gms[1].code.strip(),
                 """\
 def forward(self, primals_0, primals_1, primals_2, primals_3, primals_4, primals_5, primals_6, primals_7, primals_8, alias_2, alias_3, tangents_0):
-    full_10 = torch.ops.aten.full.default([1, 1, 768], 0, dtype = torch.float32, layout = torch.strided, device = device(type='cuda', index=0), pin_memory = False)
     fw_graph0 = self.fw_graph0
     joint_graph0 = self.joint_graph0
     mask_graph0 = self.mask_graph0
-    flex_attention_backward = torch.ops.higher_order.flex_attention_backward(primals_0, primals_0, primals_0, alias_2, alias_3, tangents_0, full_10, fw_graph0, joint_graph0, (768, 768, primals_1, primals_2, primals_3, primals_4, primals_5, primals_6, primals_7, primals_8, 128, 128, mask_graph0), 0.125, {'BACKEND': 'AUTO', 'PRESCALE_QK': False, 'ROWS_GUARANTEED_SAFE': False, 'BLOCKS_ARE_CONTIGUOUS': False, 'WRITE_DQ': True, 'OUTPUT_LOGSUMEXP': True, 'OUTPUT_MAX': False}, (), ());  primals_0 = alias_2 = alias_3 = tangents_0 = full_10 = fw_graph0 = joint_graph0 = primals_1 = primals_2 = primals_3 = primals_4 = primals_5 = primals_6 = primals_7 = primals_8 = mask_graph0 = None
+    flex_attention_backward = torch.ops.higher_order.flex_attention_backward(primals_0, primals_0, primals_0, alias_2, alias_3, tangents_0, None, fw_graph0, joint_graph0, (768, 768, primals_1, primals_2, primals_3, primals_4, primals_5, primals_6, primals_7, primals_8, 128, 128, mask_graph0), 0.125, {'BACKEND': 'AUTO', 'PRESCALE_QK': False, 'ROWS_GUARANTEED_SAFE': False, 'BLOCKS_ARE_CONTIGUOUS': False, 'WRITE_DQ': True, 'OUTPUT_LOGSUMEXP': True, 'OUTPUT_MAX': False}, (), ());  primals_0 = alias_2 = alias_3 = tangents_0 = fw_graph0 = joint_graph0 = primals_1 = primals_2 = primals_3 = primals_4 = primals_5 = primals_6 = primals_7 = primals_8 = mask_graph0 = None
     getitem_3 = flex_attention_backward[0]
     getitem_4 = flex_attention_backward[1]
     getitem_5 = flex_attention_backward[2];  flex_attention_backward = None
     add = torch.ops.aten.add.Tensor(getitem_3, getitem_4);  getitem_3 = getitem_4 = None
     add_1 = torch.ops.aten.add.Tensor(add, getitem_5);  add = getitem_5 = None
-    return (add_1, None, None, None, None, None, None, None, None)""",  # noqa: B950
+    return (add_1, None, None, None, None, None, None, None, None)""",
                 ignore_comments=True,
                 ignore_empty_lines=True,
             )
@@ -1038,10 +1046,10 @@ def forward(self, primals_0, primals_1, primals_2, primals_3, primals_4, primals
             captured_options.append(options)
 
             # Verify config is set as expected from explicit options
-            assert torch._inductor.config.max_autotune, "max_autotune should be True"
-            assert not inductor_config.triton.cudagraphs, (
-                "triton.cudagraphs should be False"
-            )
+            if not torch._inductor.config.max_autotune:
+                raise AssertionError("max_autotune should be True")
+            if inductor_config.triton.cudagraphs:
+                raise AssertionError("triton.cudagraphs should be False")
 
             return original_compile(*args, **kwargs)
 
@@ -1307,10 +1315,12 @@ def forward(self, primals_0, primals_1, primals_2, primals_3, primals_4, primals
 
         def regional_inductor_with_refcounting(gm, *example_args):
             fn = regional_inductor_invoke_subgraph(gm, *example_args)
-            assert fn._boxed_call
+            if not fn._boxed_call:
+                raise AssertionError("Expected fn._boxed_call to be True")
 
             def run(args: Any) -> Any:
-                assert type(args) is list
+                if type(args) is not list:
+                    raise AssertionError(f"Expected args to be list, got {type(args)}")
 
                 # NOTE: sys.getrefcount adds a temporary reference to the object
                 # So sys.getrefcount(x) == 2 actually means we hold the single reference to x
@@ -1375,7 +1385,10 @@ class TestRegionalOutputCode(torch._inductor.test_case.TestCase):
         y = torch.randn(10, requires_grad=True)
 
         # Compile with regional inductor
-        with torch.fx.traceback.preserve_node_meta(enable=False):
+        with (
+            torch.fx.traceback.preserve_node_meta(enable=False),
+            torch._functorch.config.patch(force_autograd_cache=True),
+        ):
             from torch._subclasses.fake_tensor import FakeTensorMode
             from torch.fx.experimental.proxy_tensor import make_fx
 
@@ -1386,10 +1399,10 @@ class TestRegionalOutputCode(torch._inductor.test_case.TestCase):
                 gm = make_fx(fn)(fake_x, fake_y)
 
             # Run regional_inductor on the graph
-            result_gm = regional_inductor(gm, fake_x, fake_y)
+            output_code = regional_inductor(gm, fake_x, fake_y)
 
         # Create RegionalOutputCode
-        output_code = RegionalOutputCode(result_gm)
+        self.assertIsInstance(output_code, RegionalOutputCode)
 
         # Test that we can call it
         self.assertIsNotNone(output_code._graph_module)
@@ -1437,12 +1450,15 @@ class TestRegionalOutputCode(torch._inductor.test_case.TestCase):
             fake_y = fake_mode.from_tensor(y)
 
             # Create forward graph
-            with torch.fx.traceback.preserve_node_meta(enable=False):
+            with (
+                torch.fx.traceback.preserve_node_meta(enable=False),
+                torch._functorch.config.patch(force_autograd_cache=True),
+            ):
                 gm = make_fx(fn)(fake_x, fake_y)
-                forward_gm = regional_inductor(gm, fake_x, fake_y)
+                fw_code = regional_inductor(gm, fake_x, fake_y)
 
         # Create forward output code
-        fw_code = RegionalOutputCode(forward_gm)
+        self.assertIsInstance(fw_code, RegionalOutputCode)
 
         # Verify it can be called
         with fake_mode:
@@ -1479,13 +1495,16 @@ class TestRegionalOutputCode(torch._inductor.test_case.TestCase):
         with fake_mode:
             fake_x = fake_mode.from_tensor(x)
 
-            with torch.fx.traceback.preserve_node_meta(enable=False):
+            with (
+                torch.fx.traceback.preserve_node_meta(enable=False),
+                torch._functorch.config.patch(force_autograd_cache=True),
+            ):
                 gm = make_fx(fn)(fake_x)
                 compiled_gm = regional_inductor(gm, fake_x)
 
         # Create forward using the generic BundledCompiledForward
-        fw_code = RegionalOutputCode(compiled_gm)
-        fw_compiled = BundledCompiledForward[RegionalOutputCode](result=fw_code)
+        self.assertIsInstance(compiled_gm, RegionalOutputCode)
+        fw_compiled = BundledCompiledForward[RegionalOutputCode](result=compiled_gm)
 
         # Test pre_save
         fw_compiled.pre_save()
@@ -1504,6 +1523,153 @@ class TestRegionalOutputCode(torch._inductor.test_case.TestCase):
         post_compiled = fw_compiled.post_compile(loaded_code, fx_config)
         self.assertIsNotNone(post_compiled)
         self.assertIsNotNone(post_compiled._graph_module)  # Now deserialized
+
+
+class RegionalInductorPartitionTests(torch._inductor.test_case.TestCase):
+    """Tests for _RegionScooper partitioning behavior.
+
+    Uses CapabilityBasedPartitioner per region ID. Nodes with the same region ID
+    are merged as aggressively as possible (only cycles prevent merging). Nodes
+    with different region IDs are never merged.
+    """
+
+    def _make_tag_node(self, g, inp, scalar, tagged):
+        node = g.call_function(torch.ops.aten.mul.Scalar, (inp, scalar))
+        if tagged:
+            node.meta["custom"] = {"compile_with_inductor": True}
+        node.meta["val"] = torch.empty(10)
+        return node
+
+    def _scoop_and_count(self, gm):
+        from torch.fx.passes.regional_inductor import _RegionScooper
+
+        with torch.fx.traceback.preserve_node_meta(enable=False):
+            partitioned = _RegionScooper.scoop_regions(gm)
+        return sum(
+            1
+            for node in partitioned.graph.nodes
+            if node.op == "call_module"
+            and node.target.startswith("__marked_inductor_submod")
+        )
+
+    def _build_chain(self, tags):
+        """Build a linear chain: x -> op0 -> op1 -> ... -> output"""
+        g = torch.fx.Graph()
+        current = g.placeholder("x")
+        for tagged in tags:
+            current = self._make_tag_node(g, current, 1.0, tagged)
+        g.output(current)
+        return torch.fx.GraphModule(torch.nn.Module(), g)
+
+    def test_linear_chain_partitioning(self):
+        """Contiguous runs of tagged nodes form separate partitions."""
+        cases = [
+            # (tags, expected_partitions)
+            ([False, True, True, True, False], 1),
+            ([True, True, False, True, True], 2),
+            ([True, False, True, False, True], 3),
+            ([True, False, True, False, True, False, True], 4),
+            ([False, False, False], 0),
+        ]
+        for tags, expected in cases:
+            with self.subTest(tags=tags):
+                gm = self._build_chain(tags)
+                self.assertEqual(self._scoop_and_count(gm), expected)
+
+    def test_parallel_branches_not_fused(self):
+        """Two adjacent independent tagged branches form 1 partition."""
+        g = torch.fx.Graph()
+        x = g.placeholder("x")
+        mul_a = self._make_tag_node(g, x, 2.0, tagged=True)
+        mul_b = self._make_tag_node(g, x, 3.0, tagged=True)
+        out = g.call_function(torch.ops.aten.add.Tensor, (mul_a, mul_b))
+        out.meta["val"] = torch.empty(10)
+        g.output(out)
+        gm = torch.fx.GraphModule(torch.nn.Module(), g)
+        self.assertEqual(self._scoop_and_count(gm), 1)
+
+    def test_parallel_branches_with_gap_same_region(self):
+        """Two independent tagged nodes separated by an untagged node but
+        sharing the same region ID are fused into 1 partition (no cycle).
+        """
+        g = torch.fx.Graph()
+        x = g.placeholder("x")
+        mul_a = self._make_tag_node(g, x, 2.0, tagged=True)
+        sin = g.call_function(torch.ops.aten.sin.default, (x,))
+        sin.meta["val"] = torch.empty(10)
+        mul_b = self._make_tag_node(g, x, 3.0, tagged=True)
+        out = g.call_function(torch.ops.aten.add.Tensor, (mul_a, mul_b))
+        out.meta["val"] = torch.empty(10)
+        g.output(out)
+        gm = torch.fx.GraphModule(torch.nn.Module(), g)
+        self.assertEqual(self._scoop_and_count(gm), 1)
+
+    def test_parallel_branches_with_gap_different_regions(self):
+        """Two independent tagged nodes with different region IDs produce
+        2 separate partitions regardless of graph topology.
+        """
+        g = torch.fx.Graph()
+        x = g.placeholder("x")
+        mul_a = self._make_tag_node(g, x, 2.0, tagged=True)
+        mul_a.meta["custom"] = {"compile_with_inductor": {"inductor_region": 0}}
+        sin = g.call_function(torch.ops.aten.sin.default, (x,))
+        sin.meta["val"] = torch.empty(10)
+        mul_b = self._make_tag_node(g, x, 3.0, tagged=True)
+        mul_b.meta["custom"] = {"compile_with_inductor": {"inductor_region": 1}}
+        out = g.call_function(torch.ops.aten.add.Tensor, (mul_a, mul_b))
+        out.meta["val"] = torch.empty(10)
+        g.output(out)
+        gm = torch.fx.GraphModule(torch.nn.Module(), g)
+        self.assertEqual(self._scoop_and_count(gm), 2)
+
+    def test_dependent_partitions_merged_across_gap(self):
+        """Two tagged nodes (same region) separated by an untagged node and
+        connected by a data dependency are merged into 1 partition.
+        """
+        g = torch.fx.Graph()
+        x = g.placeholder("x")
+        mul_a = self._make_tag_node(g, x, 2.0, tagged=True)
+        sin = g.call_function(torch.ops.aten.sin.default, (x,))
+        sin.meta["val"] = torch.empty(10)
+        # mul_b consumes mul_a, creating a data dependency across the gap
+        mul_b = self._make_tag_node(g, mul_a, 3.0, tagged=True)
+        g.output(mul_b)
+        gm = torch.fx.GraphModule(torch.nn.Module(), g)
+        self.assertEqual(self._scoop_and_count(gm), 1)
+
+    def test_different_annotations_not_merged(self):
+        """Two tagged nodes with different region IDs are NOT merged,
+        even if connected by a data dependency.
+        """
+        g = torch.fx.Graph()
+        x = g.placeholder("x")
+        mul_a = self._make_tag_node(g, x, 2.0, tagged=True)
+        mul_a.meta["custom"] = {"compile_with_inductor": {"inductor_region": 0}}
+        sin = g.call_function(torch.ops.aten.sin.default, (x,))
+        sin.meta["val"] = torch.empty(10)
+        mul_b = self._make_tag_node(g, mul_a, 3.0, tagged=True)
+        mul_b.meta["custom"] = {"compile_with_inductor": {"inductor_region": 1}}
+        g.output(mul_b)
+        gm = torch.fx.GraphModule(torch.nn.Module(), g)
+        self.assertEqual(self._scoop_and_count(gm), 2)
+
+    def test_chained_merges_across_multiple_gaps(self):
+        """Multiple tagged nodes (same region) with chained data dependencies
+        across untagged gaps are all merged into 1 partition.
+        """
+        g = torch.fx.Graph()
+        x = g.placeholder("x")
+        tagged_a = self._make_tag_node(g, x, 2.0, tagged=True)
+        # Untagged node consuming x (not tagged_a), just occupying a slot
+        filler_1 = g.call_function(torch.ops.aten.sin.default, (x,))
+        filler_1.meta["val"] = torch.empty(10)
+        tagged_b = self._make_tag_node(g, tagged_a, 3.0, tagged=True)
+        filler_2 = g.call_function(torch.ops.aten.sin.default, (x,))
+        filler_2.meta["val"] = torch.empty(10)
+        tagged_c = self._make_tag_node(g, tagged_b, 4.0, tagged=True)
+        g.output(tagged_c)
+        gm = torch.fx.GraphModule(torch.nn.Module(), g)
+        self.assertEqual(self._scoop_and_count(gm), 1)
 
 
 if __name__ == "__main__":
