@@ -1346,7 +1346,7 @@ SAC_IGNORED_OPS = {
 } | set(torch._subclasses.functional_tensor.FunctionalTensor.metadata_fns)  # type: ignore[has-type]
 
 
-def _get_active_caching_mode() -> Optional["_CachingTorchDispatchMode"]:
+def _get_active_caching_mode() -> Optional[_CachingTorchDispatchMode]:
     from torch.utils._python_dispatch import _get_current_dispatch_mode_stack
     for mode in reversed(_get_current_dispatch_mode_stack()):
         if isinstance(mode, _CachingTorchDispatchMode):
