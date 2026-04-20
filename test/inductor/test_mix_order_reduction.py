@@ -59,6 +59,14 @@ class SkipPatternTest(TestBase):
 
 
 @instantiate_parametrized_tests
+# Cooperative reductions disable split reductions, which are necessary for mix order
+# reductions.
+@inductor_config.patch(
+    {
+        "triton.cooperative_reductions": False,
+        "triton.force_cooperative_reductions": False,
+    }
+)
 class MixOrderReductionTest(TestBase):
     @parametrize(
         "name",
@@ -773,13 +781,6 @@ class MixOrderReductionTest(TestBase):
         self.assertEqual(len(compile_metrics), 1, "Don't recompile")
 
     @skipIfXpu(msg="https://github.com/intel/intel-xpu-backend-for-triton/issues/6398")
-    # Cooperative reductions cause this test to fail if Triton is enabled.
-    @inductor_config.patch(
-        {
-            "triton.cooperative_reductions": False,
-            "triton.force_cooperative_reductions": False,
-        }
-    )
     def test_additive_rnumel(self):
         """
         Fix https://github.com/pytorch/pytorch/issues/176375
