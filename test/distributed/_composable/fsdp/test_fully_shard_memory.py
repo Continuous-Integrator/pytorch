@@ -370,44 +370,51 @@ class TestFullyShardHSDPSyncCorrectness(FSDPTest):
 
     @skip_if_lt_x_gpu(4)
     @unittest.skipIf(TEST_HPU or TEST_XPU, "HSDP sync correctness test is CUDA-only")
-    def test_hsdp_bf16_ar_buffer_lifetime_under_allocator_pressure(self):
+    def test_ar_buffer_lifetime_mixed_dtype(self):
         """Regression guard for PR #140044 (`[FSDP2] Fix CUDA sync for bf16
         HSDP AR, fp32 params`).
 
-        Config: HSDP (2x2 mesh) + `MixedPrecisionPolicy(param_dtype=bf16,
-        reduce_dtype=bf16)` with fp32-stored parameters. The dtype cast at
-        `_to_dtype_if_needed(reduce_output, orig_dtype)` creates a new fp32
-        tensor and orphans the original reduce_output buffer.
+        Mechanism: under HSDP+AR when `reduce_dtype != orig_dtype`, the cast
+        at `_to_dtype_if_needed(reduce_output, orig_dtype)` materializes a
+        new tensor and leaves the original (bf16 / fp16) AR output buffer
+        reachable only through `all_reduce_input` inside `foreach_reduce`.
+        PR #140044's `_all_reduce_state` holds that ref across layers — which
+        keeps the buffer off the caching allocator's free list. Without it,
+        the allocator deterministically reuses the same physical block for
+        every layer's reduce-scatter output; under slow AR, each layer's RS
+        overwrites the shared block before the previous layer's AR has
+        finished reading it, so all layers' sharded grads collapse to the
+        last-executed layer's value.
 
-        Without PR #140044's `_all_reduce_state` ref tracking, the caching
-        allocator can reclaim `reduce_output` too early. Under memory pressure,
-        the allocator hands the same physical block to multiple layers'
-        `reduce_output` allocations, causing all `sharded_param.grad` views
-        to alias the same storage — all layers end up with the same (last
-        layer's) gradient.
+        The test surfaces the race by injecting `torch.cuda._sleep` before
+        `dist.all_reduce`, keeping the AR kernel active for ~500 ms on the
+        AR stream. Sharded grads are compared against a fast-AR reference.
 
-        This test surfaces the race by:
-        1. Injecting `torch.cuda._sleep` before each `dist.all_reduce` to
-           keep the AR kernel active on the AR stream for ~500 ms.
-        2. Allocating ~200 bf16 tensors on the default stream immediately
-           after backward returns, pressuring the allocator to reuse freed
-           blocks.
-        3. Comparing sharded grads against a reference (no sleep, no stress).
+        Parametrized over dtype-mismatch configs so the guard covers the
+        whole surface area of the bug (not just PR #140044's canonical
+        bf16+fp32 setup).
 
-        Passes on current code (PR #140044 active). Would fail if
-        `_all_reduce_state` / equivalent cross-layer ref tracking were
-        removed.
+        Passes on current code (PR #140044's `_all_reduce_state` / PR #179443's
+        `comm_ctx.all_reduce_state`). Fails if cross-layer ref tracking is
+        removed. See design doc in
+        `agent_space/fsdp2_early_release_ar_buffer.md` and PR #180900.
         """
+        self.run_subtests(
+            {
+                "mp_dtype": [torch.bfloat16, torch.float16],
+            },
+            self._test_ar_buffer_lifetime_mixed_dtype,
+        )
+
+    def _test_ar_buffer_lifetime_mixed_dtype(self, mp_dtype: torch.dtype):
         torch.manual_seed(0)
         mesh = init_device_mesh(
             device_type.type,
             (2, 2),
             mesh_dim_names=("dp_replicate", "dp_shard"),
         )
-        # bf16 reduce + fp32-stored params — the MP config from PR #140044.
-        mp = MixedPrecisionPolicy(
-            param_dtype=torch.bfloat16, reduce_dtype=torch.bfloat16
-        )
+        # reduce_dtype = mp_dtype, orig_dtype = fp32 → cast fires.
+        mp = MixedPrecisionPolicy(param_dtype=mp_dtype, reduce_dtype=mp_dtype)
 
         dim = 512
         model = nn.Sequential(
@@ -442,28 +449,10 @@ class TestFullyShardHSDPSyncCorrectness(FSDPTest):
 
             if slow_ar:
                 dist.all_reduce = slow_all_reduce
-
             try:
                 out = model(inp)
                 loss = out.sum()
                 loss.backward()
-                if slow_ar:
-                    # Aggressively allocate on default stream while AR is
-                    # still sleeping on AR stream. If the fp32 reduce_output
-                    # buffer is marked free before AR completes, the allocator
-                    # may hand it to these stress allocations, corrupting the
-                    # sharded grad's underlying storage.
-                    stress = []
-                    for i in range(200):
-                        t = torch.empty(
-                            1024 * (i + 1),
-                            device=device_type.type,
-                            dtype=torch.bfloat16,
-                        )
-                        t.fill_(float("nan"))
-                        stress.append(t)
-                    torch.get_device_module(device_type).synchronize()
-                    del stress
             finally:
                 if slow_ar:
                     dist.all_reduce = orig_all_reduce
@@ -480,29 +469,31 @@ class TestFullyShardHSDPSyncCorrectness(FSDPTest):
 
         ref = run_one(slow_ar=False)
         for _ in range(3):
-            stressed = run_one(slow_ar=True)
+            slow = run_one(slow_ar=True)
             for name, ref_sum in ref.items():
-                stressed_sum = stressed[name]
-                # If the fp32 reduce_output buffer is being reused across
-                # layers, the sharded grads will all collapse to the same
-                # value (the last-executed layer's grad sum). Reference
-                # values for the three layers differ by orders of magnitude;
-                # any aliasing corruption shows as a large mismatch here.
+                slow_sum = slow[name]
+                # When the bf16/fp16 RS-output block is shared across layers
+                # (no `_all_reduce_state` ref holding it alive), slow AR lets
+                # later-layer RSes overwrite the block before earlier layers'
+                # AR completes → every layer's grad collapses to the last-
+                # executed layer's value. Reference values across the three
+                # layers differ by orders of magnitude; any collapse shows
+                # up as a large mismatch here.
                 self.assertFalse(
-                    torch.isnan(torch.tensor(stressed_sum)).item(),
-                    f"NaN in stressed grad for {name}",
+                    torch.isnan(torch.tensor(slow_sum)).item(),
+                    f"NaN in slow-AR grad for {name}",
                 )
                 self.assertAlmostEqual(
-                    stressed_sum,
+                    slow_sum,
                     ref_sum,
                     delta=max(abs(ref_sum) * 1e-3, 1e-3),
                     msg=(
-                        f"HSDP AR buffer lifetime regression: grad sum for "
-                        f"{name} differs under allocator pressure. "
-                        f"reference={ref_sum:.4f}, stressed={stressed_sum:.4f}. "
+                        f"HSDP AR buffer lifetime regression ({mp_dtype}): "
+                        f"grad sum for {name} differs under slow AR. "
+                        f"reference={ref_sum:.4f}, slow={slow_sum:.4f}. "
                         f"All layers collapsing to the same value indicates "
-                        f"reduce_output buffer is being reused across layers "
-                        f"(see PR #140044)."
+                        f"the RS-output buffer is being reused across layers "
+                        f"(see PR #140044, PR #180900)."
                     ),
                 )
 
