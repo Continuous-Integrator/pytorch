@@ -262,6 +262,10 @@ class FSDPParam:
         # TODO: Simplify the following sharded parameter padding logic after
         # https://github.com/pytorch/pytorch/issues/113045
         self.is_dtensor = isinstance(param, DTensor)
+        self._spmd_local_type = None
+        self._spmd_partition_spec = None
+        if not self.is_dtensor:
+            self._save_spmd_type_annotation(param, self.mesh_info)
         self._orig_param_uid = _get_orig_param_uid(param)
         param_data = self._init_sharding_spec(param, fsdp_placement, shard_dim)
         if not param_data.is_contiguous():
@@ -501,6 +505,59 @@ class FSDPParam:
         )
         return param
 
+    def _save_spmd_type_annotation(
+        self,
+        param: nn.Parameter,
+        mesh_info: DataParallelMeshInfo,
+    ) -> None:
+        """Save spmd_types annotations from the original parameter.
+
+        DP axes are transformed from I to R in the saved annotation:
+        FSDP's all-gather makes the parameter replicated (not invariant),
+        and R.backward_type() == P matches the reduce-scatter semantics.
+        For HSDP, the replicate axis is also transformed since each
+        replica processes different data (gradient all-reduce implies P
+        gradients, i.e. R forward type).
+        """
+        from torch.spmd_types import (
+            get_local_type,  # pyrefly: ignore[missing-module-attribute]
+            get_partition_spec,
+            has_local_type,
+            I,  # pyrefly: ignore[missing-module-attribute]
+            normalize_axis,
+            R,  # pyrefly: ignore[missing-module-attribute]
+        )
+
+        if not has_local_type(param):
+            return
+        local_type = get_local_type(param)
+        if not local_type:
+            return
+        local_type = dict(local_type)
+        if isinstance(mesh_info, FSDPMeshInfo):
+            dp_axis = normalize_axis(mesh_info.shard_process_group)
+            if dp_axis in local_type and local_type[dp_axis] is I:
+                local_type[dp_axis] = R
+        if isinstance(mesh_info, HSDPMeshInfo):
+            rep_axis = normalize_axis(mesh_info.replicate_process_group)
+            if rep_axis in local_type and local_type[rep_axis] is I:
+                local_type[rep_axis] = R
+        self._spmd_local_type = local_type
+        self._spmd_partition_spec = get_partition_spec(param)
+
+    def _restore_spmd_type_annotation(self, param: nn.Parameter) -> None:
+        """Re-stamp saved spmd_types annotations onto the unsharded parameter."""
+        if self._spmd_local_type is None:
+            return
+        from torch.spmd_types import (  # pyrefly: ignore
+            _set_partition_spec,
+            set_local_type,
+        )
+
+        set_local_type(param, self._spmd_local_type)
+        if self._spmd_partition_spec is not None:
+            _set_partition_spec(param, self._spmd_partition_spec)
+
     def _init_sharded_post_forward_param_metadata(self, param: torch.Tensor) -> None:
         mesh_info = self.post_forward_mesh_info
         if mesh_info is None:
@@ -618,6 +675,7 @@ class FSDPParam:
         self._unsharded_param = nn.Parameter(
             unsharded_param, requires_grad=self.sharded_param.requires_grad
         )
+        self._restore_spmd_type_annotation(self._unsharded_param)
 
     def _unflatten_all_gather_outputs(self) -> tuple[torch.Tensor, ...]:
         return tuple(
