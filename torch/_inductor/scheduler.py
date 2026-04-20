@@ -5078,13 +5078,17 @@ class Scheduler:
         """
         Groups parallel nodes into combo kernels (ForeachKernelSchedulerNode).
 
-        When combo_kernel_peak_memory_threshold > 0, each candidate group is
-        simulated before creation; if the simulated graph peak memory exceeds
-        the baseline by more than the threshold, the group is either rejected
-        or the largest-output nodes are greedily dropped one at a time until
-        acceptance. The peak is computed locally (per-region) by reusing the
-        cached baseline memory timeline, so per-group cost is O(region_size +
-        buffers_touching_region).
+        When either combo_kernel_peak_memory_threshold (absolute bytes) or
+        combo_kernel_peak_memory_pct_threshold (fraction of baseline peak) is
+        set, each candidate group is simulated before creation. A group is
+        accepted iff the simulated graph peak delta satisfies every threshold
+        that is set. On rejection, the group's schedule-index span is halved
+        and the reduced group is retried (worst-case O(log initial_span)
+        retries).
+
+        The peak is computed locally (per-region) by reusing the cached
+        baseline memory timeline, so per-group cost is O(region_size +
+        buffers_touching_region) instead of O(N + B).
         """
         fused_nodes = OrderedSet(self.nodes)
         count = 0
@@ -5123,6 +5127,7 @@ class Scheduler:
                 continue
 
             if memory_check:
+                assert mem_ctx is not None
                 sim_start = time.perf_counter()
                 combo_node, new_peak = self._try_combo_with_memory_check(
                     node_list,
