@@ -4,19 +4,20 @@
 
 import sys
 
+import torch
+
 # Import TEST_WITH_ROCM first to check for ROCm before importing NVSHMEM modules
 from torch.testing._internal.common_utils import TEST_WITH_ROCM
 
 
-# Skip entire module on ROCm before importing NVSHMEM-specific modules
+# Skip entire module on ROCm before importing NVSHMEM-specific modules or running on CPU
 # NVSHMEM is NVIDIA-specific and can cause crashes during import on ROCm
-if TEST_WITH_ROCM:
+if TEST_WITH_ROCM or not torch.backends.cuda.is_built():
     print("NVSHMEM not available on ROCm, skipping tests")
     sys.exit(0)
 
 import triton.language as tl
 
-import torch
 import torch.distributed as dist
 import torch.distributed._symmetric_memory as symm_mem
 import torch.distributed._symmetric_memory._nvshmem_triton as nvshmem
@@ -294,7 +295,6 @@ class NVSHMEMTritonTest(MultiProcContinuousTest):
         self._init_device()
 
         group_name = dist.distributed_c10d._get_default_group().group_name
-        symm_mem.enable_symm_mem_for_group(group_name)
         rank = self.rank
 
         # Configuration
@@ -348,7 +348,6 @@ class NVSHMEMTritonTest(MultiProcContinuousTest):
         self._init_device()
 
         group_name = dist.distributed_c10d._get_default_group().group_name
-        symm_mem.enable_symm_mem_for_group(group_name)
         rank = self.rank
 
         # Configuration
@@ -388,7 +387,6 @@ class NVSHMEMTritonTest(MultiProcContinuousTest):
         self._init_device()
 
         group_name = dist.distributed_c10d._get_default_group().group_name
-        symm_mem.enable_symm_mem_for_group(group_name)
         rank = self.rank
         world_size = dist.get_world_size()
 
@@ -430,7 +428,6 @@ class NVSHMEMTritonTest(MultiProcContinuousTest):
         self._init_device()
 
         group_name = dist.distributed_c10d._get_default_group().group_name
-        symm_mem.enable_symm_mem_for_group(group_name)
         rank = self.rank
 
         msg_size_bytes = 8
@@ -488,7 +485,6 @@ class NVSHMEMTritonTest(MultiProcContinuousTest):
         self._init_device()
 
         group_name = dist.distributed_c10d._get_default_group().group_name
-        symm_mem.enable_symm_mem_for_group(group_name)
         rank = self.rank
 
         msg_size_bytes = 8
@@ -544,7 +540,6 @@ class NVSHMEMTritonTest(MultiProcContinuousTest):
         self._init_device()
 
         group_name = dist.distributed_c10d._get_default_group().group_name
-        symm_mem.enable_symm_mem_for_group(group_name)
 
         rank = self.rank
         peer = 1 - rank
@@ -591,7 +586,6 @@ class NVSHMEMTritonTest(MultiProcContinuousTest):
     def test_triton_signal_wait_until(self) -> None:
         self._init_device()
         group_name = dist.distributed_c10d._get_default_group().group_name
-        symm_mem.enable_symm_mem_for_group(group_name)
         rank = self.rank
         peer = 1 - rank
 
@@ -661,7 +655,6 @@ class NVSHMEMTritonTest(MultiProcContinuousTest):
         torch.manual_seed(42 + self.rank)
         self._init_device()
         group_name = dist.distributed_c10d._get_default_group().group_name
-        symm_mem.enable_symm_mem_for_group(group_name)
         rank = self.rank
         peer = 1 - rank
         # Message configuration
@@ -726,7 +719,6 @@ class NVSHMEMTritonTest(MultiProcContinuousTest):
         torch.manual_seed(42 + self.rank)
         self._init_device()
         group_name = dist.distributed_c10d._get_default_group().group_name
-        symm_mem.enable_symm_mem_for_group(group_name)
         rank = self.rank
         peer = 1 - rank
 
@@ -776,7 +768,6 @@ class NVSHMEMTritonTest(MultiProcContinuousTest):
         torch.manual_seed(42 + self.rank)
         self._init_device()
         group_name = dist.distributed_c10d._get_default_group().group_name
-        symm_mem.enable_symm_mem_for_group(group_name)
         rank = self.rank
         numel = 1
         dtype = torch.int32
@@ -812,7 +803,6 @@ class NVSHMEMTritonTest(MultiProcContinuousTest):
         self._init_device()
 
         group_name = dist.distributed_c10d._get_default_group().group_name
-        symm_mem.enable_symm_mem_for_group(group_name)
         rank = self.rank
         numel = 1
         dtype = torch.int32
@@ -855,7 +845,6 @@ class NVSHMEMTritonTest(MultiProcContinuousTest):
         torch.manual_seed(42 + self.rank)
         self._init_device()
         group_name = dist.distributed_c10d._get_default_group().group_name
-        symm_mem.enable_symm_mem_for_group(group_name)
         world_size = dist.get_world_size()
         rank = self.rank
         # Each PE will send 2 int64 elements to every other PE
@@ -902,7 +891,6 @@ class NVSHMEMTritonTest(MultiProcContinuousTest):
         torch.manual_seed(42 + self.rank)
         self._init_device()
         group_name = dist.distributed_c10d._get_default_group().group_name
-        symm_mem.enable_symm_mem_for_group(group_name)
         rank = self.rank
 
         # Configuration
@@ -970,7 +958,6 @@ class NVSHMEMTritonTest(MultiProcContinuousTest):
         torch.manual_seed(42 + self.rank)
         self._init_device()
         group_name = dist.distributed_c10d._get_default_group().group_name
-        symm_mem.enable_symm_mem_for_group(group_name)
         world_size = dist.get_world_size()
         rank = self.rank
         # Configuration
@@ -1032,7 +1019,6 @@ class NVSHMEMTritonTest(MultiProcContinuousTest):
         torch.manual_seed(42 + self.rank)
         self._init_device()
         group_name = dist.distributed_c10d._get_default_group().group_name
-        symm_mem.enable_symm_mem_for_group(group_name)
         world_size = dist.get_world_size()
         rank = self.rank
         # Configuration
@@ -1118,7 +1104,6 @@ class NVSHMEMTritonTest(MultiProcContinuousTest):
         torch.manual_seed(42 + self.rank)
         self._init_device()
         group_name = dist.distributed_c10d._get_default_group().group_name
-        symm_mem.enable_symm_mem_for_group(group_name)
         world_size = dist.get_world_size()
         rank = self.rank
         # Configuration

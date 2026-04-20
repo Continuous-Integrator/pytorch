@@ -49,10 +49,14 @@ enum class TORCH_API Float32Backend { GENERIC, CUDA, MKLDNN };
 enum class TORCH_API Float32Op { ALL, CONV, RNN, MATMUL };
 enum class TORCH_API Float32Precision { NONE, IEEE, TF32, BF16 };
 
+enum class TORCH_API CuDNNDepthwiseKernel { AUTO, CUDNN, NATIVE };
+
 TORCH_API Float32Backend str2backend(const std::string& name);
 TORCH_API Float32Op str2op(const std::string& name);
 TORCH_API Float32Precision str2precision(const std::string& name);
 TORCH_API std::string precision2str(Float32Precision prec);
+TORCH_API CuDNNDepthwiseKernel str2cudnn_depthwise(const std::string& name);
+TORCH_API std::string cudnn_depthwise2str(CuDNNDepthwiseKernel k);
 
 class TORCH_API Context {
  public:
@@ -224,6 +228,10 @@ class TORCH_API Context {
     return detail::getCUDAHooks().nvrtc();
   }
 
+  static const at::xpu::LevelZero& getLevelZero() {
+    return detail::getXPUHooks().level_zero();
+  }
+
   static bool setFlushDenormal(bool on);
 
   // NB: This method is *purely* whether or not a user requested
@@ -247,6 +255,9 @@ class TORCH_API Context {
   bool userEnabledNNPACK() const;
   void setUserEnabledNNPACK(bool e);
 
+  CuDNNDepthwiseKernel cudnnDepthwiseKernel() const;
+  void setCuDNNDepthwiseKernel(CuDNNDepthwiseKernel k);
+
   // Note [Disabling Fused SDP Kernels]
   // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
   // Flash and Memory Efficient SDP kernels are enabled by default.
@@ -263,6 +274,9 @@ class TORCH_API Context {
 
   void setSDPUseFlash(bool /*e*/);
   bool userEnabledFlashSDP() const;
+
+  void setSDPUseFA3(bool /*e*/);
+  bool userEnabledFA3SDP() const;
 
   void setSDPUseMemEfficient(bool /*e*/);
   bool userEnabledMemEfficientSDP() const;
@@ -282,6 +296,7 @@ class TORCH_API Context {
   at::LinalgBackend linalgPreferredBackend() const;
   void setLinalgPreferredBackend(at::LinalgBackend /*b*/);
 
+  at::BlasBackend blasDefaultBackend();
   at::BlasBackend blasPreferredBackend();
   void setBlasPreferredBackend(at::BlasBackend /*b*/);
 
@@ -400,8 +415,9 @@ class TORCH_API Context {
   void setQEngine(at::QEngine e);
   static const std::vector<at::QEngine>& supportedQEngines();
   static bool isXNNPACKAvailable();
-  void setCheckSparseTensorInvariants(bool e);
-  bool checkSparseTensorInvariants() const;
+  void setCheckSparseTensorInvariants(std::optional<bool> e);
+  std::optional<bool> checkSparseTensorInvariants(
+      bool warn_when_uninitialized = false) const;
   // This method is used to release the original weight after pre-packing.
   // It should be called once before loading/running the model.
   // NB: By default it is set to true for mobile builds.
@@ -462,6 +478,7 @@ class TORCH_API Context {
       at::SDPBackend::cudnn_attention,
       at::SDPBackend::overrideable};
   bool enabled_flashSDP = true;
+  bool enabled_fa3SDP = false;
   bool enabled_mem_efficientSDP = true;
   bool enabled_mathSDP = true;
   bool enabled_cudnnSDP = true;
@@ -484,6 +501,7 @@ class TORCH_API Context {
   bool enabled_mkldnn = true;
   bool allow_tf32_onednn = false;
   bool enabled_nnpack = true;
+  CuDNNDepthwiseKernel depthwise_kernel_cudnn = CuDNNDepthwiseKernel::AUTO;
   at::LinalgBackend linalg_preferred_backend =
       (c10::utils::check_env("TORCH_LINALG_PREFER_CUSOLVER") == true ||
        c10::utils::check_env("TORCH_LINALG_PREFER_HIPSOLVER") == true) // alias
@@ -493,7 +511,11 @@ class TORCH_API Context {
       (c10::utils::check_env("TORCH_BLAS_PREFER_CUBLASLT") == true ||
        c10::utils::check_env("TORCH_BLAS_PREFER_HIPBLASLT") == true) // alias
       ? at::BlasBackend::Cublaslt
-      : at::BlasBackend::Default;
+      : ((c10::utils::check_env("TORCH_BLAS_PREFER_CUBLASLT") == false ||
+          c10::utils::check_env("TORCH_BLAS_PREFER_HIPBLASLT") ==
+              false) // alias
+             ? at::BlasBackend::Cublas
+             : at::BlasBackend::Default);
   at::ROCmFABackend rocm_fa_preferred_backend =
       c10::utils::check_env("TORCH_ROCM_FA_PREFER_CK") == true
       ? at::ROCmFABackend::Ck
@@ -506,7 +528,7 @@ class TORCH_API Context {
   bool display_vmap_fallback_warnings_ = false;
   bool warn_on_accumulate_grad_stream_mismatch_ = true;
   std::atomic<at::QEngine> quantized_engine = at::QEngine::NoQEngine;
-  bool enable_sparse_tensor_invariant_checks = false;
+  std::optional<bool> enable_sparse_tensor_invariant_checks = std::nullopt;
   bool allow_fp16_reduction_cpu = false;
 
   using Key = std::pair<Float32Backend, Float32Op>;
