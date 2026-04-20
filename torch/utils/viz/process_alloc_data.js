@@ -680,6 +680,18 @@ function process_alloc_data(snapshot, device, plot_segments, max_entries, includ
     }
   }
 
+  // Shift all elements stacked above a pool envelope by delta (no animation).
+  // Used during timestep-0 initialization when there are no transition frames.
+  function shift_above_pool_no_anim(pool_key, delta) {
+    const pidx = current.indexOf(`pool:${pool_key}`);
+    if (pidx >= 0) {
+      for (let j = pidx + 1; j < current.length; j++) {
+        const e = current_data[j];
+        e.offsets[e.offsets.length - 1] += delta;
+      }
+    }
+  }
+
   // Grow a pool envelope to accommodate new_size bytes (the larger of active
   // allocations and reserved segment memory). The envelope only grows (never
   // shrinks) — it represents the pool's actual GPU memory footprint.
@@ -703,16 +715,28 @@ function process_alloc_data(snapshot, device, plot_segments, max_entries, includ
   }
 
   // --- Process initially_allocated elements ---
-  // Private pool blocks are pre-loaded into pool state at timestep 0 (no
-  // animation) so that their envelope starts at the correct initial size
-  // and free events are correctly recognized as frees.
+  // These are blocks that existed before the trace window started. They come
+  // from two sources:
+  //   1. Unmatched free events (free_completed without a prior alloc in trace)
+  //   2. active_allocated blocks in the segment snapshot with no trace event
+  //
+  // For private pool blocks: pre-load into pool state at timestep 0 (no
+  // animation). This serves two purposes:
+  //   - The envelope starts at the correct initial size
+  //   - When the free event fires during replay, it's recognized as a free
+  //     (not misinterpreted as a new allocation)
+  //
+  // For non-pool blocks: added to the global stack (draw_elem) or global
+  // summarized band.
   for (const elem of initially_allocated) {
     if (include_private_inactive && get_pool_key(elem)) {
       const pk = get_pool_key(elem);
       const size = elements[elem].size;
       const pool = get_or_create_pool(pk);
+      // Mark as active so the replay loop recognizes the free event
       pool_active_elems[elem] = pk;
 
+      // Create pool envelope on first encounter
       if (pool.envelope_data === null) {
         const env = {
           elem: `pool:${pk}`,
@@ -722,6 +746,7 @@ function process_alloc_data(snapshot, device, plot_segments, max_entries, includ
           color: 9,
         };
         pool.envelope_data = env;
+        // Add to the global stack so elements above it shift when it grows
         current.push(`pool:${pk}`);
         current_data.push(env);
         data.push(env);
@@ -729,7 +754,9 @@ function process_alloc_data(snapshot, device, plot_segments, max_entries, includ
 
       pool.active += size;
 
-      // Grow envelope directly without animation — these blocks pre-exist
+      // Grow envelope to fit: use max(active, reserved) because active can
+      // exceed reserved when block sizes are stale (e.g. segment shrank via
+      // unmap after the block was allocated).
       const init_target = Math.max(pool.active, pool.reserved);
       if (init_target > pool.max) {
         const delta = init_target - pool.max;
@@ -737,13 +764,8 @@ function process_alloc_data(snapshot, device, plot_segments, max_entries, includ
         const env = pool.envelope_data;
         env.size[env.size.length - 1] = pool.max;
         total_mem += delta;
-        const pidx = current.indexOf(`pool:${pk}`);
-        if (pidx >= 0) {
-          for (let j = pidx + 1; j < current.length; j++) {
-            const e = current_data[j];
-            e.offsets[e.offsets.length - 1] += delta;
-          }
-        }
+        // Shift all elements stacked above this pool's envelope up by delta
+        shift_above_pool_no_anim(pk, delta);
       }
 
       if (elem in draw_elem) {
@@ -765,6 +787,7 @@ function process_alloc_data(snapshot, device, plot_segments, max_entries, includ
       }
       continue;
     }
+    // Non-pool element: render individually or add to global summarized band
     if (elem in draw_elem) {
       add_allocation(elem);
     } else {
@@ -839,13 +862,7 @@ function process_alloc_data(snapshot, device, plot_segments, max_entries, includ
         const env = pool.envelope_data;
         env.size[env.size.length - 1] = pool.max;
         total_mem += delta;
-        const pidx = current.indexOf(`pool:${pk}`);
-        if (pidx >= 0) {
-          for (let j = pidx + 1; j < current.length; j++) {
-            const e = current_data[j];
-            e.offsets[e.offsets.length - 1] += delta;
-          }
-        }
+        shift_above_pool_no_anim(pk, delta);
       }
     }
     // Fix up pool stripe offsets again after reserved-based envelope growth
