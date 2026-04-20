@@ -1798,7 +1798,7 @@ def _check_with(
     error_type,
     cond: builtins.bool | SymBool,
     message: _Callable[[], str],
-):  # noqa: F811
+):
     if not isinstance(cond, (builtins.bool, SymBool)):
         raise TypeError(f"cond must be a bool, but got {type(cond)}")
 
@@ -1829,7 +1829,7 @@ def _check_with(
     raise error_type(message_evaluated)
 
 
-def _check(cond, message=None):  # noqa: F811
+def _check(cond, message=None):
     r"""Throws error containing an optional message if the specified condition
     is False.
 
@@ -1883,7 +1883,7 @@ def _check_is_size(i, message=None, *, max=None):
         _advise_is_bounded(i, max)
 
 
-def _check_index(cond, message=None):  # noqa: F811
+def _check_index(cond, message=None):
     r"""Throws error containing an optional message if the specified condition
     is False.
 
@@ -1901,7 +1901,7 @@ def _check_index(cond, message=None):  # noqa: F811
     _check_with(IndexError, cond, message)  # pyrefly: ignore [bad-argument-type]
 
 
-def _check_value(cond, message=None):  # noqa: F811
+def _check_value(cond, message=None):
     r"""Throws error containing an optional message if the specified condition
     is False.
 
@@ -1919,7 +1919,7 @@ def _check_value(cond, message=None):  # noqa: F811
     _check_with(ValueError, cond, message)  # pyrefly: ignore [bad-argument-type]
 
 
-def _check_type(cond, message=None):  # noqa: F811
+def _check_type(cond, message=None):
     r"""Throws error containing an optional message if the specified condition
     is False.
 
@@ -1937,7 +1937,7 @@ def _check_type(cond, message=None):  # noqa: F811
     _check_with(TypeError, cond, message)  # pyrefly: ignore [bad-argument-type]
 
 
-def _check_not_implemented(cond, message=None):  # noqa: F811
+def _check_not_implemented(cond, message=None):
     r"""Throws error containing an optional message if the specified condition
     is False.
 
@@ -1960,7 +1960,7 @@ def _check_not_implemented(cond, message=None):  # noqa: F811
     )
 
 
-def _check_tensor_all_with(error_type, cond, message=None):  # noqa: F811
+def _check_tensor_all_with(error_type, cond, message=None):
     if not is_tensor(cond):
         raise TypeError(f"cond must be a tensor, but got {type(cond)}")
 
@@ -1971,7 +1971,7 @@ def _check_tensor_all_with(error_type, cond, message=None):  # noqa: F811
 
 
 # C++ equivalent: `TORCH_CHECK_TENSOR_ALL`
-def _check_tensor_all(cond, message=None):  # noqa: F811
+def _check_tensor_all(cond, message=None):
     r"""Throws error containing an optional message if the specified condition
     is False.
 
