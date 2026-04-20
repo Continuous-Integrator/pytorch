@@ -234,6 +234,9 @@ class HeaderOnlyArrayRef {
   /// @name Expensive Operations
   /// @{
   std::vector<T> vec() const {
+    if (this->empty()) {
+      return {};
+    }
     return std::vector<T>(this->Data, this->Data + this->Length);
   }
 
