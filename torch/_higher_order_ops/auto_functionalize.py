@@ -725,22 +725,15 @@ def _do_auto_functionalize_v2_for_out_operator(
         )
 
     # For out= ops, the functional HOP returns exactly the out tensors.
-    # n_mutable is guaranteed > 0 by _validate_out_schema.
-    n_mutable = len(mutable_args_names)
-    unwrapped_mutable_out = (
-        (unwrapped_outs,) if n_mutable == 1 else tuple(unwrapped_outs)
-    )
-    unwrapped_actual_out = (
-        unwrapped_mutable_out[0] if n_mutable == 1 else unwrapped_mutable_out
-    )
-
-    # Sync the created out tensors back to the original FunctionalTensors
-    for orig_arg, result in zip(out_arg_originals, unwrapped_mutable_out, strict=True):
+    # auto_functionalized_v2 returns a bare tensor for single return,
+    # tuple for multiple.
+    results = unwrapped_outs if isinstance(unwrapped_outs, tuple) else (unwrapped_outs,)
+    for orig_arg, result in zip(out_arg_originals, results, strict=True):
         ctx.replace(orig_arg, result)
         ctx.commit_update(orig_arg)
         ctx.sync(orig_arg)
 
-    return ctx.wrap_tensors(unwrapped_actual_out)  # type: ignore[arg-type]
+    return ctx.wrap_tensors(unwrapped_outs)  # type: ignore[arg-type]
 
 
 def _do_auto_functionalize_v2_for_generic_mutable_operator(
