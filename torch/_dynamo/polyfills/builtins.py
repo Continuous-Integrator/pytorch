@@ -91,19 +91,26 @@ class _CallableIterator:
         return r
 
 
+class _SequenceIterator:
+    def __init__(self, iterable) -> None:
+        self.iterable = iterable
+        self.index = 0
+
+    def __iter__(self) -> _SequenceIterator:
+        return self
+
+    def __next__(self) -> object:
+        try:
+            result = self.iterable.__getitem__(self.index)
+            self.index += 1
+            return result
+        except (IndexError, StopIteration):
+            raise StopIteration from None
+
+
 def sequence_iterator(iterable) -> Iterable[object]:
     if hasattr(iterable, "__getitem__"):
-        # Needs to be a new function to avoid iter becoming a generator
-        def sequence_protocol(iterable):  # type: ignore[no-untyped-def]
-            i = 0
-            while True:
-                try:
-                    yield iterable.__getitem__(i)
-                    i += 1
-                except IndexError:
-                    break
-
-        return sequence_protocol(iterable)
+        return _SequenceIterator(iterable)
     raise TypeError(f"'{type(iterable)}' object is not iterable")
 
 

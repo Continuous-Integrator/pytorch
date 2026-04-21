@@ -106,6 +106,12 @@ def type_implements_sq_length(obj_type: type) -> bool:
     return has_slot(seq_slots, PySequenceSlots.SQ_LENGTH)
 
 
+def type_implements_sq_item(obj_type: type) -> bool:
+    """Check whether obj_type implements __getitem__ as sequence protocol"""
+    seq_slots, _, _, _ = _get_cached_slots(obj_type)
+    return has_slot(seq_slots, PySequenceSlots.SQ_ITEM)
+
+
 def type_implements_mp_length(obj_type: type) -> bool:
     """Check whether obj_type implements __len__ as mapping protocol"""
     _, map_slots, _, _ = _get_cached_slots(obj_type)
@@ -146,13 +152,19 @@ def type_implements_tp_iternext(obj_type: type) -> bool:
     return has_slot(type_slot, PyTypeSlots.TP_ITERNEXT)
 
 
-def type_sequence_check(obj_type: type) -> bool:
+def PyIter_Check(obj_type: type) -> bool:
+    # ref: https://github.com/python/cpython/blob/3.13/Objects/abstract.c#L2891-L2897
+    # CPython checks if tp_iternext != _PyObject_NextNotImplemented
+    # Dynamo only sets the bit if __next__ is actually defined
+    return type_implements_tp_iternext(obj_type)
+
+
+def PySequence_Check(obj_type: type) -> bool:
     """Implements PySequence_Check semantics for VariableTracker objects."""
     # ref: https://github.com/python/cpython/blob/v3.13.0/Objects/abstract.c#L1714-L1721
     if issubclass(obj_type, dict):
         return False
-    seq_slots, _, _, _ = _get_cached_slots(obj_type)
-    return has_slot(seq_slots, PySequenceSlots.SQ_ITEM)
+    return type_implements_sq_item(obj_type)
 
 
 def maybe_get_python_type(obj: VariableTracker) -> type:
@@ -379,13 +391,13 @@ def generic_getiter(
     if type_implements_tp_iter(T):
         res = obj.tp_iter_impl(tx)
         res_T = maybe_get_python_type(res)
-        if not type_implements_tp_iternext(res_T):
+        if not PyIter_Check(res_T):
             raise_type_error(
                 tx,
                 f"{obj.python_type_name()}.__iter__() returned non-iterator {res.python_type_name()}",
             )
         return res
-    elif type_sequence_check(T):
+    elif PySequence_Check(T):
         return UserFunctionVariable(polyfills.builtins.sequence_iterator).call_function(
             tx, [obj], {}
         )

@@ -567,6 +567,8 @@ class SetVariable(VariableTracker):
     def tp_iter_impl(self, tx: "InstructionTranslator") -> VariableTracker:
         from .iter import SetIterator
 
+        if self.source and not is_constant_source(self.source):
+            tx.output.guard_on_key_order.add(self.source)
         return SetIterator(self.items)
 
     def sq_length(self, tx: "InstructionTranslator") -> VariableTracker:

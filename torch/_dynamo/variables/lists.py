@@ -1348,6 +1348,9 @@ class DequeVariable(CommonListMethodsVariable):
 
     def tp_iter_impl(self, tx: "InstructionTranslator") -> VariableTracker:
         # ref: https://github.com/python/cpython/blob/v3.13.3/Modules/_collectionsmodule.c#L1886-L1904
+        # TODO(guilhermeleobas): Replace this by a proper DequeIteratorVariable
+        # that keeps track of the maxlen and doesn't allow iterating over more
+        # items than maxlen.
         return ListIteratorVariable(self.items, mutation_type=ValueMutationNew())
 
 
