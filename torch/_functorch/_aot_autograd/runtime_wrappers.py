@@ -804,8 +804,11 @@ def _create_runtime_wrapper(
         )
         import types
 
+        def _replay_alias(self, orig_inputs, fw_outs):
+            return _codegen_alias_fn(orig_inputs, fw_outs)
+
         runtime_epilogue._replay_output_aliases = types.MethodType(  # type: ignore[attr-defined]
-            lambda self, orig_inputs, fw_outs: _codegen_alias_fn(orig_inputs, fw_outs),
+            _replay_alias,
             runtime_epilogue,
         )
 
@@ -3026,8 +3029,6 @@ class _AOTDispatchAutogradFunctionFactory:
         )
 
         # Monkey-patch forward_epilogue.finalize to use codegen'd transform
-        _orig_finalize = forward_epilogue.finalize
-
         def _codegen_finalize(ctx: Any, fw_outs: Any) -> tuple[Any, ...]:
             num_forward_returns = fw_metadata.num_forward_returns
             raw_returns = list(fw_outs[:num_forward_returns])

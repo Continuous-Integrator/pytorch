@@ -433,6 +433,128 @@ class TestCodegenOutputAlias(TestCase):
         self.assertIn("fw_outs[", source)
         self.assertIn("gen_alias_from_base", source)
 
+    def test_alias_of_intermediate_save_as_output(self):
+        """
+        Two outputs aliasing the same intermediate (not an input). When
+        multiple outputs share the same intermediate base, the first triggers
+        alias_of_intermediate_save_as_output and the second triggers
+        alias_of_intermediate. Both use AliasOfIntermediateHandler in codegen.
+        """
+        with self._capture_codegen_source("output_alias_wrapper") as captured:
+
+            @torch.compile(backend="aot_eager")
+            def f(x):
+                y = x + 1
+                return y.view(-1), y.view(3, 3)
+
+            x = torch.randn(3, 3, requires_grad=True)
+            out1, out2 = f(x)
+
+        expected = x + 1
+        self.assertEqual(out1, expected.view(-1))
+        self.assertEqual(out2, expected.view(3, 3))
+        self.assertEqual(out1.data_ptr(), out2.data_ptr())
+
+        out1.sum().backward()
+        self.assertEqual(x.grad, torch.ones(3, 3))
+
+        self.assertEqual(len(captured), 1)
+        source = captured[0]
+        self.assertIn("gen_alias_from_base", source)
+
+    def test_xform_unsafe_view_output(self):
+        """
+        _transform_raw_returns codegen: when an output is a view of an
+        intermediate and is the only output aliasing that intermediate
+        (unsafe_view_alias), the codegen emits an _unsafe_view call.
+        """
+        with self._capture_codegen_source("compiled_fn_wrapper") as captured:
+
+            @torch.compile(backend="aot_eager")
+            def f(x):
+                return (x + 1).view(-1)
+
+            x = torch.randn(2, 3, requires_grad=True)
+            out = f(x)
+
+        self.assertEqual(out, (x + 1).view(-1))
+        self.assertTrue(out.requires_grad)
+
+        out.sum().backward()
+        self.assertEqual(x.grad, torch.ones(2, 3))
+
+        self.assertEqual(len(captured), 1)
+        self.assertIn("_unsafe_view", captured[0])
+
+    def test_xform_metadata_only_mutation(self):
+        """
+        _transform_raw_returns codegen: when an input has a metadata-only
+        mutation (mutates_metadata=True, mutates_data=False), the codegen
+        wraps the corresponding mutated input return in TensorAlias.
+        """
+        with self._capture_codegen_source("compiled_fn_wrapper") as captured:
+
+            @torch.compile(backend="aot_eager")
+            def f(x):
+                x.t_()
+                return x + 1
+
+            base = torch.randn(2, 3, requires_grad=True)
+            x = base.clone()
+            out = f(x)
+
+        self.assertEqual(out, base.clone().t().add(1))
+
+        self.assertEqual(len(captured), 1)
+        self.assertIn("TensorAlias", captured[0])
+
+    def test_cross_dtype_view_alias(self):
+        """
+        Output is a cross-dtype view of the input (view_as_real on a
+        complex tensor). Exercises gen_alias_from_base's cross-dtype
+        handling through the codegen path.
+        """
+        with self._capture_codegen_source("output_alias_wrapper") as captured:
+
+            @torch.compile(backend="aot_eager")
+            def f(x):
+                return torch.view_as_real(x)
+
+            x = torch.randn(4, dtype=torch.complex64)
+            out = f(x)
+
+        self.assertEqual(out, torch.view_as_real(x))
+        self.assertEqual(out.shape, (4, 2))
+        self.assertEqual(out.dtype, torch.float32)
+
+        self.assertEqual(len(captured), 1)
+        self.assertIn("gen_alias_from_base", captured[0])
+
+    def test_xform_aliased_output_tensoralias_wrapping(self):
+        """
+        _transform_raw_returns codegen: aliased outputs get wrapped in
+        TensorAlias so autograd.Function doesn't treat them as regular
+        tensors. Verifies the TensorAlias wrapping path for aliased
+        outputs (distinct from the metadata-only mutation wrapping).
+        """
+        with self._capture_codegen_source("compiled_fn_wrapper") as captured:
+
+            @torch.compile(backend="aot_eager")
+            def f(x):
+                return x.view(-1)
+
+            x = torch.randn(2, 3, requires_grad=True)
+            out = f(x)
+
+        self.assertEqual(out, x.view(-1))
+        self.assertEqual(out.data_ptr(), x.data_ptr())
+
+        out.sum().backward()
+        self.assertEqual(x.grad, torch.ones(2, 3))
+
+        self.assertEqual(len(captured), 1)
+        self.assertIn("TensorAlias", captured[0])
+
 
 if __name__ == "__main__":
     run_tests()
