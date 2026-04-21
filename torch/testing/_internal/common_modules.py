@@ -1778,9 +1778,9 @@ def module_error_inputs_torch_nn_CrossEntropyLoss(module_info, device, dtype, re
 def module_inputs_torch_nn_LinearCrossEntropyLoss(module_info, device, dtype, requires_grad, training, **kwargs_):
     # Return a list of module_inputs.
     #
-    # Important: module_inputs size nor the ordering of items must not
-    #     depend on the specified device! There exists tests that
-    #     correctness depend on this requirement.
+    # Important: module_inputs size and the ordering of its items must
+    # be the same for all devices.  There exists tests that
+    # correctness depend on this requirement.
     grad_inplace = kwargs_.get('grad_inplace', False)
     acc_dtype = kwargs_.get('acc_dtype')
 
@@ -1794,7 +1794,7 @@ def module_inputs_torch_nn_LinearCrossEntropyLoss(module_info, device, dtype, re
             weight=m.weight,
             reduction=m.reduction, ignore_index=m.ignore_index, label_smoothing=m.label_smoothing)
 
-    def make_target(num_classes, shape, ii, target_dtype):
+    def make_target(num_classes, shape, target_dtype):
         if target_dtype.is_floating_point:
             return make_tensor(shape, low=0, high=1, device=device, dtype=target_dtype, requires_grad=False)
         else:
@@ -1873,7 +1873,7 @@ def module_inputs_torch_nn_LinearCrossEntropyLoss(module_info, device, dtype, re
                     else:
                         target_shape = (*batch_dims, *of)
                     input = make_input(batch_dims, in_features)
-                    target = make_target(num_classes, target_shape, ii, target_dtype)
+                    target = make_target(num_classes, target_shape, target_dtype)
                     if (
                             target.device.type != "meta"
                             and not target_dtype.is_floating_point and reduction == "mean"
@@ -1892,7 +1892,7 @@ def module_inputs_torch_nn_LinearCrossEntropyLoss(module_info, device, dtype, re
                     ):
                         # target may contain out-of-range ii values
                         input = make_input(batch_dims, in_features)
-                        target = make_target(num_classes, target_shape, ii, target_dtype)
+                        target = make_target(num_classes, target_shape, target_dtype)
                         target[num_batches // 2] = ii
                         if ii < 0 or ii >= num_classes:
                             # tests the correctness of out-of-range ii
@@ -4516,6 +4516,8 @@ module_db: list[ModuleInfo] = [
                                 "test_save_load", device_type="cuda", dtypes=[torch.float16]),
                    DecorateInfo(toleranceOverride({torch.float16: tol(atol=2e-3, rtol=2e-3)}), "TestModule",
                                 "test_forward", dtypes=[torch.float16]),
+                   DecorateInfo(toleranceOverride({torch.bfloat16: tol(atol=2e-1, rtol=5e-2)}), "TestModule",
+                                "test_save_load", device_type="cuda", dtypes=[torch.bfloat16]),
                ),
                skips=(
                    DecorateInfo(unittest.skip("jacobian mismatch"), 'TestModule', 'test_gradgrad'),),

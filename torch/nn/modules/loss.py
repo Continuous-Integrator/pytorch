@@ -1530,7 +1530,7 @@ class LinearCrossEntropyLoss(_WeightedLoss):
             reduction=self.reduction,
             ignore_index=self.ignore_index,
             label_smoothing=self.label_smoothing,
-            options=self.options,
+            options=self.options,  # pyrefly: ignore [unexpected-keyword]
         )
 
 
