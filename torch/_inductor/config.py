@@ -1172,9 +1172,6 @@ class aten_distributed_optimizations:
     # In deterministic mode, this setting is ignored and "analytical" is used.
     compute_estimator: Literal["analytical", "benchmark"] = "benchmark"
 
-    # Chrome Trace JSON path for profile-guided runtime estimation.
-    profile_guided_estimations_profile_path: str | None = None
-
     # Maximum memory increase above baseline for prefetch operations
     # Uses minimum of absolute cap and ratio of baseline
     max_memory_increase_gb: float | None = None  # Absolute cap in GB
@@ -1990,7 +1987,8 @@ class triton:
 
     # Don't allow multi-stages by default to avoid out of shared memory
     mix_order_reduction_allow_multi_stages = (
-        os.environ.get("TORCHINDUCTOR_MIX_ORDER_REDUCTION_ALLOW_MULTI_STAGES") == "1"
+        os.environ.get("TORCHINDUCTOR_MIX_ORDER_REDUCTION_ALLOW_MULTI_STAGES", "1")
+        == "1"
     )
 
     # Map for storing the amount of kernel runs with dumped input tensors
