@@ -4,6 +4,7 @@
 #include <torch/csrc/distributed/c10d/JACCLTransport.h>
 
 #include <arpa/inet.h>
+#include <cstdio>
 #include <netdb.h>
 #include <netinet/tcp.h>
 #include <sys/socket.h>
@@ -527,6 +528,21 @@ c10::intrusive_ptr<Work> ProcessGroupMPS::allreduce(
   auto fn = [this, tensor, reduceOp = opts.reduceOp, work]() mutable {
     try {
       auto cpuTensor = syncAndCopyToCPU(tensor);
+      // TEMP DEBUG — dump first 8 elements at each stage for small float tensors
+      auto dumpFloat = [this](const char* tag, const at::Tensor& t) {
+        if (t.scalar_type() != at::kFloat || t.numel() > 32) return;
+        auto c = t.device().is_cpu() ? t : t.to(at::kCPU);
+        auto* p = static_cast<float*>(c.data_ptr());
+        std::fprintf(stderr, "[ar r=%d %s] n=%lld [", rank_, tag,
+                     (long long)c.numel());
+        for (int64_t i = 0; i < c.numel() && i < 8; i++) {
+          std::fprintf(stderr, "%.2f%s", p[i],
+                       i + 1 < std::min<int64_t>(c.numel(), 8) ? "," : "");
+        }
+        std::fprintf(stderr, "]\n");
+        std::fflush(stderr);
+      };
+      dumpFloat("pre  cpu", cpuTensor);
 #if HAVE_JACCL
       if (useJACCL_) {
         jacclTransport_->allReduce(
@@ -540,7 +556,11 @@ c10::intrusive_ptr<Work> ProcessGroupMPS::allreduce(
       {
         ringAllreduce(cpuTensor, reduceOp);
       }
+      dumpFloat("post reduce cpu", cpuTensor);
       copyToMPS(cpuTensor, tensor);
+      at::mps::getDefaultMPSStream()->synchronize(
+          at::mps::SyncType::COMMIT_AND_WAIT);
+      dumpFloat("post copyToMPS", tensor);
       work->finishWork();
     } catch (...) {
       work->finishWorkError(std::current_exception());
