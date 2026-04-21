@@ -100,6 +100,7 @@ from torch._guards import (
     StorageOverlap,
 )
 from torch._inductor.utils import IndentedBuffer
+from torch._library.fake_class_registry import FakeScriptObject
 from torch._library.opaque_object import get_opaque_obj_info, is_opaque_value_type
 from torch._logging import structured
 from torch._utils_internal import justknobs_check
@@ -2128,64 +2129,38 @@ class GuardBuilder(GuardBuilderBase):
         value = self.get(guard)
         if isinstance(value, torch._subclasses.FakeTensor) and value.pytype:
             t = value.pytype
+        elif isinstance(value, FakeScriptObject):
+            # During compile-time tracing, opaque objects like DeviceMesh are
+            # wrapped in FakeScriptObject. Guard against the real underlying
+            # type so the guard passes at runtime when the real object shows up.
+            t = type(value.real_obj)
         else:
-            from torch._library.fake_class_registry import FakeScriptObject
-
-            if isinstance(value, FakeScriptObject):
-                # During compile-time tracing, opaque objects like DeviceMesh
-                # are wrapped in FakeScriptObject. Guard against the real
-                # underlying type so the guard passes at runtime.
-                t = type(value.real_obj)
-            else:
-                t = type(value)
+            t = type(value)
 
         if t.__qualname__ != t.__name__:
             # Type match guards must be local scope, this is
             # raised in self.serialize_guards
             guard._unserializable = True
 
-        from torch._library.fake_class_registry import FakeScriptObject
+        obj_id = self.id_ref(t, f"type({guard.name})")
+        type_repr = repr(t)
+        code = f"___check_type_id({self.arg_ref(guard)}, {obj_id}), type={type_repr}"
+        self._set_guard_export_info(guard, [code])
 
+        verbose_code_parts = get_verbose_code_parts(
+            code, guard, recompile_hint=f"type {t.__qualname__}"
+        )
         if isinstance(value, FakeScriptObject):
-            # Use a lambda guard that unwraps FakeScriptObject before checking
-            # type, so the guard passes both at compile time (FakeScriptObject)
-            # and at runtime (real object).
-            expected_type = t
-
-            def _check_type_through_fake(val, expected=expected_type):
-                from torch._library.fake_class_registry import FakeScriptObject
-
-                if isinstance(val, FakeScriptObject):
-                    return type(val.real_obj) is expected
-                return type(val) is expected
-
-            obj_id = self.id_ref(t, f"type({guard.name})")
-            type_repr = repr(t)
-            code = (
-                f"___check_type_id({self.arg_ref(guard)}, {obj_id}), type={type_repr}"
-            )
-            self._set_guard_export_info(guard, [code])
-
-            self.get_guard_manager(guard).add_lambda_guard(
-                _check_type_through_fake,
-                get_verbose_code_parts(
-                    code, guard, recompile_hint=f"type {t.__qualname__}"
-                ),
+            self.get_guard_manager(guard).add_fake_script_object_guard(
+                FakeScriptObject,
+                obj_id,
+                verbose_code_parts,
                 guard.user_stack,
             )
         else:
-            obj_id = self.id_ref(t, f"type({guard.name})")
-            type_repr = repr(t)
-            code = (
-                f"___check_type_id({self.arg_ref(guard)}, {obj_id}), type={type_repr}"
-            )
-            self._set_guard_export_info(guard, [code])
-
             self.get_guard_manager(guard).add_type_match_guard(
                 obj_id,
-                get_verbose_code_parts(
-                    code, guard, recompile_hint=f"type {t.__qualname__}"
-                ),
+                verbose_code_parts,
                 guard.user_stack,
             )
 
