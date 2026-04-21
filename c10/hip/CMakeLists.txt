@@ -15,19 +15,14 @@ configure_file(
     ${CMAKE_CURRENT_LIST_DIR}/impl/hip_cmake_macros.h.in
     ${CMAKE_BINARY_DIR}/c10/hip/impl/hip_cmake_macros.h)
 
-# NB: All previous cu files are renamed into cc files.  This isn't tested at the
-# moment.
+# c10/hip is host-only: it calls into the HIP runtime via hip::host but contains
+# no device kernels. All sources compile as CXX with HIP_CXX_FLAGS defines.
 file(GLOB C10_HIP_SRCS
         *.cpp
         *.cc
         impl/*.cpp
         impl/*.cc
         )
-
-# Mark the cc files as HIP files, so we call the compiler.  (They have to be
-# suffixed with cc, because the hcc compiler won't accept them otherwise.)
-file(GLOB __c10_hip_srcs_cpp *.cc impl/*.cc)
-set_source_files_properties(${__c10_hip_srcs_cpp} PROPERTIES LANGUAGE HIP)
 
 file(GLOB_RECURSE C10_HIP_HEADERS *.h)
 

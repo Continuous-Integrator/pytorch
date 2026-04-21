@@ -935,15 +935,19 @@ if(HAVE_SOVERSION)
 endif()
 
 if(USE_ROCM)
-  # Mark all HIP sources with LANGUAGE HIP for CMake's native HIP compilation
-  set_source_files_properties(${Caffe2_HIP_SRCS} PROPERTIES LANGUAGE HIP)
+  # Only .cu/.hip sources need LANGUAGE HIP; .cpp files compile as CXX.
+  # Matches legacy hip_add_library behavior. Compiling .cpp as HIP emits
+  # per-TU __hip_cuid_<hash> symbols; under sccache those symbols can collide
+  # and cause "multiple definition" link errors.
+  set(__caffe2_hip_srcs_hip ${Caffe2_HIP_SRCS})
+  list(FILTER __caffe2_hip_srcs_hip INCLUDE REGEX "\\.(cu|hip)$")
+  set_source_files_properties(${__caffe2_hip_srcs_hip} PROPERTIES LANGUAGE HIP)
 endif()
 
 # Compile exposed libraries.
 if(USE_ROCM)
   set(CUDA_LINK_LIBRARIES_KEYWORD PRIVATE)
   list(APPEND Caffe2_HIP_SRCS ${GENERATED_CXX_TORCH_CUDA})
-  set_source_files_properties(${GENERATED_CXX_TORCH_CUDA} PROPERTIES LANGUAGE HIP)
   add_library(torch_hip ${Caffe2_HIP_SRCS})
   # Use CXX linker (clang-cl) which handles MSVC-style link flags natively.
   # HIP device code is compiled with -fno-gpu-rdc so no device link step needed.
