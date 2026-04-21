@@ -69,12 +69,16 @@ static void pool2d_template(const Tensor& input,
   const bool is_backward_pass = grad_output.defined();
   const bool has_indices = indices.defined();
   const bool has_divisor = divisor_override.has_value() && divisor_override.value() != 0;
-  // Use actual channels-last contiguity here: a tensor with channels-last-like
+  // Use exact-match channels-last strides so a tensor with channels-last-like
   // strides but non-packed storage (e.g. a channel slice of a channels_last
-  // tensor) would otherwise be read as packed NHWC below, yielding wrong
-  // results. See https://github.com/pytorch/pytorch/issues/180984
+  // tensor) is not treated as CL -- MPS would otherwise read it as packed
+  // NHWC. exact_match also preserves the pre-existing behavior for degenerate
+  // N-C-1-1 tensors whose strides happen to also satisfy is_contiguous(CL).
+  // See https://github.com/pytorch/pytorch/issues/180984
   const auto suggested_memory_format =
-      input.is_contiguous(MemoryFormat::ChannelsLast) ? MemoryFormat::ChannelsLast : MemoryFormat::Contiguous;
+      input.suggest_memory_format(/*channels_last_strides_exact_match=*/true) == MemoryFormat::ChannelsLast
+      ? MemoryFormat::ChannelsLast
+      : MemoryFormat::Contiguous;
   // for max_pool2d_with_indices() we cannot pass ChannelsLast (i.e., NHWC) to 'desc.dataLayout' in MPSGraph.
   // Because the returned indices will be selected based on NHWC memory layout which will
   // be incompatible with the PyTorch's global NCHW layout.
