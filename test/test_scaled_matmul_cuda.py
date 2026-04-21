@@ -1340,7 +1340,10 @@ class TestFP8Matmul(TestCase):
             if base_dtype in {torch.bfloat16, torch.float16}:
                 atol, rtol = 7e-2, 7e-2
             else:
-                atol, rtol = 2e-3, 2e-3
+                # cuBLAS row-wise FP8 accumulates raw FP8 products before applying
+                # scales (vs. emulated which dequantizes per-element first), causing
+                # rounding differences that grow with K. 3e-2 is sufficient for K=512.
+                atol, rtol = 3e-2, 3e-2
 
             self.assertEqual(out_scaled_mm, out_emulated, atol=atol, rtol=rtol)
 
