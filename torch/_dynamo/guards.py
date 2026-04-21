@@ -26,6 +26,7 @@ import functools
 import importlib
 import inspect
 import io
+import itertools
 import logging
 import math
 import pickle
@@ -184,6 +185,7 @@ from .utils import (
     istype,
     key_is_id,
     key_to_id,
+    normalize_count_iter,
     normalize_range_iter,
     orig_code_map,
     tensor_always_has_static_shape,
@@ -198,6 +200,7 @@ if TYPE_CHECKING:
 
 
 guard_manager_testing_hook_fn: Callable[[Any, Any, Any], Any] | None = None
+_COUNT_ITERATOR_TYPE = type(itertools.count())
 
 try:
     import numpy as np
@@ -749,6 +752,7 @@ def _get_closure_vars() -> dict[str, object]:
             "___dict_version": dict_version,
             "___dict_contains": lambda a, b: dict.__contains__(b, a),
             "___tuple_iterator_len": tuple_iterator_len,
+            "___normalize_count_iter": normalize_count_iter,
             "___normalize_range_iter": normalize_range_iter,
             "___tuple_iterator_getitem": tuple_iterator_getitem,
             "___dataclass_fields": dataclass_fields,
@@ -1093,6 +1097,16 @@ def check_closure(value: Any, metadata: Any) -> bool:
     if type(value) is types.FunctionType and hasattr(value, "__code__"):
         return value.__code__ is metadata
     return id(value) == metadata
+
+
+def _constant_subclass_base_value(value: Any) -> Any:
+    """Extract the base constant value from a constant subclass instance."""
+    from .variables.user_defined import _CONSTANT_BASE_TYPES
+
+    for t in _CONSTANT_BASE_TYPES:
+        if isinstance(value, t):
+            return t(value)  # pyrefly: ignore[bad-argument-type]
+    raise TypeError(f"Not a constant subclass: {type(value)}")
 
 
 def register_guard_check_spec(
@@ -2635,6 +2649,42 @@ class GuardBuilder(GuardBuilderBase):
             self.EQUALS_MATCH(guard)
 
     @register_guard_check_spec(
+        get_metadata_fn=lambda guard, value: _constant_subclass_base_value(value),
+        eval_fn=lambda value, metadata: _constant_subclass_base_value(value)
+        == metadata,
+    )
+    def CONSTANT_SUBCLASS_MATCH(self, guard: Guard) -> None:
+        """Guard for subclasses of constant types (int, float, str, etc.).
+
+        Extracts the base value using the base type's converter (e.g.,
+        int.__int__) to avoid calling user-overridden __eq__.
+        """
+        from .variables.user_defined import _CONSTANT_BASE_TYPES
+
+        val = self.get(guard)
+        ref = self.arg_ref(guard)
+
+        # Find the constant base type
+        base_type = None
+        for t in _CONSTANT_BASE_TYPES:
+            if isinstance(val, t):
+                base_type = t
+                break
+        assert base_type is not None
+
+        base_value = base_type(val)
+        code = [f"{base_type.__name__}({ref}) == {base_value!r}"]
+
+        def check_fn(x: Any) -> bool:
+            return base_type(x) == base_value
+
+        self.get_guard_manager(guard).add_lambda_guard(
+            check_fn,
+            get_verbose_code_parts(code, guard),
+            guard.user_stack,
+        )
+
+    @register_guard_check_spec(
         get_metadata_fn=lambda guard, value: value,
         eval_fn=lambda value, metadata: value is metadata,
     )
@@ -2804,6 +2854,30 @@ class GuardBuilder(GuardBuilderBase):
             obj_id,
             get_verbose_code_parts(code, guard),
             guard.user_stack,
+        )
+
+    @register_guard_check_spec(
+        get_metadata_fn=lambda guard, value: (type(value), normalize_count_iter(value)),
+        eval_fn=lambda value, metadata: (
+            type(value) is metadata[0] and normalize_count_iter(value) == metadata[1]
+        ),
+    )
+    def COUNT_ITERATOR_MATCH(self, guard: Guard) -> None:
+        ref = self.arg_ref(guard)
+        value = self.get(guard)
+        count_type = type(value)
+        normalized_count_iter = normalize_count_iter(value)
+
+        def guard_fn(x: Any) -> bool:
+            return (
+                type(x) is count_type
+                and normalize_count_iter(x) == normalized_count_iter
+            )
+
+        code = [f"___normalize_count_iter({ref}) == {normalized_count_iter}"]
+        self._set_guard_export_info(guard, code)
+        self.get_guard_manager(guard).add_lambda_guard(
+            guard_fn, get_verbose_code_parts(code, guard), guard.user_stack
         )
 
     # Multi-source guard (two inputs aliasing) — not expressible as a
@@ -3414,7 +3488,7 @@ class GuardBuilder(GuardBuilderBase):
             if not static:
                 if hasattr(value, "_dynamo_dynamic_indices"):
                     dynamic_indices = value._dynamo_dynamic_indices
-                    code_part = f"(({tensor_name}._dynamo_dynamic_indices.issubset({dynamic_indices})) if hasattr({tensor_name}, '_dynamo_dynamic_indices') else True)"  # noqa: B950
+                    code_part = f"(({tensor_name}._dynamo_dynamic_indices.issubset({dynamic_indices})) if hasattr({tensor_name}, '_dynamo_dynamic_indices') else True)"
                     code.append(code_part)
                     self.get_guard_manager(guard).add_dynamic_indices_guard(
                         dynamic_indices,
@@ -3441,7 +3515,7 @@ class GuardBuilder(GuardBuilderBase):
                 # tensors that have the attribute when compile-time didn't.
                 if hasattr(value, "_dynamo_unbacked_indices"):
                     shape_ids = getattr(value, "_dynamo_shape_ids", None)
-                    code_part = f"((getattr({tensor_name}, '_dynamo_shape_ids', None) == {shape_ids!r}) if hasattr({tensor_name}, '_dynamo_unbacked_indices') else True)"  # noqa: B950
+                    code_part = f"((getattr({tensor_name}, '_dynamo_shape_ids', None) == {shape_ids!r}) if hasattr({tensor_name}, '_dynamo_unbacked_indices') else True)"
                     code.append(code_part)
                     self.get_guard_manager(guard).add_lambda_guard(
                         lambda x, expected=shape_ids: (
@@ -3460,7 +3534,7 @@ class GuardBuilder(GuardBuilderBase):
                 # tensors that have the attribute when compile-time didn't.
                 if hasattr(value, "_dynamo_unbacked_indices"):
                     unbacked_bounds = getattr(value, "_dynamo_unbacked_bounds", None)
-                    code_part = f"((getattr({tensor_name}, '_dynamo_unbacked_bounds', None) == {unbacked_bounds!r}) if hasattr({tensor_name}, '_dynamo_unbacked_indices') else True)"  # noqa: B950
+                    code_part = f"((getattr({tensor_name}, '_dynamo_unbacked_bounds', None) == {unbacked_bounds!r}) if hasattr({tensor_name}, '_dynamo_unbacked_indices') else True)"
                     code.append(code_part)
                     self.get_guard_manager(guard).add_lambda_guard(
                         lambda x, expected=unbacked_bounds: (
@@ -3751,12 +3825,9 @@ class GuardsStatePickler(pickle.Pickler):
         pytype: type,
         dispatch_keys_raw: int,
         ctx: Any,
-        inner_data: list[tuple[str, Callable[..., Any], tuple[Any, ...]]],
+        inner_data: list[tuple[str, Any]],
     ) -> torch.Tensor:
-        # Unpickle the inner tensor components. These could also be subclass instances.
-        inner_tensors = {}
-        for attr, unpickle_func, unpickle_func_args in inner_data:
-            inner_tensors[attr] = unpickle_func(*unpickle_func_args)
+        inner_tensors = dict(inner_data)
 
         outer_size, outer_stride = meta_tensor.shape, meta_tensor.stride()
         out = type(meta_tensor).__tensor_unflatten__(  # type: ignore[attr-defined]
@@ -3789,6 +3860,10 @@ class GuardsStatePickler(pickle.Pickler):
     @classmethod
     def _unpickle_dict_keys(cls, elems: list[Any]) -> Any:
         return dict.fromkeys(elems).keys()
+
+    @classmethod
+    def _unpickle_count_iter(cls, item: int, step: int) -> itertools.count[int]:
+        return itertools.count(item, step)
 
     @classmethod
     def _unpickle_fsdp_module_type(
@@ -3891,8 +3966,7 @@ class GuardsStatePickler(pickle.Pickler):
                     inner = getattr(obj, attr)
                     if isinstance(inner, torch.Tensor):
                         self.guard_tree_values[id(inner)] = inner
-                    func, args_tuple = self.reducer_override(inner)
-                    inner_data.append((attr, func, args_tuple))
+                    inner_data.append((attr, inner))
 
                 return type(self)._unpickle_traceable_wrapper_subclass, (
                     torch.empty_like(obj, device="meta"),
@@ -3972,6 +4046,11 @@ class GuardsStatePickler(pickle.Pickler):
 
         elif isinstance(obj, types.MappingProxyType):
             return type(self)._unpickle_mapping_proxy, (obj.copy(),)
+
+        elif type(obj) is _COUNT_ITERATOR_TYPE:
+            item, step = normalize_count_iter(obj)
+            if item is not NotImplemented and step is not NotImplemented:
+                return type(self)._unpickle_count_iter, (item, step)
 
         elif isinstance(obj, torch._dynamo.utils.dict_keys):
             return type(self)._unpickle_dict_keys, (list(obj),)
@@ -4072,7 +4151,7 @@ def make_guard_filter_entry(guard: Guard, builder: GuardBuilder) -> GuardFilterE
             # doesn't exist.
             value = builder.get(guard)
             has_value = True
-        except:  # noqa: B001,E722
+        except:  # noqa: E722
             value = MISSING
             has_value = False
     is_global = get_global_source_name(guard.originating_source) is not None
@@ -4104,7 +4183,7 @@ def pickle_guards_state(
                 try:
                     type(base).__new__(type(base))
                     empty_values[id(base)] = base
-                except:  # noqa: E722, B001
+                except:  # noqa: E722
                     pass
         elif id(leaf) not in guard_tree_values:
             # TODO See if we have lift this branch as the first one.
@@ -5168,7 +5247,7 @@ def guard_error_hook(
     for guard in guard_manager.code_parts:
         try:
             eval(guard, guard_manager.global_scope, local_scope)
-        except:  # noqa: B001,E722
+        except:  # noqa: E722
             print(f"Malformed guard:\n{guard}")
 
 
