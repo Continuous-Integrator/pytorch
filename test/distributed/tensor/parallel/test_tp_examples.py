@@ -705,6 +705,7 @@ class DistTensorParallelExampleTest(DTensorTestBase):
             y_sum.backward()
             self.assertEqual(dist_x.grad.full_tensor(), x.grad)
         x.grad = None
+        dist_x.grad = None
 
         # reduction="none": target placements = (Replicate(), Replicate()).
         y_none = F.cross_entropy(x, target, reduction="none")
