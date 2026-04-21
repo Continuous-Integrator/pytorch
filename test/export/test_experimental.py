@@ -1616,6 +1616,29 @@ def forward(self, arg0_1):
                 torch.tensor(0),
             )
 
+    def test_mask_mod_wrapper_eq_for_plain_functions(self):
+        from torch.nn.attention.flex_attention import (
+            _extract_callable_pytree,
+            _MaskModWrapper,
+        )
+
+        def make_mask_mod():
+            def mask_mod(batch, head, query_idx, key_idx):
+                del batch, head
+                return query_idx >= key_idx
+
+            return mask_mod
+
+        def wrap(mask_mod):
+            _, spec, stripped = _extract_callable_pytree(mask_mod)
+            return _MaskModWrapper(stripped, spec)
+
+        wrapped_a = wrap(make_mask_mod())
+        wrapped_b = wrap(make_mask_mod())
+
+        self.assertEqual(wrapped_a, wrapped_b)
+        self.assertEqual(hash(wrapped_a), hash(wrapped_b))
+
     @unittest.skipIf(not TEST_CUDA, "CUDA not available")
     def test_blockmask_and_masks_closure_extraction(self):
         """and_masks closure tensors are recursively extracted into pytree leaves.

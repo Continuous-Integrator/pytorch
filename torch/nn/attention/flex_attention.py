@@ -503,6 +503,26 @@ class _StrippedPartial(typing.NamedTuple):
     leaf_entries: tuple[_ExtractedLeaf | _FunctionLeaf, ...]
 
 
+def _extract_callable_leaves(
+    leaves: list[Any], _seen: set[int]
+) -> tuple[tuple[BaseArgumentTypes, ...], tuple[_ExtractedLeaf | _FunctionLeaf, ...]]:
+    extracted: list[BaseArgumentTypes] = []
+    leaf_entries: list[_ExtractedLeaf | _FunctionLeaf] = []
+    for leaf in leaves:
+        if inspect.isfunction(leaf) or isinstance(leaf, functools.partial):
+            child_extracted, child_spec, child_stripped = _extract_callable_pytree(
+                leaf, _seen
+            )
+            extracted.extend(child_extracted)
+            leaf_entries.append(
+                _FunctionLeaf(child_stripped, child_spec, len(child_extracted))
+            )
+        else:
+            extracted.append(leaf)
+            leaf_entries.append(_EXTRACTED_LEAF)
+    return tuple(extracted), tuple(leaf_entries)
+
+
 def _extract_callable_pytree(
     fn, _seen: set[int] | None = None
 ) -> tuple[
@@ -546,23 +566,8 @@ def _extract_callable_pytree(
     _seen.add(id(fn))
 
     if isinstance(fn, functools.partial):
-        partial_leaves, partial_spec = tree_flatten(
-            (fn.func, fn.args, fn.keywords or {})
-        )
-        extracted: list[BaseArgumentTypes] = []
-        leaf_entries: list[_ExtractedLeaf | _FunctionLeaf] = []
-        for leaf in partial_leaves:
-            if inspect.isfunction(leaf) or isinstance(leaf, functools.partial):
-                child_extracted, child_spec, child_stripped = _extract_callable_pytree(
-                    leaf, _seen
-                )
-                extracted.extend(child_extracted)
-                leaf_entries.append(
-                    _FunctionLeaf(child_stripped, child_spec, len(child_extracted))
-                )
-            else:
-                extracted.append(leaf)
-                leaf_entries.append(_EXTRACTED_LEAF)
+        partial_leaves, partial_spec = tree_flatten((fn.func, fn.args, fn.keywords))
+        extracted, leaf_entries = _extract_callable_leaves(partial_leaves, _seen)
         return tuple(extracted), partial_spec, _StrippedPartial(tuple(leaf_entries))
 
     closure = fn.__closure__
@@ -577,20 +582,7 @@ def _extract_callable_pytree(
 
     closure_leaves, closure_spec = tree_flatten(contents)
 
-    extracted: list[BaseArgumentTypes] = []
-    leaf_entries: list[_ExtractedLeaf | _FunctionLeaf] = []
-    for leaf in closure_leaves:
-        if inspect.isfunction(leaf) or isinstance(leaf, functools.partial):
-            child_extracted, child_spec, child_stripped = _extract_callable_pytree(
-                leaf, _seen
-            )
-            extracted.extend(child_extracted)
-            leaf_entries.append(
-                _FunctionLeaf(child_stripped, child_spec, len(child_extracted))
-            )
-        else:
-            extracted.append(leaf)
-            leaf_entries.append(_EXTRACTED_LEAF)
+    extracted, leaf_entries = _extract_callable_leaves(closure_leaves, _seen)
 
     stripped = _StrippedClosure(
         code=fn.__code__,
@@ -676,16 +668,24 @@ def _leaf_entries_eq(
                 lhs.stripped.leaf_entries, rhs.stripped.leaf_entries
             ):
                 return False
-        elif lhs.stripped != rhs.stripped:
+        elif (
+            not inspect.isfunction(lhs.stripped)
+            or not inspect.isfunction(rhs.stripped)
+            or lhs.stripped.__code__ != rhs.stripped.__code__
+        ):
             return False
     return True
 
 
-def _stripped_callable_hash(stripped: Any) -> int:
+def _stripped_callable_hash(
+    stripped: _StrippedClosure | _StrippedPartial | Callable[..., Any],
+) -> int:
     if isinstance(stripped, _StrippedClosure):
         return hash(stripped.code)
     if isinstance(stripped, _StrippedPartial):
         return _leaf_entries_hash(stripped.leaf_entries)
+    if inspect.isfunction(stripped):
+        return hash(stripped.__code__)
     return hash(stripped)
 
 
@@ -717,8 +717,8 @@ class _MaskModWrapper:
     code objects + closure_spec — no tensor dispatch is triggered.
 
     When extraction is skipped (e.g., under Dynamo), fn is the original
-    callable and equality compares code objects + closure contents (for plain
-    functions) or delegates to __eq__ (for callable objects).
+    callable and equality compares code objects for plain functions or
+    delegates to __eq__ for callable objects.
     """
 
     __slots__ = ("fn", "closure_spec")
@@ -754,7 +754,7 @@ class _MaskModWrapper:
             return _leaf_entries_eq(self.fn.leaf_entries, other.fn.leaf_entries) and (
                 self.closure_spec == other.closure_spec
             )
-        # Non-extracted plain functions: compare code + closure contents
+        # Non-extracted plain functions: compare code objects
         if inspect.isfunction(self.fn) and inspect.isfunction(other.fn):
             return self.fn.__code__ == other.fn.__code__
         # Callable objects: delegate to their __eq__
