@@ -4,16 +4,41 @@
 #include <torch/csrc/distributed/c10d/JACCLTransport.h>
 
 #include <arpa/inet.h>
-#include <cstdio>
 #include <netdb.h>
 #include <netinet/tcp.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
 #include <ATen/mps/MPSStream.h>
+#include <ATen/native/mps/OperationUtils.h>
 #include <c10/util/irange.h>
 
 namespace c10d {
+
+namespace {
+
+// Apple Silicon MPS tensors are backed by an MTLBuffer in
+// MTLResourceStorageModeShared — the buffer's `contents` pointer is a
+// CPU-addressable unified-memory pointer. Returns nullptr if the tensor
+// isn't eligible for the direct (zero-DtoH/HtoD) RDMA path: non-MPS
+// device, private storage, or non-contiguous layout.
+void* mpsHostPtr(const at::Tensor& tensor) {
+  if (!tensor.device().is_mps() || !tensor.is_contiguous()) {
+    return nullptr;
+  }
+  id<MTLBuffer> buf = at::native::mps::getMTLBufferStorage(tensor);
+  if (buf == nil) {
+    return nullptr;
+  }
+  void* base = [buf contents];
+  if (base == nullptr) {
+    return nullptr;
+  }
+  return static_cast<char*>(base) +
+      tensor.storage_offset() * tensor.itemsize();
+}
+
+} // namespace
 
 // --- TCPRingTransport ---
 
@@ -407,7 +432,15 @@ at::Tensor ProcessGroupMPS::syncAndCopyToCPU(const at::Tensor& tensor) {
 void ProcessGroupMPS::copyToMPS(
     const at::Tensor& cpuTensor,
     at::Tensor& mpsTensor) {
+  // copy_ on this path does not actually leave the HtoD blit fully drained
+  // when it returns — without this explicit sync, only the first chunk of
+  // the destination tensor ends up with the reduced values and reads from
+  // the main thread see stale data. Wait for the stream here so both the
+  // source cpuTensor lifetime and the dest's visibility are settled before
+  // we mark the Work complete.
   mpsTensor.copy_(cpuTensor);
+  at::mps::getDefaultMPSStream()->synchronize(
+      at::mps::SyncType::COMMIT_AND_WAIT);
 }
 
 static void applyReduceOp(
@@ -527,22 +560,31 @@ c10::intrusive_ptr<Work> ProcessGroupMPS::allreduce(
 
   auto fn = [this, tensor, reduceOp = opts.reduceOp, work]() mutable {
     try {
-      auto cpuTensor = syncAndCopyToCPU(tensor);
-      // TEMP DEBUG — dump first 8 elements at each stage for small float tensors
-      auto dumpFloat = [this](const char* tag, const at::Tensor& t) {
-        if (t.scalar_type() != at::kFloat || t.numel() > 32) return;
-        auto c = t.device().is_cpu() ? t : t.to(at::kCPU);
-        auto* p = static_cast<float*>(c.data_ptr());
-        std::fprintf(stderr, "[ar r=%d %s] n=%lld [", rank_, tag,
-                     (long long)c.numel());
-        for (int64_t i = 0; i < c.numel() && i < 8; i++) {
-          std::fprintf(stderr, "%.2f%s", p[i],
-                       i + 1 < std::min<int64_t>(c.numel(), 8) ? "," : "");
+#if HAVE_JACCL
+      if (useJACCL_) {
+        // Zero-bounce path: on Apple Silicon the MPS tensor's storage is
+        // already CPU-addressable (unified memory), so the RDMA worker can
+        // operate on it directly. We still need to flush any in-flight GPU
+        // writes to that tensor before reading, and CPU writes in the
+        // mesh's reduceOp will be visible to subsequent GPU ops thanks to
+        // StorageModeShared coherence.
+        if (void* hostPtr = mpsHostPtr(tensor)) {
+          at::mps::getDefaultMPSStream()->synchronize(
+              at::mps::SyncType::COMMIT_AND_WAIT);
+          jacclTransport_->allReduce(
+              hostPtr,
+              static_cast<size_t>(tensor.nbytes()),
+              tensor.element_size(),
+              tensor.scalar_type(),
+              reduceOp);
+          work->finishWork();
+          return;
         }
-        std::fprintf(stderr, "]\n");
-        std::fflush(stderr);
-      };
-      dumpFloat("pre  cpu", cpuTensor);
+      }
+#endif
+      // Fallback: bounce through CPU. Used when the direct path isn't
+      // available (TCP transport, non-contiguous tensor, private storage).
+      auto cpuTensor = syncAndCopyToCPU(tensor);
 #if HAVE_JACCL
       if (useJACCL_) {
         jacclTransport_->allReduce(
@@ -556,11 +598,7 @@ c10::intrusive_ptr<Work> ProcessGroupMPS::allreduce(
       {
         ringAllreduce(cpuTensor, reduceOp);
       }
-      dumpFloat("post reduce cpu", cpuTensor);
       copyToMPS(cpuTensor, tensor);
-      at::mps::getDefaultMPSStream()->synchronize(
-          at::mps::SyncType::COMMIT_AND_WAIT);
-      dumpFloat("post copyToMPS", tensor);
       work->finishWork();
     } catch (...) {
       work->finishWorkError(std::current_exception());
