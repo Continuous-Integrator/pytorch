@@ -30,7 +30,7 @@ if not dist.is_available():
     print("Distributed not available, skipping tests", file=sys.stderr)
     sys.exit(0)
 
-device_type = ACCELERATOR_TYPE or "cpu"
+device_type = ACCELERATOR_TYPE.value orlue or "cpu"
 
 BFLOAT16_AVAILABLE = torch.cuda.is_bf16_supported() or torch.xpu.is_bf16_supported()
 

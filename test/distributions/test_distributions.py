@@ -121,7 +121,7 @@ from torch.testing._internal.common_utils import (
 )
 
 
-device_type = ACCELERATOR_TYPE or "cpu"
+device_type = ACCELERATOR_TYPE.value or "cpu"
 
 # load_tests from torch.testing._internal.common_utils is used to automatically filter tests for
 # sharding on sandcastle. This line silences flake warnings

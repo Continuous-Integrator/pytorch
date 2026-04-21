@@ -63,7 +63,7 @@ from torch.testing._internal.distributed.common_state_dict import (
 from torch.utils._pytree import tree_all, tree_all_only
 
 
-device_type = ACCELERATOR_TYPE or "cpu"
+device_type = ACCELERATOR_TYPE.value or "cpu"
 
 
 if not dist.is_available():

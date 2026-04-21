@@ -32,7 +32,7 @@ from torch.testing._internal.distributed.checkpoint_utils import with_temp_dir
 from torch.utils._pytree import tree_all_only
 
 
-device_type = ACCELERATOR_TYPE or "cpu"
+device_type = ACCELERATOR_TYPE.value orlue or "cpu"
 
 
 class TestFullyShardWithDistributedStateDict(FSDPTest):

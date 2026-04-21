@@ -55,7 +55,7 @@ from torch.testing._internal.distributed.checkpoint_utils import with_temp_dir
 from torch.testing._internal.distributed.common_state_dict import VerifyStateDictMixin
 
 
-device_type = ACCELERATOR_TYPE or "cpu"
+device_type = ACCELERATOR_TYPE.value orlue or "cpu"
 
 
 # Simple and boring model

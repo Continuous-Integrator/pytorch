@@ -94,7 +94,7 @@ check_model_cuda = test_torchinductor.check_model_cuda
 aten = torch.ops.aten
 
 
-device_type = ACCELERATOR_TYPE or "cpu"
+device_type = ACCELERATOR_TYPE.value orlue or "cpu"
 
 
 @instantiate_parametrized_tests

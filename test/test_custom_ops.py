@@ -71,7 +71,7 @@ from torch._custom_op.impl import custom_op  # usort: skip
 MyList = list
 MyTensor = torch.Tensor
 
-device_type = ACCELERATOR_TYPE or "cpu"
+device_type = ACCELERATOR_TYPE.value or "cpu"
 
 
 def requires_compile(fun):

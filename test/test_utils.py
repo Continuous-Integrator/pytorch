@@ -55,7 +55,7 @@ from torch.utils.data import DataLoader
 # sharding on sandcastle. This line silences flake warnings
 load_tests = load_tests  # noqa: PLW0127
 
-device_type = cast(str, ACCELERATOR_TYPE or "cpu")
+device_type = cast(str, ACCELERATOR_TYPE.value or "cpu")
 TEST_GPU = torch.xpu.is_available() or torch.cuda.is_available()
 
 from torch.testing._internal.common_utils import run_tests, TestCase

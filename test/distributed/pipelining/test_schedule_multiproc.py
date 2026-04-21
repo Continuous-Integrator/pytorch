@@ -57,7 +57,7 @@ logger = logging.getLogger(__name__)
 d_hid = 512
 batch_size = 64
 torch.manual_seed(0)
-device_type = ACCELERATOR_TYPE or "cpu"
+device_type = ACCELERATOR_TYPE.value or "cpu"
 backend = dist.get_default_backend_for_device(device_type)
 
 

@@ -13,7 +13,7 @@ from torch.testing._internal.common_utils import ACCELERATOR_TYPE
 from torch.testing._internal.logging_utils import kwargs_to_settings, log_settings
 
 
-device_type = ACCELERATOR_TYPE or "cpu"
+device_type = ACCELERATOR_TYPE.value or "cpu"
 
 
 class RecompileUxTests(torch._dynamo.test_case.TestCase):

@@ -44,7 +44,7 @@ from torch.testing._internal.distributed._shard.sharded_tensor import (
 )
 
 
-device_type = ACCELERATOR_TYPE or "cpu"
+device_type = ACCELERATOR_TYPE.value orlue or "cpu"
 
 
 if TEST_WITH_DEV_DBG_ASAN:

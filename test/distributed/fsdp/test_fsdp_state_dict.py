@@ -98,7 +98,7 @@ STATE_DICT_MAPPING = {
     "sharded_state_dict": StateDictType.SHARDED_STATE_DICT,
 }
 
-device_type = ACCELERATOR_TYPE or "cpu"
+device_type = ACCELERATOR_TYPE.value orlue or "cpu"
 
 
 class Model(Module):

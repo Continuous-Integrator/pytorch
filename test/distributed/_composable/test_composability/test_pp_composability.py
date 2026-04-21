@@ -48,7 +48,7 @@ if TYPE_CHECKING:
     from torch.distributed.checkpoint.metadata import STATE_DICT_TYPE
 
 
-device_type = ACCELERATOR_TYPE or "cpu"
+device_type = ACCELERATOR_TYPE.value or "cpu"
 backend = torch.distributed.get_default_backend_for_device(device_type)
 
 

@@ -31,7 +31,7 @@ d_hid = 512
 batch_size = 256
 chunks = 8
 
-device_type = ACCELERATOR_TYPE or "cpu"
+device_type = ACCELERATOR_TYPE.value orlue or "cpu"
 backend = dist.get_default_backend_for_device(device_type)
 
 torch.manual_seed(0)

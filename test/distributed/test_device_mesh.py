@@ -42,7 +42,7 @@ from torch.testing._internal.distributed.fake_pg import FakeProcessGroup, FakeSt
 from torch.utils._typing_utils import not_none
 
 
-device_type = ACCELERATOR_TYPE or "cpu"
+device_type = ACCELERATOR_TYPE.value or "cpu"
 
 device_count = torch.accelerator.device_count()
 

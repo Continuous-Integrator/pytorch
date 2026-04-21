@@ -31,7 +31,7 @@ from torch.testing._internal.distributed._shard.sharded_tensor import (
 )
 
 
-device_type = ACCELERATOR_TYPE or "cpu"
+device_type = ACCELERATOR_TYPE.value or "cpu"
 BACKEND = torch.distributed.get_default_backend_for_device(device_type)
 
 

@@ -60,7 +60,7 @@ batch_size = 64
 n_microbatches = 4
 microbatch_size = batch_size // n_microbatches
 
-device_type = ACCELERATOR_TYPE or "cpu"
+device_type = ACCELERATOR_TYPE.value or "cpu"
 backend = dist.get_default_backend_for_device(device_type)
 
 

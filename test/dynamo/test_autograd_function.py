@@ -12,7 +12,7 @@ from torch.testing._internal.common_utils import ACCELERATOR_TYPE
 from torch.testing._internal.triton_utils import HAS_GPU, requires_gpu
 
 
-device_type = ACCELERATOR_TYPE or "cpu"
+device_type = ACCELERATOR_TYPE.value or "cpu"
 
 if HAS_GPU:
     import triton

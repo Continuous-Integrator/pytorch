@@ -56,7 +56,7 @@ except ImportError:
     HAS_TORCHVISION = False
 
 
-device_type = ACCELERATOR_TYPE or "cpu"
+device_type = ACCELERATOR_TYPE.value orlue or "cpu"
 
 
 @contextmanager

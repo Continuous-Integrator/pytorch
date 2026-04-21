@@ -68,7 +68,7 @@ class TestCollectivesMultiProc(DynamoDistributedMultiProcTestCase):
     Run correctness checks in multi-proc runner, mark with minimum # GPUs to run under
     """
 
-    device = ACCELERATOR_TYPE or "cpu"
+    device = ACCELERATOR_TYPE.value or "cpu"
 
     def get_world_trs(self):
         return {

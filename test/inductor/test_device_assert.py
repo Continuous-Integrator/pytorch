@@ -13,7 +13,7 @@ from torch.testing._internal.common_utils import (
 from torch.testing._internal.triton_utils import requires_gpu_and_triton
 
 
-device_type = ACCELERATOR_TYPE or "cpu"
+device_type = ACCELERATOR_TYPE.value or "cpu"
 
 
 @instantiate_parametrized_tests

@@ -8,7 +8,7 @@ from torch.testing._internal.common_cuda import TEST_CUDA
 from torch.testing._internal.common_utils import ACCELERATOR_TYPE, TEST_XPU
 
 
-device_type = ACCELERATOR_TYPE or "cpu"
+device_type = ACCELERATOR_TYPE.value or "cpu"
 
 
 class PythonDispatcherTests(torch._dynamo.test_case.TestCase):

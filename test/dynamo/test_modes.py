@@ -29,7 +29,7 @@ from torch.utils._device import DeviceContext
 from torch.utils._python_dispatch import TorchDispatchMode
 
 
-device_type = ACCELERATOR_TYPE or "cpu"
+device_type = ACCELERATOR_TYPE.value or "cpu"
 
 
 class TestMode(BaseTorchFunctionMode):

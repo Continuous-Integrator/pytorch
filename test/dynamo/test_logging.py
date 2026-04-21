@@ -49,7 +49,7 @@ requires_distributed = functools.partial(
     unittest.skipIf, not dist.is_available(), "requires distributed"
 )
 
-device_type = ACCELERATOR_TYPE or "cpu"
+device_type = ACCELERATOR_TYPE.value or "cpu"
 
 
 def munge_shape_guards(s: str) -> str:

@@ -18,7 +18,7 @@ from torch.testing._internal.common_distributed import (
 from torch.testing._internal.common_utils import ACCELERATOR_TYPE, run_tests, TEST_XPU
 
 
-device_type = ACCELERATOR_TYPE or "cpu"
+device_type = ACCELERATOR_TYPE.value or "cpu"
 device_module = torch.get_device_module(device_type)
 
 

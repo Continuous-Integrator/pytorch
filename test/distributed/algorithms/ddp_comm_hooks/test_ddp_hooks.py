@@ -33,7 +33,7 @@ if TEST_WITH_DEV_DBG_ASAN:
     sys.exit(0)
 
 
-device_type = ACCELERATOR_TYPE or "cpu"
+device_type = ACCELERATOR_TYPE.value or "cpu"
 
 
 def gpus_for_rank(world_size):

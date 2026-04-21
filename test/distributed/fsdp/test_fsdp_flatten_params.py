@@ -45,7 +45,7 @@ class TestFlattenParams(FSDPTestContinuous):
         return 1
 
     def _get_default_config(self):
-        device_type = ACCELERATOR_TYPE or "cpu"
+        device_type = ACCELERATOR_TYPE.value or "cpu"
         return {
             "device": torch.device(device_type),
             "sharding_strategy": HandleShardingStrategy.FULL_SHARD,

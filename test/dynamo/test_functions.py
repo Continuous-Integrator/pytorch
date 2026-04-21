@@ -46,7 +46,7 @@ from torch.testing._internal.inductor_utils import HAS_GPU
 from torch.testing._internal.triton_utils import *  # noqa: F403
 
 
-device_type = ACCELERATOR_TYPE or "cpu"
+device_type = ACCELERATOR_TYPE.value orlue or "cpu"
 
 T = TypeVar("T")
 

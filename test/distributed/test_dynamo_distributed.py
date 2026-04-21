@@ -301,7 +301,7 @@ def get_hf_bert(rank):
     except ImportError as e:
         raise unittest.SkipTest("Unable to import transformers") from e
 
-    device_type = ACCELERATOR_TYPE or "cpu"
+    device_type = ACCELERATOR_TYPE.value or "cpu"
     batch_size, max_length, config, device = (
         4,
         512,
@@ -873,7 +873,7 @@ class TestMultiProc(DynamoDistributedMultiProcTestCase):
     sparingly for integration tests.
     """
 
-    device_type = ACCELERATOR_TYPE or "cpu"
+    device_type = ACCELERATOR_TYPE.value or "cpu"
 
     @skip_if_lt_x_gpu(2)
     @config.patch(optimize_ddp=False, enable_compiler_collectives=True)
@@ -1738,7 +1738,7 @@ class TestSingleProc(DynamoDistributedSingleProcTestCase):
     Use TestMultiProc for things that really need to run on multiple nodes
     """
 
-    device_type = ACCELERATOR_TYPE or "cpu"
+    device_type = ACCELERATOR_TYPE.value or "cpu"
 
     def get_model(
         self, bsz=20, in_feat=10, hidden_feat=5000, out_feat=5, ctx_manager=None
@@ -2446,7 +2446,7 @@ class TestSingleProc(DynamoDistributedSingleProcTestCase):
         class DuplicateModule(nn.Module):
             def __init__(self) -> None:
                 super().__init__()
-                device_type = ACCELERATOR_TYPE or "cpu"
+                device_type = ACCELERATOR_TYPE.value or "cpu"
                 self._param = torch.randn((3,), device=device_type)
                 self._buf = torch.nn.Buffer(
                     torch.randn((3,), requires_grad=False, device=device_type)
@@ -2479,7 +2479,7 @@ class TestSingleProc(DynamoDistributedSingleProcTestCase):
         class BufModule(nn.Module):
             def __init__(self) -> None:
                 super().__init__()
-                device_type = ACCELERATOR_TYPE or "cpu"
+                device_type = ACCELERATOR_TYPE.value or "cpu"
                 self._buf = nn.Buffer(
                     torch.randn((3,), requires_grad=False, device=device_type)
                 )
@@ -2490,7 +2490,7 @@ class TestSingleProc(DynamoDistributedSingleProcTestCase):
         class Model(nn.Module):
             def __init__(self) -> None:
                 super().__init__()
-                device_type = ACCELERATOR_TYPE or "cpu"
+                device_type = ACCELERATOR_TYPE.value or "cpu"
                 self._param = nn.Parameter(torch.randn((1,), device=device_type))
                 self._buf_module = BufModule()
                 # Share the buffer, meaning same tensor but different source
@@ -2527,7 +2527,7 @@ class TestSingleProc(DynamoDistributedSingleProcTestCase):
                 super().__init__()
                 self._use_self = use_self
                 torch.manual_seed(42)  # force `_param` to be deterministic
-                device_type = ACCELERATOR_TYPE or "cpu"
+                device_type = ACCELERATOR_TYPE.value or "cpu"
                 self._param = nn.Parameter(torch.randn((3,), device=device_type))
 
             def forward(self, x: torch.Tensor) -> torch.Tensor:

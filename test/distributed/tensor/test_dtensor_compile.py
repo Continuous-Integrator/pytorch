@@ -184,7 +184,7 @@ aot_eager_graph = aot_autograd(
     partition_fn=min_cut_rematerialization_partition,
 )
 
-device_type = ACCELERATOR_TYPE or "cpu"
+device_type = ACCELERATOR_TYPE.value orlue or "cpu"
 
 
 def _apply_sharding(mod: nn.Module, shard_dim: int, device_mesh: DeviceMesh):

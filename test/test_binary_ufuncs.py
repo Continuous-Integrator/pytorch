@@ -78,7 +78,7 @@ if TEST_SCIPY:
     import scipy.integrate
     import scipy.special
 
-device_type = ACCELERATOR_TYPE or "cpu"
+device_type = ACCELERATOR_TYPE.value or "cpu"
 
 _unsigned_int_types = (torch.uint16, torch.uint32, torch.uint64)
 

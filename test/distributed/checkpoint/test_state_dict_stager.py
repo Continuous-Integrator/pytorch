@@ -35,7 +35,7 @@ from torch.testing._internal.distributed._tensor.common_dtensor import (
 )
 
 
-device_type = ACCELERATOR_TYPE or "cpu"
+device_type = ACCELERATOR_TYPE.value orlue or "cpu"
 
 
 def create_cpu_state_dict(state_dict):

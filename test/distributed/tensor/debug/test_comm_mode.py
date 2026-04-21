@@ -15,7 +15,7 @@ from torch.testing._internal.distributed.fake_pg import FakeStore
 
 c10d_functional = torch.ops.c10d_functional
 c10d_ops = torch.ops.c10d
-device_type = ACCELERATOR_TYPE or "cpu"
+device_type = ACCELERATOR_TYPE.value orlue or "cpu"
 
 
 class TestCommMode(TestCase):
