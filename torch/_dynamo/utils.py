@@ -2926,6 +2926,24 @@ def get_items_from_dict(obj: dict[K, V]) -> Iterable[tuple[K, V | Any]]:
         return [(k, dict.__getitem__(obj, k)) for k in dict.keys(obj)]
 
 
+def enumerate_items_with_dict_position(
+    obj: dict[K, V],
+) -> Iterable[tuple[int, K, V | Any]]:
+    """Enumerate dict items yielding (dict_keys_position, key, value).
+
+    For OrderedDicts where move_to_end/prepend has been used, the OrderedDict
+    iteration order can differ from dict.keys() order.  We iterate in
+    OrderedDict order (correct execution semantics) but return each key's
+    dict.keys() position so that ConstDictKeySource indices stay consistent
+    with PyDict_Next / C++ DictGuardManager.
+    """
+    items = get_items_from_dict(obj)
+    if isinstance(obj, OrderedDict):
+        key_to_pos = {k: i for i, k in enumerate(dict.keys(obj))}
+        return ((key_to_pos[k], k, v) for k, v in items)
+    return ((i, k, v) for i, (k, v) in enumerate(items))
+
+
 def nn_module_new(cls: Any) -> Any:
     obj = object_new(cls)
     torch.nn.Module.__init__(obj)
@@ -2994,12 +3012,10 @@ dict_getitem = dict.__getitem__
 
 @torch.fx.wrap
 def dict_keys_getitem(d: dict[Any, Any], n: int) -> Any:
-    # Call dict(d) to prevent calling overridden __iter__/keys
-    dict_class = dict
-    if isinstance(d, OrderedDict):
-        dict_class = OrderedDict
+    # Use dict.keys() to match the iteration order of PyDict_Next used by
+    # the C++ DictGuardManager and by ConstDictKeySource._name_template.
     # pyrefly: ignore [bad-argument-type]
-    return next(itertools.islice(dict_class.keys(d), n, n + 1))
+    return next(itertools.islice(dict.keys(d), n, n + 1))
 
 
 def set_getitem(s: set[T], n: int) -> T:
@@ -3085,7 +3101,6 @@ def iter_contains(
     check_tensor_identity: bool = False,
 ) -> Any:
     from .variables import ConstantVariable
-    from .variables.constant import CONSTANT_VARIABLE_FALSE, CONSTANT_VARIABLE_TRUE
 
     if search.is_python_constant():
         found_const = any(
@@ -3106,7 +3121,7 @@ def iter_contains(
         if must_check_tensor_id:
             if x.is_tensor():
                 if search is _get_fake_tensor(x):  # Object equivalence
-                    return CONSTANT_VARIABLE_TRUE
+                    return ConstantVariable.create(True)
         else:
             from torch._dynamo.variables.builder import SourcelessBuilder
 
@@ -3120,7 +3135,7 @@ def iter_contains(
                     tx, [check, found], {}
                 )
     if found is None:
-        found = CONSTANT_VARIABLE_FALSE
+        found = ConstantVariable.create(False)
     return found
 
 
@@ -3176,7 +3191,7 @@ def dict_keys_repr(const_keys: Any, *, local: Any) -> str:
 GLOBAL_KEY_PREFIX = "__dict_key"
 
 
-from torch._subclasses import UnsupportedFakeTensorException  # noqa: F401
+from torch._subclasses import UnsupportedFakeTensorException
 
 
 def get_safe_global_name(tx: InstructionTranslatorBase, root: str, obj: Any) -> str:

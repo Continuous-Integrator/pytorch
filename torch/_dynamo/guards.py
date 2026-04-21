@@ -582,7 +582,7 @@ class GuardManagerWrapper:
     def populate_diff_guard_manager(self) -> None:
         self.diff_guard_root = self.clone_with_chosen_sources(self.diff_guard_sources)
 
-        # Ensure that that C++ side points to the updated diff guard manager.
+        # Ensure that C++ side points to the updated diff guard manager.
         # When a new GuardManagerWrapper is created, it does not have a
         # cache_entry attribute, so it relies on the CacheEntry constructor to
         # set the diff_guard_root in C++.  But once it is saved in the Dynamo
@@ -1096,6 +1096,16 @@ def check_closure(value: Any, metadata: Any) -> bool:
     if type(value) is types.FunctionType and hasattr(value, "__code__"):
         return value.__code__ is metadata
     return id(value) == metadata
+
+
+def _constant_subclass_base_value(value: Any) -> Any:
+    """Extract the base constant value from a constant subclass instance."""
+    from .variables.user_defined import _CONSTANT_BASE_TYPES
+
+    for t in _CONSTANT_BASE_TYPES:
+        if isinstance(value, t):
+            return t(value)  # pyrefly: ignore[bad-argument-type]
+    raise TypeError(f"Not a constant subclass: {type(value)}")
 
 
 def register_guard_check_spec(
@@ -2638,6 +2648,42 @@ class GuardBuilder(GuardBuilderBase):
             self.EQUALS_MATCH(guard)
 
     @register_guard_check_spec(
+        get_metadata_fn=lambda guard, value: _constant_subclass_base_value(value),
+        eval_fn=lambda value, metadata: _constant_subclass_base_value(value)
+        == metadata,
+    )
+    def CONSTANT_SUBCLASS_MATCH(self, guard: Guard) -> None:
+        """Guard for subclasses of constant types (int, float, str, etc.).
+
+        Extracts the base value using the base type's converter (e.g.,
+        int.__int__) to avoid calling user-overridden __eq__.
+        """
+        from .variables.user_defined import _CONSTANT_BASE_TYPES
+
+        val = self.get(guard)
+        ref = self.arg_ref(guard)
+
+        # Find the constant base type
+        base_type = None
+        for t in _CONSTANT_BASE_TYPES:
+            if isinstance(val, t):
+                base_type = t
+                break
+        assert base_type is not None
+
+        base_value = base_type(val)
+        code = [f"{base_type.__name__}({ref}) == {base_value!r}"]
+
+        def check_fn(x: Any) -> bool:
+            return base_type(x) == base_value
+
+        self.get_guard_manager(guard).add_lambda_guard(
+            check_fn,
+            get_verbose_code_parts(code, guard),
+            guard.user_stack,
+        )
+
+    @register_guard_check_spec(
         get_metadata_fn=lambda guard, value: value,
         eval_fn=lambda value, metadata: value is metadata,
     )
@@ -3410,12 +3456,14 @@ class GuardBuilder(GuardBuilderBase):
             # [Note: Dimension Marking Guards]
             # Guards for user explicit dynamism (mark_dynamic, mark_unbacked, mark_static..).
             #
-            # When a user explicitly marks dimensions, we must honor that request.
-            # If the runtime tensor has different markings than what was compiled,
-            # we recompile to ensure the user's intent is respected.
+            # Marking APIs express additive constraints: mark_dynamic(x, [0]) means
+            # "ensure dim 0 is dynamic" — it says nothing about other dims. If you
+            # want a dim to NOT be dynamic, explicitly mark it static (or unbacked).
             #
-            # Guard semantics:
-            #   - Compiled WITH attribute, runtime HAS attribute → exact match required
+            # Guard semantics (subset matching):
+            #   - Compiled WITH attribute, runtime HAS attribute → runtime markings
+            #     must be a SUBSET of compiled markings. This means the compiled graph
+            #     can satisfy the requested marking.
             #   - Compiled WITH attribute, runtime NO attribute → pass (unspecified = don't care)
             #   - Compiled WITHOUT attribute, runtime HAS attribute → recompile (new marking)
             #
@@ -3423,10 +3471,10 @@ class GuardBuilder(GuardBuilderBase):
             # the function at all). Calls are additive.
             #
             # Examples:
-            #   1. Compile with mark_dynamic(x, 0), call with mark_dynamic(x, 0) → no recompile (exact match)
-            #   2. Compile with mark_dynamic(x, 0), call with mark_dynamic(x, 1) → recompile (different dims)
-            #   3. Compile with mark_dynamic(x, 0), call with plain tensor → no recompile (unspecified = don't care)
-            #   4. Compile with plain tensor, call with mark_dynamic(x, 0) → recompile (new marking added)
+            #   1. Compile with mark_dynamic(x, [0,1]), call with mark_dynamic(x, [0]) → no recompile (subset)
+            #   2. Compile with mark_dynamic(x, [0]), call with mark_dynamic(x, [0,1]) → recompile (not a subset)
+            #   3. Compile with mark_dynamic(x, [0]), call with plain tensor → no recompile (unspecified = don't care)
+            #   4. Compile with plain tensor, call with mark_dynamic(x, [0]) → recompile (new marking added)
             #
             # _dynamo_weak_dynamic_indices vs _dynamo_propagated_dynamic_indices:
             #   _dynamo_weak_dynamic_indices is the user-facing attribute, set via
@@ -3448,12 +3496,13 @@ class GuardBuilder(GuardBuilderBase):
                 "_dynamo_unbacked_indices",
                 "_dynamo_static_indices",
             )
+
             expected_attrs: dict[str, Any] = {}
             absent_attrs: list[str] = []
             for attr_name in dim_marking_attrs:
                 if hasattr(value, attr_name):
                     expected_attrs[attr_name] = getattr(value, attr_name)
-                    code_part = f"((getattr({tensor_name}, '{attr_name}', None) == {getattr(value, attr_name)!r}) if hasattr({tensor_name}, '{attr_name}') else True)"  # noqa: B950
+                    code_part = f"((getattr({tensor_name}, '{attr_name}', set()).issubset({getattr(value, attr_name)!r})) if hasattr({tensor_name}, '{attr_name}') else True)"
                     code.append(code_part)
                 else:
                     absent_attrs.append(attr_name)
@@ -3468,7 +3517,7 @@ class GuardBuilder(GuardBuilderBase):
                 for attr_name in dep_attr_names:
                     attr_value = getattr(value, attr_name, None)
                     dependent_attrs[attr_name] = (attr_value, gate_attr)
-                    code_part = f"((getattr({tensor_name}, '{attr_name}', None) == {attr_value!r}) if hasattr({tensor_name}, '{gate_attr}') else True)"  # noqa: B950
+                    code_part = f"((getattr({tensor_name}, '{attr_name}', None) == {attr_value!r}) if hasattr({tensor_name}, '{gate_attr}') else True)"
                     code.append(code_part)
 
             # Install a single C++ guard for all dimension marking attributes.
@@ -4084,7 +4133,7 @@ def make_guard_filter_entry(guard: Guard, builder: GuardBuilder) -> GuardFilterE
             # doesn't exist.
             value = builder.get(guard)
             has_value = True
-        except:  # noqa: B001,E722
+        except:  # noqa: E722
             value = MISSING
             has_value = False
     is_global = get_global_source_name(guard.originating_source) is not None
@@ -4116,7 +4165,7 @@ def pickle_guards_state(
                 try:
                     type(base).__new__(type(base))
                     empty_values[id(base)] = base
-                except:  # noqa: E722, B001
+                except:  # noqa: E722
                     pass
         elif id(leaf) not in guard_tree_values:
             # TODO See if we have lift this branch as the first one.
@@ -5180,7 +5229,7 @@ def guard_error_hook(
     for guard in guard_manager.code_parts:
         try:
             eval(guard, guard_manager.global_scope, local_scope)
-        except:  # noqa: B001,E722
+        except:  # noqa: E722
             print(f"Malformed guard:\n{guard}")
 
 
