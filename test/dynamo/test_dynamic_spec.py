@@ -3,7 +3,19 @@
 import torch
 import torch._dynamo.testing
 from torch._dynamo.dynamic_spec import IntSpec, IntSpecType
+from torch._dynamo.testing import EagerAndRecordGraphs
+from torch.fx.experimental.symbolic_shapes import free_unbacked_symbols
 from torch.testing._internal.common_utils import run_tests, skipIfTorchDynamo, TestCase
+
+
+def _tensor_placeholder_shape(gm):
+    """Return the shape of the first tensor-typed placeholder in ``gm``."""
+    for node in gm.graph.nodes:
+        if node.op == "placeholder":
+            ev = node.meta.get("example_value")
+            if isinstance(ev, torch.Tensor):
+                return ev.shape
+    raise AssertionError("no tensor placeholder found")
 
 
 class TestIntSpecConstruction(TestCase):
@@ -133,54 +145,119 @@ class TestIntSpecEq(TestCase):
 
 
 class TestIntSpecCompile(TestCase):
-    """torch.compile(dynamic_shapes=...) with IntSpec — functional tests.
+    """torch.compile(dynamic_shapes=...) with IntSpec — graph inspection
+    and precedence tests."""
 
-    TODO(follow-up integration PR): replace recompile-count checks with
-    graph-inspection (backed-symbol presence, DDE on unbacked branching),
-    and cover precedence vs compile(dynamic=True/False).
-    """
-
-    @skipIfTorchDynamo("frame_count unreliable when dynamo traces the test")
-    def test_static_recompiles_per_shape(self):
+    @skipIfTorchDynamo("graph capture unreliable when dynamo traces the test")
+    def test_static_graph_has_concrete_shape(self):
+        """STATIC dim appears as a concrete int in the captured graph; each
+        distinct shape yields a new graph."""
         torch._dynamo.reset()
-        cnt = torch._dynamo.testing.CompileCounter()
+        backend = EagerAndRecordGraphs()
         fn = torch.compile(
             lambda x: x + 1,
-            backend=cnt,
+            backend=backend,
             dynamic_shapes={"x": {0: IntSpec.static()}},
         )
         fn(torch.randn(4, 3))
         fn(torch.randn(8, 3))
         fn(torch.randn(4, 3))  # cache hit
-        self.assertEqual(cnt.frame_count, 2)
 
-    @skipIfTorchDynamo("frame_count unreliable when dynamo traces the test")
-    def test_backed_limits_recompile(self):
+        self.assertEqual(len(backend.graphs), 2)
+        for gm in backend.graphs:
+            shape = _tensor_placeholder_shape(gm)
+            self.assertIsInstance(shape[0], int)
+
+    @skipIfTorchDynamo("graph capture unreliable when dynamo traces the test")
+    def test_backed_graph_has_backed_symbol(self):
+        """BACKED dim appears as a backed SymInt in the final graph."""
         torch._dynamo.reset()
-        cnt = torch._dynamo.testing.CompileCounter()
+        backend = EagerAndRecordGraphs()
         fn = torch.compile(
             lambda x: x.sum(0),
-            backend=cnt,
+            backend=backend,
             dynamic_shapes={"x": {0: IntSpec.backed("batch")}},
         )
         for n in [4, 8, 16, 32, 64]:
             fn(torch.randn(n, 3))
-        # BACKED currently lowers to maybe_mark_dynamic: first call specializes
-        # static, second promotes to dynamic, then cached.
-        self.assertLessEqual(cnt.frame_count, 2)
+
+        # Scaffolding uses maybe_mark_dynamic: first call specializes static,
+        # second promotes to dynamic, then cached. ≤ 2 graphs total.
+        self.assertLessEqual(len(backend.graphs), 2)
+        shape = _tensor_placeholder_shape(backend.graphs[-1])
+        self.assertIsInstance(shape[0], torch.SymInt)
+        # backed symbol: no free unbacked symbols
+        self.assertEqual(len(free_unbacked_symbols(shape[0])), 0)
+
+    @skipIfTorchDynamo("graph capture unreliable when dynamo traces the test")
+    def test_unbacked_graph_has_unbacked_symbol(self):
+        """UNBACKED dim appears as an unbacked SymInt; single compile covers all shapes."""
+        torch._dynamo.reset()
+        backend = EagerAndRecordGraphs()
+        fn = torch.compile(
+            lambda x: x.sum(0),
+            backend=backend,
+            dynamic_shapes={"x": {0: IntSpec.unbacked("batch")}},
+        )
+        for n in [4, 8, 16, 32]:
+            fn(torch.randn(n, 3))
+
+        self.assertEqual(len(backend.graphs), 1)
+        shape = _tensor_placeholder_shape(backend.graphs[0])
+        self.assertIsInstance(shape[0], torch.SymInt)
+        self.assertGreater(len(free_unbacked_symbols(shape[0])), 0)
+
+    def test_unbacked_raises_dde_on_branching(self):
+        """A function that branches on size(0) must raise a data-dependent
+        error when that dim is marked UNBACKED."""
+
+        def fn(x):
+            if x.size(0) > 5:
+                return x + 1
+            return x - 1
+
+        torch._dynamo.reset()
+        compiled = torch.compile(
+            fn,
+            backend="eager",
+            fullgraph=True,
+            dynamic_shapes={"x": {0: IntSpec.unbacked()}},
+        )
+        with self.assertRaisesRegex(Exception, "data.dependent|GuardOnDataDependent"):
+            compiled(torch.randn(10, 3))
 
     @skipIfTorchDynamo("frame_count unreliable when dynamo traces the test")
-    def test_unbacked_no_recompile(self):
+    def test_static_precedence_over_dynamic_true(self):
+        """IntSpec.static() must win over compile(dynamic=True)."""
+        torch._dynamo.reset()
+        cnt = torch._dynamo.testing.CompileCounter()
+        fn = torch.compile(
+            lambda x: x + 1,
+            backend=cnt,
+            dynamic=True,
+            dynamic_shapes={"x": {0: IntSpec.static()}},
+        )
+        fn(torch.randn(4, 3))
+        fn(torch.randn(8, 3))
+        # static wins: recompiles per distinct shape
+        self.assertEqual(cnt.frame_count, 2)
+
+    @skipIfTorchDynamo("frame_count unreliable when dynamo traces the test")
+    def test_backed_precedence_over_dynamic_false(self):
+        """IntSpec.backed() must win over compile(dynamic=False)."""
         torch._dynamo.reset()
         cnt = torch._dynamo.testing.CompileCounter()
         fn = torch.compile(
             lambda x: x.sum(0),
             backend=cnt,
-            dynamic_shapes={"x": {0: IntSpec.unbacked("batch")}},
+            dynamic=False,
+            dynamic_shapes={"x": {0: IntSpec.backed("batch")}},
         )
-        for n in [4, 8, 16, 32]:
+        for n in [4, 8, 16, 32, 64]:
             fn(torch.randn(n, 3))
-        self.assertEqual(cnt.frame_count, 1)
+        # backed wins: despite dynamic=False, promotes to dynamic after first
+        # specialization so total recompiles stays bounded at 2.
+        self.assertLessEqual(cnt.frame_count, 2)
 
     def test_list_form(self):
         torch._dynamo.reset()
