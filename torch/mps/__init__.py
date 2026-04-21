@@ -200,7 +200,7 @@ def is_available() -> bool:
 
 
 def _host_alias_storage(storage: "torch.UntypedStorage") -> "torch.UntypedStorage":
-    r"""Returns a CPU-device :class:`torch.UntypedStorage` that aliases the
+    r"""Returns a CPU :class:`torch.UntypedStorage` that aliases the
     host-visible contents of the MTLBuffer backing ``storage``.
 
     The returned storage shares memory with ``storage``: writes through the
@@ -213,11 +213,8 @@ def _host_alias_storage(storage: "torch.UntypedStorage") -> "torch.UntypedStorag
     host pointer remains valid for the alias's lifetime even if the original
     tensor is freed.
 
-    Raises :class:`TypeError` if ``storage`` is not an
-    :class:`torch.UntypedStorage`, :class:`ValueError` if it is not on the
-    MPS device, and :class:`RuntimeError` if it was not allocated by the
-    MPS allocator or is on a discrete-memory MPS device (no shared/unified
-    memory).
+    Raises an exception if ``storage`` is not backed by a shared-storage
+    ``id<MTLBuffer>`` allocated by the MPS allocator.
 
     .. warning::
         Use with caution. This bypasses the cache-coherence guarantees that
@@ -230,11 +227,6 @@ def _host_alias_storage(storage: "torch.UntypedStorage") -> "torch.UntypedStorag
         buffer) and **after** (before launching GPU work that depends on
         the host writes). Failure to do so can produce stale reads,
         torn writes, or data corruption.
-
-        The alias is **not autograd-traceable**: writes through it are
-        invisible to autograd, and the returned storage has no graph
-        relationship to the source MPS tensor. Do not use on tensors
-        that are part of an active autograd computation.
     """
     return torch._C._mps_host_alias_storage(storage)
 
