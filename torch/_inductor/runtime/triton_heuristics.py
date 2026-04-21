@@ -3008,29 +3008,6 @@ def _handle_combo_kernel_per_subkernel_blocks(
         inductor_meta_i = dict(inductor_meta_clean)
         if tiling_scores_i is not None:
             inductor_meta_i["tiling_scores"] = tiling_scores_i
-        # Per-sub-kernel metadata stored by combo_grid_meta(): forward into
-        # inductor_meta_i so pointwise()/_reduction_configs()/_persistent_reduction_configs()
-        # pick configs based on the actual sub-kernel, not heuristic defaults.
-        if f"num_load_{i}" in combo_meta:
-            inductor_meta_i["num_load"] = combo_meta[f"num_load_{i}"]
-        if f"num_store_{i}" in combo_meta:
-            inductor_meta_i["num_store"] = combo_meta[f"num_store_{i}"]
-        if f"num_reduction_{i}" in combo_meta:
-            inductor_meta_i["num_reduction"] = combo_meta[f"num_reduction_{i}"]
-        if f"autotune_hints_{i}" in combo_meta:
-            inductor_meta_i["autotune_hints"] = OrderedSet(
-                combo_meta[f"autotune_hints_{i}"]
-            )
-        if f"atomic_add_found_{i}" in combo_meta:
-            inductor_meta_i["atomic_add_found"] = combo_meta[f"atomic_add_found_{i}"]
-        if f"has_loadstore_with_contiguous_rdim_{i}" in combo_meta:
-            inductor_meta_i["has_loadstore_with_contiguous_rdim"] = combo_meta[
-                f"has_loadstore_with_contiguous_rdim_{i}"
-            ]
-        if f"tma_min_block_sizes_{i}" in combo_meta:
-            inductor_meta_i["tma_min_block_sizes"] = combo_meta[
-                f"tma_min_block_sizes_{i}"
-            ]
 
         if subkernel_heuristic == "pointwise":
             cfgs = pointwise(
