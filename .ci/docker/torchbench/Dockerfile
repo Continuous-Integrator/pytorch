@@ -49,6 +49,14 @@ COPY --chown=jenkins:jenkins ci_commit_pins/torchbench.txt /pins/torchbench.txt
 COPY --chown=jenkins:jenkins ci_commit_pins/huggingface-requirements.txt /pins/huggingface-requirements.txt
 COPY --chown=jenkins:jenkins ci_commit_pins/timm.txt /pins/timm.txt
 
+# Use the CI base image's pins as pip constraints so any shared package
+# (scipy, numpy, pandas, ...) lands on the exact same version as the base
+# image. This keeps the later `COPY --from=torchbench /opt/conda/envs/...`
+# from producing a mixed install where .py files and compiled .so files
+# come from different versions of the same package.
+COPY --chown=jenkins:jenkins requirements-ci.txt /pins/requirements-ci.txt
+ENV PIP_CONSTRAINT=/pins/requirements-ci.txt
+
 # Install TorchBench (into / to match monolithic build's CWD)
 WORKDIR /torchbench
 RUN TORCHBENCH_COMMIT=$(cat /pins/torchbench.txt) && \
