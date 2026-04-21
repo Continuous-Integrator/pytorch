@@ -16022,10 +16022,49 @@ class TestSelectiveActivationCheckpoint(TestCase):
             self.assertEqual(x_grad, x_grad_ref)
 
     @skipIfTorchDynamo("compile tested in test/dynamo/test_activation_checkpointing.py")
+    def test_mismatch_new_op_during_recompute(self):
+        call_count = [0]
+
+        def policy_fn(ctx, op, *args, **kwargs):
+            return CheckpointPolicy.PREFER_RECOMPUTE
+
+        def fn(x):
+            call_count[0] += 1
+            x = x.sin()
+            if call_count[0] > 1:
+                x = x.exp()
+            return x
+
+        x = torch.randn(3, requires_grad=True)
+        context_fn = functools.partial(create_selective_checkpoint_contexts, policy_fn)
+        out = checkpoint(fn, x, use_reentrant=False, context_fn=context_fn, early_stop=False)
+        with self.assertRaisesRegex(RuntimeError, "not found in storage"):
+            out.sum().backward()
+
+    @skipIfTorchDynamo("compile tested in test/dynamo/test_activation_checkpointing.py")
+    def test_mismatch_extra_invocation_during_recompute(self):
+        call_count = [0]
+
+        def policy_fn(ctx, op, *args, **kwargs):
+            if op == torch.ops.aten.sin.default:
+                return CheckpointPolicy.MUST_SAVE
+            return CheckpointPolicy.PREFER_RECOMPUTE
+
+        def fn(x):
+            call_count[0] += 1
+            x = x.sin()
+            if call_count[0] > 1:
+                x = x.sin()
+            return x.cos()
+
+        x = torch.randn(3, requires_grad=True)
+        context_fn = functools.partial(create_selective_checkpoint_contexts, policy_fn)
+        out = checkpoint(fn, x, use_reentrant=False, context_fn=context_fn, early_stop=False)
+        with self.assertRaisesRegex(RuntimeError, "invocation index .* not found in storage"):
+            out.sum().backward()
+
+    @skipIfTorchDynamo("compile tested in test/dynamo/test_activation_checkpointing.py")
     def test_can_only_trigger_recompute_once(self):
-        # We don't support this to avoid adding extra complexity for now.
-        # If there's a need, we could probably do some kind of use_count tracking.
-        # TODO: have a nice error message here.
         def policy_fn(ctx, op, *args, **kwargs):
             if op == torch.ops.aten.sin.default:
                 return CheckpointPolicy.MUST_SAVE
