@@ -3667,7 +3667,9 @@ def linear_cross_entropy(
       logits = linear(input, linear_weight)
       loss = cross_entropy(logits, target, **kwargs)
 
-    provided that :attr:`ignore_index` is not specified to be `None` in `kwargs`.
+    provided that :attr:`ignore_index` is not explicitly set to `None`
+    in `kwargs` (since :func:`cross_entropy` does not accept `None`
+    for :attr:`ignore_index`).
 
     See :class:`~torch.nn.Linear` and :class:`~torch.nn.CrossEntropyLoss` for details.
 

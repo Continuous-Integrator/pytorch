@@ -1472,11 +1472,13 @@ class LinearCrossEntropyLoss(_WeightedLoss):
     __constants__ = [
         "num_classes",
         "out_features",
+        "reduction",
         "ignore_index",
         "label_smoothing",
     ]
     num_classes: int
     out_features: tuple[int, ...]
+    reduction: str
     ignore_index: int | None
     label_smoothing: float
 

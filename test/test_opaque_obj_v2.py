@@ -4057,7 +4057,7 @@ class fn(torch.nn.Module):
         _opaque_obj0 = self._opaque_obj0
         randn: "f32[20, 20]" = torch.ops.aten.randn.generator([20, 20], generator = _opaque_obj0, device = device(type='cuda', index=0), pin_memory = False);  _opaque_obj0 = None
         return randn
-""",  # noqa: B950
+""",
         )
 
 
