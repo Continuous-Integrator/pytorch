@@ -1816,6 +1816,10 @@ class FakeTensorMode(TorchDispatchMode):
                 result.append(type(arg))
                 result.append(id(arg))
                 id_hashed_objects.append(arg)
+            elif isinstance(arg, (torch.ScriptObject, FakeScriptObject)):
+                result.append(type(arg))
+                result.append(id(arg))
+                id_hashed_objects.append(arg)
             elif isinstance(arg, FunctionalizeCtxWrapper):
                 # Special case for AOT Dispatcher first pass, where the fake
                 # tensor is called on the functional wrapper of the subgraph.

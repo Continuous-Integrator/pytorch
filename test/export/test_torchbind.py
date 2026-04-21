@@ -2,6 +2,7 @@
 # ruff: noqa: F841
 
 import copy
+import warnings
 
 import torch
 import torch.utils._pytree as pytree
@@ -23,6 +24,7 @@ from torch.testing._internal.common_utils import (
 from torch.testing._internal.torchbind_impls import (
     _empty_tensor_queue,
     init_torchbind_implementations,
+    load_torchbind_test_lib,
 )
 from torch.testing._internal.triton_utils import requires_cuda_and_triton
 
@@ -1648,6 +1650,71 @@ class TestRegisterFakeClass(TestCase):
                 return cls(**dict(flattend_foo))
 
         torch._library.register_fake_class("_TorchScriptTesting::_Foo", FakeFoo)
+
+
+@skipIfTorchDynamo("torchbind not supported with dynamo yet")
+class TestTorchbindInterop(TestCase):
+    """Tests that downstream subsystems (GraphModule deepcopy, FakeTensor cache)
+    handle torchbind objects without __getstate__/__eq__. This surfaces when
+    make_fx traces collectives and embeds ProcessGroup/ReduceOp as graph attrs.
+    """
+
+    def setUp(self):
+        load_torchbind_test_lib()
+
+    def test_deepcopy_with_torchbind_attr(self):
+        # Torchbind singletons (e.g. ProcessGroup from make_fx-traced
+        # collectives) land on GraphModule as get_attr targets. Classes
+        # without __getstate__/__setstate__ are shared by reference with a
+        # warning; classes with pickle support are deep-copied normally.
+        def _build_gm(name, obj):
+            root = torch.nn.Module()
+            setattr(root, name, obj)
+            graph = torch.fx.Graph()
+            x = graph.placeholder("x")
+            graph.output((x, graph.get_attr(name)))
+            return torch.fx.GraphModule(root, graph)
+
+        # Class without __getstate__: shared by reference + warning.
+        no_pickle = torch.classes._TorchScriptTesting._ReLUClass()
+        gm_no_pickle = _build_gm("_relu", no_pickle)
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            gm_copy = copy.deepcopy(gm_no_pickle)
+        self.assertIs(gm_copy._relu, no_pickle)
+        self.assertTrue(
+            any("__getstate__/__setstate__" in str(w.message) for w in caught)
+        )
+
+        # Class with __getstate__/__setstate__: falls through to normal
+        # deepcopy, producing a distinct object with equal contents.
+        pickleable = torch.classes._TorchScriptTesting._Foo(1, 2)
+        gm_pickle = _build_gm("_foo", pickleable)
+        gm_copy = copy.deepcopy(gm_pickle)
+        self.assertIsNot(gm_copy._foo, pickleable)
+        self.assertEqual(
+            gm_copy._foo.__obj_flatten__(), pickleable.__obj_flatten__()
+        )
+
+    def test_fake_tensor_cache_key_torchbind(self):
+        # Torchbind singletons (e.g. ProcessGroup) have no __eq__ defined;
+        # _prep_args_for_hash must id-hash them instead of embedding the raw
+        # object in the cache key, or cache lookups crash on comparison.
+        from torch._subclasses.fake_tensor import _CacheKeyState, FakeTensorMode
+
+        obj_a = torch.classes._TorchScriptTesting._ReLUClass()
+        obj_b = torch.classes._TorchScriptTesting._ReLUClass()
+        with FakeTensorMode() as fm:
+            x = torch.randn(4, 3)
+            func = torch.ops.aten.add.Tensor
+            state = _CacheKeyState()
+            key_a1 = fm._cache_key(state, func, [x, obj_a], {})
+            key_a2 = fm._cache_key(state, func, [x, obj_a], {})
+            key_b = fm._cache_key(state, func, [x, obj_b], {})
+            # Same object should produce equal keys; comparison must not raise.
+            self.assertEqual(key_a1, key_a2)
+            # Different torchbind instances should produce different keys.
+            self.assertNotEqual(key_a1, key_b)
 
 
 instantiate_parametrized_tests(TestExportTorchbind)
