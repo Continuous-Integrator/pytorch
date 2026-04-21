@@ -15839,21 +15839,16 @@ class TestSelectiveActivationCheckpoint(TestCase):
     # - dynamo is trying to trace into saved variable hooks unpack hook for some reason
     @skipIfTorchDynamo("compile tested in test/dynamo/test_activation_checkpointing.py")
     def test_policy_with_state(self):
-        # If I have a stateful callable, state is shared between the original
-        # forward and the recompute.
+        # Policy is only called during forward, not during backward/recompute.
         counters = []
 
         class Policy:
             def __init__(self) -> None:
                 self.counter = [0]
-                self.recompute_counter = [0]
 
             def __call__(self, ctx, func, *args, **kwargs):
-                counter = self.recompute_counter if ctx.is_recompute else self.counter
-                counter[0] += 1
-                counters.append(counter[0])
-                if counter == 1 and func is torch.ops.aten.mm.default:
-                    return CheckpointPolicy.MUST_SAVE
+                self.counter[0] += 1
+                counters.append(self.counter[0])
                 return CheckpointPolicy.PREFER_RECOMPUTE
 
         def fn(x):
@@ -15867,9 +15862,8 @@ class TestSelectiveActivationCheckpoint(TestCase):
         )
         out = checkpoint(fn, x, use_reentrant=False, context_fn=context_fn)
         out.sum().backward()
-        # 1. counter properly reset to 0 for the recompute
-        # 2. due to early-stop we do not recompute the final op
-        self.assertEqual(counters, [1, 2, 3, 1, 2])
+        # Policy is only called during forward (3 ops), not during recompute
+        self.assertEqual(counters, [1, 2, 3])
 
     @skipIfTorchDynamo("compile tested in test/dynamo/test_activation_checkpointing.py")
     def test_storage_lifetime(self):
@@ -15985,7 +15979,8 @@ class TestSelectiveActivationCheckpoint(TestCase):
         x_grad = torch.autograd.grad(out.sum(), (x,))
         x_grad_ref = torch.autograd.grad(fn(x).sum(), (x,))
         self.assertEqual(x_grad, x_grad_ref)
-        self.assertEqual(counter[0], 2)
+        # Policy is only called during forward, not backward
+        self.assertEqual(counter[0], 1)
 
     @skipIfTorchDynamo("compile tested in test/dynamo/test_activation_checkpointing.py")
     def test_function_with_non_tensor_output(self):
@@ -16084,8 +16079,6 @@ class TestSelectiveActivationCheckpoint(TestCase):
             }
 
             def policy_fn(ctx, op, *args, **kwargs):
-                if ctx.is_recompute:
-                    return CheckpointPolicy.PREFER_RECOMPUTE
                 out = ctx.op_output
                 if isinstance(out, torch.Tensor):
                     name = naming.names.get(out)
