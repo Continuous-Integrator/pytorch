@@ -15932,6 +15932,35 @@ class TestSelectiveActivationCheckpoint(TestCase):
             self.assertIsNone(ref())
 
     @skipIfTorchDynamo("compile tested in test/dynamo/test_activation_checkpointing.py")
+    def test_version_counter(self):
+        def policy_fn(ctx, op, *args, **kwargs):
+            if op == torch.ops.aten.sin.default:
+                return CheckpointPolicy.MUST_SAVE
+            else:
+                return CheckpointPolicy.PREFER_RECOMPUTE
+
+        def fn(x):
+            return x.sin().mul_(2).cos().exp()
+
+        x = torch.randn(3, requires_grad=True)
+        context_fn = functools.partial(create_selective_checkpoint_contexts, policy_fn)
+        out = checkpoint(fn, x, use_reentrant=False, context_fn=context_fn)
+
+        with self.assertRaisesRegex(RuntimeError, "has been mutated"):
+            out.sum().backward()
+
+    @skipIfTorchDynamo("compile tested in test/dynamo/test_activation_checkpointing.py")
+    def test_allow_cache_entry_mutation_error(self):
+        def policy_fn(ctx, op, *args, **kwargs):
+            return CheckpointPolicy.PREFER_RECOMPUTE
+
+        with self.assertRaisesRegex(ValueError, "allow_cache_entry_mutation is no longer supported"):
+            create_selective_checkpoint_contexts(
+                policy_fn,
+                allow_cache_entry_mutation=True,
+            )
+
+    @skipIfTorchDynamo("compile tested in test/dynamo/test_activation_checkpointing.py")
     def test_function_with_more_than_one_output(self):
         # maybe there is a more systematic way:
         counter = [0]

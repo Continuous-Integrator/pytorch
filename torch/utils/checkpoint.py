@@ -1218,8 +1218,13 @@ class _VersionWrapper:
             val = pack_hook(val)
         self.val: torch.Tensor | Any = val
         self.hooks = hooks
+        self.version: int | None = val._version if isinstance(val, torch.Tensor) else None
 
     def get_val(self):
+        if self.version is not None and self.val._version != self.version:
+            raise RuntimeError(
+                "Tensor cached during selective activation checkpoint has been mutated"
+            )
         val = self.val
         if self.hooks is not None:
             _, unpack_hook = self.hooks
@@ -1492,7 +1497,7 @@ class _CachedTorchDispatchMode(TorchDispatchMode):
         return out
 
 
-def create_selective_checkpoint_contexts(policy_fn_or_list):
+def create_selective_checkpoint_contexts(policy_fn_or_list, *, allow_cache_entry_mutation=False):
     """
     Helper to avoid recomputing certain ops during activation checkpointing.
 
@@ -1543,6 +1548,12 @@ def create_selective_checkpoint_contexts(policy_fn_or_list):
         >>>     context_fn=context_fn,
         >>> )
     """
+    if allow_cache_entry_mutation:
+        raise ValueError(
+            "allow_cache_entry_mutation is no longer supported. Cached tensors are "
+            "always checked for mutation to ensure correctness. If your use case "
+            "requires caching a tensor that is mutated afterwards, please file an issue."
+        )
     # NB: If grad_mode is disabled, checkpoint would not run forward under
     #     context_fn anyway, so proceed as usual.
     if isinstance(policy_fn_or_list, list):
