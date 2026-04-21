@@ -150,6 +150,10 @@ if [[ "$BUILD_ENVIRONMENT" == *xpu* ]]; then
   export USE_STATIC_MKL=1
 fi
 
+if [[ "$BUILD_ENVIRONMENT" != *bazel* && "$BUILD_ENVIRONMENT" != *libtorch* ]]; then
+  export USE_TORCHCOMMS=1
+fi
+
 # sccache will fail for CUDA builds if all cores are used for compiling
 # gcc 7 with sccache seems to have intermittent OOM issue if all cores are used
 if [ -z "$MAX_JOBS" ]; then
