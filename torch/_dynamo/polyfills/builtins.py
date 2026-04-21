@@ -95,16 +95,21 @@ class _SequenceIterator:
     def __init__(self, iterable) -> None:
         self.iterable = iterable
         self.index = 0
+        self.exhausted = False
 
     def __iter__(self) -> _SequenceIterator:
         return self
 
     def __next__(self) -> object:
+        if self.exhausted:
+            raise StopIteration
+
         try:
             result = self.iterable.__getitem__(self.index)
             self.index += 1
             return result
         except (IndexError, StopIteration):
+            self.exhausted = True
             raise StopIteration from None
 
 

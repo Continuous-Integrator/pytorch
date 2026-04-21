@@ -147,7 +147,7 @@ def type_implements_tp_iter(obj_type: type) -> bool:
     return has_slot(type_slot, PyTypeSlots.TP_ITER)
 
 
-def PySequence_Check(obj_type: type) -> bool:
+def pysequence_check(obj_type: type) -> bool:
     """Implements PySequence_Check semantics for VariableTracker objects."""
     # ref: https://github.com/python/cpython/blob/v3.13.0/Objects/abstract.c#L1714-L1721
     if issubclass(obj_type, dict):
@@ -359,7 +359,7 @@ def generic_getiter(
     T = maybe_get_python_type(obj)
     if type_implements_tp_iter(T):
         return obj.tp_iter_impl(tx)
-    elif PySequence_Check(T):
+    elif pysequence_check(T):
         return UserFunctionVariable(polyfills.builtins.sequence_iterator).call_function(
             tx, [obj], {}
         )
