@@ -429,7 +429,7 @@ class ZipVariable(IteratorVariable):
                     raise_observed_exception(StopIteration, tx)
                 return it[old_index]
             else:
-                return it.next_variable(tx)
+                return it.tp_iternext_impl(tx)
 
         idx: int | None = None
         try:
@@ -589,7 +589,7 @@ class FilterVariable(IteratorVariable):
                     raise_observed_exception(StopIteration, tx)
                 return self.iterable[old_index]
             else:
-                return self.iterable.next_variable(tx)
+                return self.iterable.tp_iternext_impl(tx)
 
         # A do-while loop to find elements that make fn return true
         while True:
