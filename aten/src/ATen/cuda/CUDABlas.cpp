@@ -1596,19 +1596,22 @@ bool gemm_and_bias(
   using opmath_t = at::opmath_type<Dtype>;
   bool use_bias_epilogue = bias != nullptr;
   bool use_bias_descriptor = bias != nullptr && !use_bias_epilogue;
-  opmath_t beta_val = use_bias_epilogue ? 0 : 1;
+
+  auto alpha = std::variant<opmath_t, at::Half>(alpha_val);
+  auto beta = std::variant<opmath_t, at::Half>(static_cast<opmath_t>(use_bias_epilogue ? 0 : 1));
+  const auto scale_to_void_ptr = [](const std::variant<opmath_t, at::Half>& var) -> const void* {
+    if (std::holds_alternative<opmath_t>(var)) {
+      return &std::get<opmath_t>(var);
+    }
+    return &std::get<at::Half>(var);
+  };
 
   cudaDataType_t abType = CUDA_R_32F;
   cudaDataType_t cType = CUDA_R_32F;
   cublasComputeType_t computeType = CUBLAS_COMPUTE_32F;
   cudaDataType_t scaleType = CUDA_R_32F;
   CuBlasLtMatmulPreference preference;
-  void * alpha_ptr = &alpha_val;
-  void * beta_ptr = &beta_val;
-#ifndef USE_ROCM
-  at::Half halpha_val;
-  at::Half hbeta_val;
-#endif
+
   if constexpr (std::is_same_v<Dtype, double>) {
     abType = CUDA_R_64F;
     cType = CUDA_R_64F;
@@ -1624,10 +1627,8 @@ bool gemm_and_bias(
     if (prop->major >= 7 && at::globalContext().allowFP16AccumulationCuBLAS()) {
       computeType = CUBLAS_COMPUTE_16F;
       scaleType = CUDA_R_16F;
-      halpha_val = alpha_val;
-      hbeta_val = beta_val;
-      alpha_ptr = &halpha_val;
-      beta_ptr = &hbeta_val;
+      alpha = static_cast<at::Half>(std::get<opmath_t>(alpha));
+      beta = static_cast<at::Half>(std::get<opmath_t>(beta));
     }
 #endif
     abType = CUDA_R_16F;
@@ -1686,7 +1687,7 @@ bool gemm_and_bias(
   }
 #endif
 
-  const auto get_epilogue_attribute = [&activation, &use_bias_epilogue]() -> cublasLtEpilogue_t {
+  const auto get_epilogue_val = [&activation, &use_bias_epilogue]() -> cublasLtEpilogue_t {
     switch (activation) {
       case GEMMAndBiasActivationEpilogue::RELU:
         return use_bias_epilogue ? CUBLASLT_EPILOGUE_RELU_BIAS : CUBLASLT_EPILOGUE_RELU;
@@ -1697,21 +1698,22 @@ bool gemm_and_bias(
     }
   };
 
-  const auto get_bias_pointer_attribute = [&use_bias_epilogue, &bias]() -> decltype(bias) {
+  const auto get_bias_pointer_val = [&use_bias_epilogue, &bias]() -> decltype(bias) {
     return use_bias_epilogue ? bias : static_cast<decltype(bias)>(nullptr);
   };
 
-  const auto set_epilogue_attributes = [&computeDesc, &get_epilogue_attribute, &get_bias_pointer_attribute]() -> void {
-    computeDesc.setAttribute(CUBLASLT_MATMUL_DESC_EPILOGUE, get_epilogue_attribute());
-    computeDesc.setAttribute(CUBLASLT_MATMUL_DESC_BIAS_POINTER, get_bias_pointer_attribute());
+  const auto set_epilogue_attributes = [&computeDesc, &get_epilogue_val, &get_bias_pointer_val]() -> void {
+    computeDesc.setAttribute(CUBLASLT_MATMUL_DESC_EPILOGUE, get_epilogue_val());
+    computeDesc.setAttribute(CUBLASLT_MATMUL_DESC_BIAS_POINTER, get_bias_pointer_val());
   };
 
   const auto get_Cdesc_params = [&]() -> std::tuple<CuBlasLtMatrixLayout, const void*> {
-    if (use_bias_descriptor) {
 #ifndef USE_ROCM
-      uint32_t c_alignment = _getAlignment(reinterpret_cast<uintptr_t>(bias));
-      preference.setAttribute(CUBLASLT_MATMUL_PREF_MIN_ALIGNMENT_C_BYTES, c_alignment);
+    auto c_ptr_val = use_bias_descriptor ? reinterpret_cast<uintptr_t>(bias) : reinterpret_cast<uintptr_t>(result_ptr);
+    auto c_alignment = _getAlignment(c_ptr_val);
+    preference.setAttribute(CUBLASLT_MATMUL_PREF_MIN_ALIGNMENT_C_BYTES, c_alignment);
 #endif
+    if (use_bias_descriptor) {
       return std::make_tuple(CuBlasLtMatrixLayout(abType, m, n, 0), bias);
     } else {
       if (use_bias_epilogue) {
@@ -1772,6 +1774,11 @@ bool gemm_and_bias(
       if (nsplitk > 1 && use_bias_epilogue) {
         use_bias_epilogue = false;
         use_bias_descriptor = true;
+        if (std::holds_alternative<opmath_t>(beta)) {
+          beta = static_cast<opmath_t>(1);
+        } else {
+          beta = static_cast<at::Half>(1);
+        }
       }
     }
 #endif
@@ -1779,12 +1786,12 @@ bool gemm_and_bias(
     cublasStatus = cublasLtMatmul(
       ltHandle,
       computeDesc.descriptor(),
-      alpha_ptr,
+      scale_to_void_ptr(alpha),
       mat1_ptr,
       Adesc.descriptor(),
       mat2_ptr,
       Bdesc.descriptor(),
-      beta_ptr,
+      scale_to_void_ptr(beta),
       c_ptr,
       Cdesc.descriptor(),
       result_ptr,
