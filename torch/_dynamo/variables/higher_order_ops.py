@@ -1842,7 +1842,7 @@ def speculate_subgraph_with_auto_output_flattening(
             f"fall back to eager-mode PyTorch, which could lead to a slowdown."
         )
         log.info(msg)
-        log.info(ex)  # noqa: G200
+        log.info(ex)
         raise ex
 
 
@@ -2042,7 +2042,7 @@ def speculate_subgraph(
             f"fall back to eager-mode PyTorch, which could lead to a slowdown."
         )
         log.info(msg)
-        log.info(ex)  # noqa: G200
+        log.info(ex)
         raise ex
 
 
@@ -2495,7 +2495,7 @@ class CallTorchbindHigherOrderVariable(TorchHigherOrderOperatorVariable):
 def validate_subgraph_output_types(
     output: VariableTracker | Sequence[VariableTracker],
 ) -> None:
-    """Verify that that the output of the subgraph is a tensor,
+    """Verify that the output of the subgraph is a tensor,
     int, bool, SymBool, or SymInt.
     """
     from . import TensorVariable
@@ -4765,6 +4765,7 @@ class AutogradFunctionApplyVariable(VariableTracker):
                 enable_grad=None,
                 set_subgraph_inputs="automatic",
                 allow_side_effects=True,
+                filter_aliased_intermediates=True,
                 tracer=fwd_tracer,
             )
         )
@@ -5668,7 +5669,7 @@ class LocalMapWrappedHigherOrderVariable(WrapHigherOrderVariable):
         return out
 
 
-from .invoke_subgraph import InvokeSubgraphHigherOrderVariable  # noqa: E402
+from .invoke_subgraph import InvokeSubgraphHigherOrderVariable
 
 
 # Map operator names to their corresponding variable for fast TorchHigherOrderOperatorVariable.make()

@@ -117,6 +117,10 @@ class ItertoolsVariable(VariableTracker):
                 )
 
             def retrieve_const_key(key: VariableTracker) -> Any:
+                from ..utils import specialize_symnode
+
+                # Unwrap LazyVariableTracker to get the underlying variable
+                key = specialize_symnode(key)
                 if isinstance(key, variables.SymNodeVariable):
                     return key.evaluate_expr()
                 elif key.is_python_constant():
@@ -471,7 +475,7 @@ class ZipVariable(IteratorVariable):
 
         idx: int | None = None
         try:
-            for idx, it in enumerate(self.iterables):  # noqa:B007
+            for idx, it in enumerate(self.iterables):
                 args.append(get_item(it))
         except ObservedUserStopIteration:
             if self.strict:
