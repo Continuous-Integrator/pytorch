@@ -159,7 +159,7 @@ static void transmute_to_fake(
     const at::Tensor& t,
     c10::Device fake_device,
     const std::shared_ptr<c10::FakeTensorMode>& mode) {
-  t.unsafeGetTensorImpl()->set_and_normalize_fake_device(fake_device);
+  t.unsafeGetTensorImpl()->set_fake_device(fake_device);
   if (mode) {
     t.unsafeGetTensorImpl()->set_fake_tensor_mode(mode);
   }
