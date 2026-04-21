@@ -2850,16 +2850,10 @@ def linear_cross_entropy_loss_reference(input, linear_weight, target,
                                         reduction='mean',
                                         label_smoothing=0.0):
     num_classes = linear_weight.shape[0]
-    if len(linear_weight.shape) > 2:
-        linear_weight = linear_weight.reshape((-1, linear_weight.shape[-1]))
-    logits = F.linear(input, linear_weight)
-    if target.dtype.is_floating_point:
-        logits_shape = target.shape
-    elif target.shape:
-        logits_shape = (target.shape[0], num_classes, *target.shape[1:])
-    else:
-        logits_shape = (num_classes,)
-    logits = logits.reshape(logits_shape)
+    out_features = linear_weight.shape[1:-1]
+    in_features = linear_weight.shape[-1]
+    num_batches = input.shape[:-1]
+    logits = F.linear(input, linear_weight.reshape((-1, in_features))).reshape((*num_batches, num_classes, *out_features))
     ignore_index = ignore_index if ignore_index is not None else -100
     return F.cross_entropy(
         logits, target, weight=weight,

@@ -1775,24 +1775,15 @@ def module_error_inputs_torch_nn_CrossEntropyLoss(module_info, device, dtype, re
     ]
 
 
-def module_inputs_torch_nn_LinearCrossEntropyLoss(module_info, device, dtype, requires_grad, training, **kwargs_unused):
-    make_input = partial(make_tensor, device=device, dtype=dtype, requires_grad=requires_grad)
-    make_loss_weight = partial(make_tensor, device=device, dtype=dtype, requires_grad=False)
+def module_inputs_torch_nn_LinearCrossEntropyLoss(module_info, device, dtype, requires_grad, training, **kwargs_):
+    # Return a list of module_inputs.
+    #
+    # Important: module_inputs size and the ordering of its items must
+    # be the same for all devices.  There exists tests that
+    # correctness depend on this requirement.
 
-    def make_target(is_prob, batch_size, num_classes, kwargs):
-        out_features = kwargs.get("out_features", ())
-        if is_prob:
-            shape = (*batch_size, num_classes, *out_features)
-            target = make_tensor(shape, device=device, dtype=dtype, requires_grad=False).softmax(dim=min(1, len(shape) - 1))
-        else:
-            shape = (*batch_size, *out_features)
-            target = make_tensor(shape, device=device, dtype=torch.long, requires_grad=False,
-                                 low=0, high=num_classes)
-            if "ignore_index" in kwargs and target.device.type != "meta" and torch.all(target == kwargs["ignore_index"]):
-                # make sure at least one item in target is not ignored
-                t = random.sample(sorted(set(range(num_classes)) - {kwargs["ignore_index"]}), 1)[0]
-                target[0 if target.shape else ()] = t
-        return target
+    def make_input(batch_dims, in_features):
+        return torch.randn((*batch_dims, in_features), device=device, dtype=dtype, requires_grad=requires_grad)
 
     def reference_fn(m, p, i, t):
         linear_weight = p[0].reshape(m.num_classes, *m.out_features, i.shape[-1])
@@ -1801,45 +1792,109 @@ def module_inputs_torch_nn_LinearCrossEntropyLoss(module_info, device, dtype, re
             weight=m.weight,
             reduction=m.reduction, ignore_index=m.ignore_index, label_smoothing=m.label_smoothing)
 
-    reductions: list[str] = ['mean', 'sum', 'none']
-    cases: list[tuple[str, dict]] = [
-        ('', {}),
-        ('ignore_index', {'ignore_index': 1}),
-        ('label_smoothing', {'label_smoothing': 0.15}),
-        ('ignore_index_label_smoothing', {'ignore_index': 1, 'label_smoothing': 0.5}),
-        ('out_features', {'out_features': (3, 2)}),
-    ]
+    def make_target(num_classes, shape, target_dtype):
+        if target_dtype.is_floating_point:
+            return make_tensor(shape, low=0, high=1, device=device, dtype=target_dtype, requires_grad=False)
+        else:
+            return torch.randint(
+                0,
+                num_classes,
+                shape,
+                device=device,
+                dtype=target_dtype,
+                requires_grad=False,
+            )
 
-    in_features, num_classes = 5, 4
+    def sizes_and_options():
+        # TODO: the next PR in the ghstack adds the options feature.
+        for sizes in [(8, 8, 8), (1, 5, 4), (None, 8, 4)]:
+            yield sizes, None
+
+    def samples():
+        for (num_batches, in_features, num_classes), options in sizes_and_options():
+            if num_batches is None:
+                batch_dims = ()
+            else:
+                batch_dims = (num_batches,)
+            weights = [None, torch.exp(torch.randn(num_classes, device=device, dtype=dtype, requires_grad=False))]
+
+            # generate samples for LinearCrossEntropyLoss and its forward:
+            for reduction, ii, ls, w, of in product(
+                    ["sum", "mean", "none"],
+                    [None, -100, 0, num_classes - 1, num_classes + 5],
+                    [0.0, 0.1],
+                    weights,
+                    [(), (3, 2)]):
+                module_args = (in_features, num_classes)
+                module_kwargs = dict(
+                    out_features=of,
+                    device=device,
+                    dtype=dtype,
+                    reduction=reduction,
+                    weight=w,
+                    ignore_index=ii,
+                    label_smoothing=ls,
+                )
+                if num_batches is None and of:
+                    # K-dimensional loss requires batches dimension
+                    continue
+
+                for target_dtype in [torch.int64, dtype]:
+                    if target_dtype.is_floating_point:
+                        target_shape = (*batch_dims, num_classes, *of)
+                        if ii is not None:
+                            # ignore_index is not supported for floating point target
+                            continue
+                        if options is not None:
+                            # chunking is not supported with float target
+                            continue
+                    else:
+                        target_shape = (*batch_dims, *of)
+                    input = make_input(batch_dims, in_features)
+                    target = make_target(num_classes, target_shape, target_dtype)
+                    if (
+                            target.device.type != "meta"
+                            and not target_dtype.is_floating_point and reduction == "mean"
+                            and ii is not None and ii >= 0 and ii < num_classes and torch.all(target == ii)
+                    ):
+                        # ensures valid normalization:
+                        target[0 if target.shape else ()] = random.sample(sorted(set(range(num_classes)) - {ii}), 1)[0]
+
+                    yield module_args, module_kwargs, (input, target)
+
+                    if (
+                            not target_dtype.is_floating_point
+                            and target_shape
+                            and num_batches > 1
+                            and ii is not None
+                    ):
+                        # target may contain out-of-range ii values
+                        input = make_input(batch_dims, in_features)
+                        target = make_target(num_classes, target_shape, target_dtype)
+                        target[num_batches // 2] = ii
+                        if ii < 0 or ii >= num_classes:
+                            # tests the correctness of out-of-range ii
+                            # mapping to 0 (see
+                            # linear_cross_entropy_batch_chunking_cls)
+                            target[0] = 0
+                        yield module_args, module_kwargs, (input, target)
+
+                    if (
+                            not target_dtype.is_floating_point and reduction != "mean" and ii is not None
+                    ):
+                        # target is completely filled with ii
+                        input = make_input(batch_dims, in_features)
+                        target = torch.full_like(target, ii)
+                        yield module_args, module_kwargs, (input, target)
 
     module_inputs = []
-    for is_prob, batch_size, weight, reduction, (desc, constructor_kwargs) in product(
-            (False, True),
-            ((), (7,)),
-            (None, make_loss_weight(num_classes)),
-            reductions, cases):
-        if is_prob and "ignore_index" in constructor_kwargs:
-            # ignore_index is not supported for floating point target
-            continue
-        if constructor_kwargs.get("out_features", ()) and not batch_size:
-            # K-dimensional loss requires batched input
-            continue
-
-        if len(batch_size) > 1:
-            raise AssertionError("linear_cross_entropy does not support multi-dimensional batches")
-
-        target = make_target(is_prob, batch_size, num_classes, constructor_kwargs)
+    for module_args, module_kwargs, (input, target) in samples():
         module_inputs.append(
             ModuleInput(
-                constructor_input=FunctionInput(
-                    in_features, num_classes, reduction=reduction,
-                    weight=weight,
-                    **constructor_kwargs),
-                forward_input=FunctionInput(make_input((*batch_size, in_features)), target),
-                desc=f"{'prob_' if is_prob else ''}{len(target.shape)}d_{desc}_{reduction}",
+               constructor_input=FunctionInput(*module_args, **module_kwargs),
+                forward_input=FunctionInput(input, target),
                 reference_fn=reference_fn)
         )
-
     return module_inputs
 
 
@@ -4432,7 +4487,15 @@ module_db: list[ModuleInfo] = [
                    DecorateInfo(toleranceOverride({torch.float16: tol(atol=4e-2, rtol=3e-1)}), "TestModule",
                                 "test_cpu_gpu_parity", dtypes=[torch.float16]),
                    DecorateInfo(unittest.expectedFailure, "TestModule", "test_cpu_gpu_parity",
-                                dtypes=[torch.float16, torch.bfloat16], device_type='cuda'),
+                                dtypes=[torch.bfloat16], device_type='cuda'),
+                   DecorateInfo(toleranceOverride({torch.float16: tol(atol=2e-1, rtol=2e-3)}), "TestModule",
+                                "test_memory_format", device_type="cuda", dtypes=[torch.float16]),
+                   DecorateInfo(toleranceOverride({torch.float16: tol(atol=2e-1, rtol=2e-3)}), "TestModule",
+                                "test_save_load", device_type="cuda", dtypes=[torch.float16]),
+                   DecorateInfo(toleranceOverride({torch.float16: tol(atol=2e-3, rtol=2e-3)}), "TestModule",
+                                "test_forward", dtypes=[torch.float16]),
+                   DecorateInfo(toleranceOverride({torch.bfloat16: tol(atol=2e-1, rtol=5e-2)}), "TestModule",
+                                "test_save_load", device_type="cuda", dtypes=[torch.bfloat16]),
                ),
                ),
     ModuleInfo(torch.nn.CTCLoss,
