@@ -86,6 +86,27 @@ def _get_device_ids(rank: int) -> list[int] | None:
     return None if device_type.type == "cpu" else [rank]
 
 
+class ChunkedHeadModel(nn.Module):
+    # At module scope so ``compiled_fsdp_test(compile_compute_on_module=...)``
+    # can reference the type at decoration time.
+    def __init__(self, dim: int, vocab_size: int, tie: bool) -> None:
+        super().__init__()
+        self.embed = nn.Embedding(vocab_size, dim)
+        self.body = nn.Linear(dim, dim, bias=False)
+        self.norm = nn.RMSNorm(dim)
+        self.head = nn.Linear(dim, vocab_size, bias=False)
+        if tie:
+            self.head.weight = self.embed.weight
+
+    def forward(self, tokens: torch.Tensor, *, skip_head: bool = False) -> torch.Tensor:
+        h = self.embed(tokens)
+        h = self.body(h)
+        h = self.norm(h)
+        if skip_head:
+            return h
+        return self.head(h)
+
+
 class TestFullyShardForwardInputs(FSDPTestMultiThread):
     @property
     def world_size(self) -> int:
@@ -206,6 +227,25 @@ class TestFullyShardRegisteredParams(FSDPTestMultiThread):
             self._assert_dtensor_params(model.parameters())
             model(inp).sum().backward()
             self._assert_dtensor_params(model.parameters())
+
+    def test_modules_to_run_forward_empty_for_single_module(self):
+        # ``_force_complete_incomplete_states`` guards on
+        # ``_modules_to_run_forward`` being non-empty. Single-module
+        # ``fully_shard(m)`` registers the raw pre/post hooks instead of
+        # the group wrapper (see ``FSDPState.init``), so the set must
+        # remain empty for its lifetime — otherwise force-complete would
+        # spuriously fire on ungrouped states.
+        device = torch.device(device_type.type, 0)
+        model = MLP(8, device)
+        fully_shard(model.in_proj)
+        fully_shard(model.out_proj)
+        fully_shard(model)
+        for submod in (model, model.in_proj, model.out_proj):
+            self.assertEqual(submod._get_fsdp_state()._modules_to_run_forward, set())
+        inp = torch.randn((2, 8), device=device_type.type)
+        model(inp).sum().backward()
+        for submod in (model, model.in_proj, model.out_proj):
+            self.assertEqual(submod._get_fsdp_state()._modules_to_run_forward, set())
 
     def _assert_tensor_params(self, params: Iterable[nn.Parameter]):
         # need to iterate over the list multiple times
@@ -886,26 +926,6 @@ class TestFullyShard1DTrainingCompose(FSDPTest):
         mp_policy_mode: str,
         ac: bool,
     ):
-        class ChunkedHeadModel(nn.Module):
-            def __init__(self, dim: int, vocab_size: int, tie: bool) -> None:
-                super().__init__()
-                self.embed = nn.Embedding(vocab_size, dim)
-                self.body = nn.Linear(dim, dim, bias=False)
-                self.norm = nn.RMSNorm(dim)
-                self.head = nn.Linear(dim, vocab_size, bias=False)
-                if tie:
-                    self.head.weight = self.embed.weight
-
-            def forward(
-                self, tokens: torch.Tensor, *, skip_head: bool = False
-            ) -> torch.Tensor:
-                h = self.embed(tokens)
-                h = self.body(h)
-                h = self.norm(h)
-                if skip_head:
-                    return h
-                return self.head(h)
-
         dim, vocab_size, n_chunks = 32, 128, 4
 
         # mp_policy configuration. With mp_policy active, grads are computed
@@ -1162,6 +1182,24 @@ class TestFullyShard1DTrainingCompose(FSDPTest):
                             f"{ug_name} at iter {iter_idx}"
                         ),
                     )
+
+    @skip_if_lt_x_gpu(2)
+    @compiled_fsdp_test(compile_compute_on_module=ChunkedHeadModel)
+    @xfailIf(TEST_XPU)  # https://github.com/intel/torch-xpu-ops/issues/1661
+    def test_partial_group_forward_then_standalone_compiled(self):
+        """
+        Compiled smoke test for the chunked-loss partial-group-forward
+        path. The eager variant ``test_partial_group_forward_then_standalone``
+        sweeps mp_policy/weight_tying/ac; this only runs the base config
+        to confirm compiled FSDP handles ``_force_complete_incomplete_states``
+        without regression.
+        """
+        self._test_partial_group_forward_then_standalone(
+            reshard_after_forward=True,
+            weight_tying=False,
+            mp_policy_mode="none",
+            ac=False,
+        )
 
     @skip_if_lt_x_gpu(2, allow_cpu=True)
     def test_grouped_module_cast_forward_inputs(self):
