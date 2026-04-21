@@ -625,8 +625,21 @@ c10::intrusive_ptr<Work> ProcessGroupMPS::broadcast(
 
   auto fn = [this, tensor, rootRank = opts.rootRank, work]() mutable {
     try {
+#if HAVE_JACCL
+      if (useJACCL_) {
+        if (void* hostPtr = mpsHostPtr(tensor)) {
+          at::mps::getDefaultMPSStream()->synchronize(
+              at::mps::SyncType::COMMIT_AND_WAIT);
+          jacclTransport_->broadcast(
+              hostPtr,
+              static_cast<size_t>(tensor.nbytes()),
+              rootRank);
+          work->finishWork();
+          return;
+        }
+      }
+#endif
       auto cpuTensor = syncAndCopyToCPU(tensor);
-
 #if HAVE_JACCL
       if (useJACCL_) {
         jacclTransport_->broadcast(
@@ -703,6 +716,20 @@ c10::intrusive_ptr<Work> ProcessGroupMPS::send(
 
   auto fn = [this, tensor, dstRank, work]() mutable {
     try {
+#if HAVE_JACCL
+      if (useJACCL_) {
+        if (void* hostPtr = mpsHostPtr(tensor)) {
+          at::mps::getDefaultMPSStream()->synchronize(
+              at::mps::SyncType::COMMIT_AND_WAIT);
+          jacclTransport_->send(
+              hostPtr,
+              static_cast<size_t>(tensor.nbytes()),
+              dstRank);
+          work->finishWork();
+          return;
+        }
+      }
+#endif
       auto cpuTensor = syncAndCopyToCPU(tensor);
       int64_t nbytes = cpuTensor.nbytes();
 #if HAVE_JACCL
@@ -744,6 +771,20 @@ c10::intrusive_ptr<Work> ProcessGroupMPS::recv(
 
   auto fn = [this, tensor, srcRank, work]() mutable {
     try {
+#if HAVE_JACCL
+      if (useJACCL_) {
+        if (void* hostPtr = mpsHostPtr(tensor)) {
+          at::mps::getDefaultMPSStream()->synchronize(
+              at::mps::SyncType::COMMIT_AND_WAIT);
+          jacclTransport_->recv(
+              hostPtr,
+              static_cast<size_t>(tensor.nbytes()),
+              srcRank);
+          work->finishWork();
+          return;
+        }
+      }
+#endif
       auto cpuTensor = syncAndCopyToCPU(tensor);
       int64_t nbytes = cpuTensor.nbytes();
 #if HAVE_JACCL
