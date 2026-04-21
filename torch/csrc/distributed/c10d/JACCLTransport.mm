@@ -448,14 +448,6 @@ const Destination& Connection::info() {
   }
   sgidIndex = static_cast<uint8_t>(std::max(pickedIndex, 0));
 
-  std::cerr << "[jaccl-port] iface=" << ifaceName
-            << " state=" << portAttr.state
-            << " active_mtu=" << portAttr.active_mtu
-            << " lid=" << portAttr.lid
-            << " gid_tbl_len=" << portAttr.gid_tbl_len
-            << " picked_sgid_index=" << static_cast<int>(sgidIndex)
-            << " picked_addr=" << gidToString(gid) << std::endl;
-
   src.localId = portAttr.lid;
   src.queuePairNumber = queuePair->qp_num;
   src.packetSequenceNumber = 7;
@@ -506,20 +498,6 @@ void Connection::queuePairRtr(const Destination& dst) {
 
   int mask = IBV_QP_STATE | IBV_QP_AV | IBV_QP_PATH_MTU | IBV_QP_DEST_QPN |
       IBV_QP_RQ_PSN;
-  std::cerr << "[jaccl-rtr] src lid=" << src.localId
-            << " qp=" << src.queuePairNumber
-            << " psn=" << src.packetSequenceNumber
-            << " gid_iface=" << std::hex << src.globalIdentifier.global.interface_id << std::dec
-            << " sgid_index=" << static_cast<int>(sgidIndex)
-            << " path_mtu=" << attr.path_mtu
-            << std::endl;
-  std::cerr << "[jaccl-rtr] dst lid=" << dst.localId
-            << " qp=" << dst.queuePairNumber
-            << " psn=" << dst.packetSequenceNumber
-            << " gid_subnet=" << std::hex << dst.globalIdentifier.global.subnet_prefix
-            << " gid_iface=" << dst.globalIdentifier.global.interface_id << std::dec
-            << " is_global=" << static_cast<int>(attr.ah_attr.is_global)
-            << std::endl;
   int status = ibv().modifyQp(queuePair, &attr, mask);
   TORCH_CHECK(
       status == 0,
@@ -813,8 +791,6 @@ JACCLTransport::JACCLTransport(
       size_(size),
       sideChannel_(rank, size, coordinatorAddr),
       connections_(createConnections(deviceNames)) {
-  std::cerr << "[jaccl-ctor] rank=" << rank_ << " size=" << size_
-            << " sideChannel+connections done" << std::endl;
   TORCH_CHECK(
       size_ <= MESH_MAX_PEERS,
       JACCL_TAG, " Mesh supports up to ", MESH_MAX_PEERS, " peers");
@@ -823,12 +799,10 @@ JACCLTransport::JACCLTransport(
   for (auto& conn : connections_) {
     if (conn.ctx == nullptr)
       continue;
-    std::cerr << "[jaccl-ctor] allocPd/CQ/QP on ctx=" << (void*)conn.ctx << std::endl;
     conn.allocateProtectionDomain();
     conn.createCompletionQueue(MAX_SEND_WR + MAX_RECV_WR);
     conn.createQueuePair();
   }
-  std::cerr << "[jaccl-ctor] PD/CQ/QP done for all peers" << std::endl;
 
   // Allocate buffers
   for (int k = 0; k < BUFFER_SIZES; k++) {
@@ -864,7 +838,6 @@ JACCLTransport::JACCLTransport(
   for (int peer = 0; peer < size_; peer++) {
     if (peer == rank_)
       continue;
-    std::cerr << "[jaccl-ctor] queuePairInit peer=" << peer << std::endl;
     connections_[peer].queuePairInit();
   }
 
@@ -876,27 +849,21 @@ JACCLTransport::JACCLTransport(
   for (int i = 0; i < size_; i++) {
     info[i] = connections_[i].info();
   }
-  std::cerr << "[jaccl-ctor] sideChannel allGather info..." << std::endl;
   auto allInfos = sideChannel_.allGather(info);
-  std::cerr << "[jaccl-ctor] allGather returned" << std::endl;
 
   // Transition to RTS
   for (int peer = 0; peer < size_; peer++) {
     if (peer == rank_)
       continue;
-    std::cerr << "[jaccl-ctor] RTR/RTS peer=" << peer << std::endl;
     auto peerInfo = allInfos[peer][rank_];
     connections_[peer].queuePairRtr(peerInfo);
     connections_[peer].queuePairRts();
   }
 
   // Barrier to ensure everyone is ready
-  std::cerr << "[jaccl-ctor] barrier allGather..." << std::endl;
   sideChannel_.allGather<int>(0);
-  std::cerr << "[jaccl-ctor] barrier done, constructing MeshImpl" << std::endl;
 
   mesh_ = MeshImpl(rank_, size_, connections_, buffers_);
-  std::cerr << "[jaccl-ctor] done" << std::endl;
 }
 
 JACCLTransport::~JACCLTransport() = default;
