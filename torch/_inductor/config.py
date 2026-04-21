@@ -1303,6 +1303,15 @@ quiesce_async_compile_time: int = Config(
 # compiled by triton (instead of using triton's own launcher)
 use_static_cuda_launcher: bool = static_cuda_launcher_default()
 
+# When True, the CachingAutotuner fast path skips profiler/debug-mode
+# checks, bypassing _RecordFunctionFast instrumentation even when the
+# PyTorch profiler is active.  This gives the most accurate perf numbers
+# for benchmarking (avoids profiler overhead in the hot path) but means
+# per-kernel entries won't appear in profiler traces.
+force_fast_triton_launcher_path: bool = (
+    os.environ.get("TORCHINDUCTOR_FORCE_FAST_LAUNCHER_PATH", "1") == "1"
+)
+
 # Alias of use_static_cuda_launcher, used by both CUDA/XPU.
 use_static_triton_launcher: bool = Config(
     alias="torch._inductor.config.use_static_cuda_launcher"
