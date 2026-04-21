@@ -101,7 +101,7 @@ def _import_cxx_pytree_and_store() -> _ModuleType:
 
 
 if PYTORCH_USE_CXX_PYTREE:
-    cxx = _import_cxx_pytree_and_store()  # noqa: F811
+    cxx = _import_cxx_pytree_and_store()
 else:
     cxx = _sys.modules.get("torch.utils._cxx_pytree")  # type: ignore[assignment]
 
