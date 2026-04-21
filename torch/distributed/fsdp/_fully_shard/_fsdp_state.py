@@ -128,6 +128,7 @@ class FSDPState(_State):
                 self._pre_forward,
                 self._post_forward,
                 self._modules_to_run_forward,
+                self._cast_output_dtype,
             )
             self._pre_forward_hook_handle = hook_handle
             self._post_forward_hook_handle = hook_handle
@@ -452,14 +453,20 @@ def _register_group_forward_hooks(
     pre_hook: Callable,
     post_hook: Callable,
     modules_to_run: set[nn.Module],
+    cast_output_dtype: Callable[[Any], Any],
 ) -> _MultiHandle:
     """
     Registers group forward pre and post-hooks. The pre-hook runs on every
     module pre-forward; downstream state gating ensures one-shot work
     (root setup, post_backward hook registration) fires once per group
-    pass. The post-hook runs upon the last module to complete; if at
-    least one module does not run forward, the post-hook does not run
-    and ``_force_complete_incomplete_states`` handles that case from the
+    pass. The post-hook runs on every module's post-forward: on the
+    partial path (group not yet complete) it applies only the
+    ``mp_policy.output_dtype`` cast so standalone per-module callers
+    observe the same output dtype semantics as the non-grouped case; on
+    the last module it runs the full ``post_hook`` (which reshards,
+    registers the pre-backward hook, and itself casts output_dtype). If
+    a module never runs forward, the post-hook does not fire for it and
+    ``_force_complete_incomplete_states`` finishes the group from the
     root's post-forward.
     """
     modules_set = set(modules)
@@ -474,15 +481,17 @@ def _register_group_forward_hooks(
     def get_wrapped_post_hook(module: nn.Module):
         @_dynamo_disable
         @functools.wraps(post_hook)
-        def wrapped_post_hook(*args: Any, **kwargs: Any):
-            # Skip if the set was already cleared by force-complete or
-            # the root post-backward callback, or if ``always_call=True``
-            # double-fires during exception unwind.
-            if module not in modules_to_run:
-                return
-            modules_to_run.remove(module)
-            if len(modules_to_run) == 0:
-                return post_hook(*args, **kwargs)
+        def wrapped_post_hook(hook_module: nn.Module, input: Any, output: Any) -> Any:
+            # Full path fires once, when this invocation completes the
+            # group. Otherwise apply only the output_dtype cast so every
+            # module in the group (including repeat invocations such as
+            # per-chunk standalone head calls) produces output in the
+            # mp_policy's output_dtype.
+            if module in modules_to_run:
+                modules_to_run.remove(module)
+                if len(modules_to_run) == 0:
+                    return post_hook(hook_module, input, output)
+            return cast_output_dtype(output)
 
         return wrapped_post_hook
 

@@ -861,6 +861,13 @@ class TestFullyShard1DTrainingCompose(FSDPTest):
         - ``ac``: activation checkpointing on the body module
           (exercises AC recomputation in PRE_BACKWARD entering
           FSDP's pre-forward again)
+
+        When ``weight_tying`` is off, the test also compares grouped
+        ``fully_shard([norm, head])`` against ungrouped
+        ``fully_shard(norm) + fully_shard(head)`` for bit-exact parity
+        across every mp_policy mode — the two configurations exercise
+        the same compute path and only differ in hook timing (partial
+        per-module cast vs. per-module post_forward).
         """
         self.run_subtests(
             {
@@ -924,6 +931,12 @@ class TestFullyShard1DTrainingCompose(FSDPTest):
             root_mp = MixedPrecisionPolicy()
             expected_h_dtype = torch.float32
         do_parity = mp_policy_mode == "none"
+        # Grouped-vs-ungrouped FSDP parity: same compute path, only hook
+        # timing differs (partial per-module cast vs. per-module
+        # post_forward), so loss/grads/params are bit-exact across every
+        # mp_policy mode. Skipped when weight_tying forces embed and
+        # head into one group with no ungrouped equivalent.
+        do_grouping_parity = not weight_tying
         fsdp_kwargs: dict = {"reshard_after_forward": reshard_after_forward}
 
         def _run_chunked(model: nn.Module, h_dtype: torch.dtype):
@@ -1012,8 +1025,64 @@ class TestFullyShard1DTrainingCompose(FSDPTest):
         fully_shard(model, mp_policy=root_mp, **fsdp_kwargs)
         optim = torch.optim.Adam(model.parameters(), lr=1e-2)
 
+        if do_grouping_parity:
+            torch.manual_seed(42)
+            ungrouped_model = ChunkedHeadModel(dim, vocab_size, weight_tying).to(
+                device_type
+            )
+            with torch.no_grad():
+                for param in ungrouped_model.parameters():
+                    dist.broadcast(param, src=0)
+            if ac:
+                checkpoint(ungrouped_model.body)
+            fully_shard(ungrouped_model.embed, mp_policy=root_mp, **fsdp_kwargs)
+            fully_shard(ungrouped_model.body, mp_policy=root_mp, **fsdp_kwargs)
+            fully_shard(ungrouped_model.norm, mp_policy=inner_mp, **fsdp_kwargs)
+            fully_shard(ungrouped_model.head, mp_policy=inner_mp, **fsdp_kwargs)
+            fully_shard(ungrouped_model, mp_policy=root_mp, **fsdp_kwargs)
+            ungrouped_optim = torch.optim.Adam(ungrouped_model.parameters(), lr=1e-2)
+
         for iter_idx in range(10):
             fsdp_loss, fsdp_head_grad_chunks = _run_chunked(model, expected_h_dtype)
+
+            if do_grouping_parity:
+                ungrouped_loss, ungrouped_head_grad_chunks = _run_chunked(
+                    ungrouped_model, expected_h_dtype
+                )
+                self.assertEqual(
+                    ungrouped_loss,
+                    fsdp_loss,
+                    msg=f"Loss mismatch grouped-vs-ungrouped at iter {iter_idx}",
+                )
+                self.assertEqual(
+                    ungrouped_head_grad_chunks,
+                    fsdp_head_grad_chunks,
+                    msg=(
+                        "head.weight.grad mismatch grouped-vs-ungrouped at iter "
+                        f"{iter_idx}"
+                    ),
+                )
+                for (ug_name, ug_param), (_, fsdp_param) in zip(
+                    ungrouped_model.named_parameters(), model.named_parameters()
+                ):
+                    ug_grad = (
+                        ug_param.grad.full_tensor()
+                        if isinstance(ug_param.grad, DTensor)
+                        else ug_param.grad
+                    )
+                    fsdp_grad = (
+                        fsdp_param.grad.full_tensor()
+                        if isinstance(fsdp_param.grad, DTensor)
+                        else fsdp_param.grad
+                    )
+                    self.assertEqual(
+                        fsdp_grad,
+                        ug_grad,
+                        msg=(
+                            "Grad mismatch grouped-vs-ungrouped for "
+                            f"{ug_name} at iter {iter_idx}"
+                        ),
+                    )
 
             if do_parity:
                 ref_loss, ref_head_grad_chunks = _run_chunked(ref_model, torch.float32)
@@ -1052,6 +1121,9 @@ class TestFullyShard1DTrainingCompose(FSDPTest):
 
             optim.step()
             optim.zero_grad(set_to_none=(iter_idx % 2 == 0))
+            if do_grouping_parity:
+                ungrouped_optim.step()
+                ungrouped_optim.zero_grad(set_to_none=(iter_idx % 2 == 0))
 
             if do_parity:
                 for (ref_name, ref_param), (_, fsdp_param) in zip(
@@ -1066,6 +1138,29 @@ class TestFullyShard1DTrainingCompose(FSDPTest):
                         fsdp_full,
                         ref_param,
                         msg=f"Param mismatch for {ref_name} at iter {iter_idx}",
+                    )
+
+            if do_grouping_parity:
+                for (ug_name, ug_param), (_, fsdp_param) in zip(
+                    ungrouped_model.named_parameters(), model.named_parameters()
+                ):
+                    ug_full = (
+                        ug_param.full_tensor()
+                        if isinstance(ug_param, DTensor)
+                        else ug_param
+                    )
+                    fsdp_full = (
+                        fsdp_param.full_tensor()
+                        if isinstance(fsdp_param, DTensor)
+                        else fsdp_param
+                    )
+                    self.assertEqual(
+                        fsdp_full,
+                        ug_full,
+                        msg=(
+                            "Param mismatch grouped-vs-ungrouped for "
+                            f"{ug_name} at iter {iter_idx}"
+                        ),
                     )
 
     @skip_if_lt_x_gpu(2, allow_cpu=True)
@@ -1241,6 +1336,55 @@ class TestFullyShard1DTrainingCompose(FSDPTest):
                 ref_full,
                 msg=f"grad mismatch for {ref_name} after grad-accum + chunks",
             )
+
+    @skip_if_lt_x_gpu(2, allow_cpu=True)
+    def test_partial_group_standalone_output_dtype(self):
+        """
+        Tests that ``mp_policy.output_dtype`` applies to standalone
+        per-chunk calls on a grouped FSDP module. In chunked loss with
+        ``fully_shard([norm, head])`` and inner ``output_dtype=bf16``,
+        the user calls ``model.head(chunk)`` per chunk and expects each
+        output in bf16 — matching the cast applied to the model forward
+        output via ``_force_complete_incomplete_states``.
+        """
+        dim, vocab_size = 32, 128
+
+        class Model(nn.Module):
+            def __init__(self) -> None:
+                super().__init__()
+                self.embed = nn.Embedding(vocab_size, dim)
+                self.norm = nn.RMSNorm(dim)
+                self.head = nn.Linear(dim, vocab_size, bias=False)
+
+            def forward(
+                self, tokens: torch.Tensor, *, skip_head: bool = False
+            ) -> torch.Tensor:
+                h = self.norm(self.embed(tokens))
+                if skip_head:
+                    return h
+                return self.head(h)
+
+        torch.manual_seed(42)
+        model = Model().to(device_type)
+        with torch.no_grad():
+            for param in model.parameters():
+                dist.broadcast(param, src=0)
+
+        inner_mp = MixedPrecisionPolicy(
+            param_dtype=torch.float32, output_dtype=torch.bfloat16
+        )
+        fully_shard(model.embed, mp_policy=inner_mp)
+        fully_shard([model.norm, model.head], mp_policy=inner_mp)
+        fully_shard(model, mp_policy=inner_mp)
+
+        tokens = torch.randint(0, vocab_size, (2, 16), device=device_type.type)
+
+        h = model(tokens, skip_head=True)
+        self.assertEqual(h.dtype, torch.bfloat16)
+
+        chunk = h.detach().to(torch.float32).contiguous().requires_grad_(True)
+        out = model.head(chunk)
+        self.assertEqual(out.dtype, torch.bfloat16)
 
     @skip_if_lt_x_gpu(2, allow_cpu=True)
     def test_double_forward_with_nested_fsdp_and_checkpoint(self):

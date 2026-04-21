@@ -151,12 +151,10 @@ def fully_shard(
     - Each standalone per-chunk invocation registers its own post_backward
       autograd node, so N chunk calls produce N reduce-scatters for that
       group.
-    - ``mp_policy.output_dtype`` on the group's policy is applied to the
-      output of the model's forward (via root post-forward completion),
-      not to the output of standalone per-chunk calls; apply the cast
-      explicitly if needed.
-    - ``mp_policy.cast_forward_inputs`` applies to every module in the
-      group, not just the first to run.
+    - ``mp_policy.cast_forward_inputs`` and ``mp_policy.output_dtype``
+      both apply per module in the group — every invocation (including
+      each standalone per-chunk call) casts its inputs to ``param_dtype``
+      and its output to ``output_dtype``.
 
     Args:
         module (Union[nn.Module, List[nn.Module]]): The module or modules to
