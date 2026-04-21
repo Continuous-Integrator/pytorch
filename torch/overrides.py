@@ -1433,6 +1433,7 @@ def get_testing_overrides() -> dict[Callable, Callable]:
         Tensor.mtia: lambda self, memory_format=torch.preserve_format: -1,
         Tensor.xpu: lambda self, memory_format=torch.preserve_format: -1,
         Tensor.ipu: lambda self, memory_format=torch.preserve_format: -1,
+        Tensor.const_data_ptr: lambda self: -1,
         Tensor.data_ptr: lambda self: -1,
         Tensor.dense_dim: lambda self: -1,
         Tensor.diagonal_scatter: lambda self, src, offset=0, dim1=0, dim2=1: -1,
@@ -2168,18 +2169,34 @@ def enable_reentrant_dispatch():
 
 
 def redispatch_function(func, types, args, kwargs):
-    """An alternative to ``super().__torch_function__`` that reentrantly calls the
-    torch implementation, allowing python functions to re-dispatch component
-    function calls.
+    """Skip one level of ``__torch_function__`` dispatch and call the function.
 
-    This should only be used inside of a __torch_function__ implementation, and
-    func *must* support ``__torch_function__`` dispatch.
+    This is primarily useful for **Tensor subclasses** that want to call into
+    a function's implementation while still intercepting PyTorch operations
+    inside that function.
 
-    Example::
+    Example with Tensor subclass::
 
-        class LoggingTensor:
-            def __torch_function__(func, types, args, kwargs=None):
-                log(func, types, args, kwargs)
+        class LoggingTensor(torch.Tensor):
+            @classmethod
+            def __torch_function__(cls, func, types, args, kwargs=None):
+                print(f"Calling {func.__name__}")
+                # Skip dispatch for this func, but inner ops still dispatch
                 return torch.overrides.redispatch_function(func, types, args, kwargs)
+
+        x = LoggingTensor(torch.tensor([1.0]))
+        y = LoggingTensor(torch.tensor([2.0]))
+        # Prints: "Calling add" once for the outer call
+        # Then prints: "Calling add" again for operations inside add's implementation
+        result = torch.add(x, y)
+
+    For ``TorchFunctionMode``, you typically need ``with self:`` to re-enable
+    the mode inside the function::
+
+        class LoggingMode(TorchFunctionMode):
+            def __torch_function__(self, func, types, args, kwargs=None):
+                print(f"Calling {func.__name__}")
+                with self:  # Re-enable mode for inner calls
+                    return torch.overrides.redispatch_function(func, types, args, kwargs)
     """
     return torch._C._skip_one_hop_torch_function(func, types, args, kwargs)

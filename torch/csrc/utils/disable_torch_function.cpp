@@ -255,9 +255,8 @@ PyObject* THPModule_skip_one_hop_torch_function(
   if (!PyArg_ParseTuple(a, "OOOO", &func, &types, &args, &kwargs)) {
     return nullptr;
   }
-  py::tuple py_args = args == Py_None
-      ? py::make_tuple()
-      : py::reinterpret_borrow<py::tuple>(args);
+  py::tuple py_args = args == Py_None ? py::make_tuple()
+                                      : py::reinterpret_borrow<py::tuple>(args);
 
   if (kwargs == Py_None) {
     kwargs = nullptr;

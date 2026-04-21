@@ -45,6 +45,7 @@ import torch
 from torch import SymInt
 from torch._dispatch.python import enable_python_dispatcher
 from torch._dynamo.graph_bytecode_inputs import (
+    CURRENT_STREAM_INDEX,
     get_external_object_by_index,
     register_user_object,
 )
@@ -117,6 +118,7 @@ from ..source import (
     ChainedSource,
     ConstDictKeySource,
     ConvertIntSource,
+    CurrentStreamSource,
     DictGetItemSource,
     DictSubclassGetItemSource,
     DynamicScalarSource,
@@ -195,12 +197,7 @@ from .ctx_manager import (
     NullContextVariable,
     PreserveVersionContextVariable,
 )
-from .dicts import (
-    ConstDictVariable,
-    DefaultDictVariable,
-    MappingProxyVariable,
-    SetVariable,
-)
+from .dicts import ConstDictVariable, MappingProxyVariable, SetVariable
 from .distributed import WorldMetaClassVariable
 from .functions import (
     BuiltinMethodVariable,
@@ -292,11 +289,13 @@ from .torch_function import (
     TorchFunctionModeVariable,
 )
 from .user_defined import (
+    DefaultDictVariable,
     FrozenDataClassVariable,
     InspectVariable,
     IntWrapperVariable,
     KeyedJaggedTensorVariable,
     MutableMappingVariable,
+    OrderedDictVariable,
     SourcelessGraphModuleVariable,
     UserDefinedClassVariable,
     UserDefinedConstantVariable,
@@ -766,17 +765,17 @@ class VariableBuilder:
             pass
 
         if has_triton_experimental_host_tma():
-            from triton.tools.experimental_descriptor import (  # noqa: F811
+            from triton.tools.experimental_descriptor import (
                 create_1d_tma_descriptor,
                 create_2d_tma_descriptor,
             )
         if has_triton_tensor_descriptor_host_tma():
-            from triton.tools.tensor_descriptor import TensorDescriptor  # noqa: F811
+            from triton.tools.tensor_descriptor import TensorDescriptor
         if has_triton():
             import triton as triton_mod
 
             if hasattr(triton_mod, "set_allocator"):
-                set_allocator = triton_mod.set_allocator  # noqa: F811
+                set_allocator = triton_mod.set_allocator
 
         # Handle exact type() match
         type_dispatch = self._type_dispatch().get(type(value))
@@ -881,18 +880,32 @@ class VariableBuilder:
 
             if istype(value, collections.defaultdict):
                 factory_source = AttrSource(self.source, "default_factory")
-                result = DefaultDictVariable(
+                dict_vt = ConstDictVariable(
                     result,  # type: ignore[arg-type]
-                    type(value),
+                    mutation_type=ValueMutationExisting(),
+                    source=self.source,
+                )
+                result = DefaultDictVariable(
+                    value,
                     default_factory=VariableBuilder(self.tx, factory_source)(
                         value.default_factory
                     ),
+                    dict_vt=dict_vt,
                     source=self.source,
                 )
+                return self.tx.output.side_effects.track_object_existing(value, result)
+            elif istype(value, collections.OrderedDict):
+                dict_vt = ConstDictVariable(
+                    result,  # type: ignore[arg-type]
+                    user_cls=collections.OrderedDict,
+                    mutation_type=ValueMutationExisting(),
+                    source=self.source,
+                )
+                result = OrderedDictVariable(value, dict_vt=dict_vt, source=self.source)
+                return self.tx.output.side_effects.track_object_existing(value, result)
             else:
                 result = ConstDictVariable(
                     result,  # type: ignore[arg-type]
-                    user_cls=type(value),
                     source=self.source,
                 )
 
@@ -1185,7 +1198,11 @@ class VariableBuilder:
             return StreamContextVariable.create(self.tx, stream_var)
         elif isinstance(value, torch.Stream):
             self.install_guards(GuardBuilder.TYPE_MATCH)
-            index = register_user_object(value, self.source)
+            if isinstance(self.source, CurrentStreamSource):
+                # Reuse the index pre-allocated in SymbolicStreamState.__init__
+                index = CURRENT_STREAM_INDEX
+            else:
+                index = register_user_object(value, self.source)
             stream_proxy = self.tx.output.create_proxy(
                 "call_function", get_external_object_by_index, (index,), {}
             )
@@ -1684,13 +1701,10 @@ class VariableBuilder:
                 for i, k, v in enumerate_items_with_dict_position(value)
             )
 
+            is_ordered_dict = isinstance(value, collections.OrderedDict)
             dict_vt = ConstDictVariable(
                 result,
-                user_cls=(
-                    collections.OrderedDict
-                    if isinstance(value, collections.OrderedDict)
-                    else dict
-                ),
+                user_cls=(collections.OrderedDict if is_ordered_dict else dict),
                 mutation_type=ValueMutationExisting(),
                 source=self.source,
             )
@@ -1698,7 +1712,12 @@ class VariableBuilder:
             # bytecode simple
             dict_vt.should_reconstruct_all = True
 
-            result = UserDefinedDictVariable(value, dict_vt=dict_vt, source=self.source)
+            if is_ordered_dict:
+                result = OrderedDictVariable(value, dict_vt=dict_vt, source=self.source)
+            else:
+                result = UserDefinedDictVariable(
+                    value, dict_vt=dict_vt, source=self.source
+                )
             return self.tx.output.side_effects.track_object_existing(value, result)
         elif isinstance(value, tuple):
             self.install_guards(GuardBuilder.TYPE_MATCH)
@@ -2842,7 +2861,7 @@ class VariableBuilder:
             # break because they expect all cuda inputs but our tensorified
             # float will be a f64[] cpu tensor. Fixes the following test
             # when specialize_float=False
-            # python test/inductor/test_compiled_optimizers.py CompiledOptimizerTests.test_rmsprop_weight_decay_maximize_capturable_cuda # noqa: B950
+            # python test/inductor/test_compiled_optimizers.py CompiledOptimizerTests.test_rmsprop_weight_decay_maximize_capturable_cuda
             or torch._inductor.config.triton.cudagraphs
             or justknobs_check("pytorch/compiler:unspecialize_float_killswitch", False)
             or (
