@@ -62,6 +62,11 @@ class CustomSet(set):
             yield item * 2
 
 
+class CustomSetDefaultIter(set):
+    def __init__(self, iterable) -> None:
+        super().__init__([10, 20, 30])
+
+
 class TestIterators(torch._dynamo.test_case.TestCase):
     """Test iterator support in Dynamo"""
 
@@ -673,6 +678,14 @@ class TestIterators(torch._dynamo.test_case.TestCase):
         cs = CustomSet([1, 2, 3])
         result = sorted(cs.__iter__())
         self.assertEqual(result, [2, 4, 6])
+
+    @make_dynamo_test
+    def test_custom_set_subclass_with_default_iter(self):
+        """Test custom set subclass with default __iter__"""
+
+        cs = CustomSetDefaultIter([1, 2, 3])
+        result = sorted(iter(cs))
+        self.assertEqual(result, [10, 20, 30])
 
     @make_dynamo_test
     def test_dict_keys_view_direct_iteration(self):

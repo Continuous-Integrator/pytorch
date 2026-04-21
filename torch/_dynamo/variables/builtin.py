@@ -104,6 +104,15 @@ from .lists import (
     TupleVariable,
 )
 from .misc import NullVariable
+from .object_protocol import (
+    generic_bool,
+    generic_float,
+    generic_getiter,
+    generic_int,
+    generic_len,
+    vt_getitem,
+    vt_identity_compare,
+)
 from .sets import FrozensetVariable, OrderedSetClassVariable, SetVariable
 from .tensor import (
     FakeItemVariable,
@@ -908,8 +917,6 @@ class BuiltinVariable(BaseBuiltinVariable):
                     left: VariableTracker,
                     right: VariableTracker,
                 ) -> VariableTracker | None:
-                    from .object_protocol import vt_identity_compare
-
                     result = vt_identity_compare(left, right)
                     if result is None:
                         return None
@@ -1585,16 +1592,12 @@ class BuiltinVariable(BaseBuiltinVariable):
         if name == "__len__" and len(args) == 1 and not kwargs:
             # type.__len__(instance) → len(instance)
             # e.g. list.__len__(my_list) → len(my_list)
-            from .object_protocol import generic_len
-
             return generic_len(tx, args[0])
 
         if name == "__iter__" and len(args) == 1 and not kwargs:
             # type.__iter__(instance) → iter(instance)
             # e.g., tuple.__iter__(my_tuple) → iter(my_tuple)
             # For builtin types called on user-defined subclasses, use the base iterator
-            from .object_protocol import generic_getiter
-
             return generic_getiter(tx, args[0])
 
         return super().call_method(tx, name, args, kwargs)
@@ -1602,23 +1605,17 @@ class BuiltinVariable(BaseBuiltinVariable):
     def call_int(
         self, tx: "InstructionTranslator", arg: VariableTracker
     ) -> VariableTracker | None:
-        from .object_protocol import generic_int
-
         return generic_int(tx, arg)
 
     def call_float(
         self, tx: "InstructionTranslator", arg: VariableTracker
     ) -> VariableTracker | None:
-        from .object_protocol import generic_float
-
         return generic_float(tx, arg)
 
     def call_bool(
         self, tx: "InstructionTranslator", arg: VariableTracker
     ) -> VariableTracker | None:
         # Emulate PyBool_Type.tp_vectorcall which boils down to PyObject_IsTrue.
-        from .object_protocol import generic_bool
-
         return generic_bool(tx, arg)
 
     def call_repr(
@@ -2053,8 +2050,6 @@ class BuiltinVariable(BaseBuiltinVariable):
         *args: VariableTracker,
         **kwargs: VariableTracker,
     ) -> VariableTracker:
-        from .object_protocol import generic_getiter
-
         if len(args) == 0:
             return generic_getiter(tx, obj)
         else:
@@ -2148,8 +2143,6 @@ class BuiltinVariable(BaseBuiltinVariable):
         elif isinstance(arg, variables.UserDefinedObjectVariable) and isinstance(
             arg.value, KeysView
         ):
-            from .object_protocol import generic_getiter
-
             iter_fn = generic_getiter(tx, arg)
             if isinstance(iter_fn, variables.UserMethodVariable):
                 out = tx.inline_user_function_return(iter_fn, args, kwargs)
@@ -2224,8 +2217,6 @@ class BuiltinVariable(BaseBuiltinVariable):
         *args: VariableTracker,
         **kwargs: VariableTracker,
     ) -> VariableTracker:
-        from .object_protocol import generic_len
-
         return generic_len(tx, args[0])
 
     def call_getitem(
@@ -2234,8 +2225,6 @@ class BuiltinVariable(BaseBuiltinVariable):
         *args: VariableTracker,
         **kwargs: VariableTracker,
     ) -> VariableTracker:
-        from .object_protocol import vt_getitem
-
         return vt_getitem(tx, args[0], args[1])
 
     def call_isinstance(
@@ -3414,8 +3403,6 @@ class IterBuiltinVariable(BaseBuiltinVariable):
             )
 
         if len(args) == 1:
-            from .object_protocol import generic_getiter
-
             return generic_getiter(tx, args[0])
         else:
             return variables.UserFunctionVariable(
