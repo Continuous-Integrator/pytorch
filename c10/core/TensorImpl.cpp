@@ -196,23 +196,10 @@ void TensorImpl::_change_backend_component_keys(c10::Device device) {
   key_set_ = key_set | DispatchKeySet(new_backend);
 }
 
-void TensorImpl::set_and_normalize_fake_device(c10::Device fake_device) {
+void TensorImpl::set_fake_device(c10::Device fake_device) {
   TORCH_CHECK(
       fake_device.type() != c10::DeviceType::Meta,
       "FakeTensor does not support meta device");
-
-  // normalize device index for indexed device types (not CPU)
-  // in python FakeTensor, the GPU is also initialized here by making a real
-  // tensor we'll do that at a higher level in the fallback kernel or smth
-  if (fake_device.index() == -1 && fake_device.type() != c10::DeviceType::CPU) {
-    const auto* guard_impl = c10::impl::getDeviceGuardImpl(fake_device.type());
-    if (guard_impl) {
-      fake_device = guard_impl->getDevice();
-    }
-    if (fake_device.index() == -1) {
-      fake_device = c10::Device(fake_device.type(), 0);
-    }
-  }
 
   // in python FakeTensor, it checks whether or not
   // we are in in_kernel_invocation manager to determine
@@ -231,6 +218,20 @@ void TensorImpl::set_and_normalize_fake_device(c10::Device fake_device) {
 
   // change backend key from Meta to the fake device
   _change_backend_component_keys(fake_device);
+}
+
+void TensorImpl::set_and_normalize_fake_device(c10::Device fake_device) {
+  // normalize device index for indexed device types (not CPU)
+  if (fake_device.index() == -1 && fake_device.type() != c10::DeviceType::CPU) {
+    const auto* guard_impl = c10::impl::getDeviceGuardImpl(fake_device.type());
+    if (guard_impl) {
+      fake_device = guard_impl->getDevice();
+    }
+    if (fake_device.index() == -1) {
+      fake_device = c10::Device(fake_device.type(), 0);
+    }
+  }
+  set_fake_device(fake_device);
 }
 
 void TensorImpl::HandleResize() {

@@ -243,6 +243,11 @@ enum class TorchDispatchModeKey : int8_t;
 using PyObject_TorchDispatchMode = SafePyObjectT<TorchDispatchModeKey>;
 } // namespace impl
 
+// same as Python's FakeTensorMode
+// storing shape env and converter from Python, we'll use these later
+// to implement sym ints, real tensor conversion, etc
+// this doesn't have caching because we're not implementing it
+// no in_kernel_invocation_manager since that's handled by dispatch keys in C++
 struct C10_API FakeTensorMode {
   std::shared_ptr<c10::SafePyObject> shape_env_;
   std::shared_ptr<c10::SafePyObject> fake_tensor_converter_;
@@ -1462,12 +1467,15 @@ struct C10_API TensorImpl : public c10::intrusive_ptr_target {
    * The underlying device_opt_ stays as Meta for dispatch routing
    * and fake device is stored in ExtraMeta and returned by device()
    * via the device_policy_ mechanism
-
-   * also configuring FakeTensor's dispatch logic
+   * also converting backend key from Meta to Fake and adding Fake key
+   * to DispatchKeySet
    */
 
-  // corresponds to Python's FakeTensor __init__ logic where fake_device is set
-  // and _normalize_fake_device is called
+  // this is the fast path: caller guarantees fake_device already has a valid index
+  void set_fake_device(c10::Device fake_device);
+
+  // Normalizes the device index then calls set_fake_device.
+  // use when the device might lack an index ("cuda" vs "cuda:0").
   void set_and_normalize_fake_device(c10::Device fake_device);
 
   void set_fake_tensor_mode(std::shared_ptr<FakeTensorMode> mode) {
@@ -1475,8 +1483,9 @@ struct C10_API TensorImpl : public c10::intrusive_ptr_target {
   }
 
   std::shared_ptr<FakeTensorMode> fake_tensor_mode() const {
-    if (!extra_meta_)
+    if (!extra_meta_) {
       return nullptr;
+    }
     return extra_meta_->fake_tensor_mode_;
   }
 
