@@ -166,6 +166,15 @@ class SideEffects:
         # mutations, var.source for value mutations (list/dict/etc).
         self.mutated_sources: OrderedSet[Source] = OrderedSet()
 
+        # Deferred side-effect checking: instead of failing immediately on
+        # outer-scope mutations inside HOP subgraphs, we record them and
+        # validate after tracing that they were nullified (restored to
+        # original values). Maps VT id → (VT, snapshot of items) taken
+        # before the first mutation.
+        self.deferred_side_effect_snapshots: dict[
+            int, tuple[VariableTracker, dict[Any, VariableTracker]]
+        ] = {}
+
     def ignore_mutations_on(self, var: VariableTracker) -> None:
         """Mutations to this variable will be executed but not not tracked,
         typically used for temporary mutations that are later restored."""
@@ -175,6 +184,70 @@ class SideEffects:
         """Remove a variable from the skip mutation set, restoring normal mutation tracking."""
         if var in self.ignore_mutation_on_these_variables:
             self.ignore_mutation_on_these_variables.remove(var)
+
+    @contextlib.contextmanager
+    def defer_side_effect_checks(self) -> Generator[None, None, None]:
+        """Defer outer-scope mutation checks until subgraph tracing completes.
+
+        Context managers that flip-flop a flag (set on enter, restore on exit)
+        produce no net side effect. Instead of failing immediately on the first
+        mutation, we record it and validate after tracing that all mutations
+        were nullified (values restored to their original state).
+        """
+        saved = self.deferred_side_effect_snapshots
+        self.deferred_side_effect_snapshots = {}
+        try:
+            yield
+            self.validate_deferred_side_effects()
+        finally:
+            self.deferred_side_effect_snapshots = saved
+
+    def snapshot_for_deferred(self, item: VariableTracker) -> None:
+        """Snapshot a VT's constant state before the first deferred mutation."""
+        item_id = id(item)
+        if item_id in self.deferred_side_effect_snapshots:
+            return
+        if not isinstance(item, variables.ConstDictVariable):
+            unimplemented(
+                gb_type="HOP: Unsafe non-dict side effect",
+                context=f"Attempted to mutate {item}",
+                explanation="Mutating a non-dict variable from outside the scope "
+                "of this HOP is not supported.",
+                hints=[*graph_break_hints.FUNDAMENTAL],
+            )
+        try:
+            snapshot = {k: v.as_python_constant() for k, v in item.items.items()}
+        except NotImplementedError:
+            unimplemented(
+                gb_type="HOP: Unsafe non-constant dict side effect",
+                context=f"Attempted to mutate {item}",
+                explanation="Mutating a dict with non-constant values from outside "
+                "the scope of this HOP is not supported.",
+                hints=[*graph_break_hints.FUNDAMENTAL],
+            )
+        self.deferred_side_effect_snapshots[item_id] = (item, snapshot)
+
+    def validate_deferred_side_effects(self) -> None:
+        """Check that all deferred mutations were nullified.
+
+        Raises unimplemented() if any deferred mutation left a net change.
+        """
+        for item, snapshot in self.deferred_side_effect_snapshots.values():
+            assert isinstance(item, variables.ConstDictVariable)
+            try:
+                current = {k: v.as_python_constant() for k, v in item.items.items()}
+            except NotImplementedError:
+                current = None
+            if current != snapshot:
+                unimplemented(
+                    gb_type="HOP: Non-nullified side effect",
+                    context=f"Mutated variable {item} was not restored to its original value",
+                    explanation="A variable from an outer scope was mutated inside a "
+                    "higher-order op subgraph and not restored to its original "
+                    "value. This is not supported. If using a context manager, "
+                    "ensure it fully restores the original state on exit.",
+                    hints=[*graph_break_hints.FUNDAMENTAL],
+                )
 
     def _capture_user_stack(self, key: VariableTracker) -> None:
         """Capture the current user stack from the instruction translator."""
@@ -304,17 +377,7 @@ class SideEffects:
             )
         assert item.mutation_type is not None
         if not is_side_effect_safe(item.mutation_type):
-            unimplemented(
-                gb_type="HOP: Unsafe side effect",
-                context=f"Attempted to mutate {item}",
-                explanation="Mutating a variable from outside the scope of this HOP is not supported.",
-                hints=[
-                    "If the HOP is activation checkpointing (torch.utils.checkpoint.checkpoint), this points to a "
-                    "side effect in forward method. Eager activation checkpointing replays that side-effect while "
-                    "recomputing the forward in the backward. If you are ok with side-effect not replayed in the "
-                    "backward, try setting `torch._dynamo.config.skip_fwd_side_effects_in_bwd_under_checkpoint = True`",
-                ],
-            )
+            self.snapshot_for_deferred(item)
         return False
 
     def store_attr(

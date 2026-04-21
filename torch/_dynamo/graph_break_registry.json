@@ -2419,6 +2419,36 @@
       ]
     }
   ],
+  "GB5588": [
+    {
+      "Gb_type": "HOP: Unsafe non-dict side effect",
+      "Context": "Attempted to mutate {item}",
+      "Explanation": "Mutating a non-dict variable from outside the scope of this HOP is not supported.",
+      "Hints": [
+        "This graph break is fundamental - it is unlikely that Dynamo will ever be able to trace through your code. Consider finding a workaround."
+      ]
+    }
+  ],
+  "GB2343": [
+    {
+      "Gb_type": "HOP: Unsafe non-constant dict side effect",
+      "Context": "Attempted to mutate {item}",
+      "Explanation": "Mutating a dict with non-constant values from outside the scope of this HOP is not supported.",
+      "Hints": [
+        "This graph break is fundamental - it is unlikely that Dynamo will ever be able to trace through your code. Consider finding a workaround."
+      ]
+    }
+  ],
+  "GB4850": [
+    {
+      "Gb_type": "HOP: Non-nullified side effect",
+      "Context": "Mutated variable {item} was not restored to its original value",
+      "Explanation": "A variable from an outer scope was mutated inside a higher-order op subgraph and not restored to its original value. This is not supported. If using a context manager, ensure it fully restores the original state on exit.",
+      "Hints": [
+        "This graph break is fundamental - it is unlikely that Dynamo will ever be able to trace through your code. Consider finding a workaround."
+      ]
+    }
+  ],
   "GB0187": [
     {
       "Gb_type": "functools.wraps",
