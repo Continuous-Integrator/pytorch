@@ -20,13 +20,19 @@ from unittest.mock import patch
 
 import torch
 import torch._functorch.config
-from torch.testing._internal.common_utils import run_tests, TestCase
+from functorch.compile import nop
+from torch._functorch.aot_autograd import aot_function
+from torch.testing._internal.common_utils import run_tests, skipIfTorchDynamo, TestCase
 
 
 trace_log = logging.getLogger("torch.__trace")
 
 
 class TestCodegenOutputAlias(TestCase):
+    def setUp(self):
+        super().setUp()
+        torch._dynamo.reset()
+
     @contextmanager
     def _capture_codegen_source(self, artifact_name):
         """Capture codegen artifacts from the structured trace log."""
@@ -486,24 +492,29 @@ class TestCodegenOutputAlias(TestCase):
         self.assertEqual(len(captured), 1)
         self.assertIn("_unsafe_view", captured[0])
 
+    @skipIfTorchDynamo("dynamo handles metadata mutations in-graph")
     def test_xform_metadata_only_mutation(self):
         """
         _transform_raw_returns codegen: when an input has a metadata-only
         mutation (mutates_metadata=True, mutates_data=False), the codegen
         wraps the corresponding mutated input return in TensorAlias.
+        Uses aot_function directly because dynamo handles metadata
+        mutations in-graph, so they never reach the _transform_raw_returns
+        codegen path.
         """
         with self._capture_codegen_source("compiled_fn_wrapper") as captured:
 
-            @torch.compile(backend="aot_eager")
-            def f(x):
-                x.t_()
-                return x + 1
+            def f(a, b):
+                a.transpose_(1, 0)
+                return a + b
 
-            base = torch.randn(2, 3, requires_grad=True)
-            x = base.clone()
-            out = f(x)
+            a = torch.randn(3, 4, requires_grad=True).add(0)
+            b = torch.randn(4, 3)
+            compiled_f = aot_function(f, nop)
+            out = compiled_f(a, b)
 
-        self.assertEqual(out, base.clone().t().add(1))
+        self.assertEqual(a.shape, (4, 3))
+        self.assertEqual(out.shape, (4, 3))
 
         self.assertEqual(len(captured), 1)
         self.assertIn("TensorAlias", captured[0])
@@ -536,21 +547,24 @@ class TestCodegenOutputAlias(TestCase):
         TensorAlias so autograd.Function doesn't treat them as regular
         tensors. Verifies the TensorAlias wrapping path for aliased
         outputs (distinct from the metadata-only mutation wrapping).
+        Needs a non-view computation (x * 2) to force the autograd
+        factory path; a pure view like x.view(-1) alone bypasses it.
         """
         with self._capture_codegen_source("compiled_fn_wrapper") as captured:
 
             @torch.compile(backend="aot_eager")
             def f(x):
-                return x.view(-1)
+                return x * 2, x.view(-1)
 
             x = torch.randn(2, 3, requires_grad=True)
-            out = f(x)
+            out1, out2 = f(x)
 
-        self.assertEqual(out, x.view(-1))
-        self.assertEqual(out.data_ptr(), x.data_ptr())
+        self.assertEqual(out1, x * 2)
+        self.assertEqual(out2, x.view(-1))
+        self.assertEqual(out2.data_ptr(), x.data_ptr())
 
-        out.sum().backward()
-        self.assertEqual(x.grad, torch.ones(2, 3))
+        out1.sum().backward()
+        self.assertEqual(x.grad, torch.full((2, 3), 2.0))
 
         self.assertEqual(len(captured), 1)
         self.assertIn("TensorAlias", captured[0])
