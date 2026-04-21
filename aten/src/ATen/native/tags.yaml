@@ -103,3 +103,6 @@
           arguments are write-only output buffers that are not read from.
           The operator must return exactly the mutable arguments in the order
           they are declared, and nothing else.
+- tag: out_variant
+  desc: |
+          Deprecated, does nothing. Use "out" instead.
