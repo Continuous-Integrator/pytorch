@@ -1457,18 +1457,18 @@ struct C10_API TensorImpl : public c10::intrusive_ptr_target {
     return key_set_.has_all(conjugate_ks);
   }
 
-  // Transmute this meta tensor into a fake tensor. The underlying device_opt_
-  // stays as Meta for dispatch routing, while the fake device is stored in
-  // ExtraMeta and returned by device() via the device_policy_ mechanism.
-  void set_fake_device(c10::Device fake_device) {
-    TORCH_CHECK(
-        fake_device.type() != c10::DeviceType::Meta,
-        "FakeTensor does not support meta device");
-    get_extra_meta().fake_device_ = fake_device;
-    key_set_ = key_set_.add(DispatchKey::Fake);
-    set_custom_device(true);
-    _change_backend_component_keys(fake_device);
-  }
+  /**
+   * Transmute this meta tensor into a fake tensor
+   * The underlying device_opt_ stays as Meta for dispatch routing
+   * and fake device is stored in ExtraMeta and returned by device()
+   * via the device_policy_ mechanism
+
+   * also configuring FakeTensor's dispatch logic
+   */
+
+  // corresponds to Python's FakeTensor __init__ logic where fake_device is set
+  // and _normalize_fake_device is called
+  void set_and_normalize_fake_device(c10::Device fake_device);
 
   void set_fake_tensor_mode(std::shared_ptr<FakeTensorMode> mode) {
     get_extra_meta().fake_tensor_mode_ = std::move(mode);
