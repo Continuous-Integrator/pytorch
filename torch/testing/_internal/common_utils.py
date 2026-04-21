@@ -1485,21 +1485,17 @@ def make_lazy_class(cls):
 
         setattr(cls, name, inner_wrapper(name))
 
-    @property
-    def lazy_value(self):
-        if self._cb is not None:
-            self._value = self._cb()
-            self._cb = None
-        return self._value
-
-    cls.value = lazy_value
-
     return cls
 
 
 @make_lazy_class
 class LazyVal:
-    pass
+    @property
+    def value(self):
+        if self._cb is not None:
+            self._value = self._cb()
+            self._cb = None
+        return self._value
 
 
 IS_FILESYSTEM_UTF8_ENCODING = sys.getfilesystemencoding() == 'utf-8'
