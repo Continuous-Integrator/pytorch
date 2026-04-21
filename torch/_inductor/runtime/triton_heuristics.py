@@ -1861,8 +1861,84 @@ class CachingAutotuner(KernelInterface):
             )
             and len(self.launchers) == 1
         ):
-            self._cached_launcher = launcher
+            self._cached_launcher = self._build_fast_launcher(launcher) or launcher
         return result
+
+    def _build_fast_launcher(self, launcher: LauncherType) -> LauncherType | None:
+        """Try to build a _FastCudaLauncher-backed version of the launcher.
+
+        Returns a new launcher function with the runner replaced by a
+        _FastCudaLauncher instance (vectorcall C extension), or None if
+        conditions are not met.  Falls back silently on expected errors,
+        logs a warning on unexpected ones.
+        """
+        import types
+
+        if not self.inductor_meta.get(
+            "use_fast_triton_launcher",
+            torch._inductor.config.use_fast_triton_launcher,
+        ):
+            return None
+
+        try:
+            from torch._C import _FastCudaLauncher
+        except ImportError:
+            return None
+
+        try:
+            # Only works for the static triton launcher path.
+            if not getattr(launcher, "_is_static", False):
+                return None
+
+            # Resolve the bound kernel behind the launcher function.
+            runner = launcher.__globals__.get("runner")
+            if not callable(runner):
+                return None
+            kernel = runner.__self__
+            cu_function = kernel.function
+            num_warps = kernel.num_warps
+            shared = kernel.shared
+            arg_tys = kernel.arg_tys
+
+            n_scratch = sum(
+                [
+                    getattr(kernel, "has_global_scratch", False),
+                    getattr(kernel, "has_profile_scratch", False),
+                ]
+            )
+            if torch.version.hip:
+                n_scratch = max(n_scratch, 2)
+
+            fast_runner = _FastCudaLauncher(
+                cu_function, num_warps, shared, arg_tys, n_scratch
+            )
+
+            new_globals = {**launcher.__globals__, "runner": fast_runner}
+            new_launcher = types.FunctionType(
+                launcher.__code__,
+                new_globals,
+                launcher.__name__,
+            )
+            for attr in (
+                "config",
+                "n_regs",
+                "n_spills",
+                "shared",
+                "cache_hash",
+                "store_cubin",
+                "_is_static",
+            ):
+                val = getattr(launcher, attr, None)
+                if val is not None:
+                    setattr(new_launcher, attr, val)
+            return new_launcher
+        except (AttributeError, TypeError, KeyError):
+            # Expected failures - silent fallback is OK
+            return None
+        except Exception:
+            # Unexpected failures - log for debugging
+            log.warning("Unexpected error building fast launcher", exc_info=True)
+            return None
 
     def _interpret_args_grid(
         self, args: tuple[Any, ...], cfg: Config
