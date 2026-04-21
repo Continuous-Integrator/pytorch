@@ -96,6 +96,17 @@ def _validate_out_schema(schema: "str | torch._C.FunctionSchema") -> None:
             f"keyword-only (after the *). Found mutable positional args: {names}. "
             f"Got: {schema}"
         )
+    unsupported_mutable = [
+        arg
+        for arg in mutable_args
+        if isinstance(arg.type, (torch.OptionalType, torch.ListType))
+    ]
+    if unsupported_mutable:
+        names = [a.name for a in unsupported_mutable]
+        raise ValueError(
+            f"Schema tagged with torch.Tag.out only supports Tensor mutable arguments. "
+            f"Found unsupported mutable args: {names}. Got: {schema}"
+        )
     returns = schema.returns
     if len(returns) != len(mutable_args):
         raise ValueError(

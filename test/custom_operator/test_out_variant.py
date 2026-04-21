@@ -9,6 +9,44 @@ from torch.testing._internal.common_utils import (
     run_tests,
     TestCase,
 )
+from torch.testing._internal.logging_utils import logs_to_string
+
+
+_test_lib = torch.library.Library("_TestOutVariant", "DEF")  # noqa: TOR901
+
+_test_lib.define("add(Tensor x, Tensor y) -> Tensor")
+_test_lib.define(
+    "add.out(Tensor x, Tensor y, *, Tensor(a!) out) -> Tensor(a!)",
+    tags=[torch.Tag.out],
+)
+
+
+def _add_out_impl(x: Tensor, y: Tensor, *, out: Tensor) -> Tensor:
+    out.copy_(x + y)
+    return out
+
+
+_test_lib.impl("add.out", _add_out_impl, "CompositeExplicitAutograd")
+_test_lib.impl("add.out", lambda x, y, *, out: out, "Meta")
+
+_test_lib.define(
+    "add_mul.out(Tensor x, Tensor y, *, Tensor(a!) add_out, Tensor(b!) mul_out) -> (Tensor(a!), Tensor(b!))",
+    tags=[torch.Tag.out],
+)
+
+
+def _add_mul_out_impl(
+    x: Tensor, y: Tensor, *, add_out: Tensor, mul_out: Tensor
+) -> tuple[Tensor, Tensor]:
+    add_out.copy_(x + y)
+    mul_out.copy_(x * y)
+    return add_out, mul_out
+
+
+_test_lib.impl("add_mul.out", _add_mul_out_impl, "CompositeExplicitAutograd")
+_test_lib.impl(
+    "add_mul.out", lambda x, y, *, add_out, mul_out: (add_out, mul_out), "Meta"
+)
 
 
 class TestOutVariant(TestCase):
@@ -263,6 +301,24 @@ class TestOutVariant(TestCase):
                 tags=[torch.Tag.out],
             )
 
+    def test_define_out_tag_optional_mutable_arg(self):
+        with self.assertRaisesRegex(
+            ValueError, "only supports Tensor mutable arguments"
+        ):
+            self.lib.define(
+                "mut_opt(Tensor x, *, Tensor(a!)? out=None) -> Tensor(a!)?",
+                tags=[torch.Tag.out],
+            )
+
+    def test_define_out_tag_tensorlist_mutable_arg(self):
+        with self.assertRaisesRegex(
+            ValueError, "only supports Tensor mutable arguments"
+        ):
+            self.lib.define(
+                "mut_list(Tensor x, *, Tensor(a!)[] out) -> ()",
+                tags=[torch.Tag.out],
+            )
+
     def test_define_out_tag_return_not_mutable_alias(self):
         with self.assertRaisesRegex(ValueError, "mutable alias"):
             self.lib.define(
@@ -270,50 +326,8 @@ class TestOutVariant(TestCase):
                 tags=[torch.Tag.out],
             )
 
-    def _define_multi_out_op(self):
-        """Helper: defines an op with two out tensors."""
-        self.lib.define(
-            "add_mul.out(Tensor x, Tensor y, *, Tensor(a!) add_out, Tensor(b!) mul_out) -> (Tensor(a!), Tensor(b!))",
-            tags=[torch.Tag.out],
-        )
-
-        def add_mul_out_impl(
-            x: Tensor, y: Tensor, *, add_out: Tensor, mul_out: Tensor
-        ) -> tuple[Tensor, Tensor]:
-            add_out.copy_(x + y)
-            mul_out.copy_(x * y)
-            return add_out, mul_out
-
-        def add_mul_out_meta(
-            x: Tensor, y: Tensor, *, add_out: Tensor, mul_out: Tensor
-        ) -> tuple[Tensor, Tensor]:
-            return add_out, mul_out
-
-        self.lib.impl("add_mul.out", add_mul_out_impl, "CompositeExplicitAutograd")
-        self.lib.impl("add_mul.out", add_mul_out_meta, "Meta")
-
-    def _define_simple_out_op(self):
-        """Helper: defines mylib::add_out with CompositeExplicitAutograd + Meta impls."""
-        self.lib.define("add(Tensor x, Tensor y) -> Tensor")
-        self.lib.define(
-            "add.out(Tensor x, Tensor y, *, Tensor(a!) out) -> Tensor(a!)",
-            tags=[torch.Tag.out],
-        )
-
-        def add_out_impl(x: Tensor, y: Tensor, *, out: Tensor) -> Tensor:
-            out.copy_(x + y)
-            return out
-
-        def add_out_meta(x: Tensor, y: Tensor, *, out: Tensor) -> Tensor:
-            return out
-
-        self.lib.impl("add.out", add_out_impl, "CompositeExplicitAutograd")
-        self.lib.impl("add.out", add_out_meta, "Meta")
-
     @parametrize("backend", ("aot_eager", "inductor"))
     def test_compile_out(self, backend):
-        self._define_simple_out_op()
-
         def fn(x, y, out):
             return torch.ops._TestOutVariant.add.out(x, y, out=out)
 
@@ -326,26 +340,78 @@ class TestOutVariant(TestCase):
         self.assertEqual(result, x + y)
         self.assertEqual(out, x + y)
 
+    def test_compile_out_functionalized_graph(self):
+        from torch._functorch.aot_autograd import aot_function
+
+        def fn(x, y, out):
+            return torch.ops._TestOutVariant.add.out(x, y, out=out)
+
+        graphs = []
+
+        def fw_compiler(gm, example_inputs):
+            graphs.append(gm)
+            return gm.forward
+
+        x = torch.randn(3, 4)
+        y = torch.randn(3, 4)
+        out = torch.empty(3, 4)
+
+        aot_fn = aot_function(fn, fw_compiler=fw_compiler)
+        aot_fn(x, y, out)
+
+        self.assertExpectedInline(
+            graphs[0].code.strip(),
+            """\
+def forward(self, arg0_1, arg1_1, arg2_1):
+    auto_functionalized_v2 = torch.ops.higher_order.auto_functionalized_v2(torch.ops._TestOutVariant.add.out, x = arg0_1, y = arg1_1, _out_size = (3, 4), _out_stride = (4, 1), _out_dtype = torch.float32, _out_device = device(type='cpu'), _all_bases = []);  arg0_1 = arg1_1 = None
+    getitem_1 = auto_functionalized_v2[1];  auto_functionalized_v2 = None
+    return (getitem_1, getitem_1)""",  # noqa: B950
+        )
+
+    @torch._inductor.config.patch(enable_auto_functionalized_v2=False)
+    def test_compile_out_uses_v2_hop_when_config_off(self):
+        def fn(x, y, out):
+            return torch.ops._TestOutVariant.add.out(x, y, out=out)
+
+        x = torch.randn(3, 4)
+        y = torch.randn(3, 4)
+        out = torch.empty(3, 4)
+
+        log_stream, ctx = logs_to_string(
+            "torch._functorch._aot_autograd.graph_capture", "aot_graphs"
+        )
+        with ctx():
+            result = torch.compile(fn, backend="aot_eager", fullgraph=True)(x, y, out)
+
+        graph = "\n".join(log_stream.getvalue().strip().split("\n")[4:]).strip()
+
+        self.assertEqual(result, x + y)
+        self.assertEqual(out, x + y)
+        self.assertIn("auto_functionalized_v2", graph)
+        self.assertNotIn("torch.ops.higher_order.auto_functionalized(", graph)
+
     @parametrize("backend", ("aot_eager", "inductor"))
     def test_compile_multi_out(self, backend):
-        self._define_multi_out_op()
-
-        def fn(x, y, add_out, mul_out):
+        def fn(x, y):
+            # Out tensors have different dtype and stride to test that
+            # per-tensor properties are handled correctly.
+            add_out = torch.empty(3, 4)
+            mul_out = torch.empty(4, 3, dtype=torch.float64).t()
             return torch.ops._TestOutVariant.add_mul.out(
                 x, y, add_out=add_out, mul_out=mul_out
             )
 
         x = torch.randn(3, 4)
         y = torch.randn(3, 4)
-        add_out = torch.empty(3, 4)
-        mul_out = torch.empty(3, 4)
 
         compiled_fn = torch.compile(fn, backend=backend, fullgraph=True)
-        result = compiled_fn(x, y, add_out, mul_out)
-        self.assertEqual(result[0], x + y)
-        self.assertEqual(result[1], x * y)
-        self.assertEqual(add_out, x + y)
-        self.assertEqual(mul_out, x * y)
+        add_result, mul_result = compiled_fn(x, y)
+        self.assertEqual(add_result, x + y)
+        self.assertEqual(add_result.dtype, torch.float32)
+        self.assertEqual(add_result.stride(), (4, 1))
+        self.assertEqual(mul_result, (x * y).to(torch.float64))
+        self.assertEqual(mul_result.dtype, torch.float64)
+        self.assertEqual(mul_result.stride(), (1, 3))
 
 
 instantiate_parametrized_tests(TestOutVariant)
