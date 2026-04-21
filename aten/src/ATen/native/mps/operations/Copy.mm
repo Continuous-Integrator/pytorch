@@ -116,10 +116,13 @@ static at::Tensor& copy_from_mps_(at::Tensor& dst_, const at::Tensor& src_, bool
     // 4 bytes alignment required on macos for blits.
     TORCH_INTERNAL_ASSERT(destOffset % 4 == 0, "Unaligned blit request");
 
+    c10::Storage dst_storage = dst.storage();
     id<MTLBuffer> destBuffer = [device newBufferWithBytesNoCopy:alignedPtr
                                                          length:alignedLength
                                                         options:options
-                                                    deallocator:nil];
+                                                    deallocator:^(void*, NSUInteger) {
+                                                      (void)dst_storage;
+                                                    }];
     id<MTLBuffer> maybeCastedSourceBuffer = sourceBuffer;
     Tensor maybeCastedSource;
     bool needsBlit = true;
@@ -176,10 +179,13 @@ static void copy_to_mps_stride_contig(at::Tensor& dst, const at::Tensor& src, bo
 
     void* alignedPtr = pageAlignedBlockPtr(host_src, (NSUInteger)size_to_copy, &alignedLength);
     sourceOffset = uintptr_t(host_src) - uintptr_t(alignedPtr);
+    c10::Storage src_storage = src.storage();
     id<MTLBuffer> sourceBuffer = [device newBufferWithBytesNoCopy:alignedPtr
                                                            length:alignedLength
                                                           options:options
-                                                      deallocator:nil];
+                                                      deallocator:^(void*, NSUInteger) {
+                                                        (void)src_storage;
+                                                      }];
 
     uint64_t profile_id =
         getMPSProfiler().beginProfileCopy(sourceBuffer, destBuffer, src, dst, size_to_copy, non_blocking);
