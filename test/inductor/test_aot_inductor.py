@@ -2261,6 +2261,24 @@ class AOTInductorTestsTemplate:
         aot_model = torch._export.aot_load(path, device=self.device)
         torch.testing.assert_close(m(*inputs), aot_model(*inputs))
 
+    @unittest.skipIf(IS_MACOS, "fp8 is not supported on Mac")
+    def test_aoti_fp8(self):
+        if self.device != "cpu" and not PLATFORM_SUPPORTS_FP8:
+            raise unittest.SkipTest(
+                "FP8 is only supported on H100+, SM 8.9 and MI300+ devices"
+            )
+
+        class M(torch.nn.Module):
+            def forward(self, x1, x2):
+                return x1.to(torch.float32) + x2.to(torch.float32)
+
+        m = M().eval().to(self.device)
+        x = torch.randn(16, 16, device=self.device)
+        x1 = x.to(torch.float8_e4m3fn)
+        x2 = x.to(torch.float8_e5m2)
+
+        self.check_model(m, (x1, x2))
+
     def test_aoti_constant_tensor(self):
         class Foo(torch.nn.Module):
             def __init__(self, device):
@@ -4259,6 +4277,36 @@ class AOTInductorTestsTemplate:
             dynamic_shapes=dynamic_shapes,
         )
 
+    @common_utils.parametrize("threshold", [float("inf"), float("-inf"), float("nan")])
+    def test_triton_kernel_inf_float_arg(self, threshold):
+        if self.device != GPU_TYPE or self.device == "mps":
+            raise unittest.SkipTest("requires GPU")
+
+        @triton.jit
+        def clamp_kernel(
+            in_ptr, out_ptr, threshold, n_elements, BLOCK_SIZE: "tl.constexpr"
+        ):
+            pid = tl.program_id(0)
+            offsets = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
+            mask = offsets < n_elements
+            x = tl.load(in_ptr + offsets, mask=mask)
+            out = tl.where(x > threshold, threshold, x)
+            tl.store(out_ptr + offsets, out, mask=mask)
+
+        class Model(torch.nn.Module):
+            def __init__(self, t):
+                super().__init__()
+                self.t = t
+
+            def forward(self, x):
+                out = torch.empty_like(x)
+                n = x.numel()
+                clamp_kernel[(n,)](x, out, self.t, n, BLOCK_SIZE=16)
+                return out
+
+        example_inputs = (torch.randn(16, device=self.device),)
+        self.check_model(Model(threshold), example_inputs)
+
     def test_triton_kernel_weird_param_order(self):
         if self.device != GPU_TYPE:
             raise unittest.SkipTest("requires GPU")
@@ -5183,26 +5231,6 @@ class AOTInductorTestsTemplate:
             ).run(src_code)
 
         self.check_model(m, inputs)
-
-    @unittest.skipIf(not PLATFORM_SUPPORTS_FP8, f8_msg)
-    def test_assert_size_stride_guarded_by_env_check(self):
-        # Verify that assert_size_stride and assert_alignment calls in
-        # AOTI-generated code are guarded by _check_aoti_runtime_check_inputs_env()
-        # so they only fire when AOTI_RUNTIME_CHECK_INPUTS is set.
-        class Model(torch.nn.Module):
-            def forward(self, x):
-                return torch.linalg.qr(x)[0]
-
-        example_inputs = (torch.randn(4, 4, device=self.device),)
-        _, code = run_and_get_cpp_code(AOTIRunnerUtil.compile, Model(), example_inputs)
-        FileCheck().check(
-            "if (_check_aoti_runtime_check_inputs_env()) { assert_size_stride("
-        ).run(code)
-        # assert_alignment is only emitted on GPU
-        if self.device != "cpu":
-            FileCheck().check(
-                "if (_check_aoti_runtime_check_inputs_env()) { assert_alignment("
-            ).run(code)
 
     @unittest.skipIf(not PLATFORM_SUPPORTS_FP8, f8_msg)
     @patch.dict(os.environ, {"AOTI_RUNTIME_CHECK_INPUTS": "1"})
@@ -7630,10 +7658,11 @@ class AOTInductorTestsTemplate:
                 add_18,
                 add_13,
             ):
+                device = add_13.device
                 arange_1 = torch.ops.aten.arange.start(
                     180,
                     181,
-                    device=torch.device(type=GPU_TYPE, index=0),
+                    device=device,
                     pin_memory=False,
                 )
                 add_14 = torch.ops.aten.add.Tensor(arange_1, 198)

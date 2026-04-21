@@ -44,6 +44,7 @@ from torch.utils._mode_utils import no_dispatch
 from torch.utils._python_dispatch import (
     is_traceable_wrapper_subclass,
     TorchDispatchMode,
+    TraceableWrapperSubclass,
 )
 from torch.utils._pytree import KeyPath, keystr, PyTree, tree_map, tree_map_, TreeSpec
 from torch.utils._stats import count
@@ -182,7 +183,9 @@ def disable_fake_tensor_cache(fake_mode: FakeTensorMode) -> Generator[None, None
 
 
 def get_plain_tensors(
-    subclass: Tensor, *, out: list[Tensor | int | SymInt | OpaqueBase]
+    subclass: Tensor | TraceableWrapperSubclass,
+    *,
+    out: list[Tensor | int | SymInt | OpaqueBase],
 ) -> list[Tensor | int | SymInt | OpaqueBase]:
     # This function is used in Runtime, do not add redundant asserts
     todo = [subclass]
@@ -455,6 +458,25 @@ class FakeTensorConverter:
         )
         if out is NotImplemented:
             raise UnsupportedFakeTensorException("meta converter nyi")
+
+        # Propagate grad_dtype here rather than in meta_converter because
+        # meta tensors don't carry autograd metadata.
+        # Unwrap FunctionalTensor because accessing is_leaf/grad_fn on a
+        # FunctionalTensor view whose base was mutated (e.g. via set_())
+        # triggers lazy view replay through __torch_dispatch__, which
+        # errors without an active FunctionalTensorMode.
+        inner_t = (
+            torch._from_functional_tensor(t.elem)
+            if isinstance(t, torch._subclasses.functional_tensor.FunctionalTensor)
+            else t
+        )
+        if (
+            inner_t.requires_grad
+            and inner_t.is_leaf
+            and inner_t.grad_dtype != inner_t.dtype
+            and out.is_leaf
+        ):
+            out.grad_dtype = inner_t.grad_dtype
 
         from torch._dynamo.source import RandomValueSource
 
