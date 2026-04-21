@@ -4,6 +4,7 @@
 #include <c10/core/CopyBytes.h>
 #include <c10/core/InferenceMode.h>
 #include <c10/core/SymIntArrayRef.h>
+#include <c10/core/impl/DeviceGuardImplInterface.h>
 #include <c10/core/impl/LocalDispatchKeySet.h>
 #include <c10/core/impl/PyInterpreter.h>
 #include <c10/core/impl/TorchDispatchModeTLS.h>
@@ -195,6 +196,44 @@ void TensorImpl::_change_backend_component_keys(c10::Device device) {
   key_set_ = key_set | DispatchKeySet(new_backend);
 }
 
+void TensorImpl::set_and_normalize_fake_device(c10::Device fake_device) {
+  TORCH_CHECK(
+      fake_device.type() != c10::DeviceType::Meta,
+      "FakeTensor does not support meta device");
+
+  // normalize device index if not provided
+  // in python FakeTensor, the GPU is also initialized here by making a real tensor
+  // we'll do that at a higher level in the fallback kernel or smth
+  if (fake_device.index() == -1) {
+    const auto* guard_impl =
+        c10::impl::getDeviceGuardImpl(fake_device.type());
+    if (guard_impl) {
+      fake_device = guard_impl->getDevice();
+    }
+    if (fake_device.index() == -1) {
+      fake_device = c10::Device(fake_device.type(), 0);
+    }
+  }
+
+  // in python FakeTensor, it checks whether or not
+  // we are in in_kernel_invocation manager to determine
+  // which device we return
+
+  // but since we have an extra field for fake_device_,
+  // we can just set it upon FakeTensor creation
+  // and determine in device_custom() which device to return
+  // (based on if DispatchKey::Fake is excluded or not)
+  get_extra_meta().fake_device_ = fake_device;
+  key_set_ = key_set_.add(DispatchKey::Fake);
+
+  // we need this so that device() calls device_custom()
+  // where the fake device logic is instead of just calling device_default()
+  set_custom_device(true);
+
+  // change backend key from Meta to the fake device
+  _change_backend_component_keys(fake_device);
+}
+
 void TensorImpl::HandleResize() {
   // If needed, we will free the data. the next mutable_data() call
   // will create the data storage.
@@ -375,7 +414,7 @@ c10::Device TensorImpl::device_custom() const {
   if (C10_UNLIKELY(python_custom_device_)) {
     return pyobj_slot_.load_pyobj_interpreter()->device(this);
   }
-  if (extra_meta_ && extra_meta_->fake_device_.has_value()) {
+  if (C10_UNLIKELY(extra_meta_ && extra_meta_->fake_device_.has_value())) {
     if (c10::impl::tls_is_dispatch_key_excluded(DispatchKey::Fake)) {
       return device_default();
     }
