@@ -11,13 +11,22 @@
 #include <torch/csrc/inductor/aoti_torch/c/shim.h>
 #include <optional>
 
+// Stores the last error from a failed AOTI torch shim call. Lives in the
+// host binary so rebuilding the predictor is sufficient (no model rebuild).
+inline std::string& aoti_torch_last_error() {
+  static thread_local std::string last_error;
+  return last_error;
+}
+
 #define AOTI_TORCH_CONVERT_EXCEPTION_TO_ERROR_CODE(...)    \
   try {                                                    \
     __VA_ARGS__                                            \
   } catch (const std::exception& e) {                      \
+    aoti_torch_last_error() = e.what();                    \
     LOG(ERROR) << "Exception in aoti_torch: " << e.what(); \
     return AOTI_TORCH_FAILURE;                             \
   } catch (...) {                                          \
+    aoti_torch_last_error() = "Unknown exception";         \
     LOG(ERROR) << "Exception in aoti_torch: UNKNOWN";      \
     return AOTI_TORCH_FAILURE;                             \
   }                                                        \
