@@ -152,6 +152,10 @@ output_code_log = torch._logging.getArtifactLogger(__name__, "output_code")
 autotuning_log = torch._logging.getArtifactLogger(__name__, "autotuning")
 log = logging.getLogger(__name__)
 
+FXGRAPH_CACHE_PREFIX = "c"
+AOTAUTOGRAD_CACHE_PREFIX = "a"
+COMPILED_FX_GRAPH_CACHE_PREFIX = "f"
+
 
 def get_cpp_wrapper_cubin_path_name() -> str:
     return "cubin_path" if torch.version.hip is None else "hsaco_path"
@@ -343,7 +347,7 @@ def code_hash(code: str | bytes, extra: str | bytes = "") -> str:
     if extra:
         extra_b = extra if isinstance(extra, bytes) else extra.encode("utf-8")
         hashing_str = hashing_str + b"||" + extra_b
-    return "c" + sha256_hash(hashing_str)
+    return FXGRAPH_CACHE_PREFIX + sha256_hash(hashing_str)
 
 
 def get_path(
@@ -523,6 +527,7 @@ class FxGraphCachePickler(pickle.Pickler):
                 torch.Tensor: functools.partial(self._reduce_tensor),
                 torch.nn.parameter.Parameter: functools.partial(self._reduce_tensor),
                 torch.SymInt: functools.partial(self._reduce_symint),
+                torch.SymBool: functools.partial(self._reduce_symbool),
                 torch.fx.experimental._backward_state.BackwardState: functools.partial(
                     self._reduce_unsupported
                 ),
@@ -597,6 +602,14 @@ class FxGraphCachePickler(pickle.Pickler):
         # For hashing purposes, we only care about the name of the symbol and not the
         # backed value. We evaluate guards stored with a cached graph to ensure a cached
         # entity with SymInt args is safe to reuse.
+        return (_ident, (str(s),))
+
+    def _reduce_symbool(self, s: torch.SymBool) -> tuple[Callable[[T], T], tuple[str]]:
+        """
+        Custom reducer to pickle SymBools.
+        """
+        # Same approach as _reduce_symint: use the string representation for
+        # hashing.  Guards ensure correctness on cache reload.
         return (_ident, (str(s),))
 
     def _reduce_unsupported(self, s: Any) -> NoReturn:
@@ -801,6 +814,9 @@ class BypassFxGraphCache(Exception):
     """
 
 
+_warned_pre_grad_pass_missing_uuid: OrderedSet[str] = OrderedSet()
+
+
 def resolve_pre_grad_pass_timing() -> Literal["early", "late"]:
     """Resolve the effective pre-grad pass timing from the config.
 
@@ -822,6 +838,21 @@ def resolve_pre_grad_pass_timing() -> Literal["early", "late"]:
     if timing == "default":
         supports_late = custom_pass is None or has_uuid
         timing = "late" if supports_late else "early"
+        if timing == "early" and custom_pass:
+            pass_name = type(custom_pass).__qualname__
+            if pass_name not in _warned_pre_grad_pass_missing_uuid:
+                _warned_pre_grad_pass_missing_uuid.add(pass_name)
+                log.warning(
+                    "pre_grad_custom_pass %s does not implement uuid(); "
+                    "falling back to early timing (pre-grad pass cache will be bypassed). "
+                    "Implement uuid() on your CustomGraphPass to enable caching.",
+                    pass_name,
+                )
+                CompileEventLogger.try_add_pt2_compile(
+                    "backend_compile",
+                    pre_grad_pass_missing_uuid=True,
+                    pre_grad_pass_name=pass_name,
+                )
 
     if timing == "late" and custom_pass and not has_uuid:
         raise RuntimeError(
@@ -844,8 +875,10 @@ class FxGraphHashDetails:
     a safe and stable cache key.
     """
 
-    # Excluded kwargs param that are not stable between runs
-    EXCLUDED_KWARGS = ["graph_id"]
+    # Excluded kwargs param that are not stable between runs or that
+    # don't affect compiled output (like compile_region_name which is
+    # just a debug label).
+    EXCLUDED_KWARGS = ["graph_id", "compile_region_name"]
 
     def __init__(
         self,
@@ -949,6 +982,12 @@ class FxGraphHashDetails:
             torch.is_deterministic_algorithms_warn_only_enabled(),
             torch.utils.deterministic.fill_uninitialized_memory,  # type: ignore[attr-defined]
         )
+
+        # Provenance tracking level affects whether provenance data is stored
+        # in the CompiledFxGraph, so it must be part of the cache key.
+        # Note: the "trace" prefix is excluded from _cache_config_ignore_prefix,
+        # so we add this explicitly.
+        self.provenance_tracking_level = config.trace.provenance_tracking_level
 
         # Global settings affecting matmul codegen.
         self.cuda_matmul_settings = (
@@ -1089,7 +1128,7 @@ def compiled_fx_graph_hash(
 
     # The prefix distinguishes among the other kinds of objects we
     # cache in this module.
-    key = "f" + pickler.get_hash(details)
+    key = COMPILED_FX_GRAPH_CACHE_PREFIX + pickler.get_hash(details)
     debug_lines = pickler.debug_lines(details)
     debug_str = "\n".join(debug_lines)
     log.debug(f"FX graph cache hash details for key {key}:\n{debug_str}")  # noqa: G004
@@ -1737,7 +1776,7 @@ class FxGraphCache(GuardedCache[CompiledFxGraph]):
             )
         except BypassFxGraphCache as e:
             counters["inductor"]["fxgraph_cache_bypass"] += 1
-            log.info("Bypassing FX Graph Cache because '%s'", e)  # noqa: G200
+            log.info("Bypassing FX Graph Cache because '%s'", e)
             if remote:
                 log_cache_bypass("bypass_fx_graph", str(e))
             cache_info = {
@@ -2564,9 +2603,13 @@ end
                     f.write(json.dumps(qual_name_to_id))
                 generated_files.append(constants_config_json)
 
-            gpu_codecache: ROCmCodeCache | CUDACodeCache = (
-                ROCmCodeCache() if torch.version.hip else CUDACodeCache()
-            )
+            cache_cls = {
+                "rocm": ROCmCodeCache,
+                "cuda": CUDACodeCache,
+                "xpu": XPUCodeCache,
+            }.get("rocm" if torch.version.hip else device_type, CUDACodeCache)
+
+            gpu_codecache = cache_cls()
             gpu_kernels_o = gpu_codecache.aot_kernels_o.copy()
             # clear the list of aot kernels after each linking
             gpu_codecache.aot_kernels_o.clear()
@@ -2693,6 +2736,26 @@ end
                 aot_mode=graph.aot_mode,
                 use_relative_path=use_relative_path,
             )
+
+            if gpu_kernels_o and device_type == "xpu":
+                so_build_options = CppTorchDeviceOptions(
+                    compiler="icpx",
+                    vec_isa=picked_vec_isa,
+                    device_type=device_type,
+                    aot_mode=graph.aot_mode,
+                    use_relative_path=use_relative_path,
+                    extra_flags=[
+                        "-fsycl",
+                        "-fsycl-targets=intel_gpu_pvc",
+                        "-Xspirv-translator",
+                        (
+                            "-spirv-ext="
+                            "+SPV_INTEL_split_barrier,"
+                            "+SPV_INTEL_2d_block_io,"
+                            "+SPV_INTEL_subgroup_matrix_multiply_accumulate"
+                        ),
+                    ],
+                )
 
             obj_srcs = [wrapper_o, kernel_o, consts_o, *gpu_kernels_o, *cubins_o]
             so_builder = CppBuilder(
@@ -4015,8 +4078,12 @@ class DLLWrapper:
     ) -> None:
         self.lib_path = lib_path
         self.is_open = False
-        self.DLL = cdll.LoadLibrary(lib_path)
-        self.is_open = True
+        self.open()
+
+    def open(self) -> None:
+        if not self.is_open:
+            self.DLL = cdll.LoadLibrary(self.lib_path)
+            self.is_open = True
 
     def close(self) -> None:
         if self.is_open:
@@ -4025,7 +4092,16 @@ class DLLWrapper:
 
     def _dlclose(self) -> None:
         f_dlclose = None
+        # During Python interpreter shutdown, importing modules or calling
+        # dlclose is unsafe. Silently skip cleanup in that case.
+        try:
+            import sys
 
+            if sys.is_finalizing():
+                return
+        except Exception:
+            # import machinery may already be torn down
+            return
         if is_linux():
             syms = CDLL(None)
             if not hasattr(syms, "dlclose"):
@@ -4250,7 +4326,7 @@ class CUTLASSCodeCache:
                         f.write(f"// {cls._BACKEND} {operation_name} cmd\n// {cmd}\n")
                     start_time = time()
                     log.debug("%s %s: %s", cls._BACKEND, operation_name, cmd)
-                    cmd_parts = cmd.split(" ")
+                    cmd_parts = shlex.split(cmd)
                     try:
                         if cls._use_re_build():
                             from triton.fb.re_build_helper import run_build_command
@@ -4397,6 +4473,63 @@ class CUDACodeCache(CUTLASSCodeCache):
             ]
         )
         return extra
+
+
+from torch._inductor.codegen.xpu import compile_utils as xpu_compile_utils
+
+
+@clear_on_fresh_cache
+class XPUCodeCache(CUTLASSCodeCache):
+    _SOURCE_CODE_SUFFIX = "cpp"
+    _BACKEND = "XPU"
+    dll_cache: dict[str, DLLWrapper] = {}
+
+    @classmethod
+    def _use_re_build(cls) -> bool:
+        return False
+
+    @classmethod
+    def _compile_command(
+        cls,
+        src_files: list[str],
+        dst_file: str,
+        dst_file_ext: str,
+        extra_args: list[str] | None = None,
+    ) -> str:
+        return xpu_compile_utils.xpu_compile_command(
+            src_files, dst_file, dst_file_ext, extra_args=extra_args
+        )
+
+    @classmethod
+    def _source_code_extra(cls) -> str:
+        extra = repr(
+            [
+                xpu_compile_utils._sycl_compiler(),
+                xpu_compile_utils._sycl_compiler_options(),
+                cutlass_key(),
+            ]
+        )
+        return extra
+
+    @classmethod
+    def load(cls, source_code: str, dst_file_ext: str) -> tuple[DLLWrapper, str, str]:
+        """
+        Compiles source code and loads the generated .so file.
+        Returns a tuple of DLLWrapper, hash_key, source_code_path
+        """
+
+        if dst_file_ext != "so":
+            raise RuntimeError(
+                f"Only support loading a .so file for now. "
+                f"Requested file extension: {dst_file_ext}. Source code: {source_code}"
+            )
+        dst_file_path, hash_key, source_code_path = cls.compile(
+            source_code, dst_file_ext
+        )
+        if dst_file_path not in cls.dll_cache:
+            cls.dll_cache[dst_file_path] = DLLWrapper(dst_file_path)
+
+        return (cls.dll_cache[dst_file_path], hash_key, source_code_path)
 
 
 @clear_on_fresh_cache
