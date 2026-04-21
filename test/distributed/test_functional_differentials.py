@@ -29,7 +29,7 @@ if not dist.is_available():
 DEVICE = "cuda"
 devices = ["cpu"]
 if ACCELERATOR_TYPE:
-    devices += [ACCELERATOR_TYPE]
+    devices += [ACCELERATOR_TYPE.value]
 
 
 def with_comms(func=None):
