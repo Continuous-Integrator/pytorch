@@ -735,7 +735,7 @@ def _do_auto_functionalize_v2_for_out_operator(
     )
 
     # Sync the created out tensors back to the original FunctionalTensors
-    for orig_arg, result in zip(out_arg_originals, unwrapped_mutable_out):
+    for orig_arg, result in zip(out_arg_originals, unwrapped_mutable_out, strict=True):
         ctx.replace(orig_arg, result)
         ctx.commit_update(orig_arg)
         ctx.sync(orig_arg)
@@ -1025,7 +1025,7 @@ def auto_functionalized_v2_dense(
 
 
 def _generate_new_op_kwargs_from_bases(
-    schema, kwargs, all_bases, _only_clone_these_bases, _is_out=False
+    schema, kwargs, all_bases, _only_clone_these_bases, _is_out
 ):
     mutable_args_names, mutable_args_types = get_mutable_args_from_schema(schema)
 
@@ -1130,6 +1130,7 @@ def auto_functionalized_v2_proxy(
             {k: v for k, v in kwargs.items() if k not in ("_all_bases", "_op_schema")},
             all_bases,
             _only_clone_these_bases,
+            _is_out=False,
         )
 
         _, materialized_kwargs = materialize_callable_in_args(

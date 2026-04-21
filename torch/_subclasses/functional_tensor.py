@@ -505,6 +505,7 @@ class FunctionalTensorMode(TorchDispatchMode):
             import torch._inductor.config as inductor_config
 
             if torch.compiler.is_exporting():
+                # NB: out= ops are not yet handled here; they only go through v2 below.
                 if export_config.enable_auto_functionalized_v2_for_export:
                     return do_auto_functionalize_v2(self, func, args, kwargs)
 
