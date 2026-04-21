@@ -546,7 +546,7 @@ class TensorVariable(VariableTracker):
                 tx, [self, VariableTracker.build(tx, name)], {}
             )
             # in the event that TensorVariable returns NotImplemented
-            # BuiltinVariable.call_getattr returns GetAttrVariable
+            # GetAttrBuiltinVariable.call_function returns GetAttrVariable
             ret_val = not isinstance(var, GetAttrVariable)
         except (AttributeError, ObservedAttributeError):
             ret_val = False
@@ -574,7 +574,7 @@ class TensorVariable(VariableTracker):
                 )
             elif name in self._strict_mode_conditional_banned_ops():
                 raise UnknownPropertiesDuringBackwardTrace(
-                    f"Unknown property {name} during speculating backward, dynamo will insert contiguous call ahead and speculate it again"  # noqa: B950
+                    f"Unknown property {name} during speculating backward, dynamo will insert contiguous call ahead and speculate it again"
                 )
 
         if name == "__class__":
