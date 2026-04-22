@@ -1239,42 +1239,30 @@ class TestFullyShard1DTrainingCompose(FSDPTest):
         dim, vocab_size = 32, 128
 
         class _Raiser(nn.Module):
-            def __init__(self) -> None:
+            def __init__(self, wrapped: nn.Module) -> None:
                 super().__init__()
+                self.wrapped = wrapped
                 self.armed = False
 
             def forward(self, x: torch.Tensor) -> torch.Tensor:
                 if self.armed:
                     raise RuntimeError("boom")
-                return x
-
-        class Model(nn.Module):
-            def __init__(self) -> None:
-                super().__init__()
-                self.embed = nn.Embedding(vocab_size, dim)
-                self.raiser = _Raiser()
-                self.norm = nn.RMSNorm(dim)
-                self.head = nn.Linear(dim, vocab_size, bias=False)
-
-            def forward(
-                self, tokens: torch.Tensor, *, skip_head: bool = False
-            ) -> torch.Tensor:
-                h = self.norm(self.raiser(self.embed(tokens)))
-                return h if skip_head else self.head(h)
+                return self.wrapped(x)
 
         torch.manual_seed(42)
-        model = Model().to(device_type)
+        model = ChunkedHeadModel(dim, vocab_size, tie=False).to(device_type)
+        model.body = _Raiser(model.body)
         with torch.no_grad():
-            for param in model.parameters():
-                dist.broadcast(param, src=0)
+            for p in model.parameters():
+                dist.broadcast(p, src=0)
         fully_shard([model.norm, model.head])
         fully_shard(model)
         tokens = torch.randint(0, vocab_size, (2, 16), device=device_type.type)
 
-        model.raiser.armed = True
+        model.body.armed = True
         with self.assertRaises(RuntimeError):
             model(tokens, skip_head=True)
-        model.raiser.armed = False
+        model.body.armed = False
 
         model.reset_iter_state()
 
@@ -1354,26 +1342,11 @@ class TestFullyShard1DTrainingCompose(FSDPTest):
         """
         dim, vocab_size = 32, 128
 
-        class Model(nn.Module):
-            def __init__(self) -> None:
-                super().__init__()
-                self.embed = nn.Embedding(vocab_size, dim)
-                self.norm = nn.RMSNorm(dim)
-                self.head = nn.Linear(dim, vocab_size, bias=False)
-
-            def forward(
-                self, tokens: torch.Tensor, *, skip_head: bool = False
-            ) -> torch.Tensor:
-                h = self.norm(self.embed(tokens))
-                if skip_head:
-                    return h
-                return self.head(h)
-
         torch.manual_seed(42)
-        model = Model().to(device_type)
+        model = ChunkedHeadModel(dim, vocab_size, tie=False).to(device_type)
         with torch.no_grad():
-            for param in model.parameters():
-                dist.broadcast(param, src=0)
+            for p in model.parameters():
+                dist.broadcast(p, src=0)
         fully_shard([model.norm, model.head])
         fully_shard(model)
 
