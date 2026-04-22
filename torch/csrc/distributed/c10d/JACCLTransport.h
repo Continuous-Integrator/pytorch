@@ -39,8 +39,6 @@ inline std::pair<int, int64_t> bufferSizeFromMessage(int64_t msg) {
   return {0, FRAME_SIZE};
 }
 
-// --- TCP utilities for side channel ---
-
 struct Address {
   sockaddr_storage addr;
   socklen_t len;
@@ -73,8 +71,6 @@ class TCPSocket {
   int sock_;
 };
 
-// --- IBV wrapper (dynamically loaded) ---
-
 struct IBVWrapper {
   IBVWrapper();
   bool isAvailable() const {
@@ -106,8 +102,6 @@ struct IBVWrapper {
 
 IBVWrapper& ibv();
 bool isAvailable();
-
-// --- RDMA primitives ---
 
 struct Destination {
   int localId;
@@ -160,19 +154,8 @@ struct Connection {
   ibv_cq* completionQueue;
   ibv_qp* queuePair;
   Destination src;
-  // Index into our port's GID table that holds the GID we advertise and use
-  // as source. Apple's rdma driver populates the table with one entry per IP
-  // the netdev actually owns plus one EUI-64 entry the OS does NOT bind —
-  // picking the wrong one makes IPv6 ND hang. Resolved in info() by matching
-  // GID entries against getifaddrs() output for the underlying interface.
   uint8_t sgidIndex = 0;
-  // Cached port active_mtu from queryPort. Used as path_mtu for RTR — setting
-  // path_mtu > active_mtu is illegal and gets the driver to reject the RTR
-  // transition. 0 means "not queried yet".
   ibv_mtu activeMtu = static_cast<ibv_mtu>(0);
-  // Underlying network interface name (e.g. "en2"), derived from the RDMA
-  // device name by stripping the "rdma_" prefix. Needed in info() to look up
-  // which IPs the OS owns on this port so we pick a bound GID.
   std::string ifaceName;
 
   explicit Connection(ibv_context* ctx, std::string ifaceName = {});
@@ -205,8 +188,6 @@ inline int pollConnections(
     ibv_wc* wc) {
   int completions = 0;
   for (auto& c : connections) {
-    // Skip the self-slot (no RDMA context) rather than breaking — otherwise
-    // ranks whose self-index is not the last would never poll later peers.
     if (c.ctx == nullptr) {
       continue;
     }
@@ -231,8 +212,6 @@ inline int pollConnections(
   return completions;
 }
 
-// --- Side channel for QP info exchange ---
-
 class SideChannel {
  public:
   SideChannel(int rank, int size, const char* addr);
@@ -249,8 +228,6 @@ class SideChannel {
   int size_;
   std::vector<TCPSocket> sockets_;
 };
-
-// --- Mesh allreduce implementation ---
 
 class MeshImpl {
  public:
@@ -288,8 +265,6 @@ class MeshImpl {
   std::span<SharedBuffer> buffers_;
 };
 
-// --- High-level JACCL transport for ProcessGroupMPS ---
-
 class JACCLTransport {
  public:
   JACCLTransport(int rank, int size, const char* coordinatorAddr,
@@ -313,8 +288,6 @@ class JACCLTransport {
 };
 
 } // namespace c10d::jaccl
-
-// --- Template implementations ---
 
 namespace c10d::jaccl {
 

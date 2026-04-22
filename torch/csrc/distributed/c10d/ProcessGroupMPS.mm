@@ -11,11 +11,6 @@ namespace c10d {
 
 namespace {
 
-// Apple Silicon MPS tensors are backed by an MTLBuffer in
-// MTLResourceStorageModeShared — the buffer's `contents` pointer is a
-// CPU-addressable unified-memory pointer. Returns nullptr if the tensor
-// isn't eligible for the direct (zero-DtoH/HtoD) RDMA path: non-MPS
-// device, private storage, or non-contiguous layout.
 void* mpsHostPtr(const at::Tensor& tensor) {
   if (!tensor.device().is_mps() || !tensor.is_contiguous()) {
     return nullptr;
@@ -32,9 +27,6 @@ void* mpsHostPtr(const at::Tensor& tensor) {
       tensor.storage_offset() * tensor.itemsize();
 }
 
-// Probe the local host for an RDMA device whose ibv_alloc_pd succeeds.
-// Returns the device name (e.g. "rdma_en2") or an empty string if none is
-// usable. JACCL_DEVICE can force a specific device name.
 std::string probeRDMADevice() {
 #if HAVE_JACCL
   if (!jaccl::isAvailable()) {
@@ -74,8 +66,6 @@ std::string probeRDMADevice() {
 }
 
 } // namespace
-
-// --- WorkMPS ---
 
 ProcessGroupMPS::WorkMPS::WorkMPS(
     OpType opType,
@@ -125,12 +115,8 @@ void ProcessGroupMPS::WorkMPS::finishWorkError(
   finishAndThrow(eptr);
 }
 
-// --- ProcessGroupMPS::Options ---
-
 ProcessGroupMPS::Options::Options(std::chrono::milliseconds timeout)
     : Backend::Options(MPS_BACKEND_NAME, timeout) {}
-
-// --- ProcessGroupMPS ---
 
 ProcessGroupMPS::ProcessGroupMPS(
     const c10::intrusive_ptr<Store>& store,
@@ -147,11 +133,6 @@ ProcessGroupMPS::ProcessGroupMPS(
       "but this build does not include JACCL support. Use the 'gloo' backend for "
       "CPU-based distributed training.");
 #else
-  // Each rank probes its local RDMA stack and publishes the result to the
-  // store. JACCL is only usable if every rank reports success — otherwise
-  // init would split-brain (one rank accepting on SideChannel, another never
-  // connecting). If anyone fails we refuse construction with a clear error;
-  // users on non-TB5 setups should select the gloo backend instead.
   std::string firstDevice = probeRDMADevice();
 
   std::vector<uint8_t> flag(1, firstDevice.empty() ? 0 : 1);
@@ -181,18 +162,11 @@ ProcessGroupMPS::ProcessGroupMPS(
       "rdma_en* device). Check your Thunderbolt 5 cable and network setup, or "
       "use the 'gloo' backend for CPU-based distributed training.");
 
-  // Build device name list: use the local probed device for all peers.
-  // (Apple's librdma opens a local device; the peer identity is resolved
-  // through the side-channel's Destination exchange, not via this list.)
   std::vector<std::string> deviceNames(size);
   for (int i = 0; i < size; i++) {
     deviceNames[i] = (i == rank) ? "" : firstDevice;
   }
 
-  // Exchange coordinator address via store. Use MASTER_ADDR as the host
-  // (rank 0's hostname may not resolve from peers, or may resolve to a
-  // different interface than the one MASTER_ADDR points at). Derive the
-  // port from MASTER_PORT so both ranks agree without DNS.
   std::string coordAddr;
   if (rank == 0) {
     const char* masterAddr = std::getenv("MASTER_ADDR");
@@ -252,11 +226,6 @@ void ProcessGroupMPS::enqueue(std::function<void()> fn) {
 }
 
 at::Tensor ProcessGroupMPS::syncAndCopyToCPU(const at::Tensor& tensor) {
-  // Flush the MPS command buffer and wait for completion. .contiguous()
-  // matters on the CPU-input path: .to(kCPU) is a no-op when tensor is
-  // already on CPU and preserves strides — handing a strided data_ptr to
-  // RDMA would read numel*itemsize contiguous bytes from the storage base
-  // instead of the strided elements.
   at::mps::getDefaultMPSStream()->synchronize(
       at::mps::SyncType::COMMIT_AND_WAIT);
   return tensor.to(at::kCPU).contiguous();
@@ -265,12 +234,6 @@ at::Tensor ProcessGroupMPS::syncAndCopyToCPU(const at::Tensor& tensor) {
 void ProcessGroupMPS::copyToMPS(
     const at::Tensor& cpuTensor,
     at::Tensor& mpsTensor) {
-  // copy_ on this path does not actually leave the HtoD blit fully drained
-  // when it returns — without this explicit sync, only the first chunk of
-  // the destination tensor ends up with the reduced values and reads from
-  // the main thread see stale data. Wait for the stream here so both the
-  // source cpuTensor lifetime and the dest's visibility are settled before
-  // we mark the Work complete.
   mpsTensor.copy_(cpuTensor);
   at::mps::getDefaultMPSStream()->synchronize(
       at::mps::SyncType::COMMIT_AND_WAIT);
@@ -292,10 +255,6 @@ c10::intrusive_ptr<Work> ProcessGroupMPS::allreduce(
 
   auto fn = [this, tensor, reduceOp = opts.reduceOp, work]() mutable {
     try {
-      // Direct path: on Apple Silicon the MPS tensor's storage is already
-      // CPU-addressable (unified memory), so the RDMA worker operates on it
-      // directly. Flush in-flight GPU writes first; CPU-side reduceOp writes
-      // are visible to subsequent GPU ops via StorageModeShared coherence.
       if (void* hostPtr = mpsHostPtr(tensor)) {
         at::mps::getDefaultMPSStream()->synchronize(
             at::mps::SyncType::COMMIT_AND_WAIT);
@@ -306,9 +265,6 @@ c10::intrusive_ptr<Work> ProcessGroupMPS::allreduce(
             tensor.scalar_type(),
             reduceOp);
       } else {
-        // Non-contiguous or other ineligible layout: bounce through a CPU
-        // contiguous tensor. RDMA still drives the reduce; only the staging
-        // hop is different.
         auto cpuTensor = syncAndCopyToCPU(tensor);
         jacclTransport_->allReduce(
             cpuTensor.data_ptr(),

@@ -51,8 +51,6 @@ namespace c10d::jaccl {
 
 namespace {
 
-// Strip the "rdma_" prefix from an RDMA device name to get the underlying
-// network interface name (e.g. "rdma_en2" -> "en2").
 std::string ifaceFromDeviceName(const std::string& deviceName) {
   constexpr const char* prefix = "rdma_";
   constexpr size_t prefixLen = 5;
@@ -62,11 +60,6 @@ std::string ifaceFromDeviceName(const std::string& deviceName) {
   return deviceName;
 }
 
-// Collect the IPv4 + IPv6 addresses bound to `ifaceName`, in a canonical
-// text form that matches what gidToString produces (no scope suffix, lower
-// case). Used to pick a GID whose address the OS actually owns — the kernel
-// only answers Neighbor Discovery for addresses it binds, so a GID chosen
-// from the same set avoids ND black-holes.
 std::unordered_set<std::string> boundAddressesForInterface(
     const std::string& ifaceName) {
   std::unordered_set<std::string> result;
@@ -94,9 +87,6 @@ std::unordered_set<std::string> boundAddressesForInterface(
   return result;
 }
 
-// Render a GID as a canonical IP string. RoCEv2 IPv4-mapped entries (first
-// 10 bytes zero, then 0xff 0xff, then 4 bytes of v4 addr) are rendered as
-// IPv4 so they match getifaddrs output.
 std::string gidToString(const ibv_gid& gid) {
   bool isV4Mapped = true;
   for (int i = 0; i < 10; i++) {
@@ -125,8 +115,6 @@ bool isAllZero(const ibv_gid& gid) {
 
 namespace c10d::jaccl {
 
-// --- TCP utilities ---
-
 Address parseAddress(const std::string& ipPort) {
   auto colon = ipPort.find(":");
   TORCH_CHECK(
@@ -138,8 +126,6 @@ Address parseAddress(const std::string& ipPort) {
 
   struct addrinfo hints, *res;
   std::memset(&hints, 0, sizeof(hints));
-  // TCPSocket and the rest of this file use AF_INET — keep resolution consistent
-  // so bind() doesn't get a sockaddr_in6 from mDNS on macOS.
   hints.ai_family = AF_INET;
   hints.ai_socktype = SOCK_STREAM;
 
@@ -255,8 +241,6 @@ TCPSocket TCPSocket::connect(
   return TCPSocket(sock);
 }
 
-// --- IBVWrapper ---
-
 IBVWrapper::IBVWrapper() {
   handle_ = dlopen("librdma.dylib", RTLD_NOW | RTLD_GLOBAL);
   if (handle_ == nullptr)
@@ -290,8 +274,6 @@ IBVWrapper& ibv() {
 bool isAvailable() {
   return ibv().isAvailable();
 }
-
-// --- SharedBuffer ---
 
 SharedBuffer::SharedBuffer(size_t numBytes)
     : data_(pageAlignedAlloc(numBytes)), numBytes_(numBytes) {}
@@ -329,8 +311,6 @@ ibv_sge SharedBuffer::toScatterGatherEntry(ibv_pd* pd) const {
   entry.lkey = localKey(pd);
   return entry;
 }
-
-// --- Connection ---
 
 Connection::Connection(ibv_context* ctx_, std::string ifaceName_)
     : ctx(ctx_),
@@ -384,9 +364,6 @@ void Connection::createQueuePair() {
   initAttr.cap.max_send_sge = 1;
   initAttr.cap.max_recv_sge = 1;
   initAttr.cap.max_inline_data = 0;
-  // Apple Thunderbolt RDMA's createQp fails on IBV_QPT_RC — this driver
-  // only supports UC (unreliable connected). The mesh only uses SEND/RECV
-  // on a direct link, so UC is fine for our purposes.
   initAttr.qp_type = IBV_QPT_UC;
   initAttr.sq_sig_all = 0;
 
@@ -402,14 +379,6 @@ const Destination& Connection::info() {
   ibv().queryPort(ctx, 1, &portAttr);
   activeMtu = portAttr.active_mtu;
 
-  // Pick a GID whose address the OS actually owns on `ifaceName`. Apple's
-  // rdma driver populates the GID table with one entry per IP bound to the
-  // netdev plus one MAC-derived EUI-64 link-local that the OS does NOT bind.
-  // Picking the EUI-64 entry makes the peer's kernel silently drop ND
-  // queries during modifyQp(RTR) (we'd hang ~60s and fail with ETIMEDOUT).
-  // Matching against getifaddrs() output instead guarantees we advertise an
-  // address the peer's OS answers for, so ND succeeds natively — no static
-  // neighbor entry / no sudo / no setup needed.
   auto bound = boundAddressesForInterface(ifaceName);
   ibv_gid gid{};
   int pickedIndex = -1;
@@ -426,10 +395,6 @@ const Destination& Connection::info() {
   }
 
   if (pickedIndex < 0) {
-    // Fallback: first non-zero GID, with a clear warning. This path is the
-    // old behaviour and will hit the ND hang on stock macOS, but it lets
-    // platforms with a single GID (or where the interface lookup failed)
-    // at least try.
     for (int i = 0; i < limit; i++) {
       ibv_gid candidate{};
       if (ibv().queryGid(ctx, 1, i, &candidate) != 0) continue;
@@ -475,9 +440,6 @@ void Connection::queuePairRtr(const Destination& dst) {
   ibv_qp_attr attr = {};
   memset(&attr, 0, sizeof(attr));
   attr.qp_state = IBV_QPS_RTR;
-  // path_mtu must be <= active_mtu. Hardcoding IBV_MTU_1024 caused the driver
-  // to reject RTR on Apple Thunderbolt RDMA, whose active_mtu is smaller.
-  // Fall back to IBV_MTU_256 (smallest legal value) if we never queried.
   attr.path_mtu = activeMtu != static_cast<ibv_mtu>(0) ? activeMtu : IBV_MTU_256;
   attr.rq_psn = dst.packetSequenceNumber;
   attr.dest_qp_num = dst.queuePairNumber;
@@ -489,8 +451,6 @@ void Connection::queuePairRtr(const Destination& dst) {
 
   if (dst.globalIdentifier.global.interface_id) {
     attr.ah_attr.is_global = 1;
-    // hop_limit=1 gets the packet dropped at the first driver that validates
-    // IPv6 hop_limit after decrement. 64 is the conventional safe value.
     attr.ah_attr.grh.hop_limit = 64;
     attr.ah_attr.grh.dgid = dst.globalIdentifier;
     attr.ah_attr.grh.sgid_index = sgidIndex;
@@ -569,8 +529,6 @@ std::vector<Connection> createConnections(
   return connections;
 }
 
-// --- SideChannel ---
-
 SideChannel::SideChannel(int rank, int size, const char* addr)
     : rank_(rank), size_(size) {
   auto address = parseAddress(addr);
@@ -601,8 +559,6 @@ SideChannel::SideChannel(int rank, int size, const char* addr)
 
 SideChannel::SideChannel(SideChannel&& sc)
     : rank_(sc.rank_), size_(sc.size_), sockets_(std::move(sc.sockets_)) {}
-
-// --- MeshImpl non-template methods ---
 
 void MeshImpl::sendTo(int sz, int rank, int buff) {
   connections_[rank].postSend(
@@ -780,8 +736,6 @@ void MeshImpl::recv(char* outPtr, int64_t nBytes, int src) {
   }
 }
 
-// --- JACCLTransport ---
-
 JACCLTransport::JACCLTransport(
     int rank,
     int size,
@@ -841,10 +795,6 @@ JACCLTransport::JACCLTransport(
     connections_[peer].queuePairInit();
   }
 
-  // Exchange connection info via side channel. Use std::array (trivially
-  // copyable) rather than std::vector — SideChannel::allGather<T> does a raw
-  // memcpy of sizeof(T) bytes per rank, which corrupts a std::vector's
-  // pointer/size/capacity control block.
   std::array<Destination, MESH_MAX_PEERS> info{};
   for (int i = 0; i < size_; i++) {
     info[i] = connections_[i].info();
