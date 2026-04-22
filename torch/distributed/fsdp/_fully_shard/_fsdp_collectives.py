@@ -550,7 +550,6 @@ def foreach_reduce(
     all_reduce_hook: Callable[[torch.Tensor], None] | None,
     force_sum_reduction_for_comms: bool = False,
     label_suffix: str = "",
-    prev_all_reduce_event: torch.Event | None = None,
 ) -> tuple[
     torch.Tensor,
     torch.Event,
@@ -693,9 +692,6 @@ def foreach_reduce(
         with device_handle.stream(all_reduce_stream):
             all_reduce_hook(reduce_output)
     # -- END: ops post reduce_scatter
-
-    if prev_all_reduce_event is not None:
-        all_reduce_stream.wait_event(prev_all_reduce_event)
 
     with device_handle.stream(post_reduce_stream):
         _div_if_needed(reduce_output, postdivide_factor)
