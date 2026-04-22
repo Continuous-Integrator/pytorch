@@ -9,10 +9,10 @@
 
 #include <ATen/Tensor.h>
 #include <ATen/core/DimVector.h>
+#include <c10/core/SymBool.h>
 #include <c10/util/Exception.h>
 #include <c10/util/MaybeOwned.h>
 #include <c10/util/irange.h>
-#include <c10/core/SymBool.h>
 
 #include <functional>
 #include <tuple>
