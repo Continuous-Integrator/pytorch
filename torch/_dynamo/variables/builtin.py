@@ -2179,7 +2179,7 @@ class BuiltinVariable(BaseBuiltinVariable):
         *args: VariableTracker,
         **kwargs: VariableTracker,
     ) -> VariableTracker:
-        from .builder import SourcelessBuilder
+        # ref: https://github.com/python/cpython/blob/v3.13.3/Python/bltinmodule.c#L2822-L2887
 
         if kwargs:
             if not (len(kwargs) == 1 and "strict" in kwargs):
@@ -2190,10 +2190,10 @@ class BuiltinVariable(BaseBuiltinVariable):
                     f"{len(kwargs)} kwargs",
                 )
         strict = kwargs.pop("strict", ConstantVariable.create(False))
-        iter_args = [
-            SourcelessBuilder.create(tx, iter).call_function(tx, [arg], {})
-            for arg in args
-        ]
+        items = []
+        for arg in args:
+            items.append(generic_getiter(tx, arg))
+        iter_args = TupleVariable(items, mutation_type=ValueMutationNew())
         return variables.ZipVariable(
             iter_args,
             strict=strict.as_python_constant(),
@@ -2381,7 +2381,7 @@ class BuiltinVariable(BaseBuiltinVariable):
         self,
         tx: "InstructionTranslator",
         fn: VariableTracker,
-        *seqs: VariableTracker,
+        seq: VariableTracker,
         **kwargs: VariableTracker,
     ) -> VariableTracker:
         strict = ConstantVariable.create(False)
@@ -2403,13 +2403,9 @@ class BuiltinVariable(BaseBuiltinVariable):
                     f"{len(kwargs)} kwargs",
                 )
 
-        seq_list = [
-            seq.unpack_var_sequence(tx) if seq.has_unpack_var_sequence(tx) else seq
-            for seq in seqs
-        ]
         return variables.MapVariable(
             fn,
-            seq_list,  # type: ignore[arg-type]
+            generic_getiter(tx, seq),
             strict=strict.as_python_constant(),
             mutation_type=ValueMutationNew(),
         )
@@ -2417,12 +2413,9 @@ class BuiltinVariable(BaseBuiltinVariable):
     def call_filter(
         self, tx: "InstructionTranslator", fn: VariableTracker, seq: VariableTracker
     ) -> VariableTracker:
-        seq_or_list = (
-            seq.unpack_var_sequence(tx) if seq.has_unpack_var_sequence(tx) else seq
-        )
         return variables.FilterVariable(
             fn,
-            seq_or_list,  # type: ignore[arg-type]
+            generic_getiter(tx, seq),
             mutation_type=ValueMutationNew(),
         )
 
