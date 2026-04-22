@@ -358,23 +358,38 @@ class TestFullyShardHSDPMemory(FSDPTest):
         return min(4, torch.get_device_module(device_type).device_count())
 
     @skip_if_lt_x_gpu(4)
-    @unittest.skipIf(
-        TEST_HPU or TEST_XPU, "HSDP mixed-precision memory test is CUDA-only"
-    )
-    def test_hsdp_mixed_precision_no_buffer_accumulation(self):
-        """Regression guard for https://github.com/pytorch/pytorch/issues/179128:
-        under HSDP with bf16 params + fp32 reduce, the fp32 reduce-scatter
-        output buffers must not accumulate across layers within a single
-        backward pass. The buggy path held O(n_layers) fp32 buffers; the fix
-        limits it to at most 2 simultaneously. Each extra live buffer is
-        ``block_numel / dp_shard_size * 4`` bytes, so peak active GPU memory
-        during backward distinguishes the two paths.
+    @unittest.skipIf(TEST_HPU or TEST_XPU, "HSDP memory budget test is CUDA-only")
+    def test_hsdp_backward_no_buffer_accumulation(self):
+        """Regression guard for https://github.com/pytorch/pytorch/issues/179128
+        and its same-dtype sibling path.
+
+        Under HSDP, reduce-scatter output buffers must not accumulate across
+        layers within a single backward pass. The buggy path held
+        O(n_layers) fp32 buffers; the fix limits the keep-alive to at most
+        2 simultaneously. Parametrized over ``reduce_dtype``:
+
+        - ``fp32`` (reduce_dtype != orig_dtype): the bug's path — the
+          post-reduce cast orphans the fp32 reduce-scatter output, so the
+          ``comm_ctx.all_reduce_state`` keep-alive is load-bearing and its
+          cardinality is what the fix bounds.
+        - ``bf16`` (reduce_dtype == orig_dtype): no cast, param-grad views
+          already hold the reduce output alive, so the keep-alive is
+          refcount-redundant — but the unified code path still runs.
+          Guards against accidental regression of this sub-path (which the
+          original commit message inaccurately called "skipped entirely").
         """
+        self.run_subtests(
+            {"reduce_dtype": [torch.float32, torch.bfloat16]},
+            self._test_hsdp_backward_no_buffer_accumulation,
+        )
+
+    def _test_hsdp_backward_no_buffer_accumulation(self, reduce_dtype: torch.dtype):
         torch.manual_seed(42)
         # Warm up cuBLAS workspaces before measuring the baseline.
         lin = torch.nn.Linear(768, 768, device=device_type)
         lin(torch.randn(2, 768, device=device_type)).sum().backward()
         del lin
+        gc.collect()
         torch.get_device_module(device_type).empty_cache()
         torch.get_device_module(device_type).reset_peak_memory_stats()
         base_mem_mb = _get_peak_active_memory_mb()
@@ -383,14 +398,10 @@ class TestFullyShardHSDPMemory(FSDPTest):
             device_type.type, (2, 2), mesh_dim_names=("dp_replicate", "dp_shard")
         )
         dp_shard_size = mesh["dp_shard"].size()
-        mp = MixedPrecisionPolicy(
-            param_dtype=torch.bfloat16, reduce_dtype=torch.float32
-        )
+        mp = MixedPrecisionPolicy(param_dtype=torch.bfloat16, reduce_dtype=reduce_dtype)
+        reduce_elem_bytes = reduce_dtype.itemsize  # 4 for fp32, 2 for bf16
 
         n_layers = 8
-        # bf16 params with fp32 reduce: orig_dtype != reduce_dtype, so the
-        # post-reduce cast allocates a new tensor and orphans the fp32
-        # reduce-scatter output — the path under test.
         model = Transformer(
             ModelArgs(
                 vocab_size=32,
@@ -412,34 +423,37 @@ class TestFullyShardHSDPMemory(FSDPTest):
         model(inp).sum().backward()
         peak_delta_mb = _get_peak_active_memory_mb() - base_mem_mb
 
-        # Breakdown of the expected peak during HSDP + MP backward (all bf16
-        # params, fp32 reduce). Under the fix, the following components are
-        # simultaneously alive at the peak instant (during a mid-backward
-        # layer's post-reduce):
-        #   - 1x sharded bf16 params (resident for the whole step)
+        # Upper bound on peak HSDP backward memory, simultaneously alive at
+        # a mid-backward layer's post-reduce:
+        #   - 1x sharded bf16 params (resident)
         #   - 1x sharded bf16 grads (fully accumulated at peak)
-        #   - 1x unsharded bf16 block params (prefetched all-gather for the
-        #     next block's backward compute)
-        #   - 2x fp32 reduce-scatter input (current block + previous block
-        #     still held in reduce_scatter_states)
-        #   - 2x fp32 all-reduce output (current block + previous block's
-        #     orphaned buffer held by comm_ctx.all_reduce_state).
-        #     THIS is the term the fix bounds at 2; the bug made it O(n_layers).
-        per_layer_fp32_mb = block_numel * 4 / dp_shard_size / 1e6
+        #   - 1x unsharded bf16 block params (prefetched all-gather)
+        #   - 2x reduce-scatter input in reduce_dtype (current + previous
+        #     held in reduce_scatter_states)
+        #   - 2x reduce-scatter output in reduce_dtype (current + previous
+        #     held by comm_ctx.all_reduce_state).
+        #     THIS is the term the fix bounds at 2; the bug made it
+        #     O(n_layers) in the cast case.
+        # For reduce_dtype == orig_dtype, the RS output term double-counts
+        # the grads term (param-grad views and the keep-alive reference
+        # the same storage), so the bound is looser there — still tight
+        # enough that an O(n_layers) regression would clearly breach it.
+        per_layer_rs_output_mb = block_numel * reduce_elem_bytes / dp_shard_size / 1e6
         expected_peak_mb = (
             2 * model_numel * 2 / dp_shard_size
             + 1 * block_numel * 2
-            + 2 * block_numel * 4
-            + 2 * block_numel * 4 / dp_shard_size
+            + 2 * block_numel * reduce_elem_bytes
+            + 2 * block_numel * reduce_elem_bytes / dp_shard_size
         ) / 1e6
 
         self.assertLessEqual(
             peak_delta_mb,
             expected_peak_mb,
-            f"peak backward memory delta {peak_delta_mb} MB exceeds bound "
-            f"{expected_peak_mb:.1f} MB. fp32 reduce-scatter output buffers "
-            f"may be accumulating across layers (each ~{per_layer_fp32_mb:.1f} "
-            f"MB, n_layers={n_layers}).",
+            f"[reduce_dtype={reduce_dtype}] peak backward memory delta "
+            f"{peak_delta_mb} MB exceeds bound {expected_peak_mb:.1f} MB. "
+            f"Reduce-scatter output buffers may be accumulating across "
+            f"layers (each ~{per_layer_rs_output_mb:.1f} MB, "
+            f"n_layers={n_layers}).",
         )
 
 

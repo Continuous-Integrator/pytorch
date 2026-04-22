@@ -108,6 +108,13 @@ class FSDPCommContext:
         # param grads reference a *previous* reduce_output, not the current
         # one. Storing on comm_ctx (vs per-group) limits liveness to one
         # buffer at a time, avoiding O(n_layers) accumulation in case (1).
+        #
+        # Unified for all HSDP paths, including ``orig_dtype == reduce_dtype``.
+        # In the no-cast / no-accumulation sub-case the keep-alive is
+        # refcount-redundant with param-grad views, but the extra ref plus
+        # the (same-stream, no-op) wait_event are free. Gating on dtype would
+        # duplicate the keep-alive logic without a measurable win; revisit
+        # only if same-dtype HSDP shows a perf regression here.
         self.all_reduce_state: AllReduceState | None = None
         # Post-forward order for explicit backward prefetching
         self.post_forward_order: list[FSDPParamGroup] = []  # will cause ref cycles
