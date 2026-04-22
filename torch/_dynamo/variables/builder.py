@@ -45,6 +45,7 @@ import torch
 from torch import SymInt
 from torch._dispatch.python import enable_python_dispatcher
 from torch._dynamo.graph_bytecode_inputs import (
+    CURRENT_STREAM_INDEX,
     get_external_object_by_index,
     register_user_object,
 )
@@ -117,6 +118,7 @@ from ..source import (
     ChainedSource,
     ConstDictKeySource,
     ConvertIntSource,
+    CurrentStreamSource,
     DictGetItemSource,
     DictSubclassGetItemSource,
     DynamicScalarSource,
@@ -195,12 +197,7 @@ from .ctx_manager import (
     NullContextVariable,
     PreserveVersionContextVariable,
 )
-from .dicts import (
-    ConstDictVariable,
-    DefaultDictVariable,
-    MappingProxyVariable,
-    SetVariable,
-)
+from .dicts import ConstDictVariable, MappingProxyVariable, SetVariable
 from .distributed import WorldMetaClassVariable
 from .functions import (
     BuiltinMethodVariable,
@@ -292,6 +289,7 @@ from .torch_function import (
     TorchFunctionModeVariable,
 )
 from .user_defined import (
+    DefaultDictVariable,
     FrozenDataClassVariable,
     InspectVariable,
     IntWrapperVariable,
@@ -882,14 +880,20 @@ class VariableBuilder:
 
             if istype(value, collections.defaultdict):
                 factory_source = AttrSource(self.source, "default_factory")
-                result = DefaultDictVariable(
+                dict_vt = ConstDictVariable(
                     result,  # type: ignore[arg-type]
-                    type(value),
+                    mutation_type=ValueMutationExisting(),
+                    source=self.source,
+                )
+                result = DefaultDictVariable(
+                    value,
                     default_factory=VariableBuilder(self.tx, factory_source)(
                         value.default_factory
                     ),
+                    dict_vt=dict_vt,
                     source=self.source,
                 )
+                return self.tx.output.side_effects.track_object_existing(value, result)
             elif istype(value, collections.OrderedDict):
                 dict_vt = ConstDictVariable(
                     result,  # type: ignore[arg-type]
@@ -1194,7 +1198,11 @@ class VariableBuilder:
             return StreamContextVariable.create(self.tx, stream_var)
         elif isinstance(value, torch.Stream):
             self.install_guards(GuardBuilder.TYPE_MATCH)
-            index = register_user_object(value, self.source)
+            if isinstance(self.source, CurrentStreamSource):
+                # Reuse the index pre-allocated in SymbolicStreamState.__init__
+                index = CURRENT_STREAM_INDEX
+            else:
+                index = register_user_object(value, self.source)
             stream_proxy = self.tx.output.create_proxy(
                 "call_function", get_external_object_by_index, (index,), {}
             )
@@ -1554,6 +1562,18 @@ class VariableBuilder:
                 value,
                 source=self.source,
             )
+        elif type(value) is torch._C.Generator:
+            # Generator is registered as an opaque reference type for make_fx
+            # tracing, but in dynamo we handle it as a regular object so that
+            # trace_rules-based graph breaks (e.g. initial_seed, manual_seed)
+            # work gracefully — allowing dynamo to compile code before and
+            # after the generator call. TorchScriptObjectVariable's var_getattr
+            # and call_method are decorated with @_raise_hard_error_if_graph_break,
+            # which turns any graph break into a hard error that falls back to
+            # eager for the entire function. Generator methods intentionally
+            # graph-break (they mutate/read RNG state), so they need the
+            # UserDefinedObjectVariable path which supports graceful graph breaks.
+            return self.wrap_user_defined(value)
         elif TorchScriptObjectVariable.is_matching_cls(type(value)):
             from ..source import (
                 FlattenScriptObjectSource,
