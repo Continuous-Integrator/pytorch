@@ -511,11 +511,11 @@ class FSDPParamGroup:
             # ``fully_shard([a, b])`` already registered post_backward this
             # pass; skip to avoid duplicate ``RegisterPostBackwardFunction``
             # autograd nodes.
-            group_first_in_pass = self._training_state != TrainingState.FORWARD
+            entering_forward_pass = self._training_state != TrainingState.FORWARD
             self._training_state = TrainingState.FORWARD
             self.unshard(self.unshard_async_op)
             self.wait_for_unshard()
-            if group_first_in_pass:
+            if entering_forward_pass:
                 args, kwargs = self._register_post_backward_hook(args, kwargs)
             return args, kwargs
 

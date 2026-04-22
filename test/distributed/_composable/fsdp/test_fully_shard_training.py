@@ -773,36 +773,6 @@ class TestFullyShard1DTrainingCompose(FSDPTest):
             return grad.full_tensor()  # full_tensor() already returns a new tensor
         return grad.clone()
 
-    @staticmethod
-    def _full(t: torch.Tensor | None) -> torch.Tensor | None:
-        if t is None:
-            return None
-        return t.full_tensor() if isinstance(t, DTensor) else t
-
-    def _assert_grad_parity(
-        self, model_a: nn.Module, model_b: nn.Module, msg_ctx: str
-    ) -> None:
-        for (a_name, a_p), (_, b_p) in zip(
-            model_a.named_parameters(), model_b.named_parameters()
-        ):
-            self.assertEqual(
-                self._full(a_p.grad),
-                self._full(b_p.grad),
-                msg=f"Grad mismatch for {a_name} ({msg_ctx})",
-            )
-
-    def _assert_param_parity(
-        self, model_a: nn.Module, model_b: nn.Module, msg_ctx: str
-    ) -> None:
-        for (a_name, a_p), (_, b_p) in zip(
-            model_a.named_parameters(), model_b.named_parameters()
-        ):
-            self.assertEqual(
-                self._full(a_p),
-                self._full(b_p),
-                msg=f"Param mismatch for {a_name} ({msg_ctx})",
-            )
-
     @skip_if_lt_x_gpu(2)
     @compiled_fsdp_test(compile_compute_on_module=Transformer)
     @xfailIf(TEST_XPU)  # https://github.com/intel/torch-xpu-ops/issues/1661
@@ -1105,7 +1075,14 @@ class TestFullyShard1DTrainingCompose(FSDPTest):
                     fsdp_head_grad_chunks,
                     msg=f"head.weight.grad {ctx}",
                 )
-                self._assert_grad_parity(model, ungrouped_model, ctx)
+                for (ug_name, ug_p), (_, fsdp_p) in zip(
+                    ungrouped_model.named_parameters(), model.named_parameters()
+                ):
+                    self.assertEqual(
+                        ug_p.grad.to_local(),
+                        fsdp_p.grad.to_local(),
+                        msg=f"Grad mismatch for {ug_name} ({ctx})",
+                    )
 
             if do_parity:
                 ref_loss, ref_head_grad_chunks = _run_chunked(ref_model, torch.float32)
@@ -1125,7 +1102,9 @@ class TestFullyShard1DTrainingCompose(FSDPTest):
                     msg=f"head.weight.grad {ctx}",
                 )
                 self.assertEqual(ref_loss, fsdp_loss, msg=f"Loss {ctx}")
-                self._assert_grad_parity(model, ref_model, ctx)
+                # Checks both grads and params in one call (cheaper: uses
+                # to_local() + distribute_tensor, no all-gather).
+                check_sharded_parity(self, ref_model, model)
                 ref_optim.step()
                 ref_optim.zero_grad(set_to_none=(iter_idx % 2 == 0))
 
@@ -1135,13 +1114,18 @@ class TestFullyShard1DTrainingCompose(FSDPTest):
                 ungrouped_optim.step()
                 ungrouped_optim.zero_grad(set_to_none=(iter_idx % 2 == 0))
 
-            if do_parity:
-                self._assert_param_parity(model, ref_model, f"iter {iter_idx}")
-
             if do_grouping_parity:
-                self._assert_param_parity(
-                    model, ungrouped_model, f"grouped-vs-ungrouped iter {iter_idx}"
-                )
+                for (ug_name, ug_p), (_, fsdp_p) in zip(
+                    ungrouped_model.named_parameters(), model.named_parameters()
+                ):
+                    self.assertEqual(
+                        ug_p.to_local(),
+                        fsdp_p.to_local(),
+                        msg=(
+                            f"Param mismatch grouped-vs-ungrouped for "
+                            f"{ug_name} at iter {iter_idx}"
+                        ),
+                    )
 
     @skip_if_lt_x_gpu(2)
     @compiled_fsdp_test(compile_compute_on_module=ChunkedHeadModel)
@@ -1610,7 +1594,7 @@ class TestFullyShard1DTrainingCompose(FSDPTest):
         backward: both partial forwards must re-register their post_backward
         autograd node. ``_force_complete_incomplete_states`` resets the
         inner group's ``_training_state`` to IDLE so the second forward
-        sees ``group_first_in_pass=True`` and registers normally; without
+        sees ``entering_forward_pass=True`` and registers normally; without
         that reset, backward would hang on a missing reduce-scatter.
         """
         dim, vocab_size = 32, 128
