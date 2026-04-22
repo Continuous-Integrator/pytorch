@@ -76,20 +76,7 @@ static void grid_sampler_2d_mps_impl(Tensor& output,
   auto interpolation_mode = static_cast<GridSamplerInterpolation>(_interpolation_mode);
   auto padding_mode = static_cast<GridSamplerPadding>(_padding_mode);
 
-  auto dims = input.dim();
-
-  GridSamplerParams<4> params;
-  params.sampler_dims = 2;
-  params.align_corners = align_corners;
-
-  for (const auto dim : c10::irange(dims)) {
-    params.output_sizes[dim] = safe_downcast<int32_t, int64_t>(output.size(dim));
-    params.output_strides[dim] = safe_downcast<int32_t, int64_t>(output.stride(dim));
-    params.input_sizes[dim] = safe_downcast<int32_t, int64_t>(input.size(dim));
-    params.input_strides[dim] = safe_downcast<int32_t, int64_t>(input.stride(dim));
-    params.grid_sizes[dim] = safe_downcast<int32_t, int64_t>(grid.size(dim));
-    params.grid_strides[dim] = safe_downcast<int32_t, int64_t>(grid.stride(dim));
-  }
+  GridSamplerParams<4> params(output, input, grid, align_corners);
 
   auto N = output.size(0);
   auto out_H = output.size(2);
@@ -159,20 +146,7 @@ static void grid_sampler_3d_mps_impl(Tensor& output,
   auto grid_size = grid.sizes();
   output.resize_({input_size[0], input_size[1], grid_size[1], grid_size[2], grid_size[3]}, MemoryFormat::Contiguous);
 
-  auto dims = input.dim();
-
-  GridSamplerParams<5> params;
-  params.sampler_dims = sampler_dims;
-  params.align_corners = align_corners;
-
-  for (const auto dim : c10::irange(dims)) {
-    params.output_sizes[dim] = safe_downcast<int32_t, int64_t>(output.size(dim));
-    params.output_strides[dim] = safe_downcast<int32_t, int64_t>(output.stride(dim));
-    params.input_sizes[dim] = safe_downcast<int32_t, int64_t>(input.size(dim));
-    params.input_strides[dim] = safe_downcast<int32_t, int64_t>(input.stride(dim));
-    params.grid_sizes[dim] = safe_downcast<int32_t, int64_t>(grid.size(dim));
-    params.grid_strides[dim] = safe_downcast<int32_t, int64_t>(grid.stride(dim));
-  }
+  GridSamplerParams<5> params(output, input, grid, align_corners);
 
   auto num_threads = output.numel();
   MPSStream* mpsStream = getCurrentMPSStream();

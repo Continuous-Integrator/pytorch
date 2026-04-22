@@ -17,6 +17,7 @@ enum class GridSamplerPadding : int32_t {
 };
 #else
 #include <ATen/native/GridSamplerUtils.h>
+#include <ATen/native/Pool.h>
 using at::native::GridSamplerInterpolation;
 using at::native::GridSamplerPadding;
 #endif
@@ -31,6 +32,26 @@ struct GridSamplerParams {
   ::c10::metal::array<idx_type_t, N> grid_sizes;
   ::c10::metal::array<idx_type_t, N> grid_strides;
   bool align_corners;
+
+#ifndef __METAL_VERSION__
+  GridSamplerParams() = default;
+  GridSamplerParams(
+      const at::TensorBase& output,
+      const at::TensorBase& input,
+      const at::TensorBase& grid,
+      bool align_corners_)
+      : sampler_dims(N - 2), align_corners(align_corners_) {
+    using at::native::safe_downcast;
+    for (unsigned dim = 0; dim < N; dim++) {
+      output_sizes[dim] = safe_downcast<idx_type_t>(output.size(dim));
+      output_strides[dim] = safe_downcast<idx_type_t>(output.stride(dim));
+      input_sizes[dim] = safe_downcast<idx_type_t>(input.size(dim));
+      input_strides[dim] = safe_downcast<idx_type_t>(input.stride(dim));
+      grid_sizes[dim] = safe_downcast<idx_type_t>(grid.size(dim));
+      grid_strides[dim] = safe_downcast<idx_type_t>(grid.stride(dim));
+    }
+  }
+#endif
 };
 
 template <unsigned N = 5, typename idx_type_t = int32_t>
