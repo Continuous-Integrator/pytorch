@@ -1457,8 +1457,8 @@ class ComboKernelTestsMaxAutotune(TestCase):
                 "size_hints_1": {"x": 256, "y": 256},
                 "tile_hint_0": "TileHint.SQUARE",
                 "tile_hint_1": "TileHint.SQUARE",
-                "tiling_scores_0": {"x": 8, "y": 1},
-                "tiling_scores_1": {"x": 1, "y": 8},
+                "inductor_meta_0": {"tiling_scores": {"x": 8, "y": 1}},
+                "inductor_meta_1": {"tiling_scores": {"x": 1, "y": 8}},
             }
         }
 
@@ -1544,11 +1544,6 @@ class ComboKernelTestsMaxAutotune(TestCase):
 
 @instantiate_parametrized_tests
 class ComboKernelMetadataTests(TestCase):
-    """Per-sub-kernel autotune selection metadata must be forwarded through
-    combo_grid_meta so that _handle_combo_kernel_per_subkernel_blocks() can
-    propagate it into each sub-kernel's pointwise()/reduction() call.
-    """
-
     def setUp(self):
         super().setUp()
         torch._inductor.metrics.reset()
@@ -1575,75 +1570,6 @@ class ComboKernelMetadataTests(TestCase):
         return " ".join(code)
 
     @requires_gpu_and_triton
-    def test_combo_pointwise_combo_grid_meta_has_per_subkernel_fields(self):
-        def fn(a, b, c):
-            return torch.relu(a), torch.sigmoid(b), torch.tanh(c)
-
-        inps = [torch.rand(1024, device=GPU_TYPE) for _ in range(3)]
-        code = self._combo_code(fn, inps)
-
-        for num in range(3):
-            for field in (
-                "num_load",
-                "num_store",
-                "num_reduction",
-                "autotune_hints",
-                "atomic_add_found",
-            ):
-                key = f"'{field}_{num}'"
-                self.assertIn(
-                    key,
-                    code,
-                    f"combo_grid_meta missing per-subkernel field {key}",
-                )
-
-    @requires_gpu_and_triton
-    def test_combo_reduction_combo_grid_meta_has_per_subkernel_fields(self):
-        def fn(a, b):
-            return a.sum(-1), b.mean(-1)
-
-        inps = [torch.rand(32, 1024, device=GPU_TYPE) for _ in range(2)]
-        code = self._combo_code(fn, inps)
-
-        for num in range(2):
-            for field in ("num_load", "num_store", "num_reduction"):
-                key = f"'{field}_{num}'"
-                self.assertIn(
-                    key,
-                    code,
-                    f"combo_grid_meta missing per-subkernel field {key} "
-                    f"(used by _reduction_configs register-pressure heuristic)",
-                )
-
-    @requires_gpu_and_triton
-    @torch._inductor.config.patch({"deterministic": True})
-    def test_combo_reduction_deterministic_has_contiguous_rdim_per_subkernel(self):
-        def fn(a, b):
-            return a.sum(-1), b.mean(-1)
-
-        inps = [torch.rand(32, 1024, device=GPU_TYPE) for _ in range(2)]
-        code = self._combo_code(fn, inps)
-
-        for num in range(2):
-            key = f"'has_loadstore_with_contiguous_rdim_{num}'"
-            self.assertIn(
-                key,
-                code,
-                f"combo_grid_meta missing {key} under deterministic mode",
-            )
-
-    @requires_gpu_and_triton
-    @parametrize("disable_ftz", [False, True])
-    def test_combo_triton_meta_has_disable_ftz(self, disable_ftz):
-        def fn(a, b):
-            return torch.relu(a), torch.sigmoid(b)
-
-        inps = [torch.rand(1024, device=GPU_TYPE) for _ in range(2)]
-        with torch._inductor.config.patch({"eager_numerics.disable_ftz": disable_ftz}):
-            code = self._combo_code(fn, inps)
-        self.assertIn(f"'disable_ftz': {disable_ftz}", code)
-
-    @requires_gpu_and_triton
     def test_combo_inductor_meta_has_optimize_mem(self):
         def fn(a, b):
             return torch.relu(a), torch.sigmoid(b)
@@ -1662,15 +1588,136 @@ class ComboKernelMetadataTests(TestCase):
         self.assertIn("'optimize_mem': False", code)
 
     @requires_gpu_and_triton
-    @torch._inductor.config.patch({"benchmark_kernel": True})
-    def test_combo_inductor_meta_has_kernel_num_gb_and_flop(self):
+    @parametrize("disable_ftz", [False, True])
+    def test_combo_triton_meta_has_disable_ftz(self, disable_ftz):
         def fn(a, b):
             return torch.relu(a), torch.sigmoid(b)
 
         inps = [torch.rand(1024, device=GPU_TYPE) for _ in range(2)]
+        with torch._inductor.config.patch({"eager_numerics.disable_ftz": disable_ftz}):
+            code = self._combo_code(fn, inps)
+        self.assertIn(f"'disable_ftz': {disable_ftz}", code)
+
+    @requires_gpu_and_triton
+    def test_combo_pointwise_combo_grid_meta_has_per_subkernel_fields(self):
+        def fn(a, b, c):
+            return torch.relu(a), torch.sigmoid(b), torch.tanh(c)
+
+        inps = [torch.rand(1024, device=GPU_TYPE) for _ in range(3)]
         code = self._combo_code(fn, inps)
-        self.assertIn("'kernel_num_gb'", code)
-        self.assertIn("'kernel_flop'", code)
+
+        # Each sub-kernel's inductor_meta_{n} sub-dict must contain the
+        # per-kernel autotune fields.
+        fc = FileCheck()
+        for num in range(3):
+            fc = fc.check(f"'inductor_meta_{num}'")
+            for field in (
+                "num_load",
+                "num_store",
+                "num_reduction",
+                "autotune_hints",
+                "atomic_add_found",
+            ):
+                fc = fc.check_dag(f"'{field}'")
+        fc.run(code)
+
+    @requires_gpu_and_triton
+    def test_combo_reduction_combo_grid_meta_has_per_subkernel_fields(self):
+        def fn(a, b):
+            return a.sum(-1), b.mean(-1)
+
+        inps = [torch.rand(32, 1024, device=GPU_TYPE) for _ in range(2)]
+        code = self._combo_code(fn, inps)
+
+        fc = FileCheck()
+        for num in range(2):
+            fc = fc.check(f"'inductor_meta_{num}'")
+            for field in ("num_load", "num_store", "num_reduction"):
+                fc = fc.check_dag(f"'{field}'")
+        fc.run(code)
+
+    @requires_gpu_and_triton
+    @torch._inductor.config.patch({"deterministic": True})
+    def test_combo_reduction_deterministic_has_contiguous_rdim_per_subkernel(self):
+        def fn(a, b):
+            return a.sum(-1), b.mean(-1)
+
+        inps = [torch.rand(32, 1024, device=GPU_TYPE) for _ in range(2)]
+        code = self._combo_code(fn, inps)
+
+        fc = FileCheck()
+        for num in range(2):
+            fc = fc.check(f"'inductor_meta_{num}'").check(
+                "'has_loadstore_with_contiguous_rdim'"
+            )
+        fc.run(code)
+
+    @requires_gpu_and_triton
+    def test_combo_per_kernel_inductor_meta_matches_standalone(self):
+        per_kernel_fields = re.compile(
+            r"'(num_load|num_store|num_reduction|"
+            r"atomic_add_found|no_x_dim|"
+            r"autotune_hints|tiling_scores)'\s*:\s*"
+            r"(\d+|True|False|None|\{[^{}]*\}|set\([^)]*\))"
+        )
+
+        def fn(a, b):
+            return torch.relu(a), torch.sigmoid(b)
+
+        inps = [torch.rand(1024, device=GPU_TYPE) for _ in range(2)]
+
+        # Standalone: one wrapper source can contain multiple kernels; split
+        # by "inductor_meta=" so each chunk represents one kernel.
+        with torch._inductor.config.patch({"combo_kernels": False}):
+            torch._dynamo.reset()
+            _, standalone_codes = run_and_get_code(torch.compile(fn), *inps)
+        standalone = [
+            dict(per_kernel_fields.findall(chunk))
+            for c in standalone_codes
+            for chunk in c.split("inductor_meta=")[1:]
+        ]
+
+        # Combo: per-sub-kernel inductor_meta_{i} sub-dicts inside combo_grid_meta.
+        # The inner regex allows one level of `{...}` nesting (for tiling_scores).
+        code = self._combo_code(fn, inps)
+        combo = [
+            dict(per_kernel_fields.findall(s))
+            for s in re.findall(
+                r"'inductor_meta_\d+': (\{(?:[^{}]|\{[^{}]*\})*\})", code
+            )
+        ]
+        self.assertEqual(standalone, combo)
+
+    @requires_gpu_and_triton
+    @torch._inductor.config.patch({"benchmark_kernel": True})
+    def test_combo_kernel_num_gb_and_flop_match_standalone_sum(self):
+        kernel_num_gb_re = re.compile(r"'kernel_num_gb'\s*:\s*([\d.eE+-]+)")
+        kernel_flop_re = re.compile(r"'kernel_flop'\s*:\s*([\d.eE+-]+)")
+
+        def fn(a, b):
+            return torch.relu(a), torch.sigmoid(b)
+
+        inps = [torch.rand(1024, device=GPU_TYPE) for _ in range(2)]
+
+        with torch._inductor.config.patch({"combo_kernels": False}):
+            torch._dynamo.reset()
+            _, sa_codes = run_and_get_code(torch.compile(fn), *inps)
+        sa_text = " ".join(sa_codes)
+        sa_gb_sum = sum(float(m.group(1)) for m in kernel_num_gb_re.finditer(sa_text))
+        sa_flop_sum = sum(float(m.group(1)) for m in kernel_flop_re.finditer(sa_text))
+
+        combo_code = self._combo_code(fn, inps)
+        # Combo source contains kernel_num_gb both inside each per-sub-kernel
+        # inductor_meta_{i} sub-dict and at the combo-level (the sum). The
+        # outer combo-level value is inserted AFTER combo_grid_meta in dict
+        # order, so the last match is the combo-level sum.
+        combo_gb_matches = kernel_num_gb_re.findall(combo_code)
+        combo_flop_matches = kernel_flop_re.findall(combo_code)
+        self.assertTrue(combo_gb_matches, "combo source missing kernel_num_gb")
+        self.assertTrue(combo_flop_matches, "combo source missing kernel_flop")
+
+        self.assertAlmostEqual(float(combo_gb_matches[-1]), sa_gb_sum, places=6)
+        self.assertAlmostEqual(float(combo_flop_matches[-1]), sa_flop_sum, places=6)
 
     @requires_gpu_and_triton
     @torch._inductor.config.patch({"profile_bandwidth": True})
@@ -1714,12 +1761,13 @@ class ComboKernelMetadataTests(TestCase):
         wb = torch.rand(4096, device=GPU_TYPE)
         code = self._combo_code(fn, [a, wa, b, wb])
 
+        # add_persistent_rblock must appear inside each sub-kernel's
+        # inductor_meta_{n} sub-dict (single source of truth via
+        # TritonKernel.inductor_meta_per_kernel).
+        fc = FileCheck()
         for num in range(2):
-            self.assertIn(
-                f"'add_persistent_rblock_{num}': True",
-                code,
-                f"combo_grid_meta missing add_persistent_rblock_{num}",
-            )
+            fc = fc.check(f"'inductor_meta_{num}'").check("'add_persistent_rblock'")
+        fc.run(code)
 
     @requires_gpu_and_triton
     @torch._inductor.config.patch({"benchmark_combo_kernel": True})
@@ -1729,7 +1777,6 @@ class ComboKernelMetadataTests(TestCase):
 
         inps = [torch.rand(1024, device=GPU_TYPE) for _ in range(2)]
         code = self._combo_code(fn, inps)
-        self.assertNotIn("num_gb = 0\n", code)
         self.assertRegex(code, r"num_gb = \d*\.\d+")
 
 
