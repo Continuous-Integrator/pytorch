@@ -336,23 +336,30 @@ class TestFakeTensorUpdater(TestCase):
         for gm, fn in self._get_call_function_nodes(graph):
             fake_outputs = get_fake(fn, gm)
             self.assertIsNot(fake_outputs, fn, msg="No fake outputs for node!")
-            # With the lack of a _foreach_clone operator, doing this test with tuples
-            # is tricky, so skip them for now.
-            if isinstance(fake_outputs, tuple):
-                continue
 
-            # Use torch.clone rather than torch.reshape to preserve shape.  Since
-            # we're testing changes in subgraphs, we've explicitly disallowed changes
-            # other than striding to anything input to a subgraph, and with cascading
-            # changes this is the most straightforward approach.
+            # Since we're testing changes in subgraphs, we've explicitly disallowed
+            # changes other than striding to anything input to a subgraph.  With
+            # cascading changes, cloning is the most straightforward approach to ensure
+            # that constraint is met.
+            clone_function = (
+                torch._foreach_clone if isinstance(fake_outputs, tuple) else torch.clone
+            )
             with gm.graph.inserting_after(fn):
-                if "val" in fn.meta and len(fn.meta["val"].size()) == 4:
-                    # Shuffle the strides, testing that subgraph updating still works.
+                # When tests use input tensors with dim == 4, shuffle striding order to
+                # test that updating subgraphs handles striding changes.
+                should_shuffle_strides = "val" in fn.meta and (
+                    (
+                        isinstance(fn.meta["val"], tuple)
+                        and all(len(v.size()) == 4 for v in fn.meta["val"])
+                    )
+                    or len(fn.meta["val"].size()) == 4
+                )
+                if should_shuffle_strides:
                     cloned_node = gm.graph.call_function(
-                        torch.clone, (fn,), {"memory_format": torch.channels_last}
+                        clone_function, (fn,), {"memory_format": torch.channels_last}
                     )
                 else:
-                    cloned_node = gm.graph.call_function(torch.clone, (fn,))
+                    cloned_node = gm.graph.call_function(clone_function, (fn,))
             nodes_modified = fn.replace_all_uses_with(
                 cloned_node, lambda n: n != cloned_node
             )
@@ -361,14 +368,12 @@ class TestFakeTensorUpdater(TestCase):
                 clone_num_updated = updater.incremental_update()
 
             # At a minimum, we have to update the newly inserted node and all the nodes
-            # which had an input replaced.  There may be more nodes modified if the
-            # shape has changed.
+            # which had an input replaced.  There may be more nodes modified in
+            # subgraphs, so we can't do a strict equality assertion here.
             self.assertGreaterEqual(clone_num_updated, len(nodes_modified) + 1)
 
-            # Erase the added reshape.
             cloned_node.replace_all_uses_with(fn)
             gm.graph.erase_node(cloned_node)
-
             with V.set_fake_mode(fake_mode):
                 erase_num_updated = updater.incremental_update()
 
