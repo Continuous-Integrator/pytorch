@@ -187,6 +187,14 @@ def is_data_descriptor(obj: object) -> bool:
     )
 
 
+def is_hashable(obj: object) -> bool:
+    try:
+        hash(obj)
+        return True
+    except TypeError:
+        return False
+
+
 class UserDefinedVariable(VariableTracker):
     value: object
 
@@ -286,6 +294,8 @@ class UserDefinedClassVariable(UserDefinedVariable):
 
     @staticmethod
     def is_supported_new_method(value: object) -> bool:
+        if not is_hashable(value):
+            return False
         if value in UserDefinedClassVariable.supported_c_new_functions():
             return True
         # Structseq types each define their own C tp_new.
