@@ -21,7 +21,6 @@ from torch.distributed.tensor.experimental._attention import (
     _context_parallel_shard,
     _ContextParallel,
     _cp_options,
-    _create_cp_varlen_metadata,
     _disable_context_parallel_dispatcher,
     _enable_context_parallel_dispatcher,
     _HeadTailLoadBalancer,
@@ -1291,7 +1290,7 @@ def _build_varlen_meta(
 
 
 class TestCPVarlenMetadata(TestCase):
-    """Pure-logic CPU tests for _create_cp_varlen_metadata.
+    """Pure-logic CPU tests for VarlenMetadata._shard_for_cp.
 
     These do not require a real distributed environment; we mock the
     DeviceMesh with ``_MockMesh`` and iterate over ranks manually.
@@ -1326,8 +1325,7 @@ class TestCPVarlenMetadata(TestCase):
                 else None
             )
             results.append(
-                _create_cp_varlen_metadata(
-                    global_meta,
+                global_meta._shard_for_cp(
                     mesh,
                     batch_size=B,
                     seq_length=seq_len,
@@ -1480,8 +1478,8 @@ class TestCPVarlenMetadata(TestCase):
     def test_seq_len_divisibility(self) -> None:
         meta = _build_varlen_meta([0, 30], B=1, seq_len=30)
         with self.assertRaisesRegex(ValueError, "divisible"):
-            _create_cp_varlen_metadata(
-                meta, _MockMesh(4, 0), batch_size=1, seq_length=30
+            meta._shard_for_cp(
+                _MockMesh(4, 0), batch_size=1, seq_length=30
             )
 
     def test_cross_attention_unsupported(self) -> None:
@@ -1494,8 +1492,8 @@ class TestCPVarlenMetadata(TestCase):
             max_k=20,
         )
         with self.assertRaisesRegex(ValueError, "self-attention"):
-            _create_cp_varlen_metadata(
-                meta, _MockMesh(2, 0), batch_size=1, seq_length=32
+            meta._shard_for_cp(
+                _MockMesh(2, 0), batch_size=1, seq_length=32
             )
 
     def test_multi_doc_headtail_k_local_indices(self) -> None:
@@ -1545,7 +1543,7 @@ class CPVarlenAttentionTest(DTensorTestBase):
 
     Strategy: build identical global Q/K/V and global VarlenMetadata on
     every rank; compute the reference output non-CP. Then shard Q on the
-    sequence dim and shard the metadata via ``_create_cp_varlen_metadata``;
+    sequence dim and shard the metadata via ``VarlenMetadata._shard_for_cp``;
     keep K/V replicated (in real training this is what DTensor's
     ``Replicate`` placement on the CP dim achieves). Run varlen_attn on
     each rank and unshard the output to compare to the reference.
