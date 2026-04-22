@@ -80,7 +80,6 @@ from torch.testing._internal.common_utils import (
     skipIfCrossRef,
     skipIfRocm,
     skipIfXpu,
-    TEST_TRANSFORMERS,
     TEST_WITH_CROSSREF,
     TestCase as TorchTestCase,
 )
@@ -126,6 +125,8 @@ except ImportError:
 # will invalidate the patch.
 from torch.export import export
 
+
+device_type = acc.type if (acc := torch.accelerator.current_accelerator()) else "cpu"
 
 torch.library.define("testlib::returns_tensor_symint", "(Tensor x) -> (Tensor, SymInt)")
 torch.library.define(
@@ -646,7 +647,7 @@ class TestExport(TestCase):
         # should not be copied to other nodes
         counter = 0
         for node in new_ep.graph.nodes:
-            if "custom" in node.meta:
+            if "quantization_tag" in node.meta.get("custom", {}):
                 counter += 1
                 self.assertTrue(node.meta["custom"]["quantization_tag"] == "foo")
                 self.assertTrue(node.target == torch.ops.aten.linear.default)
@@ -10607,6 +10608,28 @@ def forward(self, p_conv_weight, p_conv_bias, p_conv1d_weight, p_conv1d_bias, c_
         )
         self.assertTrue(torch.allclose(core_aten_ep.module()(*inp), m(*inp)))
 
+    def test_export_decomps_isin_dynamic(self):
+        class M(torch.nn.Module):
+            def forward(self, elements, test_elements):
+                return torch.isin(elements, test_elements)
+
+        m = M()
+        elements = torch.tensor([1, 2, 3, 4, 5])
+        test_elements = torch.tensor([2, 4])
+        inp = (elements, test_elements)
+
+        ep = export(
+            m,
+            inp,
+            dynamic_shapes={
+                "elements": {0: Dim("n_elements")},
+                "test_elements": {0: Dim("n_test")},
+            },
+        )
+        decomposed = ep.run_decompositions()
+
+        self.assertEqual(decomposed.module()(*inp), m(*inp))
+
     def test_where_broadcast_preserves_symint(self):
         import torch.fx.experimental._config as config
         from torch._dynamo.source import ConstantSource
@@ -11076,7 +11099,6 @@ graph():
             export_res = decomposed_ep.module()(x)
             self.assertTrue(export_res.size() == exp_res.size())
 
-    @skipIfXpu
     def test_export_with_fake_tensor_inputs_on_cuda_devices(self):
         fake_mode = torch._subclasses.fake_tensor.FakeTensorMode()
 
@@ -11095,9 +11117,9 @@ graph():
             model = Model()
 
         # Manually set the fake_device of fake tensors.
-        x.fake_device = torch.device("cuda:0")
+        x.fake_device = torch.device(f"{device_type}:0")
         for n, p in model.named_parameters():
-            p.fake_device = torch.device("cuda:0")
+            p.fake_device = torch.device(f"{device_type}:0")
 
         # Need to set all the requires_grad of tensors to False, because fake_tensor with CUDA device
         # doesn't quite work well with aot_autograd right now due to some logic fails
@@ -17569,6 +17591,25 @@ def forward(self, q, k, v):
         expected_mask = torch.ones(3, 5, dtype=torch.bool).triu(diagonal=2)
         self.assertEqual(eager_out, expected_mask)
 
+    def test_quantile_export(self):
+        class QuantilePair(torch.nn.Module):
+            def __init__(self, noise=0.1):
+                super().__init__()
+                self.noise = noise
+
+            def forward(self, x):
+                q = torch.tensor(
+                    [self.noise, 1.0 - self.noise],
+                    device=x.device,
+                    dtype=x.dtype,
+                )
+                return torch.quantile(x, q, dim=-1, keepdim=True)
+
+        model = QuantilePair(noise=0.1)
+        x = torch.randn(1, 3200)
+        ep = export(model, (x,))
+        self.assertEqual(ep.module()(x), model(x))
+
 
 @unittest.skipIf(not torchdynamo.is_dynamo_supported(), "dynamo isn't support")
 class TestOneOffModelExportResult(TestCase):
@@ -17607,6 +17648,7 @@ class TestOneOffModelExportResult(TestCase):
             ep = torch.export.export(ScaledDotProductAttention(), (q, k, v))
             ep.run_decompositions()
 
+    @skipIfXpu(msg="scaled_dot_product_attention issue on xpu")
     @skipIfCrossRef
     @unittest.skipIf(
         not PLATFORM_SUPPORTS_FLASH_ATTENTION,
@@ -17631,9 +17673,9 @@ class TestOneOffModelExportResult(TestCase):
                 )
                 return attn_output
 
-        q = torch.randn(1, 16, 16, 64, dtype=torch.bfloat16, device="cuda")
-        k = torch.randn(1, 16, 16, 64, dtype=torch.bfloat16, device="cuda")
-        v = torch.randn(1, 16, 16, 64, dtype=torch.bfloat16, device="cuda")
+        q = torch.randn(1, 16, 16, 64, dtype=torch.bfloat16, device=device_type)
+        k = torch.randn(1, 16, 16, 64, dtype=torch.bfloat16, device=device_type)
+        v = torch.randn(1, 16, 16, 64, dtype=torch.bfloat16, device=device_type)
 
         ep = torch.export.export(
             ScaledDotProductAttention(), (q, k, v)
@@ -17834,30 +17876,35 @@ add: USER_INPUT_MUTATION target='x'
 add_2: USER_OUTPUT""",
         )
 
-    @unittest.skipIf(not TEST_TRANSFORMERS, "No transformers")
     def test_hf_logging_logger(self):
-        import transformers
+        # Replicate the HF transformers logging pattern (stdlib logging.Logger
+        # with a monkey-patched warning_once) without importing transformers,
+        # whose import can hang in CI on HF Hub I/O.
+        @functools.lru_cache(None)
+        def warning_once(self, *args, **kwargs):
+            self.warning(*args, **kwargs)
 
-        logger = transformers.utils.logging.get_logger(__name__)
+        with patch.object(logging.Logger, "warning_once", warning_once, create=True):
+            logger = logging.getLogger(__name__)
 
-        class M(torch.nn.Module):
-            def forward(self, x):
-                logger.warning_once("start")
-                x1 = x + x
-                x2 = x1 * x1
-                x3 = x2 + x2
-                return (x1, x3)
+            class M(torch.nn.Module):
+                def forward(self, x):
+                    logger.warning_once("start")
+                    x1 = x + x
+                    x2 = x1 * x1
+                    x3 = x2 + x2
+                    return (x1, x3)
 
-        gm = export(M(), (torch.randn(3, 3),)).graph_module
-        self.assertExpectedInline(
-            gm.code.strip(),
-            """\
+            gm = export(M(), (torch.randn(3, 3),)).graph_module
+            self.assertExpectedInline(
+                gm.code.strip(),
+                """\
 def forward(self, x):
     add = torch.ops.aten.add.Tensor(x, x);  x = None
     mul = torch.ops.aten.mul.Tensor(add, add)
     add_1 = torch.ops.aten.add.Tensor(mul, mul);  mul = None
     return (add, add_1)""",
-        )
+            )
 
     def test_warning(self):
         class M(torch.nn.Module):
