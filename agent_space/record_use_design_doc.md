@@ -1,9 +1,5 @@
 # `Tensor.record_use`: precise cross-stream lifetime for the CUDA caching allocator
 
-Draft design doc — April 2026
-
-Audience: PyTorch core / runtime / caching-allocator maintainers.
-
 ## Motivation
 
 The CUDA caching allocator tracks only each block's allocation stream;
@@ -87,36 +83,6 @@ fired. Precise semantics:
 4. **Composes with `record_stream`.** A block may have both precise
    `use_events` and imprecise `stream_uses`. Both gate the free.
 5. **Thread-safe.** Takes the same allocator mutex as `record_stream`.
-
-## Design
-
-Scoped to the native CUDA caching allocator + a default fallback at
-the `DeviceAllocator` base so non-CUDA backends stay correct with zero
-code. The shape:
-
-- New `Block::use_events` field: list of `(EventPool::Event, CUDAStream)`
-  pairs. Events come from the allocator's existing `EventPool` — no new
-  resource.
-- New `DeviceCachingAllocator::recordUse(block, stream)`: records
-  `cudaEventRecord` eagerly on `stream` and stashes on the block.
-  Same-stream and under-capture calls degrade to the existing
-  `stream_uses` path.
-- Existing `free()` gate extends from `!stream_uses.empty()` to
-  `!stream_uses.empty() || !use_events.empty()`; the new
-  `consume_use_events(block)` feeds the pre-recorded events straight
-  into the existing `cuda_events` polling queue. `process_events()`
-  and the `event_count → 0` free discipline are unchanged.
-- `CUDAAllocator::recordUse` / `DeviceAllocator::recordUse` default to
-  `recordStream`. `CUDAMallocAsyncAllocator`, `CUDAPluggableAllocator`,
-  XPU stay correct-but-imprecise without any code change.
-- ATen: one new `record_use` entry in `native_functions.yaml` +
-  one-liner `RecordUse.cu`, mirroring `record_stream` exactly.
-- Python: `_tensor_docs.py` docstring + `overrides.py` stub +
-  `_dynamo/variables/{streams,tensor}.py` custom op + method tracer
-  (preserves `torch.compile` coverage from day one) + nested-tensor
-  dispatch. All mirror `record_stream`'s wiring.
-
-Full diffs, code, and edge-case handling live in the prototype PR.
 
 ## Comparison
 
