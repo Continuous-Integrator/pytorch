@@ -19,6 +19,7 @@ using namespace at;
 using namespace torch;
 
 PyObject* THPGeneratorClass = nullptr;
+static bool generatorMetaclassSet = false;
 
 PyObject* THPGenerator_initDefaultGenerator(const at::Generator& cdata) {
   auto type = reinterpret_cast<PyTypeObject*>(THPGeneratorClass);
@@ -46,6 +47,10 @@ static PyObject* THPGenerator_pynew(
     PyObject* args,
     PyObject* kwargs) {
   HANDLE_TH_ERRORS
+  TORCH_CHECK(
+      generatorMetaclassSet,
+      "torch.Generator() cannot be called before the opaque metaclass is set. "
+      "This is a bug — torch._prims.rng_prims must be imported first.");
   static torch::PythonArgParser parser({"Generator(Device device=None)"});
   torch::ParsedArgs<1> parsed_args;
   auto r = parser.parse(args, kwargs, parsed_args);
@@ -358,12 +363,16 @@ static PyTypeObject THPGeneratorType = {
 static PyObject* THPGenerator_pySetMetaclass(
     PyObject* /* unused */,
     PyObject* metaclass) {
+  if (generatorMetaclassSet) {
+    Py_RETURN_NONE;
+  }
   if (!PyType_Check(metaclass)) {
     PyErr_SetString(PyExc_TypeError, "metaclass must be a type");
     return nullptr;
   }
   Py_INCREF(metaclass);
   Py_SET_TYPE(&THPGeneratorType, (PyTypeObject*)metaclass);
+  generatorMetaclassSet = true;
   // Swapping the metaclass changes __module__ (Python resolves it via the
   // metaclass). Reset it so pickle can find the class at torch._C.Generator.
   auto module_name = THPObjectPtr(PyUnicode_FromString("torch._C"));
