@@ -2179,28 +2179,6 @@ class SkipFunctionVariable(VariableTracker):
                 tx, self.value(*(a.as_python_constant() for a in args))
             )
 
-        # object.__reduce_ex__ is a C builtin that copy.deepcopy calls
-        # via `reductor = getattr(x, "__reduce_ex__"); rv = reductor(4)`.
-        # Intercept bound __reduce_ex__ calls and delegate to the polyfill.
-        if (
-            getattr(self.value, "__name__", None) == "__reduce_ex__"
-            and hasattr(self.value, "__self__")
-            and len(args) == 1
-            and not kwargs
-        ):
-            from ..polyfills import reduce_ex_user_defined_object
-
-            obj = self.value.__self__
-            obj_vt = tx.output.side_effects.id_to_variable.get(id(obj))
-            if obj_vt is None:
-                obj_vt = VariableTracker.build(tx, obj)
-            if isinstance(obj_vt, UserDefinedObjectVariable):
-                return tx.inline_user_function_return(
-                    VariableTracker.build(tx, reduce_ex_user_defined_object),
-                    [obj_vt, args[0]],
-                    {},
-                )
-
         if inspect.getattr_static(self.value, "_torchdynamo_disable", False):
             msg = inspect.getattr_static(self.value, "_torchdynamo_disable_msg", None)
             unimplemented(
