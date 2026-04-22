@@ -19,7 +19,11 @@ from torch.distributed.pipelining import (
     ScheduleLoopedBFS,
     ScheduleZBVZeroBubble,
 )
-from torch.distributed.pipelining._utils import generate_stage_to_rank_mapping
+from torch.distributed.pipelining._utils import (
+    _StageMeta,
+    generate_stage_to_rank_mapping,
+    InferenceMode,
+)
 from torch.distributed.pipelining.schedules import (
     _Action,
     _add_reduce_grad,
@@ -1274,6 +1278,76 @@ class TestBatchP2P(TestCase):
         mock_isend.assert_not_called()
         mock_irecv.assert_not_called()
         self.assertEqual(len(result), 2)
+
+
+class TestWarmupP2PVote(TestCase):
+    """Tests for the vote-resolution branch in _PipelineSchedule._warmup_p2p.
+
+    The vote tensor's value determines inference mode: 1 -> STATIC, 0 -> DYNAMIC.
+    When the comparison is unresolvable (an unbacked SymInt under
+    FakeTensorMode, e.g. during AOT tracing), guard_or_false falls back to
+    False; if the stage's local metadata is nevertheless complete, we still
+    pick STATIC rather than DYNAMIC.
+    """
+
+    def _make_stage(self, vote_tensor, user_meta):
+        stage = MagicMock(spec=PipelineStage)
+        stage._warmup_forward_vote.return_value = vote_tensor
+        stage._warmup_backward_result.return_value = vote_tensor
+        stage._user_meta = user_meta
+        return stage
+
+    def _run_warmup(self, stage, has_backward):
+        schedule = MagicMock(spec=_PipelineSchedule)
+        _PipelineSchedule._warmup_p2p(
+            schedule, [stage], has_backward=has_backward, p2p_done=False
+        )
+
+    @parametrize(
+        "vote,expected", [(1, InferenceMode.STATIC), (0, InferenceMode.DYNAMIC)]
+    )
+    def test_vote_resolves(self, vote, expected):
+        # Real tensor: .item() returns a concrete int, so the vote value
+        # alone decides the mode (with incomplete user_meta).
+        stage = self._make_stage(torch.tensor([vote]), _StageMeta())
+        self._run_warmup(stage, has_backward=True)
+        self.assertEqual(stage._inference_mode, expected)
+
+    def test_unbacked_vote_falls_back_to_static_when_local_complete(self):
+        # Under FakeTensorMode, .item() on an unbacked FakeTensor returns an
+        # unbacked SymInt, so `result.item() == 1` is a SymBool that cannot
+        # be evaluated. guard_or_false must catch this and return False,
+        # after which complete local _user_meta flips the decision to STATIC.
+        # Without guard_or_false, the bare `== 1` comparison raises.
+        from torch._subclasses.fake_tensor import FakeTensorMode
+        from torch.fx.experimental.symbolic_shapes import ShapeEnv
+
+        complete_meta = _StageMeta(inputs=(), outputs=())
+        self.assertFalse(InferenceMode.needs_dynamic(complete_meta, True))
+
+        with FakeTensorMode(shape_env=ShapeEnv()):
+            unbacked_vote = torch.empty(1, dtype=torch.int32)
+            stage = self._make_stage(unbacked_vote, complete_meta)
+            self._run_warmup(stage, has_backward=True)
+
+        self.assertEqual(stage._inference_mode, InferenceMode.STATIC)
+
+    def test_unbacked_vote_falls_back_to_dynamic_when_local_incomplete(self):
+        # Same unbacked-SymInt scenario, but with incomplete local metadata:
+        # guard_or_false returns False, needs_dynamic returns True, so we
+        # correctly land on DYNAMIC.
+        from torch._subclasses.fake_tensor import FakeTensorMode
+        from torch.fx.experimental.symbolic_shapes import ShapeEnv
+
+        with FakeTensorMode(shape_env=ShapeEnv()):
+            unbacked_vote = torch.empty(1, dtype=torch.int32)
+            stage = self._make_stage(unbacked_vote, _StageMeta())
+            self._run_warmup(stage, has_backward=True)
+
+        self.assertEqual(stage._inference_mode, InferenceMode.DYNAMIC)
+
+
+instantiate_parametrized_tests(TestWarmupP2PVote)
 
 
 if __name__ == "__main__":

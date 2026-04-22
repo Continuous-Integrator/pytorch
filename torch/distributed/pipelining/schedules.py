@@ -18,6 +18,7 @@ import torch
 import torch.distributed as dist
 from torch._dynamo import OptimizedModule
 from torch.distributed.fsdp import FSDPModule, UnshardHandle
+from torch.fx.experimental.symbolic_shapes import guard_or_false
 from torch.nn.modules.loss import _Loss
 from torch.profiler import record_function
 
@@ -353,11 +354,15 @@ class _PipelineSchedule(ABC):
                 result = stage._warmup_backward_result(received_result=result)
                 if result is None:
                     raise RuntimeError("P2P warm-up voting failed")
-                determined_mode = (
-                    InferenceMode.STATIC
-                    if result.item() == 1
-                    else InferenceMode.DYNAMIC
-                )
+                if guard_or_false(result.item() == 1):
+                    determined_mode = InferenceMode.STATIC
+                elif not InferenceMode.needs_dynamic(stage._user_meta, has_backward):
+                    # Cross-rank vote is unresolvable (e.g. unbacked
+                    # SymInt under FakeTensorMode) but this stage has
+                    # complete local metadata — safe to use STATIC.
+                    determined_mode = InferenceMode.STATIC
+                else:
+                    determined_mode = InferenceMode.DYNAMIC
                 stage._inference_mode = determined_mode
             logger.debug(
                 "Rank determined inference_mode=%s for %d stage(s)",
