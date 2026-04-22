@@ -43,6 +43,7 @@ from ._fsdp_common import (
     TrainingState,
 )
 from ._fsdp_param import alloc_storage, FSDPParam, ParamModuleInfo, ShardedState
+from ._stream_utils import StreamHandoff
 
 
 if TYPE_CHECKING:
@@ -108,7 +109,9 @@ class FSDPCommContext:
         # param grads reference a *previous* reduce_output, not the current
         # one. Storing on comm_ctx (vs per-group) limits liveness to one
         # buffer at a time, avoiding O(n_layers) accumulation in case (1).
-        self.all_reduce_state: AllReduceState | None = None
+        # See StreamHandoff for the tensor+event+release_stream invariants
+        # that make "drop the ref" safe across streams.
+        self.all_reduce_state: StreamHandoff | None = None
         # Post-forward order for explicit backward prefetching
         self.post_forward_order: list[FSDPParamGroup] = []  # will cause ref cycles
 
@@ -128,11 +131,16 @@ class FSDPCommContext:
         """Drain the last layer's state at end of backward. Safe because
         autograd serializes finalize callbacks; first group drains, rest no-op.
         """
-        if (
-            self.all_reduce_state is not None
-            and self.all_reduce_state.event is not None
-        ):
+        if self.all_reduce_state is None:
+            return
+        # Make default stream wait on AR completion before subsequent
+        # default-stream allocations can reuse memory that aliases
+        # the AR buffer. StreamHandoff.release() only waits on its own
+        # release_stream (the AR stream); the default-stream ordering
+        # here is an additional barrier this call site owns.
+        if self.all_reduce_state.event is not None:
             self.device_handle.current_stream().wait_event(self.all_reduce_state.event)
+        self.all_reduce_state.release()
         self.all_reduce_state = None
 
 
@@ -145,11 +153,6 @@ class AllGatherState(NamedTuple):
 class ReduceScatterState(NamedTuple):
     reduce_scatter_input: torch.Tensor
     event: torch.Event | None  # reduce-scatter event
-
-
-class AllReduceState(NamedTuple):
-    all_reduce_input: torch.Tensor
-    event: torch.Event | None  # all-reduce event
 
 
 class FSDPParamGroup:
@@ -643,33 +646,28 @@ class FSDPParamGroup:
                 prev_all_reduce_event,
             )
             if prev_all_reduce_state is not None:
-                # Stream context is load-bearing: the caching allocator uses
-                # the current stream at free time to pick the reuse pool.
-                # Dropping outside this `with` would let a different stream
-                # reuse the block before all_reduce_stream's wait_event on
-                # it has completed.
-                with self.device_handle.stream(all_reduce_stream):
-                    del prev_all_reduce_state
+                prev_all_reduce_state.release()
             self.comm_ctx.reduce_scatter_states.append(
                 ReduceScatterState(reduce_scatter_input, reduce_scatter_event)
             )
             if all_reduce_input is not None:
-                # all_reduce_input is returned as a keep-alive so the next
-                # layer can free it on all_reduce_stream (routing the block
-                # to AR-stream's free pool). Without this, a freed block
-                # can be reused by a different stream before AR-stream's
-                # post-reduce ops (`+=` into the accumulated grad, etc.)
-                # finish reading it. Required for the cast case (buffer
-                # orphaned by dtype cast) and the no-cast accumulate case
-                # (param grads reference the *previous* reduce_output, not
-                # the current one).
+                # Keep the AR buffer alive so the next layer can free it on
+                # all_reduce_stream. Required for (1) the dtype-cast case —
+                # param grads reference the cast result, not the pre-cast
+                # AR buffer — and (2) the no-cast accumulate case — param
+                # grads reference a *previous* reduce_output, not the
+                # current one. See StreamHandoff docstring for why the
+                # free must route to all_reduce_stream's pool.
                 if self.device.type != "cpu":
                     if all_reduce_event is None:
                         raise AssertionError(
                             "Expected all_reduce_event to be set for non-CPU device"
                         )
-                self.comm_ctx.all_reduce_state = AllReduceState(
-                    all_reduce_input, all_reduce_event
+                self.comm_ctx.all_reduce_state = StreamHandoff(
+                    tensor=all_reduce_input,
+                    ready_event=all_reduce_event,
+                    release_stream=all_reduce_stream,
+                    device_handle=self.device_handle,
                 )
 
     def finalize_backward(self):
