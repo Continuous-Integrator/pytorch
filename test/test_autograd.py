@@ -16065,6 +16065,8 @@ class TestSelectiveActivationCheckpoint(TestCase):
 
     @skipIfTorchDynamo("compile tested in test/dynamo/test_activation_checkpointing.py")
     def test_can_only_trigger_recompute_once(self):
+        # We don't support this to avoid adding extra complexity for now.
+        # If there's a need, we could probably do some kind of use_count tracking.
         def policy_fn(ctx, op, *args, **kwargs):
             if op == torch.ops.aten.sin.default:
                 return CheckpointPolicy.MUST_SAVE
