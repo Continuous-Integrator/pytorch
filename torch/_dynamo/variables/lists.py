@@ -49,6 +49,7 @@ from .base import AsPythonConstantNotImplementedError, ValueMutationNew, Variabl
 from .constant import ConstantVariable
 from .functions import UserFunctionVariable
 from .iter import IteratorVariable
+from .object_protocol import unpack_iterator
 
 
 if TYPE_CHECKING:
@@ -804,15 +805,8 @@ class CommonListMethodsVariable(BaseListVariable):
                     f"{len(args)} args and {len(kwargs)} kwargs",
                 )
 
-            if not args[0].has_force_unpack_var_sequence(tx):
-                raise_observed_exception(
-                    TypeError, tx, args=[f"{type(args[0])} object is not iterable"]
-                )
-
-            (arg,) = args
-            arg.force_apply_to_var_sequence(
-                tx, lambda item: self.call_method(tx, "append", [item], {})
-            )
+            items = unpack_iterator(tx, args[0])
+            self.items.extend(items)
             return ConstantVariable.create(None)
         elif name == "insert" and self.is_mutable():
             if kwargs or len(args) != 2:
