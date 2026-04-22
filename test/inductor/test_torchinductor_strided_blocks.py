@@ -2,11 +2,12 @@
 # ruff: noqa: F841
 import contextlib
 import dataclasses
+import functools
 import importlib
 import math
 import unittest
 from collections.abc import Callable
-from typing import Any, Optional, Union
+from typing import Any
 
 import torch
 import torch.utils._pytree as pytree
@@ -92,7 +93,7 @@ class BlockDescriptorTestBase(InductorTestCase):
     block_descriptor_constructor_str = "tl.make_block_ptr"
 
     def _discontiguous_tensor(
-        self, view_size: tuple[int, ...], device: Union[torch.device, str]
+        self, view_size: tuple[int, ...], device: torch.device | str
     ) -> torch.Tensor:
         """
         Create a padded tensor of the given size.
@@ -126,13 +127,13 @@ class BlockDescriptorTestBase(InductorTestCase):
         self: InductorTestCase,
         func: Callable[..., Any],
         *args,
-        compile_kwargs: Optional[dict] = None,
-        expected_num_block_pointers: Optional[int] = None,
+        compile_kwargs: dict | None = None,
+        expected_num_block_pointers: int | None = None,
         expected_num_programs: int = 1,
         expected_num_triton_kernels: int = 1,
-        config_patches: Optional[dict] = None,
-        rtol: Optional[float] = None,
-        atol: Optional[float] = None,
+        config_patches: dict | None = None,
+        rtol: float | None = None,
+        atol: float | None = None,
     ):
         """
         Runs the module through Inductor, comparing to eager reference.
@@ -160,7 +161,7 @@ class BlockDescriptorTestBase(InductorTestCase):
             }
             self.assertTrue(torch.allclose(ref, actual, **tol))
 
-        def count_code(substr: str, expected: Optional[int]):
+        def count_code(substr: str, expected: int | None):
             count = sum(prog.count(substr) for prog in code)
             if expected is not None:
                 self.assertEqual(count, expected)
@@ -247,8 +248,8 @@ class CommonTemplate:
         self,
         full_size: tuple[int, ...],
         view_size: tuple[int, ...],
-        stride: Optional[tuple[int, ...]],
-        offset: Optional[int],
+        stride: tuple[int, ...] | None,
+        offset: int | None,
         require_block_ptr: bool,
         prefer_nd_tiling: bool,
     ):
@@ -478,22 +479,22 @@ class CommonTemplate:
                 load_lines,
                 """\
     tmp0 = tl.load(tl.make_block_ptr(in_ptr0, shape=[8, 8], strides=[8, 1], block_shape=[YBLOCK, XBLOCK], order=[1, 0], offsets=[yoffset, xoffset]), boundary_check=[0, 1])
-    tmp1 = tl.load(tl.make_block_ptr(in_ptr1, shape=[8], strides=[8], block_shape=[YBLOCK], order=[0], offsets=[yoffset]), boundary_check=[0], eviction_policy='evict_last')[:, None]""",  # noqa: B950
+    tmp1 = tl.load(tl.make_block_ptr(in_ptr1, shape=[8], strides=[8], block_shape=[YBLOCK], order=[0], offsets=[yoffset]), boundary_check=[0], eviction_policy='evict_last')[:, None]""",
             )
             self.assertExpectedInline(
                 store_lines,
-                """    tl.store(tl.make_block_ptr(out_ptr0, shape=[8, 8], strides=[8, 1], block_shape=[YBLOCK, XBLOCK], order=[1, 0], offsets=[yoffset, xoffset]), tl.broadcast_to(tmp2, [YBLOCK, XBLOCK]).to(tl.float32), boundary_check=[0, 1])""",  # noqa: B950
+                """    tl.store(tl.make_block_ptr(out_ptr0, shape=[8, 8], strides=[8, 1], block_shape=[YBLOCK, XBLOCK], order=[1, 0], offsets=[yoffset, xoffset]), tl.broadcast_to(tmp2, [YBLOCK, XBLOCK]).to(tl.float32), boundary_check=[0, 1])""",
             )
         else:
             self.assertExpectedInline(
                 load_lines,
                 """\
     tmp0 = tl.load(tl.make_block_ptr(in_ptr0, shape=[64], strides=[1], block_shape=[XBLOCK], order=[0], offsets=[xoffset]), boundary_check=[0])
-    tmp1 = tl.reshape(tl.broadcast_to(tl.load(tl.make_block_ptr(in_ptr1, shape=[8], strides=[8], block_shape=[(7 + XBLOCK) // 8], order=[0], offsets=[xoffset // 8]), boundary_check=[0], eviction_policy='evict_last')[:, None, None], [(7 + XBLOCK) // 8, ((1) * ((1) <= ((7 + XBLOCK) // 8)) + ((7 + XBLOCK) // 8) * (((7 + XBLOCK) // 8) < (1))), ((8) * ((8) <= (XBLOCK)) + (XBLOCK) * ((XBLOCK) < (8)))]), [XBLOCK])""",  # noqa: B950
+    tmp1 = tl.reshape(tl.broadcast_to(tl.load(tl.make_block_ptr(in_ptr1, shape=[8], strides=[8], block_shape=[(7 + XBLOCK) // 8], order=[0], offsets=[xoffset // 8]), boundary_check=[0], eviction_policy='evict_last')[:, None, None], [(7 + XBLOCK) // 8, ((1) * ((1) <= ((7 + XBLOCK) // 8)) + ((7 + XBLOCK) // 8) * (((7 + XBLOCK) // 8) < (1))), ((8) * ((8) <= (XBLOCK)) + (XBLOCK) * ((XBLOCK) < (8)))]), [XBLOCK])""",
             )
             self.assertExpectedInline(
                 store_lines,
-                """    tl.store(tl.make_block_ptr(out_ptr0, shape=[64], strides=[1], block_shape=[XBLOCK], order=[0], offsets=[xoffset]), tl.broadcast_to(tmp2, [XBLOCK]).to(tl.float32), boundary_check=[0])""",  # noqa: B950
+                """    tl.store(tl.make_block_ptr(out_ptr0, shape=[64], strides=[1], block_shape=[XBLOCK], order=[0], offsets=[xoffset]), tl.broadcast_to(tmp2, [XBLOCK]).to(tl.float32), boundary_check=[0])""",
             )
 
     @parametrize("prefer_nd_tiling", [False, True])
@@ -551,11 +552,6 @@ class CommonTemplate:
         device = torch.device(self.device)
 
         view = self._discontiguous_tensor(view_size, self.device)
-
-        if num_triton_kernels == 2 and config.triton.cooperative_reductions:
-            # fewer kernels with cooperative reductions
-            num_triton_kernels = 1
-            num_block_pointers -= 2
 
         # Expect at least 1 block pointer for the input.
         # Add 2 more if we generate 2 kernels.
@@ -913,11 +909,15 @@ class CommonTemplate:
         view = self._discontiguous_tensor((259, 311), self.device)
 
         # We expect many block pointers for this one.
+        cooperative_reductions = (
+            config.triton.cooperative_reductions
+            or config.triton.force_cooperative_reductions
+        )
         result, (code,) = self._run_and_compare(
             torch.var_mean,
             view,
-            expected_num_block_pointers=6,
-            expected_num_triton_kernels=2,
+            expected_num_block_pointers=0 if cooperative_reductions else 6,
+            expected_num_triton_kernels=1 if cooperative_reductions else 2,
             config_patches={"triton.prefer_nd_tiling": True},
         )
 
@@ -1018,7 +1018,7 @@ class CommonTemplate:
 
         view_size = (5, 7)
         arg0 = self._discontiguous_tensor(view_size, self.device)
-        arg1 = torch.empty(view_size)
+        arg1 = torch.randn(view_size)
 
         # No guarantees on the number of kernels or pointers.
         result, (code,) = self._run_and_compare(
@@ -1055,6 +1055,104 @@ class CommonTemplate:
 
         # Check the code for multiple Rn_BLOCK's
         self._assert_reduction_ndims(code, 2 if tile_reductions else 1)
+
+    # FIXME: fails for Triton CPU. Tiling does not contain YBLOCK.
+    @test_torchinductor.xfail_if_triton_cpu
+    @xfail_if_use_tensor_descriptor
+    def test_reduction_padded_output_tiling(self):
+        """
+        Test a [Y, X, R0] reduction with tiled output dimensions.
+        The key to elicit this test case is a padded output tensor.
+        """
+        x = torch.randn((9, 11, 2), device=self.device)
+
+        # We expect block pointers for the input and output.
+        result, (code,) = self._run_and_compare(
+            functools.partial(torch.amax, dim=-1),
+            x,
+            expected_num_block_pointers=2,
+            expected_num_triton_kernels=1,
+            config_patches={
+                "pad_outputs": True,
+                "padding_alignment_bytes": 32,
+                "padding_stride_threshold": 0,
+                "unroll_reductions_threshold": 1,
+                **tiled_reduction_config,
+            },
+        )
+
+        # Check the code for multiple output dims.
+        self._assert_pointwise_ndims(code, 2)
+        self._assert_reduction_ndims(code, 1)
+
+    @xfail_if_use_tensor_descriptor
+    @parametrize("unroll", (False, True))
+    def test_reduce_trailing_dims_discontiguous_input(self, unroll: bool):
+        """
+        Test a [Y, X, R0, R1] reduction where the input tensor is discontiguous, but we
+        only reduce over the last two dimensions.
+        """
+        view = self._discontiguous_tensor((7, 5, 3, 2), self.device)
+
+        # We expect block pointers for the inputs and output.
+        # Note there are more inputs if unrolled.
+        result, (code,) = self._run_and_compare(
+            functools.partial(
+                torch.amax,
+                dim=(-1, -2),
+            ),
+            view,
+            expected_num_block_pointers=7 if unroll else 2,
+            expected_num_triton_kernels=1,
+            config_patches={
+                "unroll_reductions_threshold": 1e4 if unroll else 1,
+                **tiled_reduction_config,
+            },
+        )
+
+        # Check the code for multiple pointwise dims.
+        self._assert_pointwise_ndims(code, 2)
+        self._assert_reduction_ndims(code, 0 if unroll else 2)
+
+    def test_2d_reduction_with_broadcast(self):
+        """
+        Tests 2D tiled reduction with a broadcasted 1D tensor.
+
+        This is a regression test for a bug where block pointers that only
+        advance in one reduction dimension (not both) would cause a KeyError
+        during codegen. The bug occurred because:
+        1. The broadcasted tensor only varies along the first reduction dimension (R0)
+        2. When building pointer_advancements, the block_ptr is only
+           added to R0_INDEX (non-zero advancement) but skipped for R1_INDEX
+           (zero/identity advancement)
+        3. During loop suffix generation, the code assumed if a block_ptr exists
+           in the outer loop's advancements, it must exist in the inner loop's too
+
+        The pattern: (x * y[:, None]).sum() where x is 2D and y is 1D.
+        """
+        # Use sizes that require looped (non-persistent) reductions
+        # to trigger 2D tiled reduction with R0 and R1 loops
+        M, N = 64, 128
+
+        def fn(x, y):
+            # y is 1D (M,), x is 2D (M, N)
+            # y[:, None] broadcasts to (M, N)
+            # The y block_ptr only advances with R0, not R1
+            return (x * y[:, None]).sum()
+
+        x = torch.randn(M, N, device=self.device)
+        y = torch.randn(M, device=self.device)
+
+        # This should compile without KeyError and produce correct results
+        result, (code,) = self._run_and_compare(
+            fn,
+            x,
+            y,
+            config_patches=tiled_reduction_config,
+        )
+
+        # Verify 2D reduction is used (R0_BLOCK and R1_BLOCK present)
+        self._assert_reduction_ndims(code, 2)
 
     def test_complex_reshape_block_ptr(self):
         def func(x, y):
@@ -1193,12 +1291,12 @@ class CommonTemplate:
             load_lines,
             """\
     tmp0 = tl.load(tl.make_block_ptr(in_ptr0, shape=[5, 5, 5], strides=[100, 10, 1], block_shape=[ZBLOCK, YBLOCK, XBLOCK], order=[2, 1, 0], offsets=[zoffset, yoffset, xoffset]), boundary_check=[0, 1, 2])
-    tmp1 = tl.load(tl.make_block_ptr(in_ptr1, shape=[5, 5, 5], strides=[100, 10, 1], block_shape=[ZBLOCK, YBLOCK, XBLOCK], order=[2, 1, 0], offsets=[zoffset, yoffset, xoffset]), boundary_check=[0, 1, 2])""",  # noqa: B950
+    tmp1 = tl.load(tl.make_block_ptr(in_ptr1, shape=[5, 5, 5], strides=[100, 10, 1], block_shape=[ZBLOCK, YBLOCK, XBLOCK], order=[2, 1, 0], offsets=[zoffset, yoffset, xoffset]), boundary_check=[0, 1, 2])""",
         )
 
         self.assertExpectedInline(
             store_lines,
-            """    tl.store(tl.make_block_ptr(out_ptr0, shape=[5, 5, 5], strides=[25, 5, 1], block_shape=[ZBLOCK, YBLOCK, XBLOCK], order=[2, 1, 0], offsets=[zoffset, yoffset, xoffset]), tl.broadcast_to(tmp2, [ZBLOCK, YBLOCK, XBLOCK]).to(tl.float32), boundary_check=[0, 1, 2])""",  # noqa: B950
+            """    tl.store(tl.make_block_ptr(out_ptr0, shape=[5, 5, 5], strides=[25, 5, 1], block_shape=[ZBLOCK, YBLOCK, XBLOCK], order=[2, 1, 0], offsets=[zoffset, yoffset, xoffset]), tl.broadcast_to(tmp2, [ZBLOCK, YBLOCK, XBLOCK]).to(tl.float32), boundary_check=[0, 1, 2])""",
         )
 
         # Check the indices. These are used for non-block pointers.
@@ -1207,7 +1305,7 @@ class CommonTemplate:
             """\
     zindex = zoffset + tl.arange(0, ZBLOCK)[:, None, None]
     yindex = yoffset + tl.arange(0, YBLOCK)[None, :, None]
-    xindex = xoffset + tl.arange(0, XBLOCK)[None, None, :]""",  # noqa: B950
+    xindex = xoffset + tl.arange(0, XBLOCK)[None, None, :]""",
         )
 
     def test_expand_clone_broadcast(self):
@@ -1345,7 +1443,7 @@ class CommonTemplate:
         class InputShape:
             x: int
             y: int
-            z: Optional[int] = None
+            z: int | None = None
 
             def to_list(self):
                 out = [self.y, self.x]
