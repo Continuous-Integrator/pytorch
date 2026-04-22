@@ -460,6 +460,10 @@ class VariableTracker(metaclass=VariableTrackerMeta):
         """
         return False
 
+    def is_constant_true(self) -> bool:
+        """Check if this variable is a constant True value."""
+        return False
+
     def is_constant_none(self) -> bool:
         """Check if this variable is a constant None value."""
         return False

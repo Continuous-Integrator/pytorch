@@ -1157,6 +1157,7 @@ class LocalGeneratorObjectVariable(VariableTracker):
         return types.GeneratorType
 
     def tp_iternext_impl(self, tx: "InstructionTranslatorBase") -> VariableTracker:
+        # ref: https://github.com/python/cpython/blob/v3.13.3/Objects/genobject.c#L832
         tracer = self.inline_tracer
 
         if self._is_generator_exhausted():
@@ -3247,6 +3248,9 @@ class TritonKernelVariable(VariableTracker):
         self.kernel_source = kwargs.pop("kernel_source", kwargs.get("source"))
         super().__init__(**kwargs)
         dynamo_triton_hopifier_singleton.init_variable(self, kernel, kernel_idx, grid)
+
+    def python_type(self) -> type:
+        return type(self.kernel)
 
     def call_function(
         self,
