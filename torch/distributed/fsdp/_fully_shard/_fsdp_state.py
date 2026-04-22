@@ -313,12 +313,11 @@ class FSDPState(_State):
         output = self._register_pre_backward_hook(output)
         self._training_state = TrainingState.IDLE
         if self._state_ctx.iter_forward_root is self:
-            if all_gather_state := self._comm_ctx.all_gather_state:
-                # Free the last all-gather result; refer to
-                # [Note: Overlapping all-gather copy-in and all-gather]
-                all_gather_state.wait(self._comm_ctx.all_gather_copy_in_stream)
-                all_gather_state.release()
-                self._comm_ctx.all_gather_state = None
+            # Free the last all-gather result; refer to
+            # [Note: Overlapping all-gather copy-in and all-gather]
+            self._comm_ctx.all_gather_buffer.flush(
+                self._comm_ctx.all_gather_copy_in_stream
+            )
             self._state_ctx.iter_forward_root = None
         if self._mp_policy.output_dtype is not None:
             with torch.profiler.record_function("FSDP::cast_forward_outputs"):
@@ -362,11 +361,9 @@ class FSDPState(_State):
                     state._finalize_backward()
             if self._state_ctx.is_last_backward:
                 self._comm_ctx.post_forward_order.clear()
-                # Catch the last module's RS states that no subsequent
+                # Catch the last module's RS entries that no subsequent
                 # module's group N-1 wait will clear.
-                for rs_state in self._comm_ctx.reduce_scatter_states:
-                    rs_state.release()
-                self._comm_ctx.reduce_scatter_states.clear()
+                self._comm_ctx.reduce_scatter_buffer.flush()
             self._state_ctx.post_backward_final_callback_queued = False
 
     def _finalize_backward(self) -> None:
