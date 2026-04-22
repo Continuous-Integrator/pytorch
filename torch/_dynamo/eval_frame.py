@@ -397,8 +397,17 @@ def _get_cache_entries_for_region(
     isolate_recompiles_id: int,
 ) -> list[CacheEntry]:
     """
-    Given a code object or callable, retrieve the cache entries for a
-    specific isolate_recompiles region.
+    Return the cache entries for a specific isolate_recompiles region on
+    ``code``, in LRU order (most-recently-used first).
+
+    Pass ``isolate_recompiles_id=-1`` to get the default (non-isolated)
+    bucket; pass a region's id (as exposed via
+    ``opt._isolate_recompiles_id``) to get that region's bucket.
+
+    Returns only entries owned by the requested bucket. During an actual
+    lookup, isolated regions also fall back read-only to the default
+    bucket for BC-friendly reuse — this helper does not include those
+    fallback entries.
     """
     if callable(code):
         code = code.__code__

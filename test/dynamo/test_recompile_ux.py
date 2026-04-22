@@ -935,6 +935,8 @@ class IsolateRecompilesTests(torch._dynamo.test_case.TestCase):
         self.assertEqual(cnt.frame_count, 2)
         self.assertEqual(len(_get_cache_entries_for_region(f, id_b)), 1)
 
+    # ===== Default strategy × region: SKIP inherited, RUN_ONLY not =====
+
     def test_isolate_recompiles_inherits_default_skip(self):
         """Global SKIP (from skip_code / @torch._dynamo.skip / FX plumbing /
         TorchScript __init__ / etc.) is a correctness decision — the code
@@ -1152,6 +1154,89 @@ class IsolateRecompilesTests(torch._dynamo.test_case.TestCase):
             f"default-bucket entries' guard failures dropped from "
             f"recompile reasons (bug): {default_fails}",
         )
+
+    @torch._dynamo.config.patch(recompile_limit=8)
+    def test_non_isolated_reasons_unchanged(self):
+        """Regression: recompile-reason logging for non-isolated compiles
+        (id=-1) must still work. The split between cache_entries and
+        cache_entries_for_reasons should not have changed this path."""
+        fails: list[str] = []
+
+        def f(x):
+            return x.sum()
+
+        opt = torch._dynamo.optimize(
+            "eager",
+            guard_fail_fn=lambda failure: fails.append(failure.reason),
+            dynamic=False,
+        )(f)
+
+        opt(torch.randn(3))
+        opt(torch.randn(4))
+        self.assertTrue(fails, f"no recompile reasons logged: {fails}")
+
+    @torch._dynamo.config.patch(recompile_limit=8)
+    def test_reasons_include_all_default_entries(self):
+        """When the default bucket has multiple entries, recompile-reason
+        logging from an isolated region must report guard failures from
+        each of them, not just one."""
+        default_fails: list[str] = []
+
+        def f(x):
+            return x.sum()
+
+        opt_default = torch._dynamo.optimize(
+            "eager",
+            guard_fail_fn=lambda failure: default_fails.append(failure.reason),
+            dynamic=False,
+        )(f)
+        opt_default(torch.randn(3))
+        opt_default(torch.randn(4))
+
+        # Prime the region with one entry — recompile-reason logging only
+        # fires on subsequent calls (is_recompilation requires the region
+        # to already have ≥1 entry).
+        opt_iso = torch._dynamo.optimize(
+            "eager", dynamic=False, isolate_recompiles=True
+        )(f)
+        opt_iso(torch.randn(5))
+        default_fails.clear()
+
+        # Recompile in the region — shape 6 misses the region entry and
+        # both default entries. All three should contribute guard-failure
+        # reasons; default_fails must receive both default entries' fails.
+        opt_iso(torch.randn(6))
+
+        self.assertGreaterEqual(
+            len(default_fails),
+            2,
+            f"expected guard failures for both default entries, got {default_fails}",
+        )
+
+    def test_reset_clears_region_strategy(self):
+        """torch._dynamo.reset() must clear region_strategy_map on
+        ExtraState. Otherwise a RUN_ONLY persisted by a prior region
+        would survive reset and prevent the new region from compiling."""
+        cnt = torch._dynamo.testing.CompileCounter()
+
+        def f(x):
+            return x.sin()
+
+        with torch._dynamo.config.patch(
+            recompile_limit=1, automatic_dynamic_shapes=False
+        ):
+            opt_a = torch.compile(
+                f, backend=cnt, dynamic=False, isolate_recompiles=True
+            )
+            opt_a(torch.randn(3))
+            opt_a(torch.randn(4))  # hits limit → region RUN_ONLY persisted
+            self.assertEqual(cnt.frame_count, 1)
+
+        torch._dynamo.reset()
+
+        opt_b = torch.compile(f, backend=cnt, isolate_recompiles=True)
+        opt_b(torch.randn(5))
+        self.assertEqual(cnt.frame_count, 2)
 
     @torch._dynamo.config.patch(
         recompile_limit=2,

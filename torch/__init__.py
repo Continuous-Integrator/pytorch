@@ -2711,7 +2711,14 @@ def compile(
         recompilations count against every other call's limit. With
         ``isolate_recompiles=True``, each call gets its own isolated set of entries.
         Lookups for an isolated compile call will still fall back to entries from
-        non-isolated compile calls, but new compilations are stored separately.
+        non-isolated compile calls (BC-friendly reuse), but new compilations are
+        stored separately. ``recompile_limit`` is checked per-region;
+        ``accumulated_recompile_limit`` is a global cap across all regions.
+        Default-strategy behavior is asymmetric: SKIP decisions (from
+        ``skip_code``, ``@torch._dynamo.skip``, FX-generated code, etc.) are
+        inherited by isolated regions — those remain skipped. RUN_ONLY persisted
+        by a non-isolated region hitting its recompile limit does NOT bleed
+        into isolated regions — each region manages its own RUN_ONLY state.
         Default False.
 
     Example::
