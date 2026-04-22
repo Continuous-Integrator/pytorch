@@ -14,7 +14,7 @@ import os
 import threading
 import traceback
 import warnings
-from ctypes import byref, c_uint32, c_void_p
+from ctypes import byref, c_uint32, c_void_p, cast, pointer
 from functools import lru_cache
 from typing import Any, NewType, TYPE_CHECKING
 
@@ -180,7 +180,7 @@ def _enum_devices_zes(visible_mask: list[int]) -> int:
         return -1
 
     # --- Count visible dGPUs and iGPUs ---
-    ZE_DEVICE_PROPERTY_FLAG_INTEGRATED = 1 << 0
+    ZES_DEVICE_PROPERTY_FLAG_INTEGRATED = 1 << 0
     expose_subdevices = os.getenv("ZE_FLAT_DEVICE_HIERARCHY") != "COMPOSITE"
 
     _cached_zes_device_infos.clear()
@@ -192,13 +192,16 @@ def _enum_devices_zes(visible_mask: list[int]) -> int:
     for device in devices:
         props = pyzes.zes_device_properties_t()
         props.stype = pyzes.ZES_STRUCTURE_TYPE_DEVICE_PROPERTIES
+        ext_props = pyzes.zes_device_ext_properties_t()
+        ext_props.stype = pyzes.ZES_STRUCTURE_TYPE_DEVICE_EXT_PROPERTIES
+        props.pNext = cast(pointer(ext_props), c_void_p)
         if _zes_check(
             pyzes.zesDeviceGetProperties(device, byref(props)),
             "Can't get Level Zero Sysman device properties",
         ):
             return -1
 
-        is_integrated = bool(props.core.flags & ZE_DEVICE_PROPERTY_FLAG_INTEGRATED)
+        is_integrated = bool(ext_props.flags & ZES_DEVICE_PROPERTY_FLAG_INTEGRATED)
 
         # Tiled dGPUs in FLAT/COMBINED mode expose each sub-device as a
         # separate logical device; everything else counts as one slot.
@@ -678,9 +681,8 @@ def synchronize(device: Device = None) -> None:
             if :attr:`device` is ``None`` (default).
     """
     _lazy_init()
-    return torch._C._xpu_synchronize(device)
-
     device = _get_device_index(device, optional=True)
+    return torch._C._xpu_synchronize(device)
 
 
 def get_arch_list() -> list[str]:
@@ -746,81 +748,6 @@ def _get_rng_state_offset(device: int | str | torch.device = "xpu") -> int:
     final_device = _get_device(device)
     default_generator = _get_generator(final_device)
     return default_generator.get_offset()
-
-
-def _get_zes_device_handle(device: Device = None) -> c_void_p:
-    pass
-
-
-def temperature(device: Device = None) -> float:
-    r"""Return the GPU temperature in degrees Celsius.
-
-    Args:
-        device (torch.device or int, optional): selected device. Uses the
-            current device if ``None`` (default).
-    """
-    from ctypes import c_double
-
-    try:
-        import pyzes  # type: ignore[import]
-    except ImportError:
-        raise RuntimeError(
-            "pyzes is required for temperature(); install it with 'pip install pyzes'"
-        )
-
-    dev_idx = _get_device_index(device, optional=True)
-    global _cached_zes_device_infos
-
-    if not _cached_zes_device_infos:
-        _enum_devices_zes(_parse_visible_devices())
-    print(f"_cached_zes_device_infos: {_cached_zes_device_infos}")
-    if dev_idx >= len(_cached_zes_device_infos):
-        raise RuntimeError(f"XPU device {dev_idx} not found via Level Zero Sysman")
-
-    info = _cached_zes_device_infos[dev_idx]
-    target_handle = info.device_handle
-    target_subdevice_id = info.subdevice_id
-
-    # Enumerate temperature sensors on the root device.
-    temp_count = c_uint32(0)
-    pyzes.zesDeviceEnumTemperatureSensors(target_handle, byref(temp_count), None)
-    if temp_count.value == 0:
-        raise RuntimeError(f"No temperature sensors found on XPU device {dev_idx}")
-    temp_handles = (pyzes.zes_temp_handle_t * temp_count.value)()
-    pyzes.zesDeviceEnumTemperatureSensors(target_handle, byref(temp_count), temp_handles)
-
-    # Pick the best GPU temperature sensor.
-    # For tiled dGPUs (subdevice_id is set), prefer the per-tile sensor with
-    # matching subdeviceId; fall back to a root-level GPU sensor, then any sensor.
-    gpu_handle = None
-    fallback_handle = None
-    for handle in temp_handles:
-        temp_props = pyzes.zes_temp_properties_t()
-        temp_props.stype = pyzes.ZES_STRUCTURE_TYPE_TEMP_PROPERTIES
-        pyzes.zesTemperatureGetProperties(handle, byref(temp_props))
-        is_gpu_sensor = temp_props.type == pyzes.ZES_TEMP_SENSORS_GPU
-        if target_subdevice_id is not None:
-            if (
-                is_gpu_sensor
-                and temp_props.onSubdevice
-                and temp_props.subdeviceId == target_subdevice_id
-            ):
-                gpu_handle = handle
-                break
-            if is_gpu_sensor and not temp_props.onSubdevice and fallback_handle is None:
-                fallback_handle = handle
-        else:
-            if is_gpu_sensor and not temp_props.onSubdevice:
-                gpu_handle = handle
-                break
-            if is_gpu_sensor and fallback_handle is None:
-                fallback_handle = handle
-    if gpu_handle is None:
-        gpu_handle = fallback_handle if fallback_handle is not None else temp_handles[0]
-
-    temp = c_double(0.0)
-    pyzes.zesTemperatureGetState(gpu_handle, byref(temp))
-    return temp.value
 
 
 # import here to avoid circular import
