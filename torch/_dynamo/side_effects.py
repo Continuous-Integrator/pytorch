@@ -388,7 +388,7 @@ class SideEffects:
         # mutation was nullified (value restored to original).
         deferred = False
         if (
-            item.mutation_type is not None
+            isinstance(item.mutation_type, AttributeMutationExisting)
             and not is_side_effect_safe(item.mutation_type)
             and not isinstance(item, AutogradFunctionContextVariable)
             and value.is_python_constant()
