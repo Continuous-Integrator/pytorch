@@ -3,7 +3,10 @@
 import unittest
 
 import torch
-from torch.distributed.fsdp._fully_shard._stream_utils import StreamHandoff
+from torch.distributed.fsdp._fully_shard._stream_utils import (
+    PipelinedBuffer,
+    StreamHandoff,
+)
 from torch.testing._internal.common_utils import run_tests, TEST_CUDA, TestCase
 
 
@@ -160,6 +163,114 @@ class TestStreamHandoff(TestCase):
         # (We don't assert the block is actually reused — allocator
         # decisions are internal — only that no UAF occurred above.)
         del t1, t2
+
+
+@unittest.skipUnless(TEST_CUDA, "PipelinedBuffer tests require CUDA")
+class TestPipelinedBuffer(TestCase):
+    def _make_handoff(self, *, release_stream=None):
+        producer = torch.cuda.Stream()
+        if release_stream is None:
+            release_stream = torch.cuda.Stream()
+        with torch.cuda.stream(producer):
+            t = torch.zeros(16, device="cuda")
+            event = producer.record_event()
+        return StreamHandoff(
+            tensor=t,
+            ready_event=event,
+            release_stream=release_stream,
+        )
+
+    def test_empty_buffer(self):
+        buf = PipelinedBuffer()
+        self.assertEqual(len(buf), 0)
+        self.assertFalse(buf)
+        # pop_event on empty returns None without raising.
+        self.assertIsNone(buf.pop_event())
+        # flush on empty is a no-op.
+        buf.flush()
+
+    def test_push_and_len(self):
+        buf = PipelinedBuffer()
+        buf.push(self._make_handoff())
+        self.assertEqual(len(buf), 1)
+        self.assertTrue(buf)
+        buf.push(self._make_handoff())
+        self.assertEqual(len(buf), 2)
+
+    def test_pop_event_returns_event_and_releases(self):
+        buf = PipelinedBuffer()
+        h = self._make_handoff()
+        expected_event = h.event
+        self.assertIsNotNone(expected_event)
+        buf.push(h)
+        event = buf.pop_event()
+        self.assertIs(event, expected_event)
+        # Entry is released and removed from the buffer.
+        self.assertTrue(h.released)
+        self.assertEqual(len(buf), 0)
+
+    def test_pop_event_raises_when_multiple(self):
+        buf = PipelinedBuffer()
+        buf.push(self._make_handoff())
+        buf.push(self._make_handoff())
+        with self.assertRaises(RuntimeError):
+            buf.pop_event()
+        # Buffer is untouched on error.
+        self.assertEqual(len(buf), 2)
+
+    def test_flush_releases_all(self):
+        buf = PipelinedBuffer()
+        handoffs = [self._make_handoff() for _ in range(3)]
+        for h in handoffs:
+            buf.push(h)
+        buf.flush()
+        for h in handoffs:
+            self.assertTrue(h.released)
+        self.assertEqual(len(buf), 0)
+        # Idempotent: flushing again on empty is fine.
+        buf.flush()
+
+    def test_flush_with_extra_waiters(self):
+        """flush(stream) calls handoff.wait(stream) for each entry so that
+        the extra stream is ordered after the entry's event, in addition to
+        release_stream being ordered via release()."""
+        release = torch.cuda.Stream()
+        extra = torch.cuda.Stream()
+        buf = PipelinedBuffer()
+        buf.push(self._make_handoff(release_stream=release))
+        buf.push(self._make_handoff(release_stream=release))
+        buf.flush(extra)
+        # Functional smoke: subsequent work on `extra` must not hang and
+        # must see a consistent ordering.
+        with torch.cuda.stream(extra):
+            probe = torch.zeros(1, device="cuda")
+        torch.cuda.synchronize()
+        self.assertEqual(probe.item(), 0.0)
+
+    def test_single_slot_pipeline_cycle(self):
+        """Simulate AR's per-layer cycle: pop_event + push, repeated. Verifies
+        each iteration sees the prior iteration's event and releases it."""
+        release = torch.cuda.Stream()
+        buf = PipelinedBuffer()
+        prior_events = []
+        for _ in range(3):
+            prior_event = buf.pop_event()
+            prior_events.append(prior_event)
+            buf.push(self._make_handoff(release_stream=release))
+        # First iteration has no predecessor.
+        self.assertIsNone(prior_events[0])
+        # Subsequent iterations see their predecessor's event.
+        self.assertIsNotNone(prior_events[1])
+        self.assertIsNotNone(prior_events[2])
+        # End-of-pipeline drain.
+        buf.flush()
+        self.assertEqual(len(buf), 0)
+
+    def test_repr_shows_count(self):
+        buf = PipelinedBuffer()
+        self.assertIn("entries=0", repr(buf))
+        buf.push(self._make_handoff())
+        self.assertIn("entries=1", repr(buf))
 
 
 if __name__ == "__main__":
