@@ -825,22 +825,31 @@ class CustomOpDef:
 
         self._fast_call = fast_call
 
+        # Install the fast path on both the OpOverloadPacket's `_op`
+        # (read by `torch.ops.ns.name(x)`) and the OpOverload's `_op`
+        # (read by `torch.ops.ns.name.default(x)`). Save the original
+        # entries once so repeated `_install_fast_call` invocations (e.g.
+        # registering kernels for different devices) don't nest wrappers.
         packet = self._opoverload._overloadpacket
-        # Save the original C++ dispatcher entry point once, so repeated
-        # _install_fast_call invocations (e.g. registering kernels for
-        # different devices) don't create nested fast_op wrappers.
+        overload = self._opoverload
         if not hasattr(packet, "_orig_op"):
             packet._orig_op = packet._op  # pyrefly: ignore[missing-attribute]
+        if not hasattr(overload, "_orig_op"):
+            overload._orig_op = overload._op  # pyrefly: ignore[missing-attribute]
 
-        def fast_op(*args, **kwargs):
-            result = fast_call(*args, **kwargs)
-            if result is not _FAST_PATH_FALLBACK:
-                return result
-            return packet._orig_op(
-                *args, **kwargs
-            )  # pyrefly: ignore[missing-attribute]
+        def make_fast_op(target):
+            def fast_op(*args, **kwargs):
+                result = fast_call(*args, **kwargs)
+                if result is not _FAST_PATH_FALLBACK:
+                    return result
+                return target._orig_op(
+                    *args, **kwargs
+                )  # pyrefly: ignore[missing-attribute]
 
-        packet._op = fast_op
+            return fast_op
+
+        packet._op = make_fast_op(packet)
+        overload._op = make_fast_op(overload)
 
     def _register_backend_select_dispatcher(self, device_arg_index: int):
         """

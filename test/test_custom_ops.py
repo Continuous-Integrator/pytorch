@@ -4572,7 +4572,9 @@ class TestCustomOpFastPath(TestCase):
         """Replace the C++ dispatcher fallback with one that errors, so the
         test fails if the fast path doesn't handle the call."""
         packet = opdef._opoverload._overloadpacket
-        saved_orig = packet._orig_op
+        overload = opdef._opoverload
+        saved_packet_orig = packet._orig_op
+        saved_overload_orig = overload._orig_op
         saved_overload = opdef._opoverload
 
         def poison(*a, **kw):
@@ -4580,15 +4582,18 @@ class TestCustomOpFastPath(TestCase):
                 "slow path was called; fast path should have handled this"
             )
 
-        # Poison both fallback paths:
-        # - packet._orig_op: read by fast_op for the torch.ops.* call path
-        # - opdef._opoverload: used by CustomOpDef.__call__ for the direct path
+        # Poison all three fallback paths:
+        # - packet._orig_op: read by fast_op for torch.ops.ns.name(x)
+        # - overload._orig_op: read by fast_op for torch.ops.ns.name.default(x)
+        # - opdef._opoverload: used by CustomOpDef.__call__ for direct my_op(x)
         packet._orig_op = poison
+        overload._orig_op = poison
         opdef._opoverload = poison
         try:
             yield
         finally:
-            packet._orig_op = saved_orig
+            packet._orig_op = saved_packet_orig
+            overload._orig_op = saved_overload_orig
             opdef._opoverload = saved_overload
 
     def test_fast_path_basic(self):
@@ -4601,6 +4606,7 @@ class TestCustomOpFastPath(TestCase):
         with self._assert_fast_path_taken(fp_add):
             self.assertEqual(fp_add(x, y), x + y)
             self.assertEqual(torch.ops._torch_testing.fp_add(x, y), x + y)
+            self.assertEqual(torch.ops._torch_testing.fp_add.default(x, y), x + y)
 
     def test_fast_path_mutable(self):
         @torch.library.custom_op("_torch_testing::fp_inplace", mutates_args={"x"})
