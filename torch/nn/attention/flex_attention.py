@@ -471,7 +471,7 @@ class _FunctionLeaf(typing.NamedTuple):
     function.  Stores enough information to reconstruct the function from
     the extracted leaves during unflattening."""
 
-    stripped: _StrippedClosure | _StrippedPartial | _PlainFunction
+    stripped: _CallableMetadata
     closure_spec: TreeSpec
     n_extracted: int  # number of extracted leaves this function contributes
 
@@ -531,6 +531,9 @@ class _PlainFunction(typing.NamedTuple):
         return hash(self.fn.__code__)
 
 
+_CallableMetadata: TypeAlias = _StrippedClosure | _StrippedPartial | _PlainFunction
+
+
 def _extract_callable_leaves(
     leaves: list[Any], _seen: set[int]
 ) -> tuple[tuple[BaseArgumentTypes, ...], tuple[_ExtractedLeaf | _FunctionLeaf, ...]]:
@@ -541,6 +544,12 @@ def _extract_callable_leaves(
             child_extracted, child_spec, child_stripped = _extract_callable_pytree(
                 leaf, _seen
             )
+            if not isinstance(
+                child_stripped, (_StrippedClosure, _StrippedPartial, _PlainFunction)
+            ):
+                raise AssertionError(
+                    "expected nested callable extraction to produce callable metadata"
+                )
             extracted.extend(child_extracted)
             leaf_entries.append(
                 _FunctionLeaf(child_stripped, child_spec, len(child_extracted))
@@ -556,7 +565,7 @@ def _extract_callable_pytree(
 ) -> tuple[
     tuple[BaseArgumentTypes, ...],
     TreeSpec,
-    _StrippedClosure | _StrippedPartial | _PlainFunction | Callable[..., Any],
+    _CallableMetadata | Callable[..., Any],
 ]:
     """Extract closure contents as a flattened sub-pytree.
 
@@ -694,7 +703,7 @@ def _leaf_entries_eq(
 
 
 def _stripped_callable_hash(
-    stripped: _StrippedClosure | _StrippedPartial | _PlainFunction,
+    stripped: _CallableMetadata,
 ) -> int:
     return hash(stripped)
 
@@ -752,7 +761,9 @@ class _MaskModWrapper:
             return True
         if isinstance(
             self.fn, (_StrippedClosure, _StrippedPartial, _PlainFunction)
-        ) and isinstance(other.fn, (_StrippedClosure, _StrippedPartial, _PlainFunction)):
+        ) and isinstance(
+            other.fn, (_StrippedClosure, _StrippedPartial, _PlainFunction)
+        ):
             return self.fn == other.fn and self.closure_spec == other.closure_spec
         # Non-extracted plain functions: compare code objects
         if inspect.isfunction(self.fn) and inspect.isfunction(other.fn):
@@ -760,7 +771,9 @@ class _MaskModWrapper:
         # Callable objects: delegate to their __eq__
         if not isinstance(
             self.fn, (_StrippedClosure, _StrippedPartial, _PlainFunction)
-        ) and not isinstance(other.fn, (_StrippedClosure, _StrippedPartial, _PlainFunction)):
+        ) and not isinstance(
+            other.fn, (_StrippedClosure, _StrippedPartial, _PlainFunction)
+        ):
             return self.fn == other.fn
         return False
 
