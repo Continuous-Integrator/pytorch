@@ -591,10 +591,12 @@ class FSDPParamGroup:
                 all_reduce_stream = self.comm_ctx.all_reduce_stream
 
             self._wait_for_post_backward()
-            # Drain predecessor's AR keep-alive: pop_event releases the prior
-            # handoff (its block routes to all_reduce_stream's free pool) and
-            # returns the event for foreach_reduce's ordering wait.
-            prev_all_reduce_event = self.comm_ctx.all_reduce_buffer.pop_event()
+            # Drain predecessor's AR keep-alive: release()s the prior handoff
+            # so its block routes to all_reduce_stream's free pool AND
+            # all_reduce_stream waits on the prior AR event. Subsequent
+            # AR-stream work in foreach_reduce is FIFO-ordered after that
+            # wait; no explicit event threading needed.
+            self.comm_ctx.all_reduce_buffer.pop_event()
             (
                 reduce_scatter_input,
                 reduce_scatter_event,
@@ -628,7 +630,6 @@ class FSDPParamGroup:
                 self._all_reduce_hook,
                 self.force_sum_reduction_for_comms,
                 self._label_suffix,
-                prev_all_reduce_event,
             )
             # RS input is allocated on the default stream and read on the
             # RS stream; release on default so the free routes to the pool
