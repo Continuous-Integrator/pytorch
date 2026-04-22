@@ -1,5 +1,7 @@
 # `Tensor.record_use`: precise cross-stream lifetime for the CUDA caching allocator
 
+Prototype: https://github.com/pytorch/pytorch/pull/181189
+
 ## Motivation
 
 The CUDA caching allocator tracks only each block's allocation stream;
