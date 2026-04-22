@@ -650,13 +650,17 @@ class FSDPParamGroup:
                 prev_all_reduce_event,
             )
             if prev_all_reduce_state is not None:
-                # Stream context is load-bearing: the caching allocator uses
-                # the current stream at free time to pick the reuse pool.
-                # Dropping outside this `with` would let a different stream
-                # reuse the block before all_reduce_stream's wait_event on
-                # it has completed.
-                with self.device_handle.stream(all_reduce_stream):
-                    del prev_all_reduce_state
+                # No stream context needed. The caching allocator routes
+                # the freed block back to its allocation stream's pool
+                # (reduce_scatter_stream) regardless of the stream at this
+                # drop site. Cross-stream safety for reuse of that block
+                # is provided inside foreach_reduce by
+                # `reduce_scatter_stream.wait_event(post_reduce_event)`,
+                # which gates future RS-stream work on AR-stream's
+                # post-reduce drain. (NCCL's default-sync all_reduce runs
+                # on the current stream and calls neither recordStream
+                # nor stashing, so it contributes no protection here.)
+                del prev_all_reduce_state
             self.comm_ctx.reduce_scatter_states.append(
                 ReduceScatterState(reduce_scatter_input, reduce_scatter_event)
             )
