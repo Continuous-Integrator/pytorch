@@ -23,7 +23,7 @@ namespace c10d {
 constexpr const char* MPS_BACKEND_NAME = "mps";
 
 // RDMA-only MPS backend. Construction requires an Apple Thunderbolt RDMA
-// device that accepts ibv_alloc_pd on every rank — otherwise this throws
+// device that accepts ibv_alloc_pd on every rank - otherwise this throws
 // and the user is expected to fall back to the gloo backend.
 class TORCH_API ProcessGroupMPS : public Backend {
  public:
