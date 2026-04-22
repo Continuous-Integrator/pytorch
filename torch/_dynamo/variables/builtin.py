@@ -2363,9 +2363,16 @@ class BuiltinVariable(BaseBuiltinVariable):
         self,
         tx: "InstructionTranslator",
         fn: VariableTracker,
-        seq: VariableTracker,
+        *seqs: VariableTracker,
         **kwargs: VariableTracker,
     ) -> VariableTracker:
+        if len(seqs) == 0:
+            raise_observed_exception(
+                TypeError,
+                tx,
+                args=["map() must have at least two arguments."],
+            )
+
         strict = ConstantVariable.create(False)
         if kwargs:
             if sys.version_info >= (3, 14):
@@ -2385,9 +2392,11 @@ class BuiltinVariable(BaseBuiltinVariable):
                     f"{len(kwargs)} kwargs",
                 )
 
+        iterables = [generic_getiter(tx, seq) for seq in seqs]
+        iter_args = TupleVariable(iterables, mutation_type=ValueMutationNew())
         return variables.MapVariable(
             fn,
-            generic_getiter(tx, seq),
+            iter_args,
             strict=strict.as_python_constant(),
             mutation_type=ValueMutationNew(),
         )
