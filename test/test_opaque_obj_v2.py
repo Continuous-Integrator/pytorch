@@ -4032,6 +4032,21 @@ class fn(torch.nn.Module):
 """,
         )
 
+    def test_set_generator_metaclass_is_idempotent(self):
+        """Calling _set_generator_metaclass twice is a no-op, not an error."""
+        from torch._opaque_base import OpaqueBaseMeta
+
+        # Already called during import; second call should be a no-op.
+        torch._C._set_generator_metaclass(OpaqueBaseMeta)
+        self.assertIsInstance(torch._C.Generator, OpaqueBaseMeta)
+
+    def test_generator_metaclass_is_set(self):
+        """Generator's metaclass should be OpaqueBaseMeta after import."""
+        from torch._opaque_base import OpaqueBaseMeta
+
+        self.assertIsInstance(torch._C.Generator, OpaqueBaseMeta)
+        self.assertEqual(torch._C.Generator.__module__, "torch._C")
+
 
 if __name__ == "__main__":
     run_tests()
