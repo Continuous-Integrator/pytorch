@@ -4155,6 +4155,48 @@ complete.
 )
 
 add_docstr_all(
+    "record_use",
+    r"""
+record_use(stream)
+
+Precise variant of :meth:`~Tensor.record_stream`. Records a completion event
+on :attr:`stream` at the point of this call and attaches it to the tensor's
+underlying allocation. The caching allocator will not reuse the memory until
+every attached event has completed.
+
+Unlike :meth:`~Tensor.record_stream`, which records its event at block
+deallocation time (and therefore waits for *all* work queued on the stream
+at that point, including unrelated work), :meth:`~Tensor.record_use` records
+its event immediately, so the allocator waits no longer than necessary.
+
+Typical use: call right after the consumer's last read of the tensor on
+``stream``, then drop the tensor normally. Safe to call multiple times — all
+attached events must complete before reuse. Calling with the allocation
+stream is a no-op. Composes with :meth:`~Tensor.record_stream`: if both are
+used, the allocator waits for every attached event and every recorded
+stream.
+
+.. note::
+
+    Precise tracking is currently implemented by the native CUDA caching
+    allocator. Other allocators (e.g. ``cudaMallocAsync``, pluggable custom
+    allocators) fall back to :meth:`~Tensor.record_stream` semantics, which
+    is correct but imprecise.
+
+Example::
+
+    # producer on s0, consumer on s1
+    with torch.cuda.stream(s0):
+        x = torch.zeros(N)
+    s1.wait_stream(s0)
+    with torch.cuda.stream(s1):
+        y = some_op(x)      # consumer's read of x
+        x.record_use(s1)    # mark x's use on s1 as complete here
+    del x                   # safe to drop from any stream
+""",
+)
+
+add_docstr_all(
     "remainder",
     r"""
 remainder(divisor) -> Tensor

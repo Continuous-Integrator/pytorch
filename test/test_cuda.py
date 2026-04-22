@@ -1482,6 +1482,189 @@ print(t.is_pinned())
 
         self.assertNotEqual(try_realloc.data_ptr(), data_ptr)
 
+    @unittest.skipIf(
+        TEST_CUDAMALLOCASYNC, "record_use precise path is native-allocator only"
+    )
+    def test_record_use_basic(self):
+        # record_use should defer reuse of a block until the attached event
+        # fires. This mirrors test_record_stream but using the precise API.
+        cycles_per_ms = get_cycles_per_ms()
+
+        t = torch.FloatTensor([1, 2, 3, 4]).pin_memory()
+        result = torch.cuda.FloatTensor(t.size())
+        stream = torch.cuda.Stream()
+        ptr = [None]
+
+        def perform_copy():
+            with torch.cuda.stream(stream):
+                tmp = t.cuda(non_blocking=True)
+                ptr[0] = tmp.data_ptr()
+            torch.cuda.current_stream().wait_stream(stream)
+            torch.cuda._sleep(int(50 * cycles_per_ms))
+            result.copy_(tmp)
+            # record_use is called *after* all consumer work on the current
+            # stream. The event fires when the sleep+copy finish; the block
+            # cannot be reused before then.
+            tmp.record_use(torch.cuda.current_stream())
+
+        perform_copy()
+        with torch.cuda.stream(stream):
+            tmp2 = torch.cuda.FloatTensor(t.size())
+            tmp2.zero_()
+            self.assertNotEqual(
+                tmp2.data_ptr(), ptr[0], msg="allocation reused too soon"
+            )
+
+        self.assertEqual(result.tolist(), [1, 2, 3, 4])
+
+        # After the default stream drains, the block should be reusable.
+        torch.cuda.current_stream().synchronize()
+        with torch.cuda.stream(stream):
+            tmp3 = torch.cuda.FloatTensor(t.size())
+            self.assertEqual(tmp3.data_ptr(), ptr[0], msg="allocation not reused")
+
+    @unittest.skipIf(
+        TEST_CUDAMALLOCASYNC, "record_use precise path is native-allocator only"
+    )
+    def test_record_use_precision_vs_record_stream(self):
+        # The motivating test for Proposal C. Record the event on a consumer
+        # stream before queueing a long, unrelated kernel. record_use should
+        # allow reuse once the short consumer work completes; record_stream
+        # would force the allocator to wait for the long kernel too.
+        cycles_per_ms = get_cycles_per_ms()
+
+        stream_alloc = torch.cuda.Stream()
+        stream_consumer = torch.cuda.Stream()
+
+        # Allocate, record_use, then queue a long kernel on the consumer
+        # stream. Because record_use records the event *before* the long
+        # kernel, the allocator should be willing to reuse the block as soon
+        # as the kernel that ran before record_use completes.
+        with torch.cuda.stream(stream_alloc):
+            x = torch.cuda.FloatTensor(1024)
+        stream_consumer.wait_stream(stream_alloc)
+        with torch.cuda.stream(stream_consumer):
+            # pretend this is a short consumer op
+            x.zero_()
+            x.record_use(stream_consumer)
+            # now queue a long unrelated kernel on the same consumer stream
+            torch.cuda._sleep(int(500 * cycles_per_ms))
+
+        ptr = x.data_ptr()
+        del x
+
+        # Give the short consumer op time to complete (it's trivially fast),
+        # but not enough for the long sleep.
+        torch.cuda._sleep(int(10 * cycles_per_ms))
+        torch.cuda.current_stream().synchronize()
+        stream_alloc.synchronize()
+
+        with torch.cuda.stream(stream_alloc):
+            # Block should be reusable — the recorded event fires as soon as
+            # zero_() finishes, not after the _sleep kernel.
+            y = torch.cuda.FloatTensor(1024)
+        self.assertEqual(
+            y.data_ptr(),
+            ptr,
+            msg="record_use did not allow early reuse — is precision wired up?",
+        )
+
+    @unittest.skipIf(
+        TEST_CUDAMALLOCASYNC, "record_use precise path is native-allocator only"
+    )
+    def test_record_use_same_stream_is_noop(self):
+        # Calling record_use with the allocation stream should be a no-op;
+        # the block must remain reusable on that stream immediately after
+        # del, because FIFO already orders it.
+        stream = torch.cuda.Stream()
+        with torch.cuda.stream(stream):
+            x = torch.cuda.FloatTensor(1024)
+            x.record_use(stream)  # same-stream — should be a no-op
+            ptr = x.data_ptr()
+            del x
+            y = torch.cuda.FloatTensor(1024)
+            self.assertEqual(y.data_ptr(), ptr)
+
+    @unittest.skipIf(
+        TEST_CUDAMALLOCASYNC, "record_use precise path is native-allocator only"
+    )
+    def test_record_use_multiple_events(self):
+        # Multiple record_use calls accumulate — all must complete before reuse.
+        cycles_per_ms = get_cycles_per_ms()
+
+        stream_alloc = torch.cuda.Stream()
+        stream_a = torch.cuda.Stream()
+        stream_b = torch.cuda.Stream()
+
+        with torch.cuda.stream(stream_alloc):
+            x = torch.cuda.FloatTensor(1024)
+
+        stream_a.wait_stream(stream_alloc)
+        with torch.cuda.stream(stream_a):
+            torch.cuda._sleep(int(30 * cycles_per_ms))
+            x.record_use(stream_a)
+
+        stream_b.wait_stream(stream_alloc)
+        with torch.cuda.stream(stream_b):
+            torch.cuda._sleep(int(30 * cycles_per_ms))
+            x.record_use(stream_b)
+
+        ptr = x.data_ptr()
+        del x
+
+        # Immediately try to reuse — both events still pending, so must not reuse.
+        with torch.cuda.stream(stream_alloc):
+            y = torch.cuda.FloatTensor(1024)
+        self.assertNotEqual(
+            y.data_ptr(), ptr, msg="block reused before both events fired"
+        )
+
+        # After both streams drain, the block is eligible for reuse.
+        stream_a.synchronize()
+        stream_b.synchronize()
+        del y
+        with torch.cuda.stream(stream_alloc):
+            z = torch.cuda.FloatTensor(1024)
+        self.assertEqual(z.data_ptr(), ptr, msg="block not reused after events fired")
+
+    @unittest.skipIf(
+        TEST_CUDAMALLOCASYNC, "record_use precise path is native-allocator only"
+    )
+    def test_record_use_coexists_with_record_stream(self):
+        # Using both APIs on the same tensor: both contribute to event_count,
+        # so both gate the free.
+        cycles_per_ms = get_cycles_per_ms()
+
+        stream_alloc = torch.cuda.Stream()
+        stream_rs = torch.cuda.Stream()
+        stream_ru = torch.cuda.Stream()
+
+        with torch.cuda.stream(stream_alloc):
+            x = torch.cuda.FloatTensor(1024)
+
+        stream_rs.wait_stream(stream_alloc)
+        stream_ru.wait_stream(stream_alloc)
+        with torch.cuda.stream(stream_rs):
+            torch.cuda._sleep(int(30 * cycles_per_ms))
+        x.record_stream(stream_rs)
+        with torch.cuda.stream(stream_ru):
+            torch.cuda._sleep(int(30 * cycles_per_ms))
+            x.record_use(stream_ru)
+
+        ptr = x.data_ptr()
+        del x
+
+        with torch.cuda.stream(stream_alloc):
+            y = torch.cuda.FloatTensor(1024)
+        self.assertNotEqual(y.data_ptr(), ptr)
+
+        stream_rs.synchronize()
+        stream_ru.synchronize()
+        del y
+        with torch.cuda.stream(stream_alloc):
+            z = torch.cuda.FloatTensor(1024)
+        self.assertEqual(z.data_ptr(), ptr)
+
     def test_device_context_manager(self):
         prev_device = torch.cuda.current_device()
         with torch.accelerator.device_index(None):

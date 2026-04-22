@@ -152,6 +152,11 @@ enum ShareableHandleType : char {
 namespace {
 
 using stream_set = ska::flat_hash_set<cuda::CUDAStream>;
+// Handle for a pooled CUDA event: used by the caching allocator to track
+// completion of stream uses for free-deferral. Shared between Block's
+// `use_events` (precise path) and EventPool::Event (imprecise path).
+using event_handle =
+    std::unique_ptr<cudaEvent_t, std::function<void(cudaEvent_t*)>>;
 
 void decrease_stat_array(
     StatArray& stat_array,
@@ -198,6 +203,12 @@ struct Block {
   c10::DeviceIndex device; // gpu
   cudaStream_t stream; // allocation stream
   stream_set stream_uses; // streams on which the block was used
+  // Events pre-recorded on specific streams at user-designated end-of-use
+  // points. Populated by recordUse() (precise path). At free time, these
+  // events are fed directly into cuda_events without re-recording, so the
+  // allocator can reuse the block as soon as the events fire — bypassing
+  // any later unrelated work queued on the stream.
+  std::vector<std::pair<event_handle, cuda::CUDAStream>> use_events;
   int32_t registration_counter{-1};
   size_t size; // block size in bytes
   size_t requested_size; // memory originally requested
@@ -1074,7 +1085,7 @@ struct AllocParams {
 // rates.
 class EventPool {
  public:
-  using Event = std::unique_ptr<cudaEvent_t, std::function<void(cudaEvent_t*)>>;
+  using Event = event_handle;
   // TODO: Explicit device count
   EventPool() : pools_(at::cuda::device_count()) {}
 
@@ -1835,7 +1846,9 @@ class DeviceCachingAllocator {
         endAllocateToPool(mempool_id);
         releasePool(mempool_id);
         if (block_found) {
-          params = mempool_params;
+          // Move — AllocParams holds a Block (search_key) whose use_events
+          // vector contains move-only unique_ptrs, so the type is move-only.
+          params = std::move(mempool_params);
           break;
         }
       }
@@ -2155,8 +2168,10 @@ class DeviceCachingAllocator {
 
       if (is_reusable) {
         // Clear stream uses since the graph ensures proper synchronization.
-        // No need to insert events.
+        // No need to insert events. use_events is expected to be empty
+        // during capture (recordUse falls back to stream_uses).
         block->stream_uses.clear();
+        TORCH_INTERNAL_ASSERT(block->use_events.empty());
 
         free_block(block, context);
         blocks_to_erase.push_back(block);
@@ -2205,8 +2220,11 @@ class DeviceCachingAllocator {
       stats.oversize_allocations.decrease(1);
 
     // If the block has been used on more than one stream, handle accordingly.
-    if (!block->stream_uses.empty()) {
+    if (!block->stream_uses.empty() || !block->use_events.empty()) {
       if (C10_UNLIKELY(!captures_underway.empty())) {
+        // use_events should be empty under capture — recordUse falls back
+        // to stream_uses during capture (see recordUse above).
+        TORCH_INTERNAL_ASSERT(block->use_events.empty());
         if (CUDAAllocatorConfig::graph_capture_record_stream_reuse()) {
           // record_free_markers returns a vector of free markers,
           // or an empty vector if any associated stream is not currently
@@ -2219,8 +2237,11 @@ class DeviceCachingAllocator {
           deferred_blocks.emplace(block, std::vector<cudaGraphNode_t>{});
         }
       } else {
-        // If not in a capture, insert events for the block.
+        // If not in a capture, insert events for the block. insert_events
+        // handles stream_uses (records events at free time); consume_use_events
+        // handles the precise use_events already recorded by recordUse().
         insert_events(block);
+        consume_use_events(block);
       }
     } else {
       free_block(block, context);
@@ -2290,6 +2311,36 @@ class DeviceCachingAllocator {
     if (C10_UNLIKELY(!captures_underway.empty())) {
       block_to_cudagraph_stream_uses[block].insert(stream);
     }
+  }
+
+  // Precise variant of recordStream. Records a completion event on `stream`
+  // right now (at the caller-designated end of use) and stashes it on the
+  // block. At free time, the allocator waits on this event before reusing
+  // the block — unlike recordStream which records at free time and thus
+  // waits for all work queued on the stream up to that point.
+  void recordUse(Block* block, cuda::CUDAStream stream) {
+    std::lock_guard<std::recursive_mutex> lock(mutex);
+    if (stream.stream() == block->stream) {
+      // Same-stream uses are ordered by FIFO — no event needed.
+      return;
+    }
+    if (C10_UNLIKELY(!captures_underway.empty())) {
+      // Defer precise semantics under graph capture. Records inside a
+      // capture must participate in the graph's dependency structure, and
+      // we already have machinery to handle stream_uses across capture
+      // boundaries via block_to_cudagraph_stream_uses. Fall back to the
+      // imprecise path; precision inside capture is a follow-up.
+      block->stream_uses.insert(stream);
+      block_to_cudagraph_stream_uses[block].insert(stream);
+      return;
+    }
+    c10::DeviceIndex prev_device = 0;
+    C10_CUDA_CHECK(c10::cuda::GetDevice(&prev_device));
+    C10_CUDA_CHECK(c10::cuda::SetDevice(stream.device_index()));
+    EventPool::Event event = create_event_internal(stream.device_index());
+    C10_CUDA_CHECK(cudaEventRecord(*event, stream.stream()));
+    C10_CUDA_CHECK(c10::cuda::MaybeSetDevice(prev_device));
+    block->use_events.emplace_back(std::move(event), stream);
   }
 
   /** get memory fraction limiting maximum allocated memory **/
@@ -3216,7 +3267,7 @@ class DeviceCachingAllocator {
       const std::shared_ptr<GatheredContext>& context) {
     TORCH_INTERNAL_ASSERT(
         !block->allocated && block->event_count == 0 &&
-        block->stream_uses.empty());
+        block->stream_uses.empty() && block->use_events.empty());
 
     record_trace(
         TraceEntry::FREE_COMPLETED,
@@ -4011,6 +4062,18 @@ class DeviceCachingAllocator {
     C10_CUDA_CHECK(c10::cuda::MaybeSetDevice(prev_device));
   }
 
+  // Feed pre-recorded use_events into the polling queue without recording
+  // new events at free time. This is the precise-path counterpart to
+  // insert_events.
+  void consume_use_events(Block* block) {
+    auto events = std::move(block->use_events);
+    AT_ASSERT(block->use_events.empty());
+    for (auto& [event, stream] : events) {
+      block->event_count++;
+      cuda_events[stream].emplace_back(std::move(event), block);
+    }
+  }
+
   void insert_events_deferred_until_no_capture(
       const std::shared_ptr<GatheredContext>& context) {
     if (C10_UNLIKELY(!deferred_blocks.empty())) {
@@ -4469,6 +4532,19 @@ class NativeCachingAllocator : public CUDAAllocator {
     // block must not be null reaching here
     TORCH_INTERNAL_ASSERT(block != nullptr, "No allocated block can be found");
     device_allocator[block->device]->recordStream(block, stream);
+  }
+
+  void recordUse(const DataPtr& ptr, cuda::CUDAStream stream) override {
+    // Mirrors recordStream's null/foreign-ptr handling.
+    if (!ptr.get()) {
+      return;
+    }
+    if (ptr.get_deleter() != &local_raw_delete) {
+      return;
+    }
+    Block* block = get_allocated_block(ptr.get());
+    TORCH_INTERNAL_ASSERT(block != nullptr, "No allocated block can be found");
+    device_allocator[block->device]->recordUse(block, stream);
   }
 
   SnapshotInfo snapshot(MempoolId_t mempool_id, bool include_traces) override {
