@@ -102,7 +102,7 @@ from .base import (
     ValueMutationNew,
     VariableTracker,
 )
-from .dicts import ConstDictVariable, DefaultDictVariable
+from .dicts import ConstDictVariable
 from .hashable import HashableTracker
 from .sets import SetVariable
 

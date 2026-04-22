@@ -83,6 +83,7 @@ class ComputedLazyCache:
         self.op = op
         self.reconstruct_fn = reconstruct_fn
         self.name_hint: str | None = None
+        self.source_location: SourceLocation | None = None
         self.vt: VariableTracker | None = None
 
     def realize(self) -> None:
@@ -115,12 +116,16 @@ class ComputedLazyCache:
             assert self.vt is not None
             self.vt.set_name_hint(self.name_hint)
 
+        if self.source_location is not None and self.vt.source_location is None:
+            self.vt.set_source_location(self.source_location)
+
         del self.value
         del self.lazy_vars
         del self.args
         del self.op
         del self.reconstruct_fn
         del self.name_hint
+        del self.source_location
 
 
 class LazyVariableTracker(VariableTracker, metaclass=VariableTrackerMeta):
