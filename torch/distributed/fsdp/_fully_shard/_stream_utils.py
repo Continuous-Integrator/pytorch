@@ -14,7 +14,7 @@ if TYPE_CHECKING:
     from types import ModuleType
 
 
-__all__ = ["StreamHandoff"]
+__all__ = ["PipelinedBuffer", "StreamHandoff"]
 
 
 class StreamHandoff:
@@ -58,22 +58,17 @@ class StreamHandoff:
             used to open the stream context at release time. If ``None``,
             inferred from ``tensor.device.type``.
 
-    Example - AR keep-alive in FSDP2 HSDP backward::
+    Example - AR keep-alive in FSDP2 HSDP backward, via
+    :class:`PipelinedBuffer`::
 
-        # At the end of foreach_reduce, wrap the AR buffer so the next
-        # layer's post_backward can drop it on the AR stream:
-        handoff = StreamHandoff(
-            tensor=all_reduce_input,
-            ready_event=all_reduce_event,
-            release_stream=all_reduce_stream,
-        )
-        comm_ctx.all_reduce_state = handoff
-        ...
-        # Next layer, at top of post_backward:
-        prev = comm_ctx.all_reduce_state
-        comm_ctx.all_reduce_state = None
-        if prev is not None:
-            prev.release()  # AR.wait_event(evt); with stream(AR): tensor = None
+        # Layer N+1, top of post_backward: pop prior, use event for ordering.
+        prev_event = comm_ctx.all_reduce_buffer.pop_event()
+        (..., new_input, new_event, ...) = foreach_reduce(..., prev_event)
+        # Layer N, end of post_backward: stash new handoff.
+        if new_input is not None:
+            comm_ctx.all_reduce_buffer.push(
+                StreamHandoff(new_input, new_event, all_reduce_stream)
+            )
     """
 
     __slots__ = (
@@ -184,3 +179,96 @@ class StreamHandoff:
             f" dtype={self._tensor.dtype}"
             f" release_stream={self._release_stream}>"
         )
+
+
+class PipelinedBuffer:
+    """Sequence of :class:`StreamHandoff` with drain-all and single-slot-pop idioms.
+
+    FSDP2's cross-layer keep-alive buffers come in two shapes:
+
+    - **Single-slot pipeline** (AR, AG): layer N stashes one handoff on the
+      context; layer N+1 needs the prior event for causal ordering and then
+      releases the prior. Exactly one entry at a time.
+    - **Multi-slot queue** (RS): per-group handoffs accumulate across HSDP
+      groups and drain together at the next layer / end-of-backward.
+
+    ``PipelinedBuffer`` serves both. Callers pick between :meth:`pop_event`
+    (single-slot idiom: returns the sole entry's event, releases it) and
+    :meth:`flush` (multi-slot idiom: drain everything, with optional extra
+    consumer-stream waits).
+
+    :meth:`flush` accepts additional ``extra_waiters`` streams; each entry
+    calls ``handoff.wait(stream)`` on them before ``release()``. This covers
+    two cases today:
+
+    - AG prefetch drain: both AG streams (copy-in and AG) need the wait;
+      ``release_stream`` is the AG stream, so the copy-in stream is an
+      extra waiter.
+    - End-of-backward AR flush: the default stream must be ordered after
+      the AR event so that subsequent default-stream allocations don't
+      alias the AR buffer's storage.
+
+    Example (single-slot, AR)::
+
+        buf = comm_ctx.all_reduce_buffer
+        prev_event = buf.pop_event()           # releases prior; may be None
+        (..., new_input, new_event, ...) = foreach_reduce(..., prev_event)
+        if new_input is not None:
+            buf.push(StreamHandoff(new_input, new_event, all_reduce_stream))
+
+    Example (multi-slot, RS)::
+
+        buf = comm_ctx.reduce_scatter_buffer
+        if last_group_condition:
+            buf.flush()  # drain accumulated entries
+        buf.push(StreamHandoff(rs_input, rs_event, default_stream))
+    """
+
+    __slots__ = ("_items",)
+
+    def __init__(self) -> None:
+        self._items: list[StreamHandoff] = []
+
+    def push(self, handoff: StreamHandoff) -> None:
+        """Append ``handoff`` to the buffer."""
+        self._items.append(handoff)
+
+    def pop_event(self) -> torch.Event | None:
+        """Pop the sole entry; release it; return its event.
+
+        Returns ``None`` if the buffer is empty. Raises ``RuntimeError`` if
+        the buffer holds more than one entry - that would indicate a misuse
+        of the single-slot pipeline idiom.
+        """
+        if not self._items:
+            return None
+        if len(self._items) > 1:
+            raise RuntimeError(
+                f"pop_event() requires at most one entry; have {len(self._items)}"
+            )
+        handoff = self._items.pop()
+        event = handoff.event
+        handoff.release()
+        return event
+
+    def flush(self, *extra_waiters: torch.Stream) -> None:
+        """Release every entry. Idempotent.
+
+        For each entry, ``extra_waiters`` are made to wait on the entry's
+        event before the entry's ``release()`` runs (which itself waits
+        from ``release_stream``). No-op on an empty buffer.
+        """
+        for handoff in self._items:
+            for stream in extra_waiters:
+                handoff.wait(stream)
+            handoff.release()
+        self._items.clear()
+
+    def __bool__(self) -> bool:
+        return bool(self._items)
+
+    def __len__(self) -> int:
+        return len(self._items)
+
+    def __repr__(self) -> str:
+        return f"<PipelinedBuffer entries={len(self._items)}>"
