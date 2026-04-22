@@ -248,7 +248,7 @@ class RingAttentionTest(DTensorTestBase):
         if load_balance and not is_causal:
             return
 
-        # Compilation with context_parallel doesn't work yet — both paths
+        # Compilation with context_parallel doesn't work yet -- both paths
         # (use_context=True monkey-patch and use_context=False parallelize_module)
         # fail during tracing because DTensor dispatch interferes with sdpa.
         # Previously CommDebugMode was active for all subtests, which caused
@@ -1336,7 +1336,7 @@ class TestCPVarlenMetadata(TestCase):
         )
 
     def test_single_doc_no_loadbalancer(self) -> None:
-        # B=1, one doc spanning [0, 32). CP=2 → rank 0 gets [0, 16),
+        # B=1, one doc spanning [0, 32). CP=2 -> rank 0 gets [0, 16),
         # rank 1 gets [16, 32). rank 1 is mid-doc so its seqlen_k = 32.
         meta = _build_varlen_meta([0, 32], B=1, seq_len=32)
         per_rank = self._run(meta, cp_world_size=2)
@@ -1346,10 +1346,10 @@ class TestCPVarlenMetadata(TestCase):
         self.assertEqual(per_rank[1].max_k, 32)
 
     def test_single_doc_headtail(self) -> None:
-        # seq_len=32, CP=2, headtail chunks=8 → rearranged
+        # seq_len=32, CP=2, headtail chunks=8 -> rearranged
         # [0..7, 24..31, 8..15, 16..23]. Rank 0 gets [0..7, 24..31] (one
-        # contiguous + one tail chunk → 2 segments). Rank 1 gets [8..23]
-        # contiguous → 1 segment.
+        # contiguous + one tail chunk -> 2 segments). Rank 1 gets [8..23]
+        # contiguous -> 1 segment.
         meta = _build_varlen_meta([0, 32], B=1, seq_len=32)
         per_rank = self._run(
             meta,
@@ -1380,11 +1380,11 @@ class TestCPVarlenMetadata(TestCase):
     def test_multi_doc_headtail(self) -> None:
         # Same docs as test_multi_doc_straddling, with headtail balancer
         # (chunk=16). Rank 0 = chunks 0+3 = [0..16, 48..64).
-        # Doc 0 [0..10): full → seg (10,10).
+        # Doc 0 [0..10): full -> seg (10,10).
         # Doc 1 prefix [10..16): seg (6, 6) (seqlen_k = 16-10 = 6).
         # Doc 1 tail [48..50): seg (2, 40) (seqlen_k = 49-10+1 = 40).
         # Doc 2 [50..64): seg (14, 14).
-        # Rank 1 = chunks 1+2 = [16..48), all in doc 1 → 1 seg (32, 38).
+        # Rank 1 = chunks 1+2 = [16..48), all in doc 1 -> 1 seg (32, 38).
         meta = _build_varlen_meta([0, 10, 50, 64], B=1, seq_len=64)
         per_rank = self._run(
             meta,
@@ -1406,7 +1406,7 @@ class TestCPVarlenMetadata(TestCase):
         self.assertEqual(self._seg_lens(per_rank[1]), ([4], [7]))
 
     def test_doc_inside_one_rank(self) -> None:
-        # 3 docs (4, 4, 8) totaling 16; CP=2 → rank 0 has docs 0+1, rank 1
+        # 3 docs (4, 4, 8) totaling 16; CP=2 -> rank 0 has docs 0+1, rank 1
         # has doc 2 entirely.
         meta = _build_varlen_meta([0, 4, 8, 16], B=1, seq_len=16)
         per_rank = self._run(meta, cp_world_size=2)
@@ -1415,7 +1415,7 @@ class TestCPVarlenMetadata(TestCase):
 
     def test_multi_batch(self) -> None:
         # B=2, each batch has 2 docs of length 4; cu_seq_q = [0,4,8,12,16].
-        # CP=2 (per-batch shard=4) → rank r gets batch b's seq positions
+        # CP=2 (per-batch shard=4) -> rank r gets batch b's seq positions
         # [r*4, (r+1)*4) for each b. No straddling within docs.
         meta = _build_varlen_meta([0, 4, 8], B=2, seq_len=8)
         per_rank = self._run(meta, cp_world_size=2)
@@ -1423,14 +1423,14 @@ class TestCPVarlenMetadata(TestCase):
         self.assertEqual(self._seg_lens(per_rank[1]), ([4, 4], [4, 4]))
 
     def test_multi_batch_multi_doc_straddling(self) -> None:
-        # B=2, per-batch docs [10, 22] → packed cu_seq_q =
+        # B=2, per-batch docs [10, 22] -> packed cu_seq_q =
         # [0, 10, 32, 42, 64]. CP=2, shard_len=16.
         # Rank 0 has batch0[0..16) + batch1[0..16):
-        #   batch0: doc0 [0..10) + doc1 prefix [10..16) → (10,10), (6,6)
-        #   batch1: doc2 [32..42) + doc3 prefix [42..48) → (10,10), (6,6)
+        #   batch0: doc0 [0..10) + doc1 prefix [10..16) -> (10,10), (6,6)
+        #   batch1: doc2 [32..42) + doc3 prefix [42..48) -> (10,10), (6,6)
         # Rank 1 has batch0[16..32) + batch1[16..32):
-        #   batch0: doc1 mid [16..32) → (16, 22) (seqlen_k = 31-10+1)
-        #   batch1: doc3 mid [48..64) → (16, 22) (seqlen_k = 63-42+1)
+        #   batch0: doc1 mid [16..32) -> (16, 22) (seqlen_k = 31-10+1)
+        #   batch1: doc3 mid [48..64) -> (16, 22) (seqlen_k = 63-42+1)
         # Also asserts k_local_indices for rank 0: must pick out the
         # non-contiguous per-segment K regions ([0..10), [10..16),
         # [32..42), [42..48)) from the packed length-64 K view.
@@ -1451,13 +1451,13 @@ class TestCPVarlenMetadata(TestCase):
 
     def test_cp_world_size_4(self) -> None:
         # CP=4 exercises off-by-one in the per-rank boundary math beyond
-        # the standard CP=2 cases. seq_len=64, docs [20, 44] → packed
+        # the standard CP=2 cases. seq_len=64, docs [20, 44] -> packed
         # cu_seq_q = [0, 20, 64]. shard_len=16.
-        # Rank 0 [0..16): doc 0 prefix → seqlen_q=16, seqlen_k=16
+        # Rank 0 [0..16): doc 0 prefix -> seqlen_q=16, seqlen_k=16
         # Rank 1 [16..32): doc 0 tail [16..20) + doc 1 prefix [20..32)
-        #   → (4, 20) (seqlen_k = 19-0+1), (12, 12)
-        # Rank 2 [32..48): doc 1 mid → (16, 28) (seqlen_k = 47-20+1)
-        # Rank 3 [48..64): doc 1 end → (16, 44) (seqlen_k = 63-20+1)
+        #   -> (4, 20) (seqlen_k = 19-0+1), (12, 12)
+        # Rank 2 [32..48): doc 1 mid -> (16, 28) (seqlen_k = 47-20+1)
+        # Rank 3 [48..64): doc 1 end -> (16, 44) (seqlen_k = 63-20+1)
         meta = _build_varlen_meta([0, 20, 64], B=1, seq_len=64)
         per_rank = self._run(meta, cp_world_size=4)
         self.assertEqual(self._seg_lens(per_rank[0]), ([16], [16]))
@@ -1519,7 +1519,7 @@ class TestCPVarlenMetadata(TestCase):
         )
         self.assertEqual(per_rank[1].k_local_indices, expected_rank1)
 
-        # Rank 0 Q = [0..16) + [48..64) → 4 segments. K-gather covers
+        # Rank 0 Q = [0..16) + [48..64) -> 4 segments. K-gather covers
         # original [0..10), [10..16), [10..50), [50..64) then the inverse
         # maps each original position into rearranged coords.
         expected_rank0 = torch.tensor(
@@ -1641,7 +1641,7 @@ class CPVarlenAttentionTest(DTensorTestBase):
             else None
         )
 
-        # Shard Q (no requires_grad yet — set after the to_local() inside
+        # Shard Q (no requires_grad yet -- set after the to_local() inside
         # _context_parallel_shard so the local tensor is a true leaf).
         q_for_cp = q_full.detach().clone()
         sharded = _context_parallel_shard(

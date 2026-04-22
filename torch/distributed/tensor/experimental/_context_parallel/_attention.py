@@ -1072,7 +1072,7 @@ class VarlenMetadata:
     ``_context_parallel_shard`` recognizes for varlen inputs, and
     ``_create_cp_varlen_metadata`` populates the CP-only fields below on
     the per-rank result. It is not intended as a general container for
-    non-CP ``varlen_attn`` callers — those already pass ``cu_seq_q``,
+    non-CP ``varlen_attn`` callers -- those already pass ``cu_seq_q``,
     ``cu_seq_k``, ``max_q``, ``max_k`` directly to the kernel.
 
     Fields the caller constructs (global, pre-shard):
@@ -1381,31 +1381,75 @@ def _create_cp_varlen_metadata(
 ) -> VarlenMetadata:
     """Build per-rank :class:`VarlenMetadata` for context-parallel varlen attention.
 
-    Each rank holds a shard of the global Q (along the per-batch sequence dim).
-    K/V are assumed to be all-gathered (e.g. via DTensor ``Replicate`` placement
-    on the CP dim). The per-rank metadata expresses each (doc, rank) Q chunk as
-    a varlen segment whose ``cu_seq_k`` length equals the global doc-relative
-    offset at the chunk's last position plus one. With FA's right-aligned
-    causal interpretation (``Q[i] ↔ K[j ≤ seqlen_k - seqlen_q + i]``) this
-    correctly preserves causal masking under sharding.
+    Each rank holds a shard of the global Q; K/V are assumed already
+    all-gathered across the CP dim (e.g. via DTensor ``Replicate``).
+    For each (doc, rank) contiguous-Q run the builder emits a varlen
+    segment with ``seqlen_k`` = (global doc-relative offset at the
+    chunk end) + 1, so FA's right-aligned causal reproduces document-
+    causal masking exactly. ``k_local_indices`` gathers the visible K
+    (and V) positions into a contiguous layout matching ``cu_seq_k``;
+    this is necessary when B > 1 or under a load balancer, in which
+    case the indices also compose with the load balancer's inverse
+    permutation so the gather hits the correct entries in the
+    rearranged K/V.
 
-    A rank's local Q within a global doc may be non-contiguous under load
-    balancing; each contiguous (doc, rank) run becomes its own segment.
+    Self-attention only (``cu_seq_q == cu_seq_k``); all segment
+    construction is vectorized.
 
-    This implementation supports self-attention only: ``cu_seq_q`` and
-    ``cu_seq_k`` on the input must be equal. The input ``max_q``, ``max_k``,
-    and ``cu_seq_k`` are otherwise ignored — per-rank values are re-derived
-    from ``cu_seq_q`` and the rank's Q shard.
+    Example:
+        seq_len=20, B=1, 3 docs (cu_seq_q=[0,7,13,20]), CP=4
+        (shard_len=5), no load balancer. Rank 2 owns Q rows 10..14
+        which span the tail of doc 1 and the head of doc 2.
 
-    When a ``load_balancer`` is used, the caller's K/V tensor must already be
-    in the load-balancer's forward-rearranged order along the sequence dim
-    (this is what DTensor's ``Replicate`` placement produces after the CP
-    rank first rearranges its local K/V shard). ``k_local_indices`` is
-    composed with the inverse permutation so the gather hits the correct
-    entries in the rearranged K/V.
+        Full document-causal mask (Q=K=20):
 
-    All segment construction is vectorized — no Python-level loop over
-    sequence positions.
+                                             KV_index
+                  col: 0  1  2  3  4  5  6| 7  8  9 10 11 12|13 14 15 16 17 18 19
+                   [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+                   [1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+                   [1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+                   [1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+                   [1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+                   [1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+                   [1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+                   [0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+                   [0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+         Q_index   [0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+                   ---------------------------------------------------------------
+         (Q=10)    [0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+         (Q=11)    [0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0]
+         (Q=12)    [0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0]    rank 2
+         (Q=13)    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0]
+         (Q=14)    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0]
+                   ---------------------------------------------------------------
+                   [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0]
+                   [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0]
+                   [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0, 0]
+                   [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0]
+                   [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1]
+
+        Rank 2 has two (doc, rank) contiguous-Q runs so the builder
+        emits two segments. After ``K.index_select(k_local_indices)``,
+        ``varlen_attn`` sees a (5 Q x 8 K) block-diagonal mask that
+        matches rank 2's 5x20 slice above column-for-column:
+
+                        KV_index (into k_packed / v_packed)
+                         0  1  2  3  4  5| 6  7
+                        [1, 1, 1, 1, 0, 0, 0, 0]   <- Q loc 0 (was Q=10)
+                        [1, 1, 1, 1, 1, 0, 0, 0]   <- Q loc 1 (was Q=11)
+          Q_index_local [1, 1, 1, 1, 1, 1, 0, 0]   <- Q loc 2 (was Q=12)
+                        ---- seg 0 (3x6) ----+---- seg 1 (2x2)
+                        [0, 0, 0, 0, 0, 0, 1, 0]   <- Q loc 3 (was Q=13)
+                        [0, 0, 0, 0, 0, 0, 1, 1]   <- Q loc 4 (was Q=14)
+
+        Returned VarlenMetadata for rank 2:
+          cu_seq_q        = [0, 3, 5]         (segment lengths 3, 2)
+          cu_seq_k        = [0, 6, 8]         (visible K per segment 6, 2)
+          max_q, max_k    = 3, 6
+          k_local_indices = [7, 8, 9, 10, 11, 12,  13, 14]
+                            \\------seg 0------/  \\-seg 1-/
+          unpacked_batch_size = 1
+          unpacked_seq_len    = 5
     """
     if varlen_meta.k_local_indices is not None:
         raise ValueError(
@@ -1494,7 +1538,7 @@ def _create_cp_varlen_metadata(
 
     # Convert per-batch positions to packed (global) positions: batch b
     # contributes positions in [b * seq_len, (b + 1) * seq_len). Concatenate
-    # across batches in row-major order — same order the rank's local packed Q
+    # across batches in row-major order -- same order the rank's local packed Q
     # tensor will hold.
     batch_offsets = (
         torch.arange(B, device=device, dtype=torch.long).unsqueeze(1) * seq_len
@@ -1510,7 +1554,7 @@ def _create_cp_varlen_metadata(
 
     # Vectorized segment-boundary detection: a new segment starts wherever the
     # doc id changes OR consecutive local positions are not consecutive in the
-    # global packed view. Batch boundaries are handled by diff_doc — the last
+    # global packed view. Batch boundaries are handled by diff_doc -- the last
     # position of batch b and the first of batch b+1 belong to different doc
     # ids in the global cu_seq_q, so is_break fires even when their packed
     # global positions happen to be consecutive.
