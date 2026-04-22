@@ -6,6 +6,7 @@ from ._context_parallel._attention import (
     _context_parallel_shard,
     _ContextParallel,
     _cp_options,
+    _create_cp_varlen_metadata,
     _disable_context_parallel_dispatcher,
     _enable_context_parallel_dispatcher,
     _is_causal_behavior,
@@ -14,6 +15,7 @@ from ._context_parallel._attention import (
     context_parallel,
     context_parallel_unshard,
     set_rotate_method,
+    VarlenMetadata,
 )
 from ._context_parallel._load_balancer import (
     _HeadTailLoadBalancer,
@@ -29,6 +31,7 @@ __all__ = [
     "_context_parallel_shard",
     "_ContextParallel",
     "_cp_options",
+    "_create_cp_varlen_metadata",
     "_disable_context_parallel_dispatcher",
     "_enable_context_parallel_dispatcher",
     "_is_causal_behavior",
@@ -37,6 +40,7 @@ __all__ = [
     "context_parallel",
     "context_parallel_unshard",
     "set_rotate_method",
+    "VarlenMetadata",
     "_HeadTailLoadBalancer",
     "_LoadBalancer",
     "_PerDocumentHeadTailLoadBalancer",
