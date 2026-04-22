@@ -1,0 +1,55 @@
+# OSDC B200 Smoke Workflow
+#
+# Spawns 9 parallel jobs on OSDC B200 runners. Each job runs inside the
+# PyTorch CI CUDA image (ghcr.io mirror) and runs nvidia-smi, then exits.
+# Intended as a capacity / availability check for the OSDC B200 pool.
+
+name: osdc-b200-smoke
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/osdc-b200-smoke.yml
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}-${{ github.event_name == 'workflow_dispatch' }}
+  cancel-in-progress: true
+
+permissions:
+  id-token: write
+  contents: read
+  actions: read
+
+jobs:
+  get-label-type:
+    if: github.repository_owner == 'pytorch'
+    name: get-label-type
+    uses: pytorch/pytorch/.github/workflows/_runner-determinator.yml@main
+    with:
+      triggering_actor: ${{ github.triggering_actor }}
+      issue_owner: ${{ github.event.pull_request.user.login || github.event.issue.user.login }}
+      curr_branch: ${{ github.head_ref || github.ref_name }}
+      curr_ref_type: ${{ github.ref_type }}
+      check_experiments: arc,lf
+
+  nvidia-smi:
+    if: github.repository_owner == 'pytorch'
+    name: nvidia-smi (${{ matrix.shard }}/9)
+    needs: get-label-type
+    runs-on: "${{ needs.get-label-type.outputs.label-type }}l-x86iamx-22-225-b200"
+    container:
+      image: ghcr.io/pytorch/ci-image:pytorch-linux-jammy-cuda12.8-cudnn9-py3-gcc11
+      options: "--gpus all"
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9]
+    steps:
+      - name: nvidia-smi
+        shell: bash
+        run: nvidia-smi
+
+      - name: Sleep 30 minutes
+        shell: bash
+        run: sleep 1800
