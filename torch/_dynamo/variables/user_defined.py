@@ -1426,12 +1426,9 @@ class UserDefinedObjectVariable(UserDefinedVariable):
             if result.is_python_constant():
                 result_value = result.as_python_constant()
                 if not isinstance(result_value, bool):
-                    raise_observed_exception(
-                        TypeError,
+                    raise_type_error(
                         tx,
-                        args=[
-                            f"__bool__ should return bool, returned {type(result_value).__name__}"
-                        ],
+                        f"__bool__ should return bool, returned {type(result_value).__name__}",
                     )
             return result
         return None
@@ -1442,25 +1439,19 @@ class UserDefinedObjectVariable(UserDefinedVariable):
     ) -> VariableTracker:
         # CPython: PyNumber_Index checks tp_as_number->nb_index.
         # For user-defined types, __index__ in tp_dict means nb_index is set.
-        type_attr = inspect.getattr_static(type(self.value), "__index__", None)
-        if type_attr is None:
-            return super().nb_index_impl(tx)
-        source = self.source and self.get_source_by_walking_mro(tx, "__index__")
-        method_var = self.resolve_type_attr(tx, "__index__", type_attr, source)
-        result = method_var.call_function(tx, [], {})
-        # CPython validates that __index__ returns an int.
-        # https://github.com/python/cpython/blob/c09ccd9c429/Objects/abstract.c#L1433-L1438
-        if result.is_python_constant() and not isinstance(
-            result.as_python_constant(), int
-        ):
-            raise_observed_exception(
-                TypeError,
-                tx,
-                args=[
-                    f"__index__ returned non-int (type {type(result.as_python_constant()).__name__})"
-                ],
-            )
-        return result
+        if self._maybe_get_baseclass_method("__index__"):
+            result = self.call_method(tx, "__index__", [], {})
+            # CPython validates that __index__ returns an int.
+            # https://github.com/python/cpython/blob/c09ccd9c429/Objects/abstract.c#L1433-L1438
+            if result.is_python_constant() and not isinstance(
+                result.as_python_constant(), int
+            ):
+                raise_type_error(
+                    tx,
+                    f"__index__ returned non-int (type {type(result.as_python_constant()).__name__})",
+                )
+            return result
+        return super().nb_index_impl(tx)
 
     def nb_int_impl(
         self,
@@ -1468,23 +1459,15 @@ class UserDefinedObjectVariable(UserDefinedVariable):
     ) -> VariableTracker:
         # CPython: slot_nb_int calls __int__(), PyNumber_Long validates the return type.
         # https://github.com/python/cpython/blob/v3.13.0/Objects/abstract.c#L1538-L1550
-        source = self.source and self.get_source_by_walking_mro(tx, "__int__")
-        method_var = self.resolve_type_attr(
-            tx,
-            "__int__",
-            inspect.getattr_static(type(self.value), "__int__"),
-            source,
-        )
-        result = method_var.call_function(tx, [], {})
-        if not issubclass(result.python_type(), int):
-            raise_observed_exception(
-                TypeError,
-                tx,
-                args=[
-                    f"__int__ returned non-int (type {result.python_type().__name__})"
-                ],
-            )
-        return result
+        if self._maybe_get_baseclass_method("__int__"):
+            result = self.call_method(tx, "__int__", [], {})
+            if not issubclass(result.python_type(), int):
+                raise_type_error(
+                    tx,
+                    f"__int__ returned non-int (type {result.python_type().__name__})",
+                )
+            return result
+        return super().nb_int_impl(tx)
 
     def nb_float_impl(
         self,
@@ -1492,23 +1475,15 @@ class UserDefinedObjectVariable(UserDefinedVariable):
     ) -> VariableTracker:
         # CPython: slot_nb_float calls __float__(), PyNumber_Float validates the return type.
         # https://github.com/python/cpython/blob/v3.13.0/Objects/abstract.c#L1647-L1658
-        source = self.source and self.get_source_by_walking_mro(tx, "__float__")
-        method_var = self.resolve_type_attr(
-            tx,
-            "__float__",
-            inspect.getattr_static(type(self.value), "__float__"),
-            source,
-        )
-        result = method_var.call_function(tx, [], {})
-        if not issubclass(result.python_type(), float):
-            raise_observed_exception(
-                TypeError,
-                tx,
-                args=[
-                    f"__float__ returned non-float (type {result.python_type().__name__})"
-                ],
-            )
-        return result
+        if self._maybe_get_baseclass_method("__float__"):
+            result = self.call_method(tx, "__float__", [], {})
+            if not issubclass(result.python_type(), float):
+                raise_type_error(
+                    tx,
+                    f"__float__ returned non-float (type {result.python_type().__name__})",
+                )
+            return result
+        return super().nb_float_impl(tx)
 
     def torch_function_check(self) -> None:
         assert has_torch_function(self), (
@@ -1543,31 +1518,13 @@ class UserDefinedObjectVariable(UserDefinedVariable):
         )
 
     def tp_iternext_impl(self, tx: "InstructionTranslator") -> VariableTracker:
-        method = self._maybe_get_baseclass_method("__next__")
-        if (
-            self._base_vt is not None
-            and self._base_methods is not None
-            and method in self._base_methods
-        ):
-            return self._base_vt.tp_iternext_impl(tx)
-
-        if isinstance(method, types.FunctionType):
-            method_var = self.resolve_type_attr(tx, "__next__", method, self.source)
-            return method_var.call_function(tx, [], {})
+        if self._maybe_get_baseclass_method("__next__"):
+            return self.call_method(tx, "__next__", [], {})
         return super().tp_iternext_impl(tx)
 
     def tp_iter_impl(self, tx: "InstructionTranslator") -> VariableTracker:
-        method = self._maybe_get_baseclass_method("__iter__")
-        if (
-            self._base_vt is not None
-            and self._base_methods is not None
-            and method in self._base_methods
-        ):
-            return self._base_vt.tp_iter_impl(tx)
-
-        if isinstance(method, types.FunctionType):
-            method_var = self.resolve_type_attr(tx, "__iter__", method, self.source)
-            return method_var.call_function(tx, [], {})
+        if self._maybe_get_baseclass_method("__iter__"):
+            return self.call_method(tx, "__iter__", [], {})
         return super().tp_iter_impl(tx)
 
     @staticmethod
@@ -1587,20 +1544,8 @@ class UserDefinedObjectVariable(UserDefinedVariable):
         key: VariableTracker,
     ) -> VariableTracker:
         # PyObject_GetItem: https://github.com/python/cpython/blob/62a6e898e01/Objects/abstract.c#L155-L206
-        method = self._maybe_get_baseclass_method("__getitem__")
-        if (
-            self._base_vt is not None
-            and self._base_methods is not None
-            and method in self._base_methods
-        ):
-            return self._base_vt.mp_subscript_impl(tx, key)
-        if isinstance(method, types.FunctionType):
-            source_fn = self.source and self.get_source_by_walking_mro(
-                tx, "__getitem__"
-            )
-            return variables.UserMethodVariable(
-                method, self, source_fn=source_fn, source=self.source
-            ).call_function(tx, [key], {})
+        if self._maybe_get_baseclass_method("__getitem__"):
+            return self.call_method(tx, "__getitem__", [key], {})
         return super().mp_subscript_impl(tx, key)
 
     def call_method(
@@ -1611,7 +1556,6 @@ class UserDefinedObjectVariable(UserDefinedVariable):
         kwargs: dict[str, Any],
     ) -> VariableTracker:
         from .. import trace_rules
-        from . import UserMethodVariable
         from .constant import ConstantVariable
 
         method = self._maybe_get_baseclass_method(name)
@@ -1673,35 +1617,19 @@ class UserDefinedObjectVariable(UserDefinedVariable):
             ):
                 return self._base_vt.call_method(tx, name, args, kwargs)
 
-            # check for methods implemented in C++
-            if isinstance(method, types.FunctionType):
-                source = self.source
-                source_fn = None
-                if source:
-                    source_fn = self.get_source_by_walking_mro(tx, name)
-                # TODO(jansel): add a guard to check for monkey patching?
-                from ..mutation_guard import unpatched_nn_module_init
-
-                if method is torch.nn.Module.__init__:
-                    method = unpatched_nn_module_init
-                return UserMethodVariable(
-                    method, self, source_fn=source_fn, source=source
-                ).call_function(tx, args, kwargs)  # type: ignore[arg-type]
-
             if method is list.__len__ and self.source and not (args or kwargs):
                 install_guard(self.source.make_guard(GuardBuilder.SEQUENCE_LENGTH))
                 return VariableTracker.build(tx, len(self.value))  # type: ignore[arg-type]
 
+            method_var = self.var_getattr(tx, name)
+            if not isinstance(method_var, variables.GetAttrVariable):
+                return method_var.call_function(tx, args, kwargs)
+
         return super().call_method(tx, name, args, kwargs)
 
     def len_impl(self, tx: "InstructionTranslator") -> VariableTracker:
-        method = self._maybe_get_baseclass_method("__len__")
-        if method is not None:
-            type_attr = self.lookup_class_mro_attr("__len__")
-            source = self.source and self.get_source_by_walking_mro(tx, "__len__")
-            method_var = self.resolve_type_attr(tx, "__len__", type_attr, source)
-            if not isinstance(method_var, variables.GetAttrVariable):
-                return method_var.call_function(tx, [], {})
+        if self._maybe_get_baseclass_method("__len__"):
+            return self.call_method(tx, "__len__", [], {})
 
         unimplemented(
             gb_type="Cannot trace user-defined __len__",
