@@ -2341,6 +2341,86 @@ class GraphModule(torch.nn.Module):
             out = torch.compile(fn, backend="eager", fullgraph=True)(x)
             out.backward()
 
+    def test_nullified_integer_counter_in_backward(self):
+        # Integer attribute incremented then decremented — nullified.
+        class Counter:
+            def __init__(self):
+                self.depth = 0
+
+        counter = Counter()
+
+        class Foo(torch.autograd.Function):
+            @staticmethod
+            def forward(ctx, x):
+                return x.clone()
+
+            @staticmethod
+            def backward(ctx, grad):
+                counter.depth += 1
+                result = grad.clone()
+                counter.depth -= 1
+                return result
+
+        def fn(x):
+            return Foo.apply(x).sum()
+
+        x = torch.randn(8, requires_grad=True)
+        x_ref = x.detach().clone().requires_grad_(True)
+        out_ref = fn(x_ref)
+        out_ref.backward()
+
+        torch._dynamo.reset()
+        x_c = x.detach().clone().requires_grad_(True)
+        out_c = torch.compile(fn, backend="eager", fullgraph=True)(x_c)
+        out_c.backward()
+        self.assertEqual(x_ref.grad, x_c.grad)
+
+    def test_read_after_mutate_in_backward(self):
+        # Code inside the backward reads the flipped value, confirming
+        # the traced mutation is visible during tracing.
+        import contextlib
+
+        class State:
+            def __init__(self):
+                self.mode = "default"
+
+        state = State()
+
+        @contextlib.contextmanager
+        def set_mode(mode):
+            old = state.mode
+            state.mode = mode
+            try:
+                yield
+            finally:
+                state.mode = old
+
+        class Foo(torch.autograd.Function):
+            @staticmethod
+            def forward(ctx, x):
+                return x.clone()
+
+            @staticmethod
+            def backward(ctx, grad):
+                with set_mode("special"):
+                    if state.mode == "special":
+                        return grad * 2.0
+                    return grad
+
+        def fn(x):
+            return Foo.apply(x).sum()
+
+        x = torch.randn(8, requires_grad=True)
+        x_ref = x.detach().clone().requires_grad_(True)
+        out_ref = fn(x_ref)
+        out_ref.backward()
+
+        torch._dynamo.reset()
+        x_c = x.detach().clone().requires_grad_(True)
+        out_c = torch.compile(fn, backend="eager", fullgraph=True)(x_c)
+        out_c.backward()
+        self.assertEqual(x_ref.grad, x_c.grad)
+
 
 class AutogradFunctionFunctorchTests(torch._dynamo.test_case.TestCase):
     """Tests for autograd.Function compatibility with torch.func transforms.

@@ -188,6 +188,11 @@ class SideEffects:
         Context managers that flip-flop a flag (set on enter, restore on exit)
         produce no net side effect. Instead of failing immediately, we track
         original and current values, then validate they match after tracing.
+
+        Note: this context only validates that mutations were nullified — it
+        does NOT roll back store_attr_mutations. Callers must restore
+        side_effects separately (e.g., via prev_side_effects pattern) to
+        discard the mutations after the HOP.
         """
         saved = self.deferred_attr_mutations
         self.deferred_attr_mutations = {}
@@ -202,12 +207,16 @@ class SideEffects:
     ) -> bool:
         """Record an attribute mutation for deferred validation.
 
-        Returns True if successfully deferred, False if the original value
-        is not a python constant and we should fall back to the old path.
+        Returns True if successfully deferred, False if we cannot read the
+        original value (var_getattr raises NotImplementedError) or the
+        original is not a python constant — caller should fall back to
+        check_allowed_side_effect.
         """
         key = (id(item), name)
         current = value.as_python_constant()
-        if key not in self.deferred_attr_mutations:
+        if key in self.deferred_attr_mutations:
+            original = self.deferred_attr_mutations[key][0]
+        else:
             output_graph = self.output_graph_weakref()
             assert output_graph is not None
             tx = output_graph.current_tx
@@ -218,10 +227,7 @@ class SideEffects:
             if not original_vt.is_python_constant():
                 return False
             original = original_vt.as_python_constant()
-            self.deferred_attr_mutations[key] = (original, current)
-        else:
-            original, _ = self.deferred_attr_mutations[key]
-            self.deferred_attr_mutations[key] = (original, current)
+        self.deferred_attr_mutations[key] = (original, current)
         return True
 
     def validate_deferred_attr_mutations(self) -> None:
