@@ -4138,34 +4138,6 @@ def _persistent_reduction_configs(
                         warp_size=warp_size,
                     )
                 ]
-                if torch.version.hip:
-                    # Alternative with multi-warp reduction so the autotuner
-                    # can pick between num_warps=1 (no shared memory) and a
-                    # multi-warp variant (uses shared-memory reduction).
-                    configs.append(
-                        triton_config_reduction(
-                            size_hints,
-                            x_block,
-                            rnumel,
-                            register_intensive=True,
-                            num_warps=2,
-                            min_num_warps=1,
-                            reduction_hint=reduction_hint,
-                            warp_size=warp_size,
-                        )
-                    )
-                    configs.append(
-                        triton_config_reduction(
-                            size_hints,
-                            x_block,
-                            rnumel,
-                            register_intensive=True,
-                            num_warps=4,
-                            min_num_warps=1,
-                            reduction_hint=reduction_hint,
-                            warp_size=warp_size,
-                        )
-                    )
 
         elif reduction_hint == ReductionHint.OUTER:
             configs = configs[-1:]
