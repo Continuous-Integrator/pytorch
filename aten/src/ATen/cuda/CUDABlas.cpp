@@ -1784,7 +1784,7 @@ bool gemm_and_bias(
   };
 
   // When moving from a bias epilogue fusion to a fusion with a matrix descriptor,
-  // we check whether the first selected by the heuristic algorithm can be re-used
+  // we check whether the first selected by the heuristic algorithm can be reused
   // (with some adjustments like required workspace and wave count).
   // And if not (very, very unlikely), the heuristic algorithm needs to be re-queried.
   const auto perform_algo_check = [&]() -> cublasStatus_t {
@@ -1826,7 +1826,7 @@ bool gemm_and_bias(
         use_bias_descriptor = true;
         restore_beta_val();
 
-        // In the very, very unlikely event of not being able to re-use
+        // In the very, very unlikely event of not being able to reuse
         // the selected algorithm, we need to re-query heuristic.
         if (perform_algo_check() != CUBLAS_STATUS_SUCCESS) {
           cublasStatus = get_heuristic();
