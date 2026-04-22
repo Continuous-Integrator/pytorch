@@ -43,8 +43,8 @@ class IMPSAllocator : public c10::Allocator {
   // of the MTLBuffer backing `mps_storage`. The returned storage retains the
   // source MPS storage for its lifetime, so the host pointer remains valid
   // even after the originating tensor is freed. Raises if `mps_storage` was
-  // not allocated by the MPSAllocator, or if it is not backed by shared
-  // (unified) memory (e.g. on discrete-memory devices).
+  // not allocated by the MPSAllocator, or if its MTLBuffer is private rather
+  // than shared (unified-memory) storage.
   virtual c10::Storage getHostAliasStorage(
       const c10::Storage& mps_storage) const = 0;
   virtual bool recordEvents(c10::ArrayRef<const void*> buffers) const = 0;

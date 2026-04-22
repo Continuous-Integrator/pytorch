@@ -563,8 +563,7 @@ c10::Storage MPSHeapAllocatorImpl::getHostAliasStorage(const c10::Storage& mps_s
   BufferBlock* buffer_block = get_allocated_buffer_block(mps_storage.data());
   TORCH_CHECK(buffer_block, "getHostAliasStorage: storage was not allocated by the MPSAllocator");
   TORCH_CHECK(buffer_block->heap->pool->usage & UsageFlags::SHARED,
-              "getHostAliasStorage: storage is not backed by shared (unified) memory; "
-              "host aliasing is not supported on discrete-memory MPS devices");
+              "getHostAliasStorage: storage is not backed by a shared (unified) MTLBuffer");
 
   if (!buffer_block->cpu_ptr) {
     buffer_block->cpu_ptr = [buffer_block->buffer contents];
