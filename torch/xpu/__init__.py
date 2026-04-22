@@ -755,7 +755,7 @@ def _zes_check(rc: int, msg: str) -> None:
     import pyzes  # type: ignore[import]
 
     if rc != pyzes.ZE_RESULT_SUCCESS:
-        raise RuntimeError(msg)
+        raise RuntimeError(f"{msg} (rc={rc})")
 
 
 def _get_zes_temperature_handle(device: Device = None) -> c_void_p:
@@ -866,7 +866,7 @@ def temperature(device: Device = None) -> float:
             "GPU temperature querying is not available. Try running with elevated privileges (e.g. sudo)."
         )
     if rc != pyzes.ZE_RESULT_SUCCESS:
-        raise RuntimeError("Can't get Level Zero Sysman GPU temperature.")
+        raise RuntimeError(f"Can't get Level Zero Sysman GPU temperature (rc={rc}).")
     return temp.value
 
 
