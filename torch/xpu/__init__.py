@@ -780,7 +780,8 @@ def _get_zes_temperature_handle(device: Device = None) -> c_void_p:
     device = _get_device_index(device, optional=True)
     global _cached_zes_device_infos
     if not _cached_zes_device_infos:
-        _enum_zes_device_infos(_parse_visible_devices())
+        if _enum_zes_device_infos(_parse_visible_devices()) < 0:
+            raise RuntimeError("Failed to enumerate devices via Level Zero Sysman.")
 
     total_devices = len(_cached_zes_device_infos)
     if device >= total_devices:
