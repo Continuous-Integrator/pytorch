@@ -853,6 +853,28 @@ command = [
 ]
 
 [[linter]]
+code = 'DIRECT_SPMD_TYPES_IMPORT'
+include_patterns = [
+    'torch/**/*.py',
+]
+exclude_patterns = [
+    'torch/spmd_types.py',
+]
+command = [
+    'python3',
+    'tools/linter/adapters/grep_linter.py',
+    '--pattern=(^|\\s)(import spmd_types|from spmd_types)',
+    '--linter-name=DIRECT_SPMD_TYPES_IMPORT',
+    '--error-name=direct import of spmd_types',
+    """--error-description=\
+        Do not import spmd_types directly; use torch.spmd_types instead, \
+        e.g., 'from torch.spmd_types import Shard'.
+    """,
+    '--',
+    '@{{PATHSFILE}}'
+]
+
+[[linter]]
 code = 'DEPLOY_DETECTION'
 include_patterns = [
     '**/*.py',
