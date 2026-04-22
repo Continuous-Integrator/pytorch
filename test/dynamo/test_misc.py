@@ -407,10 +407,13 @@ graph():
 
         x = torch.ones(5)
         with YoloMode():
-            out = torch.compile(torch.add, backend=backend, fullgraph=True)(x, x)
-
+            out = torch.compile(torch.add, backend=backend, fullgraph=False)(x, x)
         self.assertEqual(out.sum().item(), 5.0)
         self.assertEqual(len(backend.graphs), 0)
+
+        with YoloMode():
+            with self.assertRaisesRegex(RuntimeError, "found no compiled frames"):
+                torch.compile(torch.add, backend=backend, fullgraph=True)(x, x)
 
     def test_compile_non_infra_empty_with_disalloed_dispatch_mode(self):
         from torch.utils._python_dispatch import TorchDispatchMode
@@ -570,7 +573,7 @@ graph():
                 return False
 
             def __torch_dispatch__(self, func, types, args=(), kwargs=None):
-                out = torch.compile(func, backend=backend, fullgraph=True)(
+                out = torch.compile(func, backend=backend, fullgraph=False)(
                     *args, **kwargs
                 )
                 return out
@@ -4386,6 +4389,7 @@ not ___dict_contains('cccccccc', G['sys'].modules)""",
         o = torch.compile(foo, fullgraph=True, backend="eager")(x, y)
         self.assertEqual(o, x * y)
 
+    @torch._dynamo.config.patch(nested_graph_breaks=False)
     def test_module_deepcopy(self):
         m1 = torch.nn.Sequential(
             torch.nn.Linear(10, 10),
@@ -4482,6 +4486,149 @@ not ___dict_contains('cccccccc', G['sys'].modules)""",
         x = torch.randn(4)
         correct = fn(x)
         result = torch.compile(fn, fullgraph=True)(x)
+        self.assertEqual(result, correct)
+
+    def test_deepcopy_user_defined_object(self):
+        class MyConfig:
+            def __init__(self, hidden_size=64):
+                self.hidden_size = hidden_size
+
+        class MyModule(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.config = MyConfig()
+                self.linear = torch.nn.Linear(64, 64)
+
+            def forward(self, x):
+                cfg = copy.deepcopy(self.config)
+                return self.linear(x) * cfg.hidden_size
+
+        m = MyModule()
+        x = torch.randn(2, 64)
+        result = torch.compile(m, fullgraph=True, backend="eager")(x)
+        self.assertEqual(m(x), result)
+
+    def test_deepcopy_user_defined_object_with_containers(self):
+        class Config:
+            def __init__(self):
+                self.sizes = [1, 2, 3]
+                self.mapping = {"a": 10, "b": 20}
+                self.flags = (True, False)
+
+        def fn(x, cfg):
+            c = copy.deepcopy(cfg)
+            c.sizes[0] = 99
+            c.mapping["a"] = 77
+            return x + c.sizes[0] + c.mapping["a"]
+
+        cfg = Config()
+        x = torch.randn(4)
+        correct = fn(x, cfg)
+        result = torch.compile(fn, fullgraph=True, backend="eager")(x, cfg)
+        self.assertEqual(result, correct)
+        # Verify deepcopy didn't mutate original
+        self.assertEqual(cfg.sizes[0], 1)
+        self.assertEqual(cfg.mapping["a"], 10)
+
+    def test_deepcopy_set(self):
+        MY_SET = {1, 2, 3}
+
+        def fn(x):
+            s = copy.deepcopy(MY_SET)
+            return x + len(s)
+
+        x = torch.randn(4)
+        correct = fn(x)
+        result = torch.compile(fn, fullgraph=True)(x)
+        self.assertEqual(result, correct)
+
+    def test_deepcopy_frozenset(self):
+        MY_FROZENSET = frozenset([1, 2, 3])
+
+        def fn(x):
+            s = copy.deepcopy(MY_FROZENSET)
+            return x + len(s)
+
+        x = torch.randn(4)
+        correct = fn(x)
+        result = torch.compile(fn, fullgraph=True)(x)
+        self.assertEqual(result, correct)
+
+    def test_deepcopy_user_defined_object_with_method(self):
+        class MyConfig:
+            def __init__(self, hidden_size=64):
+                self.hidden_size = hidden_size
+
+            def get_size(self):
+                return self.hidden_size
+
+        class MyModule(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.config = MyConfig()
+                self.linear = torch.nn.Linear(64, 64)
+
+            def forward(self, x):
+                cfg = copy.deepcopy(self.config)
+                return self.linear(x) * cfg.get_size()
+
+        m = MyModule()
+        x = torch.randn(2, 64)
+        correct = m(x)
+        result = torch.compile(m, fullgraph=True, backend="eager")(x)
+        self.assertEqual(result, correct)
+
+    def test_deepcopy_nested_user_defined_object(self):
+        class Inner:
+            def __init__(self, scale):
+                self.scale = scale
+
+        class Outer:
+            def __init__(self):
+                self.inner = Inner(2.0)
+                self.bias = 1.0
+
+        def fn(x, cfg):
+            c = copy.deepcopy(cfg)
+            c.inner.scale = 3.0
+            return x * c.inner.scale + c.bias
+
+        cfg = Outer()
+        x = torch.randn(4)
+        correct = fn(x, cfg)
+        result = torch.compile(fn, fullgraph=True, backend="eager")(x, cfg)
+        self.assertEqual(result, correct)
+        # Verify deepcopy didn't mutate original
+        self.assertEqual(cfg.inner.scale, 2.0)
+
+    def test_deepcopy_with_getattribute_override(self):
+        # Regression test: classes that override __getattribute__ (like
+        # HuggingFace PretrainedConfig) caused a graph break on
+        # __reduce_ex__ because SuperVariable.call_method for
+        # object.__getattribute__ bypassed the polyfill detection in
+        # resolve_type_attr.
+        class Config:
+            attribute_map = {}
+
+            def __init__(self, hidden_size=768, num_layers=6):
+                self.hidden_size = hidden_size
+                self.num_layers = num_layers
+
+            def __getattribute__(self, key):
+                if key != "attribute_map" and key in super().__getattribute__(
+                    "attribute_map"
+                ):
+                    key = super().__getattribute__("attribute_map")[key]
+                return super().__getattribute__(key)
+
+        def fn(x, config):
+            c = copy.deepcopy(config)
+            return x * c.hidden_size + c.num_layers
+
+        x = torch.randn(3)
+        config = Config()
+        correct = fn(x, config)
+        result = torch.compile(fn, backend="eager", fullgraph=True)(x, config)
         self.assertEqual(result, correct)
 
     def test_global_state_guard_serialization(self):
@@ -7518,7 +7665,10 @@ not ___dict_contains('cccccccc', G['sys'].modules)""",
 
         @torch.compile(backend="eager")
         def f1(a, b):
-            f2(a, b)
+            try:
+                f2(a, b)
+            finally:
+                pass
 
         def f2(a, b):
             c = a + b
@@ -7527,7 +7677,10 @@ not ___dict_contains('cccccccc', G['sys'].modules)""",
 
         @torch.compile(backend="eager")
         def g1(a, b):
-            g2(a, b)
+            try:
+                g2(a, b)
+            finally:
+                pass
 
         def g2(a, b):
             c = a + b
@@ -8897,6 +9050,7 @@ not ___dict_contains('cccccccc', G['sys'].modules)""",
 
         self.assertTrue(same(ref, res))
 
+    @torch._dynamo.config.patch(nested_graph_breaks=False)
     def test_cast_no_recompile_after_graph_break(self):
         # In FSDP, cast(nn.Module, self) can be called after a
         # graph break. Without the polyfill + skip_code fix, PEP 523 compiles
@@ -14792,6 +14946,17 @@ fn
         self.assertEqual(res[8], -1)
         self.assertEqual(res[9], float.fromhex("0x1.ffffp10"))
         self.assertEqual(res[10], "0x1.8000000000000p+0")
+
+    def test_builtin_constant_fold_str_conversions(self):
+        @torch.compile(backend="eager", fullgraph=True)
+        def fn(x):
+            s = hex(255) + oct(8) + bin(3) + ascii("hello") + format(42, "x")
+            return x + len(s)
+
+        x = torch.randn(4)
+        res = fn(x)
+        expected = hex(255) + oct(8) + bin(3) + ascii("hello") + format(42, "x")
+        self.assertEqual(res, x + len(expected))
 
     def test_guard_string_escaped(self):
         d = {frozenset({0}): {frozenset({0}): 1}}
