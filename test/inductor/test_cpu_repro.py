@@ -40,7 +40,6 @@ from torch.testing._internal.common_utils import (
     IS_MACOS,
     MI200_ARCH,
     parametrize,
-    skipIfNoLapack,
     skipIfRocmArch,
     slowTest,
     TEST_MKL,
@@ -70,7 +69,6 @@ run_and_get_cpp_code = test_torchinductor.run_and_get_cpp_code
 TestCase = test_torchinductor.TestCase
 aten = torch.ops.aten
 check_model = test_torchinductor.check_model
-skip_if_cpp_wrapper = test_torchinductor.skip_if_cpp_wrapper
 
 requires_vectorization = unittest.skipUnless(
     cpu_vec_isa.valid_vec_isa_list() and os.getenv("ATEN_CPU_CAPABILITY") != "default",
@@ -140,7 +138,6 @@ class LstmModule(torch.nn.Module):
 class CPUReproTests(TestCase):
     common = check_model
 
-    @skipIfNoLapack
     def test_torch_linalg_qr_tuple_slice(self):
         def fn(x):
             return torch.linalg.qr(x)[:1]
@@ -230,8 +227,6 @@ class CPUReproTests(TestCase):
                 (v,),
             )
 
-    @skipIfNoLapack
-    @skip_if_cpp_wrapper("conj issue, to be fixed")
     def test_complex_cholesky_mh_view_fallback(self):
         torch.manual_seed(0)
 
@@ -3675,6 +3670,36 @@ class CPUReproTests(TestCase):
                 raise AssertionError(
                     f"Expected generated_cpp_vec_kernel_count == 1, got {metrics.generated_cpp_vec_kernel_count}"
                 )
+
+    @requires_vectorization
+    def test_argmax_argmin_cpptile2d_2d_input(self):
+        def fn(a, b):
+            return (a + b).max(dim=1)
+
+        def fn_min(a, b):
+            return (a + b).min(dim=1)
+
+        torch.manual_seed(0)
+        for sz in [8, 32, 35]:
+            for f in [fn, fn_min]:
+                torch._dynamo.reset()
+                a = torch.randn(sz, sz).transpose(0, 1)
+                b = torch.randn(sz, sz)
+                self.common(f, (a, b))
+
+    @requires_vectorization
+    def test_argmax_argmin_cpptile2d_3d_input(self):
+        def fn_3d(a, b):
+            return (a + b).max(dim=2)
+
+        def fn_3d_min(a, b):
+            return (a + b).min(dim=2)
+
+        for f in [fn_3d, fn_3d_min]:
+            torch._dynamo.reset()
+            a = torch.randn(4, 16, 16).permute(0, 2, 1)
+            b = torch.randn(4, 16, 16)
+            self.common(f, (a, b))
 
     # Currently, we enabled AVX2 and AVX512 for vectorization. If the platform is not
     # supported, the vectorization will not work and skip this test case. For ARM or
