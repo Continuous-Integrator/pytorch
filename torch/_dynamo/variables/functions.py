@@ -1156,7 +1156,8 @@ class LocalGeneratorObjectVariable(VariableTracker):
     def python_type(self) -> type:
         return types.GeneratorType
 
-    def next_variable(self, tx: "InstructionTranslatorBase") -> VariableTracker:
+    def tp_iternext_impl(self, tx: "InstructionTranslatorBase") -> VariableTracker:
+        # ref: https://github.com/python/cpython/blob/v3.13.3/Objects/genobject.c#L832
         tracer = self.inline_tracer
 
         if self._is_generator_exhausted():
@@ -1196,6 +1197,10 @@ class LocalGeneratorObjectVariable(VariableTracker):
             return ConstantVariable.create(True)
         return ConstantVariable.create(False)
 
+    def tp_iter_impl(self, tx: "InstructionTranslator") -> VariableTracker:
+        # ref: https://github.com/python/cpython/blob/v3.13.3/Objects/genobject.c#L831
+        return self
+
     def has_unpack_var_sequence(self, tx: "InstructionTranslator") -> bool:
         return False
 
@@ -1214,7 +1219,7 @@ class LocalGeneratorObjectVariable(VariableTracker):
     ) -> None:
         while True:
             try:
-                fn(self.next_variable(tx))
+                fn(self.tp_iternext_impl(tx))
             except ObservedUserStopIteration:
                 handle_observed_exception(tx)
                 break
@@ -1247,12 +1252,7 @@ class LocalGeneratorObjectVariable(VariableTracker):
         args: list[VariableTracker],
         kwargs: dict[str, VariableTracker],
     ) -> VariableTracker:
-        if name == "__next__":
-            return self.next_variable(tx)
-        elif name == "__iter__":
-            # iter(gen) returns itself
-            return self
-        elif name == "send":
+        if name == "send":
             # Sends a value into the generator function. Returns the next value
             # yielded by the generator, or raises StopIteration if the generator
             # exits without yielding another value
@@ -1263,7 +1263,7 @@ class LocalGeneratorObjectVariable(VariableTracker):
                     raise_observed_exception(TypeError, tx)
             tracer = self.inline_tracer
             tracer.push_many(args)
-            return self.next_variable(tx)
+            return self.tp_iternext_impl(tx)
         elif name == "close":
             # * Raises a GeneratorExit at the point where the generator function was paused.
             # * If the generator function catches the exception and returns a
@@ -1318,7 +1318,7 @@ class LocalGeneratorObjectVariable(VariableTracker):
 
             try:
                 # Raise RuntimeError if the generator yields any other value
-                if self.next_variable(tx):
+                if self.tp_iternext_impl(tx):
                     raise_observed_exception(RuntimeError, tx)
             except ObservedGeneratorExit:
                 tracer.generator_exhausted = True
@@ -1349,7 +1349,7 @@ class LocalGeneratorObjectVariable(VariableTracker):
                 # propagate the exception back to the parent caller
                 raise
 
-            retval = self.next_variable(tx)
+            retval = self.tp_iternext_impl(tx)
 
             # The exception raised before is still active. We need to check the exception
             # table one more time to find the next target. But why? Let's walk
