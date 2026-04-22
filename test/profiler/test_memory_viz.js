@@ -1455,6 +1455,180 @@ function test_per_pool_summarization_interleaved() {
 }
 
 // ============================================================
+// Reserved color slots in schemeTableau10
+// ============================================================
+// Slot 0 (blue) is used by summarized bands and slot 9 (gray) is used by pool
+// envelopes. Block stripes (non-pool, ghost-pool, replay-pool) must not land
+// on either, otherwise they blend into the summarized band or envelope behind
+// them. The remapping lives in block_color() in process_alloc_data.js.
+
+function test_block_color_envelope_keeps_gray() {
+  console.log('test_block_color_envelope_keeps_gray');
+  const poolId = [0, 1];
+  const snapshot = makeSnapshot({
+    traces: [
+      { action: 'alloc', addr: 0x1000, size: 100, frames: [], stream: 0 },
+    ],
+    segments: [{
+      device: 0, address: 0x1000, total_size: 100, segment_pool_id: poolId,
+      stream: 0, blocks: [],
+    }],
+  });
+  const result = process_alloc_data(snapshot, 0, false, 15000, true);
+  const env = result.allocations_over_time.find(
+    d => typeof d.elem === 'string' && d.elem.startsWith('pool:'));
+  assertEqual(env.color, 9, 'envelope color stays 9 (gray)');
+}
+
+function test_block_color_summarized_keeps_blue() {
+  console.log('test_block_color_summarized_keeps_blue');
+  // Global summarized band stays blue (color 0) — it's not a block stripe.
+  const snapshot = makeSnapshot({
+    traces: [
+      { action: 'alloc', addr: 0x1000, size: 100, frames: [], stream: 0 },
+    ],
+    segments: [{
+      device: 0, address: 0x1000, total_size: 4096, segment_pool_id: [0, 0],
+      stream: 0, blocks: [],
+    }],
+  });
+  const result = process_alloc_data(snapshot, 0, false, 15000, false);
+  const summarized = result.allocations_over_time.find(d => d.elem === 'summarized');
+  assertEqual(summarized.color, 0, 'global summarized band stays color 0 (blue)');
+}
+
+function test_block_color_nonpool_category_9_remapped() {
+  console.log('test_block_color_nonpool_category_9_remapped');
+  // Categories arranged so 'unknown' maps to index 9.
+  const categories = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'unknown'];
+  const snapshot = makeSnapshot({
+    traces: [
+      { action: 'alloc', addr: 0x1000, size: 100, frames: [], stream: 0 },
+    ],
+    segments: [{
+      device: 0, address: 0x1000, total_size: 4096, segment_pool_id: [0, 0],
+      stream: 0, blocks: [],
+    }],
+    categories,
+  });
+  const result = process_alloc_data(snapshot, 0, false, 15000, false);
+  const stripes = result.allocations_over_time.filter(
+    d => typeof d.elem === 'number');
+  assertEqual(stripes.length, 1, 'one non-pool block');
+  assert(stripes[0].color !== 9, 'non-pool block must not be color 9 (gray)');
+  assert(stripes[0].color % 10 !== 0, 'non-pool block must not render as slot 0 (blue)');
+  assertEqual(stripes[0].color, 8, 'color 9 should remap to 8 (→ slot 8 at render)');
+}
+
+function test_block_color_nonpool_category_0_remapped() {
+  console.log('test_block_color_nonpool_category_0_remapped');
+  // 'unknown' at index 0 means blocks would otherwise be blue, colliding with
+  // the summarized band.
+  const categories = ['unknown', 'a', 'b'];
+  const snapshot = makeSnapshot({
+    traces: [
+      { action: 'alloc', addr: 0x1000, size: 100, frames: [], stream: 0 },
+    ],
+    segments: [{
+      device: 0, address: 0x1000, total_size: 4096, segment_pool_id: [0, 0],
+      stream: 0, blocks: [],
+    }],
+    categories,
+  });
+  const result = process_alloc_data(snapshot, 0, false, 15000, false);
+  const stripes = result.allocations_over_time.filter(
+    d => typeof d.elem === 'number');
+  assertEqual(stripes.length, 1, 'one non-pool block');
+  assertEqual(stripes[0].color, 1, 'color 0 should remap to 1 (→ slot 1 at render)');
+}
+
+function test_block_color_pool_stripe_replay_not_reserved() {
+  console.log('test_block_color_pool_stripe_replay_not_reserved');
+  const poolId = [0, 1];
+  const categories = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'unknown'];
+  const snapshot = makeSnapshot({
+    traces: [
+      { action: 'alloc', addr: 0x1000, size: 100, frames: [], stream: 0 },
+    ],
+    segments: [{
+      device: 0, address: 0x1000, total_size: 100, segment_pool_id: poolId,
+      stream: 0, blocks: [],
+    }],
+    categories,
+  });
+  const result = process_alloc_data(snapshot, 0, false, 15000, true);
+  const stripes = result.allocations_over_time.filter(
+    d => typeof d.elem === 'number' && d.opacity === 0.5);
+  assertEqual(stripes.length, 1, 'one in-pool stripe');
+  const slot = ((stripes[0].color % 10) + 10) % 10;
+  assert(slot !== 9, 'pool stripe must not render as slot 9 (gray)');
+  assert(slot !== 0, 'pool stripe must not render as slot 0 (blue)');
+}
+
+function test_block_color_pool_stripe_ghost_not_reserved() {
+  console.log('test_block_color_pool_stripe_ghost_not_reserved');
+  // Ghost block in a private pool (reconstructed from segment snapshot, no
+  // trace event). This is the b'61760000000_1 case from the real snapshot.
+  const poolId = [0, 1];
+  const categories = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'unknown'];
+  const snapshot = makeSnapshot({
+    traces: [
+      { action: 'alloc', addr: 0x5000, size: 64, frames: [], stream: 0 },
+    ],
+    segments: [
+      {
+        device: 0, address: 0x5000, total_size: 4096, segment_pool_id: [0, 0],
+        stream: 0, blocks: [],
+      },
+      {
+        device: 0, address: 0x61760000000, total_size: 17930649600,
+        segment_pool_id: poolId, stream: 0,
+        blocks: [{
+          addr: 0x61760000000, state: 'active_allocated',
+          requested_size: 17922575964, frames: [], version: 1,
+        }],
+      },
+    ],
+    categories,
+  });
+  const result = process_alloc_data(snapshot, 0, false, 15000, true);
+  const pool_stripes = result.allocations_over_time.filter(
+    d => typeof d.elem === 'number' && d.ghost === true);
+  assertEqual(pool_stripes.length, 1, 'one ghost stripe in private pool');
+  const slot = ((pool_stripes[0].color % 10) + 10) % 10;
+  assert(slot !== 9, 'ghost stripe must not render as slot 9 (gray)');
+  assert(slot !== 0, 'ghost stripe must not render as slot 0 (blue)');
+}
+
+function test_block_color_default_elem_indices_0_and_9_remapped() {
+  console.log('test_block_color_default_elem_indices_0_and_9_remapped');
+  // No categories → color falls back to elem_idx. elem_idx 0 (blue slot) and
+  // elem_idx 9 (gray slot) are the reserved ones; both must be remapped.
+  const traces = [];
+  for (let i = 0; i < 10; i++) {
+    traces.push({ action: 'alloc', addr: 0x1000 + i * 0x100, size: 64, frames: [], stream: 0 });
+  }
+  const snapshot = makeSnapshot({
+    traces,
+    segments: [{
+      device: 0, address: 0x1000, total_size: 4096, segment_pool_id: [0, 0],
+      stream: 0, blocks: [],
+    }],
+  });
+  const result = process_alloc_data(snapshot, 0, false, 15000, false);
+  const stripes = result.allocations_over_time.filter(
+    d => typeof d.elem === 'number');
+  assertEqual(stripes.length, 10, 'ten non-pool blocks');
+  for (const s of stripes) {
+    const slot = ((s.color % 10) + 10) % 10;
+    assert(slot !== 9, `block elem=${s.elem} must not render as slot 9`);
+    assert(slot !== 0, `block elem=${s.elem} must not render as slot 0`);
+  }
+  assertEqual(stripes.find(s => s.elem === 0).color, 1, 'elem_idx 0 → color 1');
+  assertEqual(stripes.find(s => s.elem === 9).color, 8, 'elem_idx 9 → color 8');
+}
+
+// ============================================================
 // Run all tests
 // ============================================================
 
@@ -1505,6 +1679,13 @@ test_per_pool_summarization();
 test_per_pool_summarization_with_frees();
 test_per_pool_summarization_initially_allocated();
 test_per_pool_summarization_interleaved();
+test_block_color_envelope_keeps_gray();
+test_block_color_summarized_keeps_blue();
+test_block_color_nonpool_category_9_remapped();
+test_block_color_nonpool_category_0_remapped();
+test_block_color_pool_stripe_replay_not_reserved();
+test_block_color_pool_stripe_ghost_not_reserved();
+test_block_color_default_elem_indices_0_and_9_remapped();
 
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed > 0 ? 1 : 0);

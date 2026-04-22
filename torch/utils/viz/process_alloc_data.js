@@ -568,6 +568,7 @@ function process_alloc_data(snapshot, device, plot_segments, max_entries, includ
     if (snapshot.categories.length > 0) {
       color = snapshot.categories.indexOf(element_obj.category || 'unknown');
     }
+    color = block_color(color);
     const e = {
       elem,
       timesteps: [timestep],
@@ -610,11 +611,21 @@ function process_alloc_data(snapshot, device, plot_segments, max_entries, includ
     return pools[pool_key];
   }
 
+  // Reserved color slots in schemeTableau10: 0 (blue, used by summarized bands)
+  // and 9 (gray, used by pool envelopes). Remap any block color that would
+  // land on these so block stripes stay distinguishable from both.
+  function block_color(c) {
+    const mod = ((c % 10) + 10) % 10;
+    if (mod === 0) return c + 1;
+    if (mod === 9) return c - 1;
+    return c;
+  }
+
   function elem_color(elem_idx) {
     if (snapshot.categories.length > 0) {
-      return snapshot.categories.indexOf(elements[elem_idx].category || 'unknown');
+      return block_color(snapshot.categories.indexOf(elements[elem_idx].category || 'unknown'));
     }
-    return elem_idx;
+    return block_color(elem_idx);
   }
 
   function shift_pool_stripes(pool, delta) {
