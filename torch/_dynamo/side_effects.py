@@ -211,7 +211,10 @@ class SideEffects:
             output_graph = self.output_graph_weakref()
             assert output_graph is not None
             tx = output_graph.current_tx
-            original_vt = item.var_getattr(tx, name)  # type: ignore[arg-type]
+            try:
+                original_vt = item.var_getattr(tx, name)  # type: ignore[arg-type]
+            except NotImplementedError:
+                return False
             if not original_vt.is_python_constant():
                 return False
             original = original_vt.as_python_constant()
