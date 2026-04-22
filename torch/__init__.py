@@ -1530,6 +1530,8 @@ def use_deterministic_algorithms(
     import torch._inductor.config as inductor_config
 
     inductor_config.deterministic = mode
+    if mode:
+        inductor_config._enable_autoheuristic_ops_by_deterministic_mode()
     _C._set_deterministic_algorithms(mode, warn_only=warn_only)
 
 

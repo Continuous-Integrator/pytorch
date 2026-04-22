@@ -754,11 +754,25 @@ def _parse_autoheuristic_use_env():
 
 
 def _autoheuristic_ops_enabled_by_deterministic_mode():
-    deterministic = os.getenv("TORCHINDUCTOR_DETERMINISTIC") == "1"
-    if not deterministic:
-        return []
-    # if deterministic mode is enabled, enable these AH ops by default
     return ["pad_mm"]
+
+
+def _enable_autoheuristic_ops_by_deterministic_mode():
+    """Called by torch.use_deterministic_algorithms(True)"""
+    for mode in _autoheuristic_ops_enabled_by_deterministic_mode():
+        setattr(autoheuristic_use, mode, True)
+
+
+def _should_default_enable_autoheuristics(name: str):
+    if name in _parse_autoheuristic_use_env():
+        return True
+    deterministic_mode = os.getenv("TORCHINDUCTOR_DETERMINISTIC") == "1"
+    if (
+        deterministic_mode
+        and name in _autoheuristic_ops_enabled_by_deterministic_mode()
+    ):
+        return True
+    return False
 
 
 class autoheuristic_collect:
@@ -775,16 +789,8 @@ class autoheuristic_use:
     Config for which autoheuristic optimizations should use learned heuristics.
     """
 
-    pad_mm = (
-        "pad_mm"
-        in _parse_autoheuristic_use_env()
-        + _autoheuristic_ops_enabled_by_deterministic_mode()
-    )
-    mixed_mm = (
-        "mixed_mm"
-        in _parse_autoheuristic_collect_env()
-        + _autoheuristic_ops_enabled_by_deterministic_mode()
-    )
+    pad_mm = _should_default_enable_autoheuristics("pad_mm")
+    mixed_mm = _should_default_enable_autoheuristics("mixed_mm")
 
 
 # If set to 1, will run a JIT post compile hook if one is set.
