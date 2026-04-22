@@ -140,10 +140,10 @@ def _enum_zes_device_infos(visible_mask: list[int]) -> int:
     global _cached_zes_device_infos
 
     def _zes_check_warn(rc: int, msg: str) -> bool:
-        """Return True if the call failed (rc != 0) after issuing a warning."""
-        if rc != 0:
+        """Return True if the call failed (rc != ZE_RESULT_SUCCESS) after issuing a warning."""
+        if rc != pyzes.ZE_RESULT_SUCCESS:
             warnings.warn(msg, stacklevel=3)
-        return rc != 0
+        return rc != pyzes.ZE_RESULT_SUCCESS
 
     if _zes_check_warn(pyzes.zesInit(0), "Can't initialize Level Zero Sysman"):
         return -1
