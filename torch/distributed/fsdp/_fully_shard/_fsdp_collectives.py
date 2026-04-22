@@ -550,6 +550,7 @@ def foreach_reduce(
     all_reduce_hook: Callable[[torch.Tensor], None] | None,
     force_sum_reduction_for_comms: bool = False,
     label_suffix: str = "",
+    prev_all_reduce_event: torch.Event | None = None,
 ) -> tuple[
     torch.Tensor,
     torch.Event,
@@ -693,9 +694,16 @@ def foreach_reduce(
             all_reduce_hook(reduce_output)
     # -- END: ops post reduce_scatter
 
+    if prev_all_reduce_event is not None:
+        all_reduce_stream.wait_event(prev_all_reduce_event)
+
     with device_handle.stream(post_reduce_stream):
         _div_if_needed(reduce_output, postdivide_factor)
         reduce_output = _to_dtype_if_needed(reduce_output, orig_dtype)
+        if all_reduce_input is not None and reduce_output is not all_reduce_input:
+            # Cast created a new tensor: the orphaned all_reduce_input's free
+            # must wait for the cast to finish reading it, not just all-reduce.
+            all_reduce_event = post_reduce_stream.record_event()
         # View out and accumulate sharded gradients
         flat_grad_offset = 0  # [0, reduce_scatter_output_numel - 1]
         for padded_unsharded_size, fsdp_param in zip(
@@ -711,10 +719,28 @@ def foreach_reduce(
             )
             to_accumulate_grad = fsdp_param.sharded_param.grad is not None
             if fsdp_param.offload_to_cpu:
-                # Only overlap the D2H copy (copying to pinned memory) if not
-                # accumulating gradients since the CPU add kernel depends on
-                # the copy result and we cannot run the add as a callback
-                non_blocking = fsdp_param.pin_memory and not to_accumulate_grad
+                # Only overlap the D2H copy (copying to pinned memory) when no
+                # in-backward CPU consumer of the grad exists. Two such
+                # consumers suppress the overlap:
+                #   - Accumulating grads: the CPU add kernel depends on the
+                #     copy result and we cannot run the add as a callback.
+                #   - Post-accumulate-grad hooks: user code (e.g.
+                #     optimizer-in-backward) reads ``param.grad`` on CPU
+                #     synchronously. With ``non_blocking=True`` the hook would
+                #     observe in-flight pinned memory — silently wrong
+                #     optimizer updates.
+                has_post_acc_grad_hook = bool(
+                    getattr(
+                        fsdp_param.sharded_param,
+                        "_post_accumulate_grad_hooks",
+                        None,
+                    )
+                )
+                non_blocking = (
+                    fsdp_param.pin_memory
+                    and not to_accumulate_grad
+                    and not has_post_acc_grad_hook
+                )
                 # Since the GPU sharded gradient is allocated in the RS stream,
                 # we can free it here by not keeping a ref without waiting for
                 # the D2H copy since future RS-stream ops run after the copy
@@ -744,6 +770,15 @@ def foreach_reduce(
             padded_sharded_numel = padded_unsharded_size.numel() // world_size
             flat_grad_offset += padded_sharded_numel
         post_reduce_event = post_reduce_stream.record_event()
+    # HSDP: reduce_output was alloc'd on reduce_scatter_stream but post-
+    # reduce ops (AR, cast, `+=` into accumulated grad) ran on
+    # all_reduce_stream. The caching allocator tracks only the alloc
+    # stream, so a later reduce_scatter_stream allocation can reuse
+    # reduce_output's block while AR-stream's post-reduce ops are still
+    # draining. Make reduce_scatter_stream wait on the post-reduce event
+    # so future RS-stream allocs see AR-stream's work as complete.
+    if post_reduce_stream is not reduce_scatter_stream:
+        reduce_scatter_stream.wait_event(post_reduce_event)
     # The RS output is allocated in the RS stream and used in the default
     # stream (for optimizer). To ensure its memory is not reused for later
     # RSs, we do not need extra synchronization since the sharded parameters
