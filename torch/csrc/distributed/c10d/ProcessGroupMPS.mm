@@ -252,10 +252,14 @@ void ProcessGroupMPS::enqueue(std::function<void()> fn) {
 }
 
 at::Tensor ProcessGroupMPS::syncAndCopyToCPU(const at::Tensor& tensor) {
-  // Flush the MPS command buffer and wait for completion
+  // Flush the MPS command buffer and wait for completion. .contiguous()
+  // matters on the CPU-input path: .to(kCPU) is a no-op when tensor is
+  // already on CPU and preserves strides — handing a strided data_ptr to
+  // RDMA would read numel*itemsize contiguous bytes from the storage base
+  // instead of the strided elements.
   at::mps::getDefaultMPSStream()->synchronize(
       at::mps::SyncType::COMMIT_AND_WAIT);
-  return tensor.to(at::kCPU);
+  return tensor.to(at::kCPU).contiguous();
 }
 
 void ProcessGroupMPS::copyToMPS(
