@@ -2942,11 +2942,10 @@ class OutputGraph(OutputGraphCommon):
             inline_single_use_invoke_subgraph,
         )
 
-        if config.inline_single_use_invoke_subgraph:
-            gm = inline_single_use_invoke_subgraph(gm)
-
         if config.inline_invoke_subgraph:
             gm = inline_invoke_subgraph(gm)
+        elif config.inline_single_use_invoke_subgraph:
+            gm = inline_single_use_invoke_subgraph(gm)
 
         try:
             _step_logger()(logging.INFO, f"calling compiler function {name}")

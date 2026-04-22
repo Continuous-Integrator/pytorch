@@ -586,9 +586,9 @@ class RegionalInductorTests(torch._inductor.test_case.TestCase):
 
 @skipIfTorchDynamo("Not a suitable dynamo wrapped test")
 @torch._dynamo.config.patch("enable_invoke_subgraph_regional_compile", True)
+@torch._dynamo.config.patch(inline_single_use_invoke_subgraph=False)
 @instantiate_parametrized_tests
 class RegionalInductorInvokeSubgraphTests(torch._inductor.test_case.TestCase):
-    @torch._dynamo.config.patch(inline_single_use_invoke_subgraph=False)
     def test_custom_decomposition(self):
         # Test that custom decompositions are applied to the subgraph.
 
