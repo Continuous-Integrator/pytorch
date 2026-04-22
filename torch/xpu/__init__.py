@@ -759,7 +759,7 @@ def _zes_check(rc: int, msg: str) -> None:
 
 
 def _get_zes_temperature_handle(device: Device = None) -> c_void_p:
-    r"""Return the Level Zero Sysman GPU temperature sensor handle for *device*.
+    r"""Return the Level Zero Sysman GPU temperature sensor handle for the specified device.
 
     The result is cached in ``_ZesDeviceInfo.temperature_handle`` so that
     repeated calls skip sensor enumeration.  ``_cached_zes_device_infos``
