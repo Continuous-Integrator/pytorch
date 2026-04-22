@@ -169,10 +169,10 @@ class SideEffects:
         # Deferred side-effect checking: instead of failing immediately on
         # outer-scope mutations inside HOP subgraphs, we record them and
         # validate after tracing that they were nullified (restored to
-        # original values). Maps VT id → (VT, snapshot of items) taken
-        # before the first mutation.
+        # original values). Maps VT id → (VT, snapshot of attr values)
+        # taken before the first mutation.
         self.deferred_side_effect_snapshots: dict[
-            int, tuple[VariableTracker, dict[Any, VariableTracker]]
+            int, tuple[VariableTracker, dict[str, Any]]
         ] = {}
 
     def ignore_mutations_on(self, var: VariableTracker) -> None:
@@ -202,52 +202,64 @@ class SideEffects:
         finally:
             self.deferred_side_effect_snapshots = saved
 
-    def snapshot_for_deferred(self, item: VariableTracker) -> None:
-        """Snapshot a VT's constant state before the first deferred mutation."""
+    def snapshot_side_effect(self, item: VariableTracker) -> None:
+        """Snapshot attribute values from the real python object before mutation.
+
+        Only supports attribute mutations where values are constants
+        (bool, int, etc). Everything else raises unimplemented immediately.
+        """
         item_id = id(item)
         if item_id in self.deferred_side_effect_snapshots:
             return
-        if not isinstance(item, variables.ConstDictVariable):
+        if not isinstance(item.mutation_type, AttributeMutation):
             unimplemented(
-                gb_type="HOP: Unsafe non-dict side effect",
+                gb_type="HOP: Unsafe non-attribute side effect",
                 context=f"Attempted to mutate {item}",
-                explanation="Mutating a non-dict variable from outside the scope "
-                "of this HOP is not supported.",
+                explanation="Mutating a non-attribute variable from outside the "
+                "scope of this HOP is not supported.",
                 hints=[*graph_break_hints.FUNDAMENTAL],
             )
-        try:
-            snapshot = {k: v.as_python_constant() for k, v in item.items.items()}
-        except NotImplementedError:
-            unimplemented(
-                gb_type="HOP: Unsafe non-constant dict side effect",
-                context=f"Attempted to mutate {item}",
-                explanation="Mutating a dict with non-constant values from outside "
-                "the scope of this HOP is not supported.",
-                hints=[*graph_break_hints.FUNDAMENTAL],
-            )
-        self.deferred_side_effect_snapshots[item_id] = (item, snapshot)
+        self.deferred_side_effect_snapshots[item_id] = (item, {})
 
     def validate_deferred_side_effects(self) -> None:
         """Check that all deferred mutations were nullified.
 
-        Raises unimplemented() if any deferred mutation left a net change.
+        For each mutated attribute, compare the final traced value to the
+        original value on the real python object. If they match, the mutation
+        was nullified. Only ConstantVariable values are supported.
         """
-        for item, snapshot in self.deferred_side_effect_snapshots.values():
-            assert isinstance(item, variables.ConstDictVariable)
-            try:
-                current = {k: v.as_python_constant() for k, v in item.items.items()}
-            except NotImplementedError:
-                current = None
-            if current != snapshot:
-                unimplemented(
-                    gb_type="HOP: Non-nullified side effect",
-                    context=f"Mutated variable {item} was not restored to its original value",
-                    explanation="A variable from an outer scope was mutated inside a "
-                    "higher-order op subgraph and not restored to its original "
-                    "value. This is not supported. If using a context manager, "
-                    "ensure it fully restores the original state on exit.",
-                    hints=[*graph_break_hints.FUNDAMENTAL],
-                )
+        for item, _ in self.deferred_side_effect_snapshots.values():
+            attrs = self.store_attr_mutations.get(item, {})
+            python_obj = item.value if hasattr(item, "value") else None
+            for name, vt in attrs.items():
+                if not isinstance(vt, variables.ConstantVariable):
+                    unimplemented(
+                        gb_type="HOP: Unsafe non-constant attribute side effect",
+                        context=f"Attempted to mutate {item}.{name}",
+                        explanation="Mutating attributes with non-constant values "
+                        "from outside the scope of this HOP is not supported.",
+                        hints=[*graph_break_hints.FUNDAMENTAL],
+                    )
+                if python_obj is None or not hasattr(python_obj, name):
+                    unimplemented(
+                        gb_type="HOP: Unverifiable side effect",
+                        context=f"Mutated variable {item}.{name} could not be verified",
+                        explanation="A variable from an outer scope was mutated inside a "
+                        "higher-order op subgraph and could not be verified as restored.",
+                        hints=[*graph_break_hints.FUNDAMENTAL],
+                    )
+                original = getattr(python_obj, name)
+                current = vt.as_python_constant()
+                if current != original:
+                    unimplemented(
+                        gb_type="HOP: Non-nullified side effect",
+                        context=f"Mutated variable {item}.{name} was not restored to its original value",
+                        explanation="A variable from an outer scope was mutated inside a "
+                        "higher-order op subgraph and not restored to its original "
+                        "value. This is not supported. If using a context manager, "
+                        "ensure it fully restores the original state on exit.",
+                        hints=[*graph_break_hints.FUNDAMENTAL],
+                    )
 
     def _capture_user_stack(self, key: VariableTracker) -> None:
         """Capture the current user stack from the instruction translator."""
@@ -377,7 +389,7 @@ class SideEffects:
             )
         assert item.mutation_type is not None
         if not is_side_effect_safe(item.mutation_type):
-            self.snapshot_for_deferred(item)
+            self.snapshot_side_effect(item)
         return False
 
     def store_attr(

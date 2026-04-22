@@ -2206,21 +2206,25 @@ class GraphModule(torch.nn.Module):
             torch.compile(fn, backend="eager", fullgraph=True)(x)
 
     def test_nullified_ctx_manager_side_effect_in_backward(self):
-        # A context manager that flips a boolean flag on enter and restores
-        # it on exit has no net side effect. But Dynamo currently fails
-        # because it sees the mutation during tracing.
+        # A context manager that flips a boolean attribute on enter and
+        # restores it on exit has no net side effect. Dynamo defers the
+        # check and validates nullification after tracing.
         import contextlib
 
-        state = {"flag": False}
+        class State:
+            def __init__(self):
+                self.enabled = False
+
+        state = State()
 
         @contextlib.contextmanager
         def toggle_flag():
-            old = state["flag"]
-            state["flag"] = True
+            old = state.enabled
+            state.enabled = True
             try:
                 yield
             finally:
-                state["flag"] = old
+                state.enabled = old
 
         class Foo(torch.autograd.Function):
             @staticmethod
@@ -2251,9 +2255,13 @@ class GraphModule(torch.nn.Module):
         self.assertEqual(x_ref.grad, x_c.grad)
 
     def test_non_nullified_side_effect_in_backward_fails(self):
-        # A backward that mutates an outer-scope variable without restoring
+        # A backward that mutates an outer-scope attribute without restoring
         # it should still fail, even with deferred side-effect checking.
-        state = {"flag": False}
+        class State:
+            def __init__(self):
+                self.enabled = False
+
+        state = State()
 
         class Bad(torch.autograd.Function):
             @staticmethod
@@ -2262,7 +2270,7 @@ class GraphModule(torch.nn.Module):
 
             @staticmethod
             def backward(ctx, grad):
-                state["flag"] = True
+                state.enabled = True
                 return grad.clone()
 
         def fn(x):
