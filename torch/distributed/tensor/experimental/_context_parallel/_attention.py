@@ -34,6 +34,7 @@ __all__ = [
     "_context_parallel_shard",
     "_ContextParallel",
     "_cp_options",
+    "_create_cp_varlen_metadata",
     "_disable_context_parallel_dispatcher",
     "_enable_context_parallel_dispatcher",
     "_is_causal_behavior",
@@ -41,6 +42,7 @@ __all__ = [
     "context_parallel",
     "context_parallel_unshard",
     "set_rotate_method",
+    "VarlenMetadata",
 ]
 
 
@@ -1061,12 +1063,69 @@ def _disable_context_parallel_dispatcher_impl() -> None:
 _compiled_create_block_mask = None
 
 
+@dataclass(frozen=True, eq=False)
+class VarlenMetadata:
+    """Metadata for variable-length attention (``varlen_attn``) under
+    Context Parallel.
+
+    This type is CP-specific: it is the buffer-level descriptor that
+    ``_context_parallel_shard`` recognizes for varlen inputs, and
+    ``_create_cp_varlen_metadata`` populates the CP-only fields below on
+    the per-rank result. It is not intended as a general container for
+    non-CP ``varlen_attn`` callers — those already pass ``cu_seq_q``,
+    ``cu_seq_k``, ``max_q``, ``max_k`` directly to the kernel.
+
+    Fields the caller constructs (global, pre-shard):
+
+    - ``cu_seq_q``, ``cu_seq_k``, ``max_q``, ``max_k``: the standard
+      varlen kernel arguments describing document boundaries within a
+      packed sequence.
+    - ``unpacked_batch_size`` and ``unpacked_seq_len``: the shape
+      ``(B, S)`` of the unpacked input that produced this metadata.
+      Required by ``_create_cp_varlen_metadata`` for sharding.
+
+    Fields populated by ``_create_cp_varlen_metadata`` on the per-rank
+    result (do not set these when constructing the global metadata):
+
+    - ``unpacked_seq_len`` is rewritten to the local shard length
+      (``S / cp_world_size``); ``unpacked_batch_size`` is unchanged.
+    - ``k_local_indices`` is a 1-D index tensor of length
+      ``cu_seq_k[-1]`` that gathers the visible K (and V) positions out
+      of the rank-local packed K view. Under CP each rank holds the
+      *full* K (replicated/all-gathered across the CP dim) while
+      ``cu_seq_k`` describes only the per-segment visible regions, which
+      are non-contiguous in the standard ``[batch0_K, batch1_K, ...]``
+      packed layout when ``B > 1``. Callers must apply it to K and V
+      before invoking the varlen kernel:
+      ``k_packed = k_packed.index_select(0, k_local_indices)``.
+
+    Kept as a plain dataclass (rather than a ``NamedTuple``) so that
+    pytree does not auto-flatten it into its tensor fields; a
+    ``NamedTuple`` subclass would be flattened, which is incompatible
+    with the ``_context_parallel_shard`` dispatcher that treats the
+    whole object as a single buffer.
+    """
+
+    cu_seq_q: torch.Tensor
+    cu_seq_k: torch.Tensor
+    max_q: int
+    max_k: int
+    unpacked_batch_size: int | None = None
+    unpacked_seq_len: int | None = None
+    k_local_indices: torch.Tensor | None = None
+
+
+CPBuffer: TypeAlias = torch.Tensor | BlockMask | VarlenMetadata
+CPBufferContainer: TypeAlias = Sequence[CPBuffer] | Mapping[str, CPBuffer]
+CPBufferSeqDims: TypeAlias = Sequence[int] | Mapping[str, int]
+
+
 def _context_parallel_buffers(
     mesh: DeviceMesh,
-    buffers: list[torch.Tensor | BlockMask],
+    buffers: list[CPBuffer],
     buffer_seq_dims: list[int],
     load_balancer: _LoadBalancer | None = None,
-) -> list[torch.Tensor | BlockMask]:
+) -> list[CPBuffer]:
     """
     Shard the buffers along the sequence dimensions according to CP rules.
     Args:
@@ -1098,7 +1157,7 @@ def _context_parallel_buffers(
         )
 
     new_buffers = []
-    sharded_buffer: torch.Tensor | BlockMask
+    sharded_buffer: CPBuffer
     for buffer, seq_dim in zip(buffers, buffer_seq_dims):
         if isinstance(buffer, torch.Tensor):
             # NOTE: assuming batch dim is 0
@@ -1160,6 +1219,12 @@ def _context_parallel_buffers(
                 H=buffer.kv_num_blocks.shape[1],
                 Q_LEN=buffer.seq_lengths[0],
                 KV_LEN=buffer.seq_lengths[1],
+                device_mesh=mesh,
+                load_balancer=load_balancer,
+            )
+        elif isinstance(buffer, VarlenMetadata):
+            sharded_buffer = _create_cp_varlen_metadata(
+                varlen_meta=buffer,
                 device_mesh=mesh,
                 load_balancer=load_balancer,
             )
@@ -1309,6 +1374,232 @@ def _create_cp_block_mask(
     return block_mask
 
 
+def _create_cp_varlen_metadata(
+    varlen_meta: VarlenMetadata,
+    device_mesh: DeviceMesh,
+    load_balancer: _LoadBalancer | None = None,
+) -> VarlenMetadata:
+    """Build per-rank :class:`VarlenMetadata` for context-parallel varlen attention.
+
+    Each rank holds a shard of the global Q (along the per-batch sequence dim).
+    K/V are assumed to be all-gathered (e.g. via DTensor ``Replicate`` placement
+    on the CP dim). The per-rank metadata expresses each (doc, rank) Q chunk as
+    a varlen segment whose ``cu_seq_k`` length equals the global doc-relative
+    offset at the chunk's last position plus one. With FA's right-aligned
+    causal interpretation (``Q[i] ↔ K[j ≤ seqlen_k - seqlen_q + i]``) this
+    correctly preserves causal masking under sharding.
+
+    A rank's local Q within a global doc may be non-contiguous under load
+    balancing; each contiguous (doc, rank) run becomes its own segment.
+
+    This implementation supports self-attention only: ``cu_seq_q`` and
+    ``cu_seq_k`` on the input must be equal. The input ``max_q``, ``max_k``,
+    and ``cu_seq_k`` are otherwise ignored — per-rank values are re-derived
+    from ``cu_seq_q`` and the rank's Q shard.
+
+    When a ``load_balancer`` is used, the caller's K/V tensor must already be
+    in the load-balancer's forward-rearranged order along the sequence dim
+    (this is what DTensor's ``Replicate`` placement produces after the CP
+    rank first rearranges its local K/V shard). ``k_local_indices`` is
+    composed with the inverse permutation so the gather hits the correct
+    entries in the rearranged K/V.
+
+    All segment construction is vectorized — no Python-level loop over
+    sequence positions.
+    """
+    if varlen_meta.k_local_indices is not None:
+        raise ValueError(
+            "VarlenMetadata.k_local_indices is already set; this looks like a "
+            "per-rank result from a prior _create_cp_varlen_metadata call. "
+            "Pass the original global VarlenMetadata instead."
+        )
+    if (
+        varlen_meta.unpacked_batch_size is None
+        or varlen_meta.unpacked_seq_len is None
+    ):
+        raise ValueError(
+            "VarlenMetadata.unpacked_batch_size and .unpacked_seq_len must be "
+            "set for context-parallel sharding."
+        )
+    if varlen_meta.cu_seq_q.shape != varlen_meta.cu_seq_k.shape or not torch.equal(
+        varlen_meta.cu_seq_q, varlen_meta.cu_seq_k
+    ):
+        raise ValueError(
+            "CP varlen sharding currently supports only self-attention where "
+            "cu_seq_q == cu_seq_k."
+        )
+    B = varlen_meta.unpacked_batch_size
+    seq_len = varlen_meta.unpacked_seq_len
+    expected_total = B * seq_len
+    if (
+        varlen_meta.cu_seq_q.ndim != 1
+        or varlen_meta.cu_seq_q.numel() < 2
+        or int(varlen_meta.cu_seq_q[0].item()) != 0
+        or int(varlen_meta.cu_seq_q[-1].item()) != expected_total
+    ):
+        raise ValueError(
+            "VarlenMetadata.cu_seq_q must be a 1-D tensor starting at 0 and "
+            f"ending at unpacked_batch_size * unpacked_seq_len = {expected_total}; "
+            f"got shape {tuple(varlen_meta.cu_seq_q.shape)} with "
+            f"endpoints ({int(varlen_meta.cu_seq_q[0].item())}, "
+            f"{int(varlen_meta.cu_seq_q[-1].item())})."
+        )
+
+    cp_world_size = device_mesh.size()
+    cp_rank = device_mesh.get_local_rank()
+    if seq_len % cp_world_size != 0:
+        raise ValueError(
+            f"unpacked_seq_len {seq_len} must be divisible by cp world size "
+            f"{cp_world_size}."
+        )
+    shard_len = seq_len // cp_world_size
+    device = varlen_meta.cu_seq_q.device
+
+    load_balancer = load_balancer or _create_default_load_balancer(
+        seq_len, cp_world_size, device_mesh.device_type
+    )
+
+    # Compute the forward permutation once and reuse it both for extracting
+    # this rank's Q positions and for inverting into rearranged K coords
+    # below. Shape is normalized to (B, seq_len) with dtype long.
+    rearrange_per_batch: torch.Tensor | None = None
+    if load_balancer is not None:
+        rearrange_indices = load_balancer._generate_indices(restore=False)
+        if rearrange_indices.ndim != 2:
+            raise ValueError(
+                "load balancer indices must have shape (1, seq_len) or "
+                f"(B, seq_len); got {tuple(rearrange_indices.shape)}."
+            )
+        if rearrange_indices.shape[0] == 1:
+            rearrange_indices = rearrange_indices.expand(B, -1)
+        rearrange_per_batch = rearrange_indices.to(torch.long)
+
+    # Per-batch local-to-global seq mapping for this rank, shape (B, shard_len),
+    # values in [0, seq_len).
+    if rearrange_per_batch is None:
+        rank_per_batch = (
+            torch.arange(
+                cp_rank * shard_len,
+                (cp_rank + 1) * shard_len,
+                device=device,
+                dtype=torch.long,
+            )
+            .unsqueeze(0)
+            .expand(B, -1)
+        )
+    else:
+        rank_per_batch = rearrange_per_batch[
+            :, cp_rank * shard_len : (cp_rank + 1) * shard_len
+        ]
+
+    # Convert per-batch positions to packed (global) positions: batch b
+    # contributes positions in [b * seq_len, (b + 1) * seq_len). Concatenate
+    # across batches in row-major order — same order the rank's local packed Q
+    # tensor will hold.
+    batch_offsets = (
+        torch.arange(B, device=device, dtype=torch.long).unsqueeze(1) * seq_len
+    )
+    packed_local_to_global = (batch_offsets + rank_per_batch).reshape(-1)
+    total_local = B * shard_len
+
+    # Doc id per local position via searchsorted on the global cu_seq_q.
+    global_cu_seq_q = varlen_meta.cu_seq_q.to(torch.long)
+    doc_id = (
+        torch.searchsorted(global_cu_seq_q, packed_local_to_global, right=True) - 1
+    )
+
+    # Vectorized segment-boundary detection: a new segment starts wherever the
+    # doc id changes OR consecutive local positions are not consecutive in the
+    # global packed view. Batch boundaries are handled by diff_doc — the last
+    # position of batch b and the first of batch b+1 belong to different doc
+    # ids in the global cu_seq_q, so is_break fires even when their packed
+    # global positions happen to be consecutive.
+    diff_doc = doc_id[1:] != doc_id[:-1]
+    diff_global = packed_local_to_global[1:] != packed_local_to_global[:-1] + 1
+    is_break = diff_doc | diff_global
+    seg_starts_inner = is_break.nonzero(as_tuple=False).squeeze(-1) + 1
+    seg_starts = torch.cat(
+        [torch.zeros(1, dtype=torch.long, device=device), seg_starts_inner]
+    )
+    seg_ends = torch.cat(
+        [
+            seg_starts[1:],
+            torch.tensor([total_local], dtype=torch.long, device=device),
+        ]
+    )
+
+    seqlen_q = seg_ends - seg_starts
+    # seqlen_k for each segment = (last global position - doc global start) + 1.
+    last_local_idx = seg_ends - 1
+    last_global = packed_local_to_global[last_local_idx]
+    seg_doc_id = doc_id[seg_starts]
+    doc_global_start = global_cu_seq_q[seg_doc_id]
+    seqlen_k = last_global - doc_global_start + 1
+
+    out_dtype = varlen_meta.cu_seq_q.dtype
+    cu_seq_q = torch.cat(
+        [
+            torch.zeros(1, dtype=out_dtype, device=device),
+            seqlen_q.cumsum(0).to(out_dtype),
+        ]
+    )
+    cu_seq_k = torch.cat(
+        [
+            torch.zeros(1, dtype=out_dtype, device=device),
+            seqlen_k.cumsum(0).to(out_dtype),
+        ]
+    )
+
+    # Batch three needed host scalars into a single .cpu() transfer:
+    # max_q, max_k for the kernel and total_k (= sum(seqlen_k)) for the
+    # torch.arange below. Note: the cu_seq_q/cu_seq_k equality check above
+    # is a separate implicit sync.
+    max_q, max_k, total_k = (
+        torch.stack([seqlen_q.max(), seqlen_k.max(), seqlen_k.sum()]).cpu().tolist()
+    )
+
+    # K local indices: per-segment visible K is K[doc_global_start :
+    # last_global + 1] in *original* per-batch coords.  Build a flat
+    # gather index of length total_k so the caller can do
+    # ``K_packed.index_select(0, k_local_indices)`` to produce a
+    # contiguous K layout matching cu_seq_k.  Vectorized via
+    # repeat_interleave + arange-offset (no Python loop over segments).
+    seg_starts_in_k = torch.cat(
+        [torch.zeros(1, dtype=torch.long, device=device), seqlen_k.cumsum(0)]
+    )
+    bases = torch.repeat_interleave(doc_global_start, seqlen_k)
+    seg_starts_repeated = torch.repeat_interleave(seg_starts_in_k[:-1], seqlen_k)
+    within_seg = (
+        torch.arange(total_k, device=device, dtype=torch.long) - seg_starts_repeated
+    )
+    k_local_indices = bases + within_seg
+
+    # Under DTensor's Replicate-on-CP all-gather, the global K is
+    # concatenated across ranks in rank order, so its layout matches
+    # the load-balancer's *forward* permutation rather than the
+    # original sequence order. Map k_local_indices (built in
+    # original coords) into rearranged coords by composing with the
+    # per-batch inverse permutation.  Skip when there's no load
+    # balancer (no rearrangement happens).
+    if rearrange_per_batch is not None:
+        # restore_per_batch[b, p_orig] = rearranged position of p_orig.
+        restore_per_batch = torch.argsort(rearrange_per_batch, dim=-1)
+        b_ids = k_local_indices // seq_len
+        p_orig = k_local_indices % seq_len
+        p_rearr = restore_per_batch[b_ids, p_orig]
+        k_local_indices = b_ids * seq_len + p_rearr
+
+    return VarlenMetadata(
+        cu_seq_q=cu_seq_q,
+        cu_seq_k=cu_seq_k,
+        max_q=max_q,
+        max_k=max_k,
+        unpacked_batch_size=B,
+        unpacked_seq_len=shard_len,
+        k_local_indices=k_local_indices,
+    )
+
+
 #####################
 # Experimental APIs
 #####################
@@ -1415,24 +1706,19 @@ class _ContextParallel(ParallelStyle):
         return tuple(new_outputs)
 
 
-CPBuffer: TypeAlias = torch.Tensor | BlockMask
-CPBufferContainer: TypeAlias = Sequence[CPBuffer] | Mapping[str, CPBuffer]
-CPBufferSeqDims: TypeAlias = Sequence[int] | Mapping[str, int]
-
-
 def _context_parallel_shard(
     mesh: DeviceMesh,
     buffers: CPBufferContainer,
     seq_dims: CPBufferSeqDims,
     load_balancer: _LoadBalancer | None = None,
-) -> list[torch.Tensor | BlockMask]:
+) -> list[CPBuffer]:
     """
     Shard the buffers along the specified sequence dimensions (`seq_dims`), so that each
     rank retains only its corresponding shard according to the provided `mesh`. If a
     `load_balancer` is provided, the buffers will be rearranged by the load balancer
-    before sharding to improve load balance. Buffers can be either tensors or `BlockMask`
-    objects. If a buffer is a `BlockMask`, its sharding dimension is determined by the
-    `BlockMask` implementation, and the corresponding `seq_dim` is ignored.
+    before sharding to improve load balance. Buffers can be tensors, ``BlockMask``
+    objects, or ``VarlenMetadata`` objects. For ``BlockMask`` and ``VarlenMetadata``
+    the sharding dimension is implicit and the corresponding ``seq_dim`` is ignored.
 
     Note:
         For `_context_parallel_shard`, a non-None `load_balancer` must be explicitly passed
@@ -1440,9 +1726,10 @@ def _context_parallel_shard(
 
     Args:
         mesh (DeviceMesh): The device mesh used for context parallelism.
-        buffers (List[torch.Tensor | BlockMask]): Buffers whose usage depends on the sequence
-            dimension. Examples include input batches, labels, and positional embedding buffers.
-            These buffers must be sharded along the sequence dimension to ensure correctness.
+        buffers (List[torch.Tensor | BlockMask | VarlenMetadata]): Buffers whose usage depends
+            on the sequence dimension. Examples include input batches, labels, and positional
+            embedding buffers. These buffers must be sharded along the sequence dimension to
+            ensure correctness.
         seq_dims (List[int]): The sequence dimensions for each buffer in `buffers`. Must have
             the same length as `buffers`.
         load_balancer (Optional[_LoadBalancer]): An optional load balancer object. If provided,
@@ -1450,8 +1737,8 @@ def _context_parallel_shard(
             provided, no rearrangement is performed.
 
     Returns:
-        List[torch.Tensor | BlockMask]: The sharded buffers, each corresponding to the local
-            shard for the current rank.
+        List[torch.Tensor | BlockMask | VarlenMetadata]: The sharded buffers, each corresponding
+            to the local shard for the current rank.
     """
     # TODO: these global variables are going to bite us someday.
     # We will have to remove them soon.
@@ -1474,17 +1761,19 @@ def _context_parallel_shard(
     if len(flat_buffers) != len(flat_seq_dims):
         raise ValueError("`seq_dims` must have the pytree structure as `buffers`.")
 
-    if isinstance(flat_buffers[0], torch.Tensor):
-        device = flat_buffers[0].device
-    else:
-        device = flat_buffers[0].kv_num_blocks.device
+    def _buffer_device(buf: CPBuffer) -> torch.device:
+        if isinstance(buf, torch.Tensor):
+            return buf.device
+        if isinstance(buf, BlockMask):
+            return buf.kv_num_blocks.device
+        if isinstance(buf, VarlenMetadata):
+            return buf.cu_seq_q.device
+        raise ValueError(f"Unknown buffer type: {type(buf)}")
+
+    device = _buffer_device(flat_buffers[0])
     for buffer in flat_buffers:
-        if isinstance(buffer, torch.Tensor):
-            if device != buffer.device:
-                raise AssertionError("All buffers must be on the same device")
-        else:
-            if device != buffer.kv_num_blocks.device:
-                raise AssertionError("All buffers must be on the same device")
+        if device != _buffer_device(buffer):
+            raise AssertionError("All buffers must be on the same device")
 
     flat_sharded_buffers = _context_parallel_buffers(
         mesh, flat_buffers, flat_seq_dims, load_balancer
