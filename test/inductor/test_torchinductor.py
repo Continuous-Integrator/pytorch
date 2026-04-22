@@ -5418,6 +5418,22 @@ class CommonTemplate:
         )
         assertGeneratedKernelCountEqual(self, 0)
 
+    @requires_gpu()
+    @skip_if_gpu_halide  # slow
+    @xfail_if_mps  # Non-divisible input sizes are not implemented on MPS device
+    @parametrize("comprehensive_padding", (False, True))
+    def test_adaptive_avg_pool2d_flatten_sum(self, comprehensive_padding):
+        def fn(x):
+            y = F.adaptive_avg_pool2d(x, 7)
+            return y.flatten(1).sum(dim=-1)
+
+        with config.patch(comprehensive_padding=comprehensive_padding):
+            self.common(
+                fn,
+                (torch.randn(2, 33, 8, 8, device=self.device, dtype=torch.float64),),
+                check_lowp=False,
+            )
+
     @xfail_if_mps
     @skip_if_gpu_halide  # slow
     def test_adaptive_max_pool2d1(self):
@@ -17719,15 +17735,8 @@ if RUN_GPU:
 
         @torch._functorch.config.patch("donated_buffer", True)
         # The inplace updating does not happen after we fused the
-        # layernorm backward, or if we do cooperative reductions (due to the change in
-        # optimal peak memory ordering).
-        @torch._inductor.config.patch(
-            {
-                "triton.cooperative_reductions": False,
-                "triton.force_cooperative_reductions": False,
-                "triton.mix_order_reduction": False,
-            }
-        )
+        # layernorm backward.
+        @torch._inductor.config.patch({"triton.mix_order_reduction": False})
         def test_donated_buffer_inplace(self):
             batch_size = 32
             seq_length = 50
