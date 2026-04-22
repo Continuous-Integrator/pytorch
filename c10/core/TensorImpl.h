@@ -2184,15 +2184,9 @@ struct C10_API TensorImpl : public c10::intrusive_ptr_target {
     return &pyobj_slot_;
   }
 
-  void incref_pyobject() const noexcept final {
-    pyobj_slot_.incref();
-  }
-  void decref_pyobject() const noexcept final {
-    pyobj_slot_.decref();
-  }
-  bool try_incref_pyobject() const noexcept final {
-    return pyobj_slot_.try_incref();
-  }
+  void incref_pyobject() const noexcept final;
+  void decref_pyobject() const noexcept final;
+  bool try_incref_pyobject() const noexcept final;
 
  private:
   // See NOTE [std::optional operator usage in CUDA]
@@ -3275,7 +3269,7 @@ class C10_TensorImpl_Size_Check_Dummy_Class : private TensorImpl {
     are_equal<sizeof(autograd_meta_),      4,  FieldNameEnum::autograd_meta_>();
     are_equal<sizeof(extra_meta_),         4,  FieldNameEnum::extra_meta_>();
     are_equal<sizeof(version_counter_),    4,  FieldNameEnum::version_counter_>();
-    are_equal<sizeof(pyobj_slot_),    8,  FieldNameEnum::pyobj_slot_>();
+    are_equal<sizeof(pyobj_slot_),    4,  FieldNameEnum::pyobj_slot_>();
     is_le<sizeof(sizes_and_strides_),     88, FieldNameEnum::sizes_and_strides_>();
     are_equal<sizeof(storage_offset_),     8,  FieldNameEnum::storage_offset_>();
     are_equal<sizeof(numel_),              8,  FieldNameEnum::numel_>();
@@ -3300,7 +3294,7 @@ class C10_TensorImpl_Size_Check_Dummy_Class : private TensorImpl {
     is_le<sizeof(autograd_meta_),         16,  FieldNameEnum::autograd_meta_>();
     is_le<sizeof(extra_meta_),            16,  FieldNameEnum::extra_meta_>();
     are_equal<sizeof(version_counter_),    8,  FieldNameEnum::version_counter_>();
-    are_equal<sizeof(pyobj_slot_),   16,  FieldNameEnum::pyobj_slot_>();
+    are_equal<sizeof(pyobj_slot_),    8,  FieldNameEnum::pyobj_slot_>();
     are_equal<sizeof(sizes_and_strides_), 88,  FieldNameEnum::sizes_and_strides_>();
     are_equal<sizeof(storage_offset_),     8,  FieldNameEnum::storage_offset_>();
     are_equal<sizeof(numel_),              8,  FieldNameEnum::numel_>();

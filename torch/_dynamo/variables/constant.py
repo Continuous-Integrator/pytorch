@@ -141,6 +141,9 @@ its type to `common_constant_types`.
     def is_constant_match(self, *values: Any) -> bool:
         return self.value in values
 
+    def is_constant_true(self) -> bool:
+        return self.value is True
+
     def is_constant_none(self) -> bool:
         return self.value is None
 
