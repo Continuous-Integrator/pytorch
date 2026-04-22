@@ -753,118 +753,112 @@ class InferenceModeVariable(ContextWrappingVariable):
         return torch.inference_mode
 
 
-class CUDADeviceVariable(ContextWrappingVariable):
+class _DeviceExchangeVariable(ContextWrappingVariable):
+    _exchange_device: Any
+    _maybe_exchange_device: Any
+    _module_name: str
+    _fn_name = "device"
+    _python_type: type[Any]
+    _skip_if_none_target = False
+    _exit_return: Any = None
+
+    @staticmethod
+    def normalize_target(device: Any) -> Any:
+        return device
+
+    @classmethod
+    def create(
+        cls, tx: "InstructionTranslator", device: Any, **kwargs: Any
+    ) -> "_DeviceExchangeVariable":
+        return cls(
+            target_values=[cls.normalize_target(device)],
+            initial_values=None,
+            **kwargs,
+        )
+
+    def __init__(
+        self,
+        target_values: Any,
+        initial_values: Any | None = None,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(
+            target_values=target_values, initial_values=initial_values, **kwargs
+        )
+        self.proxy = None
+
+    def _should_exchange(self) -> bool:
+        return not (self._skip_if_none_target and self.target_values[0] is None)
+
+    def enter(self, tx: "InstructionTranslator") -> VariableTracker:
+        if self._should_exchange():
+            prev_idx = self._exchange_device(*self.target_values)
+            self.set_cleanup_hook(tx, lambda: self._maybe_exchange_device(prev_idx))
+            self.proxy = tx.output.create_node(
+                "call_function",
+                self._exchange_device,
+                (*self.target_values,),
+                {},
+            )
+        return variables.ConstantVariable.create(None)
+
+    def exit(
+        self, tx: "InstructionTranslator", *args: VariableTracker
+    ) -> VariableTracker:
+        self.cleanup_assert()
+        if self._should_exchange():
+            tx.output.create_node(
+                "call_function",
+                self._maybe_exchange_device,
+                (self.proxy,),
+                {},
+            )
+        return variables.ConstantVariable.create(self._exit_return)
+
+    def fn_name(self) -> str:
+        return self._fn_name
+
+    def module_name(self) -> str:
+        return self._module_name
+
+    def python_type(self) -> type:
+        return self._python_type
+
+
+class CUDADeviceVariable(_DeviceExchangeVariable):
     """represents torch.cuda.device"""
 
+    _exchange_device = torch.cuda._exchange_device
+    _maybe_exchange_device = torch.cuda._maybe_exchange_device
+    _module_name = "torch.cuda"
+    _python_type = torch.cuda.device
+    _exit_return = False
+
     @staticmethod
-    def create(
-        tx: "InstructionTranslator", device: Any, **kwargs: Any
-    ) -> "CUDADeviceVariable":
-        var = CUDADeviceVariable(
-            target_values=[torch.cuda._get_device_index(device, optional=True)],
-            initial_values=None,
-            **kwargs,
-        )
-        return var
+    def normalize_target(device: Any) -> Any:
+        return torch.cuda._get_device_index(device, optional=True)
 
-    def __init__(
-        self,
-        target_values: Any,
-        initial_values: Any | None = None,
-        **kwargs: Any,
-    ) -> None:
-        super().__init__(
-            target_values=target_values, initial_values=initial_values, **kwargs
-        )
-
-    def exit(
-        self, tx: "InstructionTranslator", *args: VariableTracker
-    ) -> VariableTracker:
-        self.cleanup_assert()
-        tx.output.create_node(
-            "call_function",
-            torch.cuda._maybe_exchange_device,
-            (self.proxy,),
-            {},
-        )
-        return variables.ConstantVariable.create(False)
-
-    def enter(self, tx: "InstructionTranslator") -> VariableTracker:
-        prev_idx = torch.cuda._exchange_device(*self.target_values)
-        self.set_cleanup_hook(tx, lambda: torch.cuda._maybe_exchange_device(prev_idx))
-        self.proxy = tx.output.create_node(
-            "call_function",
-            torch.cuda._exchange_device,
-            (*self.target_values,),
-            {},
-        )
-        return variables.ConstantVariable.create(None)
-
-    def module_name(self) -> str:
-        return "torch.cuda"
-
-    def fn_name(self) -> str:
-        return "device"
-
-    def python_type(self) -> type:
-        return torch.cuda.device
-
-
-class XPUDeviceVariable(ContextWrappingVariable):
+class XPUDeviceVariable(_DeviceExchangeVariable):
     """represents torch.xpu.device"""
 
+    _exchange_device = torch.xpu._exchange_device
+    _maybe_exchange_device = torch.xpu._maybe_exchange_device
+    _module_name = "torch.xpu"
+    _python_type = torch.xpu.device
+
     @staticmethod
-    def create(
-        tx: "InstructionTranslator", device: Any, **kwargs: Any
-    ) -> "XPUDeviceVariable":
-        var = XPUDeviceVariable(
-            target_values=[torch.xpu._get_device_index(device, optional=True)],
-            initial_values=None,
-            **kwargs,
-        )
-        return var
+    def normalize_target(device: Any) -> Any:
+        return torch.xpu._get_device_index(device, optional=True)
 
-    def __init__(
-        self,
-        target_values: Any,
-        initial_values: Any | None = None,
-        **kwargs: Any,
-    ) -> None:
-        super().__init__(
-            target_values=target_values, initial_values=initial_values, **kwargs
-        )
+class AcceleratorDeviceIndexVariable(_DeviceExchangeVariable):
+    """represents torch.accelerator.device_index"""
 
-    def exit(
-        self, tx: "InstructionTranslator", *args: VariableTracker
-    ) -> VariableTracker:
-        self.cleanup_assert()
-        tx.output.create_node(
-            "call_function",
-            torch.xpu._maybe_exchange_device,
-            (self.proxy,),
-            {},
-        )
-        return variables.ConstantVariable.create(None)
-
-    def enter(self, tx: "InstructionTranslator") -> VariableTracker:
-        prev_idx = torch.xpu._exchange_device(*self.target_values)
-        self.set_cleanup_hook(tx, lambda: torch.xpu._maybe_exchange_device(prev_idx))
-        self.proxy = tx.output.create_node(
-            "call_function",
-            torch.xpu._exchange_device,
-            (*self.target_values,),
-            {},
-        )
-        return variables.ConstantVariable.create(None)
-
-    def module_name(self) -> str:
-        return "torch.xpu"
-
-    def fn_name(self) -> str:
-        return "device"
-
-    def python_type(self) -> type:
-        return torch.xpu.device
+    _exchange_device = torch._C._accelerator_exchangeDevice
+    _maybe_exchange_device = torch._C._accelerator_maybeExchangeDevice
+    _module_name = "torch.accelerator"
+    _fn_name = "device_index"
+    _python_type = torch.accelerator.device_index
+    _skip_if_none_target = True
 
 
 class TorchFunctionDisableVariable(ContextWrappingVariable):
