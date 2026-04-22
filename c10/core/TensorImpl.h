@@ -1463,7 +1463,8 @@ struct C10_API TensorImpl : public c10::intrusive_ptr_target {
    * to DispatchKeySet
    */
 
-  // this is the fast path: caller guarantees fake_device already has a valid index
+  // this is the fast path: caller guarantees fake_device already has a valid
+  // index
   void set_fake_device(c10::Device fake_device);
 
   // Normalizes the device index then calls set_fake_device.
