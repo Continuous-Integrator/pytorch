@@ -1,5 +1,4 @@
 # Owner(s): ["module: higher order operators"]
-# flake8: noqa: B950
 # flake8: noqa: E731
 
 import contextlib
@@ -700,7 +699,7 @@ class GraphModule(torch.nn.Module):
         x = torch.randn(8, requires_grad=True)
         # Difficult to check the results here because we random does not match
         # between eager and Triton.
-        res = torch.compile(fn, backend="inductor", fullgraph=True)(x)  # noqa: F841
+        res = torch.compile(fn, backend="inductor", fullgraph=True)(x)
 
         torch.compiler.reset()
         backend = InductorAndRecordGraphs()
@@ -1522,12 +1521,11 @@ class GraphModule(torch.nn.Module):
 
         x = torch.randn(8, requires_grad=False)
         opt_fn = torch.compile(fn, backend="inductor", fullgraph=True)
-        # TODO When a filtered aliased intermediate is captured by side effects,
-        # it will fail later with "does not belong to this Graph" error
-        # because the proxy from the inner graph is used in the outer graph.
+        # When a filtered aliased intermediate is captured by side effects,
+        # the tainted proxy raises a clear error telling the user to clone.
         with self.assertRaisesRegex(
             torch._dynamo.exc.InternalTorchDynamoError,
-            "does not belong to this Graph",
+            "aliases an input or output.*clone",
         ):
             opt_fn(x)
 
@@ -3549,7 +3547,7 @@ class GraphModule(torch.nn.Module):
         def forward(self, l_x_: "f32[8]", synthetic_local_tmp_0_ : test_opaque_obj_v2_HoistedString):
             op_with_string_default: "f32[8]" = torch.ops.mylib.op_with_string.default(l_x_, synthetic_local_tmp_0_);  l_x_ = synthetic_local_tmp_0_ = None
             return (op_with_string_default,)
-""",  # noqa: B950
+""",
             )
 
     def test_subgraph_reuse_different_list_lengths(self):
@@ -3933,6 +3931,7 @@ class GraphModule(torch.nn.Module):
     params: f"{cls.__name__}{'Strict' if params['strict'] else 'Nonstrict'}",
 )
 class TestInvokeSubgraphExport(TestCase):
+    @torch._dynamo.config.patch(inline_single_use_invoke_subgraph=False)
     def test_simple_func(self):
         @nested_compile_region
         def gn(x, y):
@@ -3972,6 +3971,7 @@ class GraphModule(torch.nn.Module):
 """,
         )
 
+    @torch._dynamo.config.patch(inline_single_use_invoke_subgraph=False)
     def test_unbacked(self):
         @nested_compile_region
         def gn(x, y):
@@ -3995,6 +3995,7 @@ class GraphModule(torch.nn.Module):
         self.assertTrue(torch.allclose(ep.module()(x, y), M()(x, y)))
         self.assertEqual(len(list(ep.graph_module.named_modules())), 2)
 
+    @torch._dynamo.config.patch(inline_single_use_invoke_subgraph=False)
     def test_pending_unbacked(self):
         class M(torch.nn.Module):
             @nested_compile_region
@@ -4027,6 +4028,7 @@ class GraphModule(torch.nn.Module):
 
         self.assertEqual(len(list(ep.graph_module.named_modules())), 2)
 
+    @torch._dynamo.config.patch(inline_single_use_invoke_subgraph=False)
     def test_simple_method(self):
         class M(torch.nn.Module):
             @nested_compile_region
@@ -4045,6 +4047,7 @@ class GraphModule(torch.nn.Module):
         self.assertTrue(torch.allclose(ep.module()(x, y), M()(x, y)))
         self.assertEqual(len(list(ep.graph_module.named_modules())), 2)
 
+    @torch._dynamo.config.patch(inline_single_use_invoke_subgraph=False)
     def test_multiple_module(self):
         b = torch.randn(8)
 
