@@ -18,7 +18,7 @@ import torch.utils._pytree as python_pytree
 from torch._dynamo.exc import ResumePrologueTracingError, TorchRuntimeError, Unsupported
 from torch._dynamo.testing import skipIfNotPy312, skipIfOnlyNotPy312
 from torch._dynamo.utils import counters
-from torch.testing._internal.common_utils import IS_FBCODE, munge_exc
+from torch.testing._internal.common_utils import IS_FBCODE, IS_MACOS, munge_exc
 from torch.testing._internal.logging_utils import LoggingTestCase, make_logging_test
 
 
@@ -111,10 +111,17 @@ def _load_global_has_positions() -> bool:
 
 
 def _reconstruction_failure_gb_stack_source_attribution() -> str:
+    if IS_MACOS:
+        var_repr = "NullVariable originated from:"
+    else:
+        var_repr = (
+            "LazyVariableTracker(realized: SkipFunctionVariable()) originated from:"
+        )
+
     if sys.version_info >= (3, 14):
         return (
             "Stack variable source attribution:\n"
-            "  LazyVariableTracker(realized: SkipFunctionVariable()) originated from:\n"
+            f"  {var_repr}\n"
             '  File "test_error_messages.py", line N\n'
             "                torch._dynamo.graph_break()\n"
             "^^^^^^^^^^^^^^^^^^^^^^^^^\n"
@@ -124,7 +131,7 @@ def _reconstruction_failure_gb_stack_source_attribution() -> str:
     if sys.version_info >= (3, 11) and _load_global_has_positions():
         return (
             "Stack variable source attribution:\n"
-            "  LazyVariableTracker(realized: SkipFunctionVariable()) originated from:\n"
+            f"  {var_repr}\n"
             '  File "test_error_messages.py", line N\n'
             "                torch._dynamo.graph_break()\n"
             "^^^^^^^^^^^^^^^^^^^^^^^^^\n"
@@ -136,7 +143,7 @@ def _reconstruction_failure_gb_stack_source_attribution() -> str:
 
     return (
         "Stack variable source attribution:\n"
-        "  LazyVariableTracker(realized: SkipFunctionVariable()) originated from:\n"
+        f"  {var_repr}\n"
         '  File "test_error_messages.py", line N\n'
         "                torch._dynamo.graph_break()\n"
         "\n"

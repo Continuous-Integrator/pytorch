@@ -94,18 +94,19 @@ from .iter import (
     FilterVariable,
     IteratorVariable,
     ItertoolsVariable,
+    ListIteratorVariable,
     MapVariable,
+    RangeIteratorVariable,
     RepeatIteratorVariable,
+    TupleIteratorVariable,
     ZipVariable,
 )
 from .lazy import LazyConstantVariable, LazyVariableTracker
 from .lists import (
     BaseListVariable,
-    ListIteratorVariable,
     ListVariable,
     RangeVariable,
     SliceVariable,
-    TupleIteratorVariable,
     TupleVariable,
 )
 from .misc import (
