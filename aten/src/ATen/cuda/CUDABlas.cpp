@@ -1783,6 +1783,19 @@ bool gemm_and_bias(
     return CUBLAS_STATUS_SUCCESS;
   };
 
+  // Quary SplitK number for an algorithm selected by the heuristic routine.
+  const auto get_splitk_num = [&]() -> int {
+    int nsplitk = 0;
+    TORCH_CUDABLAS_CHECK(cublasLtMatmulAlgoConfigGetAttribute(
+      &heuristicResult.algo,
+      CUBLASLT_ALGO_CONFIG_SPLITK_NUM,
+      &nsplitk,
+      sizeof(nsplitk),
+      nullptr
+    ));
+    return nsplitk;
+  };
+
   // When moving from a bias epilogue fusion to a fusion with a matrix descriptor,
   // we check whether the first selected by the heuristic algorithm can be reused
   // (with some adjustments like required workspace and wave count).
@@ -1812,15 +1825,7 @@ bool gemm_and_bias(
     // provided bias.
     // FIXME: this behavior is to be changed in the upcoming CUDA releases.
     if constexpr (std::is_same_v<Dtype, C_Dtype> && (std::is_same_v<Dtype, at::Half> || std::is_same_v<Dtype, at::BFloat16>)) {
-      int nsplitk = 0;
-      TORCH_CUDABLAS_CHECK(cublasLtMatmulAlgoConfigGetAttribute(
-        &heuristicResult.algo,
-        CUBLASLT_ALGO_CONFIG_SPLITK_NUM,
-        &nsplitk,
-        sizeof(nsplitk),
-        nullptr
-      ));
-      if (nsplitk > 1 && use_bias_epilogue) {
+      if (get_splitk_num() > 1 && use_bias_epilogue) {
         // bias epilogue fusion -> bias matrix descriptor fusion
         use_bias_epilogue = false;
         use_bias_descriptor = true;
