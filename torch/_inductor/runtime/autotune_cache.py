@@ -26,7 +26,6 @@ expensive autotuning operations when the same kernels are compiled multiple time
 from __future__ import annotations
 
 import dataclasses
-import hashlib
 import logging
 import os
 import os.path
@@ -43,6 +42,7 @@ from torch.compiler._cache import (
 )
 from torch.utils._triton import has_triton
 
+from ..cache_key import AUTOTUNE_CACHE_KEY_STRATEGY
 from ..remote_cache import (
     create_cache,
     JsonDataTy,
@@ -139,7 +139,7 @@ class AutotuneCache:
 
         # base of filename is already sha256 hash the source contents
         key = f"{os.path.basename(filename)}:{cconfig.cache_key_tag}"
-        return hashlib.sha256(key.encode("utf-8")).hexdigest()
+        return AUTOTUNE_CACHE_KEY_STRATEGY.key(key)
 
     # Read the best config options from the most local cache and return it.
     def _read(self) -> dict[str, JsonDataTy] | None:
@@ -184,10 +184,7 @@ class AutotuneCache:
         of changes to the best_config format or other code changes that
         are not backward compatible w.r.t. the cache.
         """
-        hasher = hashlib.sha256()
-        hasher.update(cache_key.encode("utf-8"))
-        hasher.update(torch_key())
-        updated_cache_key = hasher.hexdigest()
+        updated_cache_key = AUTOTUNE_CACHE_KEY_STRATEGY.key(cache_key, torch_key())
 
         cache_filename = f"{dirname}/{updated_cache_key}.best_config"
         local_cache = LocalAutotuneCache()
@@ -213,8 +210,9 @@ class AutotuneCache:
 
         salt = "autotune-best-config-v2"
         # re: torch_key - see [Note: torch_key in autotune cache key]
-        key = torch_key().hex() + backend_hash + self.configs_hash + salt
-        key = hashlib.sha256(key.encode("utf-8")).hexdigest()
+        key = AUTOTUNE_CACHE_KEY_STRATEGY.key(
+            torch_key().hex(), backend_hash, self.configs_hash, salt
+        )
 
         remote_cache = create_cache(
             key,
@@ -286,6 +284,10 @@ class AutotuneCache:
             "time_taken_ms": time_taken_ns // 1000000,  # Convert from NS to MS
             "triton_cache_hash": triton_cache_hash,
         }
+        # Save extra_options if present on the config. This allows third-party
+        # backends to store custom tuned options alongside the standard config.
+        if extra_options := getattr(config, "extra_options", None):
+            data["extra_options"] = extra_options
         if HAS_WARP_SPEC:
             data.update(
                 {
@@ -470,8 +472,7 @@ class AutotuneCacheBundler:
         # that info is basically present in the `code_hash` (since it's a
         # parameter to the pointwise decorator) - but is there other info we
         # need to include from inductor_meta?
-        key = code_hash + backend_hash + salt
-        key = hashlib.sha256(key.encode("utf-8")).hexdigest()
+        key = AUTOTUNE_CACHE_KEY_STRATEGY.key(code_hash, backend_hash, salt)
 
         bundler = _AutotuneCacheBundlerImpl(key, cache)
         if not bundler._load_cache():
@@ -553,6 +554,10 @@ def _load_cached_autotuning(
 
     best_config.pop("triton_cache_hash", None)
 
+    # Extract extra_options if present. This allows third-party backends
+    # to restore custom tuned options from the cache.
+    extra_options = best_config.pop("extra_options", None)
+
     if inductor_meta.get("coordinate_descent_tuning") and best_config.pop(
         "found_by_coordesc", False
     ):
@@ -580,6 +585,9 @@ def _load_cached_autotuning(
         triton_config = Config(best_config, **config_args)
         # pyrefly: ignore [missing-attribute]
         triton_config.found_by_coordesc = True
+        # Restore extra_options (may be None if not used by backend)
+        # pyrefly: ignore [missing-attribute]
+        triton_config.extra_options = extra_options
         return triton_config
 
     matching_configs = [
@@ -595,7 +603,11 @@ def _load_cached_autotuning(
     if len(matching_configs) != 1:
         return None
 
-    return matching_configs[0]
+    matched_config = matching_configs[0]
+    # Restore extra_options (may be None if not used by backend)
+    # pyrefly: ignore [missing-attribute]
+    matched_config.extra_options = extra_options
+    return matched_config
 
 
 class _LocalAutotuneCacheBackend(RemoteCacheBackend[bytes]):

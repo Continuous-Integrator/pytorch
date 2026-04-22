@@ -99,6 +99,8 @@ AOTI_TORCH_DTYPE_IMPL(float8_e5m2, Float8_e5m2)
 AOTI_TORCH_DTYPE_IMPL(float8_e4m3fn, Float8_e4m3fn)
 AOTI_TORCH_DTYPE_IMPL(float8_e5m2fnuz, Float8_e5m2fnuz)
 AOTI_TORCH_DTYPE_IMPL(float8_e4m3fnuz, Float8_e4m3fnuz)
+AOTI_TORCH_DTYPE_IMPL(float8_e8m0fnu, Float8_e8m0fnu)
+AOTI_TORCH_DTYPE_IMPL(float4_e2m1fn_x2, Float4_e2m1fn_x2)
 AOTI_TORCH_DTYPE_IMPL(bfloat16, BFloat16)
 AOTI_TORCH_DTYPE_IMPL(float16, Half)
 AOTI_TORCH_DTYPE_IMPL(float32, Float)
@@ -250,10 +252,11 @@ AOTITorchError aoti_torch_strlist_to_ivalue(
     C10IValueHandle* ivalue) {
   AOTI_TORCH_CONVERT_EXCEPTION_TO_ERROR_CODE({
     c10::List<std::string> vec;
+    vec.reserve(len);
     for (int64_t i = 0; i < len; i++) {
-      vec.push_back(std::string(val[i]));
+      vec.emplace_back(val[i]);
     }
-    c10::IValue* t = new c10::IValue(vec);
+    c10::IValue* t = new c10::IValue(std::move(vec));
     *ivalue = reinterpret_cast<C10IValueHandle>(t);
   });
 }
