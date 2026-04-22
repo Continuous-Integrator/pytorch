@@ -312,15 +312,15 @@ ProcessGroupMPS::ProcessGroupMPS(
       store_(store),
       options_(std::move(options)) {
 #if HAVE_JACCL
+  // Probe local RDMA availability. Auto-detect devices: on macOS each
+  // Thunderbolt port exposes its own rdma_en* device, and only a port with a
+  // connected-and-healthy RDMA peer allows ibv_alloc_pd. An explicit
+  // JACCL_DEVICE override skips the probe.
+  std::string firstDevice;
   if (jaccl::isAvailable()) {
     try {
-      // Auto-detect RDMA devices. On macOS each Thunderbolt port exposes its
-      // own rdma_en* device; only the port with a connected peer allows
-      // ibv_alloc_pd. Probe each device and pick the first usable one. An
-      // explicit JACCL_DEVICE override skips the probe.
       int numDevices = 0;
       auto devices = jaccl::ibv().getDeviceList(&numDevices);
-      std::string firstDevice;
       const char* deviceOverride = std::getenv("JACCL_DEVICE");
       for (int i = 0; i < numDevices; i++) {
         std::string name = jaccl::ibv().getDeviceName(devices[i]);
@@ -341,39 +341,73 @@ ProcessGroupMPS::ProcessGroupMPS(
         jaccl::ibv().closeDevice(ctx);
       }
       jaccl::ibv().freeDeviceList(devices);
-      if (!firstDevice.empty()) {
+    } catch (const std::exception& e) {
+      TORCH_WARN(
+          "JACCL RDMA probe failed, will use TCP transport: ", e.what());
+      firstDevice.clear();
+    }
+  }
 
-        // Build device name list: use first device for all peers, empty for self
-        std::vector<std::string> deviceNames(size);
-        for (int i = 0; i < size; i++) {
-          deviceNames[i] = (i == rank) ? "" : firstDevice;
-        }
-
-        // Exchange coordinator address via store. Use MASTER_ADDR as the host
-        // (rank 0's hostname may not resolve from peers, or may resolve to a
-        // different interface than the one MASTER_ADDR points at). Derive the
-        // port from MASTER_PORT so both ranks agree without DNS.
-        std::string coordAddr;
-        if (rank == 0) {
-          const char* masterAddr = std::getenv("MASTER_ADDR");
-          const char* masterPortEnv = std::getenv("MASTER_PORT");
-          int basePort = masterPortEnv ? std::atoi(masterPortEnv) : 29500;
-          std::string host = masterAddr ? masterAddr : "127.0.0.1";
-          coordAddr = host + ":" + std::to_string(basePort + 1);
-          store_->set(
-              "jaccl_coord",
-              std::vector<uint8_t>(coordAddr.begin(), coordAddr.end()));
-        } else {
-          auto data = store_->get("jaccl_coord");
-          coordAddr = std::string(data.begin(), data.end());
-        }
-
-        jacclTransport_ = std::make_unique<jaccl::JACCLTransport>(
-            rank, size, coordAddr.c_str(), deviceNames);
-        useJACCL_ = true;
-        TORCH_WARN(
-            "ProcessGroupMPS: using JACCL RDMA transport on ", firstDevice);
+  // Rendezvous with peers so we pick a transport everyone agrees on. Without
+  // this, a split-brain init (one rank succeeds JACCL, another fails) ends in
+  // a hang: the JACCL rank blocks in SideChannel::accept while the TCP rank
+  // blocks in TCPRingTransport. Publish our per-rank availability and fall
+  // back to TCP unless ALL ranks have RDMA.
+  {
+    std::vector<uint8_t> flag(1, firstDevice.empty() ? 0 : 1);
+    store_->set("jaccl_avail/" + std::to_string(rank), flag);
+    std::vector<std::string> keys;
+    keys.reserve(size);
+    for (int r = 0; r < size; r++) {
+      keys.push_back("jaccl_avail/" + std::to_string(r));
+    }
+    store_->wait(keys);
+    bool allHaveJaccl = true;
+    for (int r = 0; r < size; r++) {
+      auto data = store_->get("jaccl_avail/" + std::to_string(r));
+      if (data.empty() || data[0] == 0) {
+        allHaveJaccl = false;
+        break;
       }
+    }
+    if (!allHaveJaccl && !firstDevice.empty()) {
+      TORCH_WARN(
+          "ProcessGroupMPS: at least one peer can't use JACCL RDMA; falling back to TCP ring transport");
+      firstDevice.clear();
+    }
+  }
+
+  if (!firstDevice.empty()) {
+    try {
+      std::vector<std::string> deviceNames(size);
+      for (int i = 0; i < size; i++) {
+        deviceNames[i] = (i == rank) ? "" : firstDevice;
+      }
+
+      // Exchange coordinator address via store. Use MASTER_ADDR as the host
+      // (rank 0's hostname may not resolve from peers, or may resolve to a
+      // different interface than the one MASTER_ADDR points at). Derive the
+      // port from MASTER_PORT so both ranks agree without DNS.
+      std::string coordAddr;
+      if (rank == 0) {
+        const char* masterAddr = std::getenv("MASTER_ADDR");
+        const char* masterPortEnv = std::getenv("MASTER_PORT");
+        int basePort = masterPortEnv ? std::atoi(masterPortEnv) : 29500;
+        std::string host = masterAddr ? masterAddr : "127.0.0.1";
+        coordAddr = host + ":" + std::to_string(basePort + 1);
+        store_->set(
+            "jaccl_coord",
+            std::vector<uint8_t>(coordAddr.begin(), coordAddr.end()));
+      } else {
+        auto data = store_->get("jaccl_coord");
+        coordAddr = std::string(data.begin(), data.end());
+      }
+
+      jacclTransport_ = std::make_unique<jaccl::JACCLTransport>(
+          rank, size, coordAddr.c_str(), deviceNames);
+      useJACCL_ = true;
+      TORCH_WARN(
+          "ProcessGroupMPS: using JACCL RDMA transport on ", firstDevice);
     } catch (const std::exception& e) {
       TORCH_WARN(
           "JACCL RDMA initialization failed, falling back to TCP: ", e.what());
