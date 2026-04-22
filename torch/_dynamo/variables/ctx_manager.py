@@ -759,7 +759,6 @@ class _DeviceExchangeVariable(ContextWrappingVariable):
     _module_name: str
     _fn_name = "device"
     _python_type: type[Any]
-    _skip_if_none_target = False
     _exit_return: Any = None
 
     @staticmethod
@@ -785,34 +784,28 @@ class _DeviceExchangeVariable(ContextWrappingVariable):
         super().__init__(
             target_values=target_values, initial_values=initial_values, **kwargs
         )
-        self.proxy = None
-
-    def _should_exchange(self) -> bool:
-        return not (self._skip_if_none_target and self.target_values[0] is None)
 
     def enter(self, tx: "InstructionTranslator") -> VariableTracker:
-        if self._should_exchange():
-            prev_idx = self._exchange_device(*self.target_values)
-            self.set_cleanup_hook(tx, lambda: self._maybe_exchange_device(prev_idx))
-            self.proxy = tx.output.create_node(
-                "call_function",
-                self._exchange_device,
-                (*self.target_values,),
-                {},
-            )
+        prev_idx = self._exchange_device(*self.target_values)
+        self.set_cleanup_hook(tx, lambda: self._maybe_exchange_device(prev_idx))
+        self.proxy = tx.output.create_node(
+            "call_function",
+            self._exchange_device,
+            (*self.target_values,),
+            {},
+        )
         return variables.ConstantVariable.create(None)
 
     def exit(
         self, tx: "InstructionTranslator", *args: VariableTracker
     ) -> VariableTracker:
         self.cleanup_assert()
-        if self._should_exchange():
-            tx.output.create_node(
-                "call_function",
-                self._maybe_exchange_device,
-                (self.proxy,),
-                {},
-            )
+        tx.output.create_node(
+            "call_function",
+            self._maybe_exchange_device,
+            (self.proxy,),
+            {},
+        )
         return variables.ConstantVariable.create(self._exit_return)
 
     def fn_name(self) -> str:
@@ -838,6 +831,7 @@ class CUDADeviceVariable(_DeviceExchangeVariable):
     def normalize_target(device: Any) -> Any:
         return torch.cuda._get_device_index(device, optional=True)
 
+
 class XPUDeviceVariable(_DeviceExchangeVariable):
     """represents torch.xpu.device"""
 
@@ -850,6 +844,7 @@ class XPUDeviceVariable(_DeviceExchangeVariable):
     def normalize_target(device: Any) -> Any:
         return torch.xpu._get_device_index(device, optional=True)
 
+
 class AcceleratorDeviceIndexVariable(_DeviceExchangeVariable):
     """represents torch.accelerator.device_index"""
 
@@ -858,7 +853,18 @@ class AcceleratorDeviceIndexVariable(_DeviceExchangeVariable):
     _module_name = "torch.accelerator"
     _fn_name = "device_index"
     _python_type = torch.accelerator.device_index
-    _skip_if_none_target = True
+
+    def enter(self, tx: "InstructionTranslator") -> VariableTracker:
+        if self.target_values[0] is None:
+            return variables.ConstantVariable.create(None)
+        return super().enter(tx)
+
+    def exit(
+        self, tx: "InstructionTranslator", *args: VariableTracker
+    ) -> VariableTracker:
+        if self.target_values[0] is None:
+            return variables.ConstantVariable.create(self._exit_return)
+        return super().exit(tx, *args)
 
 
 class TorchFunctionDisableVariable(ContextWrappingVariable):
