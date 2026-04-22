@@ -1261,16 +1261,12 @@ class VarlenMetadata:
             seq_len, cp_world_size, device_mesh.device_type
         )
 
-        # Compute the forward permutation once and reuse it both for
-        # extracting this rank's Q positions and for inverting into
-        # rearranged K coords below. Shape is normalized to (B, seq_len)
-        # with dtype long.
+        # Forward permutation, normalized to (B, seq_len) long; reused for
+        # Q extraction and K inverse-permutation below.
         rearrange_per_batch: torch.Tensor | None = None
         if load_balancer is not None:
             rearrange_indices = load_balancer._generate_indices(restore=False)
-            # ``_generate_indices`` may return None when the balancer is
-            # a no-op (e.g. ``_create_default_load_balancer`` with
-            # load-balance disabled).
+            # May be None when the balancer is a no-op.
             if rearrange_indices is not None:
                 if rearrange_indices.ndim != 2:
                     raise ValueError(
@@ -1281,8 +1277,7 @@ class VarlenMetadata:
                     rearrange_indices = rearrange_indices.expand(B, -1)
                 rearrange_per_batch = rearrange_indices.to(torch.long)
 
-        # Per-batch local-to-global seq mapping for this rank, shape
-        # (B, shard_len), values in [0, seq_len).
+        # Per-batch local-to-global seq mapping, (B, shard_len) in [0, seq_len).
         if rearrange_per_batch is None:
             rank_per_batch = (
                 torch.arange(
@@ -1299,30 +1294,23 @@ class VarlenMetadata:
                 :, cp_rank * shard_len : (cp_rank + 1) * shard_len
             ]
 
-        # Convert per-batch positions to packed (global) positions:
-        # batch b contributes positions in [b * seq_len, (b + 1) * seq_len).
-        # Concatenate across batches in row-major order -- same order
-        # the rank's local packed Q tensor will hold.
+        # Per-batch -> packed global positions, row-major across B (matches
+        # the rank's local packed Q layout).
         batch_offsets = (
             torch.arange(B, device=device, dtype=torch.long).unsqueeze(1) * seq_len
         )
         packed_local_to_global = (batch_offsets + rank_per_batch).reshape(-1)
         total_local = B * shard_len
 
-        # Doc id per local position via searchsorted on the global cu_seq_q.
         global_cu_seq_q = self.cu_seq_q.to(torch.long)
         doc_id = (
             torch.searchsorted(global_cu_seq_q, packed_local_to_global, right=True)
             - 1
         )
 
-        # Vectorized segment-boundary detection: a new segment starts
-        # wherever the doc id changes OR consecutive local positions
-        # are not consecutive in the global packed view. Batch
-        # boundaries are handled by diff_doc -- the last position of
-        # batch b and the first of batch b+1 belong to different doc
-        # ids in the global cu_seq_q, so is_break fires even when their
-        # packed global positions happen to be consecutive.
+        # Segment break wherever doc id changes or packed-global positions
+        # are non-consecutive. Batch boundaries are covered by diff_doc
+        # since adjacent batches' docs always have different ids globally.
         diff_doc = doc_id[1:] != doc_id[:-1]
         diff_global = packed_local_to_global[1:] != packed_local_to_global[:-1] + 1
         is_break = diff_doc | diff_global
@@ -1338,8 +1326,7 @@ class VarlenMetadata:
         )
 
         seqlen_q = seg_ends - seg_starts
-        # seqlen_k for each segment = (last global position - doc
-        # global start) + 1.
+        # seqlen_k = (last global pos in segment) - (doc global start) + 1.
         last_local_idx = seg_ends - 1
         last_global = packed_local_to_global[last_local_idx]
         seg_doc_id = doc_id[seg_starts]
@@ -1353,35 +1340,25 @@ class VarlenMetadata:
                 seqlen_q.cumsum(0).to(out_dtype),
             ]
         )
-        cu_seq_k = torch.cat(
-            [
-                torch.zeros(1, dtype=out_dtype, device=device),
-                seqlen_k.cumsum(0).to(out_dtype),
-            ]
+        # Kept in long for reuse as segment starts in the k-gather build below.
+        cu_seq_k_long = torch.cat(
+            [torch.zeros(1, dtype=torch.long, device=device), seqlen_k.cumsum(0)]
         )
+        cu_seq_k = cu_seq_k_long.to(out_dtype)
 
-        # Batch three needed host scalars into a single .cpu() transfer:
-        # max_q, max_k for the kernel and total_k (= sum(seqlen_k)) for
-        # the torch.arange below. Note: the cu_seq_q/cu_seq_k equality
-        # check above is a separate implicit sync.
+        # Fuse max_q / max_k / total_k into a single D2H transfer.
         max_q, max_k, total_k = (
             torch.stack([seqlen_q.max(), seqlen_k.max(), seqlen_k.sum()])
             .cpu()
             .tolist()
         )
 
-        # K local indices: per-segment visible K is K[doc_global_start :
-        # last_global + 1] in *original* per-batch coords.  Build a flat
-        # gather index of length total_k so the caller can do
-        # ``K_packed.index_select(0, k_local_indices)`` to produce a
-        # contiguous K layout matching cu_seq_k.  Vectorized via
-        # repeat_interleave + arange-offset (no Python loop over segments).
-        seg_starts_in_k = torch.cat(
-            [torch.zeros(1, dtype=torch.long, device=device), seqlen_k.cumsum(0)]
-        )
+        # Flat gather index (length total_k) over original K coords; per
+        # segment covers [doc_global_start, last_global], built via
+        # repeat_interleave + arange offset.
         bases = torch.repeat_interleave(doc_global_start, seqlen_k)
         seg_starts_repeated = torch.repeat_interleave(
-            seg_starts_in_k[:-1], seqlen_k
+            cu_seq_k_long[:-1], seqlen_k
         )
         within_seg = (
             torch.arange(total_k, device=device, dtype=torch.long)
@@ -1389,15 +1366,9 @@ class VarlenMetadata:
         )
         k_local_indices = bases + within_seg
 
-        # Under DTensor's Replicate-on-CP all-gather, the global K is
-        # concatenated across ranks in rank order, so its layout
-        # matches the load-balancer's *forward* permutation rather
-        # than the original sequence order. Map k_local_indices (built
-        # in original coords) into rearranged coords by composing with
-        # the per-batch inverse permutation.  Skip when there's no
-        # load balancer (no rearrangement happens).
+        # K is all-gathered in the balancer's forward-permuted order, so
+        # compose the gather index with the per-batch inverse permutation.
         if rearrange_per_batch is not None:
-            # restore_per_batch[b, p_orig] = rearranged position of p_orig.
             restore_per_batch = torch.argsort(rearrange_per_batch, dim=-1)
             b_ids = k_local_indices // seq_len
             p_orig = k_local_indices % seq_len

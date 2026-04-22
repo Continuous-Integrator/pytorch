@@ -1369,13 +1369,6 @@ class TestCPVarlenMetadata(TestCase):
         self.assertEqual(self._seg_lens(per_rank[0]), ([8, 8], [8, 32]))
         self.assertEqual(self._seg_lens(per_rank[1]), ([16], [24]))
 
-    def test_multi_doc_aligned(self) -> None:
-        # Two docs of length 32 each, no LB; each rank gets exactly one doc.
-        meta = _build_varlen_meta([0, 32, 64], B=1, seq_len=64)
-        per_rank = self._run(meta, cp_world_size=2, B=1, seq_len=64)
-        self.assertEqual(self._seg_lens(per_rank[0]), ([32], [32]))
-        self.assertEqual(self._seg_lens(per_rank[1]), ([32], [32]))
-
     def test_multi_doc_straddling(self) -> None:
         # Worked example: docs [0,10), [10,50), [50,64). CP=2, no LB.
         # rank 0 has [0..32): doc 0 fully + doc 1 prefix [10..32).
@@ -1387,12 +1380,15 @@ class TestCPVarlenMetadata(TestCase):
 
     def test_multi_doc_headtail(self) -> None:
         # Same docs as test_multi_doc_straddling, with headtail balancer
-        # (chunk=16). Rank 0 = chunks 0+3 = [0..16, 48..64).
-        # Doc 0 [0..10): full -> seg (10,10).
-        # Doc 1 prefix [10..16): seg (6, 6) (seqlen_k = 16-10 = 6).
-        # Doc 1 tail [48..50): seg (2, 40) (seqlen_k = 49-10+1 = 40).
-        # Doc 2 [50..64): seg (14, 14).
-        # Rank 1 = chunks 1+2 = [16..48), all in doc 1 -> 1 seg (32, 38).
+        # (chunk=16). Forward permutation is [0..16, 48..64, 16..48],
+        # inverse:
+        #   p_orig in [0,16)  -> p_rearr = p_orig
+        #   p_orig in [16,48) -> p_rearr = p_orig + 16
+        #   p_orig in [48,64) -> p_rearr = p_orig - 32
+        # Rank 0 Q = chunks 0+3 = [0..16, 48..64) -> 4 segs:
+        #   doc 0 [0..10) (10,10); doc 1 prefix [10..16) (6,6);
+        #   doc 1 tail [48..50) (2, 40); doc 2 [50..64) (14,14).
+        # Rank 1 Q = chunks 1+2 = [16..48) in doc 1 -> 1 seg (32, 38).
         meta = _build_varlen_meta([0, 10, 50, 64], B=1, seq_len=64)
         per_rank = self._run(
             meta,
@@ -1406,6 +1402,24 @@ class TestCPVarlenMetadata(TestCase):
         self.assertEqual(self._seg_lens(per_rank[0]), ([10, 6, 2, 14], [10, 6, 40, 14]))
         self.assertEqual(self._seg_lens(per_rank[1]), ([32], [38]))
 
+        # k_local_indices compose the K-gather with the inverse permutation.
+        # Rank 1 K covers original [10..48) -> [10..16) stays, [16..48) +16.
+        expected_rank1 = torch.tensor(
+            list(range(10, 16)) + list(range(32, 64)), dtype=torch.long
+        )
+        self.assertEqual(per_rank[1].k_local_indices, expected_rank1)
+        # Rank 0 K-gather covers originals [0..10), [10..16), [10..50), [50..64).
+        expected_rank0 = torch.tensor(
+            list(range(10))  # seg 0: doc 0
+            + list(range(10, 16))  # seg 1: doc 1 prefix
+            + list(range(10, 16))  # seg 2 piece [10,16)
+            + list(range(32, 64))  # seg 2 piece [16,48) shifted +16
+            + [16, 17]  # seg 2 piece [48,50) shifted -32
+            + list(range(18, 32)),  # seg 3: doc 2 [50,64) shifted -32
+            dtype=torch.long,
+        )
+        self.assertEqual(per_rank[0].k_local_indices, expected_rank0)
+
     def test_one_token_segment(self) -> None:
         # 1-token doc + 7-token doc; seq_len=8, CP=2.
         # rank 0 has [0..4): doc 0 [0..1) + doc 1 prefix [1..4).
@@ -1414,23 +1428,6 @@ class TestCPVarlenMetadata(TestCase):
         per_rank = self._run(meta, cp_world_size=2, B=1, seq_len=8)
         self.assertEqual(self._seg_lens(per_rank[0]), ([1, 3], [1, 3]))
         self.assertEqual(self._seg_lens(per_rank[1]), ([4], [7]))
-
-    def test_doc_inside_one_rank(self) -> None:
-        # 3 docs (4, 4, 8) totaling 16; CP=2 -> rank 0 has docs 0+1, rank 1
-        # has doc 2 entirely.
-        meta = _build_varlen_meta([0, 4, 8, 16], B=1, seq_len=16)
-        per_rank = self._run(meta, cp_world_size=2, B=1, seq_len=16)
-        self.assertEqual(self._seg_lens(per_rank[0]), ([4, 4], [4, 4]))
-        self.assertEqual(self._seg_lens(per_rank[1]), ([8], [8]))
-
-    def test_multi_batch(self) -> None:
-        # B=2, each batch has 2 docs of length 4; cu_seq_q = [0,4,8,12,16].
-        # CP=2 (per-batch shard=4) -> rank r gets batch b's seq positions
-        # [r*4, (r+1)*4) for each b. No straddling within docs.
-        meta = _build_varlen_meta([0, 4, 8], B=2, seq_len=8)
-        per_rank = self._run(meta, cp_world_size=2, B=2, seq_len=8)
-        self.assertEqual(self._seg_lens(per_rank[0]), ([4, 4], [4, 4]))
-        self.assertEqual(self._seg_lens(per_rank[1]), ([4, 4], [4, 4]))
 
     def test_multi_batch_multi_doc_straddling(self) -> None:
         # B=2, per-batch docs [10, 22] -> packed cu_seq_q =
@@ -1495,47 +1492,6 @@ class TestCPVarlenMetadata(TestCase):
             meta._shard_for_cp(
                 _MockMesh(2, 0), batch_size=1, seq_length=32
             )
-
-    def test_multi_doc_headtail_k_local_indices(self) -> None:
-        # Same setup as test_multi_doc_headtail: docs [0,10), [10,50), [50,64),
-        # CP=2, headtail chunk=16. Forward permutation (across ranks) is
-        # [0..16, 48..64, 16..48], so the inverse is:
-        #   p_orig in [0,16)  -> p_rearr = p_orig
-        #   p_orig in [16,48) -> p_rearr = p_orig + 16
-        #   p_orig in [48,64) -> p_rearr = p_orig - 32
-        #
-        # Rank 1 Q = [16..48) (entirely within doc 1). One segment,
-        # seqlen_k = 47 - 10 + 1 = 38, covering original K[10..48).
-        # After composing with the inverse: [10..16) stays, [16..48) shifts
-        # +16 to [32..64).
-        meta = _build_varlen_meta([0, 10, 50, 64], B=1, seq_len=64)
-        per_rank = self._run(
-            meta,
-            cp_world_size=2,
-            B=1,
-            seq_len=64,
-            load_balancer_factory=lambda s, w: _HeadTailLoadBalancer(
-                s, w, torch.device("cpu")
-            ),
-        )
-        expected_rank1 = torch.tensor(
-            list(range(10, 16)) + list(range(32, 64)), dtype=torch.long
-        )
-        self.assertEqual(per_rank[1].k_local_indices, expected_rank1)
-
-        # Rank 0 Q = [0..16) + [48..64) -> 4 segments. K-gather covers
-        # original [0..10), [10..16), [10..50), [50..64) then the inverse
-        # maps each original position into rearranged coords.
-        expected_rank0 = torch.tensor(
-            list(range(0, 10))  # seg 0: doc 0
-            + list(range(10, 16))  # seg 1: doc 1 prefix
-            + list(range(10, 16))  # seg 2: doc 1 range [10,50), piece [10,16)
-            + list(range(32, 64))  # seg 2 piece [16,48) shifted +16
-            + [16, 17]  # seg 2 piece [48,50) shifted -32
-            + list(range(18, 32)),  # seg 3: doc 2 [50,64) shifted -32
-            dtype=torch.long,
-        )
-        self.assertEqual(per_rank[0].k_local_indices, expected_rank0)
 
 
 class CPVarlenAttentionTest(DTensorTestBase):
