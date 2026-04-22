@@ -568,6 +568,22 @@ class UserDefinedClassVariable(UserDefinedVariable):
     def mp_length(self, tx: "InstructionTranslator") -> VariableTracker:
         return self.len_impl(tx)
 
+    def tp_iter_impl(self, tx: "InstructionTranslator") -> VariableTracker:
+        m = self._maybe_get_baseclass_method("__iter__")
+        if m:
+            source = self.source and AttrSource(self.source, "__iter__")
+            return variables.UserMethodVariable(
+                m, self, source_fn=source
+            ).call_function(tx, [], {})
+        try:
+            items = self.unpack_var_sequence(tx)
+            return variables.ListIteratorVariable(
+                items, mutation_type=ValueMutationNew()
+            )
+        except NotImplementedError:
+            pass
+        return super().tp_iter_impl(tx)
+
     def _call_cross_entropy_loss(
         self,
         tx: "InstructionTranslator",
@@ -1526,6 +1542,34 @@ class UserDefinedObjectVariable(UserDefinedVariable):
             kwargs,
         )
 
+    def tp_iternext_impl(self, tx: "InstructionTranslator") -> VariableTracker:
+        method = self._maybe_get_baseclass_method("__next__")
+        if (
+            self._base_vt is not None
+            and self._base_methods is not None
+            and method in self._base_methods
+        ):
+            return self._base_vt.tp_iternext_impl(tx)
+
+        if isinstance(method, types.FunctionType):
+            method_var = self.resolve_type_attr(tx, "__next__", method, self.source)
+            return method_var.call_function(tx, [], {})
+        return super().tp_iternext_impl(tx)
+
+    def tp_iter_impl(self, tx: "InstructionTranslator") -> VariableTracker:
+        method = self._maybe_get_baseclass_method("__iter__")
+        if (
+            self._base_vt is not None
+            and self._base_methods is not None
+            and method in self._base_methods
+        ):
+            return self._base_vt.tp_iter_impl(tx)
+
+        if isinstance(method, types.FunctionType):
+            method_var = self.resolve_type_attr(tx, "__iter__", method, self.source)
+            return method_var.call_function(tx, [], {})
+        return super().tp_iter_impl(tx)
+
     @staticmethod
     @functools.cache
     def _supported_random_functions() -> set[Any]:
@@ -1842,15 +1886,12 @@ class UserDefinedObjectVariable(UserDefinedVariable):
 
         while True:
             try:
-                r = iter_.next_variable(tx)
+                r = iter_.tp_iternext_impl(tx)
                 result.append(r)
             except ObservedUserStopIteration:
                 handle_observed_exception(tx)
                 break
         return result
-
-    def next_variable(self, tx: "InstructionTranslator") -> VariableTracker:
-        return self.call_method(tx, "__next__", [], {})
 
     def is_supported_random(self) -> bool:
         try:
