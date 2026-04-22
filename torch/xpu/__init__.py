@@ -109,14 +109,7 @@ def _parse_visible_devices() -> list[int]:
     return visible_devices
 
 
-def _zes_check(rc: int, msg: str) -> bool:
-    """Return True if the call failed (rc != 0) after issuing a warning."""
-    if rc != 0:
-        warnings.warn(msg, stacklevel=3)
-    return rc != 0
-
-
-def _enum_devices_zes(visible_mask: list[int]) -> int:
+def _enum_zes_device_infos(visible_mask: list[int]) -> int:
     r"""Enumerate visible XPU devices via Level Zero Sysman and cache their info.
 
     Enumerates devices from the first Level Zero Sysman driver and counts those
@@ -146,11 +139,17 @@ def _enum_devices_zes(visible_mask: list[int]) -> int:
 
     global _cached_zes_device_infos
 
-    if _zes_check(pyzes.zesInit(0), "Can't initialize Level Zero Sysman"):
+    def _zes_check_warn(rc: int, msg: str) -> bool:
+        """Return True if the call failed (rc != 0) after issuing a warning."""
+        if rc != 0:
+            warnings.warn(msg, stacklevel=3)
+        return rc != 0
+
+    if _zes_check_warn(pyzes.zesInit(0), "Can't initialize Level Zero Sysman"):
         return -1
 
     driver_count = c_uint32(0)
-    if _zes_check(
+    if _zes_check_warn(
         pyzes.zesDriverGet(byref(driver_count), None),
         "Can't get Level Zero Sysman driver count",
     ):
@@ -159,21 +158,21 @@ def _enum_devices_zes(visible_mask: list[int]) -> int:
         return 0
 
     drivers = (pyzes.zes_driver_handle_t * driver_count.value)()
-    if _zes_check(
+    if _zes_check_warn(
         pyzes.zesDriverGet(byref(driver_count), drivers),
         "Can't get Level Zero Sysman driver handles",
     ):
         return -1
 
     device_count = c_uint32(0)
-    if _zes_check(
+    if _zes_check_warn(
         pyzes.zesDeviceGet(drivers[0], byref(device_count), None),
         "Can't get Level Zero Sysman device count",
     ):
         return -1
 
     devices = (pyzes.zes_device_handle_t * device_count.value)()
-    if _zes_check(
+    if _zes_check_warn(
         pyzes.zesDeviceGet(drivers[0], byref(device_count), devices),
         "Can't get Level Zero Sysman device handles",
     ):
@@ -195,7 +194,7 @@ def _enum_devices_zes(visible_mask: list[int]) -> int:
         ext_props = pyzes.zes_device_ext_properties_t()
         ext_props.stype = pyzes.ZES_STRUCTURE_TYPE_DEVICE_EXT_PROPERTIES
         props.pNext = cast(pointer(ext_props), c_void_p)
-        if _zes_check(
+        if _zes_check_warn(
             pyzes.zesDeviceGetProperties(device, byref(props)),
             "Can't get Level Zero Sysman device properties",
         ):
@@ -233,7 +232,7 @@ def _enum_devices_zes(visible_mask: list[int]) -> int:
 
 def _raw_device_count_zes(visible_mask: list[int]) -> int:
     r"""Return the visible XPU device count via Level Zero Sysman, or negative on failure."""
-    return _enum_devices_zes(visible_mask)
+    return _enum_zes_device_infos(visible_mask)
 
 
 def _device_count_zes() -> int:
