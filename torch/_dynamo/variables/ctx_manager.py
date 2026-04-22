@@ -844,7 +844,7 @@ class XPUDeviceVariable(ContextWrappingVariable):
             (self.proxy,),
             {},
         )
-        return variables.CONSTANT_VARIABLE_FALSE
+        return variables.ConstantVariable.create(None)
 
     def enter(self, tx: "InstructionTranslator") -> VariableTracker:
         prev_idx = torch.xpu._exchange_device(*self.target_values)
@@ -855,13 +855,16 @@ class XPUDeviceVariable(ContextWrappingVariable):
             (*self.target_values,),
             {},
         )
-        return variables.CONSTANT_VARIABLE_NONE
+        return variables.ConstantVariable.create(None)
 
     def module_name(self) -> str:
         return "torch.xpu"
 
     def fn_name(self) -> str:
         return "device"
+
+    def python_type(self) -> type:
+        return torch.xpu.device
 
 
 class TorchFunctionDisableVariable(ContextWrappingVariable):
