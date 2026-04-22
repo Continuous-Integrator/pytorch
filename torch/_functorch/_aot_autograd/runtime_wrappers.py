@@ -1195,7 +1195,7 @@ class EffectTokensWrapper(CompilerWrapper):
 
         from .subclass_codegen import _compile_and_exec_source
 
-        lines = ["def _effect_tokens_wrapper(_compiled_fn_, args):"]
+        lines = ["def _effect_tokens_wrapper(args):"]
         lines.append(f"    new_args = [{', '.join(['None'] * num_tokens)}, *args]")
         lines.append("    args.clear()")
         lines.append("    outs = _compiled_fn_(new_args)")
@@ -1204,14 +1204,13 @@ class EffectTokensWrapper(CompilerWrapper):
         lines.append(f"    return outs[{num_tokens}:]")
         source = "\n".join(lines)
 
-        _codegen_fn = _compile_and_exec_source(
-            source, {}, "_effect_tokens_wrapper", "effect_tokens_wrapper"
+        inner_fn = _compile_and_exec_source(
+            source,
+            {"_compiled_fn_": compiled_fn},
+            "_effect_tokens_wrapper",
+            "effect_tokens_wrapper",
+            wrapped_fn=compiled_fn,
         )
-        _inner_compiled_fn = compiled_fn
-
-        def inner_fn(args: list[Any]) -> Any:
-            return _codegen_fn(_inner_compiled_fn, args)
-
         inner_fn._boxed_call = True  # type: ignore[attr-defined]
         return inner_fn
 

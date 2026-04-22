@@ -216,6 +216,82 @@ class TestCodegenEffectTokens(TestCase):
         finally:
             handle.destroy()
 
+    def test_multiple_effect_tokens_codegen(self):
+        """
+        Verify the codegen template works for num_tokens > 1 by directly
+        calling the codegen path. Currently only one EffectType (ORDERED)
+        exists, so num_tokens > 1 can't arise through normal compilation,
+        but the template should handle it correctly for future expansion.
+        """
+        from torch._functorch._aot_autograd.subclass_codegen import (
+            _compile_and_exec_source,
+        )
+
+        num_tokens = 2
+        lines = ["def _effect_tokens_wrapper(args):"]
+        lines.append(f"    new_args = [{', '.join(['None'] * num_tokens)}, *args]")
+        lines.append("    args.clear()")
+        lines.append("    outs = _compiled_fn_(new_args)")
+        lines.append("    if outs is None:")
+        lines.append("        return None")
+        lines.append(f"    return outs[{num_tokens}:]")
+        source = "\n".join(lines)
+
+        self.assertIn("None, None", source)
+        self.assertIn("outs[2:]", source)
+
+        call_log = []
+
+        def mock_compiled_fn(args):
+            call_log.append(list(args))
+            return list(range(len(args)))
+
+        wrapper = _compile_and_exec_source(
+            source,
+            {"_compiled_fn_": mock_compiled_fn},
+            "_effect_tokens_wrapper",
+            "effect_tokens_wrapper",
+        )
+
+        args = [10, 20, 30]
+        result = wrapper(args)
+        self.assertEqual(len(call_log), 1)
+        self.assertEqual(call_log[0], [None, None, 10, 20, 30])
+        self.assertEqual(args, [])
+        self.assertEqual(list(result), [2, 3, 4])
+
+    def test_multiple_effect_tokens_codegen_none_output(self):
+        """
+        Verify the codegen template for num_tokens > 1 handles None
+        output (Inductor cache DummyModule can return None).
+        """
+        from torch._functorch._aot_autograd.subclass_codegen import (
+            _compile_and_exec_source,
+        )
+
+        num_tokens = 2
+        lines = ["def _effect_tokens_wrapper(args):"]
+        lines.append(f"    new_args = [{', '.join(['None'] * num_tokens)}, *args]")
+        lines.append("    args.clear()")
+        lines.append("    outs = _compiled_fn_(new_args)")
+        lines.append("    if outs is None:")
+        lines.append("        return None")
+        lines.append(f"    return outs[{num_tokens}:]")
+        source = "\n".join(lines)
+
+        def mock_compiled_fn(args):
+            return None
+
+        wrapper = _compile_and_exec_source(
+            source,
+            {"_compiled_fn_": mock_compiled_fn},
+            "_effect_tokens_wrapper",
+            "effect_tokens_wrapper",
+        )
+
+        result = wrapper([10, 20])
+        self.assertIsNone(result)
+
     def test_codegen_source_structure(self):
         """
         Verify the generated source has the expected structure:
