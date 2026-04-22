@@ -767,6 +767,10 @@ class ComboKernel(Kernel):
             "combo_grid_meta": self.combo_grid_meta(size_hints_list),
             "kernel_name": str(Placeholder.DESCRIPTIVE_NAME),
             "mutated_arg_names": mutated_args,
+            # Matches triton.py:codegen_kernel(): inference/backward graphs skip
+            # CPU-copy of mutated args during autotune retries; training-forward
+            # graphs must keep it to preserve benchmark inputs across retries.
+            "optimize_mem": V.graph.is_inference or V.graph.is_backward,
             **self.triton_kernel_cls.inductor_meta_common(),
         }
         if max_persistent_rblock > 0:
@@ -1012,7 +1016,7 @@ class ComboKernel(Kernel):
                     size = V.graph.sizevars.optimization_hints(buf.get_size())
                     stride = V.graph.sizevars.optimization_hints(buf.get_stride())
                     result.writeline(
-                        f"{var_name} = rand_strided({size}, {stride}, device='{buf.get_device()}', dtype={buf.get_dtype()})"  # noqa: B950 line too long
+                        f"{var_name} = rand_strided({size}, {stride}, device='{buf.get_device()}', dtype={buf.get_dtype()})"
                     )
                 elif arg_name in V.graph.constants:
                     # note that random seed is put in V.graph.constants
@@ -1020,7 +1024,7 @@ class ComboKernel(Kernel):
                     size = V.graph.sizevars.optimization_hints(const_tensor.size())
                     stride = V.graph.sizevars.optimization_hints(const_tensor.stride())
                     result.writeline(
-                        f"{var_name} = rand_strided({size}, {stride}, device='{const_tensor.device}', dtype={const_tensor.dtype})"  # type: ignore[arg-type]  # noqa: B950 line too long
+                        f"{var_name} = rand_strided({size}, {stride}, device='{const_tensor.device}', dtype={const_tensor.dtype})"  # type: ignore[arg-type]
                     )
                 elif isinstance(arg_sig, SizeArg):
                     symval_hint = V.graph.sizevars.optimization_hint(arg_sig.expr)
@@ -1206,6 +1210,11 @@ class ComboKernel(Kernel):
                         meta[f"tile_hint_{num}"] = "TileHint.SQUARE"
                     else:
                         meta[f"tile_hint_{num}"] = "TileHint.DEFAULT"
+                    if sub_kernel.tiling_scores:
+                        meta[f"tiling_scores_{num}"] = {
+                            dim: V.graph.sizevars.optimization_hint(score, fallback=1)
+                            for dim, score in sub_kernel.tiling_scores.items()
+                        }
                 else:
                     meta[f"reduction_hint_{num}"] = (
                         sub_kernel.features.get_reduction_hint().name

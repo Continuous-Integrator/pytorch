@@ -2358,9 +2358,13 @@ def clone_tensor(x: torch.Tensor) -> torch.Tensor:
 
 
 def _copy_dynamo_attr(src: torch.Tensor, dst: torch.Tensor, attr: str) -> None:
-    """Copy a single dynamo attribute from src to dst, or remove it from dst if src doesn't have it."""
+    """Copy a single dynamo attribute from src to dst, or remove it from dst
+    if src doesn't have it. Uses .copy() for container types (set, dict) to
+    avoid shared references between src and dst, and assigns directly for
+    primitive types like bool (e.g., _has_dynamo_dim_marking)."""
     if hasattr(src, attr):
-        setattr(dst, attr, getattr(src, attr).copy())
+        val = getattr(src, attr)
+        setattr(dst, attr, val.copy() if hasattr(val, "copy") else val)
     elif hasattr(dst, attr):
         delattr(dst, attr)
 
@@ -2378,6 +2382,8 @@ def copy_dynamo_tensor_attributes(src: torch.Tensor, dst: torch.Tensor) -> None:
     _copy_dynamo_attr(src, dst, "_dynamo_shape_ids")
     _copy_dynamo_attr(src, dst, "_dynamo_strict_unbacked_indices")
     _copy_dynamo_attr(src, dst, "_dynamo_weak_dynamic_indices")
+    _copy_dynamo_attr(src, dst, "_dynamo_propagated_dynamic_indices")
+    _copy_dynamo_attr(src, dst, "_has_dynamo_dim_marking")
 
 
 def clone_input(x: torch.Tensor, *, dtype: torch.dtype | None = None) -> torch.Tensor:
@@ -3095,7 +3101,6 @@ def iter_contains(
     check_tensor_identity: bool = False,
 ) -> Any:
     from .variables import ConstantVariable
-    from .variables.constant import CONSTANT_VARIABLE_FALSE, CONSTANT_VARIABLE_TRUE
 
     if search.is_python_constant():
         found_const = any(
@@ -3116,7 +3121,7 @@ def iter_contains(
         if must_check_tensor_id:
             if x.is_tensor():
                 if search is _get_fake_tensor(x):  # Object equivalence
-                    return CONSTANT_VARIABLE_TRUE
+                    return ConstantVariable.create(True)
         else:
             from torch._dynamo.variables.builder import SourcelessBuilder
 
@@ -3130,7 +3135,7 @@ def iter_contains(
                     tx, [check, found], {}
                 )
     if found is None:
-        found = CONSTANT_VARIABLE_FALSE
+        found = ConstantVariable.create(False)
     return found
 
 
@@ -3186,7 +3191,7 @@ def dict_keys_repr(const_keys: Any, *, local: Any) -> str:
 GLOBAL_KEY_PREFIX = "__dict_key"
 
 
-from torch._subclasses import UnsupportedFakeTensorException  # noqa: F401
+from torch._subclasses import UnsupportedFakeTensorException
 
 
 def get_safe_global_name(tx: InstructionTranslatorBase, root: str, obj: Any) -> str:

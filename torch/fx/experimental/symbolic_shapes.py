@@ -56,7 +56,7 @@ import torch.utils._pytree as pytree
 
 # NB: The sym_* functions are used via getattr() and must be imported here.
 from torch import SymBool, SymFloat, SymInt
-from torch._C._functorch import get_unwrapped, is_batchedtensor
+from torch._C._functorch import get_unwrapped, is_batchedtensor, is_gradtrackingtensor
 from torch._guards import ShapeGuard, SLoc, Source, TracingContext
 from torch._library.fake_class_registry import FakeScriptObject
 from torch._library.opaque_object import is_opaque_value
@@ -986,10 +986,13 @@ def _iterate_exprs(val: IterateExprs) -> Iterator[sympy.Basic]:
         yield val.expr
     elif isinstance(val, sympy.Basic):
         yield val
-    elif isinstance(val, (int, float, bool)):
+    elif isinstance(val, (int, float, bool, str)):
         pass
     elif isinstance(val, (tuple, list)):
         for s in val:
+            yield from _iterate_exprs(s)
+    elif isinstance(val, dict):
+        for s in itertools.chain(val.keys(), val.values()):
             yield from _iterate_exprs(s)
     elif is_sparse_any(val):
         yield from _iterate_exprs(val.size())
@@ -1312,10 +1315,16 @@ def _free_unbacked_symbols_with_path(
             a, torch.distributed.tensor.DTensor
         ):
             match_tensor(a)
-    elif isinstance(a, torch.Tensor) and is_batchedtensor(a):
+    elif isinstance(a, torch.Tensor) and (
+        is_batchedtensor(a) or is_gradtrackingtensor(a)
+    ):
         unwrapped_tensor = get_unwrapped(a)
         r.update(go(unwrapped_tensor, path))
-    elif isinstance(a, torch.Tensor) and not is_batchedtensor(a):
+    elif (
+        isinstance(a, torch.Tensor)
+        and not is_batchedtensor(a)
+        and not is_gradtrackingtensor(a)
+    ):
         from torch._subclasses.fake_tensor import FakeTensor
 
         if not isinstance(a, FakeTensor):
