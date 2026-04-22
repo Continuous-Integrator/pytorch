@@ -1842,10 +1842,10 @@ def module_inputs_torch_nn_LinearCrossEntropyLoss(module_info, device, dtype, re
             # generate samples for LinearCrossEntropyLoss and its forward:
             for reduction, ii, ls, w, of in product(
                     ["sum", "mean", "none"],
-                    [None, -100, 0, num_classes - 1, num_classes + 5],
+                    [None, -100, (num_classes - 1) // 2, num_classes + 5],
                     [0.0, 0.1],
                     weights,
-                    [(), (3, 2)]):
+                    [(), (3, 2, 4)]):
                 module_args = (in_features, num_classes)
                 module_kwargs = dict(
                     out_features=of,
@@ -1935,6 +1935,19 @@ def module_error_inputs_torch_nn_LinearCrossEntropyLoss(module_info, device, dty
             error_on=ModuleErrorEnum.FORWARD_ERROR,
             error_type=RuntimeError,
             error_regex="Expected floating point type for target with class probabilities",
+        ),
+        ErrorModuleInput(
+            ModuleInput(
+                constructor_input=FunctionInput(3, 2, weight=torch.ones(3, device=device, dtype=dtype),
+                                                device=device, dtype=dtype),
+                forward_input=FunctionInput(
+                    make_input((4, 3)),
+                    torch.zeros((4, 2), device=device, dtype=dtype),
+                ),
+            ),
+            error_on=ModuleErrorEnum.CONSTRUCTION_ERROR,
+            error_type=RuntimeError,
+            error_regex="expected weight shape to be [(]2,[)], got [(]3,[)]",
         ),
     ]
 
@@ -4500,8 +4513,10 @@ module_db: list[ModuleInfo] = [
                dtypes=get_all_fp_dtypes(include_half=True, include_bfloat16=True),
                gradcheck_nondet_tol=GRADCHECK_NONDET_TOL,
                decorators=(
-                   DecorateInfo(unittest.expectedFailure, 'TestModule', 'test_memory_format', device_type="cuda",
-                                dtypes=[torch.bfloat16, torch.float16]),
+                   # No channels_last support for loss functions,
+                   # requires at least a 3-dimensional loss to
+                   # reproduce the failure.
+                   DecorateInfo(unittest.expectedFailure, 'TestModule', 'test_memory_format'),
                    DecorateInfo(toleranceOverride({torch.float16: tol(atol=2e-3, rtol=1e-2)}), "TestModule",
                                 "test_non_contiguous_tensors", dtypes=[torch.float16]),
                    DecorateInfo(toleranceOverride({torch.bfloat16: tol(atol=1e-2, rtol=5e-2)}), "TestModule",
@@ -4509,7 +4524,7 @@ module_db: list[ModuleInfo] = [
                    DecorateInfo(toleranceOverride({torch.float16: tol(atol=4e-2, rtol=3e-1)}), "TestModule",
                                 "test_cpu_gpu_parity", dtypes=[torch.float16]),
                    DecorateInfo(unittest.expectedFailure, "TestModule", "test_cpu_gpu_parity",
-                                dtypes=[torch.float16, torch.bfloat16], device_type='cuda'),
+                                dtypes=[torch.bfloat16], device_type='cuda'),
                    DecorateInfo(toleranceOverride({torch.float16: tol(atol=2e-1, rtol=2e-3)}), "TestModule",
                                 "test_save_load", device_type="cuda", dtypes=[torch.float16]),
                    DecorateInfo(toleranceOverride({torch.float16: tol(atol=2e-3, rtol=2e-3)}), "TestModule",
