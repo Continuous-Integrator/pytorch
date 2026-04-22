@@ -355,32 +355,42 @@ static PyTypeObject THPGeneratorType = {
     THPGenerator_pynew, /* tp_new */
 };
 
-bool THPGenerator_init(PyObject* module) {
-  // Set OpaqueBaseMeta as the metaclass so Generator can be registered as an
-  // opaque type for FX tracing (same pattern as ProcessGroup).
-  auto opaque_module =
-      THPObjectPtr(PyImport_ImportModule("torch._opaque_base"));
-  TORCH_CHECK(opaque_module, "Failed to import torch._opaque_base");
-  auto opaque_base_meta =
-      THPObjectPtr(PyObject_GetAttrString(opaque_module, "OpaqueBaseMeta"));
-  TORCH_CHECK(opaque_base_meta, "Failed to get OpaqueBaseMeta");
-  Py_SET_TYPE(&THPGeneratorType, (PyTypeObject*)opaque_base_meta.release());
-
-  THPGeneratorClass = reinterpret_cast<PyObject*>(&THPGeneratorType);
-  if (PyType_Ready(&THPGeneratorType) < 0)
-    return false;
-  // PyType_Ready inherits __module__ from the metaclass (OpaqueBaseMeta lives
-  // in torch._opaque_base). Override it so pickle can find the class at
-  // torch._C.Generator.
+static PyObject* THPGenerator_pySetMetaclass(
+    PyObject* /* unused */,
+    PyObject* metaclass) {
+  if (!PyType_Check(metaclass)) {
+    PyErr_SetString(PyExc_TypeError, "metaclass must be a type");
+    return nullptr;
+  }
+  Py_INCREF(metaclass);
+  Py_SET_TYPE(&THPGeneratorType, (PyTypeObject*)metaclass);
+  // Swapping the metaclass changes __module__ (Python resolves it via the
+  // metaclass). Reset it so pickle can find the class at torch._C.Generator.
   auto module_name = THPObjectPtr(PyUnicode_FromString("torch._C"));
   if (!module_name)
-    return false;
+    return nullptr;
   if (PyDict_SetItemString(
           THPGeneratorType.tp_dict, "__module__", module_name) < 0)
+    return nullptr;
+  Py_RETURN_NONE;
+}
+
+// NOLINTNEXTLINE(cppcoreguidelines-avoid-c-arrays,modernize-avoid-c-arrays)
+static PyMethodDef THPGenerator_moduleMethods[] = {
+    {"_set_generator_metaclass", THPGenerator_pySetMetaclass, METH_O, nullptr},
+    {nullptr, nullptr, 0, nullptr}};
+
+bool THPGenerator_init(PyObject* module) {
+  THPGeneratorClass = reinterpret_cast<PyObject*>(&THPGeneratorType);
+  if (PyType_Ready(&THPGeneratorType) < 0)
     return false;
   Py_INCREF(&THPGeneratorType);
   PyModule_AddObject(
       module, "Generator", reinterpret_cast<PyObject*>(&THPGeneratorType));
+  // Register _set_generator_metaclass on torch._C so Python code can
+  // late-bind OpaqueBaseMeta as Generator's metaclass (see rng_prims.py).
+  if (PyModule_AddFunctions(module, THPGenerator_moduleMethods) < 0)
+    return false;
   return true;
 }
 
