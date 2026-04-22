@@ -88,6 +88,6 @@ location not active, or `MASTER_ADDR` unreachable over TB).
 
 ## Supported operations
 
-See [`torch/csrc/distributed/c10d/ProcessGroupMPS.md`](../torch/csrc/distributed/c10d/ProcessGroupMPS.md)
+See [`torch/csrc/distributed/c10d/ProcessGroupMPS.md`](../../torch/csrc/distributed/c10d/ProcessGroupMPS.md)
 for the current op support table and notes on what is implemented vs
 pending.
