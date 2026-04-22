@@ -3,12 +3,6 @@
 #include <torch/csrc/distributed/c10d/ProcessGroupMPS.hpp>
 #include <torch/csrc/distributed/c10d/JACCLTransport.h>
 
-#include <arpa/inet.h>
-#include <netdb.h>
-#include <netinet/tcp.h>
-#include <sys/socket.h>
-#include <unistd.h>
-
 #include <ATen/mps/MPSStream.h>
 #include <ATen/native/mps/OperationUtils.h>
 #include <c10/util/irange.h>
@@ -38,213 +32,48 @@ void* mpsHostPtr(const at::Tensor& tensor) {
       tensor.storage_offset() * tensor.itemsize();
 }
 
-} // namespace
-
-// --- TCPRingTransport ---
-
-TCPRingTransport::TCPRingTransport(
-    const c10::intrusive_ptr<Store>& store,
-    int rank,
-    int size)
-    : store_(store), rank_(rank), size_(size) {
-  setupConnections();
-}
-
-TCPRingTransport::~TCPRingTransport() {
-  if (sendFd_ >= 0)
-    close(sendFd_);
-  if (recvFd_ >= 0)
-    close(recvFd_);
-  if (listenFd_ >= 0)
-    close(listenFd_);
-}
-
-void TCPRingTransport::sendAll(int fd, const void* data, size_t length) {
-  auto ptr = static_cast<const uint8_t*>(data);
-  size_t sent = 0;
-  while (sent < length) {
-    auto n = ::send(fd, ptr + sent, length - sent, 0);
-    TORCH_CHECK(n > 0, "TCPRingTransport::sendAll failed: ", strerror(errno));
-    sent += static_cast<size_t>(n);
+// Probe the local host for an RDMA device whose ibv_alloc_pd succeeds.
+// Returns the device name (e.g. "rdma_en2") or an empty string if none is
+// usable. JACCL_DEVICE can force a specific device name.
+std::string probeRDMADevice() {
+#if HAVE_JACCL
+  if (!jaccl::isAvailable()) {
+    return {};
   }
-}
-
-void TCPRingTransport::recvAll(int fd, void* data, size_t length) {
-  auto ptr = static_cast<uint8_t*>(data);
-  size_t received = 0;
-  while (received < length) {
-    auto n = ::recv(fd, ptr + received, length - received, 0);
-    TORCH_CHECK(n > 0, "TCPRingTransport::recvAll failed: ", strerror(errno));
-    received += static_cast<size_t>(n);
-  }
-}
-
-void TCPRingTransport::setupConnections() {
-  // Create listening socket
-  listenFd_ = socket(AF_INET, SOCK_STREAM, 0);
-  TORCH_CHECK(listenFd_ >= 0, "Failed to create listen socket");
-
-  int opt = 1;
-  setsockopt(listenFd_, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
-
-  struct sockaddr_in addr {};
-  addr.sin_family = AF_INET;
-  addr.sin_addr.s_addr = htonl(INADDR_ANY);
-  addr.sin_port = 0; // ephemeral port
-
-  TORCH_CHECK(
-      bind(listenFd_, (struct sockaddr*)&addr, sizeof(addr)) == 0,
-      "Failed to bind listen socket: ",
-      strerror(errno));
-  TORCH_CHECK(
-      listen(listenFd_, size_) == 0,
-      "Failed to listen: ",
-      strerror(errno));
-
-  // Get the assigned port
-  socklen_t addrLen = sizeof(addr);
-  getsockname(listenFd_, (struct sockaddr*)&addr, &addrLen);
-  uint16_t port = ntohs(addr.sin_port);
-
-  // Publish our address to the store
-  // Format: 4 bytes IP + 2 bytes port
-  // getsockname after binding to INADDR_ANY returns 0.0.0.0. To find our
-  // routable IP, connect a UDP socket to MASTER_ADDR — the OS routing table
-  // picks the right source address without sending any packets.
-  uint32_t ip = addr.sin_addr.s_addr;
-  if (ip == htonl(INADDR_ANY)) {
-    const char* masterAddr = std::getenv("MASTER_ADDR");
-    if (masterAddr) {
-      int probe = socket(AF_INET, SOCK_DGRAM, 0);
-      if (probe >= 0) {
-        struct sockaddr_in target {};
-        target.sin_family = AF_INET;
-        target.sin_port = htons(9);  // discard port, no packet actually sent
-        inet_pton(AF_INET, masterAddr, &target.sin_addr);
-        if (connect(probe, (struct sockaddr*)&target, sizeof(target)) == 0) {
-          struct sockaddr_in local {};
-          socklen_t len = sizeof(local);
-          getsockname(probe, (struct sockaddr*)&local, &len);
-          ip = local.sin_addr.s_addr;
-        }
-        close(probe);
+  try {
+    int numDevices = 0;
+    auto devices = jaccl::ibv().getDeviceList(&numDevices);
+    const char* deviceOverride = std::getenv("JACCL_DEVICE");
+    std::string chosen;
+    for (int i = 0; i < numDevices; i++) {
+      std::string name = jaccl::ibv().getDeviceName(devices[i]);
+      if (deviceOverride && name != deviceOverride) {
+        continue;
       }
+      auto ctx = jaccl::ibv().openDevice(devices[i]);
+      if (!ctx) {
+        continue;
+      }
+      auto pd = jaccl::ibv().allocPd(ctx);
+      if (pd) {
+        jaccl::ibv().deallocPd(pd);
+        jaccl::ibv().closeDevice(ctx);
+        chosen = name;
+        break;
+      }
+      jaccl::ibv().closeDevice(ctx);
     }
+    jaccl::ibv().freeDeviceList(devices);
+    return chosen;
+  } catch (...) {
+    return {};
   }
-  std::vector<uint8_t> addrData(6);
-  memcpy(addrData.data(), &ip, 4);
-  memcpy(addrData.data() + 4, &port, 2);
-  store_->set("mps_ring/" + std::to_string(rank_), addrData);
-
-  // Connect to right neighbor
-  int rightRank = (rank_ + 1) % size_;
-  if (rightRank != rank_) {
-    sendFd_ = connectToRank(rightRank);
-  }
-
-  // Accept from left neighbor
-  int leftRank = (rank_ - 1 + size_) % size_;
-  if (leftRank != rank_) {
-    recvFd_ = acceptFromRank(leftRank);
-  }
+#else
+  return {};
+#endif
 }
 
-int TCPRingTransport::connectToRank(int rank) {
-  auto data = store_->get("mps_ring/" + std::to_string(rank));
-  TORCH_CHECK(data.size() == 6, "Invalid address data from store");
-
-  uint32_t ip;
-  uint16_t port;
-  memcpy(&ip, data.data(), 4);
-  memcpy(&port, data.data() + 4, 2);
-
-  int fd = socket(AF_INET, SOCK_STREAM, 0);
-  TORCH_CHECK(fd >= 0, "Failed to create socket");
-
-  int opt = 1;
-  setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &opt, sizeof(opt));
-
-  struct sockaddr_in addr {};
-  addr.sin_family = AF_INET;
-  addr.sin_addr.s_addr = ip;
-  addr.sin_port = htons(port);
-
-  TORCH_CHECK(
-      connect(fd, (struct sockaddr*)&addr, sizeof(addr)) == 0,
-      "Failed to connect to rank ",
-      rank,
-      ": ",
-      strerror(errno));
-
-  return fd;
-}
-
-int TCPRingTransport::acceptFromRank(int /*rank*/) {
-  struct sockaddr_in addr {};
-  socklen_t addrLen = sizeof(addr);
-  int fd = accept(listenFd_, (struct sockaddr*)&addr, &addrLen);
-  TORCH_CHECK(fd >= 0, "Failed to accept connection: ", strerror(errno));
-
-  int opt = 1;
-  setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &opt, sizeof(opt));
-
-  return fd;
-}
-
-void TCPRingTransport::sendToRight(const void* data, size_t length) {
-  TORCH_CHECK(sendFd_ >= 0, "No connection to right neighbor");
-  sendAll(sendFd_, data, length);
-}
-
-void TCPRingTransport::recvFromLeft(void* data, size_t length) {
-  TORCH_CHECK(recvFd_ >= 0, "No connection from left neighbor");
-  recvAll(recvFd_, data, length);
-}
-
-void TCPRingTransport::sendTo(int dstRank, const void* data, size_t length) {
-  auto key = "mps_p2p/" + std::to_string(rank_) + "/" +
-      std::to_string(dstRank) + "/" + std::to_string(p2pSendSeq_++);
-  store_->set(
-      key,
-      std::vector<uint8_t>(
-          static_cast<const uint8_t*>(data),
-          static_cast<const uint8_t*>(data) + length));
-}
-
-void TCPRingTransport::recvFrom(int srcRank, void* data, size_t length) {
-  auto key = "mps_p2p/" + std::to_string(srcRank) + "/" +
-      std::to_string(rank_) + "/" + std::to_string(p2pRecvSeq_++);
-  auto result = store_->get(key);
-  TORCH_CHECK(
-      result.size() == length,
-      "TCPRingTransport::recvFrom: size mismatch, expected ",
-      length,
-      " got ",
-      result.size());
-  memcpy(data, result.data(), length);
-}
-
-void TCPRingTransport::barrier() {
-  auto key = "mps_barrier/" + std::to_string(barrierCount_);
-  store_->add(key, 1);
-
-  // Wait until all ranks have incremented
-  auto expected = std::vector<uint8_t>(sizeof(int64_t), 0);
-  int64_t target = size_;
-  memcpy(expected.data(), &target, sizeof(int64_t));
-
-  store_->wait({key});
-  // Spin until the counter reaches size_
-  while (true) {
-    auto val = store_->get(key);
-    int64_t count = 0;
-    memcpy(&count, val.data(), std::min(val.size(), sizeof(int64_t)));
-    if (count >= size_)
-      break;
-    std::this_thread::sleep_for(std::chrono::milliseconds(1));
-  }
-  barrierCount_++;
-}
+} // namespace
 
 // --- WorkMPS ---
 
@@ -311,115 +140,81 @@ ProcessGroupMPS::ProcessGroupMPS(
     : Backend(rank, size),
       store_(store),
       options_(std::move(options)) {
-#if HAVE_JACCL
-  // Probe local RDMA availability. Auto-detect devices: on macOS each
-  // Thunderbolt port exposes its own rdma_en* device, and only a port with a
-  // connected-and-healthy RDMA peer allows ibv_alloc_pd. An explicit
-  // JACCL_DEVICE override skips the probe.
-  std::string firstDevice;
-  if (jaccl::isAvailable()) {
-    try {
-      int numDevices = 0;
-      auto devices = jaccl::ibv().getDeviceList(&numDevices);
-      const char* deviceOverride = std::getenv("JACCL_DEVICE");
-      for (int i = 0; i < numDevices; i++) {
-        std::string name = jaccl::ibv().getDeviceName(devices[i]);
-        if (deviceOverride && name != deviceOverride) {
-          continue;
-        }
-        auto ctx = jaccl::ibv().openDevice(devices[i]);
-        if (!ctx) {
-          continue;
-        }
-        auto pd = jaccl::ibv().allocPd(ctx);
-        if (pd) {
-          jaccl::ibv().deallocPd(pd);
-          jaccl::ibv().closeDevice(ctx);
-          firstDevice = name;
-          break;
-        }
-        jaccl::ibv().closeDevice(ctx);
-      }
-      jaccl::ibv().freeDeviceList(devices);
-    } catch (const std::exception& e) {
-      TORCH_WARN(
-          "JACCL RDMA probe failed, will use TCP transport: ", e.what());
-      firstDevice.clear();
+#if !HAVE_JACCL
+  TORCH_CHECK(
+      false,
+      "ProcessGroupMPS requires Apple Thunderbolt RDMA (librdma/infiniband verbs) "
+      "but this build does not include JACCL support. Use the 'gloo' backend for "
+      "CPU-based distributed training.");
+#else
+  // Each rank probes its local RDMA stack and publishes the result to the
+  // store. JACCL is only usable if every rank reports success — otherwise
+  // init would split-brain (one rank accepting on SideChannel, another never
+  // connecting). If anyone fails we refuse construction with a clear error;
+  // users on non-TB5 setups should select the gloo backend instead.
+  std::string firstDevice = probeRDMADevice();
+
+  std::vector<uint8_t> flag(1, firstDevice.empty() ? 0 : 1);
+  store_->set("mps_pg/rdma_avail/" + std::to_string(rank), flag);
+
+  std::vector<std::string> keys;
+  keys.reserve(size);
+  for (int r = 0; r < size; r++) {
+    keys.push_back("mps_pg/rdma_avail/" + std::to_string(r));
+  }
+  store_->wait(keys);
+
+  int missingRank = -1;
+  for (int r = 0; r < size; r++) {
+    auto data = store_->get("mps_pg/rdma_avail/" + std::to_string(r));
+    if (data.empty() || data[0] == 0) {
+      missingRank = r;
+      break;
     }
   }
 
-  // Rendezvous with peers so we pick a transport everyone agrees on. Without
-  // this, a split-brain init (one rank succeeds JACCL, another fails) ends in
-  // a hang: the JACCL rank blocks in SideChannel::accept while the TCP rank
-  // blocks in TCPRingTransport. Publish our per-rank availability and fall
-  // back to TCP unless ALL ranks have RDMA.
-  {
-    std::vector<uint8_t> flag(1, firstDevice.empty() ? 0 : 1);
-    store_->set("jaccl_avail/" + std::to_string(rank), flag);
-    std::vector<std::string> keys;
-    keys.reserve(size);
-    for (int r = 0; r < size; r++) {
-      keys.push_back("jaccl_avail/" + std::to_string(r));
-    }
-    store_->wait(keys);
-    bool allHaveJaccl = true;
-    for (int r = 0; r < size; r++) {
-      auto data = store_->get("jaccl_avail/" + std::to_string(r));
-      if (data.empty() || data[0] == 0) {
-        allHaveJaccl = false;
-        break;
-      }
-    }
-    if (!allHaveJaccl && !firstDevice.empty()) {
-      TORCH_WARN(
-          "ProcessGroupMPS: at least one peer can't use JACCL RDMA; falling back to TCP ring transport");
-      firstDevice.clear();
-    }
+  TORCH_CHECK(
+      missingRank < 0,
+      "ProcessGroupMPS requires Apple Thunderbolt RDMA on every rank, but rank ",
+      missingRank,
+      " could not allocate a protection domain (ibv_alloc_pd failed on every "
+      "rdma_en* device). Check your Thunderbolt 5 cable and network setup, or "
+      "use the 'gloo' backend for CPU-based distributed training.");
+
+  // Build device name list: use the local probed device for all peers.
+  // (Apple's librdma opens a local device; the peer identity is resolved
+  // through the side-channel's Destination exchange, not via this list.)
+  std::vector<std::string> deviceNames(size);
+  for (int i = 0; i < size; i++) {
+    deviceNames[i] = (i == rank) ? "" : firstDevice;
   }
 
-  if (!firstDevice.empty()) {
-    try {
-      std::vector<std::string> deviceNames(size);
-      for (int i = 0; i < size; i++) {
-        deviceNames[i] = (i == rank) ? "" : firstDevice;
-      }
-
-      // Exchange coordinator address via store. Use MASTER_ADDR as the host
-      // (rank 0's hostname may not resolve from peers, or may resolve to a
-      // different interface than the one MASTER_ADDR points at). Derive the
-      // port from MASTER_PORT so both ranks agree without DNS.
-      std::string coordAddr;
-      if (rank == 0) {
-        const char* masterAddr = std::getenv("MASTER_ADDR");
-        const char* masterPortEnv = std::getenv("MASTER_PORT");
-        int basePort = masterPortEnv ? std::atoi(masterPortEnv) : 29500;
-        std::string host = masterAddr ? masterAddr : "127.0.0.1";
-        coordAddr = host + ":" + std::to_string(basePort + 1);
-        store_->set(
-            "jaccl_coord",
-            std::vector<uint8_t>(coordAddr.begin(), coordAddr.end()));
-      } else {
-        auto data = store_->get("jaccl_coord");
-        coordAddr = std::string(data.begin(), data.end());
-      }
-
-      jacclTransport_ = std::make_unique<jaccl::JACCLTransport>(
-          rank, size, coordAddr.c_str(), deviceNames);
-      useJACCL_ = true;
-      TORCH_WARN(
-          "ProcessGroupMPS: using JACCL RDMA transport on ", firstDevice);
-    } catch (const std::exception& e) {
-      TORCH_WARN(
-          "JACCL RDMA initialization failed, falling back to TCP: ", e.what());
-      useJACCL_ = false;
-      jacclTransport_.reset();
-    }
+  // Exchange coordinator address via store. Use MASTER_ADDR as the host
+  // (rank 0's hostname may not resolve from peers, or may resolve to a
+  // different interface than the one MASTER_ADDR points at). Derive the
+  // port from MASTER_PORT so both ranks agree without DNS.
+  std::string coordAddr;
+  if (rank == 0) {
+    const char* masterAddr = std::getenv("MASTER_ADDR");
+    const char* masterPortEnv = std::getenv("MASTER_PORT");
+    int basePort = masterPortEnv ? std::atoi(masterPortEnv) : 29500;
+    std::string host = masterAddr ? masterAddr : "127.0.0.1";
+    coordAddr = host + ":" + std::to_string(basePort + 1);
+    store_->set(
+        "mps_pg/jaccl_coord",
+        std::vector<uint8_t>(coordAddr.begin(), coordAddr.end()));
+  } else {
+    auto data = store_->get("mps_pg/jaccl_coord");
+    coordAddr = std::string(data.begin(), data.end());
   }
-#endif
-  if (!useJACCL_) {
-    transport_ = std::make_unique<TCPRingTransport>(store_, rank, size);
-  }
+
+  jacclTransport_ = std::make_unique<jaccl::JACCLTransport>(
+      rank, size, coordAddr.c_str(), deviceNames);
+  TORCH_WARN(
+      "ProcessGroupMPS: using JACCL RDMA transport on ", firstDevice);
+
   workerThread_ = std::thread(&ProcessGroupMPS::runLoop, this);
+#endif
 }
 
 ProcessGroupMPS::~ProcessGroupMPS() {
@@ -477,107 +272,6 @@ void ProcessGroupMPS::copyToMPS(
       at::mps::SyncType::COMMIT_AND_WAIT);
 }
 
-static void applyReduceOp(
-    at::Tensor& accumulator,
-    const at::Tensor& incoming,
-    const ReduceOp& op) {
-  switch (op) {
-    case ReduceOp::SUM:
-      accumulator.add_(incoming);
-      break;
-    case ReduceOp::PRODUCT:
-      accumulator.mul_(incoming);
-      break;
-    case ReduceOp::MIN:
-      at::min_out(
-          const_cast<at::Tensor&>(accumulator), accumulator, incoming);
-      break;
-    case ReduceOp::MAX:
-      at::max_out(
-          const_cast<at::Tensor&>(accumulator), accumulator, incoming);
-      break;
-    default:
-      TORCH_CHECK(false, "Unsupported reduce op: ", static_cast<int>(op));
-  }
-}
-
-void ProcessGroupMPS::ringAllreduce(
-    at::Tensor& data,
-    const ReduceOp& op) {
-  if (size_ == 1) {
-    return;
-  }
-
-  int64_t numElements = data.numel();
-  int64_t chunkSize = (numElements + size_ - 1) / size_;
-  auto flat = data.contiguous().view(-1);
-
-  // Temporary buffer for receiving data
-  auto recvBuf = at::empty({chunkSize}, flat.options());
-
-  // Phase 1: Reduce-scatter
-  // After this phase, each rank holds the fully-reduced chunk[rank].
-  for (int step = 0; step < size_ - 1; step++) {
-    int sendIdx = ((rank_ - step) % size_ + size_) % size_;
-    int recvIdx = ((rank_ - step - 1) % size_ + size_) % size_;
-
-    int64_t sendStart = sendIdx * chunkSize;
-    int64_t sendEnd = std::min(sendStart + chunkSize, numElements);
-    int64_t recvStart = recvIdx * chunkSize;
-    int64_t recvEnd = std::min(recvStart + chunkSize, numElements);
-
-    if (sendStart >= numElements || recvStart >= numElements) {
-      continue;
-    }
-
-    auto sendSlice = flat.slice(0, sendStart, sendEnd);
-    auto recvSlice = flat.slice(0, recvStart, recvEnd);
-    int64_t recvLen = recvEnd - recvStart;
-
-    transport_->sendToRight(
-        sendSlice.data_ptr(),
-        static_cast<size_t>(sendSlice.nbytes()));
-    transport_->recvFromLeft(
-        recvBuf.data_ptr(),
-        static_cast<size_t>(recvLen * flat.element_size()));
-
-    applyReduceOp(recvSlice, recvBuf.slice(0, 0, recvLen), op);
-  }
-
-  // Phase 2: Allgather
-  // Each rank sends its reduced chunk around the ring.
-  for (int step = 0; step < size_ - 1; step++) {
-    int sendIdx = ((rank_ - step + 1) % size_ + size_) % size_;
-    int recvIdx = ((rank_ - step) % size_ + size_) % size_;
-
-    int64_t sendStart = sendIdx * chunkSize;
-    int64_t sendEnd = std::min(sendStart + chunkSize, numElements);
-    int64_t recvStart = recvIdx * chunkSize;
-    int64_t recvEnd = std::min(recvStart + chunkSize, numElements);
-
-    if (sendStart >= numElements || recvStart >= numElements) {
-      continue;
-    }
-
-    auto sendSlice = flat.slice(0, sendStart, sendEnd);
-    int64_t recvLen = recvEnd - recvStart;
-
-    transport_->sendToRight(
-        sendSlice.data_ptr(),
-        static_cast<size_t>(sendSlice.nbytes()));
-    transport_->recvFromLeft(
-        recvBuf.data_ptr(),
-        static_cast<size_t>(recvLen * flat.element_size()));
-
-    flat.slice(0, recvStart, recvEnd).copy_(recvBuf.slice(0, 0, recvLen));
-  }
-
-  // Copy back if data was not contiguous
-  if (!data.is_contiguous()) {
-    data.copy_(flat.view(data.sizes()));
-  }
-}
-
 c10::intrusive_ptr<Work> ProcessGroupMPS::allreduce(
     std::vector<at::Tensor>& tensors,
     const AllreduceOptions& opts) {
@@ -594,45 +288,32 @@ c10::intrusive_ptr<Work> ProcessGroupMPS::allreduce(
 
   auto fn = [this, tensor, reduceOp = opts.reduceOp, work]() mutable {
     try {
-#if HAVE_JACCL
-      if (useJACCL_) {
-        // Zero-bounce path: on Apple Silicon the MPS tensor's storage is
-        // already CPU-addressable (unified memory), so the RDMA worker can
-        // operate on it directly. We still need to flush any in-flight GPU
-        // writes to that tensor before reading, and CPU writes in the
-        // mesh's reduceOp will be visible to subsequent GPU ops thanks to
-        // StorageModeShared coherence.
-        if (void* hostPtr = mpsHostPtr(tensor)) {
-          at::mps::getDefaultMPSStream()->synchronize(
-              at::mps::SyncType::COMMIT_AND_WAIT);
-          jacclTransport_->allReduce(
-              hostPtr,
-              static_cast<size_t>(tensor.nbytes()),
-              tensor.element_size(),
-              tensor.scalar_type(),
-              reduceOp);
-          work->finishWork();
-          return;
-        }
-      }
-#endif
-      // Fallback: bounce through CPU. Used when the direct path isn't
-      // available (TCP transport, non-contiguous tensor, private storage).
-      auto cpuTensor = syncAndCopyToCPU(tensor);
-#if HAVE_JACCL
-      if (useJACCL_) {
+      // Direct path: on Apple Silicon the MPS tensor's storage is already
+      // CPU-addressable (unified memory), so the RDMA worker operates on it
+      // directly. Flush in-flight GPU writes first; CPU-side reduceOp writes
+      // are visible to subsequent GPU ops via StorageModeShared coherence.
+      if (void* hostPtr = mpsHostPtr(tensor)) {
+        at::mps::getDefaultMPSStream()->synchronize(
+            at::mps::SyncType::COMMIT_AND_WAIT);
+        jacclTransport_->allReduce(
+            hostPtr,
+            static_cast<size_t>(tensor.nbytes()),
+            tensor.element_size(),
+            tensor.scalar_type(),
+            reduceOp);
+      } else {
+        // Non-contiguous or other ineligible layout: bounce through a CPU
+        // contiguous tensor. RDMA still drives the reduce; only the staging
+        // hop is different.
+        auto cpuTensor = syncAndCopyToCPU(tensor);
         jacclTransport_->allReduce(
             cpuTensor.data_ptr(),
             static_cast<size_t>(cpuTensor.nbytes()),
             cpuTensor.element_size(),
             cpuTensor.scalar_type(),
             reduceOp);
-      } else
-#endif
-      {
-        ringAllreduce(cpuTensor, reduceOp);
+        copyToMPS(cpuTensor, tensor);
       }
-      copyToMPS(cpuTensor, tensor);
       work->finishWork();
     } catch (...) {
       work->finishWorkError(std::current_exception());
@@ -659,50 +340,19 @@ c10::intrusive_ptr<Work> ProcessGroupMPS::broadcast(
 
   auto fn = [this, tensor, rootRank = opts.rootRank, work]() mutable {
     try {
-#if HAVE_JACCL
-      if (useJACCL_) {
-        if (void* hostPtr = mpsHostPtr(tensor)) {
-          at::mps::getDefaultMPSStream()->synchronize(
-              at::mps::SyncType::COMMIT_AND_WAIT);
-          jacclTransport_->broadcast(
-              hostPtr,
-              static_cast<size_t>(tensor.nbytes()),
-              rootRank);
-          work->finishWork();
-          return;
-        }
-      }
-#endif
-      auto cpuTensor = syncAndCopyToCPU(tensor);
-#if HAVE_JACCL
-      if (useJACCL_) {
+      if (void* hostPtr = mpsHostPtr(tensor)) {
+        at::mps::getDefaultMPSStream()->synchronize(
+            at::mps::SyncType::COMMIT_AND_WAIT);
+        jacclTransport_->broadcast(
+            hostPtr, static_cast<size_t>(tensor.nbytes()), rootRank);
+      } else {
+        auto cpuTensor = syncAndCopyToCPU(tensor);
         jacclTransport_->broadcast(
             cpuTensor.data_ptr(),
             static_cast<size_t>(cpuTensor.nbytes()),
             rootRank);
-      } else
-#endif
-      {
-        if (rank_ == rootRank) {
-          if (size_ > 1) {
-            transport_->sendToRight(
-                cpuTensor.data_ptr(),
-                static_cast<size_t>(cpuTensor.nbytes()));
-          }
-        } else {
-          transport_->recvFromLeft(
-              cpuTensor.data_ptr(),
-              static_cast<size_t>(cpuTensor.nbytes()));
-          int lastRank = (rootRank + size_ - 1) % size_;
-          if (rank_ != lastRank) {
-            transport_->sendToRight(
-                cpuTensor.data_ptr(),
-                static_cast<size_t>(cpuTensor.nbytes()));
-          }
-        }
+        copyToMPS(cpuTensor, tensor);
       }
-
-      copyToMPS(cpuTensor, tensor);
       work->finishWork();
     } catch (...) {
       work->finishWorkError(std::current_exception());
@@ -719,14 +369,7 @@ c10::intrusive_ptr<Work> ProcessGroupMPS::barrier(
 
   auto fn = [this, work]() {
     try {
-#if HAVE_JACCL
-      if (useJACCL_) {
-        jacclTransport_->barrier();
-      } else
-#endif
-      {
-        transport_->barrier();
-      }
+      jacclTransport_->barrier();
       work->finishWork();
     } catch (...) {
       work->finishWorkError(std::current_exception());
@@ -750,36 +393,17 @@ c10::intrusive_ptr<Work> ProcessGroupMPS::send(
 
   auto fn = [this, tensor, dstRank, work]() mutable {
     try {
-#if HAVE_JACCL
-      if (useJACCL_) {
-        if (void* hostPtr = mpsHostPtr(tensor)) {
-          at::mps::getDefaultMPSStream()->synchronize(
-              at::mps::SyncType::COMMIT_AND_WAIT);
-          jacclTransport_->send(
-              hostPtr,
-              static_cast<size_t>(tensor.nbytes()),
-              dstRank);
-          work->finishWork();
-          return;
-        }
-      }
-#endif
-      auto cpuTensor = syncAndCopyToCPU(tensor);
-      int64_t nbytes = cpuTensor.nbytes();
-#if HAVE_JACCL
-      if (useJACCL_) {
+      if (void* hostPtr = mpsHostPtr(tensor)) {
+        at::mps::getDefaultMPSStream()->synchronize(
+            at::mps::SyncType::COMMIT_AND_WAIT);
+        jacclTransport_->send(
+            hostPtr, static_cast<size_t>(tensor.nbytes()), dstRank);
+      } else {
+        auto cpuTensor = syncAndCopyToCPU(tensor);
         jacclTransport_->send(
             cpuTensor.data_ptr(),
-            static_cast<size_t>(nbytes),
+            static_cast<size_t>(cpuTensor.nbytes()),
             dstRank);
-      } else
-#endif
-      {
-        transport_->sendTo(dstRank, &nbytes, sizeof(nbytes));
-        transport_->sendTo(
-            dstRank,
-            cpuTensor.data_ptr(),
-            static_cast<size_t>(nbytes));
       }
       work->finishWork();
     } catch (...) {
@@ -805,45 +429,19 @@ c10::intrusive_ptr<Work> ProcessGroupMPS::recv(
 
   auto fn = [this, tensor, srcRank, work]() mutable {
     try {
-#if HAVE_JACCL
-      if (useJACCL_) {
-        if (void* hostPtr = mpsHostPtr(tensor)) {
-          at::mps::getDefaultMPSStream()->synchronize(
-              at::mps::SyncType::COMMIT_AND_WAIT);
-          jacclTransport_->recv(
-              hostPtr,
-              static_cast<size_t>(tensor.nbytes()),
-              srcRank);
-          work->finishWork();
-          return;
-        }
-      }
-#endif
-      auto cpuTensor = syncAndCopyToCPU(tensor);
-      int64_t nbytes = cpuTensor.nbytes();
-#if HAVE_JACCL
-      if (useJACCL_) {
+      if (void* hostPtr = mpsHostPtr(tensor)) {
+        at::mps::getDefaultMPSStream()->synchronize(
+            at::mps::SyncType::COMMIT_AND_WAIT);
+        jacclTransport_->recv(
+            hostPtr, static_cast<size_t>(tensor.nbytes()), srcRank);
+      } else {
+        auto cpuTensor = syncAndCopyToCPU(tensor);
         jacclTransport_->recv(
             cpuTensor.data_ptr(),
-            static_cast<size_t>(nbytes),
+            static_cast<size_t>(cpuTensor.nbytes()),
             srcRank);
-      } else
-#endif
-      {
-        int64_t recvNbytes = 0;
-        transport_->recvFrom(srcRank, &recvNbytes, sizeof(recvNbytes));
-        TORCH_CHECK(
-            recvNbytes == nbytes,
-            "ProcessGroupMPS::recv: size mismatch, expected ",
-            nbytes,
-            " got ",
-            recvNbytes);
-        transport_->recvFrom(
-            srcRank,
-            cpuTensor.data_ptr(),
-            static_cast<size_t>(nbytes));
+        copyToMPS(cpuTensor, tensor);
       }
-      copyToMPS(cpuTensor, tensor);
       work->finishWork();
     } catch (...) {
       work->finishWorkError(std::current_exception());

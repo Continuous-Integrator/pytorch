@@ -22,45 +22,9 @@ namespace c10d {
 
 constexpr const char* MPS_BACKEND_NAME = "mps";
 
-// TCP socket ring transport using the c10d Store for rendezvous.
-// Each rank publishes its listen address, connects to (rank+1)%size,
-// and accepts from (rank-1+size)%size.
-class TCPRingTransport {
- public:
-  TCPRingTransport(
-      const c10::intrusive_ptr<Store>& store,
-      int rank,
-      int size);
-  ~TCPRingTransport();
-
-  void sendToRight(const void* data, size_t length);
-  void recvFromLeft(void* data, size_t length);
-
-  void sendTo(int dstRank, const void* data, size_t length);
-  void recvFrom(int srcRank, void* data, size_t length);
-
-  void barrier();
-
- private:
-  void setupConnections();
-  void sendAll(int fd, const void* data, size_t length);
-  void recvAll(int fd, void* data, size_t length);
-  int connectToRank(int rank);
-  int acceptFromRank(int rank);
-
-  c10::intrusive_ptr<Store> store_;
-  int rank_;
-  int size_;
-
-  int listenFd_{-1};
-  int sendFd_{-1}; // to right neighbor
-  int recvFd_{-1}; // from left neighbor
-
-  uint64_t p2pSendSeq_{0};
-  uint64_t p2pRecvSeq_{0};
-  uint64_t barrierCount_{0};
-};
-
+// RDMA-only MPS backend. Construction requires an Apple Thunderbolt RDMA
+// device that accepts ibv_alloc_pd on every rank — otherwise this throws
+// and the user is expected to fall back to the gloo backend.
 class TORCH_API ProcessGroupMPS : public Backend {
  public:
   class WorkMPS : public Work {
@@ -141,16 +105,12 @@ class TORCH_API ProcessGroupMPS : public Backend {
   at::Tensor syncAndCopyToCPU(const at::Tensor& tensor);
   void copyToMPS(const at::Tensor& cpuTensor, at::Tensor& mpsTensor);
 
-  void ringAllreduce(at::Tensor& data, const ReduceOp& op);
-
   void enqueue(std::function<void()> fn);
   void runLoop();
 
   c10::intrusive_ptr<Store> store_;
   c10::intrusive_ptr<Options> options_;
-  std::unique_ptr<TCPRingTransport> transport_;
   std::unique_ptr<jaccl::JACCLTransport> jacclTransport_;
-  bool useJACCL_{false};
 
   std::thread workerThread_;
   bool stop_{false};
