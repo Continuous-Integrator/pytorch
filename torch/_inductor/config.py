@@ -753,28 +753,6 @@ def _parse_autoheuristic_use_env():
     return use_env
 
 
-def _autoheuristic_ops_enabled_by_deterministic_mode():
-    return ["pad_mm"]
-
-
-def _enable_autoheuristic_ops_by_deterministic_mode():
-    """Called by torch.use_deterministic_algorithms(True)"""
-    for mode in _autoheuristic_ops_enabled_by_deterministic_mode():
-        setattr(autoheuristic_use, mode, True)
-
-
-def _should_default_enable_autoheuristics(name: str):
-    if name in _parse_autoheuristic_use_env():
-        return True
-    deterministic_mode = os.getenv("TORCHINDUCTOR_DETERMINISTIC") == "1"
-    if (
-        deterministic_mode
-        and name in _autoheuristic_ops_enabled_by_deterministic_mode()
-    ):
-        return True
-    return False
-
-
 class autoheuristic_collect:
     """
     Config for which autoheuristic optimizations should collect training data.
@@ -789,8 +767,8 @@ class autoheuristic_use:
     Config for which autoheuristic optimizations should use learned heuristics.
     """
 
-    pad_mm = _should_default_enable_autoheuristics("pad_mm")
-    mixed_mm = _should_default_enable_autoheuristics("mixed_mm")
+    pad_mm = True if "pad_mm" in _parse_autoheuristic_use_env() else None
+    mixed_mm = True if "mixed_mm" in _parse_autoheuristic_use_env() else None
 
 
 # If set to 1, will run a JIT post compile hook if one is set.
@@ -804,20 +782,19 @@ def run_autoheuristic(name: str) -> bool:
 
 
 def collect_autoheuristic(name: str) -> bool:
-    if name == "pad_mm":
-        return autoheuristic_collect.pad_mm
-    elif name == "mixed_mm":
-        return autoheuristic_collect.mixed_mm
+    if hasattr(autoheuristic_collect, name):
+        return getattr(autoheuristic_collect, name)
     else:
         # For test compatibility with non-standard ops (e.g. "test", "foo" used in tests)
         return name in _parse_autoheuristic_collect_env()
 
 
 def use_autoheuristic(name: str) -> bool:
-    if name == "pad_mm":
-        return autoheuristic_use.pad_mm
-    elif name == "mixed_mm":
-        return autoheuristic_use.mixed_mm
+    if hasattr(autoheuristic_use, name):
+        attr = getattr(autoheuristic_use, name)
+        if attr is None:
+            return torch._inductor.config.deterministic
+        return attr
     else:
         # For test compatibility with non-standard ops (e.g. "test", "foo" used in tests)
         return name in _parse_autoheuristic_use_env()
