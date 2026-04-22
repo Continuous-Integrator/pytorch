@@ -76,7 +76,7 @@ def graph_call_function(graph: torch.fx.Graph, fn, *args, **kwargs):
     return node
 
 
-@dataclass(frozen=True)
+@dataclass
 class ViewOp:
     target: torch._ops.OpOverload
     args: tuple[Any, ...]

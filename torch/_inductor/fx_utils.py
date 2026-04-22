@@ -3,7 +3,7 @@ import contextlib
 import operator
 import warnings
 from collections import defaultdict
-from collections.abc import Callable, Container, Generator, Hashable, Iterable, Iterator
+from collections.abc import Callable, Container, Generator, Iterable
 from dataclasses import dataclass
 from functools import partial
 from itertools import chain
@@ -170,8 +170,8 @@ def _extract_subgraphs_and_args(
 class _FxNodeHash:
     node: torch.fx.Node
     target: torch.fx.node.Target
-    args_hash: int
-    kwargs_hash: int
+    arg_hashes: tuple[int, ...]
+    kwarg_hashes: tuple[int, ...]
 
 
 class FakeTensorUpdater:
@@ -215,17 +215,27 @@ class FakeTensorUpdater:
             self.processed_hashes.add(self.hash_node(node))
 
     def hash_node(self, node: torch.fx.Node) -> _FxNodeHash:
-        def get_args_or_ids(n_iter: Iterable[Any]) -> Iterator[Hashable]:
-            """Replace unhashable items from the input with the ids of those items.
-            This is kludgy, but allows us to attempt to account for unhashable classes
-            like torch.fx.Node when hashing args and kwargs for other nodes."""
-            return (n if isinstance(n, Hashable) else id(n) for n in n_iter)
+        def get_hash_or_ids(n_iter: Iterable[Any]) -> tuple[int, ...]:
+            """Replace unhashable items from the input with the ids of those items, and
+            has all other items.  This is kludgy, but allows us to attempt to account
+            for unhashable classes like torch.fx.Node when hashing args and kwargs for
+            other nodes."""
 
+            def get_hash_or_id(o: object) -> int:
+                try:
+                    return hash(o)
+                except Exception:
+                    return id(o)
+
+            return tuple(get_hash_or_id(n) for n in n_iter)
+
+        if node.kwargs:
+            breakpoint()
         return _FxNodeHash(
             node,
             node.target,
-            hash((id(node.args), *get_args_or_ids(node.args))),
-            hash((id(node.kwargs), *get_args_or_ids(node.kwargs.values()))),
+            get_hash_or_ids(node.args),
+            get_hash_or_ids(tuple(i) for i in node.kwargs.items()),
         )
 
     def incremental_update(self) -> int:
