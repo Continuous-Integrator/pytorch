@@ -4256,6 +4256,36 @@ class TestInlineSingleUseInvokeSubgraph(TestCase):
                     invoke_count += 1
         self.assertEqual(invoke_count, 2)
 
+    def test_ac_shared_subgraph_not_inlined(self):
+        @nested_compile_region
+        def gn(x):
+            return torch.sin(x)
+
+        def fn(x):
+            a = torch.utils.checkpoint.checkpoint(gn, x, use_reentrant=False)
+            b = torch.utils.checkpoint.checkpoint(gn, x, use_reentrant=False)
+            return a + b
+
+        x1 = torch.randn(8, requires_grad=True)
+        x2 = x1.clone().detach().requires_grad_(True)
+        ref = fn(x1)
+        ref.sum().backward()
+
+        # Two checkpoint bodies share the same gn subgraph module.
+        # Global counting should see 2 uses and preserve invoke_subgraph.
+        backend = EagerAndRecordGraphs()
+        res = torch.compile(fn, backend=backend, fullgraph=True)(x2)
+        self.assertEqual(ref, res)
+
+        has_invoke = any(
+            node.op == "call_function"
+            and node.target is torch.ops.higher_order.invoke_subgraph
+            for name, mod in backend.graphs[0].named_modules()
+            if isinstance(mod, torch.fx.GraphModule)
+            for node in mod.graph.nodes
+        )
+        self.assertTrue(has_invoke)
+
 
 @skipIfTorchDynamo("Not a torch._dynamo test")
 class TestInvokeSubgraphReuseHashFn(TestCase):

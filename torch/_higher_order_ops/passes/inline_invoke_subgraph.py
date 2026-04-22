@@ -9,42 +9,67 @@ if TYPE_CHECKING:
     from torch.fx.node import Node
 
 
+def count_subgraph_uses(gm: GraphModule) -> dict[int, int]:
+    """Count invoke_subgraph references by subgraph module identity across all
+    descendant GraphModules. Returns a map from id(subgraph_module) -> count."""
+    counts: dict[int, int] = {}
+    for _, mod in gm.named_modules():
+        if not isinstance(mod, GraphModule):
+            continue
+        for node in mod.graph.find_nodes(
+            op="call_function", target=torch.ops.higher_order.invoke_subgraph
+        ):
+            subgraph = getattr(mod, str(node.args[0].target), None)
+            if subgraph is not None:
+                key = id(subgraph)
+                counts[key] = counts.get(key, 0) + 1
+    return counts
+
+
 def inline_single_use_invoke_subgraph(gm: GraphModule) -> GraphModule:
-    """Inline invoke_subgraph HOPs whose subgraph is referenced exactly once.
+    """Inline invoke_subgraph HOPs whose subgraph module has exactly one call
+    site across the entire module tree.
 
     When a subgraph has only a single caller, invoke_subgraph adds overhead
     without any deduplication benefit, so we inline it unconditionally.
+    Subgraph modules that are shared across sibling modules (e.g. two AC body
+    modules referencing the same nested_compile_region) are counted globally
+    by module identity and preserved when referenced more than once.
     """
+    global_counts = count_subgraph_uses(gm)
+    inline_single_use_recursive(gm, global_counts)
+    return gm
+
+
+def inline_single_use_recursive(gm: GraphModule, global_counts: dict[int, int]) -> None:
+    # Recursively apply to nested subgraph modules first.
+    for name, mod in gm.named_modules():
+        if name and isinstance(mod, GraphModule):
+            inline_single_use_recursive(mod, global_counts)
+
     invoke_nodes = list(
         gm.graph.find_nodes(
             op="call_function", target=torch.ops.higher_order.invoke_subgraph
         )
     )
     if not invoke_nodes:
-        return gm
-
-    # Recursively apply to nested subgraph modules first.
-    for name, mod in gm.named_modules():
-        if name and isinstance(mod, GraphModule):
-            inline_single_use_invoke_subgraph(mod)
-
-    # Count how many invoke_subgraph nodes reference each subgraph (by get_attr target).
-    subgraph_use_count: dict[str, int] = {}
-    for node in invoke_nodes:
-        target = str(node.args[0].target)  # pyrefly: ignore[missing-attribute]
-        subgraph_use_count[target] = subgraph_use_count.get(target, 0) + 1
+        return
 
     single_use_nodes = [
         node
         for node in invoke_nodes
-        if subgraph_use_count[str(node.args[0].target)]
-        == 1  # pyrefly: ignore[missing-attribute]
+        if global_counts.get(
+            id(
+                getattr(gm, str(node.args[0].target), None)
+            ),  # pyrefly: ignore[missing-attribute]
+            0,
+        )
+        == 1
     ]
     if not single_use_nodes:
-        return gm
+        return
 
     inline_invoke_subgraph_nodes(gm, single_use_nodes)
-    return gm
 
 
 def inline_invoke_subgraph_nodes(gm: GraphModule, invoke_nodes: list["Node"]) -> None:
