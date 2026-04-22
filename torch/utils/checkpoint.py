@@ -1289,14 +1289,17 @@ class SelectiveCheckpointContext:
     Context passed to policy function during selective checkpointing.
 
     This class is used to pass relevant metadata to the policy function during
-    selective checkpointing. The metadata includes whether the current invocation
-    of the policy function is during recomputation or not.
+    selective checkpointing.
+
+    The policy function is only called during the forward pass. During
+    recomputation, cached values are retrieved by index, so ``is_recompute``
+    is deprecated and always ``False``.
 
     Example:
         >>> # xdoctest: +SKIP(stub)
         >>>
         >>> def policy_fn(ctx, op, *args, **kwargs):
-        >>>    print(ctx.is_recompute)
+        >>>    print(ctx.op_output)
         >>>
         >>> context_fn = functools.partial(create_selective_checkpoint_contexts, policy_fn)
         >>>
