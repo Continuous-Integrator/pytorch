@@ -1401,9 +1401,7 @@ class _CachedTorchDispatchMode(TorchDispatchMode):
 
     # Used together with _CachingTorchDispatchMode to implement SAC.
     # policy_fn is accepted but ignored for BC (xformers subclasses this).
-    def __init__(self, policy_fn_or_storage=None, storage=None, allow_cache_entry_mutation=False) -> None:
-        if storage is None:
-            storage = policy_fn_or_storage
+    def __init__(self, policy_fn, storage, allow_cache_entry_mutation=False) -> None:
         self.storage = storage
         self.allow_cache_entry_mutation = allow_cache_entry_mutation
         self.func_counter: Dict[Any, int] = defaultdict(int)
@@ -1527,7 +1525,7 @@ def create_selective_checkpoint_contexts(policy_fn_or_list, allow_cache_entry_mu
     storage: Dict[Any, Dict[int, Any]] = defaultdict(dict)
     return (
         _CachingTorchDispatchMode(policy_fn, storage),
-        _CachedTorchDispatchMode(storage=storage, allow_cache_entry_mutation=allow_cache_entry_mutation),
+        _CachedTorchDispatchMode(None, storage, allow_cache_entry_mutation),
     )
 
 # NB: this helper wraps fn before calling checkpoint_impl. kwargs and
