@@ -259,7 +259,12 @@ class TestIntSpecCompile(TestCase):
 
     @skipIfTorchDynamo("frame_count unreliable when dynamo traces the test")
     def test_backed_precedence_over_dynamic_false(self):
-        """IntSpec.backed() must win over compile(dynamic=False)."""
+        """IntSpec.backed() must win over compile(dynamic=False).
+
+        With the compile-context integration, the spec selects
+        DimDynamic.DYNAMIC directly — the first call is already backed, no
+        initial specialization, so a single compile covers all shapes.
+        """
         torch._dynamo.reset()
         cnt = torch._dynamo.testing.CompileCounter()
         fn = torch.compile(
@@ -270,9 +275,7 @@ class TestIntSpecCompile(TestCase):
         )
         for n in [4, 8, 16, 32, 64]:
             fn(torch.randn(n, 3))
-        # backed wins: despite dynamic=False, promotes to dynamic after first
-        # specialization so total recompiles stays bounded at 2.
-        self.assertLessEqual(cnt.frame_count, 2)
+        self.assertEqual(cnt.frame_count, 1)
 
     def test_list_form(self):
         torch._dynamo.reset()
