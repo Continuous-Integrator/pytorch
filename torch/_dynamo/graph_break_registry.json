@@ -1662,6 +1662,16 @@
       "Hints": []
     }
   ],
+  "GB4413": [
+    {
+      "Gb_type": "HOP: Non-nullified side effect",
+      "Context": "Attribute '{name}' was not restored to its original value",
+      "Explanation": "A variable from an outer scope was mutated inside a higher-order op subgraph and not restored to its original value. This is not supported. If using a context manager, ensure it fully restores the original state on exit.",
+      "Hints": [
+        "This graph break is fundamental - it is unlikely that Dynamo will ever be able to trace through your code. Consider finding a workaround."
+      ]
+    }
+  ],
   "GB0132": [
     {
       "Gb_type": "Unsupported `func` in itertools.accumulate",
@@ -1691,54 +1701,6 @@
       "Hints": [
         "Make sure the arguments to itertools.accumulate are correct.",
         "It may be possible to write Dynamo tracing rules for this code. Please report an issue to PyTorch if you encounter this graph break often and it is causing performance issues."
-      ]
-    }
-  ],
-  "GB8735": [
-    {
-      "Gb_type": "HOP: Unsafe non-attribute side effect",
-      "Context": "Attempted to mutate {item}",
-      "Explanation": "Mutating a non-attribute variable from outside the scope of this HOP is not supported.",
-      "Hints": [
-        "This graph break is fundamental - it is unlikely that Dynamo will ever be able to trace through your code. Consider finding a workaround."
-      ]
-    }
-  ],
-  "GB2512": [
-    {
-      "Gb_type": "HOP: Unsafe non-constant attribute side effect",
-      "Context": "Attempted to mutate {item}.{name} with non-constant value",
-      "Explanation": "Mutating attributes with non-constant values from outside the scope of this HOP is not supported.",
-      "Hints": [
-        "This graph break is fundamental - it is unlikely that Dynamo will ever be able to trace through your code. Consider finding a workaround."
-      ]
-    },
-    {
-      "Gb_type": "HOP: Unsafe non-constant attribute side effect",
-      "Context": "Attempted to mutate {item}.{name}",
-      "Explanation": "Mutating attributes with non-constant values from outside the scope of this HOP is not supported.",
-      "Hints": [
-        "This graph break is fundamental - it is unlikely that Dynamo will ever be able to trace through your code. Consider finding a workaround."
-      ]
-    }
-  ],
-  "GB8188": [
-    {
-      "Gb_type": "HOP: Unverifiable side effect",
-      "Context": "Mutated variable {item}.{name} could not be verified",
-      "Explanation": "A variable from an outer scope was mutated inside a higher-order op subgraph and could not be verified as restored.",
-      "Hints": [
-        "This graph break is fundamental - it is unlikely that Dynamo will ever be able to trace through your code. Consider finding a workaround."
-      ]
-    }
-  ],
-  "GB2106": [
-    {
-      "Gb_type": "HOP: Non-nullified side effect",
-      "Context": "Mutated variable {item}.{name} was not restored to its original value",
-      "Explanation": "A variable from an outer scope was mutated inside a higher-order op subgraph and not restored to its original value. This is not supported. If using a context manager, ensure it fully restores the original state on exit.",
-      "Hints": [
-        "This graph break is fundamental - it is unlikely that Dynamo will ever be able to trace through your code. Consider finding a workaround."
       ]
     }
   ],

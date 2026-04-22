@@ -2281,6 +2281,66 @@ class GraphModule(torch.nn.Module):
             out = torch.compile(fn, backend="eager", fullgraph=True)(x)
             out.backward()
 
+    def test_nullified_dict_attr_side_effect_in_backward(self):
+        # Attribute that holds a dict is swapped and restored — nullified.
+        class Config:
+            def __init__(self):
+                self.options = {"mode": "fast", "level": 3}
+
+        cfg = Config()
+
+        class Foo(torch.autograd.Function):
+            @staticmethod
+            def forward(ctx, x):
+                return x.clone()
+
+            @staticmethod
+            def backward(ctx, grad):
+                old = cfg.options
+                cfg.options = {"mode": "slow", "level": 1}
+                cfg.options = old
+                return grad.clone()
+
+        def fn(x):
+            return Foo.apply(x).sum()
+
+        x = torch.randn(8, requires_grad=True)
+        x_ref = x.detach().clone().requires_grad_(True)
+        out_ref = fn(x_ref)
+        out_ref.backward()
+
+        torch._dynamo.reset()
+        x_c = x.detach().clone().requires_grad_(True)
+        out_c = torch.compile(fn, backend="eager", fullgraph=True)(x_c)
+        out_c.backward()
+        self.assertEqual(x_ref.grad, x_c.grad)
+
+    def test_non_nullified_dict_attr_side_effect_in_backward_fails(self):
+        # Attribute that holds a dict is swapped but NOT restored.
+        class Config:
+            def __init__(self):
+                self.options = {"mode": "fast", "level": 3}
+
+        cfg = Config()
+
+        class Bad(torch.autograd.Function):
+            @staticmethod
+            def forward(ctx, x):
+                return x.clone()
+
+            @staticmethod
+            def backward(ctx, grad):
+                cfg.options = {"mode": "slow", "level": 1}
+                return grad.clone()
+
+        def fn(x):
+            return Bad.apply(x).sum()
+
+        x = torch.randn(8, requires_grad=True)
+        with self.assertRaises(torch._dynamo.exc.Unsupported):
+            out = torch.compile(fn, backend="eager", fullgraph=True)(x)
+            out.backward()
+
 
 class AutogradFunctionFunctorchTests(torch._dynamo.test_case.TestCase):
     """Tests for autograd.Function compatibility with torch.func transforms.

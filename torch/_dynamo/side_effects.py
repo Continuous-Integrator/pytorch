@@ -166,14 +166,10 @@ class SideEffects:
         # mutations, var.source for value mutations (list/dict/etc).
         self.mutated_sources: OrderedSet[Source] = OrderedSet()
 
-        # Deferred side-effect checking: instead of failing immediately on
-        # outer-scope mutations inside HOP subgraphs, we record them and
-        # validate after tracing that they were nullified (restored to
-        # original values). Maps VT id → VT for items with deferred mutations.
-        # Maps VT id → (VT, {attr_name: original_python_value})
-        self.deferred_side_effect_items: dict[
-            int, tuple[VariableTracker, dict[str, Any]]
-        ] = {}
+        # Deferred side-effect checking for nullified attribute mutations.
+        # Maps (vt_id, attr_name) → (original_value, current_value).
+        # On validation, we check original == current.
+        self.deferred_attr_mutations: dict[tuple[int, str], tuple[Any, Any]] = {}
 
     def ignore_mutations_on(self, var: VariableTracker) -> None:
         """Mutations to this variable will be executed but not not tracked,
@@ -187,74 +183,57 @@ class SideEffects:
 
     @contextlib.contextmanager
     def defer_side_effect_checks(self) -> Generator[None, None, None]:
-        """Defer outer-scope mutation checks until subgraph tracing completes.
+        """Defer outer-scope attribute mutation checks until tracing completes.
 
         Context managers that flip-flop a flag (set on enter, restore on exit)
-        produce no net side effect. Instead of failing immediately on the first
-        mutation, we record it and validate after tracing that all mutations
-        were nullified (values restored to their original state).
+        produce no net side effect. Instead of failing immediately, we track
+        original and current values, then validate they match after tracing.
         """
-        saved = self.deferred_side_effect_items
-        self.deferred_side_effect_items = {}
+        saved = self.deferred_attr_mutations
+        self.deferred_attr_mutations = {}
         try:
             yield
-            self.validate_deferred_side_effects()
+            self.validate_deferred_attr_mutations()
         finally:
-            self.deferred_side_effect_items = saved
+            self.deferred_attr_mutations = saved
 
-    def snapshot_side_effect(
+    def snapshot_attr_mutation(
         self, item: VariableTracker, name: str, value: VariableTracker
-    ) -> None:
-        """Record the original attribute value before the first deferred mutation.
+    ) -> bool:
+        """Record an attribute mutation for deferred validation.
 
-        Only supports attribute mutations where values are ConstantVariable
-        (bool, int, etc). Everything else raises unimplemented immediately.
+        Returns True if successfully deferred, False if the original value
+        is not a python constant and we should fall back to the old path.
         """
-        if not isinstance(value, variables.ConstantVariable):
-            unimplemented(
-                gb_type="HOP: Unsafe non-constant attribute side effect",
-                context=f"Attempted to mutate {item}.{name} with non-constant value",
-                explanation="Mutating attributes with non-constant values "
-                "from outside the scope of this HOP is not supported.",
-                hints=[*graph_break_hints.FUNDAMENTAL],
-            )
-        item_id = id(item)
-        if item_id not in self.deferred_side_effect_items:
-            self.deferred_side_effect_items[item_id] = (item, {})
-        # Only snapshot the original value for each attr once
-        attrs = self.deferred_side_effect_items[item_id][1]
-        if name not in attrs:
-            python_obj = item.value if hasattr(item, "value") else None
-            if python_obj is not None and hasattr(python_obj, name):
-                attrs[name] = getattr(python_obj, name)
-            else:
-                attrs[name] = object()  # sentinel — will never match
+        key = (id(item), name)
+        current = value.as_python_constant()
+        if key not in self.deferred_attr_mutations:
+            output_graph = self.output_graph_weakref()
+            assert output_graph is not None
+            tx = output_graph.current_tx
+            original_vt = item.var_getattr(tx, name)  # type: ignore[arg-type]
+            if not original_vt.is_python_constant():
+                return False
+            original = original_vt.as_python_constant()
+            self.deferred_attr_mutations[key] = (original, current)
+        else:
+            original, _ = self.deferred_attr_mutations[key]
+            self.deferred_attr_mutations[key] = (original, current)
+        return True
 
-    def validate_deferred_side_effects(self) -> None:
-        """Check that all deferred mutations were nullified.
-
-        For each mutated attribute, compare the final traced value to the
-        original value snapshotted before the first mutation. If they match,
-        the mutation was nullified.
-        """
-        for item, original_attrs in self.deferred_side_effect_items.values():
-            stored = self.store_attr_mutations.get(item, {})
-            for name, original_value in original_attrs.items():
-                vt = stored.get(name)
-                if vt is None or not isinstance(vt, variables.ConstantVariable):
-                    current = object()  # will never match
-                else:
-                    current = vt.as_python_constant()
-                if current != original_value:
-                    unimplemented(
-                        gb_type="HOP: Non-nullified side effect",
-                        context=f"Mutated variable {item}.{name} was not restored to its original value",
-                        explanation="A variable from an outer scope was mutated inside a "
-                        "higher-order op subgraph and not restored to its original "
-                        "value. This is not supported. If using a context manager, "
-                        "ensure it fully restores the original state on exit.",
-                        hints=[*graph_break_hints.FUNDAMENTAL],
-                    )
+    def validate_deferred_attr_mutations(self) -> None:
+        """Check that all deferred attribute mutations were nullified."""
+        for (_, name), (original, current) in self.deferred_attr_mutations.items():
+            if original != current:
+                unimplemented(
+                    gb_type="HOP: Non-nullified side effect",
+                    context=f"Attribute '{name}' was not restored to its original value",
+                    explanation="A variable from an outer scope was mutated inside a "
+                    "higher-order op subgraph and not restored to its original "
+                    "value. This is not supported. If using a context manager, "
+                    "ensure it fully restores the original state on exit.",
+                    hints=[*graph_break_hints.FUNDAMENTAL],
+                )
 
     def _capture_user_stack(self, key: VariableTracker) -> None:
         """Capture the current user stack from the instruction translator."""
@@ -384,30 +363,36 @@ class SideEffects:
             )
         assert item.mutation_type is not None
         if not is_side_effect_safe(item.mutation_type):
-            # Attribute mutations are deferred and validated later via
-            # snapshot_side_effect (called from store_attr).
-            if not isinstance(item.mutation_type, AttributeMutation):
-                unimplemented(
-                    gb_type="HOP: Unsafe non-attribute side effect",
-                    context=f"Attempted to mutate {item}",
-                    explanation="Mutating a non-attribute variable from outside "
-                    "the scope of this HOP is not supported.",
-                    hints=[*graph_break_hints.FUNDAMENTAL],
-                )
+            unimplemented(
+                gb_type="HOP: Unsafe side effect",
+                context=f"Attempted to mutate {item}",
+                explanation="Mutating a variable from outside the scope of this HOP is not supported.",
+                hints=[
+                    "If the HOP is activation checkpointing (torch.utils.checkpoint.checkpoint), this points to a "
+                    "side effect in forward method. Eager activation checkpointing replays that side-effect while "
+                    "recomputing the forward in the backward. If you are ok with side-effect not replayed in the "
+                    "backward, try setting `torch._dynamo.config.skip_fwd_side_effects_in_bwd_under_checkpoint = True`",
+                ],
+            )
         return False
 
     def store_attr(
         self, item: VariableTracker, name: str, value: VariableTracker
     ) -> None:
         assert self.is_attribute_mutation(item)
-        self.check_allowed_side_effect(item)
+        # For constant attribute mutations on outer-scope objects, defer
+        # the side-effect check and validate after tracing that the
+        # mutation was nullified (value restored to original).
+        deferred = False
         if (
-            not is_side_effect_safe(item.mutation_type)
+            item.mutation_type is not None
+            and not is_side_effect_safe(item.mutation_type)
             and not isinstance(item, AutogradFunctionContextVariable)
-            and not self.should_allow_externally_visible_side_effects_in_subtracer()
-            and not self.should_allow_side_effects_in_hop()
+            and value.is_python_constant()
         ):
-            self.snapshot_side_effect(item, name, value)
+            deferred = self.snapshot_attr_mutation(item, name, value)
+        if not deferred:
+            self.check_allowed_side_effect(item)
         if item not in self.store_attr_mutations:
             self.store_attr_mutations[item] = {}
         self.store_attr_mutations[item][name] = value
