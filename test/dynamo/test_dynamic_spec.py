@@ -80,6 +80,21 @@ class TestIntSpecImmutable(TestCase):
         with self.assertRaisesRegex(AttributeError, "UNBACKED"):
             _ = s2.optimization_hint
 
+    def test_type_is_read_only(self):
+        s = IntSpec.static("x", value=10)
+        with self.assertRaises(AttributeError):
+            s.type = IntSpecType.BACKED  # type: ignore[misc]
+
+    def test_no_fluent_type_reset(self):
+        # IntSpec has no instance method that reassigns type. The mode-named
+        # factories are classmethods: calling one "on an instance" returns a
+        # fresh IntSpec and does not mutate the original.
+        s = IntSpec.static("x")
+        new = IntSpec.backed("x")
+        self.assertIs(s.type, IntSpecType.STATIC)
+        self.assertIs(new.type, IntSpecType.BACKED)
+        self.assertIsNot(s, new)
+
 
 class TestIntSpecValidation(TestCase):
     """Cross-parameter validation rejects bad combinations."""
