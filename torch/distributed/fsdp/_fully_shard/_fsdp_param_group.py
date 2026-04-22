@@ -604,17 +604,9 @@ class FSDPParamGroup:
             # go to the all-reduce-stream free pool once we drop the ref.
             prev_all_reduce_state = self.comm_ctx.all_reduce_state
             self.comm_ctx.all_reduce_state = None
-            if (
-                prev_all_reduce_state is not None
-                and prev_all_reduce_state.event is not None
-            ):
-                # Order AR stream after the prior AR event so subsequent
-                # AR-stream work (inside foreach_reduce's post-reduce block
-                # and the del-under-stream-context below) both see prev AR
-                # as complete. Doing the wait here, before foreach_reduce,
-                # keeps foreach_reduce's signature free of a cross-iteration
-                # ordering parameter.
-                all_reduce_stream.wait_event(prev_all_reduce_state.event)
+            prev_all_reduce_event = (
+                prev_all_reduce_state.event if prev_all_reduce_state else None
+            )
             (
                 reduce_scatter_input,
                 reduce_scatter_event,
@@ -648,6 +640,7 @@ class FSDPParamGroup:
                 self._all_reduce_hook,
                 self.force_sum_reduction_for_comms,
                 self._label_suffix,
+                prev_all_reduce_event,
             )
             if prev_all_reduce_state is not None:
                 # Stream context is load-bearing: the caching allocator uses
