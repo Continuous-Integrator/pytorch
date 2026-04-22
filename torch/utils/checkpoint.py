@@ -1227,14 +1227,11 @@ class _VersionWrapper:
         return self.val
 
 
-def _detach_with_unexclude(x):
+def _detach_helper(x):
     # We detach for two separate reasons:
     # - For view ops, we need to ensure that when the tensor is returned from
     #   CachedDispatchMode, as_view sees that the AutogradMeta is nullptr
     # - Avoid reference cycles
-    # For case 1, it is not enough to check whether x has differentiable dtype
-    # because non-differentiable dtype can have non-nullptr AutogradMeta, e.g.
-    # when the tensor is a view.
     if isinstance(x, torch.Tensor):
         with torch._C._SetExcludeDispatchKeyGuard(torch._C.DispatchKey.ADInplaceOrView, False):
             # Ensure that view performed beneath autograd properly propagates
@@ -1347,7 +1344,7 @@ def save_tensor(tensor: torch.Tensor) -> None:
         return
     func, idx = info
     mode.storage[func][idx] = tree_map(
-        lambda x: _VersionWrapper(_detach_with_unexclude(x)),
+        lambda x: _VersionWrapper(_detach_helper(x)),
         tensor,
     )
 
@@ -1410,7 +1407,7 @@ class _CachingTorchDispatchMode(TorchDispatchMode):
                     node.meta["recompute"] = policy
 
         if policy in (CheckpointPolicy.MUST_SAVE, CheckpointPolicy.PREFER_SAVE) or is_compiling:
-            self.storage[func][idx] = tree_map(lambda x: _VersionWrapper(_detach_with_unexclude(x)), out)
+            self.storage[func][idx] = tree_map(lambda x: _VersionWrapper(_detach_helper(x)), out)
         else:
             self.storage[func][idx] = _RECOMPUTE
         return out
