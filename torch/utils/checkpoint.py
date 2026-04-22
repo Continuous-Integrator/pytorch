@@ -1252,14 +1252,11 @@ class _OffloadWrapper:
         return self.val
 
 
-def _detach_with_unexclude(x):
+def _detach_helper(x):
     # We detach for two separate reasons:
     # - For view ops, we need to ensure that when the tensor is returned from
     #   CachedDispatchMode, as_view sees that the AutogradMeta is nullptr
     # - Avoid reference cycles
-    # For case 1, it is not enough to check whether x has differentiable dtype
-    # because non-differentiable dtype can have non-nullptr AutogradMeta, e.g.
-    # when the tensor is a view.
     if isinstance(x, torch.Tensor):
         with torch._C._SetExcludeDispatchKeyGuard(torch._C.DispatchKey.ADInplaceOrView, False):
             # Ensure that view performed beneath autograd properly propagates
@@ -1386,7 +1383,7 @@ def save_tensor(tensor: torch.Tensor) -> None:
     func, idx = info
     hooks = mode.user_hooks
     mode.storage[func][idx] = tree_map(
-        lambda x: _VersionWrapper(_detach_with_unexclude(x), hooks),
+        lambda x: _VersionWrapper(_detach_helper(x), hooks),
         tensor,
     )
 
@@ -1456,10 +1453,10 @@ class _CachingTorchDispatchMode(TorchDispatchMode):
         if policy in (CheckpointPolicy.MUST_SAVE, CheckpointPolicy.PREFER_SAVE) or is_compiling:
             hooks = self.user_hooks
             self.storage[func][idx] = tree_map(
-                lambda x: _VersionWrapper(_detach_with_unexclude(x), hooks), out)
+                lambda x: _VersionWrapper(_detach_helper(x), hooks), out)
         elif policy in (CheckpointPolicy.MUST_CPU_OFFLOAD, CheckpointPolicy.PREFER_CPU_OFFLOAD):
             self.storage[func][idx] = tree_map(
-                lambda x: _OffloadWrapper(_detach_with_unexclude(x)), out)
+                lambda x: _OffloadWrapper(_detach_helper(x)), out)
         else:
             self.storage[func][idx] = _RECOMPUTE
         return out
