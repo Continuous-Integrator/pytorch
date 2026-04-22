@@ -4277,14 +4277,15 @@ class TestInlineSingleUseInvokeSubgraph(TestCase):
         res = torch.compile(fn, backend=backend, fullgraph=True)(x2)
         self.assertEqual(ref, res)
 
-        has_invoke = any(
-            node.op == "call_function"
-            and node.target is torch.ops.higher_order.invoke_subgraph
-            for name, mod in backend.graphs[0].named_modules()
+        invoke_count = sum(
+            1
+            for mod in backend.graphs[0].modules()
             if isinstance(mod, torch.fx.GraphModule)
             for node in mod.graph.nodes
+            if node.op == "call_function"
+            and node.target is torch.ops.higher_order.invoke_subgraph
         )
-        self.assertTrue(has_invoke)
+        self.assertEqual(invoke_count, 2)
 
 
 @skipIfTorchDynamo("Not a torch._dynamo test")
