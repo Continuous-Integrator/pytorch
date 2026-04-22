@@ -14,6 +14,7 @@ trace_structured.
 
 import logging
 from contextlib import contextmanager
+from types import SimpleNamespace
 
 import torch
 import torch._dynamo
@@ -216,42 +217,37 @@ class TestCodegenEffectTokens(TestCase):
         finally:
             handle.destroy()
 
-    def test_multiple_effect_tokens_codegen(self):
+    def _make_wrapper_via_post_compile(self, compiled_fn, num_tokens):
         """
-        Verify the codegen template works for num_tokens > 1 by directly
-        calling the codegen path. Currently only one EffectType (ORDERED)
-        exists, so num_tokens > 1 can't arise through normal compilation,
-        but the template should handle it correctly for future expansion.
+        Call EffectTokensWrapper.post_compile with a mock runtime_metadata
+        that has the given number of tokens, exercising the production
+        codegen path.
         """
-        from torch._functorch._aot_autograd.subclass_codegen import (
-            _compile_and_exec_source,
+        from torch._functorch._aot_autograd.runtime_wrappers import (
+            EffectTokensWrapper,
         )
 
-        num_tokens = 2
-        lines = ["def _effect_tokens_wrapper(args):"]
-        lines.append(f"    new_args = [{', '.join(['None'] * num_tokens)}, *args]")
-        lines.append("    args.clear()")
-        lines.append("    outs = _compiled_fn_(new_args)")
-        lines.append("    if outs is None:")
-        lines.append("        return None")
-        lines.append(f"    return outs[{num_tokens}:]")
-        source = "\n".join(lines)
+        mock_meta = SimpleNamespace(tokens={i: None for i in range(num_tokens)})
+        mock_aot_config = SimpleNamespace()
+        return EffectTokensWrapper().post_compile(
+            compiled_fn, mock_aot_config, runtime_metadata=mock_meta
+        )
 
-        self.assertIn("None, None", source)
-        self.assertIn("outs[2:]", source)
-
+    def test_multiple_effect_tokens_codegen(self):
+        """
+        Verify the codegen template works for num_tokens > 1 by calling
+        EffectTokensWrapper.post_compile directly. Currently only one
+        EffectType (ORDERED) exists, so num_tokens > 1 can't arise
+        through normal compilation, but the template should handle it
+        correctly for future expansion.
+        """
         call_log = []
 
         def mock_compiled_fn(args):
             call_log.append(list(args))
             return list(range(len(args)))
 
-        wrapper = _compile_and_exec_source(
-            source,
-            {"_compiled_fn_": mock_compiled_fn},
-            "_effect_tokens_wrapper",
-            "effect_tokens_wrapper",
-        )
+        wrapper = self._make_wrapper_via_post_compile(mock_compiled_fn, num_tokens=2)
 
         args = [10, 20, 30]
         result = wrapper(args)
@@ -265,29 +261,11 @@ class TestCodegenEffectTokens(TestCase):
         Verify the codegen template for num_tokens > 1 handles None
         output (Inductor cache DummyModule can return None).
         """
-        from torch._functorch._aot_autograd.subclass_codegen import (
-            _compile_and_exec_source,
-        )
-
-        num_tokens = 2
-        lines = ["def _effect_tokens_wrapper(args):"]
-        lines.append(f"    new_args = [{', '.join(['None'] * num_tokens)}, *args]")
-        lines.append("    args.clear()")
-        lines.append("    outs = _compiled_fn_(new_args)")
-        lines.append("    if outs is None:")
-        lines.append("        return None")
-        lines.append(f"    return outs[{num_tokens}:]")
-        source = "\n".join(lines)
 
         def mock_compiled_fn(args):
             return None
 
-        wrapper = _compile_and_exec_source(
-            source,
-            {"_compiled_fn_": mock_compiled_fn},
-            "_effect_tokens_wrapper",
-            "effect_tokens_wrapper",
-        )
+        wrapper = self._make_wrapper_via_post_compile(mock_compiled_fn, num_tokens=2)
 
         result = wrapper([10, 20])
         self.assertIsNone(result)
