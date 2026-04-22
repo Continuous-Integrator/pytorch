@@ -1501,14 +1501,6 @@ autotune_lookup_table: dict[str, dict[str, Any]] = {}
 
 file_lock_timeout: int = int(os.environ.get("TORCHINDUCTOR_FILE_LOCK_TIMEOUT", "600"))
 
-# Upper bound (seconds) on waiting for any single Inductor compile-worker
-# future to resolve in AsyncCompile._wait_futures. A hang here usually means
-# the compile-worker subprocess pool has deadlocked; fail fast with a clear
-# error instead of letting the outer CI timeout kill the job silently.
-compile_worker_wait_timeout: int = int(
-    os.environ.get("TORCHINDUCTOR_COMPILE_WORKER_WAIT_TIMEOUT", "900")
-)
-
 enable_autograd_for_aot: bool = False
 
 
