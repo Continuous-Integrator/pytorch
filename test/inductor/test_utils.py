@@ -310,9 +310,7 @@ class TestFakeTensorUpdater(TestCase):
         fn: Callable[..., torch.Tensor], *args: torch.Tensor
     ) -> torch.fx.GraphModule:
         backend = AotEagerAndRecordGraphs()
-        # populate the backend with a captured graph
         torch.compile(backend=backend, fullgraph=True)(fn)(*args)
-        # return the FW graph that has been parsed by AOTAutograd
         return backend.fw_graphs[0]
 
     @staticmethod
