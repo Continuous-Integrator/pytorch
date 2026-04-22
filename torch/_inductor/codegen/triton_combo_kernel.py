@@ -770,24 +770,6 @@ class ComboKernel(Kernel):
         if max_persistent_rblock > 0:
             inductor_meta["max_persistent_rblock"] = max_persistent_rblock
 
-        # Sum per-sub-kernel bandwidth / FLOP estimates for the combo launch.
-        self._kernel_num_gb = 0.0
-        if (
-            config.benchmark_kernel
-            or config.profile_bandwidth
-            or config.benchmark_combo_kernel
-        ):
-            self._kernel_num_gb = (
-                sum((sub.estimate_kernel_num_bytes() or 0) for sub in self.sub_kernels)
-                / 1e9
-            )
-        if config.benchmark_kernel or config.profile_bandwidth:
-            inductor_meta["kernel_num_gb"] = self._kernel_num_gb
-        if config.benchmark_kernel:
-            inductor_meta["kernel_flop"] = sum(
-                (sub.estimate_flops() or 0) for sub in self.sub_kernels
-            )
-
         sub_kernel = selected_kernel
         if heuristics == "foreach":
             heuristics_line = f"""
@@ -1000,7 +982,7 @@ class ComboKernel(Kernel):
                 code.writeline(f'pl.exit_scope("{kernel_name}")')
 
         if config.benchmark_combo_kernel:
-            code.splice(self.codegen_kernel_benchmark(num_gb=self._kernel_num_gb))
+            code.splice(self.codegen_kernel_benchmark(num_gb=0))
 
         return code.getvalue()
 
@@ -1164,9 +1146,6 @@ class ComboKernel(Kernel):
         )
 
     def combo_grid_meta(self, size_hints_list: list[dict[str, int]]) -> dict[str, Any]:
-        """
-        Build metadata used by combo-kernel grid/disaptch/autotune helpers.
-        """
         dynamic_shape = bool(self.dynamic_shape_args)
         num_kernels = len(self.sub_kernels)
         min_blocks = (
@@ -1220,23 +1199,6 @@ class ComboKernel(Kernel):
                 )
 
                 meta[f"size_hints_{num}"] = size_hints_list[num]
-                meta[f"num_load_{num}"] = sub_kernel.num_load
-                meta[f"num_store_{num}"] = sub_kernel.num_store
-                meta[f"num_reduction_{num}"] = sub_kernel.num_reduction
-                meta[f"autotune_hints_{num}"] = list(sub_kernel.autotune_hints)
-                meta[f"atomic_add_found_{num}"] = sub_kernel.atomic_add_found
-                if sub_kernel.add_persistent_rblock:
-                    meta[f"add_persistent_rblock_{num}"] = True
-                if (
-                    config.deterministic
-                    or config.test_configs.force_filter_reduction_configs
-                ):
-                    meta[f"has_loadstore_with_contiguous_rdim_{num}"] = (
-                        sub_kernel.has_load_with_contiguous_rdim
-                        or sub_kernel.has_store_with_contiguous_rdim
-                    )
-                if sub_kernel.tma_min_block_sizes:
-                    meta[f"tma_min_block_sizes_{num}"] = sub_kernel.tma_min_block_sizes
                 if meta[f"heuristic_{num}"] == "pointwise":
                     if len(size_hints_list[num]) == 2:
                         meta[f"tile_hint_{num}"] = "TileHint.SQUARE"
