@@ -1825,7 +1825,7 @@ bool gemm_and_bias(
     // provided bias.
     // FIXME: this behavior is to be changed in the upcoming CUDA releases.
     if constexpr (std::is_same_v<Dtype, C_Dtype> && (std::is_same_v<Dtype, at::Half> || std::is_same_v<Dtype, at::BFloat16>)) {
-      if (get_splitk_num() > 1 && use_bias_epilogue) {
+      if (use_bias_epilogue && get_splitk_num() > 1) {
         // bias epilogue fusion -> bias matrix descriptor fusion
         use_bias_epilogue = false;
         use_bias_descriptor = true;
