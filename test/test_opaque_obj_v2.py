@@ -4033,7 +4033,7 @@ class fn(torch.nn.Module):
         )
 
     def test_set_generator_metaclass_is_idempotent(self):
-        """Calling _set_generator_metaclass twice is a no-op, not an error."""
+        """Calling _set_generator_metaclass twice is a no-op, not an error"""
         from torch._opaque_base import OpaqueBaseMeta
 
         # Already called during import; second call should be a no-op.
@@ -4041,7 +4041,7 @@ class fn(torch.nn.Module):
         self.assertIsInstance(torch._C.Generator, OpaqueBaseMeta)
 
     def test_generator_metaclass_is_set(self):
-        """Generator's metaclass should be OpaqueBaseMeta after import."""
+        """Generator's metaclass should be OpaqueBaseMeta after import"""
         from torch._opaque_base import OpaqueBaseMeta
 
         self.assertIsInstance(torch._C.Generator, OpaqueBaseMeta)
