@@ -1495,6 +1495,10 @@ class LinearCrossEntropyLoss(_WeightedLoss):
         ignore_index: int | None = None,
         label_smoothing: float = 0.0,
     ) -> None:
+        if weight is not None and weight.shape != (num_classes,):
+            raise RuntimeError(
+                f"expected weight shape to be {(num_classes,)}, got {tuple(weight.shape)}"
+            )
         super().__init__(weight, None, None, reduction)
         self.num_classes = num_classes
         self.out_features = out_features
@@ -1503,10 +1507,14 @@ class LinearCrossEntropyLoss(_WeightedLoss):
         # Linear does not support multi-dimensional weights. To
         # circumvent this limitation, we store the linear weights as
         # two-dimensional weights and reshape it to multi-dimensional
-        # weights in forward prior passing the weights to
+        # weights in forward prior to passing the weights to
         # linear_cross_entropy.
         self.linear = Linear(
-            in_features, num_classes * math.prod(out_features), False, device, dtype
+            in_features,
+            math.prod(out_features, start=num_classes),
+            False,
+            device,
+            dtype,
         )
 
     def forward(self, input: Tensor, target: Tensor) -> Tensor:
@@ -1522,6 +1530,12 @@ class LinearCrossEntropyLoss(_WeightedLoss):
             reduction=self.reduction,
             ignore_index=self.ignore_index,
             label_smoothing=self.label_smoothing,
+        )
+
+    def extra_repr(self) -> str:
+        return (
+            f"in_features={self.linear.in_features}, num_classes={self.num_classes}, out_features={self.out_features},"
+            f" reduction={self.reduction}, ignore_index={self.ignore_index}, label_smoothing={self.label_smoothing}"
         )
 
 
