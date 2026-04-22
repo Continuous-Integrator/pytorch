@@ -1,4 +1,5 @@
 import operator
+from collections import Counter
 from typing import Any, TYPE_CHECKING
 
 import torch
@@ -9,20 +10,17 @@ if TYPE_CHECKING:
     from torch.fx.node import Node
 
 
-def count_subgraph_uses(gm: GraphModule) -> dict[int, int]:
-    """Count invoke_subgraph references by subgraph module identity across all
-    descendant GraphModules. Returns a map from id(subgraph_module) -> count."""
-    counts: dict[int, int] = {}
-    for _, mod in gm.named_modules():
+def count_subgraph_uses(gm: GraphModule) -> Counter[str]:
+    """Count invoke_subgraph references by identifier string across all
+    descendant GraphModules."""
+    counts: Counter[str] = Counter()
+    for mod in gm.modules():
         if not isinstance(mod, GraphModule):
             continue
         for node in mod.graph.find_nodes(
             op="call_function", target=torch.ops.higher_order.invoke_subgraph
         ):
-            subgraph = getattr(mod, str(node.args[0].target), None)
-            if subgraph is not None:
-                key = id(subgraph)
-                counts[key] = counts.get(key, 0) + 1
+            counts[str(node.args[1])] += 1
     return counts
 
 
@@ -41,7 +39,7 @@ def inline_single_use_invoke_subgraph(gm: GraphModule) -> GraphModule:
     return gm
 
 
-def inline_single_use_recursive(gm: GraphModule, global_counts: dict[int, int]) -> None:
+def inline_single_use_recursive(gm: GraphModule, global_counts: Counter[str]) -> None:
     # Recursively apply to nested subgraph modules first.
     for name, mod in gm.named_modules():
         if name and isinstance(mod, GraphModule):
@@ -56,15 +54,7 @@ def inline_single_use_recursive(gm: GraphModule, global_counts: dict[int, int]) 
         return
 
     single_use_nodes = [
-        node
-        for node in invoke_nodes
-        if global_counts.get(
-            id(
-                getattr(gm, str(node.args[0].target), None)
-            ),  # pyrefly: ignore[missing-attribute]
-            0,
-        )
-        == 1
+        node for node in invoke_nodes if global_counts[str(node.args[1])] == 1
     ]
     if not single_use_nodes:
         return
