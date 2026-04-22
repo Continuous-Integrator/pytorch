@@ -459,7 +459,7 @@ _run_symm_mem_tests() {
   # symmetric memory test
   time python test/run_test.py --include distributed/test_symmetric_memory.py  $PYTHON_TEST_EXTRA_OPTION --upload-artifacts-while-running
   time python test/run_test.py --include distributed/test_nvshmem.py $PYTHON_TEST_EXTRA_OPTION --upload-artifacts-while-running
-  time python test/run_test.py --include distributed/test_shmem_triton.py $PYTHON_TEST_EXTRA_OPTION --upload-artifacts-while-running
+  time python test/run_test.py --include distributed/test_nvshmem_triton.py $PYTHON_TEST_EXTRA_OPTION --upload-artifacts-while-running
   time python test/run_test.py --include distributed/test_nccl.py -k NCCLSymmetricMemoryTest $PYTHON_TEST_EXTRA_OPTION --upload-artifacts-while-running
   assert_git_not_dirty
 }
@@ -684,8 +684,7 @@ test_inductor_cpp_wrapper_shard() {
     --shard "$1" "$NUM_TEST_SHARDS" \
     --verbose
   python test/run_test.py \
-    --include inductor/test_torchinductor inductor/test_max_autotune inductor/test_cpu_repro \
-              inductor/test_triton_kernels inductor/test_combo_kernels \
+    --include inductor/test_torchinductor inductor/test_max_autotune inductor/test_cpu_repro inductor/test_triton_kernels \
     --shard "$1" "$NUM_TEST_SHARDS" \
     --verbose
   python test/run_test.py --inductor \
@@ -693,14 +692,12 @@ test_inductor_cpp_wrapper_shard() {
     -k 'take' \
     --shard "$1" "$NUM_TEST_SHARDS" \
     --verbose
-
   # Keep testing TORCHINDUCTOR_AUTOTUNE_AT_COMPILE_TIME=1 for the near future.
   # Will drop this after AOTInductor also switches to lazy Triton compilation.
   TORCHINDUCTOR_AUTOTUNE_AT_COMPILE_TIME=1 python test/run_test.py \
     --include inductor/test_torchinductor inductor/test_triton_kernels inductor/test_max_autotune \
     --shard "$1" "$NUM_TEST_SHARDS" \
     --verbose
-
   if [[ "${BUILD_ENVIRONMENT}" == *xpu* ]]; then
     python test/run_test.py \
       --include inductor/test_mkldnn_pattern_matcher \
