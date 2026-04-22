@@ -562,7 +562,7 @@ def register_onednn_fusion_ops():
                 x_zp = V.graph.add_tensor_constant(
                     torch.tensor(0, dtype=torch.int32), name="x_zp"
                 )
-            if not isinstance(x_zp, ir.TensorBox):
+            elif not isinstance(x_zp, ir.TensorBox):
                 assert type(x_zp) is int
                 x_zp = V.graph.add_tensor_constant(
                     torch.tensor(x_zp, dtype=torch.int32), name="x_zp"
@@ -635,7 +635,12 @@ def register_onednn_fusion_ops():
                 x_zp = V.graph.add_tensor_constant(
                     torch.tensor(0, dtype=torch.int32), name="x_zp"
                 )
-            if not isinstance(x_zp, ir.TensorBox):
+            elif isinstance(x_zp, ir.Constant):
+                # x_zp is an ir.Constant, extract its value
+                x_zp = V.graph.add_tensor_constant(
+                    torch.tensor(x_zp.value, dtype=torch.int32), name="x_zp"
+                )
+            elif not isinstance(x_zp, ir.TensorBox):
                 assert type(x_zp) is int
                 x_zp = V.graph.add_tensor_constant(
                     torch.tensor(x_zp, dtype=torch.int32), name="x_zp"
@@ -734,8 +739,13 @@ def register_onednn_fusion_ops():
                 x_zp = V.graph.add_tensor_constant(
                     torch.tensor(0, dtype=torch.int32), name="x_zp"
                 )
-            if not isinstance(x_zp, ir.TensorBox):
-                assert type(x_zp) is int
+            elif isinstance(x_zp, ir.Constant):
+                # x_zp is an ir.Constant, extract its value
+                x_zp = V.graph.add_tensor_constant(
+                    torch.tensor(x_zp.value, dtype=torch.int32), name="x_zp"
+                )
+            elif not isinstance(x_zp, ir.TensorBox):
+                assert type(x_zp) is int, f"x_zp type is {type(x_zp)}, not int"
                 x_zp = V.graph.add_tensor_constant(
                     torch.tensor(x_zp, dtype=torch.int32), name="x_zp"
                 )
@@ -1054,7 +1064,12 @@ def register_onednn_fusion_ops():
                 x_zp = V.graph.add_tensor_constant(
                     torch.tensor(0, dtype=torch.int32), name="x_zp"
                 )
-            if not isinstance(x_zp, ir.TensorBox):
+            elif isinstance(x_zp, ir.Constant):
+                # x_zp is an ir.Constant, extract its value
+                x_zp = V.graph.add_tensor_constant(
+                    torch.tensor(x_zp.value, dtype=torch.int32), name="x_zp"
+                )
+            elif not isinstance(x_zp, ir.TensorBox):
                 assert type(x_zp) is int
                 x_zp = V.graph.add_tensor_constant(
                     torch.tensor(x_zp, dtype=torch.int32), name="x_zp"
