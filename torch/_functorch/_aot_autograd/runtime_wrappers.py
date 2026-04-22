@@ -1196,8 +1196,9 @@ class EffectTokensWrapper(CompilerWrapper):
         from .subclass_codegen import _compile_and_exec_source
 
         lines = ["def _effect_tokens_wrapper(_compiled_fn_, args):"]
-        lines.append(f"    args = [{', '.join(['None'] * num_tokens)}, *args]")
-        lines.append("    outs = _compiled_fn_(args)")
+        lines.append(f"    new_args = [{', '.join(['None'] * num_tokens)}, *args]")
+        lines.append("    args.clear()")
+        lines.append("    outs = _compiled_fn_(new_args)")
         lines.append("    if outs is None:")
         lines.append("        return None")
         lines.append(f"    return outs[{num_tokens}:]")

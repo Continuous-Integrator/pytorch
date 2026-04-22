@@ -237,6 +237,7 @@ class TestCodegenEffectTokens(TestCase):
             source = captured[0]
             self.assertIn("def _effect_tokens_wrapper", source)
             self.assertIn("_compiled_fn_", source)
+            self.assertIn("args.clear()", source)
             self.assertIn("if outs is None:", source)
             self.assertIn("return None", source)
         finally:
