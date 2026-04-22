@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
-from typing import Any, cast, Literal, NamedTuple, TYPE_CHECKING
+from typing import Any, cast, Literal, TYPE_CHECKING
 
 import torch
 import torch.distributed as dist
@@ -98,10 +98,10 @@ class FSDPCommContext:
         # in the typical intra-node sharding / inter-node replication case
         self.all_reduce_stream = self.device_handle.Stream()
         # All-gather/reduce-scatter states keep references to collective
-        # tensors produced in one stream and used in another and accompanying
-        # CUDA events for synchronization
-        self.all_gather_state: AllGatherState | None = None
-        self.reduce_scatter_states: list[ReduceScatterState] = []
+        # tensors produced in one stream and used in another; see
+        # StreamHandoff for the (tensor, event, release_stream) invariants.
+        self.all_gather_state: StreamHandoff | None = None
+        self.reduce_scatter_states: list[StreamHandoff] = []
         # Keeps the HSDP all-reduce buffer alive until the next layer's
         # backward can free it on the all-reduce stream. Required because:
         # (1) a post-reduce dtype cast orphans the pre-cast buffer (param
@@ -145,14 +145,6 @@ class FSDPCommContext:
 
 
 # See [Note: Overlapping all-gather copy-in and all-gather]
-class AllGatherState(NamedTuple):
-    all_gather_result: AllGatherResult
-    event: torch.Event | None  # all-gather copy-out
-
-
-class ReduceScatterState(NamedTuple):
-    reduce_scatter_input: torch.Tensor
-    event: torch.Event | None  # reduce-scatter event
 
 
 class FSDPParamGroup:
@@ -414,9 +406,13 @@ class FSDPParamGroup:
             return  # no preceding unshard
         async_op = self._all_gather_result.all_gather_work is not None
         if self._training_state == TrainingState.FORWARD:  # implicit prefetch
-            if prev_all_gather_state := self.comm_ctx.all_gather_state:
-                self._wait_all_gather_streams_on_event(prev_all_gather_state.event)
-                self.comm_ctx.all_gather_state = None  # free the all-gather result
+            if prev := self.comm_ctx.all_gather_state:
+                # Both AG streams need to wait before reclaim. release()
+                # handles all_gather_stream (the release_stream) and the
+                # drop; wait() adds copy-in as the other consumer.
+                prev.wait(self.comm_ctx.all_gather_copy_in_stream)
+                prev.release()
+                self.comm_ctx.all_gather_state = None
         if isinstance(self.mesh_info, FSDPMeshInfo):
             world_size = self._all_gather_process_group.size()
         else:
@@ -467,9 +463,14 @@ class FSDPParamGroup:
             and world_size > 1
         ):
             # Defer free to allow for overlap of this copy-out with next
-            # all-gather collective
-            self.comm_ctx.all_gather_state = AllGatherState(
-                self._all_gather_result, all_gather_copy_out_event
+            # all-gather collective. Keep only the output buffer alive
+            # via StreamHandoff; Result metadata (dtypes, split_sizes) is
+            # no longer needed after copy-out and can go out of scope.
+            self.comm_ctx.all_gather_state = StreamHandoff(
+                tensor=self._all_gather_result.all_gather_output,
+                ready_event=all_gather_copy_out_event,
+                release_stream=self.comm_ctx.all_gather_stream,
+                device_handle=self.device_handle,
             )
         else:
             self._wait_all_gather_streams_on_event(all_gather_copy_out_event)
@@ -579,8 +580,7 @@ class FSDPParamGroup:
         ):
             with record_function(f"FSDP::post_backward_rs_wait ({self._module_fqn})"):
                 for rs_state in self.comm_ctx.reduce_scatter_states:
-                    if rs_state.event is not None:
-                        self.device_handle.current_stream().wait_event(rs_state.event)
+                    rs_state.release()
                 self.comm_ctx.reduce_scatter_states.clear()
         if len(fsdp_params_with_grad) == 0:
             return
@@ -647,8 +647,16 @@ class FSDPParamGroup:
             )
             if prev_all_reduce_state is not None:
                 prev_all_reduce_state.release()
+            # RS input is allocated on the default stream and read on the
+            # RS stream; release on default so the free routes to the pool
+            # the next `reduce_scatter_comm.allocate` draws from.
             self.comm_ctx.reduce_scatter_states.append(
-                ReduceScatterState(reduce_scatter_input, reduce_scatter_event)
+                StreamHandoff(
+                    tensor=reduce_scatter_input,
+                    ready_event=reduce_scatter_event,
+                    release_stream=self.device_handle.current_stream(),
+                    device_handle=self.device_handle,
+                )
             )
             if all_reduce_input is not None:
                 # Keep the AR buffer alive so the next layer can free it on

@@ -127,6 +127,20 @@ class StreamHandoff:
     def released(self) -> bool:
         return self._released
 
+    def wait(self, stream: torch.Stream) -> None:
+        """Make ``stream`` wait on ``ready_event``.
+
+        Use for multi-consumer cases where more than one stream reads the
+        tensor before release. Callers should invoke :meth:`wait` once per
+        extra consumer stream, then call :meth:`release` to drop the ref
+        (``release`` also waits on ``release_stream`` internally).
+
+        No-op if ``ready_event`` is ``None`` or the handoff is released.
+        """
+        if self._released or self._event is None:
+            return
+        stream.wait_event(self._event)
+
     def release(self) -> None:
         """Drop the tensor ref, routing the free to ``release_stream``'s pool.
 

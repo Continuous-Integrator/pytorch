@@ -314,13 +314,11 @@ class FSDPState(_State):
         self._training_state = TrainingState.IDLE
         if self._state_ctx.iter_forward_root is self:
             if all_gather_state := self._comm_ctx.all_gather_state:
-                # Free the last all-gather result if needed; refer to
+                # Free the last all-gather result; refer to
                 # [Note: Overlapping all-gather copy-in and all-gather]
-                self._comm_ctx.all_gather_copy_in_stream.wait_event(
-                    all_gather_state.event
-                )
-                self._comm_ctx.all_gather_stream.wait_event(all_gather_state.event)
-                self._comm_ctx.all_gather_state = None  # free the all-gather result
+                all_gather_state.wait(self._comm_ctx.all_gather_copy_in_stream)
+                all_gather_state.release()
+                self._comm_ctx.all_gather_state = None
             self._state_ctx.iter_forward_root = None
         if self._mp_policy.output_dtype is not None:
             with torch.profiler.record_function("FSDP::cast_forward_outputs"):
@@ -367,8 +365,7 @@ class FSDPState(_State):
                 # Catch the last module's RS states that no subsequent
                 # module's group N-1 wait will clear.
                 for rs_state in self._comm_ctx.reduce_scatter_states:
-                    if rs_state.event is not None:
-                        self._device_handle.current_stream().wait_event(rs_state.event)
+                    rs_state.release()
                 self._comm_ctx.reduce_scatter_states.clear()
             self._state_ctx.post_backward_final_callback_queued = False
 
