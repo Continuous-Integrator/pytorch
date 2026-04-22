@@ -161,54 +161,19 @@ class ComboKernelTests(TestCase):
             c2 = torch.add(a2, b2)
             return c0, c1, c2
 
-        inps = (
-            torch.rand(30, 20, device=GPU_TYPE),
-            torch.rand(40, 30, device=GPU_TYPE),
-            torch.rand(36, 40, device=GPU_TYPE),
-            torch.rand(30, 20, device=GPU_TYPE),
-            torch.rand(30, 40, device=GPU_TYPE).t(),
-            torch.rand(40, 36, device=GPU_TYPE).t(),
+        self.check_model_gpu(
+            fn,
+            (
+                torch.rand(30, 20, device=GPU_TYPE),
+                torch.rand(40, 30, device=GPU_TYPE),
+                torch.rand(36, 40, device=GPU_TYPE),
+                torch.rand(30, 20, device=GPU_TYPE),
+                torch.rand(30, 40, device=GPU_TYPE).t(),
+                torch.rand(40, 36, device=GPU_TYPE).t(),
+            ),
         )
-        self.check_model_gpu(fn, inps)
+
         self.assertEqual(torch._inductor.metrics.generated_kernel_count, 2)
-
-        # Verify the cpp_wrapper grid computation uses per-subkernel block sizes.
-        # Without per-subkernel block support, generate_lazy only provides shared
-        # meta keys (XBLOCK, YBLOCK) but SequentialFlattenComboKernelGrid looks
-        # up XBLOCK_0, XBLOCK_1 etc. — dict.get returns None, and ceildiv treats
-        # None as block=1, hardcoding the grid to xnumel*ynumel per subkernel.
-        if (
-            torch._inductor.config.cpp_wrapper
-            and self.combo_kernel_per_subkernel_blocks
-        ):
-            from torch.profiler import ProfilerActivity
-
-            fn_c = torch.compile(fn)
-            expected = fn(*inps)
-            activity = getattr(ProfilerActivity, GPU_TYPE.upper())
-            with tempfile.NamedTemporaryFile(suffix=".json") as trace_file:
-                with torch.profiler.profile(activities=[activity]) as prof:
-                    actual = fn_c(*inps)
-                    actual = fn_c(*inps)
-                self.assertEqual(expected, actual)
-
-                prof.export_chrome_trace(trace_file.name)
-                with open(trace_file.name) as f:
-                    trace_json = json.load(f)
-
-            combo_events = [
-                e
-                for e in trace_json["traceEvents"]
-                if "triton_poi_fused_1" in e.get("name", "")
-            ]
-            self.assertTrue(len(combo_events) > 0)
-            # With proper block sizes (>=16), the grid should be much smaller
-            # than the degenerate 30*40 + 40*36 = 2640 (block=1).
-            degenerate_grid = 30 * 40 + 40 * 36
-            for e in combo_events:
-                grid = e.get("args", {}).get("grid")
-                if grid:
-                    self.assertLess(grid[0], degenerate_grid)
 
     @requires_gpu_and_triton
     def test_persistent_reduction_size_hint(self):
@@ -1575,6 +1540,63 @@ class ComboKernelTestsMaxAutotune(TestCase):
             {"XBLOCK_1"},
             f"Expected the first combo coordesc step to tune the largest subkernel first, got {changed_fields}",
         )
+
+
+@instantiate_parametrized_tests
+class ComboKernelMetadataTests(TestCase):
+    def setUp(self):
+        super().setUp()
+        torch._inductor.metrics.reset()
+        self._test_stack = contextlib.ExitStack()
+        self._test_stack.enter_context(
+            torch._inductor.config.patch(
+                {
+                    "combo_kernels": True,
+                    "benchmark_combo_kernel": False,
+                    "combo_kernel_per_subkernel_blocks": True,
+                }
+            )
+        )
+
+    def tearDown(self):
+        self._test_stack.close()
+        torch._inductor.metrics.reset()
+        super().tearDown()
+
+    def _combo_code(self, fn, inps):
+        out_eager = fn(*inps)
+        out_compiled, code = run_and_get_code(torch.compile(fn), *inps)
+        self.assertEqual(out_eager, out_compiled)
+        return " ".join(code)
+
+    @requires_gpu_and_triton
+    def test_combo_inductor_meta_has_optimize_mem(self):
+        def fn(a, b):
+            return torch.relu(a), torch.sigmoid(b)
+
+        inps = [torch.rand(1024, device=GPU_TYPE) for _ in range(2)]
+        code = self._combo_code(fn, inps)
+        self.assertIn("'optimize_mem': True", code)
+
+    @requires_gpu_and_triton
+    def test_combo_inductor_meta_optimize_mem_false_in_training_forward(self):
+        def fn(a, b):
+            return torch.relu(a), torch.sigmoid(b)
+
+        inps = [torch.rand(1024, device=GPU_TYPE, requires_grad=True) for _ in range(2)]
+        code = self._combo_code(fn, inps)
+        self.assertIn("'optimize_mem': False", code)
+
+    @requires_gpu_and_triton
+    @parametrize("disable_ftz", [False, True])
+    def test_combo_triton_meta_has_disable_ftz(self, disable_ftz):
+        def fn(a, b):
+            return torch.relu(a), torch.sigmoid(b)
+
+        inps = [torch.rand(1024, device=GPU_TYPE) for _ in range(2)]
+        with torch._inductor.config.patch({"eager_numerics.disable_ftz": disable_ftz}):
+            code = self._combo_code(fn, inps)
+        self.assertIn(f"'disable_ftz': {disable_ftz}", code)
 
 
 if __name__ == "__main__":
