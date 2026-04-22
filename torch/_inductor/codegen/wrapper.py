@@ -1694,6 +1694,9 @@ class PythonWrapperCodegen(CodeGen):
     def write_assert_size_stride(
         self, name: str, size: str, stride: str, op_name: str
     ) -> None:
+        if config.aot_inductor.allow_stack_allocation:
+            # Skip generating for ArrayRef which is only meant for tiny CPU models
+            return
         if V.graph.cpp_wrapper:
             stmt = f'assert_size_stride({name}, {size}, {stride}, "{op_name}");'
             if V.graph.aot_mode:
