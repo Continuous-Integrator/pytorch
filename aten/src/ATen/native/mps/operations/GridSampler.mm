@@ -282,7 +282,7 @@ std::tuple<Tensor, Tensor> grid_sampler_2d_backward_mps(const Tensor& grad_outpu
     params.grad_input_strides[dim] = input_requires_grad ? safe_downcast<int32_t, int64_t>(grad_input.stride(dim)) : 0;
   }
   params.grad_grid_sW = safe_downcast<int32_t, int64_t>(grad_grid.stride(2));
-  params.padding_mode = static_cast<int32_t>(padding_mode);
+  params.padding_mode = padding_mode;
 
   using namespace mps;
   auto interp_str = mps::interp_to_string(interpolation_mode);
@@ -345,8 +345,8 @@ std::tuple<Tensor, Tensor> grid_sampler_3d_backward_mps(const Tensor& grad_outpu
               grid.scalar_type());
 
   auto input_requires_grad = output_mask[0];
-  int32_t interp_mode = static_cast<int32_t>(interpolation_mode);
-  int32_t pad_mode = static_cast<int32_t>(padding_mode);
+  auto interp_mode = static_cast<GridSamplerInterpolation>(interpolation_mode);
+  auto pad_mode = static_cast<GridSamplerPadding>(padding_mode);
 
   Tensor grad_input;
   if (input_requires_grad) {
@@ -355,8 +355,8 @@ std::tuple<Tensor, Tensor> grid_sampler_3d_backward_mps(const Tensor& grad_outpu
   // Always allocate grad_grid, matching CPU/CUDA and the 2D MPS backward.
   // Autograd requires a defined tensor for every output declared in the
   // derivative, even when the corresponding input doesn't require grad.
-  auto grad_grid = interp_mode == 1 ? at::zeros_like(grid, MemoryFormat::Contiguous)
-                                    : at::empty_like(grid, MemoryFormat::Contiguous);
+  auto grad_grid = interp_mode == GridSamplerInterpolation::Nearest ? at::zeros_like(grid, MemoryFormat::Contiguous)
+                                                                    : at::empty_like(grid, MemoryFormat::Contiguous);
 
   const auto& input_contiguous = input.contiguous();
   const auto& grid_contiguous = grid.contiguous();
@@ -372,7 +372,7 @@ std::tuple<Tensor, Tensor> grid_sampler_3d_backward_mps(const Tensor& grad_outpu
   auto out_W = grid_contiguous.size(3);
 
   bool run_grad_input = input_requires_grad;
-  bool run_grad_grid = interp_mode != 1;
+  bool run_grad_grid = interp_mode != GridSamplerInterpolation::Nearest;
 
   if (!run_grad_input && !run_grad_grid) {
     return std::make_tuple(std::move(grad_input), std::move(grad_grid));

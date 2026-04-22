@@ -708,12 +708,12 @@ static float2 compute_source_index_set_grad(
     float coord,
     int32_t size,
     bool align_corners,
-    int32_t padding_mode) {
+    GridSamplerPadding padding_mode) {
   switch (padding_mode) {
-    case 1:
+    case GridSamplerPadding::Border:
       return compute_source_index_set_grad<PadBorder>(
           coord, size, align_corners);
-    case 2:
+    case GridSamplerPadding::Reflection:
       return compute_source_index_set_grad<PadReflection>(
           coord, size, align_corners);
     default:
@@ -726,11 +726,11 @@ static float compute_source(
     float coord,
     int32_t size,
     bool align_corners,
-    int32_t padding_mode) {
+    GridSamplerPadding padding_mode) {
   switch (padding_mode) {
-    case 1:
+    case GridSamplerPadding::Border:
       return PadBorder::compute_source(coord, size, align_corners);
-    case 2:
+    case GridSamplerPadding::Reflection:
       return PadReflection::compute_source(coord, size, align_corners);
     default:
       return PadZeros::compute_source(coord, size, align_corners);
@@ -800,7 +800,7 @@ kernel void grid_sampler_3d_backward(
   float iy = iy_grad.x, giy_mult = iy_grad.y;
   float iz = iz_grad.x, giz_mult = iz_grad.y;
 
-  if (params.interpolation_mode == 0) { // trilinear
+  if (params.interpolation_mode == GridSamplerInterpolation::Bilinear) {
     const int ix_0 = static_cast<int>(floor(ix));
     const int iy_0 = static_cast<int>(floor(iy));
     const int iz_0 = static_cast<int>(floor(iz));
