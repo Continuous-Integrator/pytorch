@@ -1599,13 +1599,25 @@ bool gemm_and_bias(
   bool use_bias_epilogue = bias != nullptr;
   bool use_bias_descriptor = bias != nullptr && !use_bias_epilogue;
 
+  // alpha, beta can store at::Half in certain environments.
+  // See the code below.
   auto alpha = std::variant<opmath_t, at::Half>(alpha_val);
   auto beta = std::variant<opmath_t, at::Half>(use_bias_epilogue ? static_cast<opmath_t>(0) : beta_val);
-  const auto get_scale_ptr = [](const std::variant<opmath_t, at::Half>& var) -> const void* {
-    if (std::holds_alternative<opmath_t>(var)) {
-      return &std::get<opmath_t>(var);
+
+  // Used to set beta = beta_val when switching from epilogue bias fusion (beta == 0)
+  // to a fusion with Cdesc with ld == 0 and Cdesc != Ddesc.
+  const auto restore_beta_val = [&beta, &beta_val]() -> void {
+    if (std::holds_alternative<opmath_t>(beta)) {
+      beta = static_cast<opmath_t>(beta_val);
+    } else {
+      beta = static_cast<at::Half>(beta_val);
     }
-    return &std::get<at::Half>(var);
+  };
+  const auto get_scale_ptr = [](const std::variant<opmath_t, at::Half>& scale) -> const void* {
+    if (std::holds_alternative<opmath_t>(scale)) {
+      return &std::get<opmath_t>(scale);
+    }
+    return &std::get<at::Half>(scale);
   };
 
   cudaDataType_t abType = CUDA_R_32F;
@@ -1700,15 +1712,20 @@ bool gemm_and_bias(
     }
   };
 
-  const auto get_bias_pointer_val = [&use_bias_epilogue, &bias]() -> decltype(bias) {
+  const auto get_bias_ptr = [&use_bias_epilogue, &bias]() -> decltype(bias) {
     return use_bias_epilogue ? bias : static_cast<decltype(bias)>(nullptr);
   };
 
-  const auto set_epilogue_attributes = [&computeDesc, &get_epilogue_val, &get_bias_pointer_val]() -> void {
+  const auto set_epilogue_attributes = [&computeDesc, &get_epilogue_val, &get_bias_ptr]() -> void {
     computeDesc.setAttribute(CUBLASLT_MATMUL_DESC_EPILOGUE, get_epilogue_val());
-    computeDesc.setAttribute(CUBLASLT_MATMUL_DESC_BIAS_POINTER, get_bias_pointer_val());
+    computeDesc.setAttribute(CUBLASLT_MATMUL_DESC_BIAS_POINTER, get_bias_ptr());
   };
 
+  // Prepare and return a tuple (Cdesc, c_ptr).
+  // This function handles bias preparation and sets it to be used as
+  // - bias epilogue fusion, then (Cdesc, c_ptr) are that of the result, or
+  // - bias fusion through a matrix descriptor, then (Cdesc, c_ptr) are that
+  //   of the provided bias.
   const auto get_Cdesc_params = [&]() -> std::tuple<CuBlasLtMatrixLayout, const void*> {
 #ifndef USE_ROCM
     auto c_ptr_val = use_bias_descriptor ? reinterpret_cast<uintptr_t>(bias) : reinterpret_cast<uintptr_t>(result_ptr);
@@ -1742,28 +1759,58 @@ bool gemm_and_bias(
 #endif
 
   cublasLtMatmulHeuristicResult_t heuristicResult = {};
-  int returnedResult = 0;
   cublasLtHandle_t ltHandle = at::cuda::getCurrentCUDABlasLtHandle();
-  {
+
+  const auto get_heuristic = [&]() -> cublasStatus_t {
+    int returnedAlgoCount = 0;
     const auto [Cdesc, c_ptr] = get_Cdesc_params();
     TORCH_CUDABLAS_CHECK(cublasLtMatmulAlgoGetHeuristic(
-        ltHandle,
-        computeDesc.descriptor(),
-        Adesc.descriptor(),
-        Bdesc.descriptor(),
-        Cdesc.descriptor(),
-        Ddesc.descriptor(),
-        preference.descriptor(),
-        1,
-        &heuristicResult,
-        &returnedResult));
-  }
-  cublasStatus_t cublasStatus = CUBLAS_STATUS_SUCCESS;
-  if (returnedResult == 0) {
-    cublasStatus = CUBLAS_STATUS_NOT_SUPPORTED;
-  }
-  else {
+      ltHandle,
+      computeDesc.descriptor(),
+      Adesc.descriptor(),
+      Bdesc.descriptor(),
+      Cdesc.descriptor(),
+      Ddesc.descriptor(),
+      preference.descriptor(),
+      1, // num algos requested
+      &heuristicResult,
+      &returnedAlgoCount
+    ));
+
+    if (!returnedAlgoCount) {
+      return CUBLAS_STATUS_NOT_SUPPORTED;
+    }
+    return CUBLAS_STATUS_SUCCESS;
+  };
+
+  // When moving from a bias epilogue fusion to a fusion with a matrix descriptor,
+  // we check whether the first selected by the heuristic algorithm can be re-used
+  // (with some adjustments like required workspace and wave count).
+  // And if not (very, very unlikely), the heuristic algorithm needs to be re-queried.
+  const auto perform_algo_check = [&]() -> cublasStatus_t {
+    const auto [Cdesc, c_ptr] = get_Cdesc_params();
+    return cublasLtMatmulAlgoCheck(
+      ltHandle,
+      computeDesc.descriptor(),
+      Adesc.descriptor(),
+      Bdesc.descriptor(),
+      Cdesc.descriptor(),
+      Ddesc.descriptor(),
+      &heuristicResult.algo,
+      &heuristicResult
+    );
+  };
+
+  auto cublasStatus = get_heuristic();
 #ifndef USE_ROCM
+  if (cublasStatus == CUBLAS_STATUS_SUCCESS) {
+    // As of now, April of 26, the bias epilogue fusion occurs at reduced precision
+    // with SplitK algorithms, and that can lead to serious numerical issues, see
+    // revert reasons for https://github.com/pytorch/pytorch/pull/174594.
+    // Currently, we back away from bias epilogue fusions with SplitK algorithms,
+    // and fuse it via the path that sets a matrix descriptor Cdesc for the
+    // provided bias.
+    // FIXME: this behavior is to be changed in the upcoming CUDA releases.
     if constexpr (std::is_same_v<Dtype, C_Dtype> && (std::is_same_v<Dtype, at::Half> || std::is_same_v<Dtype, at::BFloat16>)) {
       int nsplitk = 0;
       TORCH_CUDABLAS_CHECK(cublasLtMatmulAlgoConfigGetAttribute(
@@ -1774,16 +1821,21 @@ bool gemm_and_bias(
         nullptr
       ));
       if (nsplitk > 1 && use_bias_epilogue) {
+        // bias epilogue fusion -> bias matrix descriptor fusion
         use_bias_epilogue = false;
         use_bias_descriptor = true;
-        if (std::holds_alternative<opmath_t>(beta)) {
-          beta = beta_val;
-        } else {
-          beta = static_cast<at::Half>(beta_val);
+        restore_beta_val();
+
+        // In the very, very unlikely event of not being able to re-use
+        // the selected algorithm, we need to re-query heuristic.
+        if (perform_algo_check() != CUBLAS_STATUS_SUCCESS) {
+          cublasStatus = get_heuristic();
         }
       }
     }
+  }
 #endif
+  if (cublasStatus == CUBLAS_STATUS_SUCCESS) {
     const auto [Cdesc, c_ptr] = get_Cdesc_params();
     cublasStatus = cublasLtMatmul(
       ltHandle,
