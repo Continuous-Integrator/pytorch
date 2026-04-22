@@ -16038,7 +16038,9 @@ class TestSelectiveActivationCheckpoint(TestCase):
 
         x = torch.randn(3, requires_grad=True)
         context_fn = functools.partial(create_selective_checkpoint_contexts, policy_fn)
-        out = checkpoint(fn, x, use_reentrant=False, context_fn=context_fn, early_stop=False)
+        out = checkpoint(
+            fn, x, use_reentrant=False, context_fn=context_fn, early_stop=False
+        )
         with self.assertRaisesRegex(RuntimeError, "not found in storage"):
             out.sum().backward()
 
@@ -16060,8 +16062,12 @@ class TestSelectiveActivationCheckpoint(TestCase):
 
         x = torch.randn(3, requires_grad=True)
         context_fn = functools.partial(create_selective_checkpoint_contexts, policy_fn)
-        out = checkpoint(fn, x, use_reentrant=False, context_fn=context_fn, early_stop=False)
-        with self.assertRaisesRegex(RuntimeError, "invocation index .* not found in storage"):
+        out = checkpoint(
+            fn, x, use_reentrant=False, context_fn=context_fn, early_stop=False
+        )
+        with self.assertRaisesRegex(
+            RuntimeError, "invocation index .* not found in storage"
+        ):
             out.sum().backward()
 
     @skipIfTorchDynamo("compile tested in test/dynamo/test_activation_checkpointing.py")
