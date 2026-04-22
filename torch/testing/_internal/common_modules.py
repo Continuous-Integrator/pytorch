@@ -1891,7 +1891,7 @@ def module_inputs_torch_nn_LinearCrossEntropyLoss(module_info, device, dtype, re
     for module_args, module_kwargs, (input, target) in samples():
         module_inputs.append(
             ModuleInput(
-               constructor_input=FunctionInput(*module_args, **module_kwargs),
+                constructor_input=FunctionInput(*module_args, **module_kwargs),
                 forward_input=FunctionInput(input, target),
                 reference_fn=reference_fn)
         )
