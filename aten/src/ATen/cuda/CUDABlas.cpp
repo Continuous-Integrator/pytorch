@@ -1783,6 +1783,7 @@ bool gemm_and_bias(
     return CUBLAS_STATUS_SUCCESS;
   };
 
+#ifndef USE_ROCM
   // Quary SplitK number for an algorithm selected by the heuristic routine.
   const auto get_splitk_num = [&]() -> int {
     int nsplitk = 0;
@@ -1795,6 +1796,7 @@ bool gemm_and_bias(
     ));
     return nsplitk;
   };
+#endif
 
   // When moving from a bias epilogue fusion to a fusion with a matrix descriptor,
   // we check whether the first selected by the heuristic algorithm can be reused
