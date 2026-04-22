@@ -612,8 +612,6 @@ class ConvertFrameAssert:
         export_constraints: Any | None = None,
         package: CompilePackage | None = None,
         recompile_limit: int | None = None,
-        isolate_recompiles: bool = False,
-        isolate_recompiles_id: int | None = None,
     ) -> None:
         # assert export_constraints is None
         reset_graph_break_dup_checker()
@@ -623,24 +621,16 @@ class ConvertFrameAssert:
         self._export_constraints = export_constraints
         self._package = package
         self._recompile_limit = recompile_limit
-        self._isolate_recompiles = isolate_recompiles
-        self._isolate_recompiles_id = (
-            isolate_recompiles_id if isolate_recompiles_id is not None else -1
-        )
         self._box = ConvertFrameBox()
 
     @property
     def _clone_with_backend(self) -> Callable[[CompilerFn], ConvertFrameAssert]:
-        # Preserves isolate_recompiles_id so the clone shares the same cache
-        # bucket (used by DDPOptimizer).
         return lambda backend: convert_frame_assert(
             backend,
             self._one_graph,
             self._export,
             self._export_constraints,
             recompile_limit=self._recompile_limit,
-            isolate_recompiles=self._isolate_recompiles,
-            isolate_recompiles_id=self._isolate_recompiles_id,
         )
 
     def __call__(
@@ -657,6 +647,15 @@ class ConvertFrameAssert:
 
         isolate_recompiles_id = get_eval_frame_isolate_recompiles_id()
         cache_entries = _get_cache_entries_for_region(code, isolate_recompiles_id)
+        # For recompile-reason logging: lookup() also checks the default (-1)
+        # bucket for isolated regions, so include those entries here to avoid
+        # dropping their guard-failure reasons.
+        if isolate_recompiles_id >= 0:
+            cache_entries_for_reasons = cache_entries + _get_cache_entries_for_region(
+                code, -1
+            )
+        else:
+            cache_entries_for_reasons = cache_entries
         total_count = _get_total_cache_entry_count(code)
         cache_size = compute_cache_size(frame, cache_entries, total_count)
         input_codes.add(code)
@@ -784,6 +783,7 @@ class ConvertFrameAssert:
                     hooks,
                     cache_entry,
                     cache_entries,
+                    cache_entries_for_reasons,
                     cache_size,
                     frame,
                     frame_state=frame_state,
@@ -811,8 +811,6 @@ def convert_frame_assert(
     export_constraints: Any | None = None,
     package: CompilePackage | None = None,
     recompile_limit: int | None = None,
-    isolate_recompiles: bool = False,
-    isolate_recompiles_id: int | None = None,
 ) -> ConvertFrameAssert:
     """Fully convert a frame into an FX graph, raising an exception if we fail."""
     return ConvertFrameAssert(
@@ -822,8 +820,6 @@ def convert_frame_assert(
         export_constraints,
         package,
         recompile_limit,
-        isolate_recompiles,
-        isolate_recompiles_id,
     )
 
 
@@ -1580,6 +1576,7 @@ def _compile(
     hooks: Hooks,
     cache_entry: CacheEntry | None,
     cache_entries: list[CacheEntry],
+    cache_entries_for_reasons: list[CacheEntry],
     cache_size: CacheSizeRelevantForFrame,
     frame: DynamoFrameType | None = None,
     frame_state: dict[str, int | FrameStateSizeEntry] | None = None,
@@ -1865,7 +1862,7 @@ def _compile(
         recompile_reason: str | None = None
         if is_recompilation(cache_size) and frame:
             reasons = get_and_maybe_log_recompilation_reasons(
-                cache_entries, frame, innermost_fn(compiler_fn)
+                cache_entries_for_reasons, frame, innermost_fn(compiler_fn)
             )
             recompile_reason = (
                 "Unable to find recompilation reasons" if not reasons else reasons[0]
@@ -2187,8 +2184,6 @@ class ConvertFrame:
         hooks: Hooks,
         package: CompilePackage | None = None,
         recompile_limit: int | None = None,
-        isolate_recompiles: bool = False,
-        isolate_recompiles_id: int | None = None,
     ) -> None:
         self._torchdynamo_orig_backend = compiler_fn
         self._inner_convert = convert_frame_assert(
@@ -2196,25 +2191,17 @@ class ConvertFrame:
             one_graph=False,
             package=package,
             recompile_limit=recompile_limit,
-            isolate_recompiles=isolate_recompiles,
-            isolate_recompiles_id=isolate_recompiles_id,
         )
         self._hooks = hooks
         self._recompile_limit = recompile_limit
-        self._isolate_recompiles = isolate_recompiles
-        self._isolate_recompiles_id = self._inner_convert._isolate_recompiles_id
 
     @property
     def _clone_with_backend(self) -> Callable[[WrapBackendDebug], ConvertFrame]:
-        # Used by DDPOptimizer to swap in its own backend while preserving the
-        # same isolate_recompiles_id so DDP-split subgraphs share the original
-        # compile call's cache bucket.
+        # Used by DDPOptimizer to swap in its own backend.
         return lambda backend: convert_frame(
             backend,
             self._hooks,
             recompile_limit=self._recompile_limit,
-            isolate_recompiles=self._isolate_recompiles,
-            isolate_recompiles_id=self._isolate_recompiles_id,
         )
 
     def __call__(
@@ -2342,8 +2329,6 @@ def convert_frame(
     hooks: Hooks,
     package: CompilePackage | None = None,
     recompile_limit: int | None = None,
-    isolate_recompiles: bool = False,
-    isolate_recompiles_id: int | None = None,
 ) -> ConvertFrame:
     """Try to convert a frame into an FX graph, if error leave frame unmodified"""
     return ConvertFrame(
@@ -2351,8 +2336,6 @@ def convert_frame(
         hooks,
         package=package,
         recompile_limit=recompile_limit,
-        isolate_recompiles=isolate_recompiles,
-        isolate_recompiles_id=isolate_recompiles_id,
     )
 
 
@@ -2381,6 +2364,7 @@ def replay(filename: str) -> None:
                 hooks=Hooks(),
                 cache_entry=None,
                 cache_entries=[],
+                cache_entries_for_reasons=[],
                 cache_size=CacheSizeRelevantForFrame(0, 0),
                 frame=None,
                 frame_state={},

@@ -771,6 +771,7 @@ class _TorchDynamoContext:
         compiler_config: Any | None = None,
         package: CompilePackage | None = None,
         hooks: Hooks | None = None,
+        isolate_recompiles_id: int = -1,
     ) -> None:
         super().__init__()
         assert callable(callback) or callback is False or callback is None
@@ -787,7 +788,7 @@ class _TorchDynamoContext:
         self.enter_exit_hooks = []
         self._package = package
         self._hooks = hooks
-        self._isolate_recompiles_id = getattr(callback, "_isolate_recompiles_id", -1)
+        self._isolate_recompiles_id = isolate_recompiles_id
         patch_fn()
 
         # Save the backends so that we can reset them during torch._dynamo.reset
@@ -826,9 +827,6 @@ class _TorchDynamoContext:
         self.prior_skip_guard_eval_unsafe = set_skip_guard_eval_unsafe(
             _is_skip_guard_eval_unsafe_stance()
         )
-        self._prior_isolate_recompiles_id = set_eval_frame_isolate_recompiles_id(
-            self._isolate_recompiles_id
-        )
         _maybe_set_eval_frame(_callback_from_stance(self.callback))
 
     def __exit__(
@@ -840,7 +838,6 @@ class _TorchDynamoContext:
         assert self.prior is not unset
         set_eval_frame(None)
         set_skip_guard_eval_unsafe(self.prior_skip_guard_eval_unsafe)
-        set_eval_frame_isolate_recompiles_id(self._prior_isolate_recompiles_id)
         for cleanup in self.cleanup_fns:
             cleanup()
         self.cleanup_fns.clear()
@@ -1206,6 +1203,7 @@ class OptimizeContext(_TorchDynamoContext):
         rebuild_ctx: Callable[[], OptimizeContext | _NullDecorator] | None = None,
         package: CompilePackage | None = None,
         hooks: Hooks | None = None,
+        isolate_recompiles_id: int = -1,
     ) -> None:
         def on_enter() -> None:
             install_generation_tagging_init()
@@ -1223,6 +1221,7 @@ class OptimizeContext(_TorchDynamoContext):
             compiler_config=compiler_config,
             package=package,
             hooks=hooks,
+            isolate_recompiles_id=isolate_recompiles_id,
         )
 
         if config.compiled_autograd:
@@ -1374,6 +1373,7 @@ def _optimize_catch_errors(
     compiler_config: Any | None = None,
     rebuild_ctx: Callable[[], OptimizeContext | _NullDecorator] | None = None,
     package: CompilePackage | None = None,
+    isolate_recompiles_id: int = -1,
 ) -> OptimizeContext:
     return OptimizeContext(
         convert_frame.catch_errors_wrapper(compile_fn, hooks),
@@ -1387,6 +1387,7 @@ def _optimize_catch_errors(
         rebuild_ctx=rebuild_ctx,
         package=package,
         hooks=hooks,
+        isolate_recompiles_id=isolate_recompiles_id,
     )
 
 
@@ -1657,9 +1658,9 @@ def _optimize(
 
         package = CompilePackage(fn=None, dynamo=None, ignore_inlined_sources=False)
 
-    isolate_recompiles_id: int | None = None
-    if isolate_recompiles:
-        isolate_recompiles_id = next(_next_isolate_recompiles_id)
+    isolate_recompiles_id = (
+        next(_next_isolate_recompiles_id) if isolate_recompiles else -1
+    )
 
     return _optimize_catch_errors(
         convert_frame.convert_frame(
@@ -1667,8 +1668,6 @@ def _optimize(
             hooks,
             package=package,
             recompile_limit=recompile_limit,
-            isolate_recompiles=isolate_recompiles,
-            isolate_recompiles_id=isolate_recompiles_id,
         ),
         hooks,
         backend_ctx_ctor,
@@ -1683,6 +1682,7 @@ def _optimize(
         ),
         rebuild_ctx=rebuild_ctx,
         package=package,
+        isolate_recompiles_id=isolate_recompiles_id,
     )
 
 
@@ -2547,9 +2547,9 @@ def _optimize_assert(
 
         package = CompilePackage(fn=None, dynamo=None, ignore_inlined_sources=False)
 
-    isolate_recompiles_id: int | None = None
-    if isolate_recompiles:
-        isolate_recompiles_id = next(_next_isolate_recompiles_id)
+    isolate_recompiles_id = (
+        next(_next_isolate_recompiles_id) if isolate_recompiles else -1
+    )
 
     return _optimize_catch_errors(
         convert_frame.convert_frame_assert(
@@ -2558,8 +2558,6 @@ def _optimize_assert(
             export_constraints=export_constraints,
             package=package,
             recompile_limit=recompile_limit,
-            isolate_recompiles=isolate_recompiles,
-            isolate_recompiles_id=isolate_recompiles_id,
         ),
         hooks,
         backend_ctx_ctor,
@@ -2568,6 +2566,7 @@ def _optimize_assert(
         dynamic=dynamic,
         rebuild_ctx=rebuild_ctx,
         package=package,
+        isolate_recompiles_id=isolate_recompiles_id,
     )
 
 

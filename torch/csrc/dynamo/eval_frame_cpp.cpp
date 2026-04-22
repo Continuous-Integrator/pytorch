@@ -491,13 +491,18 @@ PyObject* dynamo__custom_eval_frame(
     extra = init_and_set_extra_state(F_CODE(frame));
   }
 
-  // Get global strategy first for SKIP check (before region id is needed)
-  FrameExecStrategy global_strategy = extra_state_get_exec_strategy(extra);
-  recursive_callback = _callback_from_action(
-      recursive_callback, global_strategy.recursive_action);
+  // Resolve strategy per isolate_recompiles scope. For non-isolated
+  // frames (id < 0) this returns extra->strategy; for isolated regions
+  // it returns the region's own strategy, or DEFAULT if none — regions
+  // do not inherit the global SKIP / RUN_ONLY.
+  int64_t isolate_recompiles_id = get_current_isolate_recompiles_id();
+  FrameExecStrategy strategy =
+      extra_state_get_region_exec_strategy(extra, isolate_recompiles_id);
 
-  // Skip this frame (global skip applies to all regions)
-  if (global_strategy.cur_action == FrameAction::SKIP) {
+  recursive_callback =
+      _callback_from_action(recursive_callback, strategy.recursive_action);
+
+  if (strategy.cur_action == FrameAction::SKIP) {
     DEBUG_TRACE("skip %s", get_frame_name(frame));
     eval_default();
     return eval_result;
@@ -507,11 +512,6 @@ PyObject* dynamo__custom_eval_frame(
   std::unique_ptr<FrameLocalsMapping> locals =
       std::make_unique<FrameLocalsMapping>(frame);
   PyObject* backend = get_backend(callback.ptr()); // borrowed
-  int64_t isolate_recompiles_id = get_current_isolate_recompiles_id();
-
-  // Get per-region strategy (falls back to global for non-isolated)
-  FrameExecStrategy strategy =
-      extra_state_get_region_exec_strategy(extra, isolate_recompiles_id);
 
   // We don't run the current custom_eval_frame behavior for guards.
   // So we temporarily set the callback to Py_None to drive the correct behavior
