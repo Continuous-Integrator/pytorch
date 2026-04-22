@@ -1835,7 +1835,7 @@ def module_inputs_torch_nn_LinearCrossEntropyLoss(module_info, device, dtype, re
                     ignore_index=ii,
                     label_smoothing=ls,
                 )
-                if num_batches is None:
+                if num_batches is None and of:
                     # K-dimensional loss requires batches dimension
                     continue
 
