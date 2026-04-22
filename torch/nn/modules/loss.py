@@ -1534,8 +1534,12 @@ class LinearCrossEntropyLoss(_WeightedLoss):
 
     def extra_repr(self) -> str:
         return (
-            f"in_features={self.linear.in_features}, num_classes={self.num_classes}, out_features={self.out_features},"
-            f" reduction={self.reduction}, ignore_index={self.ignore_index}, label_smoothing={self.label_smoothing}"
+            f"in_features={self.linear.in_features},"
+            f" num_classes={self.num_classes},"
+            f" out_features={self.out_features},"
+            f" reduction={self.reduction},"
+            f" ignore_index={self.ignore_index},"
+            f" label_smoothing={self.label_smoothing}"
         )
 
 
