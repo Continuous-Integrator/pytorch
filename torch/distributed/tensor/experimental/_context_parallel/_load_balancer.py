@@ -476,7 +476,7 @@ class _VarlenPTRRLoadBalancer(_LoadBalancer):
         work estimate is ``t - doc_start[t] + 1`` summed over the block,
         which is only the correct work estimate under causal masking.
         Using this balancer with a non-causal varlen mask will produce a
-        valid permutation but a meaningless load balance — callers are
+        valid permutation but a meaningless load balance -- callers are
         responsible for ensuring the attention mask is causal.
 
     Estimates per-Q-block work directly from ``cu_seq_q`` (no ``BlockMask``
@@ -485,7 +485,7 @@ class _VarlenPTRRLoadBalancer(_LoadBalancer):
     is reused.
 
     Outputs a ``(B, S)`` permutation tensor where each batch element is
-    rearranged independently — important when documents differ across
+    rearranged independently -- important when documents differ across
     the batch.
     """
 
