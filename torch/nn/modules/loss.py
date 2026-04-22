@@ -1521,6 +1521,7 @@ class LinearCrossEntropyLoss(_WeightedLoss):
         self.options = options
 
     def forward(self, input: Tensor, target: Tensor) -> Tensor:
+        """Runs the forward pass."""
         linear_weight = self.linear.weight.reshape(
             (self.num_classes, *self.out_features, self.linear.in_features)
         )
