@@ -17,6 +17,7 @@
 #include <torch/csrc/utils/python_arg_parser.h>
 #include <torch/csrc/utils/python_compat.h>
 #include <torch/csrc/utils/python_numbers.h>
+#include <torch/csrc/utils/python_strings.h>
 #include <torch/csrc/utils/python_symnode.h>
 #include <torch/csrc/utils/pythoncapi_compat.h>
 #include <torch/extension.h>
@@ -1697,7 +1698,7 @@ c10::Synchronized<DictToGuardManagersMap> dict_to_guard_managers;
 // where an exception just means "these don't match" and we want guard failure
 // (recompile), not a crash. Set false_on_error to false if the caller wants to
 // handle exceptions themselves.
-static inline bool py_equals(PyObject* a, PyObject* b, bool false_on_error) {
+static bool py_equals(PyObject* a, PyObject* b, bool false_on_error) {
   int eq = PyObject_RichCompareBool(a, b, Py_EQ);
   if (false_on_error && eq == -1)
     PyErr_Clear();
@@ -2161,7 +2162,7 @@ class DEFAULT_DEVICE : public LeafGuard {
     // ref it. Interned strings are used for things like variable names and are
     // leaked by design.
     static PyObject* current_device_str =
-        PyUnicode_InternFromString("CURRENT_DEVICE");
+        THPUtils_internString("CURRENT_DEVICE");
     PyObject* device = PyDict_GetItem(
         _utils_device_dict.ptr(), current_device_str); // borrowed ref
     if (device != _device.ptr()) {
@@ -2743,22 +2744,19 @@ class DIMENSION_DYNAMIC_MARKING_GUARD : public LeafGuard {
             std::move(user_stack)) {
     // Pre-intern all attribute name strings for fast lookup on hot path.
     for (auto& item : expected_attrs) {
-      PyObject* key =
-          PyUnicode_InternFromString(py::cast<std::string>(item.first).c_str());
+      PyObject* key = THPUtils_internString(py::cast<std::string>(item.first));
       _expected_attrs.emplace_back(
           key, py::reinterpret_borrow<py::object>(item.second));
     }
     for (auto& item : absent_attrs) {
-      PyObject* key =
-          PyUnicode_InternFromString(py::cast<std::string>(item).c_str());
+      PyObject* key = THPUtils_internString(py::cast<std::string>(item));
       _absent_attrs.emplace_back(key);
     }
     for (auto& item : dependent_attrs) {
       py::tuple val = py::cast<py::tuple>(item.second);
       PyObject* attr_key =
-          PyUnicode_InternFromString(py::cast<std::string>(item.first).c_str());
-      PyObject* gate_key =
-          PyUnicode_InternFromString(py::cast<std::string>(val[1]).c_str());
+          THPUtils_internString(py::cast<std::string>(item.first));
+      PyObject* gate_key = THPUtils_internString(py::cast<std::string>(val[1]));
       _dependent_attrs.emplace_back(
           attr_key, py::reinterpret_borrow<py::object>(val[0]), gate_key);
     }
@@ -2951,10 +2949,9 @@ class DIMENSION_DYNAMIC_MARKING_GUARD : public LeafGuard {
   bool _all_absent;
   // Pre-interned string for the single flag attribute.
   static inline PyObject* _has_marking_str =
-      PyUnicode_InternFromString("_has_dynamo_dim_marking");
+      THPUtils_internString("_has_dynamo_dim_marking");
   // Pre-interned string for subset check method.
-  static inline PyObject* _issubset_str =
-      PyUnicode_InternFromString("issubset");
+  static inline PyObject* _issubset_str = THPUtils_internString("issubset");
 };
 
 class DICT_VERSION : public LeafGuard {
