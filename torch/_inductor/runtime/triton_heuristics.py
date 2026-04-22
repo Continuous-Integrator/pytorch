@@ -659,6 +659,20 @@ class CachingAutotuner(KernelInterface):
 
             self._make_launchers()
 
+    def compile_by_disabling_pipelining(self, config):
+        # self.fn.fn is dropped by prepare_for_pickle() after the initial
+        # compile; reload it so triton.compile can access the source.
+        if self.fn.fn is None:
+            assert callable(self._reload_kernel)
+            self.fn = self._reload_kernel().fn
+        cfg = copy.deepcopy(config)
+        cfg.num_stages = 1
+        if "NUM_STAGES" in cfg.kwargs:
+            cfg.kwargs["NUM_STAGES"] = 1
+        result = self._precompile_config(cfg)
+        self.compile_results = [result]
+        return result.make_launcher()
+
     def _make_launchers(self):
         if len(self.launchers) == len(self.compile_results):
             return
@@ -682,8 +696,17 @@ class CachingAutotuner(KernelInterface):
                     IntelGPUError,
                 ) as e:
                     exc = e
-        if len(launchers) == 0:
-            raise RuntimeError(f"No valid triton configs. {type(exc).__name__}: {exc}")
+            if len(launchers) == 0:
+                result = self.compile_results[-1]
+                config = result.config
+                if isinstance(exc, (OutOfResources, torch.cuda.OutOfMemoryError)) and (
+                    config.num_stages > 1 or config.kwargs.get("NUM_STAGES", 1) > 1
+                ):
+                    self.launchers = [self.compile_by_disabling_pipelining(config)]
+                    return
+                raise RuntimeError(
+                    f"No valid triton configs. {type(exc).__name__}: {exc}"
+                )
         self.launchers = launchers
 
     def prepare_for_pickle(self) -> tuple[Any, Any, Any, Any, Any, Any]:
@@ -2919,22 +2942,28 @@ def _get_config(numels: dict[str, int]) -> dict[str, int]:
 def _subkernel_fingerprint(combo_meta: dict[str, Any], i: int) -> tuple[Any, ...]:
     """Per-sub-kernel heuristic inputs as a hashable tuple. Identical
     fingerprints imply identical heuristic output.
+
+    Per-kernel fields (num_load, autotune_hints, tiling_scores, etc.) live
+    inside combo_meta[f"inductor_meta_{i}"] (single source of truth — see
+    TritonKernel.inductor_meta_per_kernel). Combo-level fields (heuristic,
+    size_hints, tile_hint, reduction_hint) remain top-level in combo_meta.
     """
-    tma = combo_meta.get(f"tma_min_block_sizes_{i}") or {}
-    tiling_scores = combo_meta.get(f"tiling_scores_{i}") or {}
+    sub_meta = combo_meta.get(f"inductor_meta_{i}", {})
+    tma = sub_meta.get("tma_min_block_sizes") or {}
+    tiling_scores = sub_meta.get("tiling_scores") or {}
     return (
         combo_meta[f"heuristic_{i}"],
         tuple(sorted(combo_meta[f"size_hints_{i}"].items())),
-        combo_meta[f"num_load_{i}"],
-        combo_meta[f"num_store_{i}"],
-        combo_meta[f"num_reduction_{i}"],
-        tuple(sorted(combo_meta[f"autotune_hints_{i}"], key=str)),
-        combo_meta[f"atomic_add_found_{i}"],
-        combo_meta[f"no_x_dim_{i}"],
+        sub_meta.get("num_load"),
+        sub_meta.get("num_store"),
+        sub_meta.get("num_reduction"),
+        tuple(sorted(sub_meta.get("autotune_hints") or [], key=str)),
+        sub_meta.get("atomic_add_found"),
+        sub_meta.get("no_x_dim"),
         combo_meta.get(f"reduction_hint_{i}"),
         combo_meta.get(f"tile_hint_{i}"),
-        combo_meta.get(f"add_persistent_rblock_{i}", False),
-        combo_meta.get(f"has_loadstore_with_contiguous_rdim_{i}"),
+        sub_meta.get("add_persistent_rblock", False),
+        sub_meta.get("has_loadstore_with_contiguous_rdim"),
         tuple(sorted(tma.items())),
         tuple(sorted(tiling_scores.items())),
     )
@@ -3004,35 +3033,14 @@ def _handle_combo_kernel_per_subkernel_blocks(
     for i in range(num_kernels):
         subkernel_heuristic = combo_meta[f"heuristic_{i}"]
         size_hints_i = combo_meta[f"size_hints_{i}"]
-        tiling_scores_i = combo_meta.get(f"tiling_scores_{i}")
-        inductor_meta_i = dict(inductor_meta_clean)
-        if tiling_scores_i is not None:
-            inductor_meta_i["tiling_scores"] = tiling_scores_i
-        # Per-sub-kernel metadata stored by combo_grid_meta(): forward into
+        # Per-sub-kernel inductor_meta passthrough packed by combo_grid_meta()
+        # via TritonKernel.inductor_meta_per_kernel(). Forward into
         # inductor_meta_i so pointwise()/_reduction_configs()/_persistent_reduction_configs()
-        # pick configs based on the actual sub-kernel, not heuristic defaults.
-        if f"num_load_{i}" in combo_meta:
-            inductor_meta_i["num_load"] = combo_meta[f"num_load_{i}"]
-        if f"num_store_{i}" in combo_meta:
-            inductor_meta_i["num_store"] = combo_meta[f"num_store_{i}"]
-        if f"num_reduction_{i}" in combo_meta:
-            inductor_meta_i["num_reduction"] = combo_meta[f"num_reduction_{i}"]
-        if f"autotune_hints_{i}" in combo_meta:
-            inductor_meta_i["autotune_hints"] = OrderedSet(
-                combo_meta[f"autotune_hints_{i}"]
-            )
-        if f"atomic_add_found_{i}" in combo_meta:
-            inductor_meta_i["atomic_add_found"] = combo_meta[f"atomic_add_found_{i}"]
-        if f"has_loadstore_with_contiguous_rdim_{i}" in combo_meta:
-            inductor_meta_i["has_loadstore_with_contiguous_rdim"] = combo_meta[
-                f"has_loadstore_with_contiguous_rdim_{i}"
-            ]
-        if f"tma_min_block_sizes_{i}" in combo_meta:
-            inductor_meta_i["tma_min_block_sizes"] = combo_meta[
-                f"tma_min_block_sizes_{i}"
-            ]
-        if combo_meta.get(f"add_persistent_rblock_{i}"):
-            inductor_meta_i["add_persistent_rblock"] = True
+        # pick configs based on the actual sub-kernel .
+        inductor_meta_i = {
+            **inductor_meta_clean,
+            **combo_meta.get(f"inductor_meta_{i}", {}),
+        }
 
         if subkernel_heuristic == "pointwise":
             cfgs = pointwise(
@@ -3096,7 +3104,7 @@ def _handle_combo_kernel_per_subkernel_blocks(
 
         group_key = (
             _subkernel_fingerprint(combo_meta, i)
-            if torch._inductor.config.combo_kernel_autotune_grouping
+            if combo_meta.get("autotune_grouping")
             else (i,)
         )
         if group_key in group_map:
@@ -4019,6 +4027,16 @@ def _persistent_reduction_configs(
     inductor_meta=None,
     triton_meta=None,
 ):
+    # Under deterministic mode, canonicalize the batch-dim hint so the
+    # candidate-config branching below (e.g. xnumel // 8 < 128) doesn't pick
+    # a different (XBLOCK, num_warps) for bs=N vs bs=N/2. Different picks
+    # change the bf16 reduction order and break batch invariance in
+    # persistent reductions like LayerNorm.
+    if inductor_meta and inductor_meta.get("batch_invariant"):
+        size_hints = dict(size_hints)
+        if "x" in size_hints:
+            size_hints["x"] = max(size_hints["x"], 4096)
+
     xnumel = size_hints["x"]
     rnumel = get_total_reduction_numel(size_hints)
 
