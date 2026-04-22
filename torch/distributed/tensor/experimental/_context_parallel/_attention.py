@@ -1457,10 +1457,7 @@ def _create_cp_varlen_metadata(
             "per-rank result from a prior _create_cp_varlen_metadata call. "
             "Pass the original global VarlenMetadata instead."
         )
-    if (
-        varlen_meta.unpacked_batch_size is None
-        or varlen_meta.unpacked_seq_len is None
-    ):
+    if varlen_meta.unpacked_batch_size is None or varlen_meta.unpacked_seq_len is None:
         raise ValueError(
             "VarlenMetadata.unpacked_batch_size and .unpacked_seq_len must be "
             "set for context-parallel sharding."
@@ -1509,14 +1506,17 @@ def _create_cp_varlen_metadata(
     rearrange_per_batch: torch.Tensor | None = None
     if load_balancer is not None:
         rearrange_indices = load_balancer._generate_indices(restore=False)
-        if rearrange_indices.ndim != 2:
-            raise ValueError(
-                "load balancer indices must have shape (1, seq_len) or "
-                f"(B, seq_len); got {tuple(rearrange_indices.shape)}."
-            )
-        if rearrange_indices.shape[0] == 1:
-            rearrange_indices = rearrange_indices.expand(B, -1)
-        rearrange_per_batch = rearrange_indices.to(torch.long)
+        # ``_generate_indices`` may return None when the balancer is a no-op
+        # (e.g. ``_create_default_load_balancer`` with load-balance disabled).
+        if rearrange_indices is not None:
+            if rearrange_indices.ndim != 2:
+                raise ValueError(
+                    "load balancer indices must have shape (1, seq_len) or "
+                    f"(B, seq_len); got {tuple(rearrange_indices.shape)}."
+                )
+            if rearrange_indices.shape[0] == 1:
+                rearrange_indices = rearrange_indices.expand(B, -1)
+            rearrange_per_batch = rearrange_indices.to(torch.long)
 
     # Per-batch local-to-global seq mapping for this rank, shape (B, shard_len),
     # values in [0, seq_len).
@@ -1548,9 +1548,7 @@ def _create_cp_varlen_metadata(
 
     # Doc id per local position via searchsorted on the global cu_seq_q.
     global_cu_seq_q = varlen_meta.cu_seq_q.to(torch.long)
-    doc_id = (
-        torch.searchsorted(global_cu_seq_q, packed_local_to_global, right=True) - 1
-    )
+    doc_id = torch.searchsorted(global_cu_seq_q, packed_local_to_global, right=True) - 1
 
     # Vectorized segment-boundary detection: a new segment starts wherever the
     # doc id changes OR consecutive local positions are not consecutive in the
@@ -1913,7 +1911,7 @@ def context_parallel(
     load_balancer = _create_default_load_balancer(seq_length, cp_world_size, device)
     shards = _context_parallel_buffers(
         mesh,
-        cast(list[torch.Tensor | BlockMask], buffers),
+        cast(list[CPBuffer], buffers),
         buffer_seq_dims,
         load_balancer,
     )
