@@ -42,13 +42,12 @@ from ..utils import (
     iter_contains,
     odict_values,
     raise_args_mismatch,
-    range_iterator,
     set_example_value,
 )
 from .base import AsPythonConstantNotImplementedError, ValueMutationNew, VariableTracker
 from .constant import ConstantVariable
 from .functions import UserFunctionVariable
-from .iter import IteratorVariable
+from .iter import ListIteratorVariable, RangeIteratorVariable, TupleIteratorVariable
 
 
 if TYPE_CHECKING:
@@ -1665,136 +1664,3 @@ class SliceVariable(VariableTracker):
                 hints=[*graph_break_hints.USER_ERROR],
             )
         return self.items[fields.index(name)]
-
-
-class ListIteratorVariable(IteratorVariable):
-    # PyListIter_Type: https://github.com/python/cpython/blob/v3.13.0/Objects/listobject.c#L3842
-    _cpython_type = type(iter([]))
-
-    _nonvar_fields = {
-        "index",
-        *IteratorVariable._nonvar_fields,
-    }
-
-    def __init__(
-        self, items: list[VariableTracker], index: int = 0, **kwargs: Any
-    ) -> None:
-        super().__init__(**kwargs)
-        assert isinstance(items, list)
-        # Removing this check as it slows things down too much
-        # https://github.com/pytorch/pytorch/pull/87533#issuecomment-1287574492
-
-        # assert all(isinstance(x, VariableTracker) for x in items)
-        self.items = items
-        self.index = index
-        self.is_exhausted = False
-
-    def __repr__(self) -> str:
-        return f"{self.__class__.__name__}(length={len(self.items)}, index={repr(self.index)})"
-
-    def tp_iternext_impl(self, tx: "InstructionTranslator") -> VariableTracker:
-        # ref: https://github.com/python/cpython/blob/6280bb547840b609feedb78887c6491af75548e8/Objects/listobject.c#L4110-L4133
-        assert self.is_mutable()
-        old_index = self.index
-        if old_index >= len(self.items) or self.is_exhausted:
-            self.is_exhausted = True
-            raise_observed_exception(StopIteration, tx)
-
-        tx.output.side_effects.mutation(self)
-        self.index += 1
-        return self.items[old_index]
-
-    def call_obj_hasattr(
-        self, tx: "InstructionTranslator", name: str
-    ) -> ConstantVariable:
-        return VariableTracker.build(tx, hasattr(iter([]), name))
-
-    def python_type(self) -> type:
-        return type(iter([]))
-
-    def as_python_constant(self) -> Any:
-        if self.index > 0:
-            raise NotImplementedError
-        return iter([x.as_python_constant() for x in self.items])
-
-    def has_unpack_var_sequence(self, tx: "InstructionTranslator") -> bool:
-        return True
-
-    def unpack_var_sequence(self, tx: "InstructionTranslator") -> list[VariableTracker]:
-        if self.is_exhausted:
-            return []
-        self.is_exhausted = True
-        return list(self.items[self.index :])
-
-    def force_unpack_var_sequence(
-        self, tx: "InstructionTranslator"
-    ) -> list[VariableTracker]:
-        return self.unpack_var_sequence(tx)
-
-    def reconstruct(self, codegen: "PyCodegen") -> None:
-        if not self.is_exhausted:
-            remaining_items = self.items[self.index :]
-        else:
-            # pyrefly: ignore [implicit-any]
-            remaining_items = []
-        codegen.foreach(remaining_items)
-        codegen.extend_output(
-            [
-                create_build_tuple(len(remaining_items)),
-                create_instruction("GET_ITER"),
-            ]
-        )
-
-
-class TupleIteratorVariable(ListIteratorVariable):
-    # PyTupleIter_Type: https://github.com/python/cpython/blob/v3.13.0/Objects/tupleobject.c#L1067
-    _cpython_type = type(iter(()))
-
-
-class RangeIteratorVariable(IteratorVariable):
-    # PyRangeIter_Type: https://github.com/python/cpython/blob/v3.13.0/Objects/rangeobject.c#L896
-    _cpython_type = type(iter(range(0)))
-
-    def __init__(
-        self, start: int, stop: int, step: int, len_: int, **kwargs: Any
-    ) -> None:
-        super().__init__(**kwargs)
-        self.start = start
-        self.stop = stop
-        self.step = step
-        self.len = len_
-
-    def tp_iter_impl(self, tx: "InstructionTranslator") -> VariableTracker:
-        """Range iterators are their own iterator."""
-        return self
-
-    def call_obj_hasattr(
-        self, tx: "InstructionTranslator", name: str
-    ) -> ConstantVariable:
-        if self.python_type() is range_iterator:
-            ri = iter(range(0))
-            return VariableTracker.build(tx, hasattr(ri, name))
-        return super().call_obj_hasattr(tx, name)
-
-    def tp_iternext_impl(self, tx: "InstructionTranslator") -> VariableTracker:
-        # ref: https://github.com/python/cpython/blob/v3.13.3/Objects/rangeobject.c#L1072-L1091
-        if self.len <= 0:
-            raise_observed_exception(StopIteration, tx)
-
-        self.len -= 1
-        current = self.start
-        self.start += self.step
-        return VariableTracker.build(tx, current)
-
-    def python_type(self) -> type:
-        return range_iterator
-
-    def reconstruct(self, codegen: "PyCodegen") -> None:
-        codegen.add_push_null(
-            lambda: codegen.append_output(codegen.create_load_python_module(range))  # type: ignore[arg-type]
-        )
-        codegen.append_output(codegen.create_load_const(self.start))
-        codegen.append_output(codegen.create_load_const(self.stop))
-        codegen.append_output(codegen.create_load_const(self.step))
-        codegen.extend_output(create_call_function(3, False))
-        codegen.append_output(create_instruction("GET_ITER"))
