@@ -1287,8 +1287,6 @@ def _build_varlen_meta(
         cu_seq_k=cu.clone(),
         max_q=int(seg_lens.max().item()),
         max_k=int(seg_lens.max().item()),
-        unpacked_batch_size=B,
-        unpacked_seq_len=seq_len,
     )
 
 
@@ -1314,6 +1312,8 @@ class TestCPVarlenMetadata(TestCase):
         self,
         global_meta: VarlenMetadata,
         cp_world_size: int,
+        B: int,
+        seq_len: int,
         load_balancer_factory=None,
     ) -> list[VarlenMetadata]:
         """Return per-rank metadata for the given global metadata."""
@@ -1321,11 +1321,19 @@ class TestCPVarlenMetadata(TestCase):
         for rank in range(cp_world_size):
             mesh = _MockMesh(cp_world_size, rank)
             lb = (
-                load_balancer_factory(global_meta.unpacked_seq_len, cp_world_size)
+                load_balancer_factory(seq_len, cp_world_size)
                 if load_balancer_factory
                 else None
             )
-            results.append(_create_cp_varlen_metadata(global_meta, mesh, lb))
+            results.append(
+                _create_cp_varlen_metadata(
+                    global_meta,
+                    mesh,
+                    batch_size=B,
+                    seq_length=seq_len,
+                    load_balancer=lb,
+                )
+            )
         return results
 
     @staticmethod
@@ -1339,7 +1347,7 @@ class TestCPVarlenMetadata(TestCase):
         # B=1, one doc spanning [0, 32). CP=2 -> rank 0 gets [0, 16),
         # rank 1 gets [16, 32). rank 1 is mid-doc so its seqlen_k = 32.
         meta = _build_varlen_meta([0, 32], B=1, seq_len=32)
-        per_rank = self._run(meta, cp_world_size=2)
+        per_rank = self._run(meta, cp_world_size=2, B=1, seq_len=32)
         self.assertEqual(self._seg_lens(per_rank[0]), ([16], [16]))
         self.assertEqual(self._seg_lens(per_rank[1]), ([16], [32]))
         self.assertEqual(per_rank[0].max_q, 16)
@@ -1354,6 +1362,8 @@ class TestCPVarlenMetadata(TestCase):
         per_rank = self._run(
             meta,
             cp_world_size=2,
+            B=1,
+            seq_len=32,
             load_balancer_factory=lambda s, w: _HeadTailLoadBalancer(
                 s, w, torch.device("cpu")
             ),
@@ -1364,7 +1374,7 @@ class TestCPVarlenMetadata(TestCase):
     def test_multi_doc_aligned(self) -> None:
         # Two docs of length 32 each, no LB; each rank gets exactly one doc.
         meta = _build_varlen_meta([0, 32, 64], B=1, seq_len=64)
-        per_rank = self._run(meta, cp_world_size=2)
+        per_rank = self._run(meta, cp_world_size=2, B=1, seq_len=64)
         self.assertEqual(self._seg_lens(per_rank[0]), ([32], [32]))
         self.assertEqual(self._seg_lens(per_rank[1]), ([32], [32]))
 
@@ -1373,7 +1383,7 @@ class TestCPVarlenMetadata(TestCase):
         # rank 0 has [0..32): doc 0 fully + doc 1 prefix [10..32).
         # rank 1 has [32..64): doc 1 mid [32..50) + doc 2 fully [50..64).
         meta = _build_varlen_meta([0, 10, 50, 64], B=1, seq_len=64)
-        per_rank = self._run(meta, cp_world_size=2)
+        per_rank = self._run(meta, cp_world_size=2, B=1, seq_len=64)
         self.assertEqual(self._seg_lens(per_rank[0]), ([10, 22], [10, 22]))
         self.assertEqual(self._seg_lens(per_rank[1]), ([18, 14], [40, 14]))
 
@@ -1389,6 +1399,8 @@ class TestCPVarlenMetadata(TestCase):
         per_rank = self._run(
             meta,
             cp_world_size=2,
+            B=1,
+            seq_len=64,
             load_balancer_factory=lambda s, w: _HeadTailLoadBalancer(
                 s, w, torch.device("cpu")
             ),
@@ -1401,7 +1413,7 @@ class TestCPVarlenMetadata(TestCase):
         # rank 0 has [0..4): doc 0 [0..1) + doc 1 prefix [1..4).
         # rank 1 has [4..8): doc 1 only, mid-doc.
         meta = _build_varlen_meta([0, 1, 8], B=1, seq_len=8)
-        per_rank = self._run(meta, cp_world_size=2)
+        per_rank = self._run(meta, cp_world_size=2, B=1, seq_len=8)
         self.assertEqual(self._seg_lens(per_rank[0]), ([1, 3], [1, 3]))
         self.assertEqual(self._seg_lens(per_rank[1]), ([4], [7]))
 
@@ -1409,7 +1421,7 @@ class TestCPVarlenMetadata(TestCase):
         # 3 docs (4, 4, 8) totaling 16; CP=2 -> rank 0 has docs 0+1, rank 1
         # has doc 2 entirely.
         meta = _build_varlen_meta([0, 4, 8, 16], B=1, seq_len=16)
-        per_rank = self._run(meta, cp_world_size=2)
+        per_rank = self._run(meta, cp_world_size=2, B=1, seq_len=16)
         self.assertEqual(self._seg_lens(per_rank[0]), ([4, 4], [4, 4]))
         self.assertEqual(self._seg_lens(per_rank[1]), ([8], [8]))
 
@@ -1418,7 +1430,7 @@ class TestCPVarlenMetadata(TestCase):
         # CP=2 (per-batch shard=4) -> rank r gets batch b's seq positions
         # [r*4, (r+1)*4) for each b. No straddling within docs.
         meta = _build_varlen_meta([0, 4, 8], B=2, seq_len=8)
-        per_rank = self._run(meta, cp_world_size=2)
+        per_rank = self._run(meta, cp_world_size=2, B=2, seq_len=8)
         self.assertEqual(self._seg_lens(per_rank[0]), ([4, 4], [4, 4]))
         self.assertEqual(self._seg_lens(per_rank[1]), ([4, 4], [4, 4]))
 
@@ -1435,7 +1447,7 @@ class TestCPVarlenMetadata(TestCase):
         # non-contiguous per-segment K regions ([0..10), [10..16),
         # [32..42), [42..48)) from the packed length-64 K view.
         meta = _build_varlen_meta([0, 10, 32], B=2, seq_len=32)
-        per_rank = self._run(meta, cp_world_size=2)
+        per_rank = self._run(meta, cp_world_size=2, B=2, seq_len=32)
         self.assertEqual(
             self._seg_lens(per_rank[0]), ([10, 6, 10, 6], [10, 6, 10, 6])
         )
@@ -1459,26 +1471,18 @@ class TestCPVarlenMetadata(TestCase):
         # Rank 2 [32..48): doc 1 mid -> (16, 28) (seqlen_k = 47-20+1)
         # Rank 3 [48..64): doc 1 end -> (16, 44) (seqlen_k = 63-20+1)
         meta = _build_varlen_meta([0, 20, 64], B=1, seq_len=64)
-        per_rank = self._run(meta, cp_world_size=4)
+        per_rank = self._run(meta, cp_world_size=4, B=1, seq_len=64)
         self.assertEqual(self._seg_lens(per_rank[0]), ([16], [16]))
         self.assertEqual(self._seg_lens(per_rank[1]), ([4, 12], [20, 12]))
         self.assertEqual(self._seg_lens(per_rank[2]), ([16], [28]))
         self.assertEqual(self._seg_lens(per_rank[3]), ([16], [44]))
 
-    def test_unpacked_dims_required(self) -> None:
-        meta = VarlenMetadata(
-            cu_seq_q=torch.tensor([0, 32], dtype=torch.int32),
-            cu_seq_k=torch.tensor([0, 32], dtype=torch.int32),
-            max_q=32,
-            max_k=32,
-        )
-        with self.assertRaisesRegex(ValueError, "unpacked_batch_size"):
-            _create_cp_varlen_metadata(meta, _MockMesh(2, 0), None)
-
     def test_seq_len_divisibility(self) -> None:
         meta = _build_varlen_meta([0, 30], B=1, seq_len=30)
         with self.assertRaisesRegex(ValueError, "divisible"):
-            _create_cp_varlen_metadata(meta, _MockMesh(4, 0), None)
+            _create_cp_varlen_metadata(
+                meta, _MockMesh(4, 0), batch_size=1, seq_length=30
+            )
 
     def test_cross_attention_unsupported(self) -> None:
         # cu_seq_q != cu_seq_k must be rejected: only self-attention is
@@ -1488,11 +1492,11 @@ class TestCPVarlenMetadata(TestCase):
             cu_seq_k=torch.tensor([0, 20, 40], dtype=torch.int32),
             max_q=16,
             max_k=20,
-            unpacked_batch_size=1,
-            unpacked_seq_len=32,
         )
         with self.assertRaisesRegex(ValueError, "self-attention"):
-            _create_cp_varlen_metadata(meta, _MockMesh(2, 0), None)
+            _create_cp_varlen_metadata(
+                meta, _MockMesh(2, 0), batch_size=1, seq_length=32
+            )
 
     def test_multi_doc_headtail_k_local_indices(self) -> None:
         # Same setup as test_multi_doc_headtail: docs [0,10), [10,50), [50,64),
@@ -1510,6 +1514,8 @@ class TestCPVarlenMetadata(TestCase):
         per_rank = self._run(
             meta,
             cp_world_size=2,
+            B=1,
+            seq_len=64,
             load_balancer_factory=lambda s, w: _HeadTailLoadBalancer(
                 s, w, torch.device("cpu")
             ),
@@ -1573,8 +1579,6 @@ class CPVarlenAttentionTest(DTensorTestBase):
             cu_seq_k=cu_t.clone(),
             max_q=int(seg_lens.max().item()),
             max_k=int(seg_lens.max().item()),
-            unpacked_batch_size=B,
-            unpacked_seq_len=seq_len,
         )
 
     def _run_varlen_cp(
@@ -1649,6 +1653,7 @@ class CPVarlenAttentionTest(DTensorTestBase):
             buffers=[q_for_cp, global_meta],
             seq_dims=[1, 0],  # seq_dim ignored for VarlenMetadata
             load_balancer=load_balancer,
+            batch_and_seq=(B, seq_len),
         )
         local_q, local_meta = sharded
         local_q.requires_grad_(True)
