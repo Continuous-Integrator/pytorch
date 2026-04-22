@@ -574,9 +574,10 @@ class TestAutograd(TestCase):
         gradgradcheck(my_function, (x, y))
 
     def test_not_implemented_grad(self):
+        # Test that built-in functions with unimplemented gradients raise appropriate errors
         a = torch.rand(2, requires_grad=True)
-        # if grad for nextafter ends up being implemented, this should be changed
-        y = torch.nextafter(a, a).sum()
+        y = torch.acosh_(a.clone()).sum()
+
         with self.assertRaisesRegex(
             NotImplementedError, "the derivative for .* is not implemented"
         ):
@@ -13555,6 +13556,62 @@ class TestAutogradDeviceType(TestCase):
         c.grad = None
         (c * d).sum().backward()
         self.assertEqual(c.grad.stride(), (2, 1))
+
+    @skipIfTorchDynamo("tests C++ autograd engine layout policy, not dynamo")
+    def test_enforce_grad_layout_policy(self, device):
+        # A custom function that returns a fresh contiguous gradient,
+        # which has different strides from a channels_last parameter.
+        class ContiguousGrad(torch.autograd.Function):
+            @staticmethod
+            def forward(ctx, x):
+                return x.sum()
+
+            @staticmethod
+            def backward(ctx, grad_output):
+                return torch.ones(2, 3, 4, 5, device=grad_output.device)
+
+        # Parameter is channels_last -- its strides differ from contiguous.
+        a = (
+            torch.rand(2, 3, 4, 5, device=device)
+            .to(memory_format=torch.channels_last)
+            .requires_grad_()
+        )
+
+        # --- enforcement ON (default): grad strides match param ---
+        ContiguousGrad.apply(a).backward()
+        self.assertEqual(a.grad.stride(), a.stride())
+        a.grad = None
+
+        # --- enforcement OFF: grad is stolen as-is (contiguous strides) ---
+        with torch.autograd.enforce_grad_layout_policy(False):
+            ContiguousGrad.apply(a).backward()
+            self.assertTrue(a.grad.is_contiguous())
+            self.assertNotEqual(a.grad.stride(), a.stride())
+        a.grad = None
+
+        # --- context manager restores state ---
+        ContiguousGrad.apply(a).backward()
+        self.assertEqual(a.grad.stride(), a.stride())
+        a.grad = None
+
+        # --- used as a bare function (not context manager) ---
+        try:
+            torch.autograd.enforce_grad_layout_policy(False)
+            ContiguousGrad.apply(a).backward()
+            self.assertTrue(a.grad.is_contiguous())
+            self.assertNotEqual(a.grad.stride(), a.stride())
+        finally:
+            torch.autograd.enforce_grad_layout_policy(True)
+        a.grad = None
+
+        # --- as a decorator ---
+        @torch.autograd.enforce_grad_layout_policy(False)
+        def do_backward():
+            ContiguousGrad.apply(a).backward()
+
+        do_backward()
+        self.assertTrue(a.grad.is_contiguous())
+        self.assertNotEqual(a.grad.stride(), a.stride())
 
     @skipIfMPS
     def test_copy_r_to_c(self, device):
