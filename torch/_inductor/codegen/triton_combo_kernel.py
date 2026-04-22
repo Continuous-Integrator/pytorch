@@ -482,6 +482,7 @@ class ComboKernel(Kernel):
         features: SIMDKernelFeatures,
         optimize_mask: bool,
         triton_kernel_cls: type[TritonKernel],
+        tiling_scores: dict[str, sympy.Expr] | None = None,
     ) -> TritonKernel:
         """
         Only allow optimize_mask=True when 1) sequential dispatch is used,
@@ -504,6 +505,7 @@ class ComboKernel(Kernel):
             is_combo_kernel=True,
             # foreach kernels don't work with cooperative reductions
             override_cooperative_reduction=False,
+            tiling_scores=tiling_scores,
         )
 
     def codegen_static_numels_sub_kernel(
@@ -720,27 +722,21 @@ class ComboKernel(Kernel):
         for i, sub in enumerate(self.sub_kernels):
             self.min_x_blocks_sub_kernel(sub, i)
         self.select_dispatch_strategy()
-        triton_meta = {
+        triton_meta: dict[str, Any] = {
             "signature": signature_to_meta(
                 signature, size_dtype=size_dtype, argdefs=argdefs
             ),
             "device": DeviceProperties.create(V.graph.get_current_device_or_throw()),
             "constants": {},
+            # Inherit enable_fp_fusion, launch_pdl, disable_ftz so combo kernels
+            # compile with the same Triton options as standalone kernels.
+            **TritonKernel.triton_meta_common(),
         }
-        triton_meta["enable_fp_fusion"] = (
-            # pyrefly: ignore [bad-typed-dict-key, unsupported-operation]
-            not config.emulate_precision_casts
-        )
 
         for arg_num in equal_1_arg_indices(signature):
             triton_meta["constants"][signature[arg_num].name] = 1  # type: ignore[index,union-attr]
 
-        # pyrefly: ignore [bad-typed-dict-key, unsupported-operation]
         triton_meta["configs"] = [config_of(signature)]
-
-        if TritonKernel._enable_pdl_codegen():
-            # pyrefly: ignore [bad-typed-dict-key, unsupported-operation]
-            triton_meta["launch_pdl"] = True
 
         mutated_args = self.get_mutated_args_sub_kernels()
         dispatch = self.dispatch_class
@@ -767,6 +763,10 @@ class ComboKernel(Kernel):
             "combo_grid_meta": self.combo_grid_meta(size_hints_list),
             "kernel_name": str(Placeholder.DESCRIPTIVE_NAME),
             "mutated_arg_names": mutated_args,
+            # Matches triton.py:codegen_kernel(): inference/backward graphs skip
+            # CPU-copy of mutated args during autotune retries; training-forward
+            # graphs must keep it to preserve benchmark inputs across retries.
+            "optimize_mem": V.graph.is_inference or V.graph.is_backward,
             **self.triton_kernel_cls.inductor_meta_common(),
         }
         if max_persistent_rblock > 0:
@@ -1204,34 +1204,17 @@ class ComboKernel(Kernel):
                 )
 
                 meta[f"size_hints_{num}"] = size_hints_list[num]
-                meta[f"num_load_{num}"] = sub_kernel.num_load
-                meta[f"num_store_{num}"] = sub_kernel.num_store
-                meta[f"num_reduction_{num}"] = sub_kernel.num_reduction
-                meta[f"autotune_hints_{num}"] = list(sub_kernel.autotune_hints)
-                meta[f"atomic_add_found_{num}"] = sub_kernel.atomic_add_found
-                if (
-                    config.deterministic
-                    or config.test_configs.force_filter_reduction_configs
-                ):
-                    meta[f"has_loadstore_with_contiguous_rdim_{num}"] = (
-                        sub_kernel.has_load_with_contiguous_rdim
-                        or sub_kernel.has_store_with_contiguous_rdim
-                    )
-                if sub_kernel.tma_min_block_sizes:
-                    meta[f"tma_min_block_sizes_{num}"] = sub_kernel.tma_min_block_sizes
+                meta[f"inductor_meta_{num}"] = sub_kernel.inductor_meta_per_kernel()
                 if meta[f"heuristic_{num}"] == "pointwise":
                     if len(size_hints_list[num]) == 2:
                         meta[f"tile_hint_{num}"] = "TileHint.SQUARE"
                     else:
                         meta[f"tile_hint_{num}"] = "TileHint.DEFAULT"
-                    if sub_kernel.tiling_scores:
-                        meta[f"tiling_scores_{num}"] = {
-                            dim: V.graph.sizevars.optimization_hint(score, fallback=1)
-                            for dim, score in sub_kernel.tiling_scores.items()
-                        }
                 else:
                     meta[f"reduction_hint_{num}"] = (
-                        sub_kernel.features.get_reduction_hint().name
+                        sub_kernel.features.get_reduction_hint(
+                            sub_kernel.tiling_scores
+                        ).name
                     )
 
             for tree in sub_kernel.range_trees:
