@@ -21,7 +21,8 @@ cooperative scheduling means:
   - The global RNG is never corrupted by thread interleaving
   - Collective numerics are bitwise identical to real NCCL + torchrun
 
-Requires scripts to use LOCAL_RANK (not RANK) for device selection.
+Scripts can use device=f"cuda:{rank}" and backend="nccl" — torchmux
+remaps all CUDA device indices to 0 and redirects any backend to vnccl.
 """
 
 import argparse
@@ -38,6 +39,30 @@ import torch.distributed as dist
 _tls = threading.local()
 
 _exec_lock = threading.Lock()
+
+# ---- torch.device remapping ----
+# Replace torch.device so that cuda:N → cuda:0 when torchmux is active.
+# Uses a metaclass so isinstance(x, torch.device) still works.
+
+_OrigDevice = torch.device
+
+
+class _DeviceMeta(type):
+    def __instancecheck__(cls, instance):
+        return isinstance(instance, _OrigDevice)
+
+    def __subclasscheck__(cls, subclass):
+        if subclass is _OrigDevice:
+            return True
+        return type.__subclasscheck__(cls, subclass)
+
+
+class _MuxDevice(metaclass=_DeviceMeta):
+    def __new__(cls, *args, **kwargs):
+        d = _OrigDevice(*args, **kwargs)
+        if d.type == "cuda" and d.index is not None and d.index > 0:
+            return _OrigDevice("cuda", 0)
+        return d
 
 
 class _ThreadLocalEnv:
@@ -211,6 +236,7 @@ def main():
     dist.init_process_group = _patched_init_pg
     dist.destroy_process_group = _patched_destroy_pg
     torch.cuda.set_device = lambda *a, **kw: _orig_cuda_set_device(0)
+    torch.device = _MuxDevice
     os.environ = _ThreadLocalEnv(os.environ)
 
     for name in _COLLECTIVES:
@@ -241,6 +267,7 @@ def main():
     dist.init_process_group = _orig_init_pg
     dist.destroy_process_group = _orig_destroy_pg
     torch.cuda.set_device = _orig_cuda_set_device
+    torch.device = _OrigDevice
     torch._C._distributed_c10d._set_thread_isolation_mode(False)
 
     failed = False
