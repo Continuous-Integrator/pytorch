@@ -754,47 +754,50 @@ kernel void grid_sampler_3d_backward(
     constant T* grid [[buffer(2)]],
     device AtomicType_t<T>* grad_input [[buffer(3)]],
     device T* grad_grid [[buffer(4)]],
-    constant GridSampler3DBackwardParams& params [[buffer(5)]],
+    constant GridSamplerBackwardParams<5>& params [[buffer(5)]],
     uint3 thread_index [[thread_position_in_grid]]) {
   const int32_t out_w = thread_index.x;
   const int32_t out_d_h_combined = thread_index.y;
   const int32_t n = thread_index.z;
 
-  const int32_t out_d = out_d_h_combined / params.output_sizes[3];
-  const int32_t out_h = out_d_h_combined % params.output_sizes[3];
+  const int32_t out_d = out_d_h_combined / params.forward.output_sizes[3];
+  const int32_t out_h = out_d_h_combined % params.forward.output_sizes[3];
 
-  if (n >= params.input_sizes[0] || out_d >= params.output_sizes[2] ||
-      out_h >= params.output_sizes[3] || out_w >= params.output_sizes[4]) {
+  if (n >= params.forward.input_sizes[0] ||
+      out_d >= params.forward.output_sizes[2] ||
+      out_h >= params.forward.output_sizes[3] ||
+      out_w >= params.forward.output_sizes[4]) {
     return;
   }
 
-  const auto C = params.input_sizes[1];
-  const auto inp_D = params.input_sizes[2];
-  const auto inp_H = params.input_sizes[3];
-  const auto inp_W = params.input_sizes[4];
+  const auto C = params.forward.input_sizes[1];
+  const auto inp_D = params.forward.input_sizes[2];
+  const auto inp_H = params.forward.input_sizes[3];
+  const auto inp_W = params.forward.input_sizes[4];
 
-  const auto grid_offset = n * params.grid_strides[0] +
-      out_d * params.grid_strides[1] + out_h * params.grid_strides[2] +
-      out_w * params.grid_strides[3];
+  const auto grid_offset = n * params.forward.grid_strides[0] +
+      out_d * params.forward.grid_strides[1] +
+      out_h * params.forward.grid_strides[2] +
+      out_w * params.forward.grid_strides[3];
 
   const float grid_x = grid[grid_offset];
-  const float grid_y = grid[grid_offset + params.grid_strides[4]];
-  const float grid_z = grid[grid_offset + 2 * params.grid_strides[4]];
+  const float grid_y = grid[grid_offset + params.forward.grid_strides[4]];
+  const float grid_z = grid[grid_offset + 2 * params.forward.grid_strides[4]];
 
   float2 ix_grad = compute_source_index_set_grad(
       grid_x,
       static_cast<int32_t>(inp_W),
-      params.align_corners,
+      params.forward.align_corners,
       params.padding_mode);
   float2 iy_grad = compute_source_index_set_grad(
       grid_y,
       static_cast<int32_t>(inp_H),
-      params.align_corners,
+      params.forward.align_corners,
       params.padding_mode);
   float2 iz_grad = compute_source_index_set_grad(
       grid_z,
       static_cast<int32_t>(inp_D),
-      params.align_corners,
+      params.forward.align_corners,
       params.padding_mode);
   float ix = ix_grad.x, gix_mult = ix_grad.y;
   float iy = iy_grad.x, giy_mult = iy_grad.y;
@@ -822,8 +825,8 @@ kernel void grid_sampler_3d_backward(
       const float gOut = grad_output[grad_out_offset];
       const auto base_grad_input_offset =
           n * params.grad_input_strides[0] + c * params.grad_input_strides[1];
-      const auto input_base_offset =
-          n * params.input_strides[0] + c * params.input_strides[1];
+      const auto input_base_offset = n * params.forward.input_strides[0] +
+          c * params.forward.input_strides[1];
 
       for (int i = 0; i < 8; i++) {
         const int xi = i & 1;
@@ -853,8 +856,9 @@ kernel void grid_sampler_3d_backward(
 
           if (params.compute_grad_grid) {
             const float val = input
-                [input_base_offset + cz * params.input_strides[2] +
-                 cy * params.input_strides[3] + cx * params.input_strides[4]];
+                [input_base_offset + cz * params.forward.input_strides[2] +
+                 cy * params.forward.input_strides[3] +
+                 cx * params.forward.input_strides[4]];
             const float sign_x = xi ? 1 : -1;
             const float sign_y = yi ? 1 : -1;
             const float sign_z = zi ? 1 : -1;
@@ -872,26 +876,26 @@ kernel void grid_sampler_3d_backward(
           out_h * params.grad_grid_strides[2] +
           out_w * params.grad_grid_strides[3];
       grad_grid[grad_grid_base_offset] = static_cast<T>(gix_mult * gix);
-      grad_grid[grad_grid_base_offset + params.grid_strides[4]] =
+      grad_grid[grad_grid_base_offset + params.forward.grid_strides[4]] =
           static_cast<T>(giy_mult * giy);
-      grad_grid[grad_grid_base_offset + 2 * params.grid_strides[4]] =
+      grad_grid[grad_grid_base_offset + 2 * params.forward.grid_strides[4]] =
           static_cast<T>(giz_mult * giz);
     }
   } else if (params.compute_grad_input) { // nearest
     float src_x = compute_source(
         grid_x,
         static_cast<int32_t>(inp_W),
-        params.align_corners,
+        params.forward.align_corners,
         params.padding_mode);
     float src_y = compute_source(
         grid_y,
         static_cast<int32_t>(inp_H),
-        params.align_corners,
+        params.forward.align_corners,
         params.padding_mode);
     float src_z = compute_source(
         grid_z,
         static_cast<int32_t>(inp_D),
-        params.align_corners,
+        params.forward.align_corners,
         params.padding_mode);
 
     int32_t ix_n = static_cast<int32_t>(rint(src_x));
@@ -956,15 +960,15 @@ kernel void grid_sampler_3d_backward(
   REGISTER_GRID_SAMPLER_3D(DTYPE, INTERP, INAME, PadBorder, "border") \
   REGISTER_GRID_SAMPLER_3D(DTYPE, INTERP, INAME, PadReflection, "reflection")
 
-#define REGISTER_GRID_SAMPLER_BACKWARD(DTYPE)                      \
-  template [[host_name("grid_sampler_3d_backward_" #DTYPE)]]       \
-  kernel void grid_sampler_3d_backward<DTYPE>(                     \
-      constant DTYPE * grad_output [[buffer(0)]],                  \
-      constant DTYPE * input [[buffer(1)]],                        \
-      constant DTYPE * grid [[buffer(2)]],                         \
-      device AtomicType_t<DTYPE> * grad_input [[buffer(3)]],       \
-      device DTYPE * grad_grid [[buffer(4)]],                      \
-      constant GridSampler3DBackwardParams & params [[buffer(5)]], \
+#define REGISTER_GRID_SAMPLER_BACKWARD(DTYPE)                       \
+  template [[host_name("grid_sampler_3d_backward_" #DTYPE)]]        \
+  kernel void grid_sampler_3d_backward<DTYPE>(                      \
+      constant DTYPE * grad_output [[buffer(0)]],                   \
+      constant DTYPE * input [[buffer(1)]],                         \
+      constant DTYPE * grid [[buffer(2)]],                          \
+      device AtomicType_t<DTYPE> * grad_input [[buffer(3)]],        \
+      device DTYPE * grad_grid [[buffer(4)]],                       \
+      constant GridSamplerBackwardParams<5> & params [[buffer(5)]], \
       uint3 thread_index [[thread_position_in_grid]]);
 
 #define REGISTER_GRID_SAMPLER_OPS(DTYPE)                         \
@@ -1179,7 +1183,7 @@ kernel void grid_sampler_2d_backward_bilinear_grid(
   auto gOut_sC = params.grad_output_strides[1];
   auto gOut_sH = params.grad_output_strides[2];
   auto gOut_sW = params.grad_output_strides[3];
-  auto gGrid_sW = params.grad_grid_sW;
+  auto gGrid_sW = params.grad_grid_strides[2];
 
   // .x = source index, .y = gradient multiplier from coordinate transform
   float2 ix = compute_source_index_set_grad(
@@ -1352,7 +1356,7 @@ kernel void grid_sampler_2d_backward_bicubic_grid(
   auto gOut_sC = params.grad_output_strides[1];
   auto gOut_sH = params.grad_output_strides[2];
   auto gOut_sW = params.grad_output_strides[3];
-  auto gGrid_sW = params.grad_grid_sW;
+  auto gGrid_sW = params.grad_grid_strides[2];
   auto align_corners = params.forward.align_corners;
 
   float2 ix = grid_sampler_unnormalize_set_grad(p.x, inp_size.x, align_corners);

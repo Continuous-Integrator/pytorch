@@ -237,26 +237,8 @@ std::tuple<Tensor, Tensor> grid_sampler_2d_backward_mps(const Tensor& grad_outpu
     return std::make_tuple(grad_input, grad_grid);
   }
 
-  GridSamplerBackwardParams<4> params;
-  params.forward.sampler_dims = 2;
-  params.forward.align_corners = align_corners;
-
-  // Forward output shape is [N, C, out_H, out_W]
-  params.forward.output_sizes[0] = safe_downcast<int32_t, int64_t>(N);
-  params.forward.output_sizes[1] = safe_downcast<int32_t, int64_t>(input.size(1));
-  params.forward.output_sizes[2] = safe_downcast<int32_t, int64_t>(out_H);
-  params.forward.output_sizes[3] = safe_downcast<int32_t, int64_t>(out_W);
-
-  for (const auto dim : c10::irange(input.dim())) {
-    params.forward.input_sizes[dim] = safe_downcast<int32_t, int64_t>(input.size(dim));
-    params.forward.input_strides[dim] = safe_downcast<int32_t, int64_t>(input.stride(dim));
-    params.forward.grid_sizes[dim] = safe_downcast<int32_t, int64_t>(grid.size(dim));
-    params.forward.grid_strides[dim] = safe_downcast<int32_t, int64_t>(grid.stride(dim));
-    params.grad_output_strides[dim] = safe_downcast<int32_t, int64_t>(grad_output.stride(dim));
-    params.grad_input_strides[dim] = input_requires_grad ? safe_downcast<int32_t, int64_t>(grad_input.stride(dim)) : 0;
-  }
-  params.grad_grid_sW = safe_downcast<int32_t, int64_t>(grad_grid.stride(2));
-  params.padding_mode = padding_mode;
+  GridSamplerBackwardParams<4> params(
+      grad_output, input, grid, grad_input, grad_grid, align_corners, padding_mode, interpolation_mode);
 
   using namespace mps;
   auto interp_str = mps::interp_to_string(interpolation_mode);
@@ -337,10 +319,6 @@ std::tuple<Tensor, Tensor> grid_sampler_3d_backward_mps(const Tensor& grad_outpu
   const auto& grad_output_contiguous = grad_output.contiguous();
 
   auto N = input_contiguous.size(0);
-  auto C = input_contiguous.size(1);
-  auto in_D = input_contiguous.size(2);
-  auto in_H = input_contiguous.size(3);
-  auto in_W = input_contiguous.size(4);
   auto out_D = grid_contiguous.size(1);
   auto out_H = grid_contiguous.size(2);
   auto out_W = grid_contiguous.size(3);
@@ -357,29 +335,14 @@ std::tuple<Tensor, Tensor> grid_sampler_3d_backward_mps(const Tensor& grad_outpu
   // queries below remain in range.
   auto grad_input_buf = run_grad_input ? grad_input : at::zeros({1, 1, 1, 1, 1}, input.options());
 
-  GridSampler3DBackwardParams params;
-  params.interpolation_mode = interp_mode;
-  params.padding_mode = pad_mode;
-  params.align_corners = align_corners;
-  params.compute_grad_input = run_grad_input;
-  params.compute_grad_grid = run_grad_grid;
-  params.input_sizes = {safe_downcast<int32_t, int64_t>(N),
-                        safe_downcast<int32_t, int64_t>(C),
-                        safe_downcast<int32_t, int64_t>(in_D),
-                        safe_downcast<int32_t, int64_t>(in_H),
-                        safe_downcast<int32_t, int64_t>(in_W)};
-  params.output_sizes = {safe_downcast<int32_t, int64_t>(N),
-                         safe_downcast<int32_t, int64_t>(C),
-                         safe_downcast<int32_t, int64_t>(out_D),
-                         safe_downcast<int32_t, int64_t>(out_H),
-                         safe_downcast<int32_t, int64_t>(out_W)};
-  for (int i = 0; i < 5; i++) {
-    params.grid_strides[i] = safe_downcast<int32_t, int64_t>(grid_contiguous.stride(i));
-    params.grad_output_strides[i] = safe_downcast<int32_t, int64_t>(grad_output_contiguous.stride(i));
-    params.input_strides[i] = safe_downcast<int32_t, int64_t>(input_contiguous.stride(i));
-    params.grad_input_strides[i] = safe_downcast<int32_t, int64_t>(grad_input_buf.stride(i));
-    params.grad_grid_strides[i] = safe_downcast<int32_t, int64_t>(grad_grid.stride(i));
-  }
+  GridSamplerBackwardParams<5> params(grad_output_contiguous,
+                                      input_contiguous,
+                                      grid_contiguous,
+                                      grad_input,
+                                      grad_grid,
+                                      align_corners,
+                                      pad_mode,
+                                      interp_mode);
 
   MPSStream* mpsStream = getCurrentMPSStream();
 

@@ -34,7 +34,6 @@ struct GridSamplerParams {
   bool align_corners;
 
 #ifndef __METAL_VERSION__
-  GridSamplerParams() = default;
   GridSamplerParams(
       const at::TensorBase& output,
       const at::TensorBase& input,
@@ -59,21 +58,37 @@ struct GridSamplerBackwardParams {
   GridSamplerParams<N, idx_type_t> forward;
   ::c10::metal::array<idx_type_t, N> grad_output_strides;
   ::c10::metal::array<idx_type_t, N> grad_input_strides;
-  idx_type_t grad_grid_sW;
+  ::c10::metal::array<idx_type_t, N> grad_grid_strides;
   GridSamplerPadding padding_mode;
-};
-
-struct GridSampler3DBackwardParams {
   GridSamplerInterpolation interpolation_mode;
-  GridSamplerPadding padding_mode;
-  bool align_corners;
   bool compute_grad_input;
   bool compute_grad_grid;
-  ::c10::metal::array<int32_t, 5> input_sizes;
-  ::c10::metal::array<int32_t, 5> output_sizes;
-  ::c10::metal::array<int32_t, 5> input_strides;
-  ::c10::metal::array<int32_t, 5> grad_input_strides;
-  ::c10::metal::array<int32_t, 5> grad_grid_strides;
-  ::c10::metal::array<int32_t, 5> grid_strides;
-  ::c10::metal::array<int32_t, 5> grad_output_strides;
+
+#ifndef __METAL_VERSION__
+  GridSamplerBackwardParams(
+      const at::TensorBase& grad_output,
+      const at::TensorBase& input,
+      const at::TensorBase& grid,
+      const at::TensorBase& grad_input,
+      const at::TensorBase& grad_grid,
+      bool align_corners,
+      GridSamplerPadding padding_mode_,
+      GridSamplerInterpolation interpolation_mode_)
+      : forward(grad_output, input, grid, align_corners),
+        padding_mode(padding_mode_),
+        interpolation_mode(interpolation_mode_),
+        compute_grad_input(grad_input.defined()),
+        compute_grad_grid(
+            interpolation_mode_ != GridSamplerInterpolation::Nearest) {
+    using at::native::safe_downcast;
+    for (unsigned dim = 0; dim < N; dim++) {
+      grad_output_strides[dim] =
+          safe_downcast<idx_type_t>(grad_output.stride(dim));
+      grad_input_strides[dim] = grad_input.defined()
+          ? safe_downcast<idx_type_t>(grad_input.stride(dim))
+          : 0;
+      grad_grid_strides[dim] = safe_downcast<idx_type_t>(grad_grid.stride(dim));
+    }
+  }
+#endif
 };
