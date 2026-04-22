@@ -64,7 +64,10 @@ class TCPSocket {
   void send(const void* data, size_t len);
   void recv(void* data, size_t len);
 
-  static TCPSocket connect(const Address& addr, int retries = 4, int waitMs = 500);
+  static TCPSocket connect(
+      const Address& addr,
+      int retries = 4,
+      int waitMs = 500);
 
  private:
   explicit TCPSocket(int sock);
@@ -236,10 +239,7 @@ class MeshImpl {
       int size,
       std::vector<Connection>& conns,
       std::vector<SharedBuffer>& buffers)
-      : rank_(rank),
-        size_(size),
-        connections_(conns),
-        buffers_(buffers) {}
+      : rank_(rank), size_(size), connections_(conns), buffers_(buffers) {}
 
   MeshImpl() : rank_(0), size_(1) {}
 
@@ -267,12 +267,19 @@ class MeshImpl {
 
 class JACCLTransport {
  public:
-  JACCLTransport(int rank, int size, const char* coordinatorAddr,
-                 const std::vector<std::string>& deviceNames);
+  JACCLTransport(
+      int rank,
+      int size,
+      const char* coordinatorAddr,
+      const std::vector<std::string>& deviceNames);
   ~JACCLTransport();
 
-  void allReduce(void* data, size_t numBytes, size_t elementSize,
-                 at::ScalarType dtype, ReduceOp op);
+  void allReduce(
+      void* data,
+      size_t numBytes,
+      size_t elementSize,
+      at::ScalarType dtype,
+      ReduceOp op);
   void broadcast(void* data, size_t numBytes, int rootRank);
   void send(const void* data, size_t numBytes, int dstRank);
   void recv(void* data, size_t numBytes, int srcRank);
