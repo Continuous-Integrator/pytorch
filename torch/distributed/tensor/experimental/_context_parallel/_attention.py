@@ -1065,39 +1065,22 @@ _compiled_create_block_mask = None
 
 @dataclass(frozen=True, eq=False)
 class VarlenMetadata:
-    """Metadata for variable-length attention (``varlen_attn``) under
-    Context Parallel.
+    """Metadata for variable-length attention (``varlen_attn``).
 
-    This type is CP-specific: it is the buffer-level descriptor that
-    ``_context_parallel_shard`` recognizes for varlen inputs, and
-    ``_create_cp_varlen_metadata`` populates the CP-only fields below on
-    the per-rank result. It is not intended as a general container for
-    non-CP ``varlen_attn`` callers -- those already pass ``cu_seq_q``,
-    ``cu_seq_k``, ``max_q``, ``max_k`` directly to the kernel.
+    ``cu_seq_q``, ``cu_seq_k``, ``max_q``, ``max_k`` are the standard
+    varlen kernel arguments describing document boundaries within a
+    packed sequence.
 
-    Fields the caller constructs (global, pre-shard):
-
-    - ``cu_seq_q``, ``cu_seq_k``, ``max_q``, ``max_k``: the standard
-      varlen kernel arguments describing document boundaries within a
-      packed sequence.
-    - ``unpacked_batch_size`` and ``unpacked_seq_len``: the shape
-      ``(B, S)`` of the unpacked input that produced this metadata.
-      Required by ``_create_cp_varlen_metadata`` for sharding.
-
-    Fields populated by ``_create_cp_varlen_metadata`` on the per-rank
-    result (do not set these when constructing the global metadata):
-
-    - ``unpacked_seq_len`` is rewritten to the local shard length
-      (``S / cp_world_size``); ``unpacked_batch_size`` is unchanged.
-    - ``k_local_indices`` is a 1-D index tensor of length
-      ``cu_seq_k[-1]`` that gathers the visible K (and V) positions out
-      of the rank-local packed K view. Under CP each rank holds the
-      *full* K (replicated/all-gathered across the CP dim) while
-      ``cu_seq_k`` describes only the per-segment visible regions, which
-      are non-contiguous in the standard ``[batch0_K, batch1_K, ...]``
-      packed layout when ``B > 1``. Callers must apply it to K and V
-      before invoking the varlen kernel:
-      ``k_packed = k_packed.index_select(0, k_local_indices)``.
+    ``k_local_indices`` is populated by ``_create_cp_varlen_metadata``
+    on the per-rank result and is ``None`` otherwise. It is a 1-D index
+    tensor of length ``cu_seq_k[-1]`` that gathers the visible K (and V)
+    positions out of the rank-local packed K view. Under CP each rank
+    holds the *full* K (replicated/all-gathered across the CP dim) while
+    ``cu_seq_k`` describes only the per-segment visible regions, which
+    are non-contiguous in the standard ``[batch0_K, batch1_K, ...]``
+    packed layout when ``B > 1``. Callers must apply it to K and V
+    before invoking the varlen kernel:
+    ``k_packed = k_packed.index_select(0, k_local_indices)``.
 
     Kept as a plain dataclass (rather than a ``NamedTuple``) so that
     pytree does not auto-flatten it into its tensor fields; a
@@ -1110,8 +1093,6 @@ class VarlenMetadata:
     cu_seq_k: torch.Tensor
     max_q: int
     max_k: int
-    unpacked_batch_size: int | None = None
-    unpacked_seq_len: int | None = None
     k_local_indices: torch.Tensor | None = None
 
 
@@ -1125,6 +1106,7 @@ def _context_parallel_buffers(
     buffers: list[CPBuffer],
     buffer_seq_dims: list[int],
     load_balancer: _LoadBalancer | None = None,
+    batch_and_seq: tuple[int, int] | None = None,
 ) -> list[CPBuffer]:
     """
     Shard the buffers along the sequence dimensions according to CP rules.
@@ -1139,6 +1121,10 @@ def _context_parallel_buffers(
             object, call its `_generate_indices(restore=False)` to generate the
             rearrangement indices such that each shard of `buffer[rearrange_idx]` is
             well-balanced (i.e., having close sparsities).
+        batch_and_seq: ``(batch_size, seq_length)`` of the unpacked input
+            tensor. Required when ``VarlenMetadata`` appears in ``buffers``
+            (used to derive per-batch sharding of the rank's Q). Ignored
+            for other buffer types.
 
     Returns:
         List[torch.Tensor]: the sharded buffers.
@@ -1223,9 +1209,18 @@ def _context_parallel_buffers(
                 load_balancer=load_balancer,
             )
         elif isinstance(buffer, VarlenMetadata):
+            if batch_and_seq is None:
+                raise ValueError(
+                    "Sharding a VarlenMetadata buffer requires "
+                    "``batch_and_seq=(batch_size, seq_length)`` to be "
+                    "passed to _context_parallel_shard."
+                )
+            batch_size, seq_length = batch_and_seq
             sharded_buffer = _create_cp_varlen_metadata(
                 varlen_meta=buffer,
                 device_mesh=mesh,
+                batch_size=batch_size,
+                seq_length=seq_length,
                 load_balancer=load_balancer,
             )
         else:
@@ -1377,9 +1372,16 @@ def _create_cp_block_mask(
 def _create_cp_varlen_metadata(
     varlen_meta: VarlenMetadata,
     device_mesh: DeviceMesh,
+    batch_size: int,
+    seq_length: int,
     load_balancer: _LoadBalancer | None = None,
 ) -> VarlenMetadata:
     """Build per-rank :class:`VarlenMetadata` for context-parallel varlen attention.
+
+    ``batch_size`` and ``seq_length`` describe the unpacked input tensor
+    whose packed form is ``varlen_meta``; they are used to decompose the
+    rank's shard per-batch. They must satisfy
+    ``batch_size * seq_length == cu_seq_q[-1]``.
 
     Each rank holds a shard of the global Q; K/V are assumed already
     all-gathered across the CP dim (e.g. via DTensor ``Replicate``).
@@ -1388,9 +1390,9 @@ def _create_cp_varlen_metadata(
     chunk end) + 1, so FA's right-aligned causal reproduces document-
     causal masking exactly. ``k_local_indices`` gathers the visible K
     (and V) positions into a contiguous layout matching ``cu_seq_k``;
-    this is necessary when B > 1 or under a load balancer, in which
-    case the indices also compose with the load balancer's inverse
-    permutation so the gather hits the correct entries in the
+    this is necessary when batch_size > 1 or under a load balancer, in
+    which case the indices also compose with the load balancer's
+    inverse permutation so the gather hits the correct entries in the
     rearranged K/V.
 
     Self-attention only (``cu_seq_q == cu_seq_k``); all segment
@@ -1448,19 +1450,12 @@ def _create_cp_varlen_metadata(
           max_q, max_k    = 3, 6
           k_local_indices = [7, 8, 9, 10, 11, 12,  13, 14]
                             \\------seg 0------/  \\-seg 1-/
-          unpacked_batch_size = 1
-          unpacked_seq_len    = 5
     """
     if varlen_meta.k_local_indices is not None:
         raise ValueError(
             "VarlenMetadata.k_local_indices is already set; this looks like a "
             "per-rank result from a prior _create_cp_varlen_metadata call. "
             "Pass the original global VarlenMetadata instead."
-        )
-    if varlen_meta.unpacked_batch_size is None or varlen_meta.unpacked_seq_len is None:
-        raise ValueError(
-            "VarlenMetadata.unpacked_batch_size and .unpacked_seq_len must be "
-            "set for context-parallel sharding."
         )
     if varlen_meta.cu_seq_q.shape != varlen_meta.cu_seq_k.shape or not torch.equal(
         varlen_meta.cu_seq_q, varlen_meta.cu_seq_k
@@ -1469,8 +1464,8 @@ def _create_cp_varlen_metadata(
             "CP varlen sharding currently supports only self-attention where "
             "cu_seq_q == cu_seq_k."
         )
-    B = varlen_meta.unpacked_batch_size
-    seq_len = varlen_meta.unpacked_seq_len
+    B = batch_size
+    seq_len = seq_length
     expected_total = B * seq_len
     if (
         varlen_meta.cu_seq_q.ndim != 1
@@ -1480,7 +1475,7 @@ def _create_cp_varlen_metadata(
     ):
         raise ValueError(
             "VarlenMetadata.cu_seq_q must be a 1-D tensor starting at 0 and "
-            f"ending at unpacked_batch_size * unpacked_seq_len = {expected_total}; "
+            f"ending at batch_size * seq_length = {expected_total}; "
             f"got shape {tuple(varlen_meta.cu_seq_q.shape)} with "
             f"endpoints ({int(varlen_meta.cu_seq_q[0].item())}, "
             f"{int(varlen_meta.cu_seq_q[-1].item())})."
@@ -1490,7 +1485,7 @@ def _create_cp_varlen_metadata(
     cp_rank = device_mesh.get_local_rank()
     if seq_len % cp_world_size != 0:
         raise ValueError(
-            f"unpacked_seq_len {seq_len} must be divisible by cp world size "
+            f"seq_length {seq_len} must be divisible by cp world size "
             f"{cp_world_size}."
         )
     shard_len = seq_len // cp_world_size
@@ -1636,8 +1631,6 @@ def _create_cp_varlen_metadata(
         cu_seq_k=cu_seq_k,
         max_q=max_q,
         max_k=max_k,
-        unpacked_batch_size=B,
-        unpacked_seq_len=shard_len,
         k_local_indices=k_local_indices,
     )
 
@@ -1753,6 +1746,7 @@ def _context_parallel_shard(
     buffers: CPBufferContainer,
     seq_dims: CPBufferSeqDims,
     load_balancer: _LoadBalancer | None = None,
+    batch_and_seq: tuple[int, int] | None = None,
 ) -> list[CPBuffer]:
     """
     Shard the buffers along the specified sequence dimensions (`seq_dims`), so that each
@@ -1777,6 +1771,9 @@ def _context_parallel_shard(
         load_balancer (Optional[_LoadBalancer]): An optional load balancer object. If provided,
             it rearranges the buffers before sharding to achieve better load balance. If not
             provided, no rearrangement is performed.
+        batch_and_seq (Optional[tuple[int, int]]): ``(batch_size, seq_length)`` of the unpacked
+            input tensor. Required when a ``VarlenMetadata`` appears in ``buffers`` (used to
+            decompose the rank's Q shard per batch element). Ignored for other buffer types.
 
     Returns:
         List[torch.Tensor | BlockMask | VarlenMetadata]: The sharded buffers, each corresponding
@@ -1818,7 +1815,7 @@ def _context_parallel_shard(
             raise AssertionError("All buffers must be on the same device")
 
     flat_sharded_buffers = _context_parallel_buffers(
-        mesh, flat_buffers, flat_seq_dims, load_balancer
+        mesh, flat_buffers, flat_seq_dims, load_balancer, batch_and_seq
     )
 
     return tree_unflatten(flat_sharded_buffers, spec)
