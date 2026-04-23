@@ -659,7 +659,8 @@ class InvokeSubgraphAutogradOp(torch.autograd.Function):
         non_differentiable_indices = get_non_differentiable_indices(subgraph)
         if non_differentiable_indices:
             non_differentiable = [
-                out[i] for i in non_differentiable_indices
+                out[i]
+                for i in non_differentiable_indices
                 if isinstance(out[i], torch.Tensor)
             ]
             if non_differentiable:
@@ -686,11 +687,17 @@ class InvokeSubgraphAutogradOp(torch.autograd.Function):
         filtered_grad_outs = []
         for idx, o in enumerate(grad_outs):
             if o is None:
-                if idx not in output_metadata.indexes_with_symint and idx not in non_differentiable_indices:
+                if (
+                    idx not in output_metadata.indexes_with_symint
+                    and idx not in non_differentiable_indices
+                ):
                     raise AssertionError(
                         f"unexpected None grad_out at index {idx}, not in indexes_with_symint"
                     )
-            elif idx in output_metadata.indexes_with_no_grad or idx in non_differentiable_indices:
+            elif (
+                idx in output_metadata.indexes_with_no_grad
+                or idx in non_differentiable_indices
+            ):
                 # Deliberately skip over the grad_outs which we know should be
                 # None because the corresponding fwd_out does not require_grad.
                 pass
