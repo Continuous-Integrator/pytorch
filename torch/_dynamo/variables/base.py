@@ -586,10 +586,14 @@ class VariableTracker(metaclass=VariableTrackerMeta):
         Implements PyObject_GetIter semantics (tp_iter slot).
         Subclasses override this to support iteration.
         """
-        raise_observed_exception(
-            TypeError,
-            tx,
-            args=[f"'{self.python_type_name()}' object is not iterable"],
+        # PyObject_GetIter: https://github.com/python/cpython/blob/3.13/Objects/abstract.c#L2847-L2870
+        # TODO: raise TypeError instead - Make sure the jit tests for ScriptDict/ScriptList works with
+        # this change
+        unimplemented(
+            gb_type="missing tp_iter",
+            context=f"tp_iter_impl not implemented for {self.python_type_name()}",
+            explanation=f"Dynamo does not know how to iterate over `{self.debug_repr()}`.",
+            hints=[*graph_break_hints.SUPPORTABLE],
         )
 
     def call_function(
