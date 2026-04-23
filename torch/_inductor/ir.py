@@ -1354,9 +1354,6 @@ class Reduction(Loops):
         reduction_numel: Expr,
         input_node: IRNode | None = None,
     ) -> tuple[ReductionHint, _IntLike]:
-        """
-        Determine the optimal number of splits for a reduction.
-        """
         # Use optimization_hint when all unbacked symbols have explicit hints,
         # otherwise fall back conservatively.
         exprs = [reduction_numel, sympy_product(ranges)]
