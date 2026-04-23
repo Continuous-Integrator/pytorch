@@ -1,5 +1,3 @@
-# @generated DO NOT EDIT MANUALLY
-#
 # Matrix-driven binary build workflow for windows arm64 wheels.
 name: windows-arm64-binary-wheel
 

@@ -1,7 +1,5 @@
-# @generated DO NOT EDIT MANUALLY
-#
-# Matrix-driven binary build workflow for windows libtorch debug (shared-with-deps).
-name: windows-binary-libtorch-debug
+# Matrix-driven binary build workflow for windows arm64 libtorch debug.
+name: windows-arm64-binary-libtorch-debug
 
 on:
   push:
@@ -16,14 +14,20 @@ on:
 env:
   ALPINE_IMAGE: "308535385114.dkr.ecr.us-east-1.amazonaws.com/tool/alpine"
   AWS_DEFAULT_REGION: us-east-1
-  BUILD_ENVIRONMENT: windows-binary-libtorch-debug
+  BUILD_ENVIRONMENT: windows-arm64-binary-libtorch-debug
   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
   PR_NUMBER: ${{ github.event.pull_request.number }}
   SHA1: ${{ github.event.pull_request.head.sha || github.sha }}
   SKIP_ALL_TESTS: 1
-  OS: windows
+  OS: windows-arm64
+  PYTORCH_ROOT: /pytorch
+  DOWNLOADS_DIR: c:\temp\downloads
+  DEPENDENCIES_DIR: c:\temp\dependencies
+  ENABLE_APL: 1
+  ENABLE_OPENBLAS: 0
+  MSVC_VERSION : 14.42
 concurrency:
-  group: windows-binary-libtorch-debug-${{ github.event.pull_request.number || github.ref_name }}-${{ github.ref_type == 'branch' && github.sha }}-${{ github.event_name == 'workflow_dispatch' }}
+  group: windows-arm64-binary-libtorch-debug-${{ github.event.pull_request.number || github.ref_name }}-${{ github.ref_type == 'branch' && github.sha }}-${{ github.event_name == 'workflow_dispatch' }}
   cancel-in-progress: true
 
 jobs:
@@ -52,7 +56,7 @@ jobs:
           show-progress: false
       - name: Generate matrix
         id: generate
-        run: python3 .github/scripts/generate_binary_build_matrix.py --runtime-matrix windows
+        run: python3 .github/scripts/generate_binary_build_matrix.py --runtime-matrix windows-arm64
 
   libtorch-build:
     name: ${{ matrix.config.build_name }}-build
@@ -62,16 +66,15 @@ jobs:
       fail-fast: false
       matrix:
         config: ${{ fromJSON(needs.generate-matrix.outputs.libtorch-debug-configs) }}
-    uses: ./.github/workflows/_binary-build-windows.yml
+    uses: ./.github/workflows/_binary-build-windows-arm64.yml
     with:
       PACKAGE_TYPE: libtorch
       DESIRED_CUDA: ${{ matrix.config.desired_cuda }}
-      GPU_ARCH_VERSION: ${{ matrix.config.gpu_arch_version }}
       GPU_ARCH_TYPE: ${{ matrix.config.gpu_arch_type }}
       LIBTORCH_CONFIG: ${{ matrix.config.libtorch_config }}
       LIBTORCH_VARIANT: ${{ matrix.config.libtorch_variant }}
-      runner_prefix: ${{ needs.get-label-type.outputs.label-type }}
-      runs_on: windows.12xlarge
+      # Dummy value so our batch scripts install pip correctly for libtorch builds.
+      DESIRED_PYTHON: "3.10"
       build_name: ${{ matrix.config.build_name }}
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
@@ -84,16 +87,14 @@ jobs:
       fail-fast: false
       matrix:
         config: ${{ fromJSON(needs.generate-matrix.outputs.libtorch-debug-configs) }}
-    uses: ./.github/workflows/_binary-test-windows.yml
+    uses: ./.github/workflows/_binary-test-windows-arm64.yml
     with:
       PACKAGE_TYPE: libtorch
       DESIRED_CUDA: ${{ matrix.config.desired_cuda }}
-      GPU_ARCH_VERSION: ${{ matrix.config.gpu_arch_version }}
       GPU_ARCH_TYPE: ${{ matrix.config.gpu_arch_type }}
       LIBTORCH_CONFIG: ${{ matrix.config.libtorch_config }}
       LIBTORCH_VARIANT: ${{ matrix.config.libtorch_variant }}
-      runner_prefix: ${{ needs.get-label-type.outputs.label-type }}
-      runs_on: ${{ matrix.config.gpu_arch_type == 'cuda' && 'windows.g4dn.xlarge' || 'windows.4xlarge' }}
+      DESIRED_PYTHON: "3.10"
       build_name: ${{ matrix.config.build_name }}
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
@@ -113,7 +114,6 @@ jobs:
       PYTORCH_ROOT: ${{ github.workspace }}
       PACKAGE_TYPE: libtorch
       DESIRED_CUDA: ${{ matrix.config.desired_cuda }}
-      GPU_ARCH_VERSION: ${{ matrix.config.gpu_arch_version }}
       GPU_ARCH_TYPE: ${{ matrix.config.gpu_arch_type }}
       LIBTORCH_CONFIG: ${{ matrix.config.libtorch_config }}
       LIBTORCH_VARIANT: ${{ matrix.config.libtorch_variant }}
