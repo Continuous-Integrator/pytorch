@@ -1059,6 +1059,34 @@ class LazyConstantVariableTests(TestCase):
         result2 = opt_fn(x, (20,), "hello")
         self.assertTrue(same(fn(x, (20,), "hello"), result2))
 
+    @torch._dynamo.config.patch(specialize_int=False, assume_static_by_default=False)
+    def test_fstring_after_realized_lazy_constant_becomes_symbolic(self):
+        """Test f-string with a closure variable that was realized to SymNodeVariable.
+
+        With specialize_int=False, a lazy constant int from a closure realizes
+        to SymNodeVariable when used in a tensor op. If the same closure variable
+        is then used in an f-string, StringFormatVariable.create sees it as
+        LazyConstantVariable (isinstance) but the inner realized value is
+        SymNodeVariable. ComputedLazyConstantVariable.create must handle this.
+        """
+        tensor_input = torch.randn(3)
+
+        def make_fn(dim):
+            def fn(t):
+                result = t.unsqueeze(dim)
+                msg = f"dim={dim}"
+                return result, msg
+
+            return fn
+
+        fn = make_fn(0)
+        opt_fn = torch.compile(fn, backend="eager")
+
+        eager = fn(tensor_input)
+        compiled = opt_fn(tensor_input)
+        self.assertTrue(same(eager[0], compiled[0]))
+        self.assertEqual(eager[1], compiled[1])
+
     def test_computed_lazy_constant_division_by_zero(self):
         """Test that division by zero with lazy constants raises ZeroDivisionError.
 
