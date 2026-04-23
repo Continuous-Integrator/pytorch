@@ -2140,7 +2140,7 @@ class BuiltinVariable(BaseBuiltinVariable):
         **kwargs: VariableTracker,
     ) -> VariableTracker:
         if len(args) == 0:
-            return variables.SetVariable(set(), mutation_type=ValueMutationNew())
+            return variables.FrozensetVariable(set(), mutation_type=ValueMutationNew())
         elif len(args) > 1:
             raise_type_error(
                 tx,
@@ -3469,6 +3469,30 @@ class ListBuiltinVariable(BaseBuiltinVariable):
                 tx,
                 "list() takes no keyword arguments",
             )
+
+        obj = args[0]
+        if obj.source and not is_constant_source(obj.source):
+            if isinstance(obj, TupleIteratorVariable):
+                install_guard(obj.source.make_guard(GuardBuilder.TUPLE_ITERATOR_LEN))
+            elif not isinstance(
+                obj,
+                (variables.IteratorVariable, variables.LocalGeneratorObjectVariable),
+            ):
+                if isinstance(
+                    obj,
+                    (
+                        ConstDictVariable,
+                        variables.OrderedSetVariable,
+                        variables.DictKeySetVariable,
+                    ),
+                ):
+                    tx.output.guard_on_key_order.add(obj.source)
+                if isinstance(obj, variables.MappingProxyVariable):
+                    install_guard(
+                        obj.source.make_guard(GuardBuilder.MAPPING_KEYS_CHECK)
+                    )
+                elif not isinstance(obj, variables.UnspecializedNNModuleVariable):
+                    install_guard(obj.source.make_guard(GuardBuilder.SEQUENCE_LENGTH))
 
         lst = ListVariable([], mutation_type=ValueMutationNew())
         lst.call_method(tx, "extend", args, kwargs)

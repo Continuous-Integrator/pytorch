@@ -806,6 +806,7 @@ class CommonListMethodsVariable(BaseListVariable):
                 )
 
             items = unpack_iterator(tx, args[0])
+            tx.output.side_effects.mutation(self)
             self.items.extend(items)
             return ConstantVariable.create(None)
         elif name == "insert" and self.is_mutable():
@@ -1129,10 +1130,10 @@ class ListVariable(CommonListMethodsVariable):
                 raise_args_mismatch(tx, name, "0 kwargs", f"{len(kwargs)} kwargs")
             if len(args) == 0:
                 return ConstantVariable.create(None)
-            elif len(args) == 1 and args[0].has_force_unpack_var_sequence(tx):
+            elif len(args) == 1:
                 (arg,) = args
                 tx.output.side_effects.mutation(self)
-                self.items[:] = arg.force_unpack_var_sequence(tx)
+                self.items[:] = unpack_iterator(tx, arg)
                 return ConstantVariable.create(None)
 
         return super().call_method(tx, name, args, kwargs)

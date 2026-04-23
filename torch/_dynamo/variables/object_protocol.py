@@ -415,5 +415,6 @@ def unpack_iterator(
         try:
             items.append(generic_iternext(tx, iterator))
         except ObservedUserStopIteration:
+            handle_observed_exception(tx)
             break
     return items
