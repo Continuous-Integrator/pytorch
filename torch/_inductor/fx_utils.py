@@ -217,7 +217,7 @@ class FakeTensorUpdater:
     def hash_node(self, node: torch.fx.Node) -> _FxNodeHash:
         def get_hash_or_ids(n_iter: Iterable[Any]) -> tuple[int, ...]:
             """Replace unhashable items from the input with the ids of those items, and
-            has all other items.  This is kludgy, but allows us to attempt to account
+            hash all other items.  This is kludgy, but allows us to attempt to account
             for unhashable classes like torch.fx.Node when hashing args and kwargs for
             other nodes."""
 
