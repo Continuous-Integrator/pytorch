@@ -3122,6 +3122,9 @@ class GuardManager {
   void disable_recursive_dict_tag_optimization(DictToGuardManagersMap& map) {
     unwatch_all_saved_dict_pointers(map);
     _disable_dict_tag_matching = true;
+    _tensor_pointers.clear();
+    _tensor_metadata_pointers.clear();
+    _dict_pointers.clear();
   }
 
  public:
