@@ -1393,12 +1393,9 @@ def permute(x, dims):
 def _register_unbacked_slice_size_bindings(dim, start, end, step, size):
     """Register DynamicSliceSize for any unbacked size bindings on the current FX node.
 
-    The FX node may have allocated unbacked symbols at trace time (when dynamo
-    couldn't prove the slice bounds) that inductor must define so the assertion
+    Unbacked symbols may have been allocated at trace time of the slice
+    that inductor must define so the assertion
     new_unbacked_defs >= renamed_unbacked_bindings passes in run_node.
-
-    current_node may be None when slice_ is called from template rendering
-    (e.g. cpp_template_kernel.slice_nd) rather than FX graph lowering.
 
     Returns (sym_size, sym_storage) parsed from the bindings, or (None, None).
     """
@@ -1407,6 +1404,8 @@ def _register_unbacked_slice_size_bindings(dim, start, end, step, size):
         resolve_unbacked_bindings,
     )
 
+    # current_node may be None when slice_ is called from template rendering
+    # (e.g. cpp_template_kernel.slice_nd) rather than FX graph lowering.
     current_node = V.graph.current_node
     node_unbacked_bindings = resolve_unbacked_bindings(
         V.graph.sizevars.shape_env,
