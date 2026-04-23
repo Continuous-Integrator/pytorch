@@ -181,7 +181,9 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
-          sparse-checkout: .ci/pytorch/
+          sparse-checkout: |
+            .ci/pytorch/
+            .github/actions/upload-binary-wheel/
           show-progress: false
       - name: Setup Python
         uses: actions/setup-python@v6
