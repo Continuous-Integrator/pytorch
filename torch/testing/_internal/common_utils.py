@@ -1056,7 +1056,7 @@ def parse_cmd_line_args():
 def _get_int_signal() -> signal.Signals:
     """Get the int signal. SIGINT for unix, SIGTERM for windows."""
     if IS_WINDOWS:
-        return signal.SIGTERM  # type: ignore[attr-defined] # noqa: F821
+        return signal.SIGTERM  # type: ignore[attr-defined]
     else:
         return signal.SIGINT
 
