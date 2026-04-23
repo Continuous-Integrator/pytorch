@@ -542,7 +542,6 @@ class MapVariable(IteratorVariable):
             codegen.extend_output(create_call_function_ex(False, False))
 
 
-
 class FilterVariable(IteratorVariable):
     """
     Represents filter(fn, iterable)
