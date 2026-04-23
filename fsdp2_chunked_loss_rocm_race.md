@@ -21,7 +21,7 @@ Revised: **stream / caching-allocator race** across chunk boundaries. The reduce
 | Every row of `head.weight.grad` should equal every other row (loss = `out.sum()`) | Ungrouped confirms this holds; grouped path's rank 1 has distinct wrong values |
 | Chunk 0 matches; chunks 1–3 under-accumulate cumulatively | Chunk N+1 corrupts what chunk N wrote, not N-1 contribution |
 | Hook/event trace shows identical RS fires per chunk per rank | Not a missing op — buffer corruption downstream |
-| CUDA CI passes the exact same test file | RCCL-specific timing, not algorithm bug |
+| CUDA CI passes the exact same test file | ~~RCCL-specific timing, not algorithm bug~~ — **refuted by CUDA `_sleep` discriminator (2026-04-23, H100)**. Widening the race window with `_sleep` reproduces the bug on CUDA: FSDP2 has a cross-platform stream-ordering bug; CUDA CI passes by kernel-timing luck, not algorithm correctness. See "CUDA validation" below. |
 
 ## Experiments
 
@@ -58,7 +58,7 @@ This replaced the previous `device.synchronize()` workaround after Experiment 1 
 
 Same detection, but `self.device_handle.synchronize()` instead of `current_stream().wait_event(...)`. Correct but coarser — a full CPU-side GPU drain.
 
-## Root cause (resolved — Experiment 1 / Row O)
+## Root cause (resolved — Experiment 1 / Row O; cross-platform confirmed 2026-04-23)
 
 Between chunk N's `post_backward` exit and chunk N+1's `post_backward` entry, autograd's engine runs chunk N+1's backward on the default stream — and autograd's kernels allocate memory. The caching allocator can hand those allocations a block that is a live input/output of chunk N's accumulate kernel still running on the RS stream (same-size same-pool reuse; memory-history snapshot showed rs_output is served from *one address* reused 200× per 50-iter run). The default-stream kernel then writes to that block before the RS-stream accumulate has finished reading it. Corruption shows up on non-rank-0 shards because rank 0's allocator history and timing differ.
 
@@ -84,7 +84,7 @@ This is also consistent with the minimal repro: every sync variant (device, rs_s
 
 The only thing that's needed is a stream-level event wait between chunk-N accumulate and chunk-N+1's next-layer work on the default stream. That's what the fix in FSDP does.
 
-## Open question: pure stream-ordering bug vs allocator event-gating bug (CUDA `_sleep` discriminator)
+## Resolved: pure stream-ordering bug, cross-platform (CUDA `_sleep` discriminator, 2026-04-23)
 
 The fix (row O) is a stream-level wait, which reads like a fix for a pure stream-ordering bug. If that framing is right, the bug should be reproducible on CUDA too once the race window is artificially widened — CUDA and ROCm have the same stream semantics; only the allocator + collective event gating differs. The doc's current framing ("NCCL hides the race on CUDA; RCCL on ROCm does not") says the opposite: CUDA's `record_stream` + free-time event recording prevents the allocator from reusing a live block across streams, so CUDA is safe *by allocator correctness*, not by timing.
 
@@ -142,13 +142,54 @@ python /data/users/weif/code-review/pytorch/rccl_chunked_loss_repro_sleep.py \
 
 If 1e9 cycles is too short on a fast CUDA GPU to visibly stall the RS stream, bump to 1e10. At ~1.5–2 GHz core clock, 1e9 ≈ 500ms per call × 4 chunks × 3 iterations ≈ 6 seconds of injected sleep — should dominate everything else.
 
-### Interpretation
+### CUDA validation (H100, NCCL 2.29.7+cuda13.0, 2026-04-23)
+
+| # | Config | Races / 3 iters |
+|---|---|---|
+| 0 | baseline, no sleep, no fix | **2/3** (doc had predicted 0) |
+| 1 | sleep 1e9 after accumulate, no fix | **3/3** |
+| 2 | sleep 1e9 between RS and accumulate, no fix | **3/3** |
+| 3 | sleep 1e9 after accumulate + `post_accum_event_stream` fix | **0/3** |
+
+**Verdict: pure FSDP2 stream-ordering bug, cross-platform.**
+
+- Run 0 alone already refutes the "CUDA safe by allocator correctness" framing: baseline races 2/3 on H100 without any sleep injection. The window is already non-zero in the standalone repro — RCCL reduce-scatter on the RS stream is slower than the default stream's `empty()+fill()`, and the caching allocator reuses the same `rs_input`/`rs_output` block every chunk, so chunk N+1's default-stream `rs_input` allocation can land on the block chunk N's RS stream is still reading.
+- Run 1 confirms: widening the window with `_sleep` makes it 3/3. No timing luck to lean on.
+- Run 3 confirms the fix holds on CUDA: the `post_accum_event_stream` stream-level wait_event orders default stream after the RS-stream accumulate, closing the window even under 1e9-cycle sleep.
+
+Why the real FSDP test passes on CUDA CI despite this: the surrounding autograd, hook, and module code on the default stream acts as accidental back-pressure that keeps the window narrow enough to not fire reliably within the test's subtest sweep. The standalone repro strips that away and exposes the bug directly.
+
+### Why an FSDP2 unit test on CUDA cannot reproduce what the standalone repro does
+
+Turning the standalone repro back into an FSDP2 unit test on CUDA is surprisingly hard — attempts via ``_sleep`` + ``patch_foreach_reduce`` on H100 cannot make the chunked-loss assertion fail, regardless of sleep magnitude. The reason is that **FSDP and the standalone repro race on two different code paths**, and FSDP's own bookkeeping closes the one CUDA exposes:
+
+| | Standalone repro | FSDP2 production path |
+|---|---|---|
+| `reduce_scatter_input` Python ref | `del rs_input` at chunk end — ref drops immediately | Appended to `comm_ctx.reduce_scatter_states`, held across all chunks of a backward; cleared only at the last param group's `post_backward` entry or in `finalize_backward` |
+| `reduce_output` Python ref | `del rs_output` at chunk end — ref drops immediately | chunk 0 holds it via `sharded_param.grad._local_tensor`; chunks 1+ drop it at `foreach_reduce` return |
+| Race vector on CUDA | rs_input block reused by next chunk while RS stream is still reading → allocator hands default stream a live block | Vector closed — ref-hold blocks allocator reuse |
+| Race vector on ROCm | same as CUDA | Vector is on **allocator-internal fragment or RCCL workspace** (Experiments K and N both held the Python-reachable buffers and still failed bit-exactly) — no Python ref covers this |
+
+So the standalone repro and the ROCm bug are **two different races that both get closed by the same fix** (stream-level `wait_event` at `post_backward` exit serializes the default stream after the RS stream regardless of *which* block the allocator hands out):
+
+- On CUDA + FSDP: rs_input race is pre-emptively closed by `reduce_scatter_states.append(...)`, so the chunked-loss numerical assertion is bit-exact with or without the fix — there's nothing to observe.
+- On CUDA + standalone repro: rs_input race is live because `del rs_input` drops the ref, so `_sleep` + no-sync fails 3/3 and the fix passes 0/3.
+- On ROCm + FSDP: the allocator-internal / RCCL-workspace race is live regardless of Python refs (Experiments K and N proved this), so the chunked-loss numerical assertion fails bit-exactly without the fix and passes with it.
+
+**Implications for a discriminating unit test on CUDA:**
+
+1. A numerical-parity unit test in FSDP on CUDA **cannot** distinguish HEAD vs HEAD~1 — both pass by virtue of `reduce_scatter_states` ref-hold. Timing-based tests on the legacy default stream are also blurred because (a) the caching allocator's cross-stream event tracking inserts implicit `wait_event`s on subsequent `torch.empty` calls that also block the default stream, and (b) the legacy default stream's implicit "synchronize with all streams" on `.synchronize()` further blurs the signal.
+2. A ROCm-only numerical-parity unit test **does** discriminate deterministically — that's exactly `test_partial_group_forward_then_standalone` before the fix. This is the real regression guard.
+3. A **CUDA-discriminating** unit test would have to artificially re-open the standalone repro's race vector: wrap `foreach_reduce` so the returned `reduce_scatter_input` is not appended to `reduce_scatter_states` (or is dropped at chunk end), then `_sleep` on the RS stream, then assert numerical parity. That is the standalone repro re-injected into the FSDP code path — possible but noisy as a canonical regression test.
+4. A **structural** unit test would call `post_backward` directly and assert that `current_stream.wait_event(self._post_reduce_event)` is invoked when entering in `TrainingState.FORWARD` (the chunked-loss condition). Cheap and deterministic on any platform, but it tests that the line runs, not that it's correct.
+
+The pragmatic answer: keep `test_partial_group_forward_then_standalone` as the ROCm-side regression guard and document the standalone repro as the CUDA-side one. Adding either option 3 or 4 on top is optional.
+
+### Original interpretation rubric (kept for reference — outcome: Run 1 ≥ 1/3)
 
 - Run 1 (the key test) is **0/3 races** ⇒ CUDA's caching allocator event gating actively prevents buffer reuse across streams until the producer event fires. The doc's framing is correct: FSDP2's missing sync is a latent hazard that CUDA's allocator correctness covers, and ROCm exposes because RCCL/HIP gating is looser. The fix is needed for ROCm, not for CUDA.
-- Run 1 is **≥1/3 races** ⇒ CUDA is only safe by timing luck, and FSDP2 has a real cross-platform stream-ordering bug that just happens to fire on ROCm due to different kernel timing. The fix should be unconditional, not gated on `in_chunked_path`.
-- Run 3 should always be **0/3** regardless of what Run 1 shows — the fix is correct by construction (stream-level wait orders default stream after RS stream). If Run 3 races, the standalone repro is missing something the real FSDP path has.
-
-Record the outcome back into this section and decide the gating question in "Suggestions for next steps" item 0.
+- **Run 1 is ≥1/3 races ⇒ CUDA is only safe by timing luck, and FSDP2 has a real cross-platform stream-ordering bug that just happens to fire on ROCm due to different kernel timing. The fix should be unconditional, not gated on `in_chunked_path`.** ← actual outcome (3/3 with sleep, 2/3 at baseline)
+- Run 3 should always be **0/3** regardless of what Run 1 shows — the fix is correct by construction (stream-level wait orders default stream after RS stream). If Run 3 races, the standalone repro is missing something the real FSDP path has. ← confirmed 0/3.
 
 ## Why the earlier surgical fixes missed it (historical)
 
@@ -177,7 +218,7 @@ Bottom line: no Python-level tensor-retention fix will close this. The workaroun
 
 **Primary fix is in place** (row O above). Below are optional follow-ups and validations.
 
-0. **Decide: conditional or unconditional `wait_event`?** The fix is currently gated on `in_chunked_path` to keep it off the non-chunked fast path. Argument for unconditional: one stream-level event wait per `post_backward` is cheap (no CPU block), and it removes a whole class of "autograd-queues-on-default-stream-while-accumulate-is-pending-on-RS-stream" foot-guns. Argument for conditional: preserves any overlap between default-stream autograd and RS-stream accumulate in the common case. **This decision is contingent on the CUDA `_sleep` discriminator test** (see "Open question" section) — if CUDA races under `_sleep`, the bug is cross-platform and the fix should be unconditional; if CUDA stays clean even under `_sleep`, the conditional gating is justified because CUDA is safe by allocator correctness, not timing. Measure on a real model before making the final call.
+0. **Decision (2026-04-23): make the `wait_event` unconditional.** The CUDA discriminator (Run 0 baseline 2/3, Run 1 with sleep 3/3) showed CUDA races on the standalone repro even without sleep injection — the bug is cross-platform, and CUDA CI only passes the FSDP test by timing luck from surrounding autograd/hook back-pressure. The conditional gating on `in_chunked_path` hides the same latent hazard on the non-chunked fast path whenever a user pattern (other than chunked loss) drops the back-pressure below the race threshold. One stream-level `wait_event` per `post_backward` is cheap (no CPU block) and closes the hazard class unconditionally. **Still TODO: measure perf impact on a real model** (expect negligible since the wait is one event, not a sync), then flip the PR from conditional to unconditional.
 
 1. **~~Investigate PR #140044 analogue.~~** Tried as Experiment N. Failed — see section above. Do not revisit.
 2. **Minimal repro outside FSDP — FOUND.** `/data/users/weif/code-review/pytorch/rccl_chunked_loss_repro.py`. 2-process, 2-GPU script with no FSDP, no autograd, no modules — just an inner loop of `dist.reduce_scatter_tensor` + accumulate-on-RS-stream, per the FSDP2 chunked-loss pattern. Run on this MI350X box (gfx950, ROCm 7.0.51831, HIP allocator caching on):
