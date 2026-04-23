@@ -12826,7 +12826,7 @@
     CUDA: adaptive_avg_pool2d_out_cuda
     MPS: adaptive_avg_pool2d_out_mps
     XPU: adaptive_avg_pool2d_out_xpu
-    MkldnnCPU: mkldnn_adaptive_avg_pool2d_out_stub    
+    MkldnnCPU: mkldnn_adaptive_avg_pool2d_out_stub
 
 - func: adaptive_avg_pool2d(Tensor self, SymInt[2] output_size) -> Tensor
   python_module: nn
