@@ -703,9 +703,7 @@ class FSDPParamGroup:
                 #      Whether vector 2 exists on CUDA FSDP but is timing-
                 #      masked is unresolved. See
                 #      ``fsdp2_chunked_loss_rocm_race.md``.
-                self.device_handle.current_stream().wait_event(
-                    self._post_reduce_event
-                )
+                self.device_handle.current_stream().wait_event(self._post_reduce_event)
             if all_reduce_input is not None:
                 if self.device.type != "cpu":
                     if all_reduce_event is None:
