@@ -2281,6 +2281,7 @@ class TestBreakpoint(CPythonTestCase):
         # Cleaning the slate here means you can't use breakpoint() to debug
         # these tests, but I think that's okay.  Just use pdb.set_trace() if
         # you must.
+        super().setUp()
         self.resources = ExitStack()
         self.addCleanup(self.resources.close)
         self.env = self.resources.enter_context(EnvironmentVarGuard())
