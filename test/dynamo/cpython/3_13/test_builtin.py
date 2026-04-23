@@ -1770,8 +1770,6 @@ class BuiltinTest(CPythonTestCase):
     # float -> integer rounding (floor, ceil, rint, round) for
     # values in the range [2**52, 2**53).  See:
     #
-    #   http://sources.redhat.com/bugzilla/show_bug.cgi?id=5350
-    #
     # We skip this test on Linux/alpha if it would fail.
     linux_alpha = (platform.system().startswith('Linux') and
                    platform.machine().startswith('alpha'))
