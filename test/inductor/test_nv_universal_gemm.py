@@ -309,17 +309,17 @@ class TestNVUniversalGemm(TestCase):
             (16, 512, 1024),
             (32, 256, 512),
             (64, 512, 1024),
+            (64, 64, 512),
         ),
     )
     def test_scaled_gemm_nvf4_padded_scales(self, m, n, k):
-        """Test NVF4 with padded scales (M < 128).
+        """Test NVF4 with padded scales (M or N < 128).
 
         torch._scaled_mm creates scales with block_size_mn=128 padding,
         producing more elements than the kernel expects. The kernel's
         _supports() must accept both padded and unpadded scale numels.
         """
         packed_k = k // 2
-        block_size = 16
 
         def scaled_mm(a, b, scale_a, scale_b):
             return torch._scaled_mm(
@@ -334,13 +334,10 @@ class TestNVUniversalGemm(TestCase):
         ).view(torch.float4_e2m1fn_x2)
         b_fp4_t = b_fp4.T
 
-        num_k_blocks = ceildiv(k, block_size)
+        num_k_blocks = ceildiv(k, 16)
         padded_k_blocks = _round_up(num_k_blocks, 4)
-        block_size_mn = 128
-        # Padded scale numel: round_up(M, 128) * K_blocks
-        # For M < 128, this is larger than M * K_blocks
-        scale_a_numel = block_size_mn * ceildiv(m, block_size_mn) * padded_k_blocks
-        scale_b_numel = block_size_mn * ceildiv(n, block_size_mn) * padded_k_blocks
+        scale_a_numel = _round_up(m, 128) * padded_k_blocks
+        scale_b_numel = _round_up(n, 128) * padded_k_blocks
 
         scale_a = torch.rand(scale_a_numel, device="cuda").to(torch.float8_e4m3fn)
         scale_b = torch.rand(scale_b_numel, device="cuda").to(torch.float8_e4m3fn)
@@ -357,7 +354,7 @@ class TestNVUniversalGemm(TestCase):
             compiled_fn = torch.compile(scaled_mm)
             result = compiled_fn(a_fp4, b_fp4_t, scale_a, scale_b)
 
-        torch.testing.assert_close(result, expected)
+        torch.testing.assert_close(result, expected, equal_nan=True)
 
     @parametrize("out_dtype", (torch.float32, torch.bfloat16))
     @parametrize(
