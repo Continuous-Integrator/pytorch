@@ -470,6 +470,28 @@ class InductorChoices:
         num_warps = 8
         num_threads = warp_size * num_warps
 
+        if config.batch_invariant:
+            # numel_hint scales with batch (it is the product of output dims,
+            # which typically includes the batch dim). Using it in the split
+            # factor would make the split — and thus the per-thread chunk of
+            # the reduction — depend on batch size, producing bitwise-different
+            # bf16/fp32 partial sums across batches. Decide purely from
+            # reduction_numel_hint so splits stay batch-invariant while still
+            # providing parallelism for large reductions (including the
+            # reduce-to-single-element case, where numel_hint == 1 would
+            # otherwise force split=1).
+            no_split_threshold = (
+                524288 if props.major is not None and props.major >= 10 else 8192
+            )
+            if reduction_numel_hint <= no_split_threshold:
+                return 1
+            chunk = num_threads * max_elements_per_thread
+            divisors = sympy.divisors(reduction_numel_hint)
+            closest = min(divisors, key=lambda x: abs(x - chunk))
+            if abs(closest - chunk) < chunk // 4:
+                chunk = closest
+            return max(1, (reduction_numel_hint + chunk - 1) // chunk)
+
         if inner_reduction:
             # do heuristics that's close to eager mode for split inner reduction
             # we leak reduction autotune configs here, and will need to refactor to avoid this later

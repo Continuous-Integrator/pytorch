@@ -1414,15 +1414,7 @@ class Reduction(Loops):
 
         # easy cases
         if numel_hint == 1:
-            # Under batch_invariant, never split (split decision scales with
-            # batch; split vs single-pass reductions produce bitwise-different
-            # bf16 sums). Hint is preserved so downstream config picks stay
-            # correct.
-            split = (
-                1
-                if config.batch_invariant
-                else inner_reduction_splits(reduction_numel_hint, numel_hint)
-            )
+            split = inner_reduction_splits(reduction_numel_hint, numel_hint)
             if split == 1:
                 # No need to split.
                 return ReductionHint.INNER, split
@@ -1531,19 +1523,13 @@ class Reduction(Loops):
             else:
                 num_inner += 1
         if num_inner > num_outer:
-            split = (
-                1
-                if config.batch_invariant
-                else inner_reduction_splits(reduction_numel_hint, numel_hint)
+            return ReductionHint.INNER, inner_reduction_splits(
+                reduction_numel_hint, numel_hint
             )
-            return ReductionHint.INNER, split
         else:
-            split = (
-                1
-                if config.batch_invariant
-                else outer_reduction_splits(reduction_numel_hint, numel_hint)
+            return ReductionHint.OUTER, outer_reduction_splits(
+                reduction_numel_hint, numel_hint
             )
-            return ReductionHint.OUTER, split
 
     @staticmethod
     def _unroll_reduction_fn(
