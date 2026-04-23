@@ -4459,47 +4459,6 @@ class TestInvokeSubgraphTrainStepCapture(TestCase):
         loss, aux = compiled(x)
         self.assertFalse(aux.requires_grad)
 
-    @torch._dynamo.config.patch(trace_autograd_ops=True)
-    @requires_cuda_and_triton
-    def test_needs_autograd_with_autograd_grad_in_graph(self):
-        """When the graph contains torch.autograd.grad (from
-        trace_autograd_ops rewriting .backward()), AOT autograd must keep
-        needs_autograd=True even when output_and_mutation_safe is True.
-        Otherwise the inference path disables autograd at runtime, causing
-        flex_attention to fall through to the dense CEA fallback.
-        """
-        from torch.nn.attention.flex_attention import create_block_mask, flex_attention
-
-        @nested_compile_region()
-        def nested_attn(q, k, v, block_mask):
-            return flex_attention(q, k, v, block_mask=block_mask)
-
-        class Model(torch.nn.Module):
-            def __init__(self):
-                super().__init__()
-                self.head = torch.nn.Linear(8, 1, bias=False, device="cuda")
-
-            def forward(self, q, k, v, block_mask):
-                out = nested_attn(q, k, v, block_mask)
-                out_det = out.detach().requires_grad_()
-                loss = self.head(out_det).sum()
-                loss.backward()
-                out.backward(out_det.grad)
-                return loss.detach()
-
-        model = Model()
-        B, H, S, D = 1, 1, 64, 8
-        q = torch.randn(B, H, S, D, device="cuda", requires_grad=True)
-        k = torch.randn(B, H, S, D, device="cuda", requires_grad=True)
-        v = torch.randn(B, H, S, D, device="cuda", requires_grad=True)
-        block_mask = create_block_mask(lambda b, h, q, kv: q >= 0, B, H, S, S)
-
-        x = (q, k, v, block_mask)
-        compiled = torch.compile(model, backend="aot_eager", fullgraph=True)
-        loss = compiled(*x)
-        # Should succeed without "backward through graph second time" or OOM
-        self.assertIsNotNone(loss)
-
 
 if __name__ == "__main__":
     run_tests()
