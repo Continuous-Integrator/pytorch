@@ -527,6 +527,7 @@ def _cache_inference_info(
             backward_state_indices=None,
             num_symints_saved_for_bw=None,
             serialized_bw_module=None,
+            min_cut_info_str=None,
         )
         AOTAutogradCache.save(
             cache_info.cache_key,
@@ -2285,6 +2286,8 @@ def aot_stage2_autograd(
         aot_config,
     )
 
+    min_cut_info_str = getattr(fx_g.graph, "_min_cut_info_str", None)
+
     fw_module_str, bw_module_str = _log_fw_bw_graphs(
         fw_module, bw_module, maybe_subclass_meta, fw_metadata, aot_config
     )
@@ -2322,6 +2325,7 @@ def aot_stage2_autograd(
         _indices_of_inps_to_detach,
         num_symints_saved_for_bw,
         bw_module,
+        min_cut_info_str,
     )
 
     return _aot_stage2c_make_autograd_function(
@@ -2413,6 +2417,7 @@ def _cache_autograd_info(
     _indices_of_inps_to_detach: list[int],
     num_symints_saved_for_bw: int,
     bw_module: torch.fx.GraphModule | None,
+    min_cut_info_str: str | None,
 ) -> tuple[
     GenericAOTAutogradResult[Any, Any] | None,
     Callable[..., Any],
@@ -2480,6 +2485,7 @@ def _cache_autograd_info(
                     backward_state_indices=backward_state_indices,
                     num_symints_saved_for_bw=num_symints_saved_for_bw,
                     serialized_bw_module=serialize_graph_module(bw_module),
+                    min_cut_info_str=min_cut_info_str,
                 )
                 AOTAutogradCache.save(
                     cache_info.cache_key,
