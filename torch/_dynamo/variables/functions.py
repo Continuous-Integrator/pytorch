@@ -23,6 +23,8 @@ accurate graph capture while handling Python's various function-related behavior
 
 import builtins
 import functools
+import importlib.metadata
+import importlib.util
 import inspect
 import itertools
 import logging
@@ -756,7 +758,7 @@ class UserFunctionVariable(BaseUserFunctionVariable):
 
             if not isinstance(fn_var, UserFunctionVariable):
                 fn_name = fn_var.get_name()
-                msg = f"Applying `nonstrict_trace` to function <{fn_name}>; however, `nonstrict_trace` currently requires the function to be defined outside `torch.compile` region."  # noqa: B950
+                msg = f"Applying `nonstrict_trace` to function <{fn_name}>; however, `nonstrict_trace` currently requires the function to be defined outside `torch.compile` region."
                 unimplemented(
                     gb_type="Limitation of `nonstrict_trace",
                     context=f"{self}",
@@ -2167,6 +2169,16 @@ class SkipFunctionVariable(VariableTracker):
         args: Sequence[VariableTracker],
         kwargs: dict[str, VariableTracker],
     ) -> VariableTracker:
+        # importlib functions are frozen builtins that Dynamo cannot trace
+        # into.  They are deterministic for a given package name, so
+        # constant-fold them when all args are constants.
+        if self.value in (importlib.util.find_spec, importlib.metadata.version) and all(
+            a.is_python_constant() for a in args
+        ):
+            return VariableTracker.build(
+                tx, self.value(*(a.as_python_constant() for a in args))
+            )
+
         if inspect.getattr_static(self.value, "_torchdynamo_disable", False):
             msg = inspect.getattr_static(self.value, "_torchdynamo_disable_msg", None)
             unimplemented(
@@ -3248,6 +3260,9 @@ class TritonKernelVariable(VariableTracker):
         self.kernel_source = kwargs.pop("kernel_source", kwargs.get("source"))
         super().__init__(**kwargs)
         dynamo_triton_hopifier_singleton.init_variable(self, kernel, kernel_idx, grid)
+
+    def python_type(self) -> type:
+        return type(self.kernel)
 
     def call_function(
         self,

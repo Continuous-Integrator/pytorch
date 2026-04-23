@@ -320,8 +320,8 @@ def is_fsdp_all_gather(
     if not is_all_gather_into_tensor(node):
         return False
     if all_node_ancestors is not None:
-        seen = sum(1 for a in all_node_ancestors[node] if a.op == "placeholder")
-        return seen == 1
+        phs = (a for a in all_node_ancestors[node] if a.op == "placeholder")
+        return next(phs, None) is not None and next(phs, None) is None
     from torch._inductor.fx_passes.fsdp import is_fsdp_all_gather as _is_fsdp_all_gather
 
     return _is_fsdp_all_gather(node)

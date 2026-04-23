@@ -1,4 +1,3 @@
-# flake8: noqa: B950
 # Owner(s): ["module: inductor"]
 import unittest
 from unittest.mock import patch
@@ -59,6 +58,8 @@ def apply_reordering_and_get_graph(graph, out_li) -> None:
         "bucket_exposed_first",
         "bucket_only_internode_comms",
         "bucket_mode",
+        "pre_bucketing_fsdp_collectives",
+        "pre_bucketing_fsdp_collectives_bucket_cap_mb",
     )
     for key in config_keys:
         if (val := getattr(dist_opts, key)) is not None:
