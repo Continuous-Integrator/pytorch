@@ -202,8 +202,11 @@ WINDOWS_BINARY_BUILD_WORKFLOWS = [
     ),
 ]
 
+# TODO(revert before merge): restore to the full FULL_PYTHON_VERSIONS list.
+# Cut to 3.10 + 3.11 while iterating on the single-runner macOS nightly so
+# end-to-end CI cycles are ~20 min instead of ~2 h.
 _MACOS_ARM64_WHEEL_CONFIGS = generate_binary_build_matrix.generate_wheels_matrix(
-    OperatingSystem.MACOS_ARM64
+    OperatingSystem.MACOS_ARM64, python_versions=["3.10", "3.11"]
 )
 
 MACOS_BINARY_BUILD_WORKFLOWS = [
