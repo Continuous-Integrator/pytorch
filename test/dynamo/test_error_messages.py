@@ -1165,18 +1165,6 @@ User code traceback:
         msg = re.sub(r"line (\d+)", "line N", msg)
         # remove carets
         msg = re.sub(r"\n\s*~*\^+\n", "\n", msg)
-        msg = re.sub(
-            (
-                r'  File "eval_frame.py", line N, in compile_wrapper\n'
-                r"    raise e\.with_traceback\(\n"
-                r"(?:        None\n    \) from e\.__cause__  # User compiler error\n)?"
-            ),
-            (
-                '  File "eval_frame.py", line N, in compile_wrapper\n'
-                "    raise e.with_traceback(None) from e.__cause__  # User compiler error\n"
-            ),
-            msg,
-        )
         self.assertExpectedInline(
             msg,
             """\
