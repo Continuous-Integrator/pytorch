@@ -29,7 +29,11 @@ if ! command -v uv >/dev/null; then
 fi
 
 for desired in ${DESIRED_PYTHONS}; do
-    echo "===== Building PyTorch wheel for Python ${desired} ====="
+    # Wrap each iteration in a GHA log group so long logs collapse nicely
+    # in the run UI (one click per Python version).
+    echo "::group::Build wheel for Python ${desired}"
+    iter_start=$(date +%s)
+
     uv python install "${desired}"
     py_bin_dir="$(dirname "$(uv python find "${desired}")")"
     export PATH="${py_bin_dir}:${PATH}"
@@ -49,4 +53,15 @@ for desired in ${DESIRED_PYTHONS}; do
     TORCH_PACKAGE_NAME="${TORCH_PACKAGE_NAME//-/_}"
     export USE_PYTORCH_METAL_EXPORT USE_COREML_DELEGATE TORCH_PACKAGE_NAME
     "${PYTORCH_ROOT}/.ci/wheel/build_wheel.sh"
+
+    iter_elapsed=$(( $(date +%s) - iter_start ))
+    echo "::endgroup::"
+
+    if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+        if [[ ! -s "${GITHUB_STEP_SUMMARY}" ]]; then
+            printf '| Python | Build time |\n|---|---:|\n' >> "${GITHUB_STEP_SUMMARY}"
+        fi
+        printf '| %s | %dm %ds |\n' "${desired}" "$((iter_elapsed/60))" "$((iter_elapsed%60))" \
+            >> "${GITHUB_STEP_SUMMARY}"
+    fi
 done
