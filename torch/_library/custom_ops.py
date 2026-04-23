@@ -22,6 +22,18 @@ log = logging.getLogger(__name__)
 
 _FAST_PATH_FALLBACK = object()
 
+_DEVICE_KEYSETS: dict[str, "_C.DispatchKeySet"] = {}
+
+
+def _keyset_for_device(device_type: str) -> "_C.DispatchKeySet":
+    ks = _DEVICE_KEYSETS.get(device_type)
+    if ks is not None:
+        return ks
+    key_name = _C._dispatch_key_for_device(device_type)
+    ks = _C.DispatchKeySet(getattr(_C.DispatchKey, key_name))
+    _DEVICE_KEYSETS[device_type] = ks
+    return ks
+
 
 @overload
 def custom_op(
@@ -672,6 +684,7 @@ class CustomOpDef:
         lib._register_fake(self._name, fake_impl, _stacklevel=4)
 
         autograd_impl = autograd.make_autograd_impl(self._opoverload, self)
+        self._autograd_impl = autograd_impl
         lib.impl(self._name, autograd_impl, "Autograd", with_keyset=True)
         schema = self._opoverload._schema
 
@@ -681,20 +694,18 @@ class CustomOpDef:
         if schema.is_mutable:
             mutated_idxs, mutated_keys = utils.mutated_args_kwargs(schema)
             self._mutated_idxs = tuple(mutated_idxs)
-
-            original_kernel = torch._C._dispatch_get_computed_kernel_for_dispatch_key(
-                f"{lib.ns}::{self._name}", "ADInplaceOrView"
-            )
+            op = self._opoverload
 
             def adinplaceorview_impl(keyset, *args, **kwargs):
-                # Handle the mutated idx the user gave us explicitly
-
                 for idx in mutated_idxs:
                     increment_version(args[idx])
                 for key in mutated_keys:
                     increment_version(kwargs[key])
-                # Handle view + mutation that are in the schema
-                return original_kernel.call_boxed(keyset, *args, **kwargs)
+                return op.redispatch(
+                    keyset & _C._after_ADInplaceOrView_keyset, *args, **kwargs
+                )
+
+            self._adinplaceorview_impl = adinplaceorview_impl
 
             with warnings.catch_warnings():
                 warnings.filterwarnings(
@@ -711,7 +722,13 @@ class CustomOpDef:
 
     def _install_fast_call(self):
         """Install a Python fast path that bypasses the C++ dispatcher for
-        common eager-mode calls. The fast path requires all of the following:
+        common eager-mode calls.  Instead of reimplementing the dispatch
+        logic, this reuses the same ``autograd_impl`` and
+        ``adinplaceorview_impl`` registered for the slow path but
+        replaces ``op.redispatch`` with a thread-local Python chain via
+        ``_ops._enable_fast_dispatch``.
+
+        The fast path requires all of the following:
         - All args are plain ``torch.Tensor`` (no subclasses).
         - No ``TorchFunctionMode`` is active.
         - No autocast is active.
@@ -723,8 +740,6 @@ class CustomOpDef:
         and the call falls through to the C++ dispatcher."""
         schema = self._opoverload._schema
 
-        # View ops have special ADInplaceOrView handling that the fast path
-        # can't replicate.
         if schema._is_view_op():
             return
 
@@ -732,72 +747,30 @@ class CustomOpDef:
             utils.is_tensorlist_like_type(a.type)
             for a in (*schema.arguments, *schema.returns)
         )
-
-        # Tensor-list args can hide subclasses that the top-level arg check
-        # in fast_call wouldn't catch.
         if has_tensorlist:
             return
 
         is_mutable = schema.is_mutable
-        mutated_idxs = getattr(self, "_mutated_idxs", ())
         raw_fns = self._raw_fns
-        opdef = self
         op = self._opoverload
         op_name = self._name
-        has_kwarg_only_args = utils.has_kwarg_only_args(schema)
+        disabled_kernel = self._disabled_kernel
+        autograd_impl = self._autograd_impl
+        adinplaceorview_impl = getattr(self, "_adinplaceorview_impl", None)
 
-        def forward(ctx, *args):
-            with _C._AutoDispatchBelowAutograd():
-                device_type = args[0].device.type
-                fn = raw_fns.get(device_type) or raw_fns.get(None)
-                result = fn(*args)  # pyrefly: ignore[not-callable]
-
-            utils._c_check_aliasing_constraint(op_name, args, {}, result)
-
-            if opdef._setup_context_fn:
-                filled_args, filled_kwargs = utils.fill_defaults(op._schema, args, {})
-                if has_kwarg_only_args:
-                    opdef._setup_context_fn(
-                        ctx=ctx,
-                        inputs=filled_args,
-                        keyword_only_inputs=filled_kwargs,
-                        output=result,
-                    )
-                else:
-                    opdef._setup_context_fn(ctx=ctx, inputs=filled_args, output=result)
-
+        def backend_dispatch(keyset, *args, **kwargs):
+            device_type = args[0].device.type
+            fn = raw_fns.get(device_type) or raw_fns.get(None)
+            result = fn(*args, **kwargs)  # pyrefly: ignore[not-callable]
+            utils._c_check_aliasing_constraint(op_name, args, kwargs, result)
             return result
 
-        def backward(ctx, *grads):
-            if opdef._backward_fn:
-                return opdef._backward_fn(ctx, *grads)
-            raise RuntimeError(
-                f"Trying to backward through {op} but no autograd "
-                f"formula was registered. "
-                f"Please use register_autograd to add one."
-            )
-
-        Generated = type(
-            f"FastGeneratedBackwardFor_{op._namespace}_{op._opname}",
-            (torch.autograd.Function,),
-            {
-                "forward": staticmethod(forward),
-                "backward": staticmethod(backward),
-            },
-        )
-
-        disabled_kernel = self._disabled_kernel
-
         def fast_call(*args, **kwargs):
-            # Dynamo needs the fake impl and dispatcher.
             if torch.compiler.is_compiling():
                 return _FAST_PATH_FALLBACK
             if not args or kwargs:
                 return _FAST_PATH_FALLBACK
 
-            # Single C++ call that checks: TorchFunctionMode, dispatch
-            # keyset (autocast, functorch, sparse, etc.), tensor subclasses,
-            # and requires_grad.
             check = _C._custom_op_fast_path_check(args)
             if check is None:
                 return _FAST_PATH_FALLBACK
@@ -810,26 +783,18 @@ class CustomOpDef:
             if fn is None:
                 return _FAST_PATH_FALLBACK
 
-            if is_mutable:
-                for idx in mutated_idxs:
-                    if not args[idx].is_inference():
-                        increment_version(args[idx])
+            # Build the dispatch chain (consumed from the end via pop()).
+            chain: list = [backend_dispatch]
+            if is_mutable and adinplaceorview_impl is not None:
+                chain.append(adinplaceorview_impl)
 
-            if torch.is_grad_enabled() and any_requires_grad:
-                return Generated.apply(*args)  # type: ignore[attr-defined]
+            keyset = _keyset_for_device(device_type)
 
-            result = fn(*args)
-
-            utils._c_check_aliasing_constraint(op_name, args, {}, result)
-            return result
+            with _ops._enable_fast_dispatch(op, chain):
+                return autograd_impl(keyset, *args)
 
         self._fast_call = fast_call
 
-        # Install the fast path on both the OpOverloadPacket's `_op`
-        # (read by `torch.ops.ns.name(x)`) and the OpOverload's `_op`
-        # (read by `torch.ops.ns.name.default(x)`). Save the original
-        # entries once so repeated `_install_fast_call` invocations (e.g.
-        # registering kernels for different devices) don't nest wrappers.
         packet = self._opoverload._overloadpacket
         overload = self._opoverload
         if not hasattr(packet, "_orig_op"):

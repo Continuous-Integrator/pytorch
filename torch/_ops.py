@@ -5,6 +5,7 @@ import ctypes
 import importlib
 import inspect
 import sys
+import threading
 import types
 from collections.abc import Callable, Iterator
 from functools import cached_property
@@ -31,6 +32,21 @@ if TYPE_CHECKING:
 
 _T = TypeVar("_T", default=Any)
 _P = ParamSpec("_P", default=...)
+
+_fast_dispatch_tls = threading.local()
+
+
+@contextlib.contextmanager
+def _enable_fast_dispatch(
+    op: "OpOverload", chain: list[Any]
+) -> Iterator[None]:
+    """While active, op.redispatch() pops from *chain* instead of C++ dispatch."""
+    prev = getattr(_fast_dispatch_tls, "entry", None)
+    _fast_dispatch_tls.entry = (op, chain)
+    try:
+        yield
+    finally:
+        _fast_dispatch_tls.entry = prev
 
 
 # Query `hasattr` only once.
@@ -875,6 +891,12 @@ class OpOverload(OperatorBase, Generic[_P, _T]):
     def redispatch(
         self, /, keyset: torch._C.DispatchKeySet, *args: _P.args, **kwargs: _P.kwargs
     ) -> _T:
+        entry = getattr(_fast_dispatch_tls, "entry", None)
+        if entry is not None:
+            target_op, chain = entry
+            if target_op is self and chain:
+                fn = chain.pop()
+                return fn(keyset, *args, **kwargs)  # type: ignore[return-value]
         return self._handle.redispatch_boxed(keyset, *args, **kwargs)  # type: ignore[return-value]
 
     def __hash__(self):
