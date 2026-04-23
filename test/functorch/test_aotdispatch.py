@@ -7335,7 +7335,6 @@ def forward(self, primals_1, tangents_1):
             "No codegen should be emitted when RNG is not functionalized",
         )
 
-    @unittest.skipIf(not torch.cuda.is_available(), "CUDA is unavailable")
     def test_functionalized_rng_no_codegen_returns_same_fn(self):
         from torch._functorch._aot_autograd.runtime_wrappers import (
             FunctionalizedRngRuntimeWrapper,
@@ -7415,7 +7414,6 @@ def forward(self, primals_1, tangents_1):
         self.assertIn("extend", source)
         self.assertIn("outs[", source)
 
-    @unittest.skipIf(not torch.cuda.is_available(), "CUDA is unavailable")
     def test_functionalized_rng_codegen_unit_return_new_outs(self):
         set_offset_log = []
 
@@ -7448,7 +7446,6 @@ def forward(self, primals_1, tangents_1):
         self.assertEqual(set_offset_log, ["out_2"])
         self.assertEqual(result, ["out_0", "out_1", "out_3"])
 
-    @unittest.skipIf(not torch.cuda.is_available(), "CUDA is unavailable")
     def test_functionalized_rng_codegen_unit_no_return_new_outs(self):
         set_offset_log = []
 
