@@ -4460,5 +4460,41 @@ class TestInvokeSubgraphTrainStepCapture(TestCase):
         self.assertFalse(aux.requires_grad)
 
 
+    @torch._dynamo.config.patch(trace_autograd_ops=True)
+    def test_needs_autograd_with_autograd_grad_in_graph(self):
+        """When the graph contains torch.autograd.grad (from
+        trace_autograd_ops rewriting .backward()), AOT autograd must keep
+        needs_autograd=True even when output_and_mutation_safe is True.
+        Otherwise the inference path disables autograd at runtime, causing
+        HOPs like flex_attention to fall through to the dense CEA fallback.
+        """
+
+        @nested_compile_region()
+        def nested_fn(x):
+            return x.sin()
+
+        class Model(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.linear = torch.nn.Linear(4, 4, bias=False)
+                self.head = torch.nn.Linear(4, 1, bias=False)
+
+            def forward(self, x):
+                y = self.linear(x)
+                z = nested_fn(y)
+                z_det = z.detach().requires_grad_()
+                loss = self.head(z_det).sum()
+                loss.backward()
+                z.backward(z_det.grad)
+                return loss.detach()
+
+        model = Model()
+        x = torch.randn(4, 4)
+        compiled = torch.compile(model, backend="aot_eager", fullgraph=True)
+        loss = compiled(x)
+        # Should succeed without "backward through graph second time" or OOM
+        self.assertIsNotNone(loss)
+
+
 if __name__ == "__main__":
     run_tests()
