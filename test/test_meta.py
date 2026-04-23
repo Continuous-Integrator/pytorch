@@ -1962,7 +1962,7 @@ class TestMetaKernelRegistrations(TestCase):
         from torch._decomp.decompositions import rrelu_with_noise_backward
 
         x = torch.randn(5, requires_grad=True)
-        lower, upper = 0.125, 0.125 + 1e-7
+        lower, upper = 0.125, 0.125 + torch.finfo(torch.float32).eps
         noise = torch.rand(5)
         grad = torch.ones(5)
         cpp_result = torch.ops.aten.rrelu_with_noise_backward(
@@ -2057,7 +2057,6 @@ class TestMetaKernelRegistrations(TestCase):
         )
         expected = torch.tensor([[1, 0], [2, 4], [3, 5]])
         self.assertEqual(result, expected)
-
 
 instantiate_device_type_tests(TestMeta, globals())
 
