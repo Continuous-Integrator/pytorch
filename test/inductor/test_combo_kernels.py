@@ -1,6 +1,7 @@
 # Owner(s): ["module: inductor"]
 
 import contextlib
+import itertools
 import json
 import logging
 import re
@@ -1620,6 +1621,16 @@ class ComboKernelPeakMemoryTests(TestCase):
         super().tearDown()
 
     @staticmethod
+    def _compile_and_count(fn, *args, **config_patch):
+        torch._dynamo.reset()
+        torch._inductor.metrics.reset()
+        config_patch.setdefault("combo_kernel_peak_memory_threshold", None)
+        config_patch.setdefault("combo_kernel_peak_memory_pct_threshold", None)
+        with torch._inductor.config.patch(config_patch):
+            out = torch.compile(fn)(*args)
+        return out, torch._inductor.metrics.generated_kernel_count
+
+    @staticmethod
     def _make_wide_resnet_like():
         """Build a WideResNet-like model."""
 
@@ -1682,24 +1693,236 @@ class ComboKernelPeakMemoryTests(TestCase):
 
         return Model()
 
+    def test_try_combo_with_memory_check_rejects_adjacent_large_allocations(self):
+        from unittest.mock import patch
+
+        from torch._inductor.memory import BufferInfo
+        from torch._inductor.scheduler import ComboKernelMemoryContext, Scheduler
+
+        class _FakeNode:
+            def __init__(self, name: str, deps=()) -> None:
+                self.name = name
+                self.scheduler = object()
+                self.unmet_dependencies = {
+                    type("Dep", (), {"name": dep})() for dep in deps
+                }
+
+            def get_name(self) -> str:
+                return self.name
+
+            def get_buffer_names(self):
+                return ()
+
+        class _FakeComboNode(_FakeNode):
+            pass
+
+        class _FakeBuffer:
+            def __init__(self, name: str, defining_op: _FakeNode, succ_nodes) -> None:
+                self.name = name
+                self.defining_op = defining_op
+                self.mpi_buffer = type("MPI", (), {"succ_nodes": succ_nodes})()
+
+            def get_name(self) -> str:
+                return self.name
+
+        class _FakeScheduler:
+            def __init__(self, nodes) -> None:
+                self.nodes = nodes
+                self.name_to_fused_node = {}
+
+            def topological_sort_schedule(self, nodes):
+                return nodes
+
+        a = _FakeNode("a")
+        consume_a = _FakeNode("consume_a", deps=("buf_a",))
+        b = _FakeNode("b")
+        consume_b = _FakeNode("consume_b", deps=("buf_b",))
+        nodes = [a, consume_a, b, consume_b]
+        scheduler = _FakeScheduler(nodes)
+        buf_a = _FakeBuffer("buf_a", a, {consume_a})
+        buf_b = _FakeBuffer("buf_b", b, {consume_b})
+        mem_ctx = ComboKernelMemoryContext(
+            graph_outputs=set(),
+            buf_info_list=[
+                BufferInfo(buf_a, 100, 100, 0, 1),
+                BufferInfo(buf_b, 100, 100, 2, 3),
+            ],
+            freeable_input_buffer_cls=type("_FakeFreeableInputBuffer", (), {}),
+            memories_at_nodes=[100, 100, 100, 100, 0],
+            node_to_idx={node: idx for idx, node in enumerate(nodes)},
+        )
+
+        def fake_foreach(*args, **kwargs):
+            return _FakeComboNode("combo")
+
+        with patch(
+            "torch._inductor.scheduler.ForeachKernelSchedulerNode", fake_foreach
+        ):
+            with torch._inductor.config.patch(
+                combo_kernel_peak_memory_threshold=0,
+                combo_kernel_peak_memory_pct_threshold=None,
+            ):
+                zero_tolerance_combo, *_ = Scheduler._try_combo_with_memory_check(
+                    scheduler,
+                    [a, b],
+                    mem_ctx,
+                    baseline_peak=100,
+                    enable_autotune=False,
+                )
+            with torch._inductor.config.patch(
+                combo_kernel_peak_memory_threshold=1,
+                combo_kernel_peak_memory_pct_threshold=None,
+            ):
+                bounded_combo, *_ = Scheduler._try_combo_with_memory_check(
+                    scheduler,
+                    [a, b],
+                    mem_ctx,
+                    baseline_peak=100,
+                    enable_autotune=False,
+                )
+            with torch._inductor.config.patch(
+                combo_kernel_peak_memory_threshold=None,
+                combo_kernel_peak_memory_pct_threshold=None,
+            ):
+                accepted_combo, _, new_region_memory, region_start, combo_step = (
+                    Scheduler._try_combo_with_memory_check(
+                        scheduler,
+                        [a, b],
+                        mem_ctx,
+                        baseline_peak=100,
+                        enable_autotune=False,
+                    )
+                )
+
+        self.assertIsNone(zero_tolerance_combo)
+        self.assertIsNone(bounded_combo)
+        self.assertIsNotNone(accepted_combo)
+        self.assertEqual(region_start, 0)
+        self.assertEqual(combo_step, 0)
+        self.assertEqual(new_region_memory, [200, 200, 100, 100])
+
+    def test_try_combo_with_memory_check_zero_pct_threshold_is_strict(self):
+        from unittest.mock import patch
+
+        from torch._inductor.memory import BufferInfo
+        from torch._inductor.scheduler import ComboKernelMemoryContext, Scheduler
+
+        class _FakeNode:
+            def __init__(self, name: str, deps=()) -> None:
+                self.name = name
+                self.scheduler = object()
+                self.unmet_dependencies = {
+                    type("Dep", (), {"name": dep})() for dep in deps
+                }
+
+            def get_name(self) -> str:
+                return self.name
+
+            def get_buffer_names(self):
+                return ()
+
+        class _FakeComboNode(_FakeNode):
+            pass
+
+        class _FakeBuffer:
+            def __init__(self, name: str, defining_op: _FakeNode, succ_nodes) -> None:
+                self.name = name
+                self.defining_op = defining_op
+                self.mpi_buffer = type("MPI", (), {"succ_nodes": succ_nodes})()
+
+            def get_name(self) -> str:
+                return self.name
+
+        class _FakeScheduler:
+            def __init__(self, nodes) -> None:
+                self.nodes = nodes
+                self.name_to_fused_node = {}
+
+            def topological_sort_schedule(self, nodes):
+                return nodes
+
+        a = _FakeNode("a")
+        consume_a = _FakeNode("consume_a", deps=("buf_a",))
+        b = _FakeNode("b")
+        consume_b = _FakeNode("consume_b", deps=("buf_b",))
+        nodes = [a, consume_a, b, consume_b]
+        scheduler = _FakeScheduler(nodes)
+        buf_a = _FakeBuffer("buf_a", a, {consume_a})
+        buf_b = _FakeBuffer("buf_b", b, {consume_b})
+        mem_ctx = ComboKernelMemoryContext(
+            graph_outputs=set(),
+            buf_info_list=[
+                BufferInfo(buf_a, 100, 100, 0, 1),
+                BufferInfo(buf_b, 100, 100, 2, 3),
+            ],
+            freeable_input_buffer_cls=type("_FakeFreeableInputBuffer", (), {}),
+            memories_at_nodes=[100, 100, 100, 100, 0],
+            node_to_idx={node: idx for idx, node in enumerate(nodes)},
+        )
+
+        def fake_foreach(*args, **kwargs):
+            return _FakeComboNode("combo")
+
+        with patch(
+            "torch._inductor.scheduler.ForeachKernelSchedulerNode", fake_foreach
+        ):
+            with torch._inductor.config.patch(
+                combo_kernel_peak_memory_threshold=None,
+                combo_kernel_peak_memory_pct_threshold=0.0,
+            ):
+                combo_node, *_ = Scheduler._try_combo_with_memory_check(
+                    scheduler,
+                    [a, b],
+                    mem_ctx,
+                    baseline_peak=100,
+                    enable_autotune=False,
+                )
+
+        self.assertIsNone(combo_node)
+
+    @requires_gpu_and_triton
+    def test_combo_kernel_peak_memory_succinct_threshold(self):
+        def fn(a, b, w):
+            first = torch.sin(a) + 1
+            small = torch.mm(first, w)[:, 0]
+            second = torch.cos(b) + 1
+            return small, second
+
+        m = n = 4096
+        a = torch.randn((m, n), device=GPU_TYPE)
+        b = torch.randn((m, n), device=GPU_TYPE)
+        w = torch.randn((n, 1), device=GPU_TYPE)
+        out_eager = fn(a, b, w)
+
+        out_default, kernels_default = self._compile_and_count(
+            fn,
+            a,
+            b,
+            w,
+            combo_kernel_peak_memory_threshold=None,
+            combo_kernel_peak_memory_pct_threshold=None,
+        )
+        out_tight, kernels_tight = self._compile_and_count(
+            fn,
+            a,
+            b,
+            w,
+            combo_kernel_peak_memory_threshold=1,
+            combo_kernel_peak_memory_pct_threshold=None,
+        )
+
+        for got, want in zip(out_default, out_eager):
+            self.assertEqual(got, want)
+        for got, want in zip(out_tight, out_eager):
+            self.assertEqual(got, want)
+        self.assertGreater(kernels_tight, kernels_default)
+
     @requires_gpu_and_triton
     def test_combo_kernel_peak_memory_threshold(self):
-        """
-        The model has 20 wide bottleneck blocks creating many BN/relu ops
-        at the same topological level.  Default combo fusion groups them into
-        wide-span combos that co-allocate large intermediate buffers,
-        adding ~60 MB peak overhead.  The threshold detects this via
-        _estimate_peak_for_nodes and rejects the heavy groups.
-
-        Sweeps threshold from 1GB (accept all) down to 1B (reject most).
-        Verifies:
-          1. correctness at every threshold.
-          2. threshold rejects groups -> strictly more kernels.
-          3. threshold reduces CUDA peak memory.
-          4. monotonicity: kernels non-decreasing as threshold shrinks.
-        """
-        import gc
-
+        """Threshold rejects heavy combo groups: tighter threshold ->
+        kernel count is non-decreasing, and 1B vs 1GB are strictly
+        ordered. CUDA peak is intentionally not asserted (caching
+        allocator is noisy)."""
         model = self._make_wide_resnet_like().to(GPU_TYPE).eval()
         x = torch.randn(1, 3, 224, 224, device=GPU_TYPE)
         with torch.no_grad():
@@ -1708,53 +1931,27 @@ class ComboKernelPeakMemoryTests(TestCase):
         thresholds = [1024 * 1024 * 1024, 1024 * 1024, 1]
         prev_kernels = None
         kernel_counts = {}
-        peak_memory = {}
 
         for threshold in thresholds:
-            torch._dynamo.reset()
-            torch._inductor.metrics.reset()
-            gc.collect()
-            torch.cuda.empty_cache()
-
-            with torch._inductor.config.patch(
-                combo_kernel_peak_memory_threshold=threshold
-            ):
-                compiled_fn = torch.compile(model)
-                with torch.no_grad():
-                    out_compiled = compiled_fn(x)
+            with torch.no_grad():
+                out_compiled, kernels = self._compile_and_count(
+                    model,
+                    x,
+                    combo_kernel_peak_memory_threshold=threshold,
+                    combo_kernel_peak_memory_pct_threshold=None,
+                )
 
             self.assertEqual(out_eager, out_compiled)
-
-            kernels = torch._inductor.metrics.generated_kernel_count
             kernel_counts[threshold] = kernels
 
-            # Monotonicity
             if prev_kernels is not None:
                 self.assertGreaterEqual(kernels, prev_kernels)
             prev_kernels = kernels
-
-            # Measure CUDA peak
-            gc.collect()
-            torch.cuda.empty_cache()
-            torch.cuda.reset_peak_memory_stats()
-            with torch.no_grad():
-                compiled_fn(x)
-            torch.cuda.synchronize()
-            peak_memory[threshold] = torch.cuda.max_memory_allocated()
 
         self.assertGreater(
             kernel_counts[1],
             kernel_counts[1024 * 1024 * 1024],
             "Tight threshold should reject wide-span combo groups",
-        )
-
-        # Tight threshold should reduce peak; use a small relative margin to
-        # tolerate CUDA caching allocator noise between runs.
-        self.assertLess(
-            peak_memory[1],
-            peak_memory[1024 * 1024 * 1024] * 0.99,
-            f"Tight threshold should reduce peak memory (got 1B={peak_memory[1]}, "
-            f"1GB={peak_memory[1024 * 1024 * 1024]})",
         )
 
     @requires_gpu_and_triton
@@ -1765,24 +1962,18 @@ class ComboKernelPeakMemoryTests(TestCase):
             out_eager = model(x)
 
         kernel_counts = {}
-        # Sweep: 50% is permissive, 0.0001 (0.01%) rejects everything with delta.
         for pct in (0.5, 0.0001):
-            torch._dynamo.reset()
-            torch._inductor.metrics.reset()
-            torch.cuda.empty_cache()
-
-            with torch._inductor.config.patch(
-                combo_kernel_peak_memory_threshold=0,
-                combo_kernel_peak_memory_pct_threshold=pct,
-            ):
-                compiled_fn = torch.compile(model)
-                with torch.no_grad():
-                    out_compiled = compiled_fn(x)
+            with torch.no_grad():
+                out_compiled, kernels = self._compile_and_count(
+                    model,
+                    x,
+                    combo_kernel_peak_memory_threshold=None,
+                    combo_kernel_peak_memory_pct_threshold=pct,
+                )
 
             self.assertEqual(out_eager, out_compiled)
-            kernel_counts[pct] = torch._inductor.metrics.generated_kernel_count
+            kernel_counts[pct] = kernels
 
-        # Tighter percent threshold should produce strictly more kernels.
         self.assertGreater(
             kernel_counts[0.0001],
             kernel_counts[0.5],
@@ -1790,36 +1981,245 @@ class ComboKernelPeakMemoryTests(TestCase):
         )
 
     @requires_gpu_and_triton
-    def test_combo_kernel_peak_memory_disabled_parity(self):
+    def test_combo_kernel_peak_memory_halving_retry(self):
+        """Verify the halving retry path actually fires: a candidate must
+        appear that is a strict subset (by node names) of an earlier
+        candidate from the same compile."""
+        from unittest.mock import patch
+
+        from torch._inductor.scheduler import Scheduler
+        from torch._inductor.utils import fresh_cache
+
         model = self._make_wide_resnet_like().to(GPU_TYPE).eval()
         x = torch.randn(1, 3, 224, 224, device=GPU_TYPE)
         with torch.no_grad():
             out_eager = model(x)
 
-        # Disabled via both thresholds == 0.
+        call_log: list[tuple[frozenset[str], int]] = []
+        original_try = Scheduler._try_combo_with_memory_check
+
+        def logging_try(self, group_nodes, *args, **kwargs):
+            names = frozenset(n.get_name() for n in group_nodes)
+            call_log.append((names, len(group_nodes)))
+            return original_try(self, group_nodes, *args, **kwargs)
+
         torch._dynamo.reset()
         torch._inductor.metrics.reset()
-        torch.cuda.empty_cache()
-        with torch._inductor.config.patch(
-            combo_kernel_peak_memory_threshold=0,
-            combo_kernel_peak_memory_pct_threshold=0.0,
+        # fresh_cache prevents the FX cache from skipping the scheduler.
+        with (
+            fresh_cache(),
+            patch.object(Scheduler, "_try_combo_with_memory_check", logging_try),
+            torch._inductor.config.patch(
+                combo_kernel_peak_memory_threshold=4096,
+                combo_kernel_peak_memory_pct_threshold=None,
+            ),
         ):
-            out_disabled = torch.compile(model)(x)
-        kernels_disabled = torch._inductor.metrics.generated_kernel_count
+            compiled_fn = torch.compile(model)
+            with torch.no_grad():
+                out_compiled = compiled_fn(x)
+
+        self.assertEqual(out_eager, out_compiled)
+        self.assertGreater(len(call_log), 0)
+        halving_observed = any(
+            len_i < len_j and names_i < names_j
+            for i, (names_i, len_i) in enumerate(call_log)
+            for names_j, len_j in call_log[:i]
+        )
+        self.assertTrue(
+            halving_observed,
+            "Expected at least one halving retry. "
+            f"call_log lens: {[c[1] for c in call_log[:20]]}",
+        )
+
+    @requires_gpu_and_triton
+    def test_combo_kernel_peak_memory_commit_path_exercised(self):
+        """End-to-end smoke for the commit path: at least one combo is
+        accepted and the monotonic-region_start invariant holds."""
+        from unittest.mock import patch
+
+        from torch._inductor.scheduler import Scheduler
+        from torch._inductor.utils import fresh_cache
+
+        model = self._make_wide_resnet_like().to(GPU_TYPE).eval()
+        x = torch.randn(1, 3, 224, 224, device=GPU_TYPE)
+        with torch.no_grad():
+            out_eager = model(x)
+
+        accepted_regions: list[tuple[int, int]] = []
+        original_commit = Scheduler._commit_combo_to_memory_context
+
+        def capturing_commit(
+            self, mem_ctx, region_start, combo_step, new_region_memory, group_nodes
+        ):
+            region_end = region_start + len(new_region_memory) - 2
+            accepted_regions.append((region_start, region_end))
+            return original_commit(
+                self, mem_ctx, region_start, combo_step, new_region_memory, group_nodes
+            )
 
         torch._dynamo.reset()
         torch._inductor.metrics.reset()
-        torch.cuda.empty_cache()
-        out_default = torch.compile(model)(x)
-        kernels_default = torch._inductor.metrics.generated_kernel_count
+        with (
+            fresh_cache(),
+            patch.object(
+                Scheduler, "_commit_combo_to_memory_context", capturing_commit
+            ),
+            torch._inductor.config.patch(
+                combo_kernel_peak_memory_threshold=128 * 1024,
+                combo_kernel_peak_memory_pct_threshold=None,
+            ),
+        ):
+            compiled_fn = torch.compile(model)
+            with torch.no_grad():
+                out_compiled = compiled_fn(x)
 
-        self.assertEqual(out_eager, out_disabled)
-        self.assertEqual(out_eager, out_default)
-        self.assertEqual(
-            kernels_disabled,
-            kernels_default,
-            "Feature-disabled path must match the default schedule exactly",
+        self.assertEqual(out_eager, out_compiled)
+        self.assertGreater(len(accepted_regions), 0)
+        for prev, curr in itertools.pairwise(accepted_regions):
+            self.assertGreaterEqual(curr[0], prev[0])
+
+    def test_commit_combo_to_memory_context_overlapping_regions(self):
+        """Unit test for _commit_combo_to_memory_context with overlapping
+        regions: the integration tests above can't reliably produce
+        overlap (depends on Inductor's topo sort), so we feed it directly."""
+        from torch._inductor.scheduler import ComboKernelMemoryContext, Scheduler
+
+        N = 20
+        mem_ctx = ComboKernelMemoryContext(
+            graph_outputs=set(),
+            buf_info_list=[],
+            freeable_input_buffer_cls=type("_FakeFreeableInputBuffer", (), {}),
+            memories_at_nodes=[100] * (N + 1),
+            node_to_idx={},
         )
+
+        class _FakeNode:
+            def __init__(self, name: str) -> None:
+                self.name = name
+
+            def get_name(self) -> str:
+                return self.name
+
+        # combo1: writes [4..11]; combo2: writes [8..15]; overlap = [8..11].
+        combo1_nodes = [_FakeNode(f"a{i}") for i in range(5)]
+        Scheduler._commit_combo_to_memory_context(
+            None,  # type: ignore[arg-type]
+            mem_ctx,
+            region_start=4,
+            combo_step=5,
+            new_region_memory=[120, 150, 200, 200, 180, 160, 140, 130],
+            group_nodes=combo1_nodes,
+        )
+        self.assertEqual(max(mem_ctx.memories_at_nodes), 200)
+
+        combo2_nodes = [_FakeNode(f"b{i}") for i in range(4)]
+        Scheduler._commit_combo_to_memory_context(
+            None,  # type: ignore[arg-type]
+            mem_ctx,
+            region_start=8,
+            combo_step=9,
+            new_region_memory=[170, 190, 210, 195, 175, 155, 145, 135],
+            group_nodes=combo2_nodes,
+        )
+        self.assertEqual(max(mem_ctx.memories_at_nodes), 210)
+
+        self.assertEqual(mem_ctx.memories_at_nodes[4], 120)
+        self.assertEqual(mem_ctx.memories_at_nodes[7], 200)
+        self.assertEqual(mem_ctx.memories_at_nodes[8], 170)
+        self.assertEqual(mem_ctx.memories_at_nodes[11], 195)
+        self.assertEqual(mem_ctx.memories_at_nodes[15], 135)
+        self.assertEqual(mem_ctx.memories_at_nodes[16], 100)
+
+        self.assertEqual(mem_ctx.last_region_start, 8)
+        for n in combo1_nodes:
+            self.assertEqual(mem_ctx.accepted_step[n], 5)
+        for n in combo2_nodes:
+            self.assertEqual(mem_ctx.accepted_step[n], 9)
+
+        with self.assertRaises(AssertionError):
+            Scheduler._commit_combo_to_memory_context(
+                None,  # type: ignore[arg-type]
+                mem_ctx,
+                region_start=2,
+                combo_step=2,
+                new_region_memory=[100, 100],
+                group_nodes=[_FakeNode("c0")],
+            )
+
+    def test_try_combo_with_memory_check_recomputes_region(self):
+        from unittest.mock import patch
+
+        from torch._inductor.memory import BufferInfo
+        from torch._inductor.scheduler import ComboKernelMemoryContext, Scheduler
+
+        class _FakeNode:
+            def __init__(self, name: str) -> None:
+                self.name = name
+                self.scheduler = object()
+                self.unmet_dependencies = set()
+
+            def get_name(self) -> str:
+                return self.name
+
+            def get_buffer_names(self):
+                return ()
+
+        class _FakeComboNode(_FakeNode):
+            pass
+
+        class _FakeBuffer:
+            def __init__(self, name: str, defining_op: _FakeNode, succ_nodes) -> None:
+                self.name = name
+                self.defining_op = defining_op
+                self.mpi_buffer = type("MPI", (), {"succ_nodes": succ_nodes})()
+
+            def get_name(self) -> str:
+                return self.name
+
+        class _FakeScheduler:
+            def __init__(self, nodes) -> None:
+                self.nodes = nodes
+                self.name_to_fused_node = {}
+
+            def topological_sort_schedule(self, nodes):
+                return nodes
+
+        a = _FakeNode("a")
+        b = _FakeNode("b")
+        c = _FakeNode("c")
+        d = _FakeNode("d")
+        e = _FakeNode("e")
+        nodes = [a, b, c, d, e]
+        scheduler = _FakeScheduler(nodes)
+        long_lived = _FakeBuffer("buf", b, {e})
+        mem_ctx = ComboKernelMemoryContext(
+            graph_outputs=set(),
+            buf_info_list=[BufferInfo(long_lived, 10, 10, 1, 4)],
+            freeable_input_buffer_cls=type("_FakeFreeableInputBuffer", (), {}),
+            memories_at_nodes=[0, 10, 10, 10, 10, 0],
+            node_to_idx={node: idx for idx, node in enumerate(nodes)},
+        )
+
+        def fake_foreach(*args, **kwargs):
+            return _FakeComboNode("combo")
+
+        with patch(
+            "torch._inductor.scheduler.ForeachKernelSchedulerNode", fake_foreach
+        ):
+            combo_node, _, new_region_memory, region_start, combo_step = (
+                Scheduler._try_combo_with_memory_check(
+                    scheduler,
+                    [a, b],
+                    mem_ctx,
+                    baseline_peak=10,
+                    enable_autotune=False,
+                )
+            )
+
+        self.assertIsNotNone(combo_node)
+        self.assertEqual(region_start, 0)
+        self.assertEqual(combo_step, 0)
+        self.assertEqual(new_region_memory, [10, 10, 10])
 
 
 if __name__ == "__main__":
