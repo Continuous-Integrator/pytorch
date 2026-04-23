@@ -486,7 +486,6 @@ class ZipVariable(IteratorVariable):
         )
 
 
-
 class MapVariable(ZipVariable):
     """
     Represents map(fn, *iterables)
@@ -535,7 +534,6 @@ class MapVariable(ZipVariable):
             )
         else:
             codegen.extend_output(create_call_function_ex(False, False))
-
 
 
 class FilterVariable(IteratorVariable):
