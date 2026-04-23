@@ -294,6 +294,8 @@ missing tp_iter
 
   Developer debug context: tp_iter_impl not implemented for zip
 
+ For more details about this graph break, please visit: https://meta-pytorch.github.io/compile-graph-break-site/gb/gb0811.html
+
 from user code:
    File "test_error_messages.py", line N, in fn
     return [x + 1 for x in it]""",
@@ -316,6 +318,8 @@ missing tp_iter
   Hint: It may be possible to write Dynamo tracing rules for this code. Please report an issue to PyTorch if you encounter this graph break often and it is causing performance issues.
 
   Developer debug context: tp_iter_impl not implemented for dict_items
+
+ For more details about this graph break, please visit: https://meta-pytorch.github.io/compile-graph-break-site/gb/gb0811.html
 
 from user code:
    File "test_error_messages.py", line N, in fn
