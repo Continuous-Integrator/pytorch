@@ -381,7 +381,6 @@ class ZipVariable(IteratorVariable):
     _cpython_type = zip
 
     _nonvar_fields = {
-        "index",
         "strict",
         *IteratorVariable._nonvar_fields,
     }
@@ -434,7 +433,7 @@ class ZipVariable(IteratorVariable):
 
                 handle_observed_exception(tx)  # StopIteration
                 raise_value_error(
-                    tx, f"zip argument {i} is longer than previous arguments"
+                    tx, f"zip() argument {i} is longer than previous arguments"
                 )
 
         return variables.TupleVariable(items)
@@ -504,7 +503,6 @@ class MapVariable(IteratorVariable):
                 # In strict mode, if any iterable is exhausted, all must be exhausted.
                 for j in range(i + 1, tuplesize):
                     it_j = self.iterable.items[j]
-                    assert isinstance(it_j, IteratorVariable)
                     if is_iterator_exhausted(tx, it_j):
                         continue
                     break
@@ -553,11 +551,6 @@ class FilterVariable(IteratorVariable):
     # PyFilter_Type: https://github.com/python/cpython/blob/v3.13.0/Python/bltinmodule.c#L630
     _cpython_type = filter
 
-    _nonvar_fields = {
-        "index",
-        *IteratorVariable._nonvar_fields,
-    }
-
     def __init__(
         self,
         fn: VariableTracker,
@@ -573,15 +566,6 @@ class FilterVariable(IteratorVariable):
 
     def tp_iternext_impl(self, tx: "InstructionTranslator") -> VariableTracker:
         # ref: https://github.com/python/cpython/blob/v3.13.3/Python/bltinmodule.c#L573-L606
-        def _next() -> VariableTracker:
-            old_index = self.index
-            if isinstance(self.iterable, list):
-                if old_index >= len(self.iterable):
-                    raise_observed_exception(StopIteration, tx)
-                return self.iterable[old_index]
-            else:
-                return self.iterable.next_variable(tx)
-
         # A do-while loop to find elements that make fn return true
         while True:
             item = generic_iternext(tx, self.iterable)
