@@ -273,7 +273,6 @@ def compute_pre_bucket_cap_mb(
         return bucket_cap_mb_override
 
     import torch._inductor.config as inductor_config
-    from torch._inductor.comm_analysis import compute_min_saturation_bytes, NCCL_COLL
 
     dist_opts = inductor_config.aten_distributed_optimizations
     cal_mult = (
@@ -282,30 +281,42 @@ def compute_pre_bucket_cap_mb(
     floor_mb = dist_opts.pre_bucketing_fsdp_collectives_min_bucket_cap_mb
     ceil_mb = dist_opts.pre_bucketing_fsdp_collectives_max_bucket_cap_mb
 
-    min_bytes = compute_min_saturation_bytes(
-        group_size, NCCL_COLL.ALL_GATHER, target_efficiency=0.9
-    )
-    cap_mb = cal_mult * min_bytes / (1024 * 1024)
+    min_bytes = 0
+    try:
+        from torch._inductor.comm_analysis import (
+            compute_min_saturation_bytes,  # pyrefly: ignore [missing-module-attribute]
+            NCCL_COLL,
+        )
+
+        min_bytes = compute_min_saturation_bytes(
+            group_size, NCCL_COLL.ALL_GATHER, target_efficiency=0.9
+        )
+        cap_mb = cal_mult * min_bytes / (1024 * 1024)
+    except ImportError:
+        cap_mb = floor_mb
     cap_mb = max(floor_mb, min(ceil_mb, cap_mb))
 
     if dist_opts.pre_bucketing_fsdp_collectives_verbose:
-        from torch._inductor.comm_analysis import (
-            detect_interconnect,
-            get_inter_node_bw,
-            get_intra_node_bw,
-        )
+        try:
+            from torch._inductor.comm_analysis import (
+                detect_interconnect,  # pyrefly: ignore [missing-module-attribute]
+                get_inter_node_bw,  # pyrefly: ignore [missing-module-attribute]
+                get_intra_node_bw,  # pyrefly: ignore [missing-module-attribute]
+            )
 
-        logger.info(
-            "pre_bucket_cap: interconnect=%s intra_bw=%.0f inter_bw=%.0f "
-            "saturation_bytes=%d (%.1f MB) cal_mult=%.2f cap_mb=%.1f",
-            detect_interconnect(group_size).name,
-            get_intra_node_bw(),
-            get_inter_node_bw(),
-            min_bytes,
-            min_bytes / (1024 * 1024),
-            cal_mult,
-            cap_mb,
-        )
+            logger.info(
+                "pre_bucket_cap: interconnect=%s intra_bw=%.0f inter_bw=%.0f "
+                "saturation_bytes=%d (%.1f MB) cal_mult=%.2f cap_mb=%.1f",
+                detect_interconnect(group_size).name,
+                get_intra_node_bw(),
+                get_inter_node_bw(),
+                min_bytes,
+                min_bytes / (1024 * 1024),
+                cal_mult,
+                cap_mb,
+            )
+        except ImportError:
+            logger.info("pre_bucket_cap: cap_mb=%.1f (fallback)", cap_mb)
 
     return cap_mb
 
