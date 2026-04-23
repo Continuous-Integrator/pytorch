@@ -1693,7 +1693,9 @@ class PipelineScheduleMulti(_PipelineSchedule):
                 "Simply stop passing it, and everything should still work fine."
             )
 
-    def _initialize_stages(self, args: tuple[Any, ...], kwargs, target=None, loss_kwargs=None):
+    def _initialize_stages(
+        self, args: tuple[Any, ...], kwargs, target=None, loss_kwargs=None
+    ):
         (
             self._stages_forward_initialized,
             self._stages_backward_initialized,
