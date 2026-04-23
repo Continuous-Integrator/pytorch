@@ -320,7 +320,7 @@ def vt_sequence_getitem(
 ) -> VariableTracker:
     """CPython's PySequence_GetItem — always sq_item, never mp_subscript.
 
-    https://github.com/python/cpython/blob/v3.13.3/Objects/abstract.c#L2165-L2194
+    ref: https://github.com/python/cpython/blob/v3.13.3/Objects/abstract.c#L1874-L1902
 
     Called by PyObject_GetItem branch 2, reversed() fallback, and the old
     iteration protocol.  Wraps negative indices via sq_length before

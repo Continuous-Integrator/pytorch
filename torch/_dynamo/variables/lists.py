@@ -252,8 +252,8 @@ class BaseListVariable(VariableTracker):
         tx: "InstructionTranslator",
         key: VariableTracker,
     ) -> VariableTracker:
-        # list_item: https://github.com/python/cpython/blob/62a6e898e01/Objects/listobject.c#L318
-        # tuple_item: https://github.com/python/cpython/blob/62a6e898e01/Objects/tupleobject.c#L347
+        # list_item: https://github.com/python/cpython/blob/62a6e898e01/Objects/listobject.c#L335-L351
+        # tuple_item: https://github.com/python/cpython/blob/62a6e898e01/Objects/tupleobject.c#L421-L430
         # CPython's sq_item takes Py_ssize_t (already int from vt_getitem's
         # nb_index_impl).  Unlike mp_subscript, sq_item never handles slices.
         index = key.as_python_constant()
@@ -686,7 +686,7 @@ class RangeVariable(BaseListVariable):
         tx: "InstructionTranslator",
         key: VariableTracker,
     ) -> VariableTracker:
-        # range_item: https://github.com/python/cpython/blob/62a6e898e01/Objects/rangeobject.c#L462
+        # range_item: https://github.com/python/cpython/blob/62a6e898e01/Objects/rangeobject.c#L405-L416
         # CPython's sq_item takes Py_ssize_t (already int from vt_getitem's
         # nb_index_impl).  Unlike mp_subscript (range_subscript), no slices.
         index = key.as_python_constant()

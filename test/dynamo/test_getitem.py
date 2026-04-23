@@ -664,7 +664,6 @@ class GetItemTests(torch._dynamo.test_case.TestCase):
     # --- TritonKernelVariable ---
 
     @unittest.skipUnless(HAS_GPU and HAS_CUDA_AND_TRITON, "requires gpu and triton")
-    @unittest.skip("TODO: TritonKernelVariable needs python_type() for vt_getitem")
     def test_triton_kernel_getitem_grid(self):
         from torch.testing._internal.triton_utils import add_kernel
 
@@ -929,13 +928,74 @@ class GetItemTests(torch._dynamo.test_case.TestCase):
         x = torch.randn(4)
         self.assertEqual(fn(x), self._compile(fn, x))
 
-    # --- (d) TODO: generic_getiter sequence protocol fallback ---
-    # Once generic_getiter lands (PR #178462), iter()/list()/tuple() on types
-    # with sq_item but no __iter__ will work via the sequence_iterator polyfill.
-    # All current sq_item types (list, tuple, str, bytes, range, deque) also
-    # have __iter__, so they go through tp_iter — not the sequence fallback.
-    # Add tests here for the sequence fallback path once generic_getiter is
-    # available, e.g. a C extension type with sq_item but no tp_iter.
+    # --- (d) generic_getiter sequence protocol fallback ---
+    # User-defined class with __getitem__ + __len__ but no __iter__:
+    # CPython gives it both mp_subscript and sq_item via slot wrappers.
+    # generic_getiter (#178462) detects no tp_iter, falls back to
+    # pysequence_check → sequence_iterator polyfill → __getitem__.
+
+    def test_iter_seqonly(self):
+        """iter(SeqOnly) → generic_getiter → sequence_iterator → __getitem__."""
+
+        class SeqOnly:
+            def __init__(self, items):
+                self.items = items
+
+            def __getitem__(self, i):
+                return self.items[i]
+
+            def __len__(self):
+                return len(self.items)
+
+        def fn(x):
+            s = SeqOnly([1, 2, 3])
+            total = 0
+            for item in s:
+                total += item
+            return x + total
+
+        x = torch.randn(4)
+        self.assertEqual(fn(x), self._compile(fn, x))
+
+    def test_list_seqonly(self):
+        """list(SeqOnly) → generic_getiter → sequence_iterator → __getitem__."""
+
+        class SeqOnly:
+            def __init__(self, items):
+                self.items = items
+
+            def __getitem__(self, i):
+                return self.items[i]
+
+            def __len__(self):
+                return len(self.items)
+
+        def fn(x):
+            s = SeqOnly([1, 2, 3])
+            return x + sum(list(s))
+
+        x = torch.randn(4)
+        self.assertEqual(fn(x), self._compile(fn, x))
+
+    def test_tuple_seqonly(self):
+        """tuple(SeqOnly) → generic_getiter → sequence_iterator → __getitem__."""
+
+        class SeqOnly:
+            def __init__(self, items):
+                self.items = items
+
+            def __getitem__(self, i):
+                return self.items[i]
+
+            def __len__(self):
+                return len(self.items)
+
+        def fn(x):
+            s = SeqOnly([1, 2, 3])
+            return x + sum(tuple(s))
+
+        x = torch.randn(4)
+        self.assertEqual(fn(x), self._compile(fn, x))
 
     # --- (e) Sequence protocol fallback (in operator) ---
     # A user-defined class with __getitem__ + __len__ but no __iter__
