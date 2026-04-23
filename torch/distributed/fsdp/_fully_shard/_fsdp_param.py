@@ -261,6 +261,7 @@ class FSDPParam:
         # `distribute_tensor` after https://github.com/pytorch/pytorch/issues/116101
         # TODO: Simplify the following sharded parameter padding logic after
         # https://github.com/pytorch/pytorch/issues/113045
+        self.is_spmd_types = self._has_spmd_local_type(param)
         self.is_dtensor = isinstance(param, DTensor)
         self._orig_param_uid = _get_orig_param_uid(param)
         param_data = self._init_sharding_spec(param, fsdp_placement, shard_dim)
@@ -318,14 +319,39 @@ class FSDPParam:
             raise AssertionError(
                 f"Expected contiguous tensor with {self.fsdp_placement=}"
             )
-        self.sharded_param = nn.Parameter(
-            self.to_sharded_dtensor(sharded_param),
-            requires_grad=param.requires_grad,
-        )
+        if self.is_spmd_types:
+            self.sharded_param = nn.Parameter(
+                sharded_param, requires_grad=param.requires_grad
+            )
+            self._annotate_spmd_types(self.sharded_param, sharded=True)
+        else:
+            self.sharded_param = nn.Parameter(
+                self.to_sharded_dtensor(sharded_param),
+                requires_grad=param.requires_grad,
+            )
         # Let `param_data` be freed normally when its ref count reaches 0 when
         # the `fully_shard` call returns to allow provided parameters to alias
         self._setattr_on_modules(self.sharded_param)
         self.sharded_state = ShardedState.SHARDED
+
+    @staticmethod
+    def _has_spmd_local_type(param: nn.Parameter) -> bool:
+        try:
+            from spmd_types.runtime import has_local_type  # pyrefly: ignore
+        except ImportError:
+            return False
+        return has_local_type(param)
+
+    def _annotate_spmd_types(self, tensor: torch.Tensor, sharded: bool) -> None:
+        """Set spmd_types annotation on a tensor for the FSDP shard axis."""
+        from spmd_types._type_attr import set_local_type  # pyrefly: ignore
+        from spmd_types.types import S  # pyrefly: ignore
+
+        local_type = dict(self._spmd_types_unsharded_type)
+        fsdp_axis = self._spmd_types_fsdp_axis
+        if sharded:
+            local_type[fsdp_axis] = S(self.fsdp_placement.dim)
+        set_local_type(tensor, local_type)
 
     def _init_sharding_spec(
         self,
@@ -338,6 +364,8 @@ class FSDPParam:
         return the local tensor data to be sharded.
         """
         self._unsharded_dtensor_spec = None
+        if self.is_spmd_types and self.mesh_info.is_spmd_mesh:
+            return self._init_sharding_spec_spmd_types(param, fsdp_placement, shard_dim)
         if self.mesh_info.is_spmd_mesh and not self.is_dtensor:
             raise ValueError(
                 "When dp_mesh_dims is provided, all parameters must be "
@@ -501,6 +529,45 @@ class FSDPParam:
         )
         return param
 
+    def _init_sharding_spec_spmd_types(
+        self,
+        param: nn.Parameter,
+        fsdp_placement: Shard,
+        shard_dim: int,
+    ) -> torch.Tensor:
+        """spmd_types path: param is a plain tensor with spmd_types annotations."""
+        from spmd_types._mesh_axis import MeshAxis  # pyrefly: ignore
+        from spmd_types._type_attr import get_local_type  # pyrefly: ignore
+        from spmd_types.types import R, Shard as SpmdShard  # pyrefly: ignore
+
+        spmd_mesh = self.mesh_info.spmd_mesh
+        if spmd_mesh is None or spmd_mesh.mesh_dim_names is None:
+            raise ValueError("spmd_types path requires a named SPMD mesh")
+        dp_dim_names = self.mesh_info.dp_mesh_dims
+        if dp_dim_names is None:
+            raise AssertionError("dp_dim_names must not be None for SPMD mesh")
+
+        local_type = get_local_type(param)
+        fsdp_axis = MeshAxis.of(spmd_mesh.get_group(dp_dim_names.shard_names[0]))
+        param_type = local_type.get(fsdp_axis)
+        if param_type is not R and not isinstance(param_type, SpmdShard):
+            raise ValueError(
+                f"Expected R or S on FSDP shard axis but got {param_type} "
+                f"for parameter '{self._module_info.param_name}'"
+            )
+
+        # Store spmd_types metadata for unshard/reshard annotation
+        self._spmd_types_unsharded_type = local_type
+        self._spmd_types_fsdp_axis = fsdp_axis
+        self._spmd_types_mesh = spmd_mesh
+
+        # Build a DTensorSpec so the DTensor code paths (that we don't use)
+        # don't crash if accidentally accessed. But we don't actually wrap
+        # as DTensor.
+        self._spmd_mesh = spmd_mesh
+        self._sharding_spec = None  # type: ignore[assignment]
+        return param
+
     def _init_sharded_post_forward_param_metadata(self, param: torch.Tensor) -> None:
         mesh_info = self.post_forward_mesh_info
         if mesh_info is None:
@@ -611,13 +678,18 @@ class FSDPParam:
             self._contiguous_orig_stride,
             storage_offset=0,
         )
-        if self._unsharded_dtensor_spec is not None:
+        if self.is_spmd_types:
+            pass  # keep as plain tensor; annotate after Parameter creation
+        elif self._unsharded_dtensor_spec is not None:
             unsharded_param = _from_local_no_grad(
                 unsharded_param, self._unsharded_dtensor_spec
             )
         self._unsharded_param = nn.Parameter(
             unsharded_param, requires_grad=self.sharded_param.requires_grad
         )
+        if self.is_spmd_types:
+            self._annotate_spmd_types(self._unsharded_param, sharded=False)
+            self._annotate_spmd_types(self._unsharded_param.data, sharded=False)
 
     def _unflatten_all_gather_outputs(self) -> tuple[torch.Tensor, ...]:
         return tuple(
@@ -854,6 +926,8 @@ class FSDPParam:
         return self._get_grad_inner_tensor(grad)
 
     def _get_grad_inner_tensor(self, grad: torch.Tensor) -> torch.Tensor:
+        if self.is_spmd_types:
+            return grad
         if self.is_dtensor:
             if isinstance(grad, AsyncCollectiveTensor):
                 grad = grad.wait()
@@ -890,6 +964,8 @@ class FSDPParam:
 
     @property
     def _sharded_local_tensor(self) -> torch.Tensor:
+        if self.is_spmd_types:
+            return self.sharded_param
         return cast(DTensor, self.sharded_param)._local_tensor
 
     def _init_shard_mesh(self) -> DeviceMesh:
@@ -928,7 +1004,10 @@ class FSDPParam:
                 )
             self.sharded_param = new_param
 
-        local_tensor = new_param._local_tensor
+        if self.is_spmd_types:
+            local_tensor = new_param.data
+        else:
+            local_tensor = new_param._local_tensor
         if local_tensor.is_meta:
             return
         updated_local_tensor = False
@@ -968,18 +1047,26 @@ class FSDPParam:
             updated_local_tensor = True
         if not same_local_tensor:
             self._sharded_param_data = local_tensor.view(-1)
-        if not isinstance(self.sharded_param, DTensor):
-            raise AssertionError(f"Expected DTensor, got {type(self.sharded_param)}")
-        if updated_local_tensor:
-            # Only change the local tensor object if needed
-            self.sharded_param._local_tensor = local_tensor.narrow(
-                dim=shard_dim, start=0, length=length
-            )
-            if not self.sharded_param._local_tensor.is_contiguous():
-                raise AssertionError(
-                    "Expected sharded_param._local_tensor to be contiguous"
+        if self.is_spmd_types:
+            if updated_local_tensor:
+                self.sharded_param.data = local_tensor.narrow(
+                    dim=shard_dim, start=0, length=length
                 )
-        self._sharding_spec = self.sharded_param._spec
+                self._annotate_spmd_types(self.sharded_param, sharded=True)
+        else:
+            if not isinstance(self.sharded_param, DTensor):
+                raise AssertionError(
+                    f"Expected DTensor, got {type(self.sharded_param)}"
+                )
+            if updated_local_tensor:
+                self.sharded_param._local_tensor = local_tensor.narrow(
+                    dim=shard_dim, start=0, length=length
+                )
+                if not self.sharded_param._local_tensor.is_contiguous():
+                    raise AssertionError(
+                        "Expected sharded_param._local_tensor to be contiguous"
+                    )
+            self._sharding_spec = self.sharded_param._spec
 
     def __repr__(self):
         return f"FSDPParam(fqn={self._param_fqn}, orig_size={self._orig_size})"
