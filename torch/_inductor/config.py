@@ -468,13 +468,13 @@ estimate_op_runtime = "default"
 
 runtime_estimations_mms_benchmark: bool = False
 
-# unit: GB/s, uni-directional P2P bandwidth per card
-# default value is NVLink
-intra_node_bw = 300
+# unit: GB/s, uni-directional P2P bandwidth per card (NVLink).
+# None = auto-detect from GPU generation; set to override.
+intra_node_bw: int | None = None
 
-# unit: GB/s, uni-directional P2P bandwidth per node
-# default value is InfiniBand
-inter_node_bw = 25
+# unit: GB/s, uni-directional P2P bandwidth per node (IB/RoCE).
+# None = auto-detect from GPU generation; set to override.
+inter_node_bw: int | None = None
 
 # unit: GB/s, uni-directional CPU<>GPU bandwidth
 # default value is PCIe; modify for your hardware or measured bandwidth
@@ -767,8 +767,8 @@ class autoheuristic_use:
     Config for which autoheuristic optimizations should use learned heuristics.
     """
 
-    pad_mm = "pad_mm" in _parse_autoheuristic_use_env()
-    mixed_mm = "mixed_mm" in _parse_autoheuristic_collect_env()
+    pad_mm = True if "pad_mm" in _parse_autoheuristic_use_env() else None
+    mixed_mm = True if "mixed_mm" in _parse_autoheuristic_use_env() else None
 
 
 # If set to 1, will run a JIT post compile hook if one is set.
@@ -782,20 +782,19 @@ def run_autoheuristic(name: str) -> bool:
 
 
 def collect_autoheuristic(name: str) -> bool:
-    if name == "pad_mm":
-        return autoheuristic_collect.pad_mm
-    elif name == "mixed_mm":
-        return autoheuristic_collect.mixed_mm
+    if hasattr(autoheuristic_collect, name):
+        return getattr(autoheuristic_collect, name)
     else:
         # For test compatibility with non-standard ops (e.g. "test", "foo" used in tests)
         return name in _parse_autoheuristic_collect_env()
 
 
 def use_autoheuristic(name: str) -> bool:
-    if name == "pad_mm":
-        return autoheuristic_use.pad_mm
-    elif name == "mixed_mm":
-        return autoheuristic_use.mixed_mm
+    if hasattr(autoheuristic_use, name):
+        attr = getattr(autoheuristic_use, name)
+        if attr is None:
+            return torch._inductor.config.deterministic
+        return attr
     else:
         # For test compatibility with non-standard ops (e.g. "test", "foo" used in tests)
         return name in _parse_autoheuristic_use_env()
@@ -896,6 +895,9 @@ loop_ordering_after_fusion: bool = (
     )
     == "1"
 )
+loop_reindexing_after_fusion: bool = (
+    os.environ.get("TORCHINDUCTOR_LOOP_REINDEXING_AFTER_FUSION", "1") == "1"
+)
 
 
 # When trying to fuse two nodes, one with:
@@ -968,6 +970,9 @@ split_reductions = os.getenv("TORCHINDUCTOR_SPLIT_REDUCTIONS", "1") == "1"
 # if we know they affect numerics.  WARNING: Expect perf hit in this mode.
 deterministic = os.getenv("TORCHINDUCTOR_DETERMINISTIC") == "1"
 
+# Batch-invariant mode: stable per-sample compiled kernel across batch sizes. Implies deterministic.
+batch_invariant = os.getenv("TORCHINDUCTOR_BATCH_INVARIANT") == "1"
+
 # When we do split reduction, this number control the minimum value for
 # num_split. Too small num_split make the split reduction less efficient.
 # It's a much bigger problem when we compile a dynamic shape kernel with
@@ -1007,10 +1012,15 @@ combo_kernel_allow_mixed_sizes = 1
 combo_kernel_foreach_dynamic_shapes = True
 # Maximum number of arguments (read/write buffers) allowed in a combo kernel
 combo_kernel_max_num_args = 250
+# Maximum number of sub-kernels allowed in a single combo kernel
+combo_kernel_max_num_nodes = 8
 # When True, each combo sub-kernel gets its own block sizes (XBLOCK_0, YBLOCK_0, etc.)
 # allowing different sub-kernels to use different tile sizes based on their heuristics.
 # When False, all sub-kernels share block sizes (XBLOCK, YBLOCK, etc.)
 combo_kernel_per_subkernel_blocks = False
+# When True, combo-kernel autotuning groups sub-kernels that share the same
+# candidate config set and kernel-analysis signature. Disabled by default.
+combo_kernel_autotune_grouping = False
 # When True, only pointwise kernels are eligible for combo kernel fusion.
 combo_kernels_pointwise_only = False
 
@@ -1164,6 +1174,9 @@ class aten_distributed_optimizations:
     # In deterministic mode, this setting is ignored and "analytical" is used.
     compute_estimator: Literal["analytical", "benchmark"] = "benchmark"
 
+    # Chrome Trace JSON path for profile-guided runtime estimation.
+    profile_guided_estimations_profile_path: str | None = None
+
     # Maximum memory increase above baseline for prefetch operations
     # Uses minimum of absolute cap and ratio of baseline
     max_memory_increase_gb: float | None = None  # Absolute cap in GB
@@ -1236,7 +1249,7 @@ class aten_distributed_optimizations:
     pre_bucketing_fsdp_collectives_bucket_cap_mb: float | None = None
 
     # Floor for auto-computed bucket cap in MB.
-    pre_bucketing_fsdp_collectives_min_bucket_cap_mb: float = 50.0
+    pre_bucketing_fsdp_collectives_min_bucket_cap_mb: float = 10.0
 
     # Ceiling for auto-computed bucket cap in MB.
     pre_bucketing_fsdp_collectives_max_bucket_cap_mb: float = 500.0
@@ -1245,9 +1258,9 @@ class aten_distributed_optimizations:
     # via logger and trace_structured.
     pre_bucketing_fsdp_collectives_verbose: bool = False
 
-    # Multiplier on the analytical model's min saturation size.
-    # The model underpredicts by ~3x vs measured H100 NVLink/IB NDR.
-    pre_bucketing_fsdp_collectives_saturation_calibration_multiplier: float = 3.0
+    # Multiplier on the empirical saturation model's output.
+    # With the empirical profiles this should be 1.0; kept for manual tuning.
+    pre_bucketing_fsdp_collectives_saturation_calibration_multiplier: float = 1.0
 
 
 def parallel_compile_enabled_internally() -> bool:
@@ -1336,6 +1349,15 @@ strict_static_cuda_launcher: bool = (
 # Alias of strict_static_cuda_launcher, used by both CUDA/XPU.
 strict_static_triton_launcher: bool = Config(
     alias="torch._inductor.config.strict_static_cuda_launcher"
+)
+
+# Use _FastCudaLauncher (vectorcall C extension) instead of
+# StaticallyLaunchedCudaKernel.run for the CachingAutotuner fast path.
+# Pre-binds kernel metadata at first launch and uses THPVariable_Unpack +
+# tensor.data_ptr() in C++ to bypass PyArg_ParseTuple, cuPointerGetAttribute,
+# and cuCtxGetCurrent.
+use_fast_triton_launcher: bool = (
+    os.environ.get("TORCHINDUCTOR_USE_FAST_TRITON_LAUNCHER", "1") == "1"
 )
 
 # gemm autotuning global cache dir
@@ -1892,6 +1914,13 @@ class triton:
     # hint to Triton when arguments are divisible by 16
     divisible_by_16 = os.environ.get("TORCHINDUCTOR_DIVISIBLE_BY_16", "1") == "1"
 
+    # On AMD/HIP, annotate pointer args with tt.pointer_range=32 when the
+    # tensor storage provably fits in 2 GB. This lets Triton emit efficient
+    # buffer load/store ops. Disable if a Triton compiler bug is triggered.
+    emit_pointer_range_32 = (
+        os.environ.get("TORCHINDUCTOR_EMIT_POINTER_RANGE_32", "1") == "1"
+    )
+
     # Minimum R0_BLOCK to be used for a TritonSplitScanKernel
     # NOTE: This also indirectly controls the size of workspace buffer required
     min_split_scan_rblock = 256
@@ -1992,6 +2021,10 @@ class triton:
     # If set to true, will skip some non-critical checks in the mix order reduction
     # this could be helpful to avoid recompilations in some cases
     mix_order_reduction_non_strict_mode = False
+
+    # Maximum external read buffers (loads) in a mix-order reduction
+    # kernel. Set to 0 to disable the check.
+    mix_order_reduction_max_reads = 10
 
     # Don't allow multi-stages by default to avoid out of shared memory
     mix_order_reduction_allow_multi_stages = (
@@ -2731,7 +2764,7 @@ class test_configs:
 
 
 if TYPE_CHECKING:
-    from torch.utils._config_typing import *  # noqa: F401, F403
+    from torch.utils._config_typing import *  # noqa: F403
 
 
 class eager_numerics:
