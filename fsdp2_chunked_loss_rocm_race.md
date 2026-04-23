@@ -206,9 +206,35 @@ This **strengthens the two-vector framing** rather than refuting it. We now have
 **Implication for framing the bug:** it's one cross-platform stream-ordering bug with two race windows closed by the same stream-level wait:
 
 1. `rs_input` block reuse — active in the standalone repro on both platforms; inert in FSDP on both platforms because `reduce_scatter_states.append` shields it.
-2. Allocator-internal / RCCL-workspace reuse — active in FSDP on ROCm. Not directly testable on CUDA FSDP (assertion is bit-exact with or without the fix), so this vector is either absent on CUDA or timing-masked by the same back-pressure that hides vector 1 in CUDA standalone without `_sleep`.
+2. Allocator-internal reuse (HIP caching allocator; not Python-reachable) — active in FSDP on ROCm, and **not reproducible in the standalone repro** (see "Trying to expose vector 2" below — 0/50 across sleep + alloc-pressure × size sweep when refs are held). This implies vector 2's buffer is allocated by something specific to the FSDP/autograd code path (matmul-backward intermediate, reshard buffer, or RCCL workspace triggered by the `all_gather` + `reduce_scatter` sequence — not `reduce_scatter` alone). Status on CUDA FSDP is indeterminate from FSDP-path data alone.
 
 Either way the fix is a single stream-order edge that covers both. Reinforces the row-0 decision to make the `wait_event` unconditional: CUDA FSDP gains latent protection against vector 2 if back-pressure ever shrinks; ROCm FSDP gets the actual fix.
+
+### Trying to expose vector 2 in the standalone repro on ROCm (MI350X, 2026-04-23)
+
+Follow-up to the ref-hold experiment above. If vector 2 is a generic "RCCL + caching allocator + chunked loop" hazard, we should be able to expose it in the standalone repro by combining `--hold-refs both` (closing vector 1) with window-widening or allocator pressure. Extended `rccl_chunked_loss_repro_sleep.py` with `--hold-refs` and `--alloc-pressure N [--alloc-pressure-numel K]` (alloc+free N tensors of K numel on default stream between chunks, simulating autograd intermediate-tensor churn).
+
+| Config | Races / 50 iters |
+|---|---|
+| sleep=1e9 at `rs_after_accum`, hold-refs=off (baseline sanity) | 50/50 |
+| sleep=1e9 at `rs_after_accum`, hold-refs=both | **0/50** |
+| sleep=1e9 at `rs_between_rs_and_accum`, hold-refs=both | **0/50** |
+| hold-refs=both, alloc-pressure=10 (numel=256) | **0/50** |
+| hold-refs=both, alloc-pressure=100 (numel=256) | **0/50** |
+| hold-refs=both, alloc-pressure=1000 (numel=256) | **0/50** |
+| hold-refs=both, alloc-pressure=1000, pressure-numel=2048 (matches rs_output) | **0/50** |
+| hold-refs=both, alloc-pressure=500, pressure-numel=4096 (matches rs_input) | **0/50** |
+| sleep=1e9 + alloc-pressure=1000 (numel=2048) + hold-refs=both (combined) | **0/50** |
+
+**Vector 2 cannot be exposed in the standalone repro by any generic combination of sleep-widening and allocator pressure.** This is a strong positive narrowing, not a null result. Together with three other data points, it pins down vector 2's character:
+
+- **Experiment A (doc, ROCm FSDP):** disabling the caching allocator (`PYTORCH_NO_CUDA_MEMORY_CACHING=1`) makes the FSDP test pass. Vector 2's buffer is served by the HIP caching allocator.
+- **Experiments K, L, N (doc, ROCm FSDP):** holding every Python-reachable tensor (`unsharded_grads`, autograd grad DTensor, `reduce_output`) leaves the FSDP test failing bit-exactly. Vector 2's buffer is not Python-reachable.
+- **This experiment (ROCm standalone):** with `rs_input` (or both RS buffers) ref-held, no combination of `_sleep`, allocator churn, or size-tuning produces a race. Vector 2 is not a generic RCCL-in-a-chunked-loop hazard.
+
+The combination forces vector 2's buffer to be: served by the HIP caching allocator, not Python-reachable, and **allocated by something specific to the FSDP/autograd code path** that the standalone repro doesn't replicate. The simplest candidates: an autograd backward intermediate (e.g. matmul-backward's grad workspace for `head.weight.grad`), a reshard-related allocation, or an RCCL workspace created by the *sequence* of `all_gather` + `reduce_scatter` that FSDP issues per param group (not just `reduce_scatter` alone).
+
+**Implication for vector 2's CUDA status:** the standalone repro cannot discriminate "vector 2 absent on CUDA" from "vector 2 timing-masked on CUDA" on either platform, because the standalone repro lacks whatever FSDP-specific allocation is the racing buffer. Discrimination would require either (a) CUDA allocator instrumentation to observe cross-stream event gating on FSDP's allocations, or (b) a CUDA FSDP stress test that reduces back-pressure (e.g. replace autograd backward with `_sleep`-filler kernels, or patch out selected intermediate allocations). Both are out of scope; the row-0 unconditional-fix decision stands and is no longer justified by "timing luck on CUDA" (disproven at FSDP-path level) but by "vector 2 CUDA status not discriminable from FSDP-level data" — the fix is one event wait and closes the hazard class either way.
 
 ### Original interpretation rubric (kept for reference — outcome: Run 1 ≥ 1/3)
 

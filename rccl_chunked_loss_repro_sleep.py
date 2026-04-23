@@ -88,6 +88,9 @@ def _chunk_pattern(
     use_rccl: bool,
     sleep_cycles: int,
     sleep_where: str,
+    hold_refs: str = "off",
+    alloc_pressure: int = 0,
+    alloc_pressure_numel: int = 256,
 ) -> int:
     if sync_mode not in SYNC_MODES:
         raise ValueError(f"sync_mode must be in {SYNC_MODES}, got {sync_mode!r}")
@@ -118,6 +121,8 @@ def _chunk_pattern(
         rs_stream.wait_event(zero_ev)
 
         local_is_set = False
+        # Mimics FSDP's reduce_scatter_states ref-hold; released at iter end.
+        held_refs: list[torch.Tensor] = []
 
         for chunk in range(n_chunks):
             rs_input = torch.empty(full_numel, device=device, dtype=dtype)
@@ -158,7 +163,28 @@ def _chunk_pattern(
                 post_accum_event = rs_stream.record_event() if sync_mode in (
                     "post_accum_event_cpu", "post_accum_event_stream"
                 ) else None
-            del rs_input, rs_output
+            if hold_refs == "input":
+                held_refs.append(rs_input)
+                del rs_input, rs_output
+            elif hold_refs == "both":
+                held_refs.append(rs_input)
+                held_refs.append(rs_output)
+                del rs_input, rs_output
+            else:
+                del rs_input, rs_output
+
+            # Optional default-stream allocator pressure: alloc + free N small
+            # tensors to simulate autograd's intermediate-tensor churn between
+            # chunks. Forces the caching allocator to hand out different blocks
+            # on subsequent calls, increasing chance of a block collision with
+            # whatever buffer the RS stream's in-flight work is reading/writing.
+            if alloc_pressure > 0:
+                for _ in range(alloc_pressure):
+                    _pressure_tensor = torch.empty(
+                        alloc_pressure_numel, device=device, dtype=dtype
+                    )
+                    _pressure_tensor.fill_(0.0)
+                    del _pressure_tensor
 
             if do_ag:
                 with torch.cuda.stream(ag_stream):
@@ -185,6 +211,7 @@ def _chunk_pattern(
         torch.cuda.current_stream(device).wait_event(end_ev)
 
         torch.cuda.synchronize()
+        held_refs.clear()
 
         T = world_size * (world_size + 1) // 2
         S = n_chunks * (n_chunks + 1) // 2
@@ -232,6 +259,9 @@ def _worker(rank: int, world_size: int, args: argparse.Namespace) -> None:
             use_rccl=not args.no_rccl,
             sleep_cycles=args.sleep_cycles,
             sleep_where=args.sleep_where,
+            hold_refs=args.hold_refs,
+            alloc_pressure=args.alloc_pressure,
+            alloc_pressure_numel=args.alloc_pressure_numel,
         )
     except Exception:
         traceback.print_exc()
@@ -256,6 +286,19 @@ def main() -> int:
                              "~1e9 cycles ≈ many ms on modern GPUs")
     parser.add_argument("--sleep-where", choices=SLEEP_WHERE, default="rs_after_accum",
                         help="where on the RS stream to inject _sleep")
+    parser.add_argument("--hold-refs", choices=("off", "input", "both"),
+                        default="off",
+                        help="mimic FSDP's reduce_scatter_states ref-hold: "
+                             "'off' (default — del at chunk end); 'input' "
+                             "(hold rs_input like FSDP); 'both' (hold both)")
+    parser.add_argument("--alloc-pressure", type=int, default=0,
+                        help="alloc+free N small tensors on default stream "
+                             "between chunks to simulate autograd intermediate "
+                             "tensor churn — tests whether a Python-invisible "
+                             "buffer is the race vector when rs_input ref is "
+                             "held")
+    parser.add_argument("--alloc-pressure-numel", type=int, default=256,
+                        help="numel per pressure tensor")
     args = parser.parse_args()
 
     if not torch.cuda.is_available():
@@ -273,7 +316,8 @@ def main() -> int:
         f"iterations={args.iterations}, n_chunks={args.n_chunks}, "
         f"shard_numel={args.shard_numel}, ag={args.ag}, "
         f"hipri={args.hipri}, sync_mode={args.sync_mode}, "
-        f"sleep_cycles={args.sleep_cycles}, sleep_where={args.sleep_where}"
+        f"sleep_cycles={args.sleep_cycles}, sleep_where={args.sleep_where}, "
+        f"hold_refs={args.hold_refs}, alloc_pressure={args.alloc_pressure}"
     )
     print(f"hip={torch.version.hip}, cuda={torch.version.cuda}")
 
