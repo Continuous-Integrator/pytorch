@@ -2,8 +2,8 @@
 
 
 import logging
-import re
 import unittest
+from unittest import mock
 from unittest.mock import MagicMock, patch
 
 log = logging.getLogger(__name__)
@@ -18,6 +18,7 @@ from torch._inductor.template_heuristics.nv_universal_gemm import (
     HeuristicConfig,
     NVUniversalGemmHeuristics,
 )
+from torch._inductor.scheduler import Scheduler
 from torch._inductor.test_case import run_tests, TestCase
 from torch._inductor.utils import ensure_nv_universal_gemm_available, run_and_get_code
 from torch.testing._internal.common_utils import (
@@ -552,9 +553,8 @@ class TestNVUniversalGemmEpilogueFusion(TestCase):
     """Test cases for NVIDIA Universal GEMM epilogue fusion.
 
     Tests verify both correctness and that fusion actually occurs by examining
-    generated code for epilogue markers. Uses NVGEMM,ATEN backends so there
-    is always a fallback — fusion verification is conditional on NVGEMM being
-    selected by autotuning.
+    generated code for epilogue markers. Benchmarks are mocked to ensure
+    deterministic fusion decisions independent of GPU noise.
     """
 
     M, N, K = 512, 512, 512
@@ -564,17 +564,23 @@ class TestNVUniversalGemmEpilogueFusion(TestCase):
         with config.patch(
             {
                 "max_autotune": True,
-                "max_autotune_gemm_backends": "NVGEMM,ATEN",
+                "max_autotune_gemm_backends": "NVGEMM",
                 "nvgemm_max_profiling_configs": 2,
                 "force_disable_caches": True,
             }
+        ), mock.patch.object(
+            Scheduler,
+            "benchmark_fused_nodes",
+            return_value=(1.0, ""),
+        ), mock.patch.object(
+            Scheduler,
+            "benchmark_codegened_module",
+            return_value=(0.5, ""),
         ):
             result, code_list = run_and_get_code(torch.compile(fn), *args)
         code = "\n".join(code_list)
-        # Only the autotuning winner gets a .run() call in the wrapper body.
-        nvgemm_selected = bool(re.search(r"nv_universal_gemm_\w+\.run\(", code))
         epilogue_fused = EPILOGUE_FN_NAME in code and "EpilogueArguments" in code
-        return result, code, nvgemm_selected, epilogue_fused
+        return result, code, epilogue_fused
 
     @parametrize("dtype", (torch.float16, torch.bfloat16))
     def test_matmul_relu(self, dtype):
@@ -585,12 +591,9 @@ class TestNVUniversalGemmEpilogueFusion(TestCase):
         def fn(a, b):
             return torch.relu(a @ b)
 
-        result, code, nvgemm_selected, epilogue_fused = self._compile_and_check(
-            fn, a, b
-        )
+        result, code, epilogue_fused = self._compile_and_check(fn, a, b)
         torch.testing.assert_close(result, fn(a, b), atol=1e-2, rtol=1e-2)
-        if nvgemm_selected:
-            self.assertTrue(epilogue_fused, "NVGEMM selected but relu was NOT fused into epilogue")
+        self.assertTrue(epilogue_fused, "relu was NOT fused into epilogue")
 
     def test_matmul_add(self):
         """Test that matmul + element-wise addition fuses into the GEMM epilogue.
@@ -605,12 +608,9 @@ class TestNVUniversalGemmEpilogueFusion(TestCase):
         def fn(a, b, addend):
             return (a @ b) + addend
 
-        result, code, nvgemm_selected, epilogue_fused = self._compile_and_check(
-            fn, a, b, addend
-        )
+        result, code, epilogue_fused = self._compile_and_check(fn, a, b, addend)
         torch.testing.assert_close(result, fn(a, b, addend), atol=2e-2, rtol=2e-2)
-        if nvgemm_selected:
-            self.assertTrue(epilogue_fused, "NVGEMM selected but add was NOT fused into epilogue")
+        self.assertTrue(epilogue_fused, "add was NOT fused into epilogue")
 
     def test_matmul_mul_scale(self):
         """Test that matmul + element-wise multiply fuses into the GEMM epilogue.
@@ -626,12 +626,9 @@ class TestNVUniversalGemmEpilogueFusion(TestCase):
         def fn(a, b, scale):
             return (a @ b) * scale
 
-        result, code, nvgemm_selected, epilogue_fused = self._compile_and_check(
-            fn, a, b, scale
-        )
+        result, code, epilogue_fused = self._compile_and_check(fn, a, b, scale)
         torch.testing.assert_close(result, fn(a, b, scale), atol=2e-2, rtol=2e-2)
-        if nvgemm_selected:
-            self.assertTrue(epilogue_fused, "NVGEMM selected but scale-mul was NOT fused into epilogue")
+        self.assertTrue(epilogue_fused, "scale-mul was NOT fused into epilogue")
 
     def test_matmul_add_relu_chained(self):
         """Test that matmul + add + relu chain fuses into the GEMM epilogue.
@@ -646,12 +643,9 @@ class TestNVUniversalGemmEpilogueFusion(TestCase):
         def fn(a, b, bias):
             return torch.relu((a @ b) + bias)
 
-        result, code, nvgemm_selected, epilogue_fused = self._compile_and_check(
-            fn, a, b, bias
-        )
+        result, code, epilogue_fused = self._compile_and_check(fn, a, b, bias)
         torch.testing.assert_close(result, fn(a, b, bias), atol=1e-2, rtol=1e-2)
-        if nvgemm_selected and not epilogue_fused:
-            log.warning("NVGEMM selected but bias+relu chain was NOT fused (benchmark may have preferred unfused)")
+        self.assertTrue(epilogue_fused, "bias+relu chain was NOT fused into epilogue")
 
     def test_matmul_cast_dtype(self):
         """Test that matmul + dtype cast fuses into the GEMM epilogue."""
@@ -662,12 +656,9 @@ class TestNVUniversalGemmEpilogueFusion(TestCase):
         def fn(a, b):
             return (a @ b).to(torch.float32)
 
-        result, code, nvgemm_selected, epilogue_fused = self._compile_and_check(
-            fn, a, b
-        )
+        result, code, epilogue_fused = self._compile_and_check(fn, a, b)
         torch.testing.assert_close(result, fn(a, b), atol=1e-2, rtol=1e-2)
-        if nvgemm_selected:
-            self.assertTrue(epilogue_fused, "NVGEMM selected but dtype cast was NOT fused into epilogue")
+        self.assertTrue(epilogue_fused, "dtype cast was NOT fused into epilogue")
 
     def test_matmul_sigmoid(self):
         """Test that matmul + sigmoid fuses into the GEMM epilogue."""
@@ -678,12 +669,9 @@ class TestNVUniversalGemmEpilogueFusion(TestCase):
         def fn(a, b):
             return torch.sigmoid(a @ b)
 
-        result, code, nvgemm_selected, epilogue_fused = self._compile_and_check(
-            fn, a, b
-        )
+        result, code, epilogue_fused = self._compile_and_check(fn, a, b)
         torch.testing.assert_close(result, fn(a, b), atol=1e-2, rtol=1e-2)
-        if nvgemm_selected:
-            self.assertTrue(epilogue_fused, "NVGEMM selected but sigmoid was NOT fused into epilogue")
+        self.assertTrue(epilogue_fused, "sigmoid was NOT fused into epilogue")
 
     def test_matmul_tanh(self):
         """Test that matmul + tanh fuses into the GEMM epilogue."""
@@ -694,12 +682,9 @@ class TestNVUniversalGemmEpilogueFusion(TestCase):
         def fn(a, b):
             return torch.tanh(a @ b)
 
-        result, code, nvgemm_selected, epilogue_fused = self._compile_and_check(
-            fn, a, b
-        )
+        result, code, epilogue_fused = self._compile_and_check(fn, a, b)
         torch.testing.assert_close(result, fn(a, b), atol=1e-2, rtol=1e-2)
-        if nvgemm_selected:
-            self.assertTrue(epilogue_fused, "NVGEMM selected but tanh was NOT fused into epilogue")
+        self.assertTrue(epilogue_fused, "tanh was NOT fused into epilogue")
 
     def test_matmul_exp(self):
         """Test that matmul + exp fuses into the GEMM epilogue."""
@@ -710,12 +695,9 @@ class TestNVUniversalGemmEpilogueFusion(TestCase):
         def fn(a, b):
             return torch.exp(a @ b)
 
-        result, code, nvgemm_selected, epilogue_fused = self._compile_and_check(
-            fn, a, b
-        )
+        result, code, epilogue_fused = self._compile_and_check(fn, a, b)
         torch.testing.assert_close(result, fn(a, b), atol=1e-2, rtol=1e-2)
-        if nvgemm_selected:
-            self.assertTrue(epilogue_fused, "NVGEMM selected but exp was NOT fused into epilogue")
+        self.assertTrue(epilogue_fused, "exp was NOT fused into epilogue")
 
     def test_matmul_sub(self):
         """Test that matmul + subtraction fuses into the GEMM epilogue."""
@@ -727,12 +709,9 @@ class TestNVUniversalGemmEpilogueFusion(TestCase):
         def fn(a, b, offset):
             return (a @ b) - offset
 
-        result, code, nvgemm_selected, epilogue_fused = self._compile_and_check(
-            fn, a, b, offset
-        )
+        result, code, epilogue_fused = self._compile_and_check(fn, a, b, offset)
         torch.testing.assert_close(result, fn(a, b, offset), atol=2e-2, rtol=2e-2)
-        if nvgemm_selected:
-            self.assertTrue(epilogue_fused, "NVGEMM selected but sub was NOT fused into epilogue")
+        self.assertTrue(epilogue_fused, "sub was NOT fused into epilogue")
 
     def test_matmul_div(self):
         """Test that matmul + division fuses into the GEMM epilogue."""
@@ -744,12 +723,9 @@ class TestNVUniversalGemmEpilogueFusion(TestCase):
         def fn(a, b, norm):
             return (a @ b) / norm
 
-        result, code, nvgemm_selected, epilogue_fused = self._compile_and_check(
-            fn, a, b, norm
-        )
+        result, code, epilogue_fused = self._compile_and_check(fn, a, b, norm)
         torch.testing.assert_close(result, fn(a, b, norm), atol=2e-2, rtol=2e-2)
-        if nvgemm_selected:
-            self.assertTrue(epilogue_fused, "NVGEMM selected but div was NOT fused into epilogue")
+        self.assertTrue(epilogue_fused, "div was NOT fused into epilogue")
 
     def test_plain_matmul_no_epilogue(self):
         """Test that plain matmul does NOT produce epilogue fusion markers."""
@@ -760,9 +736,7 @@ class TestNVUniversalGemmEpilogueFusion(TestCase):
         def fn(a, b):
             return a @ b
 
-        result, code, nvgemm_selected, epilogue_fused = self._compile_and_check(
-            fn, a, b
-        )
+        result, code, epilogue_fused = self._compile_and_check(fn, a, b)
         torch.testing.assert_close(result, fn(a, b), atol=1e-2, rtol=1e-2)
         self.assertFalse(
             epilogue_fused, "plain matmul should NOT have epilogue fusion markers"
@@ -777,9 +751,7 @@ class TestNVUniversalGemmEpilogueFusion(TestCase):
         def fn(a, b):
             return (a @ b).sum(dim=-1)
 
-        result, code, nvgemm_selected, epilogue_fused = self._compile_and_check(
-            fn, a, b
-        )
+        result, code, epilogue_fused = self._compile_and_check(fn, a, b)
         expected = fn(a, b)
         torch.testing.assert_close(
             result.float(), expected.float(), atol=5e-2, rtol=5e-2
