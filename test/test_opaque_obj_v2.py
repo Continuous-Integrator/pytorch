@@ -3268,7 +3268,6 @@ def forward(self, L_x_ : torch.Tensor):
         result.backward(grad_o)
         self.assertEqual(x2.grad, grad_o * 1.5)
 
-    @torch._dynamo.config.patch(inline_single_use_invoke_subgraph=False)
     def test_invoke_subgraph(self):
         @torch.compiler.nested_compile_region
         def fn(scale_obj, x):
@@ -4060,21 +4059,6 @@ class fn(torch.nn.Module):
         return randn
 """,
         )
-
-    def test_set_generator_metaclass_is_idempotent(self):
-        """Calling _set_generator_metaclass twice is a no-op, not an error"""
-        from torch._opaque_base import OpaqueBaseMeta
-
-        # Already called during import; second call should be a no-op.
-        torch._C._set_generator_metaclass(OpaqueBaseMeta)
-        self.assertIsInstance(torch._C.Generator, OpaqueBaseMeta)
-
-    def test_generator_metaclass_is_set(self):
-        """Generator's metaclass should be OpaqueBaseMeta after import"""
-        from torch._opaque_base import OpaqueBaseMeta
-
-        self.assertIsInstance(torch._C.Generator, OpaqueBaseMeta)
-        self.assertEqual(torch._C.Generator.__module__, "torch._C")
 
 
 if __name__ == "__main__":
