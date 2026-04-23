@@ -130,15 +130,20 @@ jobs:
           retention-days: 14
           if-no-files-found: error
           path: ${{ runner.temp }}/artifacts/wheel-py3_14t-cpu
-  # Smoke-test each delocated wheel on a fresh runner so we validate the
-  # wheel is truly self-contained (and not relying on host state left by the
-  # build job). Must pass before wheel-upload publishes to S3/R2. Uses a
-  # standard runner — smoke tests are trivial and don't need xlarge.
-  wheel-test:
+  # For each wheel, a fresh macos-26 runner smoke-tests the delocated wheel
+  # and — only if the test passes — pushes it to S3/R2. A single matrix gives
+  # per-Python-version gating for free: test-X failing blocks only upload-X,
+  # not the whole fan-out. The upload step calls the upload-binary-wheel
+  # composite action so this workflow doesn't duplicate AWS-creds + upload
+  # plumbing that lives in `_binary-upload.yml`.
+  wheel-test-upload:
     if: ${{ github.repository_owner == 'pytorch' }}
     needs: wheel-build
     runs-on: macos-26
     timeout-minutes: 30
+    permissions:
+      id-token: write
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -172,11 +177,11 @@ jobs:
             freethreaded: true
             build_name: wheel-py3_14t-cpu
     steps:
-      - name: Checkout smoke-test script
+      - name: Checkout PyTorch CI scripts
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
-          sparse-checkout: .ci/pytorch/smoke_test/
+          sparse-checkout: .ci/pytorch/
           show-progress: false
       - name: Setup Python
         uses: actions/setup-python@v6
@@ -197,47 +202,16 @@ jobs:
           source "$venv_dir/bin/activate"
           pip install "${RUNNER_TEMP}/artifacts"/*.whl numpy -v
           python .ci/pytorch/smoke_test/smoke_test.py --package torchonly
-
-  wheel-upload:
-    if: ${{ github.repository_owner == 'pytorch' }}
-    permissions:
-      id-token: write
-      contents: read
-    needs: wheel-test
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - desired_python: "3.10"
-            build_name: wheel-py3_10-cpu
-          - desired_python: "3.11"
-            build_name: wheel-py3_11-cpu
-          - desired_python: "3.12"
-            build_name: wheel-py3_12-cpu
-          - desired_python: "3.13"
-            build_name: wheel-py3_13-cpu
-          - desired_python: "3.13t"
-            build_name: wheel-py3_13t-cpu
-          - desired_python: "3.14"
-            build_name: wheel-py3_14-cpu
-          - desired_python: "3.14t"
-            build_name: wheel-py3_14t-cpu
-    with:
-      PYTORCH_ROOT: /pytorch
-      PACKAGE_TYPE: wheel
-      DESIRED_CUDA: cpu
-      GPU_ARCH_TYPE: cpu
-      DOCKER_IMAGE: manylinux2_28-builder
-      DOCKER_IMAGE_TAG_PREFIX: cpu
-      DESIRED_PYTHON: ${{ matrix.desired_python }}
-      build_name: ${{ matrix.build_name }}
-      use_s3: False
-    secrets:
-      github-token: ${{ secrets.GITHUB_TOKEN }}
-      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
-      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-    uses: ./.github/workflows/_binary-upload.yml
+      - name: Upload wheel to S3/R2
+        uses: ./.github/actions/upload-binary-wheel
+        with:
+          build-name: ${{ matrix.build_name }}
+          package-type: wheel
+          desired-cuda: cpu
+          pkg-dir: ${{ runner.temp }}/artifacts
+          r2-account-id: ${{ secrets.R2_ACCOUNT_ID }}
+          r2-access-key-id: ${{ secrets.R2_ACCESS_KEY_ID }}
+          r2-secret-access-key: ${{ secrets.R2_SECRET_ACCESS_KEY }}
   libtorch-cpu-shared-with-deps-release-extract:
     if: ${{ github.repository_owner == 'pytorch' }}
     needs: wheel-build

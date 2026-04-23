@@ -99,15 +99,20 @@ jobs:
 {%- endfor %}
 
 {%- if first["package_type"] == "wheel" %}
-  # Smoke-test each delocated wheel on a fresh runner so we validate the
-  # wheel is truly self-contained (and not relying on host state left by the
-  # build job). Must pass before wheel-upload publishes to S3/R2. Uses a
-  # standard runner — smoke tests are trivial and don't need xlarge.
-  wheel-test:
+  # For each wheel, a fresh macos-26 runner smoke-tests the delocated wheel
+  # and — only if the test passes — pushes it to S3/R2. A single matrix gives
+  # per-Python-version gating for free: test-X failing blocks only upload-X,
+  # not the whole fan-out. The upload step calls the upload-binary-wheel
+  # composite action so this workflow doesn't duplicate AWS-creds + upload
+  # plumbing that lives in `_binary-upload.yml`.
+  wheel-test-upload:
     if: ${{ github.repository_owner == 'pytorch' }}
     needs: wheel-build
     runs-on: macos-26
     timeout-minutes: 30
+    permissions:
+      id-token: write
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -119,11 +124,11 @@ jobs:
             build_name: !{{ config["build_name"] }}
         {%- endfor %}
     steps:
-      - name: Checkout smoke-test script
+      - name: Checkout PyTorch CI scripts
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
-          sparse-checkout: .ci/pytorch/smoke_test/
+          sparse-checkout: .ci/pytorch/
           show-progress: false
       - name: Setup Python
         uses: actions/setup-python@v6
@@ -144,37 +149,16 @@ jobs:
           source "$venv_dir/bin/activate"
           pip install "${RUNNER_TEMP}/artifacts"/*.whl numpy -v
           python .ci/pytorch/smoke_test/smoke_test.py --package torchonly
-
-  wheel-upload:
-    if: ${{ github.repository_owner == 'pytorch' }}
-    permissions:
-      id-token: write
-      contents: read
-    needs: wheel-test
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-        {%- for config in build_configs %}
-          - desired_python: "!{{ config["python_version"] }}"
-            build_name: !{{ config["build_name"] }}
-        {%- endfor %}
-    with:
-      PYTORCH_ROOT: /pytorch
-      PACKAGE_TYPE: !{{ first["package_type"] }}
-      DESIRED_CUDA: !{{ first["desired_cuda"] }}
-      GPU_ARCH_TYPE: !{{ first["gpu_arch_type"] }}
-      DOCKER_IMAGE: !{{ first["container_image"] }}
-      DOCKER_IMAGE_TAG_PREFIX: !{{ first["container_image_tag_prefix"] }}
-      DESIRED_PYTHON: ${{ matrix.desired_python }}
-      build_name: ${{ matrix.build_name }}
-      use_s3: False
-    secrets:
-      github-token: ${{ secrets.GITHUB_TOKEN }}
-      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
-      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-    uses: ./.github/workflows/_binary-upload.yml
+      - name: Upload wheel to S3/R2
+        uses: ./.github/actions/upload-binary-wheel
+        with:
+          build-name: ${{ matrix.build_name }}
+          package-type: !{{ first["package_type"] }}
+          desired-cuda: !{{ first["desired_cuda"] }}
+          pkg-dir: ${{ runner.temp }}/artifacts
+          r2-account-id: ${{ secrets.R2_ACCOUNT_ID }}
+          r2-access-key-id: ${{ secrets.R2_ACCESS_KEY_ID }}
+          r2-secret-access-key: ${{ secrets.R2_SECRET_ACCESS_KEY }}
 {%- endif %}
 {%- endif %}
 
