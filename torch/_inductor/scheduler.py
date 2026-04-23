@@ -5141,13 +5141,14 @@ class Scheduler:
             window_min = 0
             for n in ordered:
                 idx = n2i[n]
-                if window and idx - window_min > max_distance:
+                if not window:
+                    window_min = idx
+                    window.append(n)
+                elif idx - window_min > max_distance:
                     yield window
                     window = [n]
                     window_min = idx
                 else:
-                    if not window:
-                        window_min = idx
                     window.append(n)
             if window:
                 yield window
@@ -5189,13 +5190,13 @@ class Scheduler:
                 )
             # Try both ends because the peak-driving node can sit at either side.
             n2i = mem_ctx.node_to_idx
-            first_idx = last_idx = n2i[candidate[0]]
-            for n in candidate[1:]:
-                idx = n2i[n]
-                if idx < first_idx:
-                    first_idx = idx
-                elif idx > last_idx:
-                    last_idx = idx
+            # Halving is based on baseline schedule span, not list length, so we
+            # keep shrinking the earliest/latest covered steps.
+            # Each retry then takes the left-side and right-side nodes that still fit
+            # within that smaller baseline span.
+            idxs = [n2i[n] for n in candidate]
+            first_idx = min(idxs)
+            last_idx = max(idxs)
             cur_span = last_idx - first_idx
             while cur_span > 0:
                 cur_span //= 2
@@ -5203,14 +5204,12 @@ class Scheduler:
                 late_cutoff = last_idx - cur_span
                 early = [n for n in candidate if n2i[n] <= early_cutoff]
                 late = [n for n in candidate if n2i[n] >= late_cutoff]
-                attempts: list[list[BaseSchedulerNode]] = []
-                if 2 <= len(early) < len(candidate):
-                    attempts.append(early)
-                if 2 <= len(late) < len(candidate) and late != early:
-                    attempts.append(late)
+                attempts = [
+                    group for group in (early, late) if 2 <= len(group) < len(candidate)
+                ]
+                if len(attempts) == 2 and attempts[0] == attempts[1]:
+                    attempts.pop()
                 if not attempts:
-                    if cur_span == 0:
-                        break
                     continue
                 for attempt in attempts:
                     if not self.speedup_by_combo_kernel(attempt):
@@ -5245,13 +5244,17 @@ class Scheduler:
                 break
             if memory_check:
                 assert mem_ctx is not None
+                # Memory-aware search limits the initial candidates up front.
                 candidates: list[list[BaseSchedulerNode]] = list(
                     _distance_windows(node_list)
                 )
             else:
                 candidates = [node_list]
 
-            for candidate in candidates:
+            candidate_idx = 0
+            while candidate_idx < len(candidates):
+                candidate = candidates[candidate_idx]
+                candidate_idx += 1
                 if len(candidate) < 2:
                     continue
                 if num_ck_nodes is not None and count > num_ck_nodes:
@@ -5275,6 +5278,8 @@ class Scheduler:
                     if combo_node is None:
                         continue
                     assert new_region_memory is not None
+                    # Later candidates should be judged against the graph after
+                    # this accepted combo, not against the original baseline.
                     baseline_peak = new_peak
                     self._commit_combo_to_memory_context(
                         mem_ctx,
@@ -5283,8 +5288,21 @@ class Scheduler:
                         new_region_memory,
                         accepted_nodes,
                     )
+
+                    # Only retry a later remainder here. An earlier remainder already failed.
                     accepted = accepted_nodes
+                    if len(accepted) < len(candidate):
+                        accepted_set = OrderedSet(accepted)
+                        remaining = [n for n in candidate if n not in accepted_set]
+                        if (
+                            len(remaining) >= 2
+                            and min(mem_ctx.node_to_idx[n] for n in remaining)
+                            >= region_start
+                        ):
+                            candidates.append(remaining)
                 else:
+                    # Legacy path: try the full candidate directly with no
+                    # memory simulation or distance splitting.
                     combo_node = ForeachKernelSchedulerNode(
                         candidate[0].scheduler,
                         candidate,
@@ -5426,6 +5444,9 @@ class Scheduler:
                 local_entries.append((current_step, baseline_order, node))
                 seen_local_nodes.add(node)
 
+        # Rebuild just the affected baseline slice: replace the current group
+        # with one tentative combo node, and collapse any overlapping earlier
+        # accepted combo to its committed step.
         for i in range(region_start, region_end + 1):
             n = self.nodes[i]
             if n in group_set:
@@ -5437,11 +5458,14 @@ class Scheduler:
             if step is not None:
                 top = name_to_fused_node.get(n.get_name())
                 assert top is not None
+                # Overlapping later regions should see the earlier accepted
+                # combo at its committed step, not its stale standalone pieces.
                 if region_start <= step <= region_end:
                     add_local_node(top, step, i)
                 continue
             add_local_node(n, i, i)
 
+        # Sort by tentative step first and keep baseline order as a stable tiebreak.
         local_nodes = [
             node for _, _, node in sorted(local_entries, key=operator.itemgetter(0, 1))
         ]
@@ -5555,6 +5579,8 @@ class Scheduler:
             accumulate(bi.size_alloc, bi.size_free, new_start, new_end)
 
         memories_at_nodes = mem_ctx.memories_at_nodes
+        # Carry in the baseline memory live just before the rewritten region,
+        # then replay only the region-local delta on top of it.
         carry_in = memories_at_nodes[region_start - 1] if region_start > 0 else 0
         cur = carry_in
         region_peak = cur
@@ -5570,14 +5596,12 @@ class Scheduler:
 
         abs_thr = config.combo_kernel_peak_memory_threshold
         pct_thr = config.combo_kernel_peak_memory_pct_threshold
-        allowed_delta: float | None = None
+        limits: list[float] = []
         if abs_thr is not None:
-            allowed_delta = float(abs_thr)
+            limits.append(float(abs_thr))
         if pct_thr is not None:
-            pct_limit = pct_thr * baseline_peak
-            allowed_delta = (
-                pct_limit if allowed_delta is None else max(allowed_delta, pct_limit)
-            )
+            limits.append(pct_thr * baseline_peak)
+        allowed_delta = max(limits) if limits else None
         accept = allowed_delta is None or delta <= allowed_delta
 
         if accept:

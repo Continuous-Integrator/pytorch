@@ -8,6 +8,7 @@ import re
 import sys
 import tempfile
 import unittest
+from types import SimpleNamespace
 
 import torch
 import torch._inductor
@@ -46,44 +47,6 @@ except (unittest.SkipTest, ImportError) as e:
     if __name__ == "__main__":
         sys.exit(0)
     raise
-
-
-class _PeakMemFakeNode:
-    def __init__(self, name: str, deps=()) -> None:
-        self.name = name
-        self.scheduler = object()
-        self.unmet_dependencies = {type("Dep", (), {"name": dep})() for dep in deps}
-
-    def get_name(self) -> str:
-        return self.name
-
-    def get_buffer_names(self):
-        return ()
-
-
-class _PeakMemFakeComboNode(_PeakMemFakeNode):
-    pass
-
-
-class _PeakMemFakeBuffer:
-    def __init__(self, name: str, defining_op: _PeakMemFakeNode, succ_nodes) -> None:
-        self.name = name
-        self.defining_op = defining_op
-        self.mpi_buffer = type("MPI", (), {"succ_nodes": succ_nodes})()
-
-    def get_name(self) -> str:
-        return self.name
-
-
-class _PeakMemFakeScheduler:
-    def __init__(self, nodes, name_to_fused_node=None) -> None:
-        self.nodes = nodes
-        self.name_to_fused_node = (
-            {} if name_to_fused_node is None else name_to_fused_node
-        )
-
-    def topological_sort_schedule(self, nodes):
-        return nodes
 
 
 @instantiate_parametrized_tests
@@ -1640,6 +1603,45 @@ class ComboKernelMetadataTests(TestCase):
         self.assertIn(f"'disable_ftz': {disable_ftz}", code)
 
 
+# Minimal scheduler doubles for direct _try_combo_with_memory_check tests.
+class _PeakMemFakeNode:
+    def __init__(self, name: str, deps=()) -> None:
+        self.name = name
+        self.scheduler = object()
+        self.unmet_dependencies = tuple(SimpleNamespace(name=dep) for dep in deps)
+
+    def get_name(self) -> str:
+        return self.name
+
+    def get_buffer_names(self):
+        return ()
+
+
+class _PeakMemFakeBuffer:
+    def __init__(self, name: str, defining_op: _PeakMemFakeNode, succ_nodes) -> None:
+        self.name = name
+        self.defining_op = defining_op
+        self.mpi_buffer = SimpleNamespace(succ_nodes=succ_nodes)
+
+    def get_name(self) -> str:
+        return self.name
+
+
+class _PeakMemFakeFreeableInputBuffer:
+    pass
+
+
+class _PeakMemFakeScheduler:
+    def __init__(self, nodes, name_to_fused_node=None) -> None:
+        self.nodes = nodes
+        self.name_to_fused_node = (
+            {} if name_to_fused_node is None else name_to_fused_node
+        )
+
+    def topological_sort_schedule(self, nodes):
+        return nodes
+
+
 @instantiate_parametrized_tests
 class ComboKernelPeakMemoryTests(InductorTestCase):
     """Coverage for memory-aware combo-kernel acceptance and commit logic."""
@@ -1744,7 +1746,36 @@ class ComboKernelPeakMemoryTests(InductorTestCase):
         return Model()
 
     @staticmethod
-    def _run_fake_combo_try(
+    def _make_wide_resnet_case():
+        # This model shape reliably exercises the combo-kernel search paths used
+        # by the end-to-end memory-aware tests.
+        model = ComboKernelPeakMemoryTests._make_wide_resnet_like().to(GPU_TYPE).eval()
+        x = torch.randn(1, 3, 224, 224, device=GPU_TYPE)
+        with torch.no_grad():
+            out_eager = model(x)
+        return model, x, out_eager
+
+    @staticmethod
+    def _make_peak_mem_context(
+        nodes,
+        *,
+        buf_info_list,
+        memories_at_nodes,
+        accepted_step=None,
+    ):
+        from torch._inductor.scheduler import ComboKernelMemoryContext
+
+        return ComboKernelMemoryContext(
+            graph_outputs=set(),
+            buf_info_list=buf_info_list,
+            freeable_input_buffer_cls=_PeakMemFakeFreeableInputBuffer,
+            memories_at_nodes=memories_at_nodes,
+            node_to_idx={node: idx for idx, node in enumerate(nodes)},
+            accepted_step={} if accepted_step is None else dict(accepted_step),
+        )
+
+    @staticmethod
+    def _try_combo_with_fake_scheduler(
         nodes,
         group_nodes,
         *,
@@ -1758,20 +1789,20 @@ class ComboKernelPeakMemoryTests(InductorTestCase):
     ):
         from unittest.mock import patch
 
-        from torch._inductor.scheduler import ComboKernelMemoryContext, Scheduler
+        from torch._inductor.scheduler import Scheduler
 
         scheduler = _PeakMemFakeScheduler(nodes, name_to_fused_node)
-        mem_ctx = ComboKernelMemoryContext(
-            graph_outputs=set(),
+        # Unit tests pass a precomputed baseline timeline to isolate the local
+        # combo logic from the full scheduler setup path.
+        mem_ctx = ComboKernelPeakMemoryTests._make_peak_mem_context(
+            nodes,
             buf_info_list=buf_info_list,
-            freeable_input_buffer_cls=type("_FakeFreeableInputBuffer", (), {}),
             memories_at_nodes=memories_at_nodes,
-            node_to_idx={node: idx for idx, node in enumerate(nodes)},
-            accepted_step={} if accepted_step is None else dict(accepted_step),
+            accepted_step=accepted_step,
         )
 
         def fake_foreach(*args, **kwargs):
-            return _PeakMemFakeComboNode(combo_name)
+            return _PeakMemFakeNode(combo_name)
 
         with patch(
             "torch._inductor.scheduler.ForeachKernelSchedulerNode", fake_foreach
@@ -1798,7 +1829,7 @@ class ComboKernelPeakMemoryTests(InductorTestCase):
             BufferInfo(buf_a, 100, 100, 0, 1),
             BufferInfo(buf_b, 100, 100, 2, 3),
         ]
-        zero_tolerance_combo, *_ = self._run_fake_combo_try(
+        zero_tolerance_combo, *_ = self._try_combo_with_fake_scheduler(
             nodes,
             [a, b],
             buf_info_list=buf_info_list,
@@ -1806,7 +1837,7 @@ class ComboKernelPeakMemoryTests(InductorTestCase):
             memories_at_nodes=[100, 100, 100, 100, 0],
             thresholds=self._thresholds(abs_thr=0),
         )
-        zero_pct_combo, *_ = self._run_fake_combo_try(
+        zero_pct_combo, *_ = self._try_combo_with_fake_scheduler(
             nodes,
             [a, b],
             buf_info_list=buf_info_list,
@@ -1814,7 +1845,7 @@ class ComboKernelPeakMemoryTests(InductorTestCase):
             memories_at_nodes=[100, 100, 100, 100, 0],
             thresholds=self._thresholds(pct_thr=0.0),
         )
-        bounded_combo, *_ = self._run_fake_combo_try(
+        bounded_combo, *_ = self._try_combo_with_fake_scheduler(
             nodes,
             [a, b],
             buf_info_list=buf_info_list,
@@ -1823,7 +1854,7 @@ class ComboKernelPeakMemoryTests(InductorTestCase):
             thresholds=self._thresholds(abs_thr=1),
         )
         accepted_combo, _, new_region_memory, region_start, combo_step = (
-            self._run_fake_combo_try(
+            self._try_combo_with_fake_scheduler(
                 nodes,
                 [a, b],
                 buf_info_list=buf_info_list,
@@ -1851,7 +1882,7 @@ class ComboKernelPeakMemoryTests(InductorTestCase):
         nodes = [a, b, c, d, e]
         long_lived = _PeakMemFakeBuffer("buf", b, {e})
         combo_node, _, new_region_memory, region_start, combo_step = (
-            self._run_fake_combo_try(
+            self._try_combo_with_fake_scheduler(
                 nodes,
                 [a, b],
                 buf_info_list=[BufferInfo(long_lived, 10, 10, 1, 4)],
@@ -1868,7 +1899,7 @@ class ComboKernelPeakMemoryTests(InductorTestCase):
 
     def test_commit_combo_with_later_outside_user_keeps_suffix(self):
         """Committing a local rewrite leaves the later unchanged suffix intact."""
-        from torch._inductor.scheduler import ComboKernelMemoryContext, Scheduler
+        from torch._inductor.scheduler import Scheduler
 
         a = _PeakMemFakeNode("a")
         b = _PeakMemFakeNode("b")
@@ -1876,15 +1907,13 @@ class ComboKernelPeakMemoryTests(InductorTestCase):
         later_user = _PeakMemFakeNode("later_user")
         nodes = [a, b, c, later_user]
         buf = _PeakMemFakeBuffer("buf", b, {later_user})
-        mem_ctx = ComboKernelMemoryContext(
-            graph_outputs=set(),
+        mem_ctx = self._make_peak_mem_context(
+            nodes,
             buf_info_list=[BufferInfo(buf, 10, 10, 1, 3)],
-            freeable_input_buffer_cls=type("_FakeFreeableInputBuffer", (), {}),
             memories_at_nodes=[0, 10, 10, 10, 0],
-            node_to_idx={node: idx for idx, node in enumerate(nodes)},
         )
         combo_node, _, new_region_memory, region_start, combo_step = (
-            self._run_fake_combo_try(
+            self._try_combo_with_fake_scheduler(
                 nodes,
                 [a, b],
                 buf_info_list=mem_ctx.buf_info_list,
@@ -1915,11 +1944,11 @@ class ComboKernelPeakMemoryTests(InductorTestCase):
         b1 = _PeakMemFakeNode("b1")
         a2 = _PeakMemFakeNode("a2")
         b2 = _PeakMemFakeNode("b2")
-        combo_a = _PeakMemFakeComboNode("combo_a")
+        combo_a = _PeakMemFakeNode("combo_a")
         nodes = [a1, b1, a2, b2]
         carried_buf = _PeakMemFakeBuffer("buf_a", a2, set())
         combo_node, _, new_region_memory, region_start, combo_step = (
-            self._run_fake_combo_try(
+            self._try_combo_with_fake_scheduler(
                 nodes,
                 [b1, b2],
                 buf_info_list=[BufferInfo(carried_buf, 50, 50, 2, 2)],
@@ -1950,20 +1979,13 @@ class ComboKernelPeakMemoryTests(InductorTestCase):
         mem_ctx = ComboKernelMemoryContext(
             graph_outputs=set(),
             buf_info_list=[],
-            freeable_input_buffer_cls=type("_FakeFreeableInputBuffer", (), {}),
+            freeable_input_buffer_cls=_PeakMemFakeFreeableInputBuffer,
             memories_at_nodes=[100] * (N + 1),
             node_to_idx={},
         )
 
-        class _FakeNode:
-            def __init__(self, name: str) -> None:
-                self.name = name
-
-            def get_name(self) -> str:
-                return self.name
-
         # combo1: writes [4..11]; combo2: writes [8..15]; overlap = [8..11].
-        combo1_nodes = [_FakeNode(f"a{i}") for i in range(5)]
+        combo1_nodes = [_PeakMemFakeNode(f"a{i}") for i in range(5)]
         Scheduler._commit_combo_to_memory_context(
             None,  # type: ignore[arg-type]
             mem_ctx,
@@ -1974,7 +1996,7 @@ class ComboKernelPeakMemoryTests(InductorTestCase):
         )
         self.assertEqual(max(mem_ctx.memories_at_nodes), 200)
 
-        combo2_nodes = [_FakeNode(f"b{i}") for i in range(4)]
+        combo2_nodes = [_PeakMemFakeNode(f"b{i}") for i in range(4)]
         Scheduler._commit_combo_to_memory_context(
             None,  # type: ignore[arg-type]
             mem_ctx,
@@ -2005,7 +2027,7 @@ class ComboKernelPeakMemoryTests(InductorTestCase):
                 region_start=2,
                 combo_step=2,
                 new_region_memory=[100, 100],
-                group_nodes=[_FakeNode("c0")],
+                group_nodes=[_PeakMemFakeNode("c0")],
             )
 
     @requires_gpu_and_triton
@@ -2052,10 +2074,7 @@ class ComboKernelPeakMemoryTests(InductorTestCase):
 
         from torch._inductor.scheduler import ForeachKernelSchedulerNode, Scheduler
 
-        model = self._make_wide_resnet_like().to(GPU_TYPE).eval()
-        x = torch.randn(1, 3, 224, 224, device=GPU_TYPE)
-        with torch.no_grad():
-            out_eager = model(x)
+        model, x, out_eager = self._make_wide_resnet_case()
 
         max_distance = 1
         original_spans: list[int] = []
@@ -2075,6 +2094,8 @@ class ComboKernelPeakMemoryTests(InductorTestCase):
             return groups
 
         def logging_try(self, group_nodes, mem_ctx, *args, **kwargs):
+            # Observe the candidates after _distance_windows has already split
+            # the original topo-level groups.
             idxs = [mem_ctx.node_to_idx[node] for node in group_nodes]
             tried_spans.append(max(idxs) - min(idxs))
             return original_try(self, group_nodes, mem_ctx, *args, **kwargs)
@@ -2118,10 +2139,7 @@ class ComboKernelPeakMemoryTests(InductorTestCase):
         self, threshold_kind, loose, tight
     ):
         """Tighter absolute or percentage limits reject more combo groups."""
-        model = self._make_wide_resnet_like().to(GPU_TYPE).eval()
-        x = torch.randn(1, 3, 224, 224, device=GPU_TYPE)
-        with torch.no_grad():
-            out_eager = model(x)
+        model, x, out_eager = self._make_wide_resnet_case()
         kernel_counts = {}
         for value in (loose, tight):
             thresholds = (
@@ -2150,15 +2168,14 @@ class ComboKernelPeakMemoryTests(InductorTestCase):
         from torch._inductor.scheduler import Scheduler
         from torch._inductor.utils import fresh_cache
 
-        model = self._make_wide_resnet_like().to(GPU_TYPE).eval()
-        x = torch.randn(1, 3, 224, 224, device=GPU_TYPE)
-        with torch.no_grad():
-            out_eager = model(x)
+        model, x, out_eager = self._make_wide_resnet_case()
 
         call_log: list[tuple[frozenset[str], int]] = []
         original_try = Scheduler._try_combo_with_memory_check
 
         def logging_try(self, group_nodes, *args, **kwargs):
+            # Halving retries show up as strict subsets of an earlier failed
+            # candidate from the same compile.
             names = frozenset(n.get_name() for n in group_nodes)
             call_log.append((names, len(group_nodes)))
             return original_try(self, group_nodes, *args, **kwargs)
@@ -2198,10 +2215,7 @@ class ComboKernelPeakMemoryTests(InductorTestCase):
         from torch._inductor.scheduler import Scheduler
         from torch._inductor.utils import fresh_cache
 
-        model = self._make_wide_resnet_like().to(GPU_TYPE).eval()
-        x = torch.randn(1, 3, 224, 224, device=GPU_TYPE)
-        with torch.no_grad():
-            out_eager = model(x)
+        model, x, out_eager = self._make_wide_resnet_case()
 
         accepted_regions: list[tuple[int, int]] = []
         original_commit = Scheduler._commit_combo_to_memory_context
