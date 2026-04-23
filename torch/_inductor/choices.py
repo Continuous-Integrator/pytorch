@@ -470,32 +470,15 @@ class InductorChoices:
         num_warps = 8
         num_threads = warp_size * num_warps
 
-        if config.batch_invariant:
-            # numel_hint scales with batch (it is the product of output dims,
-            # which typically includes the batch dim). Using it in the split
-            # factor would make the split — and thus the per-thread chunk of
-            # the reduction — depend on batch size, producing bitwise-different
-            # bf16/fp32 partial sums across batches. Decide purely from
-            # reduction_numel_hint so splits stay batch-invariant while still
-            # providing parallelism for large reductions (including the
-            # reduce-to-single-element case, where numel_hint == 1 would
-            # otherwise force split=1).
-            no_split_threshold = (
-                524288 if props.major is not None and props.major >= 10 else 8192
-            )
-            if reduction_numel_hint <= no_split_threshold:
-                return 1
-            chunk = num_threads * max_elements_per_thread
-            divisors = sympy.divisors(reduction_numel_hint)
-            closest = min(divisors, key=lambda x: abs(x - chunk))
-            if abs(closest - chunk) < chunk // 4:
-                chunk = closest
-            return max(1, (reduction_numel_hint + chunk - 1) // chunk)
-
+        # `and not config.batch_invariant` below routes past every numel_hint-based
+        # branch into the final else, so K depends only on reduction_numel_hint.
         if inner_reduction:
             # do heuristics that's close to eager mode for split inner reduction
             # we leak reduction autotune configs here, and will need to refactor to avoid this later
-            if numel_hint >= 2 * num_sm:  # don't split if there are enough outputs
+            if (
+                numel_hint >= 2 * num_sm  # don't split if there are enough outputs
+                and not config.batch_invariant
+            ):
                 return 1
             # based on sum(x[N]) on GB200, split reduction provides higher performance when N >= 1M
             # TODO: test more hardwares
@@ -504,9 +487,13 @@ class InductorChoices:
             )
             if reduction_numel_hint <= no_split_threshold:
                 return 1
-            if reduction_numel_hint * numel_hint <= min_elements_per_device:
+            if (
+                reduction_numel_hint * numel_hint <= min_elements_per_device
+            ) and not config.batch_invariant:
                 split_size = min_elements_per_thread
-            elif reduction_numel_hint * numel_hint < max_elements_per_device:
+            elif (
+                reduction_numel_hint * numel_hint < max_elements_per_device
+            ) and not config.batch_invariant:
                 target_blocks = num_sm * threads_per_sm // (2 * num_threads)
                 blocks_per_output = (target_blocks + numel_hint - 1) // numel_hint
                 tmp_split_size = (
@@ -536,9 +523,15 @@ class InductorChoices:
             rvals_per_thread = 4  # comes from heuristics, refactor to not leak here
             xvals_per_block = 128
             xblocks = (numel_hint + xvals_per_block - 1) // xvals_per_block
-            if reduction_numel_hint * numel_hint < min_elements_per_device:
+            if (
+                reduction_numel_hint * numel_hint < min_elements_per_device
+                and not config.batch_invariant
+            ):
                 split_size = min_elements_per_thread
-            elif reduction_numel_hint * numel_hint < max_elements_per_device:
+            elif (
+                reduction_numel_hint * numel_hint < max_elements_per_device
+                and not config.batch_invariant
+            ):
                 target_blocks = num_sm * threads_per_sm // (num_threads)
                 target_blocks = (target_blocks + xblocks - 1) // xblocks
                 tmp_split_size = (

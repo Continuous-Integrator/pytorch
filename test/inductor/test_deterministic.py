@@ -185,6 +185,39 @@ class DeterministicTest(TestCase):
             )
             self.assertNotEqual(n_full, n_half)
 
+    @parametrize("inner_reduction", [True, False])
+    @unittest.skipIf(not HAS_GPU_AND_TRITON, "requires GPU + Triton")
+    def test_reduction_split_factor_batch_invariant(self, inner_reduction):
+        # Under batch_invariant, K must depend only on reduction_numel_hint
+        # so per-sample partial sums stay bitwise-stable across batch sizes.
+        # Covers both inner and outer branches directly; the end-to-end test
+        # above only exercises inner (its reduction dim has stride 1).
+        from torch._inductor.choices import InductorChoices
+
+        device = torch.device(GPU_TYPE, 0)
+        R = 1 << 20  # 1M — large enough to split
+        numels = (1, 8, 64, 512)
+
+        def splits(bi):
+            with inductor_config.patch(batch_invariant=bi):
+                return [
+                    InductorChoices.reduction_split_factor(
+                        device, R, N, inner_reduction=inner_reduction
+                    )
+                    for N in numels
+                ]
+
+        bi = splits(True)
+        self.assertEqual(len(set(bi)), 1, f"BI split varies with numel_hint: {bi}")
+        self.assertGreater(bi[0], 1, "BI should still split a 1M reduction")
+
+        # Guard against the test trivially passing if the non-BI path
+        # were ever made invariant too.
+        non_bi = splits(False)
+        self.assertGreater(
+            len(set(non_bi)), 1, f"non-BI no longer varies with numel_hint: {non_bi}"
+        )
+
     def test_reorder_for_locality_preserves_randint_order(self):
         with inductor_config.patch(fallback_random=True):
 
