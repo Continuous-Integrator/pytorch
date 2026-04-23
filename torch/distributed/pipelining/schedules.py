@@ -284,7 +284,9 @@ class _PipelineSchedule(ABC):
         self._internal_losses: list[torch.Tensor] = []
         logger.info("Using %s", self.__class__.__name__)
 
-    def _maybe_compute_loss(self, stage, output, target_mbs, mb_index, loss_kwargs=None):
+    def _maybe_compute_loss(
+        self, stage, output, target_mbs, mb_index, loss_kwargs=None
+    ):
         if stage.is_last and self._loss_fn is not None:
             loss = self._compute_loss(output, target_mbs[mb_index], loss_kwargs)  # type: ignore[index]
             self._internal_losses.append(loss)
@@ -732,8 +734,7 @@ class PipelineScheduleSingle(_PipelineSchedule):
         target: target for the loss function.
         losses: a list to store the losses for each microbatch.
         return_outputs: whether to return the outputs from the last stage.
-        loss_kwargs: extra keyword arguments forwarded to the loss function
-            (e.g. ``global_valid_tokens`` for chunked cross-entropy loss).
+        loss_kwargs: extra keyword arguments forwarded to the loss function.
         """
         if self._has_backward and not torch.is_grad_enabled():
             raise RuntimeError(
@@ -759,7 +760,11 @@ class PipelineScheduleSingle(_PipelineSchedule):
 
         # Run microbatches
         self._step_microbatches(
-            args_split, kwargs_split, targets_split, losses, return_outputs,
+            args_split,
+            kwargs_split,
+            targets_split,
+            losses,
+            return_outputs,
             loss_kwargs=loss_kwargs,
         )
 
@@ -801,6 +806,7 @@ class _ScheduleForwardOnly(PipelineScheduleSingle):
         target_mbs: list | None = None,
         losses: list | None = None,
         return_outputs: bool = True,
+        loss_kwargs: dict[str, Any] | None = None,
     ):
         """
         Run one iteration of the pipeline schedule
@@ -865,7 +871,9 @@ class ScheduleGPipe(PipelineScheduleSingle):
         """
         arg_mbs, kwarg_mbs = self._check_inputs(arg_mbs, kwarg_mbs, target_mbs, losses)
         maybe_first_target = target_mbs[0] if target_mbs is not None else None
-        self._initialize_stage(arg_mbs[0], kwarg_mbs[0], maybe_first_target, loss_kwargs)
+        self._initialize_stage(
+            arg_mbs[0], kwarg_mbs[0], maybe_first_target, loss_kwargs
+        )
 
         # Delay send waits
         fwd_sends_to_wait: list[list[dist.Work]] = []
@@ -1012,7 +1020,9 @@ or equal to the number of stages ({self._num_stages})."
         """
         arg_mbs, kwarg_mbs = self._check_inputs(arg_mbs, kwarg_mbs, target_mbs, losses)
         maybe_first_target = target_mbs[0] if target_mbs is not None else None
-        self._initialize_stage(arg_mbs[0], kwarg_mbs[0], maybe_first_target, loss_kwargs)
+        self._initialize_stage(
+            arg_mbs[0], kwarg_mbs[0], maybe_first_target, loss_kwargs
+        )
 
         # Last stage has 1 warmup, second-to-last 2 warmups, ...
         # first stage `num_stages` warmups
@@ -1056,7 +1066,9 @@ or equal to the number of stages ({self._num_stages})."
             #   The last forward send is left for fuse with first 1B in 1B1F below
 
             # Compute loss
-            self._maybe_compute_loss(self._stage, output, target_mbs, fwd_mb_index, loss_kwargs)
+            self._maybe_compute_loss(
+                self._stage, output, target_mbs, fwd_mb_index, loss_kwargs
+            )
             fwd_mb_index += 1
 
         # Now we should have send ops left over, to be fused with first 1B of 1B1F phase below.
@@ -1100,7 +1112,9 @@ or equal to the number of stages ({self._num_stages})."
             )  # type: ignore[index]
 
             # Compute loss
-            self._maybe_compute_loss(self._stage, output, target_mbs, fwd_mb_index, loss_kwargs)
+            self._maybe_compute_loss(
+                self._stage, output, target_mbs, fwd_mb_index, loss_kwargs
+            )
 
             # Get the fwd send ops, but don't fire, leave it for the next iter (wrap-around)
             fwd_sends = self._stage.get_fwd_send_ops(fwd_mb_index)
@@ -1751,8 +1765,7 @@ class PipelineScheduleMulti(_PipelineSchedule):
         target: target for the loss function.
         losses: a list to store the losses for each microbatch.
         return_outputs: whether to return the outputs from the last stage.
-        loss_kwargs: extra keyword arguments forwarded to the loss function
-            (e.g. ``global_valid_tokens`` for chunked cross-entropy loss).
+        loss_kwargs: extra keyword arguments forwarded to the loss function.
         """
         if (
             self._has_backward
@@ -1784,7 +1797,11 @@ class PipelineScheduleMulti(_PipelineSchedule):
 
         # Run microbatches
         self._step_microbatches(
-            args_split, kwargs_split, targets_split, losses, return_outputs,
+            args_split,
+            kwargs_split,
+            targets_split,
+            losses,
+            return_outputs,
             loss_kwargs=loss_kwargs,
         )
 
@@ -1812,7 +1829,9 @@ class PipelineScheduleMulti(_PipelineSchedule):
         """
         arg_mbs, kwarg_mbs = self._check_inputs(arg_mbs, kwarg_mbs, target_mbs, losses)
         maybe_first_target = target_mbs[0] if target_mbs is not None else None
-        self._initialize_stages(arg_mbs[0], kwarg_mbs[0], maybe_first_target, loss_kwargs)
+        self._initialize_stages(
+            arg_mbs[0], kwarg_mbs[0], maybe_first_target, loss_kwargs
+        )
 
         # Based on the plan in Step 1 created in __init__:
         # 2. Perform communication based on the pipeline_order
@@ -1852,7 +1871,9 @@ class PipelineScheduleMulti(_PipelineSchedule):
                             kwarg_mbs[mb_index],
                             save_forward_output=return_outputs,
                         )
-                        self._maybe_compute_loss(stage, output, target_mbs, mb_index, loss_kwargs)
+                        self._maybe_compute_loss(
+                            stage, output, target_mbs, mb_index, loss_kwargs
+                        )
                         ops.extend(stage.get_fwd_send_ops(mb_index))
                     elif computation_type == _ComputationType.FULL_BACKWARD:
                         # perform backward computation
@@ -2199,7 +2220,9 @@ class _PipelineScheduleRuntime(PipelineScheduleMulti):
         """
         arg_mbs, kwarg_mbs = self._check_inputs(arg_mbs, kwarg_mbs, target_mbs, losses)
         maybe_first_target = target_mbs[0] if target_mbs is not None else None
-        self._initialize_stages(arg_mbs[0], kwarg_mbs[0], maybe_first_target, loss_kwargs)
+        self._initialize_stages(
+            arg_mbs[0], kwarg_mbs[0], maybe_first_target, loss_kwargs
+        )
 
         # Based on the plan in Step 1 created in __init__:
         # 2. Perform communication based on the pipeline_order
@@ -2309,7 +2332,9 @@ class _PipelineScheduleRuntime(PipelineScheduleMulti):
                     kwarg_mbs[mb_index],  # type: ignore[index]
                     save_forward_output=return_outputs,
                 )
-                self._maybe_compute_loss(stage, output, target_mbs, mb_index, loss_kwargs)
+                self._maybe_compute_loss(
+                    stage, output, target_mbs, mb_index, loss_kwargs
+                )
 
                 # SEND/RECV op are avoided for special case with 2 adjacent stages on same rank
                 # see [Note: V-schedule special case]

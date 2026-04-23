@@ -315,6 +315,7 @@ class _PipelineStageBase(ABC):
         loss_fn: Callable[..., torch.Tensor] | None = None,
         target: torch.Tensor | None = None,
         received_grad_meta: _StageBackwardMeta | None = None,
+        loss_kwargs: dict[str, Any] | None = None,
     ) -> _StageBackwardMeta | None:
         raise NotImplementedError
 
@@ -1273,6 +1274,7 @@ class _PipelineStage(_PipelineStageBase):
         loss_fn: Callable[..., torch.Tensor] | None = None,
         target: torch.Tensor | None = None,
         received_grad_meta: _StageBackwardMeta | None = None,
+        loss_kwargs: dict[str, Any] | None = None,
     ) -> _StageBackwardMeta | None:
         """
         Prepare backward infrastructure for traced pipeline.
