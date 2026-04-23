@@ -996,6 +996,7 @@ class FunctionalizedRngRuntimeWrapper(InductorWrapper):
                 return out
             return compiled_fn(runtime_args)
 
+        wrapper._boxed_call = True  # type: ignore[attr-defined]
         return wrapper
 
     # Calling convention: If we are running functionalized RNG, then outs consists
