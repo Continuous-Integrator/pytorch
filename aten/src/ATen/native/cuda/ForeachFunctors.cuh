@@ -19,10 +19,10 @@ inline void increment_version(TensorList tensors) {
 }
 
 // Initializes args and checks if all args are aligned
-template <int depth, typename T, bool IS_VOLTA_OR_HIGHER>
+template <int depth, typename T>
 __device__ bool init_args(
     T** args,
-    TensorListMetadata<depth, IS_VOLTA_OR_HIGHER>& tl,
+    TensorListMetadata<depth>& tl,
     const int64_t chunk_idx,
     const int64_t chunk_size,
     const int64_t tensor_loc) {
@@ -39,10 +39,10 @@ __device__ bool init_args(
 }
 
 // Initializes args and checks if all args are aligned
-template <int depth, typename T, typename T2, bool IS_VOLTA_OR_HIGHER>
+template <int depth, typename T, typename T2>
 __device__ bool init_args(
     T** args,
-    TensorListScalarListMetadata<T2, depth, IS_VOLTA_OR_HIGHER>& tl,
+    TensorListScalarListMetadata<T2, depth>& tl,
     const int64_t chunk_idx,
     const int64_t chunk_size,
     const int64_t tensor_loc) {
@@ -58,10 +58,10 @@ __device__ bool init_args(
   return all_aligned;
 }
 
-template <int depth, typename T, bool IS_VOLTA_OR_HIGHER>
+template <int depth, typename T>
 __device__ bool init_args(
     T** args,
-    FusedOptimizerTensorListMetadata<depth, IS_VOLTA_OR_HIGHER>& tl,
+    FusedOptimizerTensorListMetadata<depth>& tl,
     const int64_t chunk_idx,
     const int64_t chunk_size,
     const int64_t tensor_loc) {
@@ -74,6 +74,34 @@ __device__ bool init_args(
       all_aligned = false;
     }
   }
+  return all_aligned;
+}
+
+template <
+    int depth,
+    typename param_type,
+    typename grad_type,
+    typename exp_avg_type,
+    typename exp_avg_sq_type>
+__device__ bool init_args_mixed_prec(
+    param_type** param_args,
+    grad_type** grad_args,
+    exp_avg_type** exp_avg_args,
+    exp_avg_sq_type** exp_avg_sq_args,
+    FusedOptimizerTensorListMetadata<depth>& tl,
+    const int64_t chunk_idx,
+    const int64_t chunk_size,
+    const int64_t tensor_loc) {
+  *param_args =
+      (param_type*)tl.addresses[0][tensor_loc] + chunk_idx * chunk_size;
+  *grad_args = (grad_type*)tl.addresses[1][tensor_loc] + chunk_idx * chunk_size;
+  *exp_avg_args =
+      (exp_avg_type*)tl.addresses[2][tensor_loc] + chunk_idx * chunk_size;
+  *exp_avg_sq_args =
+      (exp_avg_sq_type*)tl.addresses[3][tensor_loc] + chunk_idx * chunk_size;
+
+  bool all_aligned = is_aligned(*param_args) && is_aligned(*grad_args) &&
+      is_aligned(*exp_avg_args) && is_aligned(*exp_avg_sq_args);
   return all_aligned;
 }
 
@@ -96,6 +124,43 @@ __device__ void load_args(
   }
 }
 
+template <
+    typename T,
+    typename param_type,
+    typename grad_type,
+    typename exp_avg_type,
+    typename exp_avg_sq_type>
+__device__ void load_args(
+    T r_args[][kILP],
+    const param_type* param_args,
+    const grad_type* grad_args,
+    const exp_avg_type* exp_avg_args,
+    const exp_avg_sq_type* exp_avg_sq_args,
+    const int64_t i_start,
+    const int64_t chunk_size,
+    const int64_t n) {
+#pragma unroll
+  for (int ii = 0; ii < kILP; ii++) {
+    const auto i = i_start + threadIdx.x + ii * blockDim.x;
+    r_args[0][ii] = 0;
+    if (i < n && i < chunk_size) {
+      r_args[0][ii] = static_cast<T>(param_args[i]);
+    }
+    r_args[1][ii] = 0;
+    if (i < n && i < chunk_size) {
+      r_args[1][ii] = static_cast<T>(grad_args[i]);
+    }
+    r_args[2][ii] = 0;
+    if (i < n && i < chunk_size) {
+      r_args[2][ii] = static_cast<T>(exp_avg_args[i]);
+    }
+    r_args[3][ii] = 0;
+    if (i < n && i < chunk_size) {
+      r_args[3][ii] = static_cast<T>(exp_avg_sq_args[i]);
+    }
+  }
+}
+
 template <typename T>
 __device__ void store_args(
     T* dst,
@@ -108,6 +173,21 @@ __device__ void store_args(
     const int64_t i = i_start + threadIdx.x + ii * blockDim.x;
     if (i < n && i < chunk_size)
       dst[i] = src[ii];
+  }
+}
+
+template <typename dT, typename sT>
+__device__ void store_args(
+    dT* dst,
+    sT* src,
+    const int64_t i_start,
+    const int64_t chunk_size,
+    const int64_t n) {
+#pragma unroll
+  for (int ii = 0; ii < kILP; ii++) {
+    const int64_t i = i_start + threadIdx.x + ii * blockDim.x;
+    if (i < n && i < chunk_size)
+      dst[i] = static_cast<dT>(src[ii]);
   }
 }
 
@@ -201,10 +281,10 @@ __device__ __forceinline__ void pointwise_op_scalar(
 template <typename T, int depth, int r_args_depth, int res_arg_index>
 struct BinaryOpScalarFunctor {
   using opmath_t = at::opmath_type<T>;
-  template <typename Op, bool IS_VOLTA_OR_HIGHER>
+  template <typename Op>
   __device__ __forceinline__ void operator()(
       int64_t chunk_size,
-      TensorListMetadata<depth, IS_VOLTA_OR_HIGHER>& tl,
+      TensorListMetadata<depth>& tl,
       Op op,
       opmath_t scalar) {
     const int tensor_loc = tl.block_to_tensor[blockIdx.x];
@@ -225,10 +305,10 @@ struct BinaryOpScalarFunctor {
 template <typename T, int depth, int r_args_depth, int res_arg_index>
 struct BinaryOpScalarListFunctor {
   using opmath_t = at::opmath_type<T>;
-  template <typename Op, bool IS_VOLTA_OR_HIGHER>
+  template <typename Op>
   __device__ __forceinline__ void operator()(
       int64_t chunk_size,
-      TensorListScalarListMetadata<opmath_t, depth, IS_VOLTA_OR_HIGHER>& tl,
+      TensorListScalarListMetadata<opmath_t, depth>& tl,
       Op op) {
     const auto tensor_loc = tl.block_to_tensor[blockIdx.x];
     const auto chunk_idx = tl.block_to_chunk[blockIdx.x];
@@ -249,10 +329,10 @@ struct BinaryOpScalarListFunctor {
 template <typename T, int depth, int r_args_depth, int res_arg_index>
 struct BinaryOpListAlphaFunctor {
   using opmath_t = at::opmath_type<T>;
-  template <typename Op, bool IS_VOLTA_OR_HIGHER>
+  template <typename Op>
   __device__ __forceinline__ void operator()(
       int64_t chunk_size,
-      TensorListMetadata<depth, IS_VOLTA_OR_HIGHER>& tl,
+      TensorListMetadata<depth>& tl,
       Op op,
       opmath_t alpha) {
     const auto tensor_loc = tl.block_to_tensor[blockIdx.x];
@@ -301,10 +381,10 @@ struct BinaryOpListAlphaFunctor {
 template <typename T, int depth, int r_args_depth, int res_arg_index>
 struct BinaryOpScalarTensorFunctor {
   using opmath_t = at::opmath_type<T>;
-  template <typename Op, bool IS_VOLTA_OR_HIGHER>
+  template <typename Op>
   __device__ __forceinline__ void operator()(
       int64_t chunk_size,
-      TensorListMetadata<depth, IS_VOLTA_OR_HIGHER>& tl,
+      TensorListMetadata<depth>& tl,
       Op op,
       T* scalar,
       opmath_t alpha) {
@@ -358,10 +438,9 @@ struct BinaryOpScalarTensorFunctor {
 
 template <typename T, int depth, int r_args_depth, int res_arg_index>
 struct ZeroFunctor {
-  template <bool IS_VOLTA_OR_HIGHER>
   __device__ __forceinline__ void operator()(
       int64_t chunk_size,
-      TensorListMetadata<1, IS_VOLTA_OR_HIGHER>& tl) {
+      TensorListMetadata<1>& tl) {
     const auto tensor_loc = tl.block_to_tensor[blockIdx.x];
     const auto chunk_idx = tl.block_to_chunk[blockIdx.x];
     auto n = tl.numel_for_tensor[tensor_loc];
@@ -400,10 +479,10 @@ struct ZeroFunctor {
 template <typename T, int depth, int r_args_depth, int res_arg_index>
 struct UnaryOpFunctor {
   using opmath_t = at::opmath_type<T>;
-  template <typename Op, bool IS_VOLTA_OR_HIGHER>
+  template <typename Op>
   __device__ __forceinline__ void operator()(
       int64_t chunk_size,
-      TensorListMetadata<depth, IS_VOLTA_OR_HIGHER>& tl,
+      TensorListMetadata<depth>& tl,
       Op op) {
     const auto tensor_loc = tl.block_to_tensor[blockIdx.x];
     const auto chunk_idx = tl.block_to_chunk[blockIdx.x];
@@ -452,10 +531,10 @@ struct UnaryOpFunctor {
 template <typename T, int depth, int r_args_depth, int res_arg_index>
 struct PointwiseOpScalarFunctor {
   using opmath_t = at::opmath_type<T>;
-  template <typename Op, bool IS_VOLTA_OR_HIGHER>
+  template <typename Op>
   __device__ __forceinline__ void operator()(
       int64_t chunk_size,
-      TensorListMetadata<depth, IS_VOLTA_OR_HIGHER>& tl,
+      TensorListMetadata<depth>& tl,
       Op op,
       opmath_t scalar) {
     const auto tensor_loc = tl.block_to_tensor[blockIdx.x];
@@ -476,10 +555,10 @@ struct PointwiseOpScalarFunctor {
 template <typename T, int depth, int r_args_depth, int res_arg_index>
 struct PointwiseOpScalarListFunctor {
   using opmath_t = at::opmath_type<T>;
-  template <typename Op, bool IS_VOLTA_OR_HIGHER>
+  template <typename Op>
   __device__ __forceinline__ void operator()(
       int64_t chunk_size,
-      TensorListScalarListMetadata<opmath_t, depth, IS_VOLTA_OR_HIGHER>& tl,
+      TensorListScalarListMetadata<opmath_t, depth>& tl,
       Op op) {
     const auto tensor_loc = tl.block_to_tensor[blockIdx.x];
     const auto chunk_idx = tl.block_to_chunk[blockIdx.x];
@@ -506,10 +585,10 @@ struct PointwiseOpScalarListFunctor {
 template <typename T, int depth, int r_args_depth, int res_arg_index>
 struct PointwiseOpScalar0dTensorFunctor {
   using opmath_t = at::opmath_type<T>;
-  template <typename Op, bool IS_VOLTA_OR_HIGHER>
+  template <typename Op>
   __device__ __forceinline__ void operator()(
       int64_t chunk_size,
-      TensorListMetadata<depth, IS_VOLTA_OR_HIGHER>& tl,
+      TensorListMetadata<depth>& tl,
       Op op,
       opmath_t alpha) {
     const auto tensor_loc = tl.block_to_tensor[blockIdx.x];
@@ -577,10 +656,10 @@ struct PointwiseOpScalar0dTensorFunctor {
 template <typename T, int depth>
 struct PointwiseOpListFunctor {
   using opmath_t = at::opmath_type<T>;
-  template <typename Op, bool IS_VOLTA_OR_HIGHER>
+  template <typename Op>
   __device__ __forceinline__ void operator()(
       int64_t chunk_size,
-      TensorListMetadata<depth, IS_VOLTA_OR_HIGHER>& tl,
+      TensorListMetadata<depth>& tl,
       Op op) {
     const auto tensor_loc = tl.block_to_tensor[blockIdx.x];
     const auto chunk_idx = tl.block_to_chunk[blockIdx.x];
@@ -628,10 +707,10 @@ struct PointwiseOpListFunctor {
 template <typename T, int depth, int r_args_depth, int res_arg_index>
 struct TernaryOpListFunctor {
   using opmath_t = at::opmath_type<T>;
-  template <typename Op, bool IS_VOLTA_OR_HIGHER>
+  template <typename Op>
   __device__ __forceinline__ void operator()(
       int64_t chunk_size,
-      TensorListMetadata<depth, IS_VOLTA_OR_HIGHER>& tl,
+      TensorListMetadata<depth>& tl,
       Op op) {
     static_assert(depth == 3 || depth == 4, "");
     static_assert(depth >= r_args_depth, "");
@@ -682,10 +761,10 @@ struct TernaryOpListFunctor {
 template <typename T, int depth, int r_args_depth, int res_arg_index>
 struct TernaryOpScalarFunctor {
   using opmath_t = at::opmath_type<T>;
-  template <typename Op, bool IS_VOLTA_OR_HIGHER>
+  template <typename Op>
   __device__ __forceinline__ void operator()(
       int64_t chunk_size,
-      TensorListMetadata<depth, IS_VOLTA_OR_HIGHER>& tl,
+      TensorListMetadata<depth>& tl,
       Op op,
       opmath_t alpha) {
     static_assert(depth == 2 || depth == 3, "");
@@ -739,10 +818,10 @@ struct TernaryOpScalarFunctor {
 template <typename T, int depth, int r_args_depth, int res_arg_index>
 struct TernaryOpScalarListFunctor {
   using opmath_t = at::opmath_type<T>;
-  template <typename Op, bool IS_VOLTA_OR_HIGHER>
+  template <typename Op>
   __device__ __forceinline__ void operator()(
       int64_t chunk_size,
-      TensorListScalarListMetadata<opmath_t, depth, IS_VOLTA_OR_HIGHER>& tl,
+      TensorListScalarListMetadata<opmath_t, depth>& tl,
       Op op) {
     static_assert(depth == 2 || depth == 3, "");
     static_assert(depth >= r_args_depth, "");
