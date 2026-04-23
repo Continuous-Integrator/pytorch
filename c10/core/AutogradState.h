@@ -43,10 +43,6 @@ struct C10_API AutogradState {
     view_replay_enabled_ = view_replay_enabled;
   }
 
-  void set_grad_layout_enforcement_enabled(bool enabled) {
-    grad_layout_enforcement_enabled_ = enabled;
-  }
-
   void set_graph_exec_group(std::optional<SafePyObject> group) {
     graph_exec_group_ = std::move(group);
   }
@@ -71,10 +67,6 @@ struct C10_API AutogradState {
     return view_replay_enabled_;
   }
 
-  bool get_grad_layout_enforcement_enabled() const {
-    return grad_layout_enforcement_enabled_;
-  }
-
   const std::optional<SafePyObject>& get_graph_exec_group() const {
     return graph_exec_group_;
   }
@@ -86,7 +78,6 @@ struct C10_API AutogradState {
   bool fw_grad_mode_ : 1;
   bool multithreading_enabled_ : 1;
   bool view_replay_enabled_ : 1 = false;
-  bool grad_layout_enforcement_enabled_ : 1 = true;
 };
 
 } // namespace c10
