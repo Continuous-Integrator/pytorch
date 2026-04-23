@@ -376,11 +376,6 @@ class FakeTensorUpdater:
         def should_process_node(node: torch.fx.Node) -> bool:
             return (
                 callable(node.target)
-                # control_deps doesn't have an impl for DispatchKey.AutogradCUDA, which
-                # causes a test failure in
-                # TestComputeCommReorderingBucketing::test_bucketing_split_for_overlap_blocking_deps_inductor.
-                # TODO: remove this when resolving https://github.com/pytorch/pytorch/issues/165786
-                and node.target is not control_deps
                 # node.target will called with FakeTensor arguments, which are not
                 # supported by Inductor lowerings. TODO: Investigate how to remove
                 # this. See https://github.com/pytorch/pytorch/issues/164920
