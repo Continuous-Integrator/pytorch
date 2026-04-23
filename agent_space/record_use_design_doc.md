@@ -1,6 +1,6 @@
 # `Tensor.record_use`: FSDP2-style precise cross-stream lifetime in the caching allocator
 
-Prototype: https://github.com/pytorch/pytorch/pull/181189 (note: the current prototype implements an earlier event-polling variant; the design here switches to the FIFO-chain mechanism described below — the PR needs to be updated to match).
+Prototype: https://github.com/pytorch/pytorch/pull/181189
 
 ## Purpose
 
@@ -46,21 +46,19 @@ What's missing is an allocator-visible version of the FIFO-chain pattern — one
 
 ## Proposal: `Tensor.record_use(stream)`
 
-Same scene as above, rewritten with `record_use`:
+Same scene as above, rewritten with `record_use`. Only the per-iteration user code is shown — there is no user code at iter N+1 to include, because the cross-iteration `wait_event` is no longer the caller's responsibility:
 
 ```python
 # Iteration N, on the comm stream:
 with torch.cuda.stream(comm_stream):
     y = consumer_kernel(buf)
-    buf.record_use(comm_stream)          # ← allocator stores this event on
-                                          #   buf's block; will issue
-                                          #   cudaStreamWaitEvent on the
-                                          #   next stream that reuses the
-                                          #   block, at allocation time
-del buf                                  # any stream, any thread, any time
+    buf.record_use(comm_stream)     # record event on comm_stream, attach
+                                     # to buf's allocation block
+del buf                              # block returns to pool immediately,
+                                     # carrying the attached event
 ```
 
-The stash, the cross-iteration `wait_event`, and the `with torch.cuda.stream(X):` drop wrapper all go away — the allocator holds the event directly on the block and issues the wait itself at the point of reuse.
+The wait is paid by the allocator the next time someone allocates and the pool hands back this block: `cudaStreamWaitEvent(requesting_stream, event)` is issued inside the allocator, before the block is returned to the caller. The stash in `comm_ctx.state`, the explicit `comm_stream.wait_event(prev.event)` at the top of the next iteration, and the `with torch.cuda.stream(X):` drop wrapper all go away.
 
 ### Precise semantics
 
@@ -95,11 +93,12 @@ The key row is **timing determinism**. `record_stream`'s "wait until `process_ev
 
 Scoped to the native CUDA caching allocator + a default fallback at the `DeviceAllocator` base so non-CUDA backends stay correct with zero code.
 
-- New `Block::pending_waits` field: list of `(EventPool::Event, cuda::CUDAStream)` pairs representing events that any reusing stream must `cudaStreamWaitEvent` on before using this block's memory. Populated by `recordUse()`, cleared on first reuse.
-- New `DeviceCachingAllocator::recordUse(block, stream)`: records `cudaEventRecord` eagerly on `stream`, appends the event to `block->pending_waits`. Same-stream calls are no-ops.
-- **Allocation path**: after a block is selected from the pool and before it is returned, issue `cudaStreamWaitEvent(requesting_stream, event)` for each event in `block->pending_waits`, then clear the list. After this point the physical memory is ordered-after those events on the requesting stream's FIFO; any later reuse is safe by transitivity.
-- **Free path is unchanged.** Unlike the original event-polling proposal, `pending_waits` does not gate when the block returns to the pool. Blocks return to the pool immediately on free (subject to the existing `stream_uses` path for `record_stream` callers), and the wait is paid at the next allocation.
-- **No interaction with `cuda_events` / `process_events()`.** This proposal does not extend the polling path.
+- **`Block::pending_waits`**: list of `(EventPool::Event, cuda::CUDAStream)` pairs attached by `recordUse()`. Travels with the block through `free()` into the pool and is consumed at the next allocation that picks up the block.
+- **`DeviceCachingAllocator::recordUse(block, stream)`**: records `cudaEventRecord` eagerly on `stream` and appends to `block->pending_waits`. Same-stream calls are no-ops. Under CUDA graph capture: skip with `TORCH_WARN_ONCE`. Cross-device (stream on a different device than the block's alloc device): skip with `TORCH_WARN_ONCE`.
+- **Allocation path** (`alloc_found_block`): after a block is selected and any split has happened, if the block (or, in the split case, the remaining pool block) has attached waits, issue `cudaStreamWaitEvent(requesting_stream, event)` for each. In the non-split case clear the list; in the split case leave `remaining->pending_waits` in place so that future allocations that take further chunks of the same physical memory also issue the wait.
+- **Merge path** (`try_merge_blocks`): when `src` is merged into `dst`, move `src->pending_waits` entries onto `dst->pending_waits` before `delete src`, so the union of physical ranges carries the union of waits.
+- **Free path is unchanged.** `pending_waits` does not gate when the block enters the pool; blocks return to the pool immediately on free (subject to the existing `stream_uses` path for `record_stream` callers).
+- **No interaction with `cuda_events` / `process_events()`.** This design does not extend the polling path.
 - `CUDAAllocator::recordUse` / `DeviceAllocator::recordUse` default to `recordStream`. `CUDAMallocAsyncAllocator`, `CUDAPluggableAllocator`, XPU stay correct with zero code (losing precision — acceptable as an opt-in improvement).
 - ATen: one new `record_use` entry in `native_functions.yaml` + one-liner `RecordUse.cu`, mirroring `record_stream`.
 - Python: `_tensor_docs.py` docstring + `overrides.py` stub + `_dynamo/variables/{streams,tensor}.py` custom op + method tracer + nested-tensor dispatch. All mirror `record_stream`'s wiring.
@@ -108,23 +107,27 @@ Scoped to the native CUDA caching allocator + a default fallback at the `DeviceA
 
 At free time, the allocator doesn't know which stream will pick up the block, so it cannot issue the wait. Storing the event and paying the wait at alloc time defers the decision to the exact moment a requesting stream is known. This is the same dynamic the FSDP2 recipe exploits manually — the wait_event is placed in the next iteration's code path, which runs on the stream that will do the reuse.
 
-### Interaction with expandable segments / block splitting
+### Block splitting and merging
 
-On first reuse of any byte of the block, the wait is issued and `pending_waits` cleared. If the block is split, the sub-blocks share the (now-empty) `pending_waits` — once the physical memory is safe on one stream, it's safe period, because the event completing is a monotone condition. No per-sub-block bookkeeping needed.
+On split, the caller-returned chunk (a freshly-constructed `Block`) has an empty `pending_waits`; the `remaining` chunk (same `Block` object, shrunk in place, re-inserted into the pool) keeps the waits. The allocation path issues `cudaStreamWaitEvent` from `remaining->pending_waits` on the returning stream for the caller, but does not clear `remaining` — its waits still protect the tail physical range for any later allocation that takes more of it.
+
+On merge, waits on `src` are transferred to `dst`. The merged block represents the union of physical ranges, and the union of waits protects the whole range.
+
+This avoids shared ownership of events (`pending_waits` entries stay move-only `unique_ptr`-backed) while preserving the invariant that every allocation of any byte within a physical range observes its protecting waits.
 
 ## Risk and landability
 
 1. **BC is clean.** `record_stream` semantics, `Block::stream_uses`, `insert_events()`, `process_events()`: all untouched. Every existing caller sees identical behavior.
-2. **Timing determinism is the central property.** Memory is ordered by GPU stream dependencies, not by CPU-side polling. This is the production-required property that distinguishes this design from the earlier event-polling `record_use` variant.
+2. **Timing determinism is the central property.** Memory is ordered by GPU stream dependencies, not by CPU-side polling. This is the production-required property that distinguishes this design from any event-polling variant.
 3. **User-visible footgun.** `record_use` must be called after the consumer's last read or it's a UAF. Same hazard the hand-rolled recipe carries today; `record_use` inherits it, doesn't invent it.
-4. **Graph-capture path.** `cudaEventRecord` inside capture participates in graph dependencies, which may or may not be desired. Simple option for PR 1: fall back to no-op (warn) under capture, mirror FSDP2's capture story. Worth a separate RFC if precise capture semantics are needed.
+4. **Graph-capture path.** `cudaEventRecord` inside capture participates in graph dependencies, which may or may not be desired. Prototype: `recordUse` is a no-op under capture with `TORCH_WARN_ONCE`, mirroring FSDP2's own capture policy. Worth a separate RFC if precise-in-capture semantics are needed.
 5. **Non-CUDA backends.** `DeviceAllocator::recordUse` default delegates to `recordStream`, so XPU / MallocAsync / pluggable allocators compile and run unchanged. Precise implementations are clean mirrors of the CUDA path; deferred to follow-up PRs.
 6. **Allocator state footprint.** One extra vector per `Block`, empty on blocks that never record. No heap growth in steady state for `record_use`-free workloads.
 7. **Cost at allocation.** Each `record_use` call issues one `cudaEventRecord`; each reuse of a tagged block issues one `cudaStreamWaitEvent`. Both are O(1) GPU-side and cheap. The allocator is already on the critical allocation path, so adding a conditional wait_event is negligible.
 
 ## Alternatives (why not…)
 
-- **Event-polling `record_use` (the earlier revision of this doc).** Stashes events in `cuda_events`; reuse is gated by `process_events()` polling. Rejected because memory footprint becomes timing-dependent, which is the reason production code avoids `record_stream` in the first place.
+- **Event-polling variant (record event at call time, park on `cuda_events` queue, poll via `process_events()`).** Would make memory footprint depend on polling cadence — the exact property FSDP2 avoids by hand-rolling. Rejected.
 - **Make `record_stream` precise.** BC-breaking; and still leaves the event-polling mechanism in place.
 - **`keep_alive_until(event)` (caller supplies the event).** Forces boilerplate at the common call site; addable later as a companion.
 - **`record_stream(stream, precise=True)`.** Behavior-changing flag on a public API is hard to grep and hard to review.
@@ -133,9 +136,9 @@ On first reuse of any byte of the block, the wait is issued and `pending_waits` 
 
 ## Scope
 
-**PR 1:** native CUDA allocator implementation of the FIFO-chain mechanism above, `Tensor.record_use`, docs, dynamo custom op, tests that (a) verify precision vs `record_stream`, (b) verify **timing independence** (run under artificially slow/fast polling or multi-stream contention and observe no change in peak memory).
+**PR 1 (prototype, implemented):** native CUDA allocator with `Block::pending_waits`, `issue_pending_waits` at `alloc_found_block`, split/merge ownership handling; `Tensor.record_use` ATen binding + docs + dynamo custom op + nested-tensor dispatch; graph-capture and cross-device fallbacks; 5 unit tests covering immediate-reuse, same-stream no-op, multi-event accumulation, coexistence with `record_stream`, cross-stream reuse.
 
-**Follow-ups:** `CUDAMallocAsyncAllocator` native path; `c10/xpu` mirror; FSDP2 migration (collapse `StreamHandoff` to a one-liner, drop the subsystem-specific NamedTuples); capture-precise semantics (separate RFC).
+**Follow-ups:** `CUDAMallocAsyncAllocator` native path; `c10/xpu` mirror; FSDP2 migration (collapse `StreamHandoff` to a one-liner, drop the subsystem-specific NamedTuples); lifting the same-device restriction; capture-precise semantics (separate RFC).
 
 **Non-goals:** replacing `record_stream`; changing `stream_uses` semantics; runtime misuse detection; any code path that uses `cudaEventQuery` polling.
 
@@ -155,4 +158,11 @@ On first reuse of any byte of the block, the wait is issued and `pending_waits` 
 
 ## Appendix: prototype status
 
-The PR linked at the top implements an earlier event-polling variant of `record_use`, which is **superseded by this design**. A working prototype of the FIFO-chain mechanism above is not yet in the PR; the existing allocator changes need to be reworked to use `cudaStreamWaitEvent` at alloc-time rather than attaching to `cuda_events`. This is a smaller diff than the polling variant (no `consume_use_events`, no changes to `free()` or `process_events()`) and will replace the current prototype.
+Implemented in PR #181189. All 5 new `record_use` tests pass; 3 existing `record_stream` tests pass with no regression. Build clean on the native CUDA allocator path. Code surfaces:
+
+- `c10/core/CachingDeviceAllocator.h` — `DeviceAllocator::recordUse` virtual + default fallback to `recordStream`.
+- `c10/cuda/CUDACachingAllocator.{h,cpp}` — `Block::pending_waits`, `DeviceCachingAllocator::recordUse`, `issue_pending_waits`, `alloc_found_block` wiring, `try_merge_blocks` ownership transfer, `NativeCachingAllocator::recordUse` dispatcher.
+- `aten/src/ATen/native/native_functions.yaml` + `RecordUse.cu` — ATen entry and kernel.
+- `torch/_tensor_docs.py`, `torch/overrides.py`, `torch/_dynamo/variables/{streams,tensor}.py`, `torch/nested/_internal/ops.py` — Python surfaces.
+- `torchgen/native_function_generation.py`, `torchgen/gen_functionalization_type.py`, `tools/autograd/gen_variable_type.py` — codegen allow-list entries.
+- `test/test_cuda.py` — 5 new tests.
