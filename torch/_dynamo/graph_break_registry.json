@@ -1975,16 +1975,6 @@
       ]
     }
   ],
-  "GB2738": [
-    {
-      "Gb_type": "hasattr() with non-constant name argument",
-      "Context": "hasattr({obj}, {attr})",
-      "Explanation": "hasattr() with non-constant name argument is not supported",
-      "Hints": [
-        "Ensure the name argument of hasattr() is a string"
-      ]
-    }
-  ],
   "GB9522": [
     {
       "Gb_type": "hasattr() on unsupported type",

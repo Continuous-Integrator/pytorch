@@ -3336,12 +3336,7 @@ class HasAttrBuiltinVariable(BaseBuiltinVariable):
             raise_observed_exception(TypeError, tx)
         obj, attr = args
         if not attr.is_python_constant():
-            unimplemented(
-                gb_type="hasattr() with non-constant name argument",
-                context=f"hasattr({obj}, {attr})",
-                explanation="hasattr() with non-constant name argument is not supported",
-                hints=["Ensure the name argument of hasattr() is a string"],
-            )
+            raise_observed_exception(TypeError, tx)
         result = obj.call_obj_hasattr(tx, attr.as_python_constant())
         if result is None:
             unimplemented(
@@ -3417,7 +3412,7 @@ class SetAttrBuiltinVariable(BaseBuiltinVariable):
                 from .builder import wrap_fx_proxy
 
                 if name == "requires_grad":
-                    # TODO(voz): Make it work properly
+                    # TODO(azahed98): Make it work properly
                     unimplemented(
                         gb_type="setattr() on Tensor.requires_grad",
                         context=f"setattr({obj}, {name}, {val})",
@@ -3427,8 +3422,9 @@ class SetAttrBuiltinVariable(BaseBuiltinVariable):
                         hints=[*graph_break_hints.SUPPORTABLE],
                     )
                 elif name == "data":
-                    # See comments on `test_set_data_on_scoped_tensor` for plans
-                    # to support this.
+                    # [Note: set_data_on_scoped_tensor]
+                    # TODO(azahed98): The plan of record is to introduce a set_data op, entirely subsume the
+                    # operation into a call_function in the fx graph, and let aot_autograd handle it.
                     if obj.source is None:
                         unimplemented(
                             gb_type="Failed to mutate tensor data attribute",
