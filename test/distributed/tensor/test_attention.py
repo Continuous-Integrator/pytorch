@@ -1440,9 +1440,7 @@ class TestCPVarlenMetadata(TestCase):
         # [32..42), [42..48)) from the packed length-64 K view.
         meta = _build_varlen_meta([0, 10, 32], B=2, seq_len=32)
         per_rank = self._run(meta, cp_world_size=2, B=2, seq_len=32)
-        self.assertEqual(
-            self._seg_lens(per_rank[0]), ([10, 6, 10, 6], [10, 6, 10, 6])
-        )
+        self.assertEqual(self._seg_lens(per_rank[0]), ([10, 6, 10, 6], [10, 6, 10, 6]))
         self.assertEqual(self._seg_lens(per_rank[1]), ([16, 16], [22, 22]))
         expected_rank0_k = torch.tensor(
             list(range(10))
@@ -1472,9 +1470,7 @@ class TestCPVarlenMetadata(TestCase):
     def test_seq_len_divisibility(self) -> None:
         meta = _build_varlen_meta([0, 30], B=1, seq_len=30)
         with self.assertRaisesRegex(ValueError, "divisible"):
-            meta._shard_for_cp(
-                _MockMesh(4, 0), batch_size=1, seq_length=30
-            )
+            meta._shard_for_cp(_MockMesh(4, 0), batch_size=1, seq_length=30)
 
     def test_cross_attention_unsupported(self) -> None:
         # cu_seq_q != cu_seq_k must be rejected: only self-attention is
@@ -1486,9 +1482,7 @@ class TestCPVarlenMetadata(TestCase):
             max_k=20,
         )
         with self.assertRaisesRegex(ValueError, "self-attention"):
-            meta._shard_for_cp(
-                _MockMesh(2, 0), batch_size=1, seq_length=32
-            )
+            meta._shard_for_cp(_MockMesh(2, 0), batch_size=1, seq_length=32)
 
 
 def _synthetic_doc_lengths(seq_len: int, kind: str, seed: int = 0) -> list[int]:
@@ -1603,7 +1597,7 @@ class TestVarlenPTRRLoadBalancer(TestCase):
         )
 
     def test_multi_batch_different_doc_structures(self) -> None:
-        S, BS, W = 128, 32, 2
+        BS, W = 32, 2
         # batch 0: one doc of 128; batch 1: two docs of 64+64.
         cu = torch.tensor([0, 128, 192, 256], dtype=torch.int32)
         lb = _VarlenPTRRLoadBalancer(
@@ -1692,6 +1686,7 @@ class TestVarlenPTRRLoadBalancer(TestCase):
                 world_size=2,
                 block_size=32,
             )
+
 
 class CPVarlenAttentionTest(DTensorTestBase):
     """End-to-end correctness for varlen attention under CP.

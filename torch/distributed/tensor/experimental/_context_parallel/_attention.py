@@ -1304,8 +1304,7 @@ class VarlenMetadata:
 
         global_cu_seq_q = self.cu_seq_q.to(torch.long)
         doc_id = (
-            torch.searchsorted(global_cu_seq_q, packed_local_to_global, right=True)
-            - 1
+            torch.searchsorted(global_cu_seq_q, packed_local_to_global, right=True) - 1
         )
 
         # Segment break wherever doc id changes or packed-global positions
@@ -1348,21 +1347,16 @@ class VarlenMetadata:
 
         # Fuse max_q / max_k / total_k into a single D2H transfer.
         max_q, max_k, total_k = (
-            torch.stack([seqlen_q.max(), seqlen_k.max(), seqlen_k.sum()])
-            .cpu()
-            .tolist()
+            torch.stack([seqlen_q.max(), seqlen_k.max(), seqlen_k.sum()]).cpu().tolist()
         )
 
         # Flat gather index (length total_k) over original K coords; per
         # segment covers [doc_global_start, last_global], built via
         # repeat_interleave + arange offset.
         bases = torch.repeat_interleave(doc_global_start, seqlen_k)
-        seg_starts_repeated = torch.repeat_interleave(
-            cu_seq_k_long[:-1], seqlen_k
-        )
+        seg_starts_repeated = torch.repeat_interleave(cu_seq_k_long[:-1], seqlen_k)
         within_seg = (
-            torch.arange(total_k, device=device, dtype=torch.long)
-            - seg_starts_repeated
+            torch.arange(total_k, device=device, dtype=torch.long) - seg_starts_repeated
         )
         k_local_indices = bases + within_seg
 

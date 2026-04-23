@@ -506,8 +506,7 @@ class _VarlenPTRRLoadBalancer(_LoadBalancer):
             raise ValueError("cu_seq_q must be monotonically non-decreasing.")
         if seq_length % block_size != 0:
             raise ValueError(
-                f"seq_length {seq_length} must be divisible by "
-                f"block_size {block_size}."
+                f"seq_length {seq_length} must be divisible by block_size {block_size}."
             )
         num_blocks = seq_length // block_size
         if num_blocks % world_size != 0:
