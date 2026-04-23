@@ -2130,7 +2130,7 @@ class BuiltinVariable(BaseBuiltinVariable):
             )
 
         s = SetVariable([], mutation_type=ValueMutationNew())
-        s.call_method(tx, "update", args, kwargs)
+        s.call_method(tx, "update", [args[0]], kwargs)
         return s
 
     def call_frozenset(
@@ -3495,7 +3495,7 @@ class ListBuiltinVariable(BaseBuiltinVariable):
                     install_guard(obj.source.make_guard(GuardBuilder.SEQUENCE_LENGTH))
 
         lst = ListVariable([], mutation_type=ValueMutationNew())
-        lst.call_method(tx, "extend", args, kwargs)
+        lst.call_method(tx, "extend", [args[0]], kwargs)
         return lst
 
     def call_method(
