@@ -56,8 +56,11 @@ from torch._inductor.select_algorithm import (
 )
 from torch._inductor.template_heuristics.registry import override_template_heuristics
 from torch._inductor.template_heuristics.triton import (
+    BlackwellGPUGemmConfig,
     CUDAAddmmPersistentTMATemplateConfigHeuristic,
     CUDAAddMMTemplateConfigHeuristic,
+    CUDABlackwellAddmmPersistentTMATemplateConfigHeuristic,
+    CUDABlackwellPersistentTMATemplateConfigHeuristic,
     CUDAMMTemplateConfigHeuristic,
     CUDAPersistentTMATemplateConfigHeuristic,
     GemmConfig,
@@ -3288,17 +3291,34 @@ class TestTemplateConfigPruning(TestCase):
     def setUpClass(cls):
         super().setUpClass()
         # Initialize heuristics once for all tests
-        cls.addmm_tma_heuristic = CUDAAddmmPersistentTMATemplateConfigHeuristic()
         cls.addmm_heuristic = CUDAAddMMTemplateConfigHeuristic()
-        cls.mm_tma_heuristic = CUDAPersistentTMATemplateConfigHeuristic()
         cls.mm_heuristic = CUDAMMTemplateConfigHeuristic()
+
+        tma_addmm_heuristic_cls = CUDAAddmmPersistentTMATemplateConfigHeuristic
+        tma_mm_heuristic_cls = CUDAPersistentTMATemplateConfigHeuristic
+        if has_datacenter_blackwell_tma_device():
+            tma_addmm_heuristic_cls = (
+                CUDABlackwellAddmmPersistentTMATemplateConfigHeuristic
+            )
+            tma_mm_heuristic_cls = CUDABlackwellPersistentTMATemplateConfigHeuristic
+        cls.addmm_tma_heuristic = tma_addmm_heuristic_cls()
+        cls.mm_tma_heuristic = tma_mm_heuristic_cls()
 
         block_sizes = [64, 128, 256]
         num_stages = [4, 5]
         from itertools import product
 
+        gemm_config_cls = GemmConfig
+        gemm_config_kwargs = {}
+        if has_datacenter_blackwell_tma_device():
+            gemm_config_cls = BlackwellGPUGemmConfig
+            gemm_config_kwargs = {
+                "epilogue_subtile": 2,
+                "warp_specialize": True,
+                "flatten": True,
+            }
         cls.gemm_configs = [
-            GemmConfig(BLOCK_M, BLOCK_N, BLOCK_K, stage, 8)
+            gemm_config_cls(BLOCK_M, BLOCK_N, BLOCK_K, stage, 8, **gemm_config_kwargs)
             for BLOCK_M, BLOCK_N, BLOCK_K, stage in product(
                 block_sizes, block_sizes, block_sizes, num_stages
             )
