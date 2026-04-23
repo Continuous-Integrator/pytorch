@@ -562,13 +562,16 @@ class FSDPParamGroup:
         # This method should be idempotent and safe to call even when this
         # FSDP parameter group was not used in backward (should be a no-op)
         logger.debug("%s", self._with_fqn("FSDP::post_backward"))
-        # Chunked-loss grouped-FSDP path: when a standalone per-chunk head
-        # call triggers this post-backward, the entering state is FORWARD
-        # (the group's ``_modules_to_run`` post-hook did not run the full
-        # post_hook because not all modules in the group executed, so
-        # pre_backward was never registered or invoked). Normal backward
-        # fires with entering state == PRE_BACKWARD.
-        in_chunked_path = self._training_state == TrainingState.FORWARD
+        # Partial-group-forward detection: grouped ``fully_shard([a, b, ...])``
+        # where the forward ran only a subset of the group's modules (chunked
+        # loss, 1F1B, etc.). The wrapped post-hook took its partial path, so
+        # ``state._post_forward`` never ran and no ``_pre_backward`` hook was
+        # registered — ``pre_backward`` therefore never fired and state stays
+        # at FORWARD instead of transitioning IDLE → PRE_BACKWARD.
+        is_partial_group_backward = (
+            len(self.modules) > 1  # grouped (structural)
+            and self._training_state == TrainingState.FORWARD  # partial path taken
+        )
         self._training_state = TrainingState.POST_BACKWARD
         with record_function(self._with_fqn("FSDP::post_backward_accumulate")):
             for fsdp_param in self.fsdp_params:
@@ -668,20 +671,38 @@ class FSDPParamGroup:
             self.comm_ctx.reduce_scatter_states.append(
                 ReduceScatterState(reduce_scatter_input, reduce_scatter_event)
             )
-            if in_chunked_path:
-                # Chunked-loss grouped-FSDP: at post_backward exit, make the
-                # default stream wait on this chunk's post-accumulate event
-                # before returning to autograd. Without this, chunk N+1's
-                # autograd-backward kernels queue on the default stream
-                # concurrently with chunk N's accumulate on the RS stream.
-                # The caching allocator then hands an autograd kernel a
-                # block that is a live input/output of chunk N's accumulate,
-                # corrupting grads on non-zero ranks. A stream-level wait
-                # on the post-accumulate event is sufficient; a wait on the
-                # pre-accumulate reduce_scatter_event is NOT (verified on
-                # MI350X). The existing wait at the next post_backward's
-                # entry is too late because autograd runs between
-                # post_backwards. No CPU sync required.
+            if is_partial_group_backward:
+                # Serialize the default stream on this invocation's
+                # post-accumulate event before returning to autograd.
+                # Otherwise the next partial-group invocation's autograd
+                # kernels queue on the default stream concurrently with
+                # this one's accumulate on the RS stream; the caching
+                # allocator then hands an autograd kernel a block that is
+                # a live input/output of this accumulate, corrupting grads
+                # on non-zero ranks. The post-accumulate event is load-
+                # bearing (pre-accumulate reduce_scatter_event is NOT, per
+                # MI350X); waiting at the next post_backward's entry is
+                # too late because autograd runs between post_backwards.
+                # No CPU sync.
+                #
+                # TODO(#181218): open questions on scope.
+                #   1. Conditional vs unconditional. The same cross-stream
+                #      hazard exists structurally in regular FSDP but has
+                #      not been observed to fire, plausibly because
+                #      ``reduce_scatter_states.append(...)`` ref-holds
+                #      ``reduce_scatter_input`` and cross-layer allocator
+                #      pressure is looser than within a group. Dropping
+                #      the gate needs a real-model overlap-loss measurement.
+                #   2. ROCm-specific vs cross-platform. Only observed on
+                #      ROCm/RCCL/MI350X; CUDA FSDP passes without this fix.
+                #      The standalone repro shows the stream-ordering
+                #      hazard (vector 1) is cross-platform, but FSDP's
+                #      ref-hold closes it on both. The residual FSDP-side
+                #      race on ROCm (vector 2) is on a non-Python-reachable
+                #      buffer — RCCL workspace or allocator fragment.
+                #      Whether vector 2 exists on CUDA FSDP but is timing-
+                #      masked is unresolved. See
+                #      ``fsdp2_chunked_loss_rocm_race.md``.
                 self.device_handle.current_stream().wait_event(
                     self._post_reduce_event
                 )

@@ -70,7 +70,6 @@ def _chunk_pattern(
     high_priority_rs: bool,
     sync_mode: str,
     use_rccl: bool = True,
-    hold_refs: str = "off",
 ) -> int:
     if sync_mode not in SYNC_MODES:
         raise ValueError(f"sync_mode must be in {SYNC_MODES}, got {sync_mode!r}")
@@ -107,11 +106,6 @@ def _chunk_pattern(
 
         # Use a fresh "local_is_set" flag for chunk 0; subsequent chunks +=.
         local_is_set = False
-        # Mimics FSDP's ``reduce_scatter_states`` list: held across chunks,
-        # cleared at iter end. "input" = only rs_input (matches FSDP exactly);
-        # "both" = rs_input + rs_output (maximally conservative — if race
-        # still fires, no Python-reachable buffer is the vector).
-        held_refs: list[torch.Tensor] = []
 
         for chunk in range(n_chunks):
             # 1. alloc rs_input on default stream, fill with known values.
@@ -150,17 +144,7 @@ def _chunk_pattern(
                     "post_accum_event_cpu", "post_accum_event_stream"
                 ) else None
             # drop refs — rs_input & rs_output go to allocator free lists
-            # unless --hold-refs is set, which mimics FSDP's
-            # ``reduce_scatter_states`` ref-hold across chunks.
-            if hold_refs == "input":
-                held_refs.append(rs_input)
-                del rs_input, rs_output
-            elif hold_refs == "both":
-                held_refs.append(rs_input)
-                held_refs.append(rs_output)
-                del rs_input, rs_output
-            else:
-                del rs_input, rs_output
+            del rs_input, rs_output
 
             if do_ag:
                 with torch.cuda.stream(ag_stream):
@@ -192,11 +176,6 @@ def _chunk_pattern(
         torch.cuda.current_stream(device).wait_event(end_ev)
 
         torch.cuda.synchronize()
-        # release held refs only after the full iteration has drained, so the
-        # allocator cannot reuse those blocks during the in-flight chunks
-        # (mirrors FSDP's ``reduce_scatter_states.clear()`` at last param
-        # group's post_backward / finalize_backward).
-        held_refs.clear()
 
         # Expected accumulator value for this rank:
         # Each chunk c contributes reduce-sum of (rank+1)*(c+1) across ranks
@@ -257,7 +236,6 @@ def _worker(rank: int, world_size: int, args: argparse.Namespace) -> None:
             high_priority_rs=args.hipri,
             sync_mode=args.sync_mode,
             use_rccl=not args.no_rccl,
-            hold_refs=args.hold_refs,
         )
         if args.record_memory:
             path = f"{args.record_memory}_rank{rank}.pickle"
@@ -291,15 +269,6 @@ def main() -> int:
                         help="replace dist.reduce_scatter_tensor with a "
                              "local sharded copy (keeps the streams + allocator "
                              "pattern but removes RCCL from the loop)")
-    parser.add_argument("--hold-refs", choices=("off", "input", "both"),
-                        default="off",
-                        help="mimic FSDP's reduce_scatter_states ref-hold: "
-                             "'off' (default, baseline repro with del at "
-                             "chunk end); 'input' (hold rs_input across "
-                             "chunks — exact FSDP analogue); 'both' (hold "
-                             "rs_input and rs_output — maximally "
-                             "conservative, tests if ANY Python ref shields "
-                             "the race)")
     parser.add_argument("--record-memory", type=str, default="",
                         help="path prefix for torch.cuda.memory snapshot; "
                              "per-rank suffix _rank{R}.pickle appended")
@@ -320,8 +289,7 @@ def main() -> int:
     print(
         f"iterations={args.iterations}, n_chunks={args.n_chunks}, "
         f"shard_numel={args.shard_numel}, ag={args.ag}, "
-        f"hipri={args.hipri}, sync_mode={args.sync_mode}, "
-        f"hold_refs={args.hold_refs}"
+        f"hipri={args.hipri}, sync_mode={args.sync_mode}"
     )
     print(f"hip={torch.version.hip}, cuda={torch.version.cuda}")
 
