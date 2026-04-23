@@ -229,8 +229,6 @@ class FakeTensorUpdater:
 
             return tuple(get_hash_or_id(n) for n in n_iter)
 
-        if node.kwargs:
-            breakpoint()
         return _FxNodeHash(
             node,
             node.target,
