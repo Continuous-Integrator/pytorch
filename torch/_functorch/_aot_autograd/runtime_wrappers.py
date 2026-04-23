@@ -980,21 +980,43 @@ class FunctionalizedRngRuntimeWrapper(InductorWrapper):
         *,
         runtime_metadata: ViewAndMutationMeta,
     ) -> Callable[..., Any]:
+        if not runtime_metadata.is_rng_op_functionalized:
+            return compiled_fn
+
+        from .subclass_codegen import _compile_and_exec_source
+
+        offset_index = runtime_metadata.num_forward_returns
+        return_new_outs = self.return_new_outs
+        lines = [
+            "def _functionalized_rng_wrapper(_compiled_fn_, _get_rng_state_, _set_offset_, runtime_args):"
+        ]
+        lines.append("    seed, offset = _get_rng_state_()")
+        lines.append("    runtime_args.extend([seed, offset])")
+        lines.append("    outs = _compiled_fn_(runtime_args)")
+        lines.append(f"    _set_offset_(outs[{offset_index}])")
+        if return_new_outs:
+            lines.append(
+                f"    return outs[:{offset_index}] + outs[{offset_index + 1}:]"
+            )
+        else:
+            lines.append("    return outs")
+        source = "\n".join(lines)
+
+        _codegen_fn = _compile_and_exec_source(
+            source,
+            {},
+            "_functionalized_rng_wrapper",
+            "functionalized_rng_wrapper",
+        )
+        _inner_compiled_fn = compiled_fn
+        _get_rng_state = CUDARngStateHelper.get_torch_state_as_tuple
+        _set_offset = CUDARngStateHelper.set_new_offset
+
         @wraps(compiled_fn)
         def wrapper(runtime_args: list[Any]) -> Any:
-            if runtime_metadata.is_rng_op_functionalized:
-                # Add the seed and offset to args
-                seed, offset = CUDARngStateHelper.get_torch_state_as_tuple()
-                runtime_args.extend([seed, offset])
-                out = compiled_fn(runtime_args)
-                out = self._functionalized_rng_runtime_epilogue(
-                    runtime_metadata,
-                    out,
-                    # TODO: this won't be right for the backward when we convert the call_compiled_backward to use the wrapper
-                    runtime_metadata.num_forward_returns,
-                )
-                return out
-            return compiled_fn(runtime_args)
+            return _codegen_fn(
+                _inner_compiled_fn, _get_rng_state, _set_offset, runtime_args
+            )
 
         wrapper._boxed_call = True  # type: ignore[attr-defined]
         return wrapper
