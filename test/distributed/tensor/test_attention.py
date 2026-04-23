@@ -1585,6 +1585,8 @@ class TestVarlenPTRRLoadBalancer(TestCase):
         meta = _build_varlen_meta_from_doc_lens([S], B=1, seq_len=S)
         lb = _VarlenPTRRLoadBalancer(
             meta.cu_seq_q,
+            batch_size=1,
+            seq_length=S,
             world_size=W,
             block_size=BS,
         )
@@ -1602,6 +1604,8 @@ class TestVarlenPTRRLoadBalancer(TestCase):
         cu = torch.tensor([0, 128, 192, 256], dtype=torch.int32)
         lb = _VarlenPTRRLoadBalancer(
             cu,
+            batch_size=2,
+            seq_length=128,
             world_size=W,
             block_size=BS,
         )
@@ -1618,6 +1622,8 @@ class TestVarlenPTRRLoadBalancer(TestCase):
 
         ptrr = _VarlenPTRRLoadBalancer(
             meta.cu_seq_q,
+            batch_size=1,
+            seq_length=S,
             world_size=W,
             block_size=BS,
         )
@@ -1653,6 +1659,8 @@ class TestVarlenPTRRLoadBalancer(TestCase):
         meta = _build_varlen_meta_from_doc_lens([S], B=1, seq_len=S)
         lb = _VarlenPTRRLoadBalancer(
             meta.cu_seq_q,
+            batch_size=1,
+            seq_length=S,
             world_size=W,
             block_size=BS,
         )
@@ -1664,6 +1672,8 @@ class TestVarlenPTRRLoadBalancer(TestCase):
         with self.assertRaisesRegex(ValueError, "divisible by block_size"):
             _VarlenPTRRLoadBalancer(
                 meta.cu_seq_q,
+                batch_size=1,
+                seq_length=128,
                 world_size=2,
                 block_size=100,
             )
@@ -1674,6 +1684,8 @@ class TestVarlenPTRRLoadBalancer(TestCase):
         with self.assertRaisesRegex(ValueError, "must be divisible by world_size"):
             _VarlenPTRRLoadBalancer(
                 meta.cu_seq_q,
+                batch_size=1,
+                seq_length=192,
                 world_size=4,
                 block_size=32,
             )
@@ -1683,6 +1695,8 @@ class TestVarlenPTRRLoadBalancer(TestCase):
         with self.assertRaisesRegex(ValueError, "does not match"):
             _VarlenPTRRLoadBalancer(
                 cu_bad,
+                batch_size=1,
+                seq_length=64,
                 world_size=2,
                 block_size=32,
             )
@@ -1980,6 +1994,8 @@ class CPVarlenAttentionTest(DTensorTestBase):
             world_size,
             device: _VarlenPTRRLoadBalancer(
                 global_meta.cu_seq_q,
+                batch_size=B,
+                seq_length=seq_len,
                 world_size=world_size,
                 block_size=32,
             ),
@@ -2006,6 +2022,8 @@ class CPVarlenAttentionTest(DTensorTestBase):
             world_size,
             device: _VarlenPTRRLoadBalancer(
                 global_meta.cu_seq_q,
+                batch_size=B,
+                seq_length=seq_len,
                 world_size=world_size,
                 block_size=32,
             ),
