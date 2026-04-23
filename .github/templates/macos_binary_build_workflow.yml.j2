@@ -7,7 +7,7 @@
 name: !{{ build_environment }}
 {%- endblock %}
 
-{#- Derive the setup-python micro-version from a DESIRED_PYTHON like "3.13" or "3.13t" -#}
+{#- actions/setup-python wants a full X.Y.Z version string; map DESIRED_PYTHON to one. -#}
 {%- macro setup_python_version(py_ver) -%}
 !{{ py_ver.strip('t') + ('.4' if '3.14' not in py_ver else '.0') }}
 {%- endmacro %}
@@ -59,17 +59,16 @@ jobs:
       DESIRED_CUDA: !{{ first["desired_cuda"] }}
       GPU_ARCH_TYPE: !{{ first["gpu_arch_type"] }}
       SKIP_ALL_TESTS: 1
+      DESIRED_PYTHONS: "!{{ build_configs | map(attribute='python_version') | join(' ') }}"
       {%- if first.pytorch_extra_install_requirements is defined and first.pytorch_extra_install_requirements|d('')|length > 0 %}
       PYTORCH_EXTRA_INSTALL_REQUIREMENTS: !{{ first.pytorch_extra_install_requirements }}
       {%- endif %}
     steps:
-      # NOTE: These environment variables are put here so that they can be applied on every job equally
-      #       They are also here because setting them at a workflow level doesn't give us access to the
-      #       runner.temp variable, which we need.
+      # BINARY_ENV_FILE needs ${RUNNER_TEMP} so it has to be populated in-step
+      # rather than at the workflow env level.
       - name: Populate runner env
         shell: bash
         run: |
-          # shellcheck disable=SC2129
           echo "BINARY_ENV_FILE=${RUNNER_TEMP}/env" >> "${GITHUB_ENV}"
       - name: Checkout PyTorch
         uses: actions/checkout@v4
@@ -83,36 +82,8 @@ jobs:
           git clean -fxd
       - name: Install libomp
         run: "${PYTORCH_ROOT}/.ci/wheel/install_libomp.sh"
-      # Build phase: compile a wheel per CPython version without delocating.
-      # libtorch_cpu is reused across iterations via `build/`; only libtorch_python
-      # + _C recompile thanks to the Python-cache invalidation in cmake.py.
-{%- for config in build_configs %}
-      - name: Setup Python !{{ config["python_version"] }}
-        uses: actions/setup-python@v6
-        with:
-          # .4 version is min minor for 3.10, and also no-gil version of 3.13 needs at least 3.13.3
-          python-version: "!{{ setup_python_version(config["python_version"]) }}"
-          freethreaded: !{{ "true" if config["python_version"].endswith('t') else "false" }}
-      - name: Build wheel !{{ config["python_version"] }}
-        env:
-          DESIRED_PYTHON: "!{{ config["python_version"] }}"
-          # Per-iteration output/work dirs so wheels and whl_tmp_dir stay isolated.
-          PYTORCH_FINAL_PACKAGE_DIR: ${{ runner.temp }}/artifacts/!{{ config["build_name"] }}
-          MAC_PACKAGE_WORK_DIR: ${{ runner.temp }}/work/!{{ config["build_name"] }}
-        run: |
-          set -eux -o pipefail
-          mkdir -p "$PYTORCH_FINAL_PACKAGE_DIR" "$MAC_PACKAGE_WORK_DIR"
-          # Rewrite BINARY_ENV_FILE with values derived from this iteration's DESIRED_PYTHON.
-          "${PYTORCH_ROOT}/.ci/pytorch/binary_populate_env.sh"
-          # shellcheck disable=SC1090
-          source "$BINARY_ENV_FILE"
-
-          USE_PYTORCH_METAL_EXPORT=1
-          USE_COREML_DELEGATE=1
-          TORCH_PACKAGE_NAME="${TORCH_PACKAGE_NAME//-/_}"
-          export USE_PYTORCH_METAL_EXPORT USE_COREML_DELEGATE TORCH_PACKAGE_NAME
-          "${PYTORCH_ROOT}/.ci/wheel/build_wheel.sh"
-{%- endfor %}
+      - name: Build all wheels
+        run: "${PYTORCH_ROOT}/.ci/wheel/build_all_macos_wheels.sh"
       - name: Delocate all wheels
         run: "${PYTORCH_ROOT}/.ci/wheel/delocate_wheels.sh"
       # Upload phase: each wheel becomes its own artifact (one call per name).
@@ -130,11 +101,12 @@ jobs:
 {%- if first["package_type"] == "wheel" %}
   # Smoke-test each delocated wheel on a fresh runner so we validate the
   # wheel is truly self-contained (and not relying on host state left by the
-  # build job).
+  # build job). Must pass before wheel-upload publishes to S3/R2. Uses a
+  # standard runner — smoke tests are trivial and don't need xlarge.
   wheel-test:
     if: ${{ github.repository_owner == 'pytorch' }}
     needs: wheel-build
-    runs-on: !{{ macos_runner }}
+    runs-on: macos-26
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -172,14 +144,13 @@ jobs:
           source "$venv_dir/bin/activate"
           pip install "${RUNNER_TEMP}/artifacts"/*.whl numpy -v
           python .ci/pytorch/smoke_test/smoke_test.py --package torchonly
-{%- endif %}
 
   wheel-upload:
     if: ${{ github.repository_owner == 'pytorch' }}
     permissions:
       id-token: write
       contents: read
-    needs: wheel-build
+    needs: wheel-test
     strategy:
       fail-fast: false
       matrix:
@@ -204,6 +175,7 @@ jobs:
       R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
       R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
     uses: ./.github/workflows/_binary-upload.yml
+{%- endif %}
 {%- endif %}
 
 {%- for lt_config in libtorch_extraction_configs %}
