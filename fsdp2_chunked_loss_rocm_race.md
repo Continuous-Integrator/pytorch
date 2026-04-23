@@ -317,4 +317,3 @@ No other files touched; all diagnostic instrumentation has been reverted.
 - `/data/users/weif/code-review/pytorch/hip_allocator_cross_stream_repro.py` — FSDP-free attempt that did NOT reproduce (useful to rule out a generic HIP allocator cross-stream-reuse bug).
 - `/data/users/weif/code-review/pytorch/analyze_memory_snapshot.py` — quick summarizer for `torch.cuda.memory._dump_snapshot` pickles.
 
-claude --resume 249ddfd4-a812-44ae-8d82-b8f7891c0f22
