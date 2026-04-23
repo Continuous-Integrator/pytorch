@@ -95,6 +95,20 @@ jobs:
         with:
           no-sudo: true
 
+      - name: Configure AWS credentials(PyTorch account) for nightly
+        if: ${{ github.event_name == 'push' && github.event.ref == 'refs/heads/nightly' }}
+        uses: aws-actions/configure-aws-credentials@ececac1a45f3b08a01d2dd070d28d111c5fe6722 # v4.1.0
+        with:
+          role-to-assume: arn:aws:iam::749337293305:role/gha_workflow_nightly_build_wheels
+          aws-region: us-east-1
+
+      - name: Configure AWS credentials(PyTorch account) for RC builds
+        if: ${{ github.event_name == 'push' &&  (startsWith(github.event.ref, 'refs/tags/') && !startsWith(github.event.ref, 'refs/tags/ciflow/')) }}
+        uses: aws-actions/configure-aws-credentials@ececac1a45f3b08a01d2dd070d28d111c5fe6722 # v4.1.0
+        with:
+          role-to-assume: arn:aws:iam::749337293305:role/gha_workflow_test_build_wheels
+          aws-region: us-east-1
+
       - name: Download Build Artifacts
         id: download-artifacts
         # NB: When the previous build job is skipped, there won't be any artifacts and
@@ -105,14 +119,31 @@ jobs:
           name: ${{ inputs.build_name }}
           path: "${{ runner.temp }}/artifacts/"
 
+      - name: Set DRY_RUN (only for tagged pushes)
+        if: ${{ github.event_name == 'push' && (github.event.ref == 'refs/heads/nightly' || (startsWith(github.event.ref, 'refs/tags/') && !startsWith(github.event.ref, 'refs/tags/ciflow/'))) }}
+        run: |
+          echo "DRY_RUN=disabled" >> "$GITHUB_ENV"
+
+      - name: Set UPLOAD_CHANNEL (only for tagged pushes)
+        if: ${{ github.event_name == 'push' && startsWith(github.event.ref, 'refs/tags/') && !startsWith(github.event.ref, 'refs/tags/ciflow/') }}
+        shell: bash -e -l {0}
+        run: |
+          # reference ends with an RC suffix
+          if [[ "${GITHUB_REF_NAME}" = *-rc[0-9]* ]]; then
+            echo "UPLOAD_CHANNEL=test" >> "$GITHUB_ENV"
+          fi
+
       - name: Upload binaries
         if: steps.download-artifacts.outcome && steps.download-artifacts.outcome == 'success'
-        uses: ./.github/actions/upload-binary-wheel
-        with:
-          build-name: ${{ inputs.build_name }}
-          package-type: ${{ inputs.PACKAGE_TYPE }}
-          desired-cuda: ${{ inputs.DESIRED_CUDA }}
-          pkg-dir: ${{ runner.temp }}/artifacts
-          r2-account-id: ${{ secrets.R2_ACCOUNT_ID }}
-          r2-access-key-id: ${{ secrets.R2_ACCESS_KEY_ID }}
-          r2-secret-access-key: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+        shell: bash
+        env:
+          PKG_DIR: "${{ runner.temp }}/artifacts"
+          UPLOAD_SUBFOLDER: "${{ env.DESIRED_CUDA }}"
+          BUILD_NAME: ${{ inputs.build_name }}
+          R2_UPLOAD: ${{ (github.event_name == 'push' && github.event.ref == 'refs/heads/nightly') && 'true' || '' }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+        run: |
+            set -ex
+            bash .ci/pytorch/binary_upload.sh

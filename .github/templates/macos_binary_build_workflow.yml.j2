@@ -83,6 +83,18 @@ jobs:
       - name: Install libomp
         run: |
           "${PYTORCH_ROOT}/.ci/wheel/install_libomp.sh"
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          # enable-cache persists ~/.cache/uv across nightlies (keyed on the
+          # workflow file hash by default); a warm cache makes the subsequent
+          # `uv python install` a no-op.
+          enable-cache: true
+      - name: Pre-fetch all CPython versions
+        # One command, parallel downloads of everything in DESIRED_PYTHONS.
+        # Cached under ~/.local/share/uv/python/; the build script's per-
+        # iteration `uv python install <ver>` becomes a cache hit.
+        run: uv python install $DESIRED_PYTHONS
       - name: Build all wheels
         run: |
           "${PYTORCH_ROOT}/.ci/wheel/build_all_macos_wheels.sh"

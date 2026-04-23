@@ -23,11 +23,6 @@ set -eux -o pipefail
 : "${RUNNER_TEMP:=/tmp}"
 export BINARY_ENV_FILE="${BINARY_ENV_FILE:-${RUNNER_TEMP}/env}"
 
-if ! command -v uv >/dev/null; then
-    curl -LsSf https://astral.sh/uv/install.sh | sh
-    export PATH="${HOME}/.local/bin:${PATH}"
-fi
-
 for desired in ${DESIRED_PYTHONS}; do
     # Wrap each iteration in a GHA log group so long logs collapse nicely
     # in the run UI (one click per Python version).
