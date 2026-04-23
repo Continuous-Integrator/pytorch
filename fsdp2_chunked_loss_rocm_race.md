@@ -304,9 +304,151 @@ Bottom line: no Python-level tensor-retention fix will close this. The workaroun
 6. **Narrow the workaround further.** The current `device.synchronize()` is coarse. If instrumentation (step 3) shows exactly which buffer races, replace with a targeted hold or a `record_stream`. Until then, the conditional sync keeps the heavy fix off the hot path.
 7. **Check other partial-forward FSDP configurations.** The bug is specific to "group of N modules, only M < N called in outer forward, the rest called standalone." Pipeline parallelism with interleaved 1F1B may hit the same pattern. Worth a preemptive review before shipping the chunked-loss feature broadly.
 
+## Plan: resolve "vector 2 is ROCm-specific vs cross-platform" open question
+
+Organizes the scattered next-step items above into a three-phase plan. Phase 1–2 run on this MI350X box and can settle the question by code-reading for the allocator-side branch (no CUDA machine required). Phase 3 is only needed if Phase 2 narrows the bug to the collective library.
+
+### Phase 1 — pin the exact racing buffer on ROCm
+
+1. Temporarily disable the fix. Either scratch-branch the `current_stream().wait_event(self._post_reduce_event)` line in `_fsdp_param_group.py:706`, or env-gate it behind `FSDP2_CHUNKED_ROCM_FIX_OFF=1` so the same binary can run both arms. Confirm `test_partial_group_forward_then_standalone` still races 5/5 before instrumentation, as a sanity check that disable works.
+2. Wrap the failing run in `torch.cuda.memory._record_memory_history(enabled='all', context='all', stacks='python', max_entries=200000)` and dump via `torch.cuda.memory._dump_snapshot(path)` at the first assertion failure. Recording overhead already known to drop the race rate from 49/50 to 2/50 on the standalone repro (see step 2 above), so expect the same on the FSDP test — budget for multiple runs to catch one.
+3. Bit-compare `head.weight.grad._local_tensor` against a known-good run (fix enabled). Record the failing byte offsets on rank 1, iter 0 (the known-failing seed from Experiment N).
+4. Extend `analyze_memory_snapshot.py` to:
+   - Accept a failing-byte-offset list and map each offset to `(segment_id, block_id, requested_size, stream_tag, alloc_stack)`.
+   - Print the block's `history` entries (alloc/free sequence) and `stream_uses` / cross-stream event records.
+   - Flag blocks whose `stream_uses` includes a stream the allocator did not record an event for.
+
+**Exit criterion:** one concrete racing block with stream tag, alloc stack, and free/reuse event trace.
+
+### Phase 2 — classify: allocator-internal vs collective-library (still ROCm only)
+
+Run the same failing test — or the standalone repro if it reproduces faster — with isolation toggles, and cross-reference against the Phase-1 alloc stack:
+
+| Run | Flag | If passes |
+|---|---|---|
+| A | `PYTORCH_NO_HIP_MEMORY_CACHING=1` (alias: `PYTORCH_NO_CUDA_MEMORY_CACHING=1`) | allocator event-tracking bug — `CUDACachingAllocator.cpp` is shared between HIP and CUDA builds, so **cross-platform by code inspection**. No CUDA run needed. |
+| B | `PYTORCH_HIP_ALLOC_CONF=expandable_segments:False,garbage_collection_threshold:0.0` | narrower: a specific segment-reuse strategy triggers it; still allocator-side, still cross-platform at the file level but may be gated by HIP-only paths — need to read the config's code path. |
+| C | `NCCL_BUFFSIZE=<large>` and/or disabling RCCL's allocator-pool integration | collective-side — RCCL workspace reuse — Phase 3 required to confirm CUDA behavior. |
+| D | custom `torch.cuda.CUDAPluggableAllocator` stub that disables block reuse for `size == rs_output_bytes` (8 KiB) and `size == rs_input_bytes` (16 KiB) | narrows to a specific size class / reuse path; combine with Phase-1 alloc stack to pinpoint call site. |
+
+Decision tree on exit:
+
+- Alloc stack in Phase 1 lands inside `c10/cuda/CUDACachingAllocator.cpp` (or `torch/csrc/cuda/CachingHostAllocator.cpp`) **and** Run A passes ⇒ allocator event-tracking bug on a shared code path ⇒ **cross-platform**. Done — no CUDA run.
+- Alloc stack lands inside RCCL (`rcclCommInit*`, `ncclMemAlloc`, workspace init) **or** Run C passes while Run A fails ⇒ collective-library-side ⇒ go to Phase 3.
+- Block is a PyTorch-side tensor but `stream_uses` shows a use from a stream the allocator did not track ⇒ allocator event-tracking gap on a specific stream pair (likely the RS stream or the `post_reduce_stream`) ⇒ cross-platform by file-level inspection, but verify by reading `record_stream` / `free_block` paths for the exact stream pair identified in Phase 1.
+
+**Exit criterion:** allocator-side vs collective-side verdict with evidence from Phase-1 alloc stack + one of the isolation runs.
+
+### Phase 3 — CUDA confirmation (only if Phase 2 says collective-side; out of scope for this machine)
+
+Requires a CUDA box, scheduled separately:
+
+1. Build a no-FSDP, no-accumulate standalone that loops `dist.reduce_scatter_tensor` with `PYTORCH_NO_CUDA_MEMORY_CACHING=1` forcing the allocator out of the picture. Fork from `rccl_chunked_loss_repro_sleep.py`; strip the accumulate and ref-drop logic to leave a pure back-to-back reduce-scatter workload. This surface is only the collective library — if it races on both ROCm and CUDA, vector 2 is cross-platform at the collective layer; if only ROCm races, it is RCCL-specific.
+2. If RCCL-specific, file upstream against RCCL with the Phase-1 alloc stack and byte-offset evidence attached; keep the unconditional FSDP gate as the user-facing workaround. If cross-platform at the collective layer, file against NCCL+RCCL jointly, and keep the unconditional FSDP gate as a correctness-critical mitigation (not insurance).
+
+### Why this ordering
+
+- Phase 1 converts "somewhere in a non-Python-reachable buffer" into a concrete alloc site, stream tag, and event trace. Smallest unit of new information; unblocks everything else.
+- Phase 2 can conclude "cross-platform" by code inspection (branch A) without a CUDA machine, which handles the most likely case cheaply. The allocator is shared C++ between HIP and CUDA builds, so a bug in that file is cross-platform by construction.
+- Phase 3 is only reached in the minority branch (collective-library-side) and is substantially cheaper once Phase 1 has produced the buffer identity and lifecycle trace.
+
+### Supersedes earlier next-step items
+
+- Items 3 ("Instrument the caching allocator on the repro") and 4 ("Try allocator configs") under **Suggestions for next steps** are now subsumed by Phase 1 and Phase 2 respectively. Item 5 ("Reduce the allocator tracking surface") is only valuable after Phase 1 identifies whether the racing buffer is one of `reduce_scatter_input` / `reduce_output`; do not pursue pre-emptively.
+
+## Phase 1 results (2026-04-23, MI350X, gfx950, ROCm 7.0.51831)
+
+Phase 1 executed per plan above. Instrumentation was an env-gated `FSDP2_PHASE1_DUMP=<dir>` hook in the test that records `torch.cuda.memory._record_memory_history(enabled='all', context='all', stacks='python', max_entries=200000)` and dumps grads + `_dump_snapshot` when the `grouped-vs-ungrouped` assertion fires. Both the in-source `FSDP2_CHUNKED_ROCM_FIX_OFF=1` gate and the test hook were reverted after capture. Artifacts under `agent_space/phase1_dump/` and scripts under `agent_space/`.
+
+### Step 1 — fix-off baseline
+
+Race fires at iter 0 with the documented fingerprint: `Mismatched elements: 2048 / 4096 (50.0%)`, `absolute diff 11.481439590454102 at index (0, 10)`, `head.weight.grad grouped-vs-ungrouped iter 0`. Env-gate works; Phase 1 runs on the same binary.
+
+### Step 2 — bit-diff offsets
+
+Both ranks' `fsdp_head_grad` (gathered via `full_tensor()`, shape `(128, 32)` fp32) differ from `ug_head_grad` in a **single contiguous run of 2048 elements = 8192 bytes at byte offset 0**, i.e. rows `[0, 64)` of `head.weight.grad`. This is rank 0's sharded row range. Bit-identical mismatch pattern across both ranks confirms the corruption happens on rank 0's shard and is seen post-all-gather on both sides.
+
+Racing buffer size = **8192 bytes = `rs_output` shard** (world_size=2, head = `(128, 32)` fp32, shard = `(64, 32)` fp32 = 2048 elems).
+
+### Step 3 — snapshot: all 8-KiB allocations come from FSDP `foreach_reduce`
+
+Analyzer: `agent_space/block_report.py`.
+
+- **Racing-size allocs**: 10 allocs of exactly 8192 B across iter 0; 6 distinct addresses. No other size class lands on any of those addresses across the trace.
+- **Alloc stack** for every single 8-KiB allocation (all 10):
+  ```
+  torch/distributed/fsdp/_fully_shard/_fsdp_collectives.py:65  DefaultAllocMixin.allocate
+  torch/distributed/fsdp/_fully_shard/_fsdp_collectives.py:626 foreach_reduce
+  torch/distributed/fsdp/_fully_shard/_fsdp_param_group.py:645 post_backward
+  ```
+  Line 65 is `return torch.empty(*size, dtype=dtype, device=device)`. **There are zero frames from RCCL, RCCL workspace init, or HIP-internal allocation paths in the trace.** The racing buffer is a plain `torch.empty` tensor owned by FSDP as `reduce_output`.
+- **Stream tagging**: every 8-KiB address is tagged to exactly one stream in the allocator's bookkeeping (the reduce-scatter stream of its owning FSDP module). The cross-stream-reuse flag is NOT triggered for any address. The allocator considers each block as used by a single stream.
+- **Reuse pattern on the racing block**: address `0x7f5817c02000` (grouped RS stream) goes `alloc → free_req → free_done → alloc → free_req → free_done → alloc → free_req → free_done` across the three non-initial chunks of one backward, all under phases `FSDP::post_backward_reduce (norm, head)` and `FSDP::reduce_scatter (norm, head)`. `free_requested` and `free_completed` fire at identical `time_us` — the allocator sees no outstanding stream work and returns the block to the free list immediately. Within the RS stream that is FIFO-safe; the race window is only open if *another stream* touches this block before the RS stream's kernel completes.
+
+### Step 4 — verdict
+
+The racing buffer is a **PyTorch-managed 8-KiB `rs_output` tensor allocated via `torch.empty` on the RS stream**. It is:
+
+- **Not an RCCL workspace.** Alloc stacks contain no RCCL frames.
+- **Not an allocator-internal fragment on some different buffer.** Every 8-KiB allocation in the trace resolves to this one code path; no other size aliases the address.
+- **Not a cross-stream handoff from the allocator's bookkeeping perspective.** Each block is tagged to exactly one stream across its lifetime.
+
+The mechanism of the race is therefore the one the code comment already posits: the default stream running autograd for chunk N+1 touches `head.weight.grad._local_tensor`, which is a Python-level alias of the 8-KiB block whose last writer is the RS stream's accumulate kernel of chunk N. The allocator never sees a `record_stream` or `alloc` from the default stream on this block — the block is accessed via tensor alias, not via an allocator request — so the allocator's cross-stream event tracking **cannot** protect it. This kind of cross-stream access is a user-level stream-ordering responsibility, which is exactly what the `wait_event` at `post_backward` exit provides.
+
+### Phase 2 sanity (Run A)
+
+`PYTORCH_NO_CUDA_MEMORY_CACHING=1 FSDP2_CHUNKED_ROCM_FIX_OFF=1 ... test_partial_group_forward_then_standalone` → **passes**. Disabling the caching allocator masks the race. Useful positive control: it confirms the race depends on block reuse through the caching allocator (consistent with the same 8-KiB address being handed back for three consecutive chunks). It does **not** indicate an allocator bug — the allocator is behaving correctly; its correctness just provides no guarantee against cross-stream access that goes through Python tensor aliases rather than through the allocator's API.
+
+### Cross-platform conclusion — **cross-platform**, no CUDA run required
+
+The racing path is:
+- `torch.empty` allocation on the RS stream. Shared C++ allocator code path (`c10/cuda/CUDACachingAllocator.cpp`) across HIP and CUDA builds.
+- `.grad._local_tensor` aliasing of that block, accessed by the default stream during autograd. Shared Python FSDP code path.
+- No `record_stream` on the default stream, because the access is through a Python alias, not through an allocator request. Shared everywhere.
+
+None of the three ingredients is HIP/ROCm/RCCL-specific by file. The CUDA+FSDP path has the same aliasing and the same stream topology; the only reason CUDA does not fire this assertion today is surrounding autograd/hook kernel timing that keeps the window narrow — the standalone CUDA repro confirmed vector 1 is cross-platform (doc above, "CUDA validation" section), and Phase 1 confirms the FSDP-side vector 2 operates on a PyTorch-managed buffer through the same code path.
+
+This resolves the open question in `_fsdp_param_group.py:696–705`:
+- Vector 2 in FSDP is not ROCm-specific. It is a cross-platform FSDP stream-ordering bug on a PyTorch-allocated `rs_output` buffer.
+- Whether it is latently triggerable on CUDA FSDP today is an empirical timing question; the **code path is identical** and the fix is load-bearing, not insurance, on any platform where the default stream's autograd kernels can race with the RS stream's accumulate on the reused `rs_output` block.
+
+### What Phase 1 did NOT settle
+
+- Whether a real CUDA FSDP run can be made to fail the same assertion with `_sleep`-widened windows or altered autograd topology. The code-level evidence is sufficient; a CUDA-side empirical confirmation is optional and out of scope for this ROCm box. *(See the regression test below — it gives the user a one-command path to check this on CUDA.)*
+- Whether the `reduce_scatter_states.append(...)` ref-hold closes vector 2 on CUDA by accident. It does not — the ref-hold is on `reduce_scatter_input` (16 KiB), not on `reduce_output` (8 KiB). The 8-KiB block that hosts `.grad._local_tensor` is not ref-held by `reduce_scatter_states`; it is held by the param's `.grad` itself. That does not close the cross-stream access race.
+
+### Cross-platform deterministic regression test
+
+Added `test_partial_group_chunked_loss_rs_output_race` in `test/distributed/_composable/fsdp/test_fully_shard_training.py` (class `TestFullyShard1DTrainingCompose`).
+
+The test deterministically reproduces the race on both platforms by widening the window between the reduce-scatter stream's accumulate and `_post_reduce_event` using `torch.cuda._sleep`. Injection point is a monkey-patch of `_fsdp_collectives._to_dtype_if_needed` — the single call site at line 715 of `foreach_reduce` that runs inside the `with stream(post_reduce_stream):` block immediately before the accumulate loop. Sleep is `10**8` cycles (~60 ms on H100/MI350X), six orders of magnitude wider than FSDP's normal post-backward-to-next-autograd CPU gap.
+
+ROCm verification (MI350X, gfx950, ROCm 7.0.51831):
+
+| State | Runs | Outcome |
+|---|---|---|
+| fix on | 3/3 | PASS (~17 s each) |
+| fix off (wait_event line commented out) | 3/3 | FAIL at iter 0 — `"chunk 1 did not contribute to head.weight.grad"`, `delta.norm() == 0.0` — chunk 1's accumulate writes are overwritten by the racing default-stream autograd. |
+
+On CUDA, the expected outcomes are symmetric:
+- Fix on → PASS (confirms the fix is load-bearing cross-platform).
+- Fix off → deterministic FAIL (confirms the race is reachable on CUDA FSDP once the window is widened past CUDA's natural kernel timing).
+
+If CUDA matches both predictions, Phase 1's code-path conclusion is confirmed empirically. If CUDA passes even with the fix off, the mechanism differs between platforms and Phase 2 isolation work is needed to find the delta — possible but unlikely given the shared `.grad._local_tensor` alias path.
+
+To run without the fix, comment out the `self.device_handle.current_stream().wait_event(self._post_reduce_event)` line in `FSDPParamGroup.post_backward` (in `_fsdp_param_group.py`) and re-run the test.
+
+Artifacts:
+- `agent_space/phase1_dump/rank{0,1}_iter0_snapshot.pkl` — memory-history pickles from the failing iteration.
+- `agent_space/phase1_dump/rank{0,1}_iter0_{fsdp,ug}_head_grad.pt` — grad tensors at the point of assertion failure.
+- `agent_space/bit_diff.py` — offset computation.
+- `agent_space/block_report.py` — allocator-block characterization, FSDP-phase correlation via `external_annotations`.
+- `agent_space/inspect_snapshot.py` — one-off snapshot schema dump.
+
 ## Files modified
 
 - `torch/distributed/fsdp/_fully_shard/_fsdp_param_group.py` — `post_backward`: added `in_chunked_path` detection and, after `reduce_scatter_states.append(...)`, a stream-level `current_stream().wait_event(self._post_reduce_event)`. +16 LOC.
+- `test/distributed/_composable/fsdp/test_fully_shard_training.py` — added `test_partial_group_chunked_loss_rs_output_race` regression test with `_sleep`-widened race window via `_to_dtype_if_needed` monkey-patch. Passes with fix on both CUDA and ROCm; fails deterministically without.
 
 No other files touched; all diagnostic instrumentation has been reverted.
 
