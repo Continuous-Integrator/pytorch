@@ -986,15 +986,12 @@ class FunctionalizedRngRuntimeWrapper(InductorWrapper):
         from .subclass_codegen import _compile_and_exec_source
 
         offset_index = runtime_metadata.num_forward_returns
-        return_new_outs = self.return_new_outs
-        lines = [
-            "def _functionalized_rng_wrapper(_compiled_fn_, _get_rng_state_, _set_offset_, runtime_args):"
-        ]
+        lines = ["def _functionalized_rng_wrapper(runtime_args):"]
         lines.append("    seed, offset = _get_rng_state_()")
         lines.append("    runtime_args.extend([seed, offset])")
         lines.append("    outs = _compiled_fn_(runtime_args)")
         lines.append(f"    _set_offset_(outs[{offset_index}])")
-        if return_new_outs:
+        if self.return_new_outs:
             lines.append(
                 f"    return outs[:{offset_index}] + outs[{offset_index + 1}:]"
             )
@@ -1002,24 +999,19 @@ class FunctionalizedRngRuntimeWrapper(InductorWrapper):
             lines.append("    return outs")
         source = "\n".join(lines)
 
-        _codegen_fn = _compile_and_exec_source(
+        inner_fn = _compile_and_exec_source(
             source,
-            {},
+            {
+                "_compiled_fn_": compiled_fn,
+                "_get_rng_state_": CUDARngStateHelper.get_torch_state_as_tuple,
+                "_set_offset_": CUDARngStateHelper.set_new_offset,
+            },
             "_functionalized_rng_wrapper",
             "functionalized_rng_wrapper",
+            wrapped_fn=compiled_fn,
         )
-        _inner_compiled_fn = compiled_fn
-        _get_rng_state = CUDARngStateHelper.get_torch_state_as_tuple
-        _set_offset = CUDARngStateHelper.set_new_offset
-
-        @wraps(compiled_fn)
-        def wrapper(runtime_args: list[Any]) -> Any:
-            return _codegen_fn(
-                _inner_compiled_fn, _get_rng_state, _set_offset, runtime_args
-            )
-
-        wrapper._boxed_call = True  # type: ignore[attr-defined]
-        return wrapper
+        inner_fn._boxed_call = True  # type: ignore[attr-defined]
+        return inner_fn
 
     # Calling convention: If we are running functionalized RNG, then outs consists
     # of (user_outs, rng_offset)
