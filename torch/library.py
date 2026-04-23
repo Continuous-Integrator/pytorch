@@ -4,7 +4,6 @@ import functools
 import inspect
 import re
 import sys
-import traceback
 import weakref
 from collections.abc import Callable, Sequence
 from typing import Any, overload, TYPE_CHECKING, TypeVar, Union
@@ -20,7 +19,7 @@ from torch._library.custom_ops import (
     device_types_t,
 )
 from torch._library.effects import EffectType
-from torch._library.infer_schema import infer_schema  # noqa: F401
+from torch._library.infer_schema import infer_schema
 from torch._library.triton import triton_op, wrap_triton
 from torch._ops import OpOverload
 from torch.types import _dtype
@@ -95,8 +94,8 @@ class Library:
                 f"{ns} is a reserved namespace. Please try creating a library with another name."
             )
 
-        frame = traceback.extract_stack(limit=2)[0]
-        filename, lineno = frame.filename, frame.lineno
+        f = sys._getframe(1)
+        filename, lineno = f.f_code.co_filename, f.f_lineno
         self.m: Any | None = torch._C._dispatch_library(
             kind, ns, dispatch_key, filename, lineno
         )
