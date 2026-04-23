@@ -833,7 +833,7 @@
     CUDA: arange_cuda_out
     MPS: arange_mps_out
     MTIA: arange_mtia_out
-    XPU: arange_out_xpu
+    XPU: arange_xpu_out
   cpp_no_default_args: ['step']
 
 # This function is a temporary hack to allow tracing of arange like constructs with dynamic
@@ -1463,8 +1463,8 @@
     CPU: cat_out_cpu
     CUDA: cat_out_cuda
     MPS: cat_out_mps
-    QuantizedCPU: cat_out_quantized_cpu
     XPU: cat_out_xpu
+    QuantizedCPU: cat_out_quantized_cpu
 
 - func: cat.names(Tensor[] tensors, Dimname dim) -> Tensor
 
@@ -2458,6 +2458,7 @@
     CPU: empty_cpu
     CUDA: empty_cuda
     MPS: empty_mps
+    XPU: empty_xpu
     Meta: empty_meta_symint
     MkldnnCPU: empty_mkldnn
     SparseCPU, SparseCUDA, SparseMPS, SparseXPU: empty_sparse
@@ -2465,7 +2466,6 @@
     SparseCsrCPU, SparseCsrCUDA, SparseCsrXPU: empty_sparse_compressed
     SparseCsrMeta: empty_sparse_compressed_symint
     QuantizedCPU, QuantizedCUDA, QuantizedMeta: empty_unknown_quantized
-    XPU: empty_xpu
   tags: core
 
 - func: empty_permuted(SymInt[] size, int[] physical_layout, *, ScalarType? dtype=None, Layout? layout=None, Device? device=None, bool? pin_memory=None) -> Tensor
@@ -2515,7 +2515,7 @@
 - func: _empty_affine_quantized(SymInt[] size, *, ScalarType? dtype=None, Layout? layout=None, Device? device=None, bool? pin_memory=None, float scale=1, int zero_point=0, MemoryFormat? memory_format=contiguous_format) -> Tensor
   dispatch:
     CPU: empty_affine_quantized_other_backends_stub
-    QuantizedCPU, QuantizedCUDA, XPU: empty_affine_quantized
+    QuantizedCPU, QuantizedCUDA: empty_affine_quantized
   autogen: _empty_affine_quantized.out
 
 # it's a factory function receiving a tensor argument, thus overriding explicitly
@@ -2524,7 +2524,7 @@
   category_override: factory
   dispatch:
     CPU: empty_per_channel_affine_quantized_other_backends_stub
-    QuantizedCPU, QuantizedCUDA, XPU: empty_per_channel_affine_quantized
+    QuantizedCPU, QuantizedCUDA: empty_per_channel_affine_quantized
   autogen: _empty_per_channel_affine_quantized.out
 
 - func: resize_(Tensor(a!) self, SymInt[] size, *, MemoryFormat? memory_format=None) -> Tensor(a!)
@@ -2538,8 +2538,8 @@
     CPU: resize_
     CUDA: resize_cuda_
     MPS: resize_mps_
-    QuantizedCPU: quantized_resize_cpu_
     XPU: resize_xpu_
+    QuantizedCPU: quantized_resize_cpu_
     SparseCsrCPU, SparseCsrCUDA, SparseCsrMeta, SparseCsrXPU: resize_sparse_csr_
   autogen: resize, resize.out
 
@@ -2580,9 +2580,9 @@
     CPU: empty_strided_cpu
     CUDA: empty_strided_cuda
     MPS: empty_strided_mps
+    XPU: empty_strided_xpu
     Meta: empty_strided_meta_symint
     QuantizedCPU, QuantizedCUDA: empty_strided_unknown_quantized
-    XPU: empty_strided_xpu
   autogen: empty_strided.out
   tags: core
 
@@ -3414,8 +3414,8 @@
     CPU: layer_norm_cpu
     CUDA: layer_norm_cuda
     MPS: layer_norm_mps
-    CompositeExplicitAutograd: math_native_layer_norm
     XPU: layer_norm_xpu
+    CompositeExplicitAutograd: math_native_layer_norm
     NestedTensorCPU, NestedTensorHPU, NestedTensorCUDA, NestedTensorXPU: nested_layer_norm
   autogen: native_layer_norm.out
   tags: core
@@ -3438,8 +3438,8 @@
   dispatch:
     CUDA: _fused_rms_norm_cuda
     MPS: _fused_rms_norm_mps
-    CompositeImplicitAutograd: rms_norm_composite
     XPU: _fused_rms_norm_xpu
+    CompositeImplicitAutograd: rms_norm_composite
 
 - func: _fused_rms_norm_backward(Tensor grad_out, Tensor input, int[] normalized_shape, Tensor rstd, Tensor? weight, bool[2] output_mask) -> (Tensor, Tensor)
   dispatch:
@@ -4084,7 +4084,6 @@
   dispatch:
     QuantizedCPU: quantized_max_pool2d
     QuantizedCUDA: quantized_max_pool2d_cudnn
-    XPU: quantized_max_pool2d_xpu
   autogen: quantized_max_pool2d.out
 
 - func: quantized_max_pool3d(Tensor self, int[3] kernel_size, int[3] stride=[], int[3] padding=0, int[3] dilation=1, bool ceil_mode=False) -> Tensor
@@ -4571,8 +4570,8 @@
     CPU: batch_norm_cpu
     CUDA: batch_norm_cuda
     MPS: batch_norm_mps
-    MkldnnCPU: mkldnn_batch_norm
     XPU: batch_norm_xpu
+    MkldnnCPU: mkldnn_batch_norm
 
 - func: native_batch_norm.out(Tensor input, Tensor? weight, Tensor? bias, Tensor? running_mean, Tensor? running_var, bool training, float momentum, float eps, *, Tensor(a!) out, Tensor(b!) save_mean, Tensor(c!) save_invstd) -> (Tensor(a!), Tensor(b!), Tensor(c!))
   dispatch:
@@ -4587,8 +4586,8 @@
     CPU: _batch_norm_legit_cpu
     CUDA: _batch_norm_legit_cuda
     MPS: _batch_norm_legit_mps
-    MkldnnCPU: _mkldnn_batch_norm_legit
     XPU: _batch_norm_legit_xpu
+    MkldnnCPU: _mkldnn_batch_norm_legit
   autogen: _native_batch_norm_legit_functional
   tags: core
 
@@ -4613,8 +4612,8 @@
     CPU: _batch_norm_legit_no_stats_cpu
     CUDA: _batch_norm_legit_no_stats_cuda
     MPS: _batch_norm_legit_no_stats_mps
-    MkldnnCPU: _mkldnn_batch_norm_legit_no_stats
     XPU: _batch_norm_legit_no_stats_xpu
+    MkldnnCPU: _mkldnn_batch_norm_legit_no_stats
   tags: core
 
 - func: _native_batch_norm_legit.no_stats_out(Tensor input, Tensor? weight, Tensor? bias, bool training, float momentum, float eps, *, Tensor(a!) out, Tensor(b!) save_mean, Tensor(c!) save_invstd) -> (Tensor(a!), Tensor(b!), Tensor(c!))
@@ -4658,8 +4657,8 @@
     CPU: batch_norm_backward_cpu
     CUDA: batch_norm_backward_cuda
     MPS: batch_norm_backward_mps
-    MkldnnCPU: mkldnn_batch_norm_backward
     XPU: batch_norm_backward_xpu
+    MkldnnCPU: mkldnn_batch_norm_backward
   autogen: native_batch_norm_backward.out
 
 - func: batch_norm_backward_reduce(Tensor grad_out, Tensor input, Tensor mean, Tensor invstd, Tensor? weight, bool input_g, bool weight_g, bool bias_g) -> (Tensor, Tensor, Tensor, Tensor)
@@ -6206,8 +6205,8 @@
   dispatch:
     CPU, CUDA: std
     MPS: std_mps
-    QuantizedCPU: std_quantized_cpu
     XPU: std_xpu
+    QuantizedCPU: std_quantized_cpu
   tags: reduction
 
 - func: std_mean(Tensor self, bool unbiased=True) -> (Tensor, Tensor)
@@ -6933,8 +6932,8 @@
     CPU: _efficientzerotensor
     CUDA: _efficientzerotensor_cuda
     MPS: _efficientzerotensor_mps
-    Meta: _efficientzerotensor_meta_symint
     XPU: _efficientzerotensor_xpu
+    Meta: _efficientzerotensor_meta_symint
   autogen: _efficientzerotensor.out
 
 - func: zeros(SymInt[] size, *, ScalarType? dtype=None, Layout? layout=None, Device? device=None, bool? pin_memory=None) -> Tensor
@@ -7046,8 +7045,8 @@
     CPU: _batch_norm_with_update_cpu
     CUDA: _batch_norm_with_update_cuda
     MPS: _batch_norm_with_update_mps
-    MkldnnCPU: _batch_norm_with_update_mkldnn
     XPU: _batch_norm_with_update_xpu
+    MkldnnCPU: _batch_norm_with_update_mkldnn
   autogen: _batch_norm_with_update_functional
 
 - func: _batch_norm_with_update.out(Tensor input, Tensor? weight, Tensor? bias, Tensor(a!) running_mean, Tensor(b!) running_var, float momentum, float eps, *, Tensor(d!) out, Tensor(e!) save_mean, Tensor(f!) save_invstd, Tensor(g!) reserve) -> (Tensor(d!), Tensor(e!), Tensor(f!), Tensor(g!))
@@ -7067,8 +7066,8 @@
     CPU: _new_batch_norm_backward_cpu
     CUDA: _new_batch_norm_backward_cuda
     MPS: _new_batch_norm_backward_mps
-    MkldnnCPU: _new_batch_norm_backward_mkldnn
     XPU: _new_batch_norm_backward_xpu
+    MkldnnCPU: _new_batch_norm_backward_mkldnn
 
 # TODO: reduce signatures down to one when optional args is available
 - func: _sparse_sum(Tensor self) -> Tensor
@@ -8419,8 +8418,8 @@
     Meta: set_storage_meta__symint
     CUDA: set_storage_cuda_
     MPS: set_storage_mps_
-    QuantizedCPU, QuantizedCUDA: set_storage_quantized_
     XPU: set_storage_xpu_
+    QuantizedCPU, QuantizedCUDA: set_storage_quantized_
   autogen: set.source_Storage_storage_offset, set.source_Storage_storage_offset_out
   tags: inplace_view
 
@@ -10169,8 +10168,7 @@
   structured: True
   structured_inherits: TensorIteratorBase
   dispatch:
-    CPU, XPU: signbit_out
-    CUDA: signbit_out
+    CPU, CUDA, XPU: signbit_out
     MPS: signbit_out_mps
     SparseCPU, SparseCUDA, SparseMPS, SparseXPU: signbit_sparse_out
     SparseCsrCPU, SparseCsrCUDA, SparseCsrMeta, SparseCsrXPU: signbit_sparse_csr_out
@@ -10717,8 +10715,8 @@
     CPU: cpu_equal
     CUDA: cuda_equal
     MPS: mps_equal
-    QuantizedCPU: equal_quantized_cpu
     XPU: xpu_equal
+    QuantizedCPU: equal_quantized_cpu
 
 - func: pow.Tensor_Tensor_out(Tensor self, Tensor exponent, *, Tensor(a!) out) -> Tensor(a!)
   device_check: NoCheck   # TensorIterator
@@ -12827,8 +12825,8 @@
     CPU: adaptive_avg_pool2d_out_cpu
     CUDA: adaptive_avg_pool2d_out_cuda
     MPS: adaptive_avg_pool2d_out_mps
-    MkldnnCPU: mkldnn_adaptive_avg_pool2d_out_stub
     XPU: adaptive_avg_pool2d_out_xpu
+    MkldnnCPU: mkldnn_adaptive_avg_pool2d_out_stub    
 
 - func: adaptive_avg_pool2d(Tensor self, SymInt[2] output_size) -> Tensor
   python_module: nn
@@ -12853,9 +12851,9 @@
     CPU: adaptive_avg_pool2d_cpu
     CUDA: adaptive_avg_pool2d_cuda
     MPS: adaptive_avg_pool2d_mps
+    XPU: adaptive_avg_pool2d_xpu
     QuantizedCPU: adaptive_avg_pool2d_quantized_cpu
     QuantizedCUDA: adaptive_avg_pool2d_quantized_cuda
-    XPU: adaptive_avg_pool2d_xpu
   autogen: _adaptive_avg_pool2d.out
   tags: core
 
@@ -12874,8 +12872,8 @@
   dispatch:
     CPU: adaptive_avg_pool3d_out_cpu
     CUDA: adaptive_avg_pool3d_out_cuda
-    QuantizedCPU: adaptive_avg_pool3d_out_quantized_cpu
     XPU: adaptive_avg_pool3d_out_xpu
+    QuantizedCPU: adaptive_avg_pool3d_out_quantized_cpu
 
 - func: adaptive_avg_pool3d(Tensor self, SymInt[3] output_size) -> Tensor
   python_module: nn
@@ -12886,8 +12884,8 @@
   dispatch:
     CPU: adaptive_avg_pool3d_cpu
     CUDA: adaptive_avg_pool3d_cuda
-    QuantizedCPU: adaptive_avg_pool3d_quantized_cpu
     XPU: adaptive_avg_pool3d_xpu
+    QuantizedCPU: adaptive_avg_pool3d_quantized_cpu
   autogen: _adaptive_avg_pool3d.out
   tags: core
 
@@ -12971,8 +12969,8 @@
     CPU: avg_pool2d_out_cpu
     CUDA: avg_pool2d_out_cuda
     MPS: avg_pool2d_out_mps
-    MkldnnCPU: mkldnn_avg_pool2d_out
     XPU: avg_pool2d_out_xpu
+    MkldnnCPU: mkldnn_avg_pool2d_out
 
 - func: avg_pool2d(Tensor self, int[2] kernel_size, int[2] stride=[], int[2] padding=0, bool ceil_mode=False, bool count_include_pad=True, int? divisor_override=None) -> Tensor
   python_module: nn
@@ -12989,8 +12987,8 @@
     CPU: avg_pool2d_backward_out_cpu
     CUDA: avg_pool2d_backward_out_cuda
     MPS: avg_pool2d_backward_out_mps
-    MkldnnCPU: mkldnn_avg_pool2d_backward_out
     XPU: avg_pool2d_backward_out_xpu
+    MkldnnCPU: mkldnn_avg_pool2d_backward_out
 
 - func: avg_pool2d_backward(Tensor grad_output, Tensor self, int[2] kernel_size, int[2] stride, int[2] padding, bool ceil_mode, bool count_include_pad, int? divisor_override) -> Tensor
   python_module: nn
@@ -13006,8 +13004,8 @@
     CPU: avg_pool3d_out_cpu
     CUDA: avg_pool3d_out_cuda
     MPS: avg_pool3d_out_mps
-    MkldnnCPU: mkldnn_avg_pool3d_out
     XPU: avg_pool3d_out_xpu
+    MkldnnCPU: mkldnn_avg_pool3d_out
 
 - func: avg_pool3d(Tensor self, int[3] kernel_size, int[3] stride=[], int[3] padding=0, bool ceil_mode=False, bool count_include_pad=True, int? divisor_override=None) -> Tensor
   python_module: nn
@@ -13024,8 +13022,8 @@
     CPU: avg_pool3d_backward_out_cpu
     CUDA: avg_pool3d_backward_out_cuda
     MPS: avg_pool3d_backward_out_mps
-    MkldnnCPU: mkldnn_avg_pool3d_backward_out
     XPU: avg_pool3d_backward_out_xpu
+    MkldnnCPU: mkldnn_avg_pool3d_backward_out
 
 - func: avg_pool3d_backward(Tensor grad_output, Tensor self, int[3] kernel_size, int[3] stride, int[3] padding, bool ceil_mode, bool count_include_pad, int? divisor_override) -> Tensor
   python_module: nn
