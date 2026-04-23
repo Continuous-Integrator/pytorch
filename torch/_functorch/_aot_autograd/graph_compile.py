@@ -255,13 +255,19 @@ def aot_stage1_graph_capture(
                     fw_metadata=aot_state.fw_metadata,
                 )
             )
-            # Apply AC rematerialization to forward+loss+bwd graph
-            if torch._functorch.config.remat_using_tags_for_fwd_loss_bwd_graph:
-                from torch._functorch._activation_checkpointing.remat_using_tags_for_fwd_loss_bwd_graph_pass import (
-                    remat_using_tags_for_fwd_loss_bwd_graph,
-                )
 
-                graph = remat_using_tags_for_fwd_loss_bwd_graph(graph)
+        # Apply AC rematerialization only when the graph captures a full
+        # fwd+loss+bwd training step (i.e. it contains torch.autograd.grad
+        # from trace_autograd_ops).
+        if (
+            torch._functorch.config.remat_using_tags_for_fwd_loss_bwd_graph
+            and aot_state.fw_metadata.graph_has_autograd_grad
+        ):
+            from torch._functorch._activation_checkpointing.remat_using_tags_for_fwd_loss_bwd_graph_pass import (
+                remat_using_tags_for_fwd_loss_bwd_graph,
+            )
+
+            graph = remat_using_tags_for_fwd_loss_bwd_graph(graph)
 
     if config.selective_decompose:
         from torch.fx.experimental.proxy_tensor import selective_decompose

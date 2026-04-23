@@ -104,17 +104,17 @@ class GraphModule(torch.nn.Module):
         self.assertExpectedInline(
             fw_actual,
             """\
-class <lambda>(torch.nn.Module):
-    def forward(self, arg0_1: "f32[4, 4]", arg1_1: "f32[4]", arg2_1: "f32[2, 4]"):
-        t: "f32[4, 4]" = torch.ops.aten.t.default(arg0_1);  arg0_1 = None
-        addmm: "f32[2, 4]" = torch.ops.aten.addmm.default(arg1_1, arg2_1, t);  arg1_1 = t = None
+class GraphModule(torch.nn.Module):
+    def forward(self, primals_1: "f32[4, 4]", primals_2: "f32[4]", primals_3: "f32[2, 4]"):
+        t: "f32[4, 4]" = torch.ops.aten.t.default(primals_1);  primals_1 = None
+        addmm: "f32[2, 4]" = torch.ops.aten.addmm.default(primals_2, primals_3, t);  primals_2 = t = None
 
         sum_1: "f32[]" = torch.ops.aten.sum.default(addmm);  addmm = None
 
         ones_like: "f32[]" = torch.ops.aten.ones_like.default(sum_1, pin_memory = False, memory_format = torch.preserve_format)
         expand: "f32[2, 4]" = torch.ops.aten.expand.default(ones_like, [2, 4]);  ones_like = None
         t_1: "f32[4, 2]" = torch.ops.aten.t.default(expand)
-        mm: "f32[4, 4]" = torch.ops.aten.mm.default(t_1, arg2_1);  t_1 = arg2_1 = None
+        mm: "f32[4, 4]" = torch.ops.aten.mm.default(t_1, primals_3);  t_1 = primals_3 = None
         t_2: "f32[4, 4]" = torch.ops.aten.t.default(mm);  mm = None
         sum_2: "f32[1, 4]" = torch.ops.aten.sum.dim_IntList(expand, [0], True);  expand = None
         view: "f32[4]" = torch.ops.aten.view.default(sum_2, [4]);  sum_2 = None
@@ -179,10 +179,10 @@ class GraphModule(torch.nn.Module):
         self.assertExpectedInline(
             fw_actual,
             """\
-class <lambda>(torch.nn.Module):
-    def forward(self, arg0_1: "f32[4, 4]", arg1_1: "f32[4]", arg2_1: "f32[2, 4]"):
-        t: "f32[4, 4]" = torch.ops.aten.t.default(arg0_1);  arg0_1 = None
-        addmm: "f32[2, 4]" = torch.ops.aten.addmm.default(arg1_1, arg2_1, t);  arg1_1 = arg2_1 = t = None
+class GraphModule(torch.nn.Module):
+    def forward(self, primals_1: "f32[4, 4]", primals_2: "f32[4]", primals_3: "f32[2, 4]"):
+        t: "f32[4, 4]" = torch.ops.aten.t.default(primals_1);  primals_1 = None
+        addmm: "f32[2, 4]" = torch.ops.aten.addmm.default(primals_2, primals_3, t);  primals_2 = primals_3 = t = None
 
         sum_1: "f32[]" = torch.ops.aten.sum.default(addmm);  addmm = None
 
@@ -241,17 +241,17 @@ class GraphModule(torch.nn.Module):
         self.assertExpectedInline(
             fw_actual,
             """\
-class <lambda>(torch.nn.Module):
-    def forward(self, arg0_1: "f32[4, 4]", arg1_1: "f32[4]", arg2_1: "f32[2, 4]"):
-        t: "f32[4, 4]" = torch.ops.aten.t.default(arg0_1);  arg0_1 = None
-        addmm: "f32[2, 4]" = torch.ops.aten.addmm.default(arg1_1, arg2_1, t);  arg1_1 = t = None
+class GraphModule(torch.nn.Module):
+    def forward(self, primals_1: "f32[4, 4]", primals_2: "f32[4]", primals_3: "f32[2, 4]"):
+        t: "f32[4, 4]" = torch.ops.aten.t.default(primals_1);  primals_1 = None
+        addmm: "f32[2, 4]" = torch.ops.aten.addmm.default(primals_2, primals_3, t);  primals_2 = t = None
 
         sum_1: "f32[]" = torch.ops.aten.sum.default(addmm);  addmm = None
 
         ones_like: "f32[]" = torch.ops.aten.ones_like.default(sum_1, pin_memory = False, memory_format = torch.preserve_format)
         expand: "f32[2, 4]" = torch.ops.aten.expand.default(ones_like, [2, 4]);  ones_like = None
         t_1: "f32[4, 2]" = torch.ops.aten.t.default(expand);  expand = None
-        mm: "f32[4, 4]" = torch.ops.aten.mm.default(t_1, arg2_1);  t_1 = arg2_1 = None
+        mm: "f32[4, 4]" = torch.ops.aten.mm.default(t_1, primals_3);  t_1 = primals_3 = None
         t_2: "f32[4, 4]" = torch.ops.aten.t.default(mm);  mm = None
         t_3: "f32[4, 4]" = torch.ops.aten.t.default(t_2);  t_2 = None
 

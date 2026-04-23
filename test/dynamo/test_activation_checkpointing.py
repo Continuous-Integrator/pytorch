@@ -2449,20 +2449,20 @@ class RematerializeACNodesPassTests(torch._dynamo.test_case.TestCase):
         self.assertExpectedInline(
             gm_with.code.strip(),
             """\
-def forward(self, arg0_1, arg1_1):
-    mm = torch.ops.aten.mm.default(arg0_1, arg1_1)
+def forward(self, primals_1, primals_2):
+    mm = torch.ops.aten.mm.default(primals_1, primals_2)
     sigmoid = torch.ops.aten.sigmoid.default(mm);  mm = None
     sum_1 = torch.ops.aten.sum.default(sigmoid);  sigmoid = None
     ones_like = torch.ops.aten.ones_like.default(sum_1, pin_memory = False, memory_format = torch.preserve_format);  sum_1 = None
     expand = torch.ops.aten.expand.default(ones_like, [4, 4]);  ones_like = None
-    mm_recomputed = torch.ops.aten.mm.default(arg0_1, arg1_1)
+    mm_recomputed = torch.ops.aten.mm.default(primals_1, primals_2)
     sigmoid_recomputed = torch.ops.aten.sigmoid.default(mm_recomputed);  mm_recomputed = None
     detach_2_recomputed = torch.ops.aten.detach.default(sigmoid_recomputed);  sigmoid_recomputed = None
     detach_4 = torch.ops.aten.detach.default(detach_2_recomputed);  detach_2_recomputed = None
     sigmoid_backward = torch.ops.aten.sigmoid_backward.default(expand, detach_4);  expand = detach_4 = None
-    t = torch.ops.aten.t.default(arg0_1);  arg0_1 = None
+    t = torch.ops.aten.t.default(primals_1);  primals_1 = None
     mm_2 = torch.ops.aten.mm.default(t, sigmoid_backward);  t = None
-    t_1 = torch.ops.aten.t.default(arg1_1);  arg1_1 = None
+    t_1 = torch.ops.aten.t.default(primals_2);  primals_2 = None
     mm_3 = torch.ops.aten.mm.default(sigmoid_backward, t_1);  sigmoid_backward = t_1 = None
     detach_5 = torch.ops.aten.detach.default(mm_3);  mm_3 = None
     detach_6 = torch.ops.aten.detach.default(mm_2);  mm_2 = None
@@ -2628,12 +2628,12 @@ def forward(self, arg0_1, arg1_1):
         self.assertExpectedInline(
             gm_after.code.strip(),
             """\
-def forward(self, arg0_1):
-    sigmoid = torch.ops.aten.sigmoid.default(arg0_1)
+def forward(self, primals_1):
+    sigmoid = torch.ops.aten.sigmoid.default(primals_1)
     sum_1 = torch.ops.aten.sum.default(sigmoid);  sigmoid = None
     ones_like = torch.ops.aten.ones_like.default(sum_1, pin_memory = False, memory_format = torch.preserve_format);  sum_1 = None
     expand = torch.ops.aten.expand.default(ones_like, [4, 4]);  ones_like = None
-    sigmoid_recomputed = torch.ops.aten.sigmoid.default(arg0_1);  arg0_1 = None
+    sigmoid_recomputed = torch.ops.aten.sigmoid.default(primals_1);  primals_1 = None
     detach_3_recomputed = torch.ops.aten.detach.default(sigmoid_recomputed);  sigmoid_recomputed = None
     detach_5 = torch.ops.aten.detach.default(detach_3_recomputed);  detach_3_recomputed = None
     sigmoid_backward = torch.ops.aten.sigmoid_backward.default(expand, detach_5);  expand = detach_5 = None
@@ -2676,12 +2676,12 @@ def forward(self, arg0_1):
         self.assertExpectedInline(
             gm_after.code.strip(),
             """\
-def forward(self, arg0_1):
-    sigmoid = torch.ops.aten.sigmoid.default(arg0_1)
+def forward(self, primals_1):
+    sigmoid = torch.ops.aten.sigmoid.default(primals_1)
     sum_1 = torch.ops.aten.sum.default(sigmoid);  sigmoid = None
     ones_like = torch.ops.aten.ones_like.default(sum_1, pin_memory = False, memory_format = torch.preserve_format);  sum_1 = None
     expand = torch.ops.aten.expand.default(ones_like, [4, 4]);  ones_like = None
-    sigmoid_recomputed = torch.ops.aten.sigmoid.default(arg0_1);  arg0_1 = None
+    sigmoid_recomputed = torch.ops.aten.sigmoid.default(primals_1);  primals_1 = None
     detach_3_recomputed = torch.ops.aten.detach.default(sigmoid_recomputed);  sigmoid_recomputed = None
     detach_5 = torch.ops.aten.detach.default(detach_3_recomputed);  detach_3_recomputed = None
     sigmoid_backward = torch.ops.aten.sigmoid_backward.default(expand, detach_5);  expand = detach_5 = None
@@ -2790,26 +2790,26 @@ def forward(self, arg0_1):
         self.assertExpectedInline(
             gm_with.code.strip(),
             """\
-def forward(self, arg0_1, arg1_1, arg2_1):
-    mm = torch.ops.aten.mm.default(arg0_1, arg1_1)
+def forward(self, primals_1, primals_2, primals_3):
+    mm = torch.ops.aten.mm.default(primals_1, primals_2)
     sin = torch.ops.aten.sin.default(mm);  mm = None
-    mm_1 = torch.ops.aten.mm.default(arg0_1, arg2_1)
+    mm_1 = torch.ops.aten.mm.default(primals_1, primals_3)
     sigmoid = torch.ops.aten.sigmoid.default(mm_1);  mm_1 = None
     detach_4 = torch.ops.aten.detach.default(sigmoid)
     sum_1 = torch.ops.aten.sum.default(sin);  sin = None
     sum_2 = torch.ops.aten.sum.default(sigmoid);  sigmoid = None
     ones_like = torch.ops.aten.ones_like.default(sum_1, pin_memory = False, memory_format = torch.preserve_format);  sum_1 = None
     expand = torch.ops.aten.expand.default(ones_like, [4, 4]);  ones_like = None
-    mm_recomputed = torch.ops.aten.mm.default(arg0_1, arg1_1);  arg0_1 = None
+    mm_recomputed = torch.ops.aten.mm.default(primals_1, primals_2);  primals_1 = None
     cos = torch.ops.aten.cos.default(mm_recomputed);  mm_recomputed = None
     mul = torch.ops.aten.mul.Tensor(expand, cos);  expand = cos = None
-    t = torch.ops.aten.t.default(arg1_1);  arg1_1 = None
+    t = torch.ops.aten.t.default(primals_2);  primals_2 = None
     mm_3 = torch.ops.aten.mm.default(mul, t);  mul = t = None
     ones_like_1 = torch.ops.aten.ones_like.default(sum_2, pin_memory = False, memory_format = torch.preserve_format);  sum_2 = None
     expand_1 = torch.ops.aten.expand.default(ones_like_1, [4, 4]);  ones_like_1 = None
     detach_5 = torch.ops.aten.detach.default(detach_4);  detach_4 = None
     sigmoid_backward = torch.ops.aten.sigmoid_backward.default(expand_1, detach_5);  expand_1 = detach_5 = None
-    t_1 = torch.ops.aten.t.default(arg2_1);  arg2_1 = None
+    t_1 = torch.ops.aten.t.default(primals_3);  primals_3 = None
     mm_4 = torch.ops.aten.mm.default(sigmoid_backward, t_1);  sigmoid_backward = t_1 = None
     add = torch.ops.aten.add.Tensor(mm_3, mm_4);  mm_3 = mm_4 = None
     detach_6 = torch.ops.aten.detach.default(add);  add = None
