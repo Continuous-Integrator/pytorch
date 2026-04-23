@@ -218,6 +218,10 @@ class TestMaxAutotune(TestCase):
     @unittest.skipIf(
         not has_triton_tma_device(), "Need device-side TMA support in Triton"
     )
+    @unittest.skipIf(
+        has_datacenter_blackwell_tma_device(),
+        "Hopper-style mm_persistent_tma template is shadowed by the Blackwell warp-specialized TMA template on data-center Blackwell. Covered by test_max_autotune_blackwell.py",
+    )
     @skipIfXpu(msg="XPU TMA requires contiguous last dimension")
     @parametrize("a_transposed", (False, True))
     @parametrize("b_transposed", (False, True))
@@ -616,6 +620,10 @@ class TestMaxAutotune(TestCase):
     @unittest.skipIf(
         not has_triton_tma_device(), "Need device-side TMA support in Triton"
     )
+    @unittest.skipIf(
+        has_datacenter_blackwell_tma_device(),
+        "Hopper-style mm_persistent_tma template is shadowed by the Blackwell warp-specialized TMA template on data-center Blackwell.",
+    )
     @skipIfXpu(msg="XPU TMA requires contiguous last dimension")
     @parametrize("a_transposed", (False, True))
     @parametrize("b_transposed", (False, True))
@@ -779,6 +787,10 @@ class TestMaxAutotune(TestCase):
     @unittest.skipIf(
         not has_triton_tma_device(), "Need device-side TMA support in Triton"
     )
+    @unittest.skipIf(
+        has_datacenter_blackwell_tma_device(),
+        "Hopper-style mm_persistent_tma template is shadowed by the Blackwell warp-specialized TMA template on data-center Blackwell.",
+    )
     def test_persistent_tma_epilogue_fusion_store_cache(self):
         # Regression test: when epilogue fusion runs with TMA store, the
         # store_cache must be updated so that a subsequent epilogue load from
@@ -857,6 +869,10 @@ class TestMaxAutotune(TestCase):
 
     @unittest.skipIf(
         not has_triton_tma_device(), "Need device-side TMA support in Triton"
+    )
+    @unittest.skipIf(
+        has_datacenter_blackwell_tma_device(),
+        "Hopper-style mm_persistent_tma template is shadowed by the Blackwell warp-specialized TMA template on data-center Blackwell; covered by test_max_autotune_blackwell.py",
     )
     @skipIfXpu(msg="XPU TMA requires contiguous last dimension")
     @parametrize("a_transposed", (False, True))
@@ -3172,6 +3188,10 @@ class TestMaxAutotune(TestCase):
     @unittest.skipIf(TEST_WITH_ROCM, "Test requires CUDA")
     @unittest.skipIf(
         not SM90OrLater, "Requires SM90+ (H100/B200) for sufficient GPU memory"
+    )
+    @unittest.skipIf(
+        has_datacenter_blackwell_tma_device(),
+        "Hopper-style mm_persistent_tma template is shadowed by the Blackwell warp-specialized TMA template on data-center Blackwell.",
     )
     @largeTensorTest("10 GB", device=GPU_TYPE)
     def test_max_autotune_mm_persistent_tma_large_input_tensor_int64_indexing(self):
