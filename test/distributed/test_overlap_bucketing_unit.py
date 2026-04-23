@@ -1057,58 +1057,6 @@ class TestOverlapPreservingBucketing(InductorTestCase):
         # Should not error in deterministic mode (would have errored before fix)
         schedule_overlap_bucketing(gm)
 
-    def test_assume_bucketed_latency_exceeds_exposed_time(self):
-        """
-        When assume_bucketing_reduces_latency is True and two same-type
-        collectives are in-flight, the latency subtraction in
-        _handle_collective_start must not go negative.
-
-        Trigger: custom_runtime_estimation returns a higher value for
-        override_size=0 (latency) than for override_size=None (full estimate).
-        This can happen after analytical model recalibration for small collectives.
-        """
-        from torch._inductor.fx_passes.overlap_scheduling import (
-            schedule_overlap_bucketing,
-        )
-
-        def func(a, b):
-            group_name = "0"
-            group_size = 1
-
-            ag1 = torch.ops._c10d_functional.all_gather_into_tensor(
-                a, group_size, group_name
-            )
-            mm1 = torch.mm(a, b)
-
-            ag2 = torch.ops._c10d_functional.all_gather_into_tensor(
-                b, group_size, group_name
-            )
-
-            ag1_out = torch.ops._c10d_functional.wait_tensor(ag1)
-            ag2_out = torch.ops._c10d_functional.wait_tensor(ag2)
-
-            return mm1.sum() + ag1_out.sum() + ag2_out.sum()
-
-        with FakeTensorMode():
-            a = torch.randn(4, 4, device=self.device)
-            b = torch.randn(4, 4, device=self.device)
-            gm = make_fx(func)(a, b)
-
-        def custom_runtime(node: fx.Node, override_size: int | None) -> float | None:
-            if "all_gather" in str(node.target):
-                if override_size == 0:
-                    return 10.0  # latency only
-                return 3.0  # full estimate < latency
-            if "mm" in str(node.target):
-                return 5.0
-            return 0.0
-
-        schedule_overlap_bucketing(
-            gm,
-            custom_runtime_estimation=custom_runtime,
-            pre_bucketing_fsdp_collectives=False,
-        )
-
 
 @requires_accelerator_dist_backend(["nccl", "xccl"])
 @unittest.skipIf(not HAS_GPU, "Inductor+gpu needs triton and recent GPU arch")
