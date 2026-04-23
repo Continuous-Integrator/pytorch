@@ -4159,29 +4159,53 @@ add_docstr_all(
     r"""
 record_use(stream)
 
-Precise variant of :meth:`~Tensor.record_stream`. Records a completion event
-on :attr:`stream` at the point of this call and attaches it to the tensor's
-underlying allocation. The caching allocator will not reuse the memory until
-every attached event has completed.
+Records a completion event on :attr:`stream` at the point of this call and
+attaches it to the tensor's underlying allocation. When the caching
+allocator later hands this block to a new allocation, it issues
+``cudaStreamWaitEvent`` on the requesting stream for each attached event
+before returning the block — so the requesting stream's FIFO is ordered
+after the consumer's end-of-use without any ``cudaEventQuery`` polling.
 
-Unlike :meth:`~Tensor.record_stream`, which records its event at block
-deallocation time (and therefore waits for *all* work queued on the stream
-at that point, including unrelated work), :meth:`~Tensor.record_use` records
-its event immediately, so the allocator waits no longer than necessary.
+Memory behavior is **timing-deterministic**: the tensor's block returns to
+the pool as soon as the Python ref drops; the ordering required for safe
+reuse is paid at the next allocation, by the reusing stream, via
+``cudaStreamWaitEvent``. This is the same ordering mechanism production
+multi-stream subsystems (e.g. FSDP2) implement manually as
+``next_stream.wait_event(prev_consumer_event)`` before the next iteration's
+allocation; :meth:`~Tensor.record_use` moves that pattern into the
+allocator so user code writes one call instead of a multi-step recipe with
+a Python-side stash.
 
 Typical use: call right after the consumer's last read of the tensor on
-``stream``, then drop the tensor normally. Safe to call multiple times — all
-attached events must complete before reuse. Calling with the allocation
-stream is a no-op. Composes with :meth:`~Tensor.record_stream`: if both are
-used, the allocator waits for every attached event and every recorded
-stream.
+:attr:`stream`, then drop the tensor normally.
+
+.. warning::
+
+    The caller must place :meth:`~Tensor.record_use` **after** the
+    consumer's last read of the tensor on :attr:`stream`. Calling it too
+    early is a use-after-free — the allocator will reuse the block while
+    the consumer kernel is still reading. (:meth:`~Tensor.record_stream`
+    does not have this trap because its event is recorded at free time.)
+
+Properties:
+
+* Calling with the tensor's allocation stream is a no-op.
+* Multiple :meth:`~Tensor.record_use` calls compose: all attached events
+  are waited on at reuse time.
+* Composes with :meth:`~Tensor.record_stream`: both mechanisms gate reuse
+  independently.
+* Under CUDA graph capture, the call is skipped with a warning; precise
+  cross-stream lifetime inside captured graphs is not yet supported.
+* If the stream is on a different device than the tensor's allocation
+  device, the call is skipped with a warning.
 
 .. note::
 
-    Precise tracking is currently implemented by the native CUDA caching
-    allocator. Other allocators (e.g. ``cudaMallocAsync``, pluggable custom
-    allocators) fall back to :meth:`~Tensor.record_stream` semantics, which
-    is correct but imprecise.
+    :meth:`~Tensor.record_use` is currently implemented only by the native
+    CUDA caching allocator. Other allocators (``cudaMallocAsync``,
+    pluggable custom allocators) fall back to
+    :meth:`~Tensor.record_stream` semantics, which is correct but uses
+    event polling rather than FIFO ordering.
 
 Example::
 
@@ -4192,7 +4216,7 @@ Example::
     with torch.cuda.stream(s1):
         y = some_op(x)      # consumer's read of x
         x.record_use(s1)    # mark x's use on s1 as complete here
-    del x                   # safe to drop from any stream
+    del x                   # safe from any stream, any thread
 """,
 )
 
