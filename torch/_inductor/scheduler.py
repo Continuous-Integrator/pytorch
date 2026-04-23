@@ -5289,7 +5289,8 @@ class Scheduler:
                         accepted_nodes,
                     )
 
-                    # Only retry a later remainder here. An earlier remainder already failed.
+                    # Only retry a later remainder here. An earlier remainder
+                    # already failed.
                     accepted = accepted_nodes
                     if len(accepted) < len(candidate):
                         accepted_set = OrderedSet(accepted)
@@ -5475,6 +5476,8 @@ class Scheduler:
             for buf in n.get_buffer_names():
                 name_to_local_pos[buf] = i
         topo_valid = True
+        # Most local rewrites stay topo-valid; only sort when the combo
+        # replacement moves a producer after one of its local users.
         for i, n in enumerate(local_nodes):
             for dep in n.unmet_dependencies:
                 p = name_to_local_pos.get(dep.name)
@@ -5495,26 +5498,30 @@ class Scheduler:
             new_step[node] = combo_step
 
         def step_of(node: BaseSchedulerNode) -> int:
-            # A node may already have moved because of an earlier accepted combo.
-            s = new_step.get(node)
-            if s is not None:
-                return s
-            s = accepted_step.get(node)
-            if s is not None:
-                return s
-            if node in node_to_idx:
-                return node_to_idx[node]
+            # This node may already have a new step from this tentative combo or from
+            # an earlier accepted combo.
+            def lookup(n: BaseSchedulerNode) -> int | None:
+                if n in new_step:
+                    return new_step[n]
+                if n in accepted_step:
+                    return accepted_step[n]
+                return node_to_idx.get(n)
+
+            step = lookup(node)
+            if step is not None:
+                return step
+
+            # If this exact node is stale, fall back to the top-level fused
+            # owner that currently represents it in the schedule.
             top = name_to_fused_node.get(node.get_name())
-            if top is not None:
-                if top in new_step:
-                    return new_step[top]
-                if top in accepted_step:
-                    return accepted_step[top]
-                if top in node_to_idx:
-                    return node_to_idx[top]
-            return -1
+            if top is None:
+                return -1
+
+            step = lookup(top)
+            return -1 if step is None else step
 
         region_size = region_end - region_start + 1
+        region_end_plus_1 = region_end + 1
         region_delta = [0] * (region_size + 1)
         # Only nodes in the local region move. Users outside the region keep
         # their baseline steps, and overlapping accepted combos are collapsed
@@ -5526,39 +5533,43 @@ class Scheduler:
             if region_start <= new_start <= region_end:
                 region_delta[new_start - region_start] += size_alloc
             free_slot = new_end + 1
-            if region_start <= free_slot <= region_end + 1:
+            if region_start <= free_slot <= region_end_plus_1:
                 region_delta[free_slot - region_start] -= size_free
+
+        def succ_steps_of(buf) -> list[int]:
+            return [
+                s_step for s in buf.mpi_buffer.succ_nodes if (s_step := step_of(s)) >= 0
+            ]
 
         FreeableInputBuffer = mem_ctx.freeable_input_buffer_cls
         graph_outputs = mem_ctx.graph_outputs
         for bi in mem_ctx.buf_info_list:
-            buf_for_remap = bi.buffer
+            buf = bi.buffer
             remap_start: int | None = None
-            if not isinstance(buf_for_remap, FreeableInputBuffer):
-                defining = buf_for_remap.defining_op
-                if defining is not None:
-                    cand = step_of(defining)
-                    if region_start <= cand <= region_end:
-                        remap_start = cand
+            if not isinstance(buf, FreeableInputBuffer) and buf.defining_op is not None:
+                cand = step_of(buf.defining_op)
+                if region_start <= cand <= region_end:
+                    remap_start = cand
 
             latest_event = max(bi.start_step, bi.end_step + 1)
             earliest_event = min(bi.start_step, bi.end_step + 1)
+            # Skip buffers whose defining step did not move and whose baseline
+            # lifetime never touches this rewritten region.
             if remap_start is None and (
-                latest_event < region_start or earliest_event > region_end + 1
+                latest_event < region_start or earliest_event > region_end_plus_1
             ):
                 continue
 
-            buf = bi.buffer
             if isinstance(buf, FreeableInputBuffer):
-                succ = buf.mpi_buffer.succ_nodes
-                if not succ or buf.get_name() in graph_outputs:
+                # Freeable inputs are already live on entry; only their last
+                # consumer can move when the local region is rewritten.
+                if buf.get_name() in graph_outputs:
                     continue
-                succ_steps = [s_step for s in succ if (s_step := step_of(s)) >= 0]
+                succ_steps = succ_steps_of(buf)
                 if not succ_steps:
                     continue
-                new_end = max(succ_steps)
                 alloc = bi.size_alloc if region_start == 0 else 0
-                accumulate(alloc, bi.size_free, 0, new_end)
+                accumulate(alloc, bi.size_free, 0, max(succ_steps))
                 continue
 
             defining = buf.defining_op
@@ -5567,13 +5578,11 @@ class Scheduler:
             new_start = step_of(defining)
             if new_start < 0:
                 continue
-            succ = buf.mpi_buffer.succ_nodes
             if buf.get_name() in graph_outputs:
+                # Graph outputs stay live through the end of the graph.
                 new_end = -1
-            elif not succ:
-                new_end = new_start
             else:
-                succ_steps = [s_step for s in succ if (s_step := step_of(s)) >= 0]
+                succ_steps = succ_steps_of(buf)
                 new_end = max(succ_steps) if succ_steps else new_start
 
             accumulate(bi.size_alloc, bi.size_free, new_start, new_end)
@@ -5601,7 +5610,7 @@ class Scheduler:
             limits.append(float(abs_thr))
         if pct_thr is not None:
             limits.append(pct_thr * baseline_peak)
-        allowed_delta = max(limits) if limits else None
+        allowed_delta = max(limits, default=None)
         accept = allowed_delta is None or delta <= allowed_delta
 
         if accept:
