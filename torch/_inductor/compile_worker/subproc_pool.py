@@ -450,6 +450,11 @@ class SubprocMain:
 
     @staticmethod
     def do_job(pickler: SubprocPickler, data: bytes) -> bytes:
+        import time
+
+        pid = os.getpid()
+        t0 = time.perf_counter()
+        print(f"[worker {pid}] job start t={t0:.3f}", flush=True)
         # do the pickle/unpickle in the sub-subproc
         job = typing.cast(Callable[[], object], pickler.loads(data))
 
@@ -457,6 +462,10 @@ class SubprocMain:
             result = job()
         except Exception:
             result = _SubprocExceptionInfo(traceback.format_exc())
+        print(
+            f"[worker {pid}] job end dt={time.perf_counter() - t0:.3f}s",
+            flush=True,
+        )
         return pickler.dumps(result)
 
 
