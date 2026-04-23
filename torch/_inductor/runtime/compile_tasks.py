@@ -114,6 +114,41 @@ def _set_triton_libdevice_path_impl() -> None:
         )
 
 
+def _worker_compile_cutedsl(
+    kernel_name: str,
+    source_code: str,
+    main_suffix: str,
+    extra_env: dict[str, str],
+) -> tuple[str, str, int]:
+    """
+    Subprocess worker for CuteDSL kernel compilation.
+
+    Writes source to PyCodeCache and loads the module, triggering @cute.kernel /
+    @cute.jit MLIR compilation. Returns (key, path, elapsed_us) so the parent
+    can reload the module cheaply (MLIR caches are warmed on disk).
+    """
+    os.environ.update(extra_env)
+
+    start_ns = time.time_ns()
+
+    import torch._inductor.codecache as codecache
+
+    key, path = codecache.PyCodeCache.write(source_code)
+    mod = codecache.PyCodeCache.load_by_key_path(key, path)
+
+    main_func_name = f"{kernel_name}_{main_suffix}"
+    if not hasattr(mod, main_func_name):
+        available = [name for name in dir(mod) if callable(getattr(mod, name))]
+        raise RuntimeError(
+            f"Could not find kernel function '{main_func_name}'. "
+            f"Available callables: {available}"
+        )
+
+    elapsed_ns = time.time_ns() - start_ns
+    linecache.clearcache()
+    return key, path, elapsed_ns // 1000
+
+
 def _worker_compile_triton(
     load_kernel: Callable[[], CachingAutotuner],
     extra_env: dict[str, str],
