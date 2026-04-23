@@ -983,9 +983,10 @@ class FunctionalizedRngRuntimeWrapper(InductorWrapper):
         if not runtime_metadata.is_rng_op_functionalized:
             return compiled_fn
 
-        assert runtime_metadata.num_outputs_rng_offset == 1, (
-            f"expected num_outputs_rng_offset == 1, got {runtime_metadata.num_outputs_rng_offset}"
-        )
+        if runtime_metadata.num_outputs_rng_offset != 1:
+            raise AssertionError(
+                f"expected num_outputs_rng_offset == 1, got {runtime_metadata.num_outputs_rng_offset}"
+            )
 
         from .subclass_codegen import _compile_and_exec_source
 
