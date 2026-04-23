@@ -250,26 +250,7 @@ jobs:
           "${PYTORCH_ROOT}/.ci/wheel/build_wheel.sh"
       - name: Delocate all wheels
         run: "${PYTORCH_ROOT}/.ci/wheel/delocate_wheels.sh"
-      # Smoke-test + upload phase: each iteration re-activates its Python
-      # (cache hit from the build phase) and exercises the delocated wheel.
-      - name: Setup Python 3.10 (smoke)
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.10.4"
-          freethreaded: false
-      - name: Smoke-test wheel 3.10
-        env:
-          PYTORCH_FINAL_PACKAGE_DIR: ${{ runner.temp }}/artifacts/wheel-py3_10-cpu
-        run: |
-          set -eux -o pipefail
-          venv_dir="${RUNNER_TEMP}/test_venv_wheel-py3_10-cpu"
-          rm -rf "$venv_dir"
-          python -mvenv "$venv_dir"
-          # shellcheck disable=SC1091
-          source "$venv_dir/bin/activate"
-          pip install "$PYTORCH_FINAL_PACKAGE_DIR"/*.whl numpy -v
-          python "${PYTORCH_ROOT}/.ci/pytorch/smoke_test/smoke_test.py" --package torchonly
-          deactivate
+      # Upload phase: each wheel becomes its own artifact (one call per name).
       - name: Upload wheel-py3_10-cpu
         uses: actions/upload-artifact@v4.4.0
         if: always()
@@ -278,24 +259,6 @@ jobs:
           retention-days: 14
           if-no-files-found: error
           path: ${{ runner.temp }}/artifacts/wheel-py3_10-cpu
-      - name: Setup Python 3.11 (smoke)
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.11.4"
-          freethreaded: false
-      - name: Smoke-test wheel 3.11
-        env:
-          PYTORCH_FINAL_PACKAGE_DIR: ${{ runner.temp }}/artifacts/wheel-py3_11-cpu
-        run: |
-          set -eux -o pipefail
-          venv_dir="${RUNNER_TEMP}/test_venv_wheel-py3_11-cpu"
-          rm -rf "$venv_dir"
-          python -mvenv "$venv_dir"
-          # shellcheck disable=SC1091
-          source "$venv_dir/bin/activate"
-          pip install "$PYTORCH_FINAL_PACKAGE_DIR"/*.whl numpy -v
-          python "${PYTORCH_ROOT}/.ci/pytorch/smoke_test/smoke_test.py" --package torchonly
-          deactivate
       - name: Upload wheel-py3_11-cpu
         uses: actions/upload-artifact@v4.4.0
         if: always()
@@ -304,24 +267,6 @@ jobs:
           retention-days: 14
           if-no-files-found: error
           path: ${{ runner.temp }}/artifacts/wheel-py3_11-cpu
-      - name: Setup Python 3.12 (smoke)
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.12.4"
-          freethreaded: false
-      - name: Smoke-test wheel 3.12
-        env:
-          PYTORCH_FINAL_PACKAGE_DIR: ${{ runner.temp }}/artifacts/wheel-py3_12-cpu
-        run: |
-          set -eux -o pipefail
-          venv_dir="${RUNNER_TEMP}/test_venv_wheel-py3_12-cpu"
-          rm -rf "$venv_dir"
-          python -mvenv "$venv_dir"
-          # shellcheck disable=SC1091
-          source "$venv_dir/bin/activate"
-          pip install "$PYTORCH_FINAL_PACKAGE_DIR"/*.whl numpy -v
-          python "${PYTORCH_ROOT}/.ci/pytorch/smoke_test/smoke_test.py" --package torchonly
-          deactivate
       - name: Upload wheel-py3_12-cpu
         uses: actions/upload-artifact@v4.4.0
         if: always()
@@ -330,24 +275,6 @@ jobs:
           retention-days: 14
           if-no-files-found: error
           path: ${{ runner.temp }}/artifacts/wheel-py3_12-cpu
-      - name: Setup Python 3.13 (smoke)
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.13.4"
-          freethreaded: false
-      - name: Smoke-test wheel 3.13
-        env:
-          PYTORCH_FINAL_PACKAGE_DIR: ${{ runner.temp }}/artifacts/wheel-py3_13-cpu
-        run: |
-          set -eux -o pipefail
-          venv_dir="${RUNNER_TEMP}/test_venv_wheel-py3_13-cpu"
-          rm -rf "$venv_dir"
-          python -mvenv "$venv_dir"
-          # shellcheck disable=SC1091
-          source "$venv_dir/bin/activate"
-          pip install "$PYTORCH_FINAL_PACKAGE_DIR"/*.whl numpy -v
-          python "${PYTORCH_ROOT}/.ci/pytorch/smoke_test/smoke_test.py" --package torchonly
-          deactivate
       - name: Upload wheel-py3_13-cpu
         uses: actions/upload-artifact@v4.4.0
         if: always()
@@ -356,24 +283,6 @@ jobs:
           retention-days: 14
           if-no-files-found: error
           path: ${{ runner.temp }}/artifacts/wheel-py3_13-cpu
-      - name: Setup Python 3.13t (smoke)
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.13.4"
-          freethreaded: true
-      - name: Smoke-test wheel 3.13t
-        env:
-          PYTORCH_FINAL_PACKAGE_DIR: ${{ runner.temp }}/artifacts/wheel-py3_13t-cpu
-        run: |
-          set -eux -o pipefail
-          venv_dir="${RUNNER_TEMP}/test_venv_wheel-py3_13t-cpu"
-          rm -rf "$venv_dir"
-          python -mvenv "$venv_dir"
-          # shellcheck disable=SC1091
-          source "$venv_dir/bin/activate"
-          pip install "$PYTORCH_FINAL_PACKAGE_DIR"/*.whl numpy -v
-          python "${PYTORCH_ROOT}/.ci/pytorch/smoke_test/smoke_test.py" --package torchonly
-          deactivate
       - name: Upload wheel-py3_13t-cpu
         uses: actions/upload-artifact@v4.4.0
         if: always()
@@ -382,24 +291,6 @@ jobs:
           retention-days: 14
           if-no-files-found: error
           path: ${{ runner.temp }}/artifacts/wheel-py3_13t-cpu
-      - name: Setup Python 3.14 (smoke)
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.14.0"
-          freethreaded: false
-      - name: Smoke-test wheel 3.14
-        env:
-          PYTORCH_FINAL_PACKAGE_DIR: ${{ runner.temp }}/artifacts/wheel-py3_14-cpu
-        run: |
-          set -eux -o pipefail
-          venv_dir="${RUNNER_TEMP}/test_venv_wheel-py3_14-cpu"
-          rm -rf "$venv_dir"
-          python -mvenv "$venv_dir"
-          # shellcheck disable=SC1091
-          source "$venv_dir/bin/activate"
-          pip install "$PYTORCH_FINAL_PACKAGE_DIR"/*.whl numpy -v
-          python "${PYTORCH_ROOT}/.ci/pytorch/smoke_test/smoke_test.py" --package torchonly
-          deactivate
       - name: Upload wheel-py3_14-cpu
         uses: actions/upload-artifact@v4.4.0
         if: always()
@@ -408,24 +299,6 @@ jobs:
           retention-days: 14
           if-no-files-found: error
           path: ${{ runner.temp }}/artifacts/wheel-py3_14-cpu
-      - name: Setup Python 3.14t (smoke)
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.14.0"
-          freethreaded: true
-      - name: Smoke-test wheel 3.14t
-        env:
-          PYTORCH_FINAL_PACKAGE_DIR: ${{ runner.temp }}/artifacts/wheel-py3_14t-cpu
-        run: |
-          set -eux -o pipefail
-          venv_dir="${RUNNER_TEMP}/test_venv_wheel-py3_14t-cpu"
-          rm -rf "$venv_dir"
-          python -mvenv "$venv_dir"
-          # shellcheck disable=SC1091
-          source "$venv_dir/bin/activate"
-          pip install "$PYTORCH_FINAL_PACKAGE_DIR"/*.whl numpy -v
-          python "${PYTORCH_ROOT}/.ci/pytorch/smoke_test/smoke_test.py" --package torchonly
-          deactivate
       - name: Upload wheel-py3_14t-cpu
         uses: actions/upload-artifact@v4.4.0
         if: always()
@@ -434,6 +307,72 @@ jobs:
           retention-days: 14
           if-no-files-found: error
           path: ${{ runner.temp }}/artifacts/wheel-py3_14t-cpu
+  # Smoke-test each delocated wheel on a fresh runner so we validate the
+  # wheel is truly self-contained (and not relying on host state left by the
+  # build job).
+  wheel-test:
+    if: ${{ github.repository_owner == 'pytorch' }}
+    needs: wheel-build
+    runs-on: macos-26-xlarge
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - desired_python: "3.10"
+            setup_python_version: "3.10.4"
+            freethreaded: false
+            build_name: wheel-py3_10-cpu
+          - desired_python: "3.11"
+            setup_python_version: "3.11.4"
+            freethreaded: false
+            build_name: wheel-py3_11-cpu
+          - desired_python: "3.12"
+            setup_python_version: "3.12.4"
+            freethreaded: false
+            build_name: wheel-py3_12-cpu
+          - desired_python: "3.13"
+            setup_python_version: "3.13.4"
+            freethreaded: false
+            build_name: wheel-py3_13-cpu
+          - desired_python: "3.13t"
+            setup_python_version: "3.13.4"
+            freethreaded: true
+            build_name: wheel-py3_13t-cpu
+          - desired_python: "3.14"
+            setup_python_version: "3.14.0"
+            freethreaded: false
+            build_name: wheel-py3_14-cpu
+          - desired_python: "3.14t"
+            setup_python_version: "3.14.0"
+            freethreaded: true
+            build_name: wheel-py3_14t-cpu
+    steps:
+      - name: Checkout smoke-test script
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          sparse-checkout: .ci/pytorch/smoke_test/
+          show-progress: false
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "${{ matrix.setup_python_version }}"
+          freethreaded: ${{ matrix.freethreaded }}
+      - uses: actions/download-artifact@v4.1.7
+        with:
+          name: ${{ matrix.build_name }}
+          path: "${{ runner.temp }}/artifacts"
+      - name: Smoke-test wheel
+        run: |
+          set -eux -o pipefail
+          venv_dir="${RUNNER_TEMP}/test_venv"
+          rm -rf "$venv_dir"
+          python -mvenv "$venv_dir"
+          # shellcheck disable=SC1091
+          source "$venv_dir/bin/activate"
+          pip install "${RUNNER_TEMP}/artifacts"/*.whl numpy -v
+          python .ci/pytorch/smoke_test/smoke_test.py --package torchonly
 
   wheel-upload:
     if: ${{ github.repository_owner == 'pytorch' }}
