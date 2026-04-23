@@ -185,6 +185,31 @@ So the standalone repro and the ROCm bug are **two different races that both get
 
 The pragmatic answer: keep `test_partial_group_forward_then_standalone` as the ROCm-side regression guard and document the standalone repro as the CUDA-side one. Adding either option 3 or 4 on top is optional.
 
+### ROCm standalone ref-hold verification (MI350X, 2026-04-23)
+
+Direct verification of the two-vector framing above, from the ROCm side. Extended `rccl_chunked_loss_repro.py` with a `--hold-refs` flag that mimics FSDP's `reduce_scatter_states.append(...)` by retaining Python refs to `rs_input` (and optionally `rs_output`) across all chunks of an iteration, released only at iter end. If ROCm's standalone race vector were actually an allocator-internal / RCCL-workspace buffer (as the table above claims for ROCm FSDP), no Python ref would close it.
+
+| Config | Races / 200 iters |
+|---|---|
+| `--hold-refs off --sync-mode none` (baseline) | **32/200** (16%) |
+| `--hold-refs input --sync-mode none` (rs_input held, mimics FSDP exactly) | **0/200** |
+| `--hold-refs both --sync-mode none` (rs_input + rs_output held) | **0/200** |
+| `--hold-refs both --sync-mode post_accum_event_stream` (fix, sanity) | **0/200** |
+
+Holding `rs_input` alone is sufficient to close the standalone race on ROCm. Same behavior as CUDA — the standalone repro's race is on the Python-reachable `rs_input` block on both platforms.
+
+This **strengthens the two-vector framing** rather than refuting it. We now have direct evidence that:
+
+- **Standalone repro's vector = `rs_input`, cross-platform.** CUDA baseline 2/3 races (doc row above); ROCm baseline 32/200 races; ROCm `rs_input`-held 0/200 races. The vector is identical on both platforms.
+- **FSDP path's ROCm vector ≠ `rs_input`.** FSDP already ref-holds `rs_input` via `reduce_scatter_states.append(...)`, and that ref-hold is provably sufficient to close the `rs_input` race (this experiment). Yet `test_partial_group_forward_then_standalone` still fails bit-exactly on ROCm. Therefore the FSDP race must be on a buffer no Python ref covers — consistent with Experiments K, L, N all holding every other Python-reachable tensor and still failing.
+
+**Implication for framing the bug:** it's one cross-platform stream-ordering bug with two race windows closed by the same stream-level wait:
+
+1. `rs_input` block reuse — active in the standalone repro on both platforms; inert in FSDP on both platforms because `reduce_scatter_states.append` shields it.
+2. Allocator-internal / RCCL-workspace reuse — active in FSDP on ROCm. Not directly testable on CUDA FSDP (assertion is bit-exact with or without the fix), so this vector is either absent on CUDA or timing-masked by the same back-pressure that hides vector 1 in CUDA standalone without `_sleep`.
+
+Either way the fix is a single stream-order edge that covers both. Reinforces the row-0 decision to make the `wait_event` unconditional: CUDA FSDP gains latent protection against vector 2 if back-pressure ever shrinks; ROCm FSDP gets the actual fix.
+
 ### Original interpretation rubric (kept for reference — outcome: Run 1 ≥ 1/3)
 
 - Run 1 (the key test) is **0/3 races** ⇒ CUDA's caching allocator event gating actively prevents buffer reuse across streams until the producer event fires. The doc's framing is correct: FSDP2's missing sync is a latent hazard that CUDA's allocator correctness covers, and ROCm exposes because RCCL/HIP gating is looser. The fix is needed for ROCm, not for CUDA.
