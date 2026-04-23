@@ -114,18 +114,18 @@ def _set_triton_libdevice_path_impl() -> None:
         )
 
 
-def _worker_compile_cutedsl(
+def _worker_compile_pycodecache_kernel(
     kernel_name: str,
     source_code: str,
     main_suffix: str,
     extra_env: dict[str, str],
 ) -> tuple[str, str, int]:
     """
-    Subprocess worker for CuteDSL kernel compilation.
+    Subprocess worker for PyCodeCache-based kernel compilation (CuteDSL, NV Universal GEMM).
 
-    Writes source to PyCodeCache and loads the module, triggering @cute.kernel /
-    @cute.jit MLIR compilation. Returns (key, path, elapsed_us) so the parent
-    can reload the module cheaply (MLIR caches are warmed on disk).
+    Writes source to PyCodeCache and loads the module, triggering compilation
+    (e.g. MLIR via @cute.kernel/@cute.jit). Returns (key, path, elapsed_us)
+    so the parent can reload the module cheaply from warmed caches.
     """
     os.environ.update(extra_env)
 

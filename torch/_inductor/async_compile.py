@@ -50,7 +50,7 @@ from torch._inductor.compile_worker.utils import _async_compile_initializer
 from torch._inductor.runtime.compile_tasks import (
     _set_triton_libdevice_path,
     _set_triton_ptxas_path,
-    _worker_compile_cutedsl,
+    _worker_compile_pycodecache_kernel,
     _worker_compile_triton,
 )
 from torch._inductor.utils import clear_on_fresh_cache
@@ -628,11 +628,11 @@ class AsyncCompile:
             return task()
 
         if self.use_process_pool():
-            env_vars = ["TORCHINDUCTOR_CACHE_DIR"]
+            env_vars = ["TORCHINDUCTOR_CACHE_DIR", "TORCHINDUCTOR_CUTLASS_DIR"]
             extra_env = {v: os.environ[v] for v in env_vars if v in os.environ}
 
             subprocess_task = self.process_pool().submit(
-                _worker_compile_cutedsl,
+                _worker_compile_pycodecache_kernel,
                 kernel_name,
                 source_code,
                 MAIN_SUFFIX,
@@ -644,6 +644,11 @@ class AsyncCompile:
                     key, path, elapsed_us = subprocess_task.result()
                 except SubprocException as e:
                     raise e.with_name(kernel_name) from e
+                log.debug(
+                    "CuteDSL kernel %s compiled in subprocess in %dus",
+                    kernel_name,
+                    elapsed_us,
+                )
                 return self._load_kernel_wrapper(
                     kernel_name, MAIN_SUFFIX, CuteDSLKernelWrapper, key, path
                 )
@@ -731,11 +736,11 @@ class AsyncCompile:
             return task()
 
         if self.use_process_pool():
-            env_vars = ["TORCHINDUCTOR_CACHE_DIR"]
+            env_vars = ["TORCHINDUCTOR_CACHE_DIR", "TORCHINDUCTOR_CUTLASS_DIR"]
             extra_env = {v: os.environ[v] for v in env_vars if v in os.environ}
 
             subprocess_task = self.process_pool().submit(
-                _worker_compile_cutedsl,
+                _worker_compile_pycodecache_kernel,
                 kernel_name,
                 source_code,
                 MAIN_SUFFIX,
@@ -747,6 +752,11 @@ class AsyncCompile:
                     key, path, elapsed_us = subprocess_task.result()
                 except SubprocException as e:
                     raise e.with_name(kernel_name) from e
+                log.debug(
+                    "NV Universal GEMM kernel %s compiled in subprocess in %dus",
+                    kernel_name,
+                    elapsed_us,
+                )
                 return self._load_kernel_wrapper(
                     kernel_name, MAIN_SUFFIX, NVUniversalGemmKernelWrapper, key, path
                 )
