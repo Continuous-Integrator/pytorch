@@ -1962,7 +1962,7 @@ class TestMetaKernelRegistrations(TestCase):
         from torch._decomp.decompositions import rrelu_with_noise_backward
 
         x = torch.randn(5, requires_grad=True)
-        lower, upper = 0.125, 0.125 + 1e-7
+        lower, upper = 0.125, 0.125 + torch.finfo(torch.float32).eps
         noise = torch.rand(5)
         grad = torch.ones(5)
         cpp_result = torch.ops.aten.rrelu_with_noise_backward(
@@ -1973,23 +1973,18 @@ class TestMetaKernelRegistrations(TestCase):
         )
         self.assertEqual(cpp_result, decomp_result)
 
-
-class TestMetaKernelRegistrationsDeviceType(TestCase):
     @skipIfTorchDynamo("tests raw meta kernel, not dynamo")
-    def test_linalg_eig_strides(self, device):
-        matrix = torch.randn(3, 3, device=device)
-        matrix_meta = torch.randn(3, 3, device="meta")
-        _, eigvecs = torch.linalg.eig(matrix)
-        _, eigvecs_meta = torch.linalg.eig(matrix_meta)
-        self.assertEqual(eigvecs.stride(), eigvecs_meta.stride())
-        self.assertEqual(eigvecs.shape, eigvecs_meta.shape)
-        self.assertEqual(eigvecs.dtype, eigvecs_meta.dtype)
+    def test_linalg_eig_strides(self):
+        A_cpu = torch.randn(3, 3)
+        A_meta = torch.randn(3, 3, device="meta")
+        _, eigvecs_cpu = torch.linalg.eig(A_cpu)
+        _, eigvecs_meta = torch.linalg.eig(A_meta)
+        self.assertEqual(eigvecs_cpu.stride(), eigvecs_meta.stride())
+        self.assertEqual(eigvecs_cpu.shape, eigvecs_meta.shape)
+        self.assertEqual(eigvecs_cpu.dtype, eigvecs_meta.dtype)
 
 
 instantiate_device_type_tests(TestMeta, globals())
-instantiate_device_type_tests(
-    TestMetaKernelRegistrationsDeviceType, globals(), only_for=("cpu", "cuda")
-)
 
 
 def print_op_str_if_not_supported(op_str):
