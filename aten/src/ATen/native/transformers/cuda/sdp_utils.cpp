@@ -496,10 +496,21 @@ bool check_cudnn_dropout(sdp_params const& params, bool debug) {
 }
 
 bool check_cudnn_tensor_shapes(sdp_params const& params, bool debug) {
+  const auto b = params.query.sym_size(0);
   const auto s_q = params.query.sym_size(2);
   const auto s_k = params.key.sym_size(2);
   const auto d_qk = params.query.sym_size(3);
   const auto d_v = params.value.sym_size(3);
+  // cuDNN uses 16-bit indexing for batch dimension internally
+  constexpr int64_t max_cudnn_batch_size = 65535;
+  if (b > max_cudnn_batch_size) {
+    if (debug) {
+      TORCH_WARN(
+          "cuDNN SDPA does not support batch size greater than ",
+          max_cudnn_batch_size);
+    }
+    return false;
+  }
   long cudnn_version = at::detail::getCUDAHooks().versionRuntimeCuDNN();
   if (cudnn_version < 8903) {
     if (debug) {
