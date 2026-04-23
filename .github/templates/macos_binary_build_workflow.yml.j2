@@ -81,11 +81,14 @@ jobs:
           # Remove any artifacts from the previous checkouts
           git clean -fxd
       - name: Install libomp
-        run: "${PYTORCH_ROOT}/.ci/wheel/install_libomp.sh"
+        run: |
+          "${PYTORCH_ROOT}/.ci/wheel/install_libomp.sh"
       - name: Build all wheels
-        run: "${PYTORCH_ROOT}/.ci/wheel/build_all_macos_wheels.sh"
+        run: |
+          "${PYTORCH_ROOT}/.ci/wheel/build_all_macos_wheels.sh"
       - name: Delocate all wheels
-        run: "${PYTORCH_ROOT}/.ci/wheel/delocate_wheels.sh"
+        run: |
+          "${PYTORCH_ROOT}/.ci/wheel/delocate_wheels.sh"
       # Upload phase: each wheel becomes its own artifact (one call per name).
 {%- for config in build_configs %}
       - name: Upload !{{ config["build_name"] }}
@@ -100,11 +103,17 @@ jobs:
 
 {%- if first["package_type"] == "wheel" %}
   # Each matrix entry invokes _binary-test-macos.yml independently, so the
-  # test (on macos-26) → upload (on ubuntu, via _binary-upload.yml) chain
+  # test (on macos-26) -> upload (on ubuntu, via _binary-upload.yml) chain
   # runs per-Python-version: test-X failing blocks only upload-X.
   wheel-test-upload:
     if: ${{ github.repository_owner == 'pytorch' }}
     needs: wheel-build
+    # Must be granted at this level; permissions do not automatically flow into
+    # the upload step of the nested _binary-test-macos.yml → _binary-upload.yml
+    # chain, and the inner upload needs id-token:write for AWS OIDC.
+    permissions:
+      id-token: write
+      contents: read
     strategy:
       fail-fast: false
       matrix:
