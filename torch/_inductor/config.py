@@ -1501,6 +1501,15 @@ autotune_lookup_table: dict[str, dict[str, Any]] = {}
 
 file_lock_timeout: int = int(os.environ.get("TORCHINDUCTOR_FILE_LOCK_TIMEOUT", "600"))
 
+# Per-future timeout (seconds) for AsyncCompile._wait_futures. If a compile
+# worker does not finish within this time, raise a RuntimeError naming the
+# kernel instead of blocking the parent until the outer CI timeout fires.
+# Slowest legitimate single-test compile observed is ~130s, so 300s leaves
+# ~2.3x margin.
+compile_worker_wait_timeout: int = int(
+    os.environ.get("TORCHINDUCTOR_COMPILE_WORKER_WAIT_TIMEOUT", "300")
+)
+
 enable_autograd_for_aot: bool = False
 
 
