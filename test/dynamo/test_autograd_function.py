@@ -2421,6 +2421,56 @@ class GraphModule(torch.nn.Module):
         out_c.backward()
         self.assertEqual(x_ref.grad, x_c.grad)
 
+    def test_property_with_side_effect_in_backward_fails(self):
+        # A property setter that has a real side effect (incrementing a
+        # counter) is NOT a nullified mutation even if the value is restored.
+        # Dynamo traces through the setter and sees the non-nullified
+        # set_count increment.
+        import contextlib
+
+        class State:
+            def __init__(self):
+                self._enabled = False
+                self.set_count = 0
+
+            @property
+            def enabled(self):
+                return self._enabled
+
+            @enabled.setter
+            def enabled(self, val):
+                self.set_count += 1
+                self._enabled = val
+
+        state = State()
+
+        @contextlib.contextmanager
+        def toggle():
+            old = state.enabled
+            state.enabled = True
+            try:
+                yield
+            finally:
+                state.enabled = old
+
+        class Foo(torch.autograd.Function):
+            @staticmethod
+            def forward(ctx, x):
+                return x.clone()
+
+            @staticmethod
+            def backward(ctx, grad):
+                with toggle():
+                    return grad.clone()
+
+        def fn(x):
+            return Foo.apply(x).sum()
+
+        x = torch.randn(8, requires_grad=True)
+        with self.assertRaises(torch._dynamo.exc.Unsupported):
+            out = torch.compile(fn, backend="eager", fullgraph=True)(x)
+            out.backward()
+
 
 class AutogradFunctionFunctorchTests(torch._dynamo.test_case.TestCase):
     """Tests for autograd.Function compatibility with torch.func transforms.

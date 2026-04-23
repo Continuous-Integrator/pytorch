@@ -213,6 +213,7 @@ class SideEffects:
         check_allowed_side_effect.
         """
         key = (id(item), name)
+        assert value.is_python_constant()  # guaranteed by caller (store_attr)
         current = value.as_python_constant()
         if key in self.deferred_attr_mutations:
             original = self.deferred_attr_mutations[key][0]
@@ -237,10 +238,13 @@ class SideEffects:
                 unimplemented(
                     gb_type="HOP: Non-nullified side effect",
                     context=f"Attribute '{name}' was not restored to its original value",
-                    explanation="A variable from an outer scope was mutated inside a "
-                    "higher-order op subgraph and not restored to its original "
-                    "value. This is not supported. If using a context manager, "
-                    "ensure it fully restores the original state on exit.",
+                    explanation=f"Attribute '{name}' on an outer-scope object was "
+                    f"changed from {original!r} to {current!r} inside a "
+                    "higher-order op subgraph. Dynamo only supports mutations "
+                    "that are undone before the subgraph exits (e.g., context "
+                    "managers that save/restore a flag). If you intentionally "
+                    "want this side effect, move the mutation outside of the "
+                    "higher-order op.",
                     hints=[*graph_break_hints.FUNDAMENTAL],
                 )
 
