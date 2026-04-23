@@ -699,8 +699,12 @@ class CachingAutotuner(KernelInterface):
             if len(launchers) == 0:
                 result = self.compile_results[-1]
                 config = result.config
-                if isinstance(exc, (OutOfResources, torch.cuda.OutOfMemoryError)) and (
-                    config.num_stages > 1 or config.kwargs.get("NUM_STAGES", 1) > 1
+                if (
+                    isinstance(exc, (OutOfResources, torch.cuda.OutOfMemoryError))
+                    and (
+                        config.num_stages > 1 or config.kwargs.get("NUM_STAGES", 1) > 1
+                    )
+                    and self.inductor_meta.get("dynamic_disable_pipelining", True)
                 ):
                     self.launchers = [self.compile_by_disabling_pipelining(config)]
                     return
@@ -4023,6 +4027,16 @@ def _persistent_reduction_configs(
     inductor_meta=None,
     triton_meta=None,
 ):
+    # Under deterministic mode, canonicalize the batch-dim hint so the
+    # candidate-config branching below (e.g. xnumel // 8 < 128) doesn't pick
+    # a different (XBLOCK, num_warps) for bs=N vs bs=N/2. Different picks
+    # change the bf16 reduction order and break batch invariance in
+    # persistent reductions like LayerNorm.
+    if inductor_meta and inductor_meta.get("batch_invariant"):
+        size_hints = dict(size_hints)
+        if "x" in size_hints:
+            size_hints["x"] = max(size_hints["x"], 4096)
+
     xnumel = size_hints["x"]
     rnumel = get_total_reduction_numel(size_hints)
 
