@@ -558,6 +558,10 @@ def get_fake(x: Any, gm: torch.fx.GraphModule | None) -> Any:
             return x.meta["example_value"]
         if x.op == "get_attr" and isinstance(x.target, str) and hasattr(gm, x.target):
             return getattr(gm, x.target)
+        # If a node has no available fake values and isn't a get_attr, it either returns
+        # None or is incorrectly configured.  Since there are real nodes which return
+        # None, we can't error here.
+        return None
     # If there are no example values, return x
     return x
 
