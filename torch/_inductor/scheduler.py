@@ -5107,11 +5107,10 @@ class Scheduler:
     def create_combo_kernel_nodes(self, num_ck_nodes: int | None = None) -> None:
         """Group parallel nodes into combo kernels.
 
-        When combo_kernel_peak_memory_threshold or
-        combo_kernel_peak_memory_pct_threshold is set, the search is
-        limited up-front to baseline-order windows with bounded span
-        (combo_kernel_max_distance). A window is fused only if the
-        simulated graph peak stays within the configured threshold.
+        When peak-memory gating is enabled (either threshold dimension is not
+        None), the search is limited up-front to baseline-order windows with
+        bounded span (combo_kernel_max_distance). A window is fused only if
+        the simulated graph peak stays within the configured threshold policy.
         Rejected windows are retried with halving.
         """
         fused_nodes = OrderedSet(self.nodes)
@@ -5326,7 +5325,18 @@ class Scheduler:
         self.prune_redundant_deps(self.nodes)
 
     def _init_peak_memory_context(self) -> ComboKernelMemoryContext:
-        """Build baseline state for memory-aware combo fusion."""
+        """Build the baseline memory view used by memory-aware combo search.
+
+        The later combo checks only rewrite one local region at a time, so we
+        cache three pieces of baseline state up front:
+        - `buf_info_list`: each buffer's alloc/free lifetime in the original
+          schedule
+        - `memories_at_nodes`: the prefix memory timeline for that schedule
+        - `node_to_idx`: the original step of each scheduler node
+
+        Later accepted combos patch only the affected region of this context
+        instead of rebuilding memory for the whole graph.
+        """
         from .memory import (
             assign_memory_planning_info_for_scheduler_buffers,
             assign_memory_planning_info_for_scheduler_nodes,
@@ -5351,6 +5361,8 @@ class Scheduler:
         )
         N = len(self.nodes)
         delta = [0] * (N + 1)
+        # Convert buffer lifetimes into a per-step memory timeline once, then
+        # reuse and patch this timeline as combos are accepted.
         for bi in buf_info_list:
             delta[bi.start_step] += bi.size_alloc
             delta[bi.end_step + 1] -= bi.size_free
@@ -5377,6 +5389,13 @@ class Scheduler:
     ) -> tuple[ForeachKernelSchedulerNode | None, int, list[int] | None, int, int]:
         """Try forming a combo from group_nodes; reject on excess memory growth.
 
+        The tentative rewrite only changes node order inside
+        [region_start, region_end]. Users outside that region keep their
+        baseline steps, and any previously accepted combo overlapping this
+        baseline slice is represented by its combo step rather than by stale
+        standalone sub-nodes. That makes region-local memory recomputation
+        sufficient for this rewrite model.
+
         Returns (combo_node | None, new_peak, new_region_memory | None,
         region_start, combo_step). On reject combo_node is None and the
         memory/region values are placeholders.
@@ -5391,19 +5410,41 @@ class Scheduler:
         node_to_idx = mem_ctx.node_to_idx
         region_start = min(node_to_idx[n] for n in group_nodes)
         region_end = max(node_to_idx[n] for n in group_nodes)
+        name_to_fused_node = self.name_to_fused_node
+        accepted_step = mem_ctx.accepted_step
 
         group_set = OrderedSet(group_nodes)
         assert self.nodes[region_start] in group_set
-        local_nodes: list[BaseSchedulerNode] = []
+        local_entries: list[tuple[int, int, BaseSchedulerNode]] = []
+        seen_local_nodes: OrderedSet[BaseSchedulerNode] = OrderedSet()
         inserted_combo = False
+
+        def add_local_node(
+            node: BaseSchedulerNode, current_step: int, baseline_order: int
+        ) -> None:
+            if node not in seen_local_nodes:
+                local_entries.append((current_step, baseline_order, node))
+                seen_local_nodes.add(node)
+
         for i in range(region_start, region_end + 1):
             n = self.nodes[i]
             if n in group_set:
                 if not inserted_combo:
-                    local_nodes.append(combo_node)
+                    add_local_node(combo_node, region_start, i)
                     inserted_combo = True
-            else:
-                local_nodes.append(n)
+                continue
+            step = accepted_step.get(n)
+            if step is not None:
+                top = name_to_fused_node.get(n.get_name())
+                assert top is not None
+                if region_start <= step <= region_end:
+                    add_local_node(top, step, i)
+                continue
+            add_local_node(n, i, i)
+
+        local_nodes = [
+            node for _, _, node in sorted(local_entries, key=operator.itemgetter(0, 1))
+        ]
 
         name_to_local_pos: dict[str, int] = {}
         for i, n in enumerate(local_nodes):
@@ -5429,9 +5470,6 @@ class Scheduler:
         for node in group_nodes:
             new_step[node] = combo_step
 
-        name_to_fused_node = self.name_to_fused_node
-        accepted_step = mem_ctx.accepted_step
-
         def step_of(node: BaseSchedulerNode) -> int:
             # A node may already have moved because of an earlier accepted combo.
             s = new_step.get(node)
@@ -5454,6 +5492,9 @@ class Scheduler:
 
         region_size = region_end - region_start + 1
         region_delta = [0] * (region_size + 1)
+        # Only nodes in the local region move. Users outside the region keep
+        # their baseline steps, and overlapping accepted combos are collapsed
+        # to their combo step before we rebuild local memory.
 
         def accumulate(
             size_alloc: int, size_free: int, new_start: int, new_end: int
