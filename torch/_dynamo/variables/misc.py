@@ -1929,16 +1929,20 @@ class StringFormatVariable(VariableTracker):
             if all_simple_constants:
                 # Use str.format as the op with format_string as the first arg.
                 # _make_binary_op_reconstruct_fn already has a str.format handler.
+                from .base import AsPythonConstantNotImplementedError
                 from .builtin import _make_binary_op_reconstruct_fn
 
                 reconstruct_fn = _make_binary_op_reconstruct_fn(str.format)
                 assert reconstruct_fn is not None
                 fmt_str_var = variables.ConstantVariable.create(format_string)
-                return ComputedLazyConstantVariable.create(
-                    str.format,
-                    [fmt_str_var] + list(sym_args),
-                    reconstruct_fn,
-                )
+                try:
+                    return ComputedLazyConstantVariable.create(
+                        str.format,
+                        [fmt_str_var] + list(sym_args),
+                        reconstruct_fn,
+                    )
+                except (TypeError, ValueError, AsPythonConstantNotImplementedError):
+                    pass
         elif all(x.is_python_constant() for x in all_args):
             return variables.ConstantVariable.create(
                 format_string.format(

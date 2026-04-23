@@ -124,7 +124,7 @@ def _reconstruction_failure_gb_stack_source_attribution() -> str:
     if sys.version_info >= (3, 11) and _load_global_has_positions():
         return (
             "Stack variable source attribution:\n"
-            "  NullVariable originated from:\n"
+            "  LazyVariableTracker(realized: SkipFunctionVariable()) originated from:\n"
             '  File "test_error_messages.py", line N\n'
             "                torch._dynamo.graph_break()\n"
             "^^^^^^^^^^^^^^^^^^^^^^^^^\n"
