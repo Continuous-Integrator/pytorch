@@ -83,6 +83,9 @@ jobs:
           git clean -fxd
       - name: Install libomp
         run: "${PYTORCH_ROOT}/.ci/wheel/install_libomp.sh"
+      # Build phase: compile a wheel per CPython version without delocating.
+      # libtorch_cpu is reused across iterations via `build/`; only libtorch_python
+      # + _C recompile thanks to the Python-cache invalidation in cmake.py.
 {%- for config in build_configs %}
       - name: Setup Python !{{ config["python_version"] }}
         uses: actions/setup-python@v6
@@ -109,17 +112,23 @@ jobs:
           TORCH_PACKAGE_NAME="${TORCH_PACKAGE_NAME//-/_}"
           export USE_PYTORCH_METAL_EXPORT USE_COREML_DELEGATE TORCH_PACKAGE_NAME
           "${PYTORCH_ROOT}/.ci/wheel/build_wheel.sh"
+{%- endfor %}
+      - name: Delocate all wheels
+        run: "${PYTORCH_ROOT}/.ci/wheel/delocate_wheels.sh"
 {%- if first["package_type"] == "wheel" %}
+      # Smoke-test + upload phase: each iteration re-activates its Python
+      # (cache hit from the build phase) and exercises the delocated wheel.
+{%- for config in build_configs %}
+      - name: Setup Python !{{ config["python_version"] }} (smoke)
+        uses: actions/setup-python@v6
+        with:
+          python-version: "!{{ setup_python_version(config["python_version"]) }}"
+          freethreaded: !{{ "true" if config["python_version"].endswith('t') else "false" }}
       - name: Smoke-test wheel !{{ config["python_version"] }}
         env:
-          DESIRED_PYTHON: "!{{ config["python_version"] }}"
           PYTORCH_FINAL_PACKAGE_DIR: ${{ runner.temp }}/artifacts/!{{ config["build_name"] }}
         run: |
           set -eux -o pipefail
-          # shellcheck disable=SC1090
-          source "$BINARY_ENV_FILE"
-
-          # Fresh venv using the setup-python-installed Python for this iteration.
           venv_dir="${RUNNER_TEMP}/test_venv_!{{ config["build_name"] }}"
           rm -rf "$venv_dir"
           python -mvenv "$venv_dir"
@@ -128,7 +137,6 @@ jobs:
           pip install "$PYTORCH_FINAL_PACKAGE_DIR"/*.whl numpy -v
           python "${PYTORCH_ROOT}/.ci/pytorch/smoke_test/smoke_test.py" --package torchonly
           deactivate
-{%- endif %}
       - name: Upload !{{ config["build_name"] }}
         uses: actions/upload-artifact@v4.4.0
         if: always()
@@ -138,6 +146,18 @@ jobs:
           if-no-files-found: error
           path: ${{ runner.temp }}/artifacts/!{{ config["build_name"] }}
 {%- endfor %}
+{%- else %}
+{%- for config in build_configs %}
+      - name: Upload !{{ config["build_name"] }}
+        uses: actions/upload-artifact@v4.4.0
+        if: always()
+        with:
+          name: !{{ config["build_name"] }}
+          retention-days: 14
+          if-no-files-found: error
+          path: ${{ runner.temp }}/artifacts/!{{ config["build_name"] }}
+{%- endfor %}
+{%- endif %}
 
   wheel-upload:
     if: ${{ github.repository_owner == 'pytorch' }}
