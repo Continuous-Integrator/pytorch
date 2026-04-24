@@ -214,14 +214,7 @@ def gen_arguments(
     callsite_exprs: list[str] = []
     for arg in flat_arguments:
         if arg.name in skipped_args:
-            # Use the argument's default value if available; fall back to
-            # std::nullopt for optional types.
-            if arg.default is not None:
-                from torchgen.api.cpp import default_expr
-
-                callsite_exprs.append(default_expr(arg.default, arg.type, symint=False))
-            else:
-                callsite_exprs.append("std::nullopt")
+            callsite_exprs.append("std::nullopt")
             continue
         new_types, names, _, new_callsite_exprs = convert_arg_type_and_name(
             arg.type, arg.name, arg.is_write
