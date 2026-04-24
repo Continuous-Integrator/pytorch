@@ -105,8 +105,6 @@ def spmd_check(gm: torch.fx.GraphModule) -> bool:
         return True
 
     structure_hash = _compute_hash(gm)
-    if structure_hash is None:
-        return True
 
     from torch._subclasses.fake_tensor import unset_fake_temporarily
     from torch.distributed.distributed_c10d import _get_default_group
@@ -115,9 +113,15 @@ def spmd_check(gm: torch.fx.GraphModule) -> bool:
     world_size = dist.get_world_size()
     rank = dist.get_rank()
 
+    # All ranks must participate in all_gather even if hash is None,
+    # to avoid collective desync when only some ranks get None.
     with unset_fake_temporarily():
-        all_hashes: list[int] = [0] * world_size
+        all_hashes: list[int | None] = [None] * world_size
         dist.all_gather_object(all_hashes, structure_hash, pg)
+
+    # If any rank couldn't compute a hash, skip the check
+    if any(h is None for h in all_hashes):
+        return True
 
     if all(h == all_hashes[0] for h in all_hashes):
         return True
