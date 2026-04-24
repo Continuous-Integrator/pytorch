@@ -85,6 +85,11 @@ using cccl_discard_iterator  = thrust::discard_iterator<>;
 #define ATEN_CUB_COUNTING_ITERATOR(...) NO_ROCM(at_cuda_detail)ROCM_HIPCUB(::cub)::CountingInputIterator<__VA_ARGS__>
 #define ATEN_CUB_CONSTANT_ITERATOR(...) NO_ROCM(at_cuda_detail)ROCM_HIPCUB(::cub)::ConstantInputIterator<__VA_ARGS__>
 #define ATEN_CUB_MAXIMUM() NO_ROCM(at_cuda_detail)ROCM_HIPCUB(::cub)::Max()
+template<class T>
+using cccl_constant_iterator = thrust::constant_iterator<T>;
+template<class T>
+using cccl_counting_iterator = thrust::counting_iterator<T>;
+using cccl_discard_iterator  = thrust::discard_iterator<>;
 #endif
 
 #if defined(USE_ROCM)
