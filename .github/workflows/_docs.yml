@@ -110,7 +110,7 @@ jobs:
               cd docs && make html && make coverage
 
       - name: Setup Linux
-        uses: pytorch/pytorch/.github/actions/setup-linux@main
+        uses: ./.github/actions/setup-linux
         with:
           # Docs build runs `git log --follow` per page for "Created/Updated"
           # dates; a treeless clone triggers lazy fetches and makes the build
