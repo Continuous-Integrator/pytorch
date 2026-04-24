@@ -6083,6 +6083,17 @@ class CommonTemplate:
         if out.dtype != torch.bfloat16:
             raise AssertionError(f"Expected dtype torch.bfloat16, got {out.dtype}")
 
+    def test_as_strided_on_split_view(self):
+        # as_strided without an explicit storage_offset must preserve the
+        # offset of split/slice views instead of resetting to the base tensor.
+        def fn(x):
+            a, b = x.split(3)
+            a_s = a.as_strided((2,), (1,))
+            b_s = b.as_strided((2,), (1,))
+            return a_s + b_s
+
+        self.common(fn, (torch.arange(6, dtype=torch.float32),))
+
     def test_repeat_interleave(self):
         def fn(x):
             return (
@@ -14155,6 +14166,9 @@ def forward(self, arg0_1: "Sym(s77)", arg1_1: "Sym(s27)", arg2_1: "Sym(s53)", ar
     # Skipped on ROCm until https://github.com/ROCm/triton/issues/443 resolved
     @slowTest
     def test_fuse_large_params(self):
+        if is_mps_backend(self.device):
+            raise unittest.SkipTest("Metal has a 31-buffer argument limit per kernel")
+
         def pt2_optimizer_step(optimizer):
             @torch.compile()
             def f():
