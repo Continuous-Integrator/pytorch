@@ -787,17 +787,6 @@ class _DeviceExchangeVariable(ContextWrappingVariable):
         )
         self.proxy = None
 
-    def enter(self, tx: "InstructionTranslator") -> VariableTracker:
-        prev_idx = self._exchange_device(*self.target_values)
-        self.set_cleanup_hook(tx, lambda: self._maybe_exchange_device(prev_idx))
-        self.proxy = tx.output.create_node(
-            "call_function",
-            self._exchange_device,
-            (*self.target_values,),
-            {},
-        )
-        return variables.ConstantVariable.create(None)
-
     def exit(
         self, tx: "InstructionTranslator", *args: VariableTracker
     ) -> VariableTracker:
