@@ -5,6 +5,16 @@ from collections.abc import Callable, Sequence
 
 import torch
 from torch.distributed._functional_collectives import AsyncCollectiveTensor
+from torch.distributed.spmd_types import (
+    assert_type as spmd_assert_type,
+    I,
+    MeshAxis,
+    P,
+    R,
+    S,
+    set_current_mesh,
+    typecheck,
+)
 from torch.distributed.tensor import DeviceMesh, DTensor
 from torch.distributed.tensor.placement_types import (
     _Partial,
@@ -36,8 +46,6 @@ def _placement_to_spmd_type(
     - Replicate -> R (default; I only if grad is explicitly Replicate)
     - Partial -> P
     """
-    from spmd_types.types import I, P, R, S  # pyrefly: ignore
-
     if isinstance(placement, _Shard):
         return S(placement.dim)
     elif isinstance(placement, _Replicate):
@@ -57,9 +65,6 @@ def _annotate_spmd_types(
     device_mesh: DeviceMesh,
 ) -> None:
     """Annotate unwrapped local tensors with spmd_types inferred from placements."""
-    from spmd_types._mesh_axis import MeshAxis  # pyrefly: ignore
-    from spmd_types.runtime import assert_type  # pyrefly: ignore
-
     for idx, local_arg in enumerate(flat_local_args):
         if not isinstance(local_arg, torch.Tensor) or isinstance(local_arg, DTensor):
             continue
@@ -75,7 +80,7 @@ def _annotate_spmd_types(
             axis = MeshAxis.of(device_mesh.get_group(mesh_dim_name))
             grad_p = grad_placements[dim_idx] if grad_placements is not None else None
             spmd_type[axis] = _placement_to_spmd_type(placement, grad_p)
-        assert_type(local_arg, spmd_type)  # pyrefly: ignore
+        spmd_assert_type(local_arg, spmd_type)
 
 
 def local_map(
@@ -305,10 +310,6 @@ def _local_map_wrapped(
     local_args = pytree.tree_unflatten(flat_local_args, args_spec)
 
     if enable_spmd_types and seen_dtensor_arg:
-        from spmd_types._checker import typecheck  # pyrefly: ignore
-        from spmd_types._mesh import set_current_mesh  # pyrefly: ignore
-        from spmd_types._mesh_axis import MeshAxis  # pyrefly: ignore
-
         assert device_mesh is not None  # noqa: S101
         _annotate_spmd_types(
             flat_local_args, in_placements, in_grad_placements, device_mesh
