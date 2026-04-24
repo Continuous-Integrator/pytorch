@@ -474,17 +474,24 @@ static Tensor scaled_grouped_mm_cublaslt(
     const std::optional<at::Tensor>& bias,
     const std::optional<at::Tensor>& scale_result,
     std::optional<c10::ScalarType> out_dtype,
-    bool use_fast_accum) {
+    bool use_fast_accum,
+    const std::optional<at::Tensor>& global_scale_a = std::nullopt,
+    const std::optional<at::Tensor>& global_scale_b = std::nullopt) {
 #if !defined(USE_ROCM) && defined(CUDA_VERSION) && CUDA_VERSION >= 13020
+  const bool is_fp4 = mat_a.dtype() == at::kFloat4_e2m1fn_x2;
   TORCH_CHECK(
-      mat_a.dtype() == at::kFloat8_e4m3fn || mat_a.dtype() == at::kFloat8_e5m2,
-      "cublasLt scaled grouped GEMM requires Float8_e4m3fn or Float8_e5m2 input, got ", mat_a.scalar_type());
+      mat_a.dtype() == at::kFloat8_e4m3fn || mat_a.dtype() == at::kFloat8_e5m2
+          || mat_a.dtype() == at::kFloat4_e2m1fn_x2,
+      "cublasLt scaled grouped GEMM requires Float8_e4m3fn, Float8_e5m2, or Float4_e2m1fn_x2 input, got ", mat_a.scalar_type());
   TORCH_CHECK(
-      mat_b.dtype() == at::kFloat8_e4m3fn || mat_b.dtype() == at::kFloat8_e5m2,
-      "cublasLt scaled grouped GEMM requires Float8_e4m3fn or Float8_e5m2 input, got ", mat_b.scalar_type());
-  TORCH_CHECK(
-    mat_a.dtype() == at::kFloat8_e4m3fn || mat_b.dtype() == at::kFloat8_e4m3fn,
-    "at least one input must be Float8_e4m3fn");
+      mat_b.dtype() == at::kFloat8_e4m3fn || mat_b.dtype() == at::kFloat8_e5m2
+          || mat_b.dtype() == at::kFloat4_e2m1fn_x2,
+      "cublasLt scaled grouped GEMM requires Float8_e4m3fn, Float8_e5m2, or Float4_e2m1fn_x2 input, got ", mat_b.scalar_type());
+  if (!is_fp4) {
+    TORCH_CHECK(
+      mat_a.dtype() == at::kFloat8_e4m3fn || mat_b.dtype() == at::kFloat8_e4m3fn,
+      "at least one FP8 input must be Float8_e4m3fn");
+  }
   TORCH_CHECK(mat_a.dim() == 2 || mat_a.dim() == 3, "mat_a has to be 2 or 3d");
   TORCH_CHECK(mat_b.dim() == 2 || mat_b.dim() == 3, "mat_b has to be 2 or 3d");
   const bool a_is_2d = mat_a.dim() == 2;
@@ -502,11 +509,13 @@ static Tensor scaled_grouped_mm_cublaslt(
   TORCH_CHECK(!bias.has_value(), "Bias not supported for scaled grouped GEMM");
 
   TORCH_CHECK(
-      scale_a.dtype() == at::kFloat || scale_a.dtype() == at::kFloat8_e8m0fnu,
-      "scale_a must be float32 or float8_e8m0fnu, got ", scale_a.scalar_type());
+      scale_a.dtype() == at::kFloat || scale_a.dtype() == at::kFloat8_e8m0fnu
+          || scale_a.dtype() == at::kFloat8_e4m3fn,
+      "scale_a must be float32, float8_e8m0fnu, or float8_e4m3fn, got ", scale_a.scalar_type());
   TORCH_CHECK(
-      scale_b.dtype() == at::kFloat || scale_b.dtype() == at::kFloat8_e8m0fnu,
-      "scale_b must be float32 or float8_e8m0fnu, got ", scale_b.scalar_type());
+      scale_b.dtype() == at::kFloat || scale_b.dtype() == at::kFloat8_e8m0fnu
+          || scale_b.dtype() == at::kFloat8_e4m3fn,
+      "scale_b must be float32, float8_e8m0fnu, or float8_e4m3fn, got ", scale_b.scalar_type());
   const int batchCount = offs.has_value()
       ? static_cast<int>(offs.value().size(0))
       : static_cast<int>(mat_a.size(0));
@@ -530,7 +539,9 @@ static Tensor scaled_grouped_mm_cublaslt(
 
   const auto out_dtype_ = out_dtype.value_or(at::kBFloat16);
   Tensor out = create_grouped_gemm_output_tensor(mat_a, mat_b, offs, out_dtype_);
-  cublasGroupedArgs args(mat_a, mat_b, offs, out, scale_a, scale_b, scale_result);
+  cublasGroupedArgs args(mat_a, mat_b, offs, out, scale_a, scale_b, scale_result,
+      /*scaling_choice_a=*/std::nullopt, /*scaling_choice_b=*/std::nullopt,
+      global_scale_a, global_scale_b);
   at::cuda::blas::scaled_grouped_gemm(
       args.transa, args.transb,
       args.mArray, args.avgM,
@@ -702,6 +713,16 @@ _scaled_grouped_mm_cuda_v2(
             offs, bias, /*scale_result=*/std::nullopt,
             out_dtype, use_fast_accum);
       }
+    }
+    // NVFP4: two recipes (BlockWise1x16 block scale + TensorWise global scale)
+    if (recipe_a_enum.size() == 2 &&
+        recipe_a_enum[0] == ScalingType::BlockWise1x16 &&
+        recipe_a_enum[1] == ScalingType::TensorWise) {
+      return scaled_grouped_mm_cublaslt(
+          mat_a, mat_b, scale_a[0], scale_b[0],
+          offs, bias, /*scale_result=*/std::nullopt,
+          out_dtype, use_fast_accum,
+          /*global_scale_a=*/scale_a[1], /*global_scale_b=*/scale_b[1]);
     }
   }
 #endif

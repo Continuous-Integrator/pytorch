@@ -25,6 +25,15 @@ __device__ __forceinline__ int64_t cublas_vec32_scale_size(int inner, int outer)
   return s_rows * s_cols;
 }
 
+// cuBLAS VEC16_UE4M3 scale tensor size (bytes, since e4m3fn is 1 byte each).
+// Matches the validation in is_blockwise_1x16_scaling() and _scaled_nvfp4_nvfp4():
+//   round_up(outer, 128) * round_up(ceil_div(inner, 16), 4)
+__device__ __forceinline__ int64_t cublas_vec16_scale_size(int inner, int outer) {
+  int64_t s_rows = (((inner + 15) / 16) + 3) / 4 * 4;
+  int64_t s_cols = ((outer + 127) / 128) * 128;
+  return s_rows * s_cols;
+}
+
 __global__ void populate_cublas_grouped_args_kernel(
     const int32_t* __restrict__ offs,
     int64_t base_A, int64_t base_B, int64_t base_D,
@@ -43,11 +52,19 @@ __global__ void populate_cublas_grouped_args_kernel(
     int64_t scale_a_stride_bytes, int64_t scale_b_stride_bytes,
     int32_t scale_a_inner, int32_t scale_a_outer,
     int32_t scale_b_inner, int32_t scale_b_outer,
-    int64_t* __restrict__ scalePtrA_out, int64_t* __restrict__ scalePtrB_out) {
+    int64_t* __restrict__ scalePtrA_out, int64_t* __restrict__ scalePtrB_out,
+    const float* __restrict__ global_scale_a_ptr,
+    const float* __restrict__ global_scale_b_ptr,
+    bool use_vec16_scale,
+    int32_t k_scale_multiplier) {
   int i = threadIdx.x;
 
   if (i == 0) {
-    *alpha_ptr = 1.0f;
+    if (global_scale_a_ptr != nullptr && global_scale_b_ptr != nullptr) {
+      *alpha_ptr = *global_scale_a_ptr * *global_scale_b_ptr;
+    } else {
+      *alpha_ptr = 1.0f;
+    }
     *beta_ptr = 0.0f;
   }
 
@@ -85,9 +102,11 @@ __global__ void populate_cublas_grouped_args_kernel(
       int64_t offset = 0;
       for (int j = 0; j < i; j++) {
         int32_t dim_j = (j == 0) ? offs[j] : offs[j] - offs[j - 1];
-        int32_t inner = scale_a_inner ? scale_a_inner : dim_j;
-        int32_t outer = scale_a_outer ? scale_a_outer : dim_j;
-        offset += cublas_vec32_scale_size(inner, outer);
+        int32_t inner = scale_a_inner ? scale_a_inner : dim_j * k_scale_multiplier;
+        int32_t outer = scale_a_outer ? scale_a_outer : dim_j * k_scale_multiplier;
+        offset += use_vec16_scale
+            ? cublas_vec16_scale_size(inner, outer)
+            : cublas_vec32_scale_size(inner, outer);
       }
       scalePtrA_out[i] = base_scale_a + offset;
     }
@@ -99,9 +118,11 @@ __global__ void populate_cublas_grouped_args_kernel(
       int64_t offset = 0;
       for (int j = 0; j < i; j++) {
         int32_t dim_j = (j == 0) ? offs[j] : offs[j] - offs[j - 1];
-        int32_t inner = scale_b_inner ? scale_b_inner : dim_j;
-        int32_t outer = scale_b_outer ? scale_b_outer : dim_j;
-        offset += cublas_vec32_scale_size(inner, outer);
+        int32_t inner = scale_b_inner ? scale_b_inner : dim_j * k_scale_multiplier;
+        int32_t outer = scale_b_outer ? scale_b_outer : dim_j * k_scale_multiplier;
+        offset += use_vec16_scale
+            ? cublas_vec16_scale_size(inner, outer)
+            : cublas_vec32_scale_size(inner, outer);
       }
       scalePtrB_out[i] = base_scale_b + offset;
     }
@@ -128,6 +149,8 @@ void launch_populate_cublas_grouped_args(
     int32_t scale_a_inner, int32_t scale_a_outer,
     int32_t scale_b_inner, int32_t scale_b_outer,
     int64_t* scalePtrA_out, int64_t* scalePtrB_out,
+    const float* global_scale_a_ptr, const float* global_scale_b_ptr,
+    bool use_vec16_scale, int32_t k_scale_multiplier,
     cudaStream_t stream) {
   TORCH_CHECK(batchCount > 0 && batchCount <= 1024,
       "batchCount must be in [1, 1024], got ", batchCount);
@@ -148,7 +171,9 @@ void launch_populate_cublas_grouped_args(
       scale_a_stride_bytes, scale_b_stride_bytes,
       scale_a_inner, scale_a_outer,
       scale_b_inner, scale_b_outer,
-      scalePtrA_out, scalePtrB_out);
+      scalePtrA_out, scalePtrB_out,
+      global_scale_a_ptr, global_scale_b_ptr,
+      use_vec16_scale, k_scale_multiplier);
   C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
@@ -164,7 +189,9 @@ cublasGroupedArgs::cublasGroupedArgs(
     const std::optional<Tensor>& scale_b,
     const std::optional<Tensor>& scale_result,
     const std::optional<at::blas::ScalingType>& scaling_choice_a,
-    const std::optional<at::blas::ScalingType>& scaling_choice_b) {
+    const std::optional<at::blas::ScalingType>& scaling_choice_b,
+    const std::optional<Tensor>& global_scale_a,
+    const std::optional<Tensor>& global_scale_b) {
   const bool a_is_2d = mat1.dim() == 2;
   const bool b_is_2d = mat2.dim() == 2;
   if (a_is_2d || b_is_2d) {
@@ -202,15 +229,23 @@ cublasGroupedArgs::cublasGroupedArgs(
 
   // In the cuBLAS B^T×A^T convention:
   //   cublas_m = user_N, cublas_n = user_M, cublas_k = user_K
-  const int32_t cublas_m = static_cast<int32_t>(user_N);
-  const int32_t cublas_n = static_cast<int32_t>(user_M);
-  const int32_t cublas_k = static_cast<int32_t>(user_K);
+  int32_t cublas_m = static_cast<int32_t>(user_N);
+  int32_t cublas_n = static_cast<int32_t>(user_M);
+  int32_t cublas_k = static_cast<int32_t>(user_K);
 
   // Leading dimensions (constant across groups, from inner-dim strides)
   // cuBLAS-A = mat2, cuBLAS-B = mat1
-  const int32_t lda_val = static_cast<int32_t>(transa == 't' ? mat2.stride(-1) : mat2.stride(-2));
-  const int32_t ldb_val = static_cast<int32_t>(transb == 't' ? mat1.stride(-1) : mat1.stride(-2));
+  int32_t lda_val = static_cast<int32_t>(transa == 't' ? mat2.stride(-1) : mat2.stride(-2));
+  int32_t ldb_val = static_cast<int32_t>(transb == 't' ? mat1.stride(-1) : mat1.stride(-2));
   const int32_t ldd_val = static_cast<int32_t>(c.stride(-2));
+
+  // cuBLAS expects unpacked values for K, LDA, LDB with FP4 packed data
+  const bool is_fp4 = mat1.dtype() == at::kFloat4_e2m1fn_x2;
+  if (is_fp4) {
+    cublas_k *= 2;
+    lda_val *= 2;
+    ldb_val *= 2;
+  }
 
   if (scale_a && scale_b) {
     scale_mata_ptr = scale_b->data_ptr();
@@ -221,6 +256,8 @@ cublasGroupedArgs::cublasGroupedArgs(
     auto infer = [&](const Tensor& scale) -> at::blas::ScalingType {
       if (scale.scalar_type() == at::kFloat8_e8m0fnu)
         return at::blas::ScalingType::BlockWise1x32;
+      if (scale.scalar_type() == at::kFloat8_e4m3fn)
+        return at::blas::ScalingType::BlockWise1x16;
       if (scale.numel() == 1)
         return at::blas::ScalingType::TensorWise;
       return at::blas::ScalingType::GroupWise;
@@ -239,7 +276,8 @@ cublasGroupedArgs::cublasGroupedArgs(
   // be an array of device pointers for grouped GEMM.
   auto needs_ptr_array = [](at::blas::ScalingType st) {
     return st == at::blas::ScalingType::GroupWise
-        || st == at::blas::ScalingType::BlockWise1x32;
+        || st == at::blas::ScalingType::BlockWise1x32
+        || st == at::blas::ScalingType::BlockWise1x16;
   };
   const bool mata_needs_ptr = needs_ptr_array(scale_mata_scaling_type);
   const bool matb_needs_ptr = needs_ptr_array(scale_matb_scaling_type);
@@ -253,13 +291,19 @@ cublasGroupedArgs::cublasGroupedArgs(
 
   if (a_is_2d && b_is_2d) {
     // 2D x 2D: jagged K
+    // For FP4, offsets are in unpacked units but tensor strides are in packed
+    // units, so halve the pointer strides to compensate.
     k_is_delta = true;
     a_offs_stride = mat2.stride(-2) * esz;
     b_offs_stride = mat1.stride(-1) * esz;
+    if (is_fp4) {
+      a_offs_stride /= 2;
+      b_offs_stride /= 2;
+    }
     d_idx_stride = c.stride(0) * out_esz;
     avgM = cublas_m;
     avgN = cublas_n;
-    avgK = user_K / batchCount;
+    avgK = cublas_k / batchCount;
   } else if (a_is_2d && !b_is_2d) {
     // 2D x 3D: jagged M (user M varies, cublas n varies)
     n_is_delta = true;
@@ -295,8 +339,12 @@ cublasGroupedArgs::cublasGroupedArgs(
   // + optionally up to 2 x int64[batchCount] for per-group scale pointer arrays
   //   (GroupWise scales: embedded in the main buffer)
   //   (BlockWise1x32 scales: separate allocation required by cuBLAS)
-  const bool mata_blockwise = scale_mata_scaling_type == at::blas::ScalingType::BlockWise1x32;
-  const bool matb_blockwise = scale_matb_scaling_type == at::blas::ScalingType::BlockWise1x32;
+  auto is_blockwise = [](at::blas::ScalingType st) {
+    return st == at::blas::ScalingType::BlockWise1x32
+        || st == at::blas::ScalingType::BlockWise1x16;
+  };
+  const bool mata_blockwise = is_blockwise(scale_mata_scaling_type);
+  const bool matb_blockwise = is_blockwise(scale_matb_scaling_type);
   const int embedded_ptr_arrays =
       ((mata_needs_ptr && !mata_blockwise) ? 1 : 0) +
       ((matb_needs_ptr && !matb_blockwise) ? 1 : 0);
@@ -374,11 +422,14 @@ cublasGroupedArgs::cublasGroupedArgs(
           ? scale_a->stride(0) * scale_a->element_size()
           : (scale_a ? scale_a->element_size() : 0));
 
-  // For variable-size BlockWise1x32, pass inner/outer dims for per-group
+  // For variable-size blockwise scaling, pass inner/outer dims for per-group
   // scale size computation. A value of 0 means "substitute the jagged
   // dimension (delta from offsets) at runtime".
   // cuBLAS-A scale: getScaleTensorSize(inner=K, outer=cublas_m=user_N)
   // cuBLAS-B scale: getScaleTensorSize(inner=K, outer=cublas_n=user_M)
+  // Note: cublas_k already has the FP4 ×2 adjustment applied, so non-zero
+  // inner values are already in unpacked units. For variable K (value 0),
+  // the kernel applies k_scale_multiplier to the delta from offsets.
   int32_t scale_a_inner = 0, scale_a_outer = 0;
   int32_t scale_b_inner = 0, scale_b_outer = 0;
   if (blockwise_variable_a) {
@@ -404,6 +455,14 @@ cublasGroupedArgs::cublasGroupedArgs(
 
   cudaStream_t stream = at::cuda::getCurrentCUDAStream();
 
+  const bool use_vec16 = scale_mata_scaling_type == at::blas::ScalingType::BlockWise1x16
+      || scale_matb_scaling_type == at::blas::ScalingType::BlockWise1x16;
+
+  const float* gs_a_ptr = global_scale_a.has_value()
+      ? global_scale_a->data_ptr<float>() : nullptr;
+  const float* gs_b_ptr = global_scale_b.has_value()
+      ? global_scale_b->data_ptr<float>() : nullptr;
+
   launch_populate_cublas_grouped_args(
         batchCount, offs_ptr,
         base_A, base_B, base_D,
@@ -423,6 +482,8 @@ cublasGroupedArgs::cublasGroupedArgs(
         scale_a_inner, scale_a_outer,
         scale_b_inner, scale_b_outer,
         scaleAPtrArray, scaleBPtrArray,
+        gs_a_ptr, gs_b_ptr,
+        use_vec16, /*k_scale_multiplier=*/1,
         stream);
 
   // For per-group scales, point to the device-side pointer arrays

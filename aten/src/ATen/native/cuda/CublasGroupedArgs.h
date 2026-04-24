@@ -19,7 +19,9 @@ struct cublasGroupedArgs {
       const std::optional<Tensor>& scale_b = std::nullopt,
       const std::optional<Tensor>& scale_result = std::nullopt,
       const std::optional<at::blas::ScalingType>& scaling_choice_a = std::nullopt,
-      const std::optional<at::blas::ScalingType>& scaling_choice_b = std::nullopt);
+      const std::optional<at::blas::ScalingType>& scaling_choice_b = std::nullopt,
+      const std::optional<Tensor>& global_scale_a = std::nullopt,
+      const std::optional<Tensor>& global_scale_b = std::nullopt);
 
   char transa, transb;
   int64_t avgM, avgN, avgK;
