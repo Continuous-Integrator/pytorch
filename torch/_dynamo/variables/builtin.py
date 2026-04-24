@@ -88,7 +88,6 @@ from .dicts import (
     DictKeysVariable,
     DictViewVariable,
 )
-from .hashable import is_hashable
 from .lists import (
     BaseListVariable,
     ListIteratorVariable,
@@ -336,11 +335,9 @@ class BaseBuiltinVariable(VariableTracker):
     ) -> ConstantVariable:
         return VariableTracker.build(tx, hasattr(self.as_python_constant(), name))  # type: ignore[return-value]
 
-    def is_python_hashable(self) -> bool:
-        return True
-
-    def get_python_hash(self) -> int:
-        return hash(self.as_python_constant())
+    def hash_impl(self, tx: "InstructionTranslator") -> tuple[int, bool]:
+        # CPython meth_hash: https://github.com/python/cpython/blob/e76aa128fe/Objects/methodobject.c#L319
+        return hash(self.as_python_constant()), False
 
     def is_python_equal(self, other: object) -> bool:
         return isinstance(other, BaseBuiltinVariable) and (
@@ -1639,6 +1636,13 @@ class BuiltinVariable(BaseBuiltinVariable):
         from .object_protocol import generic_bool
 
         return generic_bool(tx, arg)
+
+    def call_hash(
+        self, tx: "InstructionTranslator", arg: VariableTracker
+    ) -> VariableTracker:
+        from .object_protocol import generic_hash
+
+        return generic_hash(tx, arg)
 
     def call_repr(
         self, tx: "InstructionTranslator", arg: VariableTracker
