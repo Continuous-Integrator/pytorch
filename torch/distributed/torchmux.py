@@ -12,21 +12,27 @@ CUDA context via the driver API (VRAM returned to the driver) and
 restores it when rescheduled. Collectives are resolved by bookkeeping
 each rank's tensor contribution on disk — no NCCL is needed.
 
-Produces two chrome://tracing traces (set TORCHMUX_TRACE_DIR, default
-/tmp): a natural trace showing actual serial execution with
-snapshot/restore overhead, and a synthetic trace reconstructing what
-parallel execution would look like.
+Produces two chrome://tracing traces (set TORCHMUX_TRACE_DIR):
+a natural trace showing actual serial execution with snapshot/restore
+overhead, and a synthetic trace reconstructing what parallel execution
+would look like.
 
-Note: each worker process monkeypatches torch.device and
-torch.cuda.set_device to transparently remap virtual CUDA device
-indices (e.g. cuda:5) onto physical GPUs (e.g. cuda:1 when ngpus=2).
-This only affects Python-level calls to torch.device() made after
-the monkeypatch is installed. Some PyTorch modules cache the original
-torch.device at import time (e.g. torch.nn.modules.module,
-torch.fx.graph) — code using those cached references will bypass the
-remapping. This is fine for standard training scripts that construct
-devices via torch.device(...) at call sites.
+Note [torchmux device remapping]:
+Each worker process monkeypatches torch.device and torch.cuda.set_device
+to transparently remap virtual CUDA device indices (e.g. cuda:5) onto
+physical GPUs (e.g. cuda:1 when ngpus=2). Limitations:
+  - Only affects Python-level calls to torch.device() made *after* the
+    monkeypatch is installed. Modules that cache the original torch.device
+    at import time (e.g. torch.nn.modules.module, torch.fx.graph) bypass
+    the remapping.
+  - isinstance(x, torch.device) works correctly via the _DeviceMeta
+    metaclass, but `type(x) is torch.device` identity checks will fail
+    (since actual device objects are _OrigDevice instances).
+  - This is acceptable for standard training scripts that construct
+    devices via torch.device(...) at call sites.
 """
+
+__all__: list[str] = []
 
 import argparse
 import json
@@ -157,6 +163,10 @@ def _release(*, snapshot=True):
 
 # ---- Per-process trace recording ----
 
+# Trace events are bounded to prevent unbounded memory growth in long
+# training runs. At ~200 bytes per event, 1M events ≈ 200MB. For a
+# typical run with ~10 events/step, this covers ~100k steps.
+_MAX_TRACE_EVENTS = 1_000_000
 _trace_events = []  # list of (cat, name, start_us, dur_us)
 _compute_start = None  # monotonic us when current compute phase began
 
@@ -166,7 +176,8 @@ def _us():
 
 
 def _trace(cat, name, start, dur):
-    _trace_events.append((cat, name, start, dur))
+    if len(_trace_events) < _MAX_TRACE_EVENTS:
+        _trace_events.append((cat, name, start, dur))
 
 
 def _begin_compute():
@@ -725,8 +736,9 @@ def _worker(
     dist.destroy_process_group = _mux_destroy
     dist.new_group = _mux_new_group
 
-    trace_dir = os.environ.get("TORCHMUX_TRACE_DIR", "/tmp")
-    os.makedirs(trace_dir, exist_ok=True)
+    trace_dir = os.environ.get("TORCHMUX_TRACE_DIR", "")
+    if trace_dir:
+        os.makedirs(trace_dir, exist_ok=True)
 
     _acquire()
     _begin_compute()
@@ -880,7 +892,7 @@ def main():
     finally:
         from torch.distributed import torchmux_trace
 
-        trace_dir = os.environ.get("TORCHMUX_TRACE_DIR", "/tmp")
+        trace_dir = os.environ.get("TORCHMUX_TRACE_DIR", "")
 
         events_by_rank = {}
         for r in range(nproc):
@@ -892,7 +904,7 @@ def main():
                 except (json.JSONDecodeError, ValueError):
                     pass
 
-        if events_by_rank:
+        if events_by_rank and trace_dir:
             natural_path = os.path.join(trace_dir, "torchmux_natural.json")
             synthetic_path = os.path.join(trace_dir, "torchmux_synthetic.json")
 
@@ -905,6 +917,7 @@ def main():
                 synthetic_path,
             )
 
+        if events_by_rank:
             _print_timing_summary(events_by_rank)
 
         sched.cleanup()

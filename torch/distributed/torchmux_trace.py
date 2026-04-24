@@ -193,5 +193,9 @@ def _split_into_phases(events_by_rank, nproc):
 def _write(path, trace_events):
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     trace = {"traceEvents": trace_events, "displayTimeUnit": "ms"}
-    with open(path, "w") as f:
+    # Write to a temp file and rename to avoid following symlinks and to
+    # ensure readers never see a partially-written trace file.
+    tmp = path + f".tmp.{os.getpid()}"
+    with open(tmp, "w") as f:
         json.dump(trace, f)
+    os.replace(tmp, path)

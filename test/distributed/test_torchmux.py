@@ -1322,6 +1322,7 @@ class TestTorchmuxErrorHandling(TestCase):
             timeout=120,
         )
         self.assertNotEqual(result.returncode, 0)
+        self.assertIn("intentional crash", result.stderr)
 
 
 class TestVNCCLErrorPropagation(_VNCCLTestBase):
@@ -1357,7 +1358,7 @@ class TestVNCCLErrorPropagation(_VNCCLTestBase):
 
         VNCCLProcessGroup._do = _patched_do
         try:
-            with self.assertRaises(RuntimeError):
+            with self.assertRaisesRegex(RuntimeError, "failed"):
                 self._run_on_pgs(pgs, _work)
         finally:
             VNCCLProcessGroup._do = orig_do
@@ -1666,6 +1667,127 @@ class TestVNCCLSequenceNumbering(_VNCCLTestBase):
             self.assertEqual(results[r][0], torch.full((4,), expected_ar1))
             self.assertEqual(results[r][1], torch.full((4,), 77.0))
             self.assertEqual(results[r][2], torch.full((4,), float(expected_ar2)))
+
+
+class TestVNCCLEmptyTensors(_VNCCLTestBase):
+    """Verify vnccl handles zero-sized tensors correctly."""
+
+    def test_allreduce_empty(self):
+        pgs = self._make_pgs()
+
+        def _work(rank, pg):
+            t = [torch.empty(0)]
+            pg.allreduce(t)
+            return t[0]
+
+        results = self._run_on_pgs(pgs, _work)
+        for r, t in enumerate(results):
+            self.assertEqual(t.numel(), 0)
+
+    def test_broadcast_empty(self):
+        from torch._C._distributed_c10d import BroadcastOptions
+
+        pgs = self._make_pgs()
+
+        def _work(rank, pg):
+            t = [torch.empty(0)]
+            opts = BroadcastOptions()
+            opts.rootRank = 0
+            pg.broadcast(t, opts)
+            return t[0]
+
+        results = self._run_on_pgs(pgs, _work)
+        for r, t in enumerate(results):
+            self.assertEqual(t.numel(), 0)
+
+    def test_allgather_empty(self):
+        pgs = self._make_pgs()
+
+        def _work(rank, pg):
+            inp = [torch.empty(0)]
+            out = [[torch.empty(0) for _ in range(self._world_size)]]
+            pg.allgather(out, inp)
+            return out[0]
+
+        results = self._run_on_pgs(pgs, _work)
+        for r, gathered in enumerate(results):
+            for t in gathered:
+                self.assertEqual(t.numel(), 0)
+
+
+@unittest.skipIf(
+    not torch.cuda.is_available() or torch.cuda.device_count() < 2,
+    "requires >= 2 CUDA GPUs",
+)
+class TestTorchmuxMultiGPU(TestCase):
+    """Test torchmux with --ngpus 2 to verify multi-GPU device mapping."""
+
+    def setUp(self):
+        super().setUp()
+        self._tmpdir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self._tmpdir, True)
+
+    def test_ngpus_2_correctness(self):
+        script = os.path.join(self._tmpdir, "multigpu.py")
+        with open(script, "w") as f:
+            f.write(
+                "import json, os, torch, torch.distributed as dist\n"
+                "dist.init_process_group()\n"
+                "rank = dist.get_rank()\n"
+                "ws = dist.get_world_size()\n"
+                "ngpus = int(os.environ.get('TORCHMUX_NGPUS', '1'))\n"
+                "device = f'cuda:{rank % ngpus}'\n"
+                "torch.cuda.set_device(device)\n"
+                "results = {}\n"
+                "x = torch.full((4,), float(rank + 1), device=device)\n"
+                "dist.all_reduce(x)\n"
+                "expected = ws * (ws + 1) / 2\n"
+                "results['allreduce'] = torch.allclose(\n"
+                "    x, torch.full_like(x, expected)\n"
+                ")\n"
+                "results['device_index'] = (\n"
+                "    torch.cuda.current_device() == rank % ngpus\n"
+                ")\n"
+                "dist.destroy_process_group()\n"
+                "path = os.path.join(\n"
+                "    os.environ['TORCHMUX_RESULTS_DIR'], f'rank{rank}.json'\n"
+                ")\n"
+                "with open(path, 'w') as f:\n"
+                "    json.dump({k: bool(v) for k, v in results.items()}, f)\n"
+            )
+
+        results_dir = os.path.join(self._tmpdir, "results")
+        os.makedirs(results_dir)
+        trace_dir = os.path.join(self._tmpdir, "traces")
+        os.makedirs(trace_dir)
+        env = os.environ.copy()
+        env["TORCHMUX_NGPUS"] = "2"
+        env["TORCHMUX_RESULTS_DIR"] = results_dir
+        env["TORCHMUX_TRACE_DIR"] = trace_dir
+
+        result = subprocess.run(
+            [
+                sys.executable, "-m", "torch.distributed.torchmux",
+                "--nproc-per-node", "4", "--ngpus", "2", script,
+            ],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        self.assertEqual(
+            result.returncode, 0,
+            f"torchmux --ngpus 2 failed (rc={result.returncode}):\n"
+            f"stdout: {result.stdout}\nstderr: {result.stderr}",
+        )
+
+        for rank in range(4):
+            rpath = os.path.join(results_dir, f"rank{rank}.json")
+            self.assertTrue(os.path.exists(rpath), f"missing results for rank {rank}")
+            with open(rpath) as f:
+                results = json.load(f)
+            for op_name, passed in results.items():
+                self.assertTrue(passed, f"rank {rank}: {op_name} failed")
 
 
 if __name__ == "__main__":
