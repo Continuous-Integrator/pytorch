@@ -163,14 +163,14 @@ class TestIntSpecConstruction(TestCase):
         self.assertEqual(s._max, 64)
 
     def test_static_with_positional_int_rejected(self):
-        # IntSpec.static(10) would silently bind 10 to `name`. Must fail
-        # loudly and point users at the `value=` keyword.
+        # ``IntSpec.static(10)`` would silently bind 10 to ``name``. Must
+        # fail with a clear redirect to the kwarg form.
         with self.assertRaises(TypeError) as cm:
             IntSpec.static(10)  # type: ignore[arg-type]
         self.assertEqual(
             str(cm.exception),
             "IntSpec.name must be str or None, got int; "
-            "if you meant to pass a value, use a keyword argument "
+            "if you meant to pass a value/hint, use a keyword argument "
             "(e.g. IntSpec.static(value=10))",
         )
 
@@ -180,7 +180,7 @@ class TestIntSpecConstruction(TestCase):
         self.assertEqual(
             str(cm.exception),
             "IntSpec.name must be str or None, got int; "
-            "if you meant to pass a value, use a keyword argument "
+            "if you meant to pass a value/hint, use a keyword argument "
             "(e.g. IntSpec.static(value=10))",
         )
 
@@ -190,7 +190,7 @@ class TestIntSpecConstruction(TestCase):
         self.assertEqual(
             str(cm.exception),
             "IntSpec.name must be str or None, got int; "
-            "if you meant to pass a value, use a keyword argument "
+            "if you meant to pass a value/hint, use a keyword argument "
             "(e.g. IntSpec.static(value=10))",
         )
 
@@ -200,7 +200,7 @@ class TestIntSpecConstruction(TestCase):
         self.assertEqual(
             str(cm.exception),
             "IntSpec.name must be str or None, got int; "
-            "if you meant to pass a value, use a keyword argument "
+            "if you meant to pass a value/hint, use a keyword argument "
             "(e.g. IntSpec.static(value=10))",
         )
 
@@ -1042,9 +1042,8 @@ class TestContextVar(TestCase):
 class TestScalarIntCompile(TestCase):
     """torch.compile(dynamic_shapes=...) with scalar-int arguments."""
 
-    @skipIfTorchDynamo("frame_count unreliable when dynamo traces the test")
+    @skipIfTorchDynamo()
     def test_scalar_backed_no_recompile(self):
-        torch._dynamo.reset()
         cnt = torch._dynamo.testing.CompileCounter()
 
         def fn(x, n):
@@ -1060,24 +1059,35 @@ class TestScalarIntCompile(TestCase):
         # BACKED scalar: single compile, dynamic symbol.
         self.assertEqual(cnt.frame_count, 1)
 
+    @_fx_experimental_config.patch(no_data_dependent_graph_break=True)
     def test_scalar_unbacked_dde_on_branching(self):
+        """UNBACKED scalar branched on → raw ``GuardOnDataDependentSymNode``
+        (bypassing the default ``UserError`` wrap via the config patch).
+        Asserts structurally on ``cm.exception.cond.free_symbols``.
+        """
+
         def fn(x, n):
             if n > 5:
                 return x + 1
             return x - 1
 
-        torch._dynamo.reset()
         compiled = torch.compile(
             fn,
             backend="eager",
             fullgraph=True,
-            dynamic_shapes={"n": IntSpec.unbacked("n")},
+            dynamic_shapes={"n": IntSpec.unbacked()},
         )
-        with self.assertRaisesRegex(Exception, "data.dependent|GuardOnDataDependent"):
+        with self.assertRaises(GuardOnDataDependentSymNode) as cm:
             compiled(torch.randn(3), 10)
+        free_syms = cm.exception.cond.free_symbols
+        self.assertEqual(len(free_syms), 1)
+        (sym,) = free_syms
+        self.assertTrue(
+            str(sym).startswith("u"),
+            msg=f"expected unbacked symbol (u-prefix), got {sym!r}",
+        )
 
     def test_modelspec_mixed_tensor_and_scalar(self):
-        torch._dynamo.reset()
         cnt = torch._dynamo.testing.CompileCounter()
 
         def fn(x, n):
@@ -1105,7 +1115,6 @@ class TestTopLevelOnly(TestCase):
     def test_nested_dict_arg_is_not_spec_target(self):
         """If the fn takes a dict ``d`` and the spec names ``d``, the nested
         tensor inside ``d`` must NOT receive the spec meant for the dict."""
-        torch._dynamo.reset()
         cnt = torch._dynamo.testing.CompileCounter()
 
         def fn(d):
@@ -1127,18 +1136,97 @@ class TestTopLevelOnly(TestCase):
         self.assertGreaterEqual(cnt.frame_count, 2)
 
 
-class TestApplyDynamicShapes(TestCase):
-    """Entry-point validation in _apply_dynamic_shapes."""
+class TestDynamicShapesKwargValidation(TestCase):
+    """Entry-point validation for ``torch.compile(dynamic_shapes=...)``.
+
+    The check lives in ``OptimizeContext.__init__`` (in ``eval_frame.py``),
+    triggered at ``torch.compile(...)`` call time (not deferred until the
+    first invocation).
+    """
 
     def test_rejects_non_dict_non_modelspec(self):
-        from torch._dynamo.dynamic_spec import _apply_dynamic_shapes
-
         def fn(x):
             return x + 1
 
-        compiled = torch.compile(fn, backend="eager")
         with self.assertRaisesRegex(TypeError, "dict or ModelSpec"):
-            _apply_dynamic_shapes(compiled, fn, [IntSpec.backed("x")])  # type: ignore[arg-type]
+            torch.compile(
+                fn,
+                backend="eager",
+                dynamic_shapes=[IntSpec.backed("x")],  # type: ignore[arg-type]
+            )
+
+
+class TestListFormRealCompile(TestCase):
+    """End-to-end: list-form tensor-dim specs through the real
+    ``torch.compile(dynamic_shapes=...)`` integration (not the PR 1/PR 2
+    scaffolding helper).
+
+    These tests exercise the ContextVar path that ``OptimizeContext``
+    sets up: builder hooks read the spec, override ``marked_*``, and
+    compile with the requested dynamism.
+    """
+
+    @skipIfTorchDynamo()
+    def test_list_form_single_compile_backed(self):
+        """Raw list in ``dynamic_shapes`` for a tensor: dim 0 BACKED,
+        dim 1 inherits context. Single compile across varying dim-0 sizes.
+        """
+
+        def fn(x):
+            return x.sum(0)
+
+        cnt = torch._dynamo.testing.CompileCounter()
+        compiled = torch.compile(
+            fn,
+            backend=cnt,
+            dynamic_shapes={"x": [IntSpec.backed("batch"), None]},
+        )
+        for n in [4, 8, 16]:
+            x = torch.randn(n, 3)
+            self.assertEqual(compiled(x), fn(x))
+        self.assertEqual(cnt.frame_count, 1)
+
+    @skipIfTorchDynamo()
+    def test_tensorspec_from_list_e2e(self):
+        """Same test, but construct the per-dim spec container via
+        ``TensorSpec.from_list`` — rank inferred from the list length."""
+
+        def fn(x):
+            return x.sum(0)
+
+        ts = TensorSpec.from_list([IntSpec.backed("batch"), None])
+        cnt = torch._dynamo.testing.CompileCounter()
+        compiled = torch.compile(fn, backend=cnt, dynamic_shapes={"x": ts})
+        for n in [4, 8, 16]:
+            x = torch.randn(n, 3)
+            self.assertEqual(compiled(x), fn(x))
+        self.assertEqual(cnt.frame_count, 1)
+
+    @skipIfTorchDynamo()
+    def test_modelspec_list_form_plus_scalar(self):
+        """``ModelSpec`` mixing list-form per-dim tensor + scalar-int.
+        Single compile across varying shapes and scalar values, outputs
+        match eager."""
+
+        def fn(x, n):
+            return x.sum(0) + n
+
+        cnt = torch._dynamo.testing.CompileCounter()
+        compiled = torch.compile(
+            fn,
+            backend=cnt,
+            dynamic_shapes=ModelSpec(
+                {
+                    "x": [IntSpec.backed("batch"), None],
+                    "n": IntSpec.backed(guarding_hint=32),
+                }
+            ),
+        )
+        for shape0, n in [(4, 3), (8, 5), (16, 7)]:
+            x = torch.randn(shape0, 3)
+            self.assertEqual(compiled(x, n), fn(x, n))
+        # Both dims dynamic → single compile across 3 varying calls.
+        self.assertEqual(cnt.frame_count, 1)
 
 
 class TestKnownGaps(TestCase):
@@ -1146,7 +1234,7 @@ class TestKnownGaps(TestCase):
     integration. Each test here is expected to fail until the corresponding
     fix lands; see torch/_dynamo/DYNAMIC_SHAPES_INTEGRATION.md."""
 
-    @skipIfTorchDynamo("frame_count unreliable when dynamo traces the test")
+    @skipIfTorchDynamo()
     def test_nn_module_spec_applies_to_forward_args(self):
         """Bug: OptimizedModule may not dispatch through the wrapper that
         sets the ContextVar, so the spec never reaches the tracing path.
@@ -1158,7 +1246,6 @@ class TestKnownGaps(TestCase):
             def forward(self, x):
                 return x.sum(0)
 
-        torch._dynamo.reset()
         cnt = torch._dynamo.testing.CompileCounter()
         compiled = torch.compile(
             M(),
@@ -1169,7 +1256,7 @@ class TestKnownGaps(TestCase):
             compiled(torch.randn(n, 3))
         self.assertEqual(cnt.frame_count, 1)
 
-    @skipIfTorchDynamo("frame_count unreliable when dynamo traces the test")
+    @skipIfTorchDynamo()
     def test_backed_respects_max_bound(self):
         """Bug: IntSpec.backed(min=N, max=M) bounds are silently dropped.
         Expected: a value outside the declared max should either raise or
@@ -1179,7 +1266,6 @@ class TestKnownGaps(TestCase):
         def fn(x):
             return x.sum(0)
 
-        torch._dynamo.reset()
         cnt = torch._dynamo.testing.CompileCounter()
         compiled = torch.compile(
             fn,
@@ -1193,7 +1279,7 @@ class TestKnownGaps(TestCase):
         with self.assertRaises(Exception):
             compiled(torch.randn(100, 3))
 
-    @skipIfTorchDynamo("frame_count unreliable when dynamo traces the test")
+    @skipIfTorchDynamo()
     def test_static_shapes_shortcircuit_does_not_override_spec(self):
         """Bug: tensor_always_has_static_shape (e.g. nn.Parameter,
         specialized-nn-module sources) short-circuits _automatic_dynamic
@@ -1211,7 +1297,6 @@ class TestKnownGaps(TestCase):
             def forward(self, x):
                 return x + self.w.sum(0)
 
-        torch._dynamo.reset()
         cnt = torch._dynamo.testing.CompileCounter()
         compiled = torch.compile(
             M(),

@@ -42,14 +42,14 @@ class IntSpecType(enum.Enum):
     """How an integer should be treated during compilation.
 
     STATIC
-        Treat as a compile-time constant. Recompiles if the value changes.
+        Compile-time constant; recompiles if the value changes.
     BACKED
-        Symbolic with a backing hint. Guards and 0/1 specialization are
-        permitted; user code or the compiler may install constraints.
+        Symbolic with a guarding hint. Guards and 0/1 specialization are
+        permitted.
     UNBACKED
-        Symbolic with no backing value. Guaranteed not to be guarded on and
-        not 0/1 specialized; branching on the value may raise a
-        data-dependent error.
+        Symbolic with an optimized hint. Not guarded on, not 0/1
+        specialized; branching on the value may raise a data-dependent
+        error.
     """
 
     STATIC = "static"
@@ -89,10 +89,16 @@ class IntSpec:
 
     Example::
 
-        IntSpec("x", IntSpecType.STATIC, value=10)
         IntSpec.static("x", value=10)
         IntSpec.backed("batch", min=1, max=64, guarding_hint=32)
         IntSpec.unbacked("seq", min=1, max=2048, optimization_hint=512)
+
+        # Anonymous form (scalar-int use, no name):
+        IntSpec.backed()
+        IntSpec.backed(guarding_hint=32)
+
+        # Direct constructor (name required, may be None):
+        IntSpec("x", IntSpecType.STATIC, value=10)
     """
 
     # Slot annotations. Pyrefly / mypy can't see the backing slots because
@@ -131,13 +137,11 @@ class IntSpec:
     ) -> None:
         if not isinstance(type, IntSpecType):
             raise TypeError(f"IntSpec.type must be an IntSpecType, got {type!r}")
-        # Route each argument to the right slot by type. Catches e.g.
-        # ``IntSpec.static(10)`` where 10 would otherwise silently bind to
-        # ``name``.
         if name is not None and not isinstance(name, str):
             raise TypeError(
-                f"IntSpec.name must be str or None, got {name.__class__.__name__}; "
-                f"if you meant to pass a value, use a keyword argument "
+                f"IntSpec.name must be str or None, got "
+                f"{name.__class__.__name__}; if you meant to pass a "
+                f"value/hint, use a keyword argument "
                 f"(e.g. IntSpec.static(value=10))"
             )
         for field_name, field_val in (
@@ -214,6 +218,10 @@ class IntSpec:
             )
 
     # -- factories ---------------------------------------------------------
+    #
+    # ``name`` is the only positional argument; all other fields are
+    # keyword-only. Passing non-``str`` (e.g. ``IntSpec.static(10)``) is
+    # rejected at ``__init__`` with a hint to use the kwarg form.
 
     @classmethod
     def static(cls, name: str | None = None, *, value: int | None = None) -> "IntSpec":
@@ -509,57 +517,3 @@ def get_active_spec_for_dim(arg_name: str, dim: int) -> "IntSpec | None":
     if arg_spec is None:
         return None
     return _resolve_dim_spec(arg_spec, dim)
-
-
-def _apply_dynamic_shapes(compiled: Any, original: Any, dynamic_shapes: Any) -> Any:
-    """Wrap a compiled callable so that ``dynamic_shapes`` is active for the
-    duration of each call.
-
-    The wrapper sets a :class:`contextvars.ContextVar` around the inner
-    ``compiled()`` invocation; the Dynamo variable builder reads it and
-    applies per-dim dynamism directly via ``DimDynamic``. No tensor
-    attributes are mutated and no ``mark_*`` calls are issued.
-    """
-    import functools
-
-    import torch
-
-    normalized: dict[str, Any]
-    if isinstance(dynamic_shapes, ModelSpec):
-        normalized = dict(dynamic_shapes.items())
-    elif isinstance(dynamic_shapes, dict):
-        normalized = dict(dynamic_shapes)
-    else:
-        raise TypeError(
-            f"dynamic_shapes must be a dict or ModelSpec, got "
-            f"{type(dynamic_shapes).__name__}"
-        )
-
-    if isinstance(compiled, torch.nn.Module):
-        # Capture the dynamo-wrapped forward *before* overwriting, so the
-        # wrapper calls through to tracing rather than recursing into its
-        # own slot (`compiled(*args, **kwargs)` dispatches via
-        # `nn.Module.__call__` → `self.forward`, which is what we're
-        # about to replace).
-        original_forward = compiled.forward
-
-        @functools.wraps(original_forward)
-        def module_wrapper(*args: Any, **kwargs: Any) -> Any:
-            token = _active_dynamic_shapes.set(normalized)
-            try:
-                return original_forward(*args, **kwargs)
-            finally:
-                _active_dynamic_shapes.reset(token)
-
-        compiled.forward = module_wrapper  # type: ignore[method-assign]
-        return compiled
-
-    @functools.wraps(compiled)
-    def wrapper(*args: Any, **kwargs: Any) -> Any:
-        token = _active_dynamic_shapes.set(normalized)
-        try:
-            return compiled(*args, **kwargs)
-        finally:
-            _active_dynamic_shapes.reset(token)
-
-    return wrapper

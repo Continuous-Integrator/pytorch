@@ -2801,15 +2801,11 @@ def compile(
         backend=backend,
         nopython=fullgraph,
         dynamic=dynamic,
+        dynamic_shapes=dynamic_shapes,
         disable=disable,
         guard_filter_fn=guard_filter_fn,
         recompile_limit=recompile_limit,
     )(model)  # type: ignore[return-value]
-
-    if dynamic_shapes is not None:
-        from torch._dynamo.dynamic_spec import _apply_dynamic_shapes
-
-        compiled = _apply_dynamic_shapes(compiled, model, dynamic_shapes)
 
     return compiled
 
