@@ -5108,8 +5108,9 @@ class Scheduler:
         """Group parallel nodes into combo kernels.
 
         When peak-memory gating is enabled (either threshold dimension is not
-        None), the search is limited up-front to baseline-order windows with
-        bounded span (combo_kernel_max_distance). A window is fused only if
+        None), the default memory-aware path starts from the existing topo-level combo groups,
+        then limits each group up front to baseline-order windows with bounded
+        span (combo_kernel_max_distance). A window is fused only if
         the simulated graph peak stays within the configured threshold policy.
         Rejected windows are retried with halving.
         """
@@ -5284,13 +5285,15 @@ class Scheduler:
                     self._commit_combo_to_memory_context(
                         mem_ctx,
                         region_start,
+                        combo_node,
                         combo_step,
                         new_region_memory,
                         accepted_nodes,
                     )
 
                     # Only retry a later remainder here. An earlier remainder
-                    # already failed.
+                    # already failed + re-adding an earlier remainder would violate
+                    # the forward commit order of the incremental memory context.
                     accepted = accepted_nodes
                     if len(accepted) < len(candidate):
                         accepted_set = OrderedSet(accepted)
@@ -5476,8 +5479,8 @@ class Scheduler:
             for buf in n.get_buffer_names():
                 name_to_local_pos[buf] = i
         topo_valid = True
-        # Most local rewrites stay topo-valid; only sort when the combo
-        # replacement moves a producer after one of its local users.
+        # Replacing non-contiguous same-level nodes with one combo can
+        # disturb local producer-before-user order, so only topo-sort this slice when needed.
         for i, n in enumerate(local_nodes):
             for dep in n.unmet_dependencies:
                 p = name_to_local_pos.get(dep.name)
@@ -5487,7 +5490,6 @@ class Scheduler:
             if not topo_valid:
                 break
         if not topo_valid:
-            # Replacing the window with one combo can invalidate only local order.
             local_nodes = self.topological_sort_schedule(local_nodes)
 
         new_step: dict[BaseSchedulerNode, int] = {
@@ -5523,10 +5525,10 @@ class Scheduler:
         region_size = region_end - region_start + 1
         region_end_plus_1 = region_end + 1
         region_delta = [0] * (region_size + 1)
+
         # Only nodes in the local region move. Users outside the region keep
         # their baseline steps, and overlapping accepted combos are collapsed
         # to their combo step before we rebuild local memory.
-
         def accumulate(
             size_alloc: int, size_free: int, new_start: int, new_end: int
         ) -> None:
@@ -5638,11 +5640,19 @@ class Scheduler:
         self,
         mem_ctx: ComboKernelMemoryContext,
         region_start: int,
+        combo_node: BaseSchedulerNode,
         combo_step: int,
         new_region_memory: list[int],
         group_nodes: list[BaseSchedulerNode],
     ) -> None:
         """Commit an accepted combo to the baseline memory context."""
+        last_region_start = mem_ctx.last_region_start
+        # Windows are visited in baseline order, so commits must be monotonic.
+        assert region_start >= last_region_start, (
+            "combo commits must be processed in non-decreasing region order; "
+            f"got region_start={region_start} after last={last_region_start}"
+        )
+
         memories_at_nodes = mem_ctx.memories_at_nodes
         end = region_start + len(new_region_memory)
         assert end <= len(memories_at_nodes)
@@ -5650,15 +5660,10 @@ class Scheduler:
             memories_at_nodes[t] = new_region_memory[i]
 
         accepted_step = mem_ctx.accepted_step
+        accepted_step[combo_node] = combo_step
         for n in group_nodes:
             accepted_step[n] = combo_step
 
-        last_region_start = mem_ctx.last_region_start
-        # Windows are visited in baseline order, so commits must be monotonic.
-        assert region_start >= last_region_start, (
-            "combo commits must be processed in non-decreasing region order; "
-            f"got region_start={region_start} after last={last_region_start}"
-        )
         mem_ctx.last_region_start = region_start
 
     def prune_redundant_deps(self, nodes: list[BaseSchedulerNode]) -> None:

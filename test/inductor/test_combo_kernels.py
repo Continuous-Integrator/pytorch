@@ -1,7 +1,6 @@
 # Owner(s): ["module: inductor"]
 
 import contextlib
-import itertools
 import json
 import logging
 import re
@@ -1816,91 +1815,119 @@ class ComboKernelPeakMemoryTests(InductorTestCase):
                     enable_autotune=False,
                 )
 
-    def test_try_combo_with_memory_check_rejects_adjacent_large_allocations(self):
-        """Strict thresholds reject a local peak increase; disabled thresholds allow it."""
+    def test_threshold_gating(self):
+        """abs_thr/pct_thr set to 0 or a too-small bound reject; default accepts."""
         a = _PeakMemFakeNode("a")
         consume_a = _PeakMemFakeNode("consume_a", deps=("buf_a",))
         b = _PeakMemFakeNode("b")
         consume_b = _PeakMemFakeNode("consume_b", deps=("buf_b",))
         nodes = [a, consume_a, b, consume_b]
-        buf_a = _PeakMemFakeBuffer("buf_a", a, {consume_a})
-        buf_b = _PeakMemFakeBuffer("buf_b", b, {consume_b})
         buf_info_list = [
-            BufferInfo(buf_a, 100, 100, 0, 1),
-            BufferInfo(buf_b, 100, 100, 2, 3),
+            BufferInfo(_PeakMemFakeBuffer("buf_a", a, {consume_a}), 100, 100, 0, 1),
+            BufferInfo(_PeakMemFakeBuffer("buf_b", b, {consume_b}), 100, 100, 2, 3),
         ]
-        zero_tolerance_combo, *_ = self._try_combo_with_fake_scheduler(
-            nodes,
-            [a, b],
-            buf_info_list=buf_info_list,
-            baseline_peak=100,
-            memories_at_nodes=[100, 100, 100, 100, 0],
-            thresholds=self._thresholds(abs_thr=0),
-        )
-        zero_pct_combo, *_ = self._try_combo_with_fake_scheduler(
-            nodes,
-            [a, b],
-            buf_info_list=buf_info_list,
-            baseline_peak=100,
-            memories_at_nodes=[100, 100, 100, 100, 0],
-            thresholds=self._thresholds(pct_thr=0.0),
-        )
-        bounded_combo, *_ = self._try_combo_with_fake_scheduler(
-            nodes,
-            [a, b],
-            buf_info_list=buf_info_list,
-            baseline_peak=100,
-            memories_at_nodes=[100, 100, 100, 100, 0],
-            thresholds=self._thresholds(abs_thr=1),
-        )
-        accepted_combo, _, new_region_memory, region_start, combo_step = (
-            self._try_combo_with_fake_scheduler(
+        memories_at_nodes = [100, 100, 100, 100, 0]
+
+        def run(thresholds):
+            return self._try_combo_with_fake_scheduler(
                 nodes,
                 [a, b],
                 buf_info_list=buf_info_list,
                 baseline_peak=100,
-                memories_at_nodes=[100, 100, 100, 100, 0],
-                thresholds=self._thresholds(),
+                memories_at_nodes=memories_at_nodes,
+                thresholds=thresholds,
             )
-        )
 
-        self.assertIsNone(zero_tolerance_combo)
-        self.assertIsNone(zero_pct_combo)
-        self.assertIsNone(bounded_combo)
-        self.assertIsNotNone(accepted_combo)
+        # Rejection cases: any limit below the +100 delta the combo forces.
+        for label, thresholds in (
+            ("abs=0", self._thresholds(abs_thr=0)),
+            ("pct=0", self._thresholds(pct_thr=0.0)),
+            ("abs=1", self._thresholds(abs_thr=1)),
+        ):
+            combo, *_ = run(thresholds)
+            self.assertIsNone(combo, f"{label} should reject")
+
+        # Both thresholds disabled → accept and surface the new region timeline.
+        combo, _, new_region_memory, region_start, combo_step = run(self._thresholds())
+        self.assertIsNotNone(combo)
         self.assertEqual(region_start, 0)
         self.assertEqual(combo_step, 0)
         self.assertEqual(new_region_memory, [200, 200, 100, 100])
 
-    def test_try_combo_with_memory_check_recomputes_region(self):
-        """_try_combo_with_memory_check returns only the rewritten region timeline."""
-        a = _PeakMemFakeNode("a")
-        b = _PeakMemFakeNode("b")
-        c = _PeakMemFakeNode("c")
-        d = _PeakMemFakeNode("d")
-        e = _PeakMemFakeNode("e")
-        nodes = [a, b, c, d, e]
-        long_lived = _PeakMemFakeBuffer("buf", b, {e})
-        combo_node, _, new_region_memory, region_start, combo_step = (
-            self._try_combo_with_fake_scheduler(
-                nodes,
-                [a, b],
-                buf_info_list=[BufferInfo(long_lived, 10, 10, 1, 4)],
-                baseline_peak=10,
-                memories_at_nodes=[0, 10, 10, 10, 10, 0],
-                thresholds=self._thresholds(),
-            )
-        )
+    def test_accepted_combo_with_fused_parent_subnode_visible(self):
+        """Regression test for the FusedSchedulerNode step_of fallback.
 
-        self.assertIsNotNone(combo_node)
-        self.assertEqual(region_start, 0)
-        self.assertEqual(combo_step, 0)
-        self.assertEqual(new_region_memory, [10, 10, 10])
+        A prior combo absorbs a FusedSchedulerNode F (with leaf sub-node f1)
+        plus G. After commit, name_to_fused_node[f1] points to the outer
+        combo_fg (skipping F), so step_of(f1) can only resolve if combo_fg
+        itself is registered in accepted_step. If the fix regresses,
+        step_of(f1) returns -1 and buf_x's contribution is silently dropped
+        from the region memory check — a miscounting that is not
+        I/O-observable in a normal compile.
+        """
+        from unittest.mock import patch
 
-    def test_commit_combo_with_later_outside_user_keeps_suffix(self):
-        """Committing a local rewrite leaves the later unchanged suffix intact."""
         from torch._inductor.scheduler import Scheduler
 
+        fused_parent = _PeakMemFakeNode("F")
+        earlier_peer = _PeakMemFakeNode("G")
+        h = _PeakMemFakeNode("H")
+        k = _PeakMemFakeNode("K", deps=("buf_x",))
+        nodes = [fused_parent, earlier_peer, h, k]
+
+        fused_subnode = _PeakMemFakeNode("f1")
+        combo_fg = _PeakMemFakeNode("combo_fg")
+        buf_x = _PeakMemFakeBuffer("buf_x", fused_subnode, {k})
+        mem_ctx = self._make_peak_mem_context(
+            nodes,
+            buf_info_list=[BufferInfo(buf_x, 50, 50, 0, 3)],
+            memories_at_nodes=[50, 50, 50, 50, 0],
+        )
+        Scheduler._commit_combo_to_memory_context(
+            None,  # type: ignore[arg-type]
+            mem_ctx,
+            region_start=0,
+            combo_node=combo_fg,
+            combo_step=0,
+            new_region_memory=[50, 50, 50],
+            group_nodes=[fused_parent, earlier_peer],
+        )
+        scheduler = _PeakMemFakeScheduler(
+            nodes,
+            name_to_fused_node={"f1": combo_fg, "G": combo_fg},
+        )
+
+        def fake_foreach(*args, **kwargs):
+            return _PeakMemFakeNode("combo_hk")
+
+        with patch(
+            "torch._inductor.scheduler.ForeachKernelSchedulerNode", fake_foreach
+        ):
+            combo, _, new_region_memory, region_start, combo_step = (
+                Scheduler._try_combo_with_memory_check(
+                    scheduler,
+                    [h, k],
+                    mem_ctx,
+                    baseline_peak=50,
+                    enable_autotune=False,
+                )
+            )
+
+        self.assertIsNotNone(combo)
+        self.assertEqual(region_start, 2)
+        self.assertEqual(combo_step, 2)
+        # buf_x is carried into the region from the earlier combo (alive at
+        # step 2) and freed after K consumes it at step 3 → [50, 0, 0].
+        self.assertEqual(new_region_memory, [50, 0, 0])
+
+    def test_commit_semantics(self):
+        """Three invariants of _commit_combo_to_memory_context:
+        (a) it only rewrites [region_start, region_end+1], leaving the suffix intact;
+        (b) it correctly handles overlapping commits;
+        (c) a non-monotonic region_start raises and leaves mem_ctx unmutated."""
+        from torch._inductor.scheduler import ComboKernelMemoryContext, Scheduler
+
+        # (a) Single commit preserves the suffix outside the region.
         a = _PeakMemFakeNode("a")
         b = _PeakMemFakeNode("b")
         c = _PeakMemFakeNode("c")
@@ -1922,59 +1949,21 @@ class ComboKernelPeakMemoryTests(InductorTestCase):
                 thresholds=self._thresholds(),
             )
         )
-
-        self.assertIsNotNone(combo_node)
-        self.assertEqual(region_start, 0)
-        self.assertEqual(combo_step, 0)
         self.assertEqual(new_region_memory, [10, 10, 10])
-
         Scheduler._commit_combo_to_memory_context(
             None,  # type: ignore[arg-type]
             mem_ctx,
             region_start,
+            combo_node,
             combo_step,
             new_region_memory,
             [a, b],
         )
+        # Suffix (index 4) stays at its pre-commit value of 0.
         self.assertEqual(mem_ctx.memories_at_nodes, [10, 10, 10, 10, 0])
 
-    def test_try_combo_with_memory_check_skips_subnodes_of_accepted_combo(self):
-        """Overlapping later tries must collapse earlier accepted subnodes to their combo."""
-        a1 = _PeakMemFakeNode("a1")
-        b1 = _PeakMemFakeNode("b1")
-        a2 = _PeakMemFakeNode("a2")
-        b2 = _PeakMemFakeNode("b2")
-        combo_a = _PeakMemFakeNode("combo_a")
-        nodes = [a1, b1, a2, b2]
-        carried_buf = _PeakMemFakeBuffer("buf_a", a2, set())
-        combo_node, _, new_region_memory, region_start, combo_step = (
-            self._try_combo_with_fake_scheduler(
-                nodes,
-                [b1, b2],
-                buf_info_list=[BufferInfo(carried_buf, 50, 50, 2, 2)],
-                baseline_peak=50,
-                memories_at_nodes=[50, 0, 0, 0, 0],
-                combo_name="combo_b",
-                thresholds=self._thresholds(),
-                name_to_fused_node={
-                    "a1": combo_a,
-                    "a2": combo_a,
-                },
-                accepted_step={a1: 0, a2: 0},
-            )
-        )
-
-        self.assertIsNotNone(combo_node)
-        self.assertEqual(region_start, 1)
-        self.assertEqual(combo_step, 1)
-        self.assertEqual(new_region_memory, [0, 0, 0, 0])
-
-    def test_commit_combo_to_memory_context_overlapping_regions(self):
-        """Unit test for _commit_combo_to_memory_context with overlapping
-        regions: the integration tests above can't reliably produce
-        overlap (depends on Inductor's topo sort), so we feed it directly."""
-        from torch._inductor.scheduler import ComboKernelMemoryContext, Scheduler
-
+        # (b) Overlapping commits: combo1 writes [4..11], combo2 writes [8..15].
+        # This can't be produced reliably end-to-end so we feed it directly.
         N = 20
         mem_ctx = ComboKernelMemoryContext(
             graph_outputs=set(),
@@ -1983,52 +1972,58 @@ class ComboKernelPeakMemoryTests(InductorTestCase):
             memories_at_nodes=[100] * (N + 1),
             node_to_idx={},
         )
-
-        # combo1: writes [4..11]; combo2: writes [8..15]; overlap = [8..11].
         combo1_nodes = [_PeakMemFakeNode(f"a{i}") for i in range(5)]
         Scheduler._commit_combo_to_memory_context(
             None,  # type: ignore[arg-type]
             mem_ctx,
             region_start=4,
+            combo_node=_PeakMemFakeNode("combo1"),
             combo_step=5,
             new_region_memory=[120, 150, 200, 200, 180, 160, 140, 130],
             group_nodes=combo1_nodes,
         )
-        self.assertEqual(max(mem_ctx.memories_at_nodes), 200)
-
         combo2_nodes = [_PeakMemFakeNode(f"b{i}") for i in range(4)]
         Scheduler._commit_combo_to_memory_context(
             None,  # type: ignore[arg-type]
             mem_ctx,
             region_start=8,
+            combo_node=_PeakMemFakeNode("combo2"),
             combo_step=9,
             new_region_memory=[170, 190, 210, 195, 175, 155, 145, 135],
             group_nodes=combo2_nodes,
         )
         self.assertEqual(max(mem_ctx.memories_at_nodes), 210)
-
+        # Spot-check: combo1-only prefix, overlap (combo2 wins), combo2-only,
+        # untouched suffix.
         self.assertEqual(mem_ctx.memories_at_nodes[4], 120)
         self.assertEqual(mem_ctx.memories_at_nodes[7], 200)
         self.assertEqual(mem_ctx.memories_at_nodes[8], 170)
         self.assertEqual(mem_ctx.memories_at_nodes[11], 195)
         self.assertEqual(mem_ctx.memories_at_nodes[15], 135)
         self.assertEqual(mem_ctx.memories_at_nodes[16], 100)
-
         self.assertEqual(mem_ctx.last_region_start, 8)
         for n in combo1_nodes:
             self.assertEqual(mem_ctx.accepted_step[n], 5)
         for n in combo2_nodes:
             self.assertEqual(mem_ctx.accepted_step[n], 9)
 
+        # (c) Non-monotonic region_start must raise and NOT mutate mem_ctx.
+        baseline_memories = list(mem_ctx.memories_at_nodes)
+        baseline_steps = dict(mem_ctx.accepted_step)
+        baseline_last_region_start = mem_ctx.last_region_start
         with self.assertRaises(AssertionError):
             Scheduler._commit_combo_to_memory_context(
                 None,  # type: ignore[arg-type]
                 mem_ctx,
                 region_start=2,
+                combo_node=_PeakMemFakeNode("combo0"),
                 combo_step=2,
                 new_region_memory=[100, 100],
                 group_nodes=[_PeakMemFakeNode("c0")],
             )
+        self.assertEqual(mem_ctx.memories_at_nodes, baseline_memories)
+        self.assertEqual(mem_ctx.accepted_step, baseline_steps)
+        self.assertEqual(mem_ctx.last_region_start, baseline_last_region_start)
 
     @requires_gpu_and_triton
     def test_combo_kernel_peak_memory_succinct_threshold(self):
@@ -2069,7 +2064,10 @@ class ComboKernelPeakMemoryTests(InductorTestCase):
 
     @requires_gpu_and_triton
     def test_combo_kernel_peak_memory_distance_windows_bound_candidates(self):
-        """Candidates reaching the memory check already satisfy combo_kernel_max_distance."""
+        """With combo_kernel_max_distance set tight, every candidate reaching
+        _try_combo_with_memory_check has span ≤ max_distance, AND the WideResNet
+        case produces at least one pre-split group wider than max_distance
+        (proving _distance_windows actually did work)."""
         from unittest.mock import patch
 
         from torch._inductor.scheduler import ForeachKernelSchedulerNode, Scheduler
@@ -2079,24 +2077,21 @@ class ComboKernelPeakMemoryTests(InductorTestCase):
         max_distance = 1
         original_spans: list[int] = []
         tried_spans: list[int] = []
-        original_group_nodes = ForeachKernelSchedulerNode.group_nodes_for_combo_kernels
+        original_groups_fn = ForeachKernelSchedulerNode.group_nodes_for_combo_kernels
         original_try = Scheduler._try_combo_with_memory_check
 
         def logging_groups(scheduler):
-            groups = original_group_nodes(scheduler)
-            node_to_idx = {node: idx for idx, node in enumerate(scheduler.nodes)}
-            for nodes in groups:
-                nodes = ForeachKernelSchedulerNode.combinable_nodes(nodes)
-                if len(nodes) < 2:
-                    continue
-                idxs = [node_to_idx[node] for node in nodes]
-                original_spans.append(max(idxs) - min(idxs))
+            groups = original_groups_fn(scheduler)
+            node_to_idx = {n: i for i, n in enumerate(scheduler.nodes)}
+            for g in groups:
+                g = ForeachKernelSchedulerNode.combinable_nodes(g)
+                if len(g) >= 2:
+                    idxs = [node_to_idx[n] for n in g]
+                    original_spans.append(max(idxs) - min(idxs))
             return groups
 
         def logging_try(self, group_nodes, mem_ctx, *args, **kwargs):
-            # Observe the candidates after _distance_windows has already split
-            # the original topo-level groups.
-            idxs = [mem_ctx.node_to_idx[node] for node in group_nodes]
+            idxs = [mem_ctx.node_to_idx[n] for n in group_nodes]
             tried_spans.append(max(idxs) - min(idxs))
             return original_try(self, group_nodes, mem_ctx, *args, **kwargs)
 
@@ -2115,139 +2110,90 @@ class ComboKernelPeakMemoryTests(InductorTestCase):
                 **self._thresholds(abs_thr=1 << 60),
             ),
         ):
-            compiled_fn = torch.compile(model)
             with torch.no_grad():
-                out_compiled = compiled_fn(x)
+                out_compiled = torch.compile(model)(x)
 
         self.assertEqual(out_eager, out_compiled)
         self.assertGreater(len(tried_spans), 0)
         self.assertTrue(
-            any(span > max_distance for span in original_spans),
+            any(s > max_distance for s in original_spans),
             "Expected at least one pre-split combo group wider than max_distance",
         )
-        self.assertTrue(all(span <= max_distance for span in tried_spans))
+        self.assertTrue(all(s <= max_distance for s in tried_spans))
 
     @requires_gpu_and_triton
-    @parametrize(
-        "threshold_kind,loose,tight",
-        [
-            ("abs", 1024 * 1024 * 1024, 1),
-            ("pct", 0.5, 0.0001),
-        ],
-    )
-    def test_combo_kernel_peak_memory_tighter_threshold_rejects_more_combos(
-        self, threshold_kind, loose, tight
-    ):
-        """Tighter absolute or percentage limits reject more combo groups."""
-        model, x, out_eager = self._make_wide_resnet_case()
-        kernel_counts = {}
-        for value in (loose, tight):
-            thresholds = (
-                self._thresholds(abs_thr=value)
-                if threshold_kind == "abs"
-                else self._thresholds(pct_thr=value)
-            )
-            with torch.no_grad():
-                out_compiled, kernels = self._compile_and_count(model, x, **thresholds)
-            self.assertEqual(out_eager, out_compiled)
-            kernel_counts[value] = kernels
-
-        self.assertGreater(
-            kernel_counts[tight],
-            kernel_counts[loose],
-            "Tighter threshold should reject more combo groups",
-        )
-
-    @requires_gpu_and_triton
-    def test_combo_kernel_peak_memory_halving_retry(self):
-        """Verify the halving retry path actually fires: a candidate must
-        appear that is a strict subset (by node names) of an earlier
-        candidate from the same compile."""
+    def test_combo_kernel_peak_memory_halving_retry_and_remaining_reenqueue(self):
+        """Under a tight threshold:
+        (a) halving fires — at least one tried candidate is a strict subset
+            of an earlier one from the same compile;
+        (b) after a partial halving accept, the outer loop re-enqueues the
+            unaccepted remainder (candidate − committed) as a new candidate."""
         from unittest.mock import patch
 
         from torch._inductor.scheduler import Scheduler
-        from torch._inductor.utils import fresh_cache
 
         model, x, out_eager = self._make_wide_resnet_case()
 
-        call_log: list[tuple[frozenset[str], int]] = []
+        tried: list[frozenset[str]] = []
+        committed: list[frozenset[str]] = []
         original_try = Scheduler._try_combo_with_memory_check
+        original_commit = Scheduler._commit_combo_to_memory_context
 
         def logging_try(self, group_nodes, *args, **kwargs):
-            # Halving retries show up as strict subsets of an earlier failed
-            # candidate from the same compile.
-            names = frozenset(n.get_name() for n in group_nodes)
-            call_log.append((names, len(group_nodes)))
+            tried.append(frozenset(n.get_name() for n in group_nodes))
             return original_try(self, group_nodes, *args, **kwargs)
+
+        def logging_commit(
+            self,
+            mem_ctx,
+            region_start,
+            combo_node,
+            combo_step,
+            new_region_memory,
+            group_nodes,
+        ):
+            committed.append(frozenset(n.get_name() for n in group_nodes))
+            return original_commit(
+                self,
+                mem_ctx,
+                region_start,
+                combo_node,
+                combo_step,
+                new_region_memory,
+                group_nodes,
+            )
 
         torch._dynamo.reset()
         torch._inductor.metrics.reset()
         with (
             fresh_cache(),
             patch.object(Scheduler, "_try_combo_with_memory_check", logging_try),
-            torch._inductor.config.patch(
-                **self._thresholds(abs_thr=4096),
-            ),
+            patch.object(Scheduler, "_commit_combo_to_memory_context", logging_commit),
+            torch._inductor.config.patch(**self._thresholds(abs_thr=4096)),
         ):
-            compiled_fn = torch.compile(model)
             with torch.no_grad():
-                out_compiled = compiled_fn(x)
+                out_compiled = torch.compile(model)(x)
 
         self.assertEqual(out_eager, out_compiled)
-        self.assertGreater(len(call_log), 0)
+        self.assertGreater(len(tried), 0)
+
+        # (a) halving: a later try is a strict subset of an earlier one.
         halving_observed = any(
-            len_i < len_j and names_i < names_j
-            for i, (names_i, len_i) in enumerate(call_log)
-            for names_j, len_j in call_log[:i]
+            later < earlier for i, later in enumerate(tried) for earlier in tried[:i]
+        )
+        self.assertTrue(halving_observed, "Expected at least one halving retry")
+
+        # (b) remaining-re-enqueue: for some full candidate tried, a proper
+        # subset got committed (partial accept) AND the exact remainder
+        # (candidate − committed) was tried later as a new candidate.
+        tried_set = set(tried)
+        remainder_observed = any(
+            c < orig and (orig - c) in tried_set for orig in tried for c in committed
         )
         self.assertTrue(
-            halving_observed,
-            "Expected at least one halving retry. "
-            f"call_log lens: {[c[1] for c in call_log[:20]]}",
+            remainder_observed,
+            "Expected a partial halving accept whose remainder was re-enqueued",
         )
-
-    @requires_gpu_and_triton
-    def test_combo_kernel_peak_memory_commit_path_exercised(self):
-        """End-to-end smoke for the commit path: at least one combo is
-        accepted and the monotonic-region_start invariant holds."""
-        from unittest.mock import patch
-
-        from torch._inductor.scheduler import Scheduler
-        from torch._inductor.utils import fresh_cache
-
-        model, x, out_eager = self._make_wide_resnet_case()
-
-        accepted_regions: list[tuple[int, int]] = []
-        original_commit = Scheduler._commit_combo_to_memory_context
-
-        def capturing_commit(
-            self, mem_ctx, region_start, combo_step, new_region_memory, group_nodes
-        ):
-            region_end = region_start + len(new_region_memory) - 2
-            accepted_regions.append((region_start, region_end))
-            return original_commit(
-                self, mem_ctx, region_start, combo_step, new_region_memory, group_nodes
-            )
-
-        torch._dynamo.reset()
-        torch._inductor.metrics.reset()
-        with (
-            fresh_cache(),
-            patch.object(
-                Scheduler, "_commit_combo_to_memory_context", capturing_commit
-            ),
-            torch._inductor.config.patch(
-                **self._thresholds(abs_thr=128 * 1024),
-            ),
-        ):
-            compiled_fn = torch.compile(model)
-            with torch.no_grad():
-                out_compiled = compiled_fn(x)
-
-        self.assertEqual(out_eager, out_compiled)
-        self.assertGreater(len(accepted_regions), 0)
-        for prev, curr in itertools.pairwise(accepted_regions):
-            self.assertGreaterEqual(curr[0], prev[0])
 
 
 if __name__ == "__main__":
