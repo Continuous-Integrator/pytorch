@@ -4554,20 +4554,42 @@ class AlgorithmSelectorCache(PersistentCache):
             for i, x in enumerate(input_nodes)
         }
         example_inputs = list(unique_example_inputs.values())
-        example_inputs_extern = []
 
-        for i, input_node in enumerate(input_nodes):
-            if unique_example_inputs[input_node.get_name()].is_mkldnn:
+        # For extern choices, use their actual input_nodes (e.g., 1D bias for addmm)
+        # rather than the global input_nodes (which may have expanded shapes)
+        extern_choice = next(
+            (c for c in choices if cls._is_extern(c) and hasattr(c, "input_nodes")),
+            None,
+        )
+        extern_input_nodes = (
+            extern_choice.input_nodes
+            if extern_choice is not None
+            and len(extern_choice.input_nodes) == len(input_nodes)
+            else input_nodes
+        )
+        # Build example inputs for extern_input_nodes (may differ from global input_nodes)
+        unique_example_inputs_extern = {
+            x.get_name(): cls.benchmark_example_value(x, hint_override=hint_override)
+            for x in extern_input_nodes
+            if x.get_name() not in unique_example_inputs
+        }
+        unique_example_inputs_extern.update(unique_example_inputs)
+
+        example_inputs_extern = []
+        for i, input_node in enumerate(extern_input_nodes):
+            if unique_example_inputs_extern[input_node.get_name()].is_mkldnn:
                 example_inputs_extern.append(
-                    unique_example_inputs[input_node.get_name()]
+                    unique_example_inputs_extern[input_node.get_name()]
                 )
             else:
-                base = unique_example_inputs[input_node.get_name()]
+                base = unique_example_inputs_extern[input_node.get_name()]
                 base = base if base._base is None else base._base
 
                 if i in input_gen_fns:
                     # Use tensor's actual shape from input_gen_fn
-                    generated_tensor = unique_example_inputs[input_node.get_name()]
+                    generated_tensor = unique_example_inputs_extern[
+                        input_node.get_name()
+                    ]
                     sizes = tuple(generated_tensor.size())
                     strides = tuple(generated_tensor.stride())
                     storage_offset = generated_tensor.storage_offset()

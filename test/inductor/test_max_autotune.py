@@ -862,11 +862,33 @@ class TestMaxAutotune(TestCase):
         a = torch.randn(100, 10).to(GPU_TYPE)
         b = torch.randn(10, 100).to(GPU_TYPE)
 
-        with config.patch(
-            {
-                "max_autotune": True,
-                "max_autotune_gemm_backends": "ATEN",
-            }
+        # Track that extern benchmark receives 1D bias
+        extern_bias_shape = []
+
+        def tracking_benchmark_choice(cls, choice, autotune_args):
+            is_extern = AlgorithmSelectorCache._is_extern(choice)
+            if is_extern:
+                benchmark_tensors = autotune_args.get_benchmark_tensors(is_extern)
+                inputs, _ = benchmark_tensors.unpack()
+                nonlocal extern_bias_shape
+                extern_bias_shape = inputs[0].shape
+            return mock_benchmark_choice_wrapper(aten_time=0.1, triton_time=1.0)(
+                choice, autotune_args
+            )
+
+        with (
+            config.patch(
+                {
+                    "max_autotune": True,
+                    "max_autotune_gemm_backends": "ATEN,TRITON",
+                    "test_configs.max_mm_configs": 1,
+                }
+            ),
+            mock.patch.object(
+                AlgorithmSelectorCache,
+                "benchmark_choice",
+                classmethod(tracking_benchmark_choice),
+            ),
         ):
             Y_compiled, code = run_and_get_code(torch.compile(addmm), x, a, b)
             Y = addmm(x, a, b)
@@ -875,6 +897,16 @@ class TestMaxAutotune(TestCase):
             # Verify addmm is called without reinterpret_tensor on bias
             FileCheck().check("addmm").run(code[0])
             self.assertNotIn("addmm(reinterpret_tensor", code[0])
+
+            # Verify extern benchmark received 1D bias (not expanded 2D)
+            # Note: In async pipelined mode, benchmarks run in child processes
+            # where our mock doesn't apply, so extern_bias_shape may be empty.
+            if len(extern_bias_shape) > 0:
+                self.assertEqual(
+                    tuple(extern_bias_shape),
+                    (100,),
+                    f"Expected 1D bias shape (100,), got {tuple(extern_bias_shape)}",
+                )
 
     @unittest.skipIf(
         not has_triton_tma_device(), "Need device-side TMA support in Triton"
