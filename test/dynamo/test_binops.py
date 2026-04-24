@@ -15,7 +15,6 @@ Tests cover:
 """
 
 import collections
-import unittest
 
 import torch
 import torch._dynamo.test_case
@@ -32,30 +31,30 @@ class TestLogicalOr(torch._dynamo.test_case.TestCase):
     @make_dynamo_test
     def test_or_with_booleans(self):
         """Test or with boolean operands"""
-        self.assertEqual(True or True, True)
-        self.assertEqual(True or False, True)
-        self.assertEqual(False or True, True)
-        self.assertEqual(False or False, False)
+        self.assertEqual(True or True, True)  # noqa: SIM222
+        self.assertEqual(True or False, True)  # noqa: SIM222
+        self.assertEqual(False or True, True)  # noqa: SIM222
+        self.assertEqual(False or False, False)  # noqa: RUF100
 
     @make_dynamo_test
     def test_or_with_integers(self):
         """Test or with integer operands (0 is falsy, non-zero is truthy)"""
-        self.assertEqual(0 or 5, 5)
-        self.assertEqual(5 or 0, 5)
-        self.assertEqual(3 or 7, 3)
+        self.assertEqual(0 or 5, 5)  # noqa: SIM222
+        self.assertEqual(5 or 0, 5)  # noqa: SIM222
+        self.assertEqual(3 or 7, 3)  # noqa: SIM222
 
     @make_dynamo_test
     def test_or_with_strings(self):
         """Test or with string operands"""
-        self.assertEqual("" or "hello", "hello")
-        self.assertEqual("hello" or "world", "hello")
+        self.assertEqual("" or "hello", "hello")  # noqa: SIM222
+        self.assertEqual("hello" or "world", "hello")  # noqa: SIM222
 
     @make_dynamo_test
     def test_or_with_containers(self):
         """Test or with container operands (empty is falsy)"""
-        self.assertEqual([] or [1, 2], [1, 2])
-        self.assertEqual([1, 2] or [], [1, 2])
-        self.assertEqual(None or 5, 5)
+        self.assertEqual([] or [1, 2], [1, 2])  # noqa: SIM222
+        self.assertEqual([1, 2] or [], [1, 2])  # noqa: SIM222
+        self.assertEqual(None or 5, 5)  # noqa: SIM222
 
     @make_dynamo_test
     def test_or_short_circuit(self):
@@ -68,8 +67,8 @@ class TestLogicalOr(torch._dynamo.test_case.TestCase):
     @make_dynamo_test
     def test_or_chained(self):
         """Test chained or operations"""
-        self.assertEqual(0 or 0 or 3 or 4, 3)
-        self.assertEqual(False or False or True, True)
+        self.assertEqual(0 or 0 or 3 or 4, 3)  # noqa: SIM222
+        self.assertEqual(False or False or True, True)  # noqa: SIM222
 
 
 class TestBitwiseOrIntegers(torch._dynamo.test_case.TestCase):
@@ -189,8 +188,6 @@ class TestBitwiseOrFrozenSet(torch._dynamo.test_case.TestCase):
 class UserDefinedDict(dict):
     """User-defined dict subclass for testing __or__ operator"""
 
-    pass
-
 
 class _BitwiseOrDictBase:
     """Base class for testing bitwise OR operator with different dict types (Python 3.9+)"""
@@ -209,8 +206,7 @@ class _BitwiseOrDictBase:
         left = self.make_left({"a": 1, "b": 2})
         right = self.make_right({"b": 20, "c": 3})
         result = left | right
-        # self.assertEqual(result, {"a": 1, "b": 20, "c": 3})
-        assert result == {"a": 1, "b": 20, "c": 3}
+        self.assertEqual(result, {"a": 1, "b": 20, "c": 3})
 
     @make_dynamo_test
     def test_dict_or_empty(self):
@@ -232,80 +228,106 @@ class _BitwiseOrDictBase:
 
 class TestDictOrDict(_BitwiseOrDictBase, torch._dynamo.test_case.TestCase):
     """Tests for dict | dict merge"""
+
     def make_left(self, data):
         return dict(data)
+
     def make_right(self, data):
         return dict(data)
 
 
 class TestDictOrDefaultdict(_BitwiseOrDictBase, torch._dynamo.test_case.TestCase):
     """Tests for dict | defaultdict merge"""
+
     def make_left(self, data):
         return dict(data)
+
     def make_right(self, data):
         return collections.defaultdict(int, data)
 
 
 class TestDefaultdictOrDict(_BitwiseOrDictBase, torch._dynamo.test_case.TestCase):
     """Tests for defaultdict | dict merge"""
+
     def make_left(self, data):
         return collections.defaultdict(int, data)
+
     def make_right(self, data):
         return dict(data)
 
 
-class TestDefaultdictOrDefaultdict(_BitwiseOrDictBase, torch._dynamo.test_case.TestCase):
+class TestDefaultdictOrDefaultdict(
+    _BitwiseOrDictBase, torch._dynamo.test_case.TestCase
+):
     """Tests for defaultdict | defaultdict merge"""
+
     def make_left(self, data):
         return collections.defaultdict(int, data)
+
     def make_right(self, data):
         return collections.defaultdict(int, data)
 
 
 class TestDictOrOrdereddict(_BitwiseOrDictBase, torch._dynamo.test_case.TestCase):
     """Tests for dict | OrderedDict merge"""
+
     def make_left(self, data):
         return dict(data)
+
     def make_right(self, data):
         return collections.OrderedDict(data.items())
 
 
 class TestOrdereddictOrDict(_BitwiseOrDictBase, torch._dynamo.test_case.TestCase):
     """Tests for OrderedDict | dict merge"""
+
     def make_left(self, data):
         return collections.OrderedDict(data.items())
+
     def make_right(self, data):
         return dict(data)
 
 
-class TestOrdereddictOrOrdereddict(_BitwiseOrDictBase, torch._dynamo.test_case.TestCase):
+class TestOrdereddictOrOrdereddict(
+    _BitwiseOrDictBase, torch._dynamo.test_case.TestCase
+):
     """Tests for OrderedDict | OrderedDict merge"""
+
     def make_left(self, data):
         return collections.OrderedDict(data.items())
+
     def make_right(self, data):
         return collections.OrderedDict(data.items())
 
 
 class TestDictOrUserDefinedDict(_BitwiseOrDictBase, torch._dynamo.test_case.TestCase):
     """Tests for dict | user-defined dict merge"""
+
     def make_left(self, data):
         return dict(data)
+
     def make_right(self, data):
         return UserDefinedDict(data)
 
 
 class TestUserDefinedDictOrDict(_BitwiseOrDictBase, torch._dynamo.test_case.TestCase):
     """Tests for user-defined dict | dict merge"""
+
     def make_left(self, data):
         return UserDefinedDict(data)
+
     def make_right(self, data):
         return dict(data)
 
 
-class TestUserDefinedDictOrUserDefinedDict(_BitwiseOrDictBase, torch._dynamo.test_case.TestCase):
+class TestUserDefinedDictOrUserDefinedDict(
+    _BitwiseOrDictBase, torch._dynamo.test_case.TestCase
+):
     """Tests for user-defined dict | user-defined dict merge"""
+
     def make_left(self, data):
         return UserDefinedDict(data)
+
     def make_right(self, data):
         return UserDefinedDict(data)
 
@@ -333,6 +355,7 @@ class _BitwiseOrInplaceBase:
 
 class TestDictInplaceOr(_BitwiseOrInplaceBase, torch._dynamo.test_case.TestCase):
     """Tests for dict |= dict inplace merge"""
+
     container_type = dict
     data1 = {"a": 1, "b": 2}
     data2 = {"b": 20, "c": 3}
@@ -341,6 +364,7 @@ class TestDictInplaceOr(_BitwiseOrInplaceBase, torch._dynamo.test_case.TestCase)
 
 class TestSetInplaceOr(_BitwiseOrInplaceBase, torch._dynamo.test_case.TestCase):
     """Tests for set |= set inplace union"""
+
     container_type = set
     data1 = {1, 2}
     data2 = {2, 3}
@@ -349,8 +373,10 @@ class TestSetInplaceOr(_BitwiseOrInplaceBase, torch._dynamo.test_case.TestCase):
 
 class TestDefaultdictInplaceOr(_BitwiseOrInplaceBase, torch._dynamo.test_case.TestCase):
     """Tests for defaultdict |= dict inplace merge"""
+
     def make_container(self, data):
         return collections.defaultdict(int, data)
+
     data1 = {"a": 1, "b": 2}
     data2 = {"b": 20, "c": 3}
     expected = {"a": 1, "b": 20, "c": 3}
@@ -511,8 +537,6 @@ instantiate_parametrized_tests(TestUserDefinedDictOrUserDefinedDict)
 instantiate_parametrized_tests(TestDictInplaceOr)
 instantiate_parametrized_tests(TestSetInplaceOr)
 instantiate_parametrized_tests(TestDefaultdictInplaceOr)
-
-
 
 
 if __name__ == "__main__":
