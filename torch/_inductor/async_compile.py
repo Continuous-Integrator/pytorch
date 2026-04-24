@@ -9,7 +9,11 @@ import multiprocessing
 import os
 import re
 import sys
-from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import (
+    Future,
+    ThreadPoolExecutor,
+    TimeoutError as FuturesTimeoutError,
+)
 from concurrent.futures.process import BrokenProcessPool
 from functools import partial
 from time import time, time_ns
@@ -750,7 +754,10 @@ class AsyncCompile:
             try:
                 kernel = result.result(timeout=wait_timeout)
                 scope[key] = kernel
-            except TimeoutError as e:
+            except FuturesTimeoutError as e:
+                # concurrent.futures.TimeoutError became an alias of the
+                # builtin TimeoutError in Python 3.11; on 3.10 it is a
+                # distinct class, so catch it explicitly.
                 raise RuntimeError(
                     f"Inductor compile-worker future for {key!r} did not "
                     f"complete within {wait_timeout}s. Override with "
