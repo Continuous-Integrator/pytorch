@@ -7,6 +7,7 @@ from torch.testing._internal.common_utils import (
     instantiate_parametrized_tests,
     parametrize,
     run_tests,
+    skipIfTorchDynamo,
     TestCase,
 )
 
@@ -28,6 +29,7 @@ _test_lib.impl("add_", _add_inplace_impl, "CompositeExplicitAutograd")
 _test_lib.impl("add_", lambda self_, other: self_, "Meta")
 
 
+@skipIfTorchDynamo("custom operator tests not applicable to dynamo")
 class TestInplaceTag(TestCase):
     def setUp(self):
         self.lib = torch.library.Library("_TestInplaceTag", "FRAGMENT")  # noqa: TOR901

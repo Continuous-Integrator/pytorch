@@ -8,6 +8,7 @@ from torch.testing._internal.common_utils import (
     instantiate_parametrized_tests,
     parametrize,
     run_tests,
+    skipIfTorchDynamo,
     TestCase,
 )
 
@@ -45,6 +46,7 @@ def _add_mul_out_impl(
 _test_lib.impl("add_mul.out", _add_mul_out_impl, "CompositeExplicitAutograd")
 
 
+@skipIfTorchDynamo("custom operator tests not applicable to dynamo")
 class TestOutVariant(TestCase):
     def setUp(self):
         self.lib = torch.library.Library("_TestOutVariant", "FRAGMENT")  # noqa: TOR901
