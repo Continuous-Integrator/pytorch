@@ -13,10 +13,13 @@ Tests verify that a "runtime_wrapper_orchestration" artifact is emitted
 via trace_structured.
 """
 
+import warnings
+
 from common_utils import capture_codegen_source
 
 import torch
 import torch._dynamo
+import torch._functorch.config as functorch_config
 from torch.testing._internal.common_utils import run_tests, skipIfTorchDynamo, TestCase
 
 
@@ -420,6 +423,43 @@ class TestCodegenRuntimeWrapper(TestCase):
         self.assertIn("_replay_aliases_", source)
         self.assertIn("0: args[0]", source)
         self.assertIn("1: args[1]", source)
+
+    def test_first_invocation_ctx_threaded_through_codegen(self):
+        """
+        The codegen'd wrapper receives _first_ctx_ (a _FirstInvocationContext)
+        as a parameter and wraps compiled fn execution in it. On first call,
+        this activates _AnalyzeCustomOpInputOutputMode which checks custom op
+        aliasing. Verify the mode fires on first call and not on second.
+        """
+        with torch.library._scoped_library("test_rw", "FRAGMENT") as lib:
+            lib.define("alias_op(Tensor x) -> Tensor")
+            lib.impl("alias_op", lambda x: x.view_as(x), "CompositeExplicitAutograd")
+            lib.impl("alias_op", lambda x: x.view_as(x), "Meta")
+
+            @torch.compile(backend="aot_eager")
+            def f(x):
+                return torch.ops.test_rw.alias_op(x) + 1
+
+            x = torch.randn(4)
+            with functorch_config.patch(
+                check_custom_op_aliasing=True,
+                error_on_custom_op_aliasing=False,
+            ):
+                with warnings.catch_warnings(record=True) as w:
+                    warnings.simplefilter("always")
+                    f(x)
+                    aliasing_warnings = [
+                        x for x in w if "may not alias any inputs" in str(x.message)
+                    ]
+                    self.assertEqual(len(aliasing_warnings), 1)
+
+                with warnings.catch_warnings(record=True) as w:
+                    warnings.simplefilter("always")
+                    f(x)
+                    aliasing_warnings = [
+                        x for x in w if "may not alias any inputs" in str(x.message)
+                    ]
+                    self.assertEqual(len(aliasing_warnings), 0)
 
     @skipIfTorchDynamo("dynamo handles mutations in-graph")
     def test_leaf_no_grad_mutation_uses_copy(self):
