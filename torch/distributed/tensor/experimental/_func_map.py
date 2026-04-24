@@ -8,6 +8,7 @@ from torch.distributed._functional_collectives import AsyncCollectiveTensor
 from torch.distributed.spmd_types import (
     assert_type as spmd_assert_type,
     I,
+    is_available,
     MeshAxis,
     P,
     R,
@@ -310,6 +311,10 @@ def _local_map_wrapped(
     local_args = pytree.tree_unflatten(flat_local_args, args_spec)
 
     if enable_spmd_types and seen_dtensor_arg:
+        if not is_available():
+            raise RuntimeError(
+                "spmd_types=True requires the spmd_types package to be installed"
+            )
         assert device_mesh is not None  # noqa: S101
         _annotate_spmd_types(
             flat_local_args, in_placements, in_grad_placements, device_mesh
