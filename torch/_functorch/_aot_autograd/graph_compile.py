@@ -461,6 +461,12 @@ def aot_stage2_inference(
         )
     _apply_tensorify_python_scalars(fw_module)
 
+    # When trace_autograd_ops=True, the inference graph may contain fw/bw
+    # invoke_subgraph pairs from traced torch.autograd.grad/backward calls.
+    # Run the same HOP partitioning that the training path uses so the
+    # backward subgraphs don't redundantly recompute forward ops.
+    fw_module = run_joint_graph_passes_on_hops(fw_module, None, aot_config)
+
     compiled_fw = _aot_stage2b_inference_compile(
         fw_module,
         updated_flat_args,  # type: ignore[arg-type]
@@ -1914,7 +1920,7 @@ def _categorize_saved_tensors_for_backward(
 # We can do this by manually detach'ing y before sending it through the `CompiledFunction`.
 #
 # Note that this solution is not bulletproof.
-# It's possible to construct a case where eager may or may not have have tried to autograd through y,
+# It's possible to construct a case where eager may or may not have tried to autograd through y,
 # depending on the actual grad_outputs that were passed in during the backward.
 # There is no easy fix for this: the simplest fix would be to run with `retain_graph=True`,
 # allowing autograd to reuse the graph.

@@ -586,7 +586,6 @@ class RegionalInductorTests(torch._inductor.test_case.TestCase):
 
 @skipIfTorchDynamo("Not a suitable dynamo wrapped test")
 @torch._dynamo.config.patch("enable_invoke_subgraph_regional_compile", True)
-@torch._dynamo.config.patch(inline_single_use_invoke_subgraph=False)
 @instantiate_parametrized_tests
 class RegionalInductorInvokeSubgraphTests(torch._inductor.test_case.TestCase):
     def test_custom_decomposition(self):
@@ -1366,6 +1365,28 @@ def forward(self, primals_0, primals_1, primals_2, primals_3, primals_4, primals
 
         fn(x).sum().backward()
         self.assertEqual(x.grad, x * 3)
+
+    @torch._dynamo.config.patch(trace_autograd_ops=True)
+    def test_autograd_grad_with_nested_compile_region(self):
+        nested_config = get_invoke_subgraph_compile_options()
+
+        @torch.compiler.nested_compile_region(options=nested_config)
+        def g(x, w):
+            return torch.matmul(x, w)
+
+        def fn(x, w):
+            out = g(x, w)
+            loss = out.sum()
+            (grad_w,) = torch.autograd.grad(loss, w)
+            return loss.detach(), grad_w
+
+        x = torch.randn(4, 4)
+        w = torch.randn(4, 4, requires_grad=True)
+
+        ref = fn(x, w)
+        opt_fn = torch.compile(fn, backend="aot_eager", fullgraph=True)
+        res = opt_fn(x, w)
+        self.assertEqual(ref, res)
 
 
 @skipIfTorchDynamo("Not a suitable dynamo wrapped test")
