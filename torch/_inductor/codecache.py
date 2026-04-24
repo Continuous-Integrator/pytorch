@@ -2528,7 +2528,7 @@ end
                         from concurrent.futures import ThreadPoolExecutor
 
                         # Compute offsets up front so each worker can write into a
-                        # disjoint slice of a single pre-allocated buffer indepently
+                        # disjoint slice of a single pre-allocated buffer independently
                         offsets: list[int] = []
                         sizes: list[int] = []
                         total_size = 0
