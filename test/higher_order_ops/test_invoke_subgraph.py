@@ -4548,7 +4548,10 @@ class TestInvokeSubgraphReuseHashFn(TestCase):
 
 
 class TestInvokeSubgraphTrainStepCapture(TestCase):
-    @torch._dynamo.config.patch(trace_autograd_ops=True)
+    @torch._dynamo.config.patch(
+        trace_autograd_ops=True,
+        inline_single_use_invoke_subgraph=False,
+    )
     def test_mark_non_differentiable_propagation(self):
         """invoke_subgraph wrapping an autograd.Function that calls
         mark_non_differentiable should propagate the non-differentiable
@@ -4635,6 +4638,7 @@ class TestInvokeSubgraphTrainStepCapture(TestCase):
     @torch._dynamo.config.patch(
         trace_autograd_ops=True,
         enable_invoke_subgraph_regional_compile=True,
+        inline_single_use_invoke_subgraph=False,
     )
     def test_nested_region_config_propagated_to_backward(self):
         """When joint tracing creates backward invoke_subgraph nodes,
@@ -4672,19 +4676,19 @@ class TestInvokeSubgraphTrainStepCapture(TestCase):
 
         from torch._dynamo.backends.common import aot_autograd
         from torch._higher_order_ops.invoke_subgraph import invoke_subgraph
-        from torch.fx.passes.regional_inductor_invoke_subgraph import (
-            regional_inductor_invoke_subgraph,
-        )
 
-        bw_graphs = []
+        # With trace_autograd_ops, the full train step is captured as a
+        # single inference graph (no separate bw_compiler call). Check
+        # that backward invoke_subgraph nodes in the inference graph
+        # have nested_region_config before regional compilation.
+        fw_graphs = []
 
-        def recording_bw_compiler(gm, example_inputs, **kwargs):
-            bw_graphs.append(gm)
-            return regional_inductor_invoke_subgraph(gm, example_inputs, **kwargs)
+        def recording_fw_compiler(gm, example_inputs, **kwargs):
+            fw_graphs.append(gm)
+            return gm
 
         backend = aot_autograd(
-            fw_compiler=regional_inductor_invoke_subgraph,
-            bw_compiler=recording_bw_compiler,
+            fw_compiler=recording_fw_compiler,
         )
 
         model = Model()
@@ -4694,12 +4698,20 @@ class TestInvokeSubgraphTrainStepCapture(TestCase):
         self.assertIsNotNone(loss)
 
         # Verify that backward invoke_subgraph nodes have nested_region_config
-        self.assertGreater(len(bw_graphs), 0)
-        for gm in bw_graphs:
+        self.assertGreater(len(fw_graphs), 0)
+        found_bw_node = False
+        for gm in fw_graphs:
             for node in gm.graph.nodes:
-                if node.op == "call_function" and node.target is invoke_subgraph:
+                if (
+                    node.op == "call_function"
+                    and node.target is invoke_subgraph
+                    and isinstance(node.args[1], str)
+                    and node.args[1].startswith("bw")
+                ):
+                    found_bw_node = True
                     self.assertIn("custom", node.meta)
                     self.assertIn("nested_region_config", node.meta["custom"])
+        self.assertTrue(found_bw_node, "Should find backward invoke_subgraph nodes")
 
 
 if __name__ == "__main__":
