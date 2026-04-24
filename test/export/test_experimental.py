@@ -1639,6 +1639,46 @@ def forward(self, arg0_1):
         self.assertEqual(wrapped_a, wrapped_b)
         self.assertEqual(hash(wrapped_a), hash(wrapped_b))
 
+    def test_blockmask_self_referential_function_closure_extraction(self):
+        from torch.nn.attention.flex_attention import create_block_mask
+
+        _register_blockmask_pytree()
+
+        def make_mask_mod():
+            def helper():
+                return helper
+
+            def mask_mod(batch, head, query_idx, key_idx):
+                del batch, head
+                _ = helper
+                return query_idx >= key_idx
+
+            return mask_mod
+
+        mask_a = create_block_mask(
+            make_mask_mod(), B=1, H=1, Q_LEN=8, KV_LEN=8, device="cpu", BLOCK_SIZE=4
+        )
+        mask_b = create_block_mask(
+            make_mask_mod(), B=1, H=1, Q_LEN=8, KV_LEN=8, device="cpu", BLOCK_SIZE=4
+        )
+
+        leaves_a, spec_a = pytree.tree_flatten(mask_a)
+        leaves_b, spec_b = pytree.tree_flatten(mask_b)
+
+        self.assertEqual(spec_a, spec_b)
+
+        restored = pytree.tree_unflatten(leaves_a, spec_a)
+        self.assertTrue(
+            torch.equal(
+                restored.mask_mod(
+                    0, 0, torch.arange(8)[:, None], torch.arange(8)[None, :]
+                ),
+                mask_a.mask_mod(
+                    0, 0, torch.arange(8)[:, None], torch.arange(8)[None, :]
+                ),
+            )
+        )
+
     @unittest.skipIf(not TEST_CUDA, "CUDA not available")
     def test_blockmask_and_masks_closure_extraction(self):
         """and_masks closure tensors are recursively extracted into pytree leaves.

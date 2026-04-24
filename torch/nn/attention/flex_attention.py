@@ -471,9 +471,27 @@ class _CallableLeaf(typing.NamedTuple):
     nested callable. Stores enough information to reconstruct it from the
     extracted leaves during unflattening."""
 
-    stripped: _CallableMetadata
+    stripped: _CallableMetadata | Callable[..., Any]
     callable_spec: TreeSpec
     n_extracted: int  # number of extracted leaves this function contributes
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, _CallableLeaf):
+            return False
+        return (
+            _callable_entry_eq(self.stripped, other.stripped)
+            and self.callable_spec == other.callable_spec
+            and self.n_extracted == other.n_extracted
+        )
+
+    def __hash__(self) -> int:
+        return hash(
+            (
+                _callable_entry_hash(self.stripped),
+                self.callable_spec,
+                self.n_extracted,
+            )
+        )
 
 
 class _StrippedClosure(typing.NamedTuple):
@@ -499,10 +517,10 @@ class _StrippedClosure(typing.NamedTuple):
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, _StrippedClosure):
             return False
-        return self.code == other.code
+        return self.code == other.code and self.leaf_entries == other.leaf_entries
 
     def __hash__(self) -> int:
-        return hash(self.code)
+        return hash((self.code, self.leaf_entries))
 
 
 class _StrippedPartial(typing.NamedTuple):
@@ -513,10 +531,10 @@ class _StrippedPartial(typing.NamedTuple):
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, _StrippedPartial):
             return False
-        return _leaf_entries_eq(self.leaf_entries, other.leaf_entries)
+        return self.leaf_entries == other.leaf_entries
 
     def __hash__(self) -> int:
-        return _leaf_entries_hash(self.leaf_entries)
+        return hash(self.leaf_entries)
 
 
 class _PlainFunction(typing.NamedTuple):
@@ -534,6 +552,21 @@ class _PlainFunction(typing.NamedTuple):
 _CallableMetadata: TypeAlias = _StrippedClosure | _StrippedPartial | _PlainFunction
 
 
+def _callable_entry_eq(
+    lhs: _CallableMetadata | types.FunctionType,
+    rhs: _CallableMetadata | types.FunctionType,
+) -> bool:
+    if inspect.isfunction(lhs) and inspect.isfunction(rhs):
+        return lhs.__code__ == rhs.__code__
+    return lhs == rhs
+
+
+def _callable_entry_hash(value: _CallableMetadata | types.FunctionType) -> int:
+    if inspect.isfunction(value):
+        return hash(value.__code__)
+    return hash(value)
+
+
 def _extract_callable_leaves(
     leaves: list[Any], _seen: set[int]
 ) -> tuple[tuple[BaseArgumentTypes, ...], tuple[_ExtractedLeaf | _CallableLeaf, ...]]:
@@ -546,7 +579,7 @@ def _extract_callable_leaves(
             )
             if not isinstance(
                 child_stripped, (_StrippedClosure, _StrippedPartial, _PlainFunction)
-            ):
+            ) and not inspect.isfunction(child_stripped):
                 raise AssertionError(
                     "expected nested callable extraction to produce callable metadata"
                 )
@@ -600,7 +633,7 @@ def _extract_callable_pytree(
     if _seen is None:
         _seen = set()
     if id(fn) in _seen:
-        return (), _EMPTY_CLOSURE_SPEC, _PlainFunction(fn)
+        return (), _EMPTY_CLOSURE_SPEC, fn
     _seen.add(id(fn))
 
     if isinstance(fn, functools.partial):
@@ -680,40 +713,6 @@ def _reconstruct_closure_fn(stripped, extracted_leaves, callable_spec):
         restored.__dict__.update(stripped.extra_dict)
 
     return restored
-
-
-def _leaf_entries_eq(
-    a: tuple[_ExtractedLeaf | _CallableLeaf, ...],
-    b: tuple[_ExtractedLeaf | _CallableLeaf, ...],
-) -> bool:
-    if len(a) != len(b):
-        return False
-    for lhs, rhs in zip(a, b):
-        if type(lhs) is not type(rhs):
-            return False
-        if not isinstance(lhs, _CallableLeaf):
-            continue
-        if not isinstance(rhs, _CallableLeaf):
-            raise AssertionError("expected matching _CallableLeaf entries")
-        if lhs != rhs:
-            return False
-    return True
-
-
-def _leaf_entries_hash(entries: tuple[_ExtractedLeaf | _CallableLeaf, ...]) -> int:
-    return hash(
-        tuple(
-            (
-                type(entry),
-                entry.callable_spec,
-                entry.n_extracted,
-                hash(entry.stripped),
-            )
-            if isinstance(entry, _CallableLeaf)
-            else type(entry)
-            for entry in entries
-        )
-    )
 
 
 class _MaskModWrapper:
