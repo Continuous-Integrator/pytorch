@@ -3970,7 +3970,7 @@ def _automatic_dynamic(
     )
     # Per-dim UNBACKED bounds contributed by the active spec. Merged with
     # ``_dynamo_unbacked_bounds`` when building the StatefulSymbolicContext.
-    _spec_unbacked_bounds: dict[int, tuple[int, int]] = {}
+    _spec_unbacked_bounds: dict[int, tuple[int | None, int | None]] = {}
 
     for i in range(e.dim()):
         # NB: mark dynamic has precedence over static
@@ -3995,12 +3995,10 @@ def _automatic_dynamic(
                     marked_dynamic = True
                 elif _spec.type is IntSpecType.UNBACKED:
                     marked_unbacked = True
-                    if _spec.min is not None or _spec.max is not None:
+                    if _spec._min is not None or _spec._max is not None:
                         _spec_unbacked_bounds[i] = (
-                            _spec.min if _spec.min is not None else 0,
-                            _spec.max
-                            if _spec.max is not None
-                            else int(math.iinfo(int).max),
+                            _spec._min,
+                            _spec._max,
                         )
 
         specialize_on.append(getattr(e, "_specialize_on", {}).get(i, []))
@@ -4062,15 +4060,17 @@ def _automatic_dynamic(
                 # constraint_stride is deliberaly kept None because no easy way to provide value ranges for mark dynamic
                 constraint_stride = None
                 # Active dynamic_shapes spec wins over _dynamo_dynamic_range.
-                if _spec is not None and _spec.type is IntSpecType.BACKED and (
-                    _spec.min is not None or _spec.max is not None
+                if (
+                    _spec is not None
+                    and _spec.type is IntSpecType.BACKED
+                    and (_spec._min is not None or _spec._max is not None)
                 ):
                     from torch.fx.experimental.symbolic_shapes import (
                         StrictMinMaxConstraint,
                     )
 
-                    _lo = _spec.min if _spec.min is not None else -math.inf
-                    _hi = _spec.max if _spec.max is not None else math.inf
+                    _lo = _spec._min if _spec._min is not None else -math.inf
+                    _hi = _spec._max if _spec._max is not None else math.inf
                     constraint_size = StrictMinMaxConstraint(
                         vr=ValueRanges(lower=_lo, upper=_hi),
                         warn_only=False,
@@ -4142,7 +4142,7 @@ def _automatic_dynamic(
         dynamic_sizes.append(dynamic_size)
         dynamic_strides.append(dynamic_stride)
 
-    _merged_unbacked_bounds: dict[int, tuple[int, int]] | None
+    _merged_unbacked_bounds: dict[int, tuple[int | None, int | None]] | None
     _attr_unbacked_bounds = getattr(e, "_dynamo_unbacked_bounds", None)
     if _spec_unbacked_bounds and _attr_unbacked_bounds:
         _merged_unbacked_bounds = {**_attr_unbacked_bounds, **_spec_unbacked_bounds}
