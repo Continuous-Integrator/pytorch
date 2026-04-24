@@ -858,7 +858,6 @@ include_patterns = [
     'torch/**/*.py',
 ]
 exclude_patterns = [
-    'torch/spmd_types.py',
     'torch/distributed/spmd_types/__init__.py',
     'torch/distributed/spmd_types/_stubs.py',
 ]
