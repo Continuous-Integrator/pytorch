@@ -33,6 +33,7 @@ from torch._functorch import config
 from torch._inductor.codecache import (
     _ident,
     add_ephemeral_timeout_increase_for_distributed,
+    AOTAUTOGRAD_CACHE_PREFIX,
     BypassFxGraphCache,
     create_cache,
     extract_tensor_metadata_for_cache_key,
@@ -524,7 +525,7 @@ class AOTAutogradCacheDetails(FxGraphHashDetails):
             # FXGraphCache has constraints on what can be pickled in its inductor
             # config. Check that the gm is cacheable by inductor first,
             # and if it raises an exception, also bypass on our end.
-            FxGraphCache._check_can_cache(gm)
+            FxGraphCache._check_can_cache(gm, example_inputs, fx_config)
             super().__init__(gm, example_inputs, fx_config, [])
         except BypassFxGraphCache as e:
             # Sometimes inductor configs are unpickleable and can fail
@@ -810,7 +811,7 @@ def autograd_cache_key(
             )
             pickler = AOTAutogradCachePickler(gm)
             # The prefix distinguishes among the other kinds of objects we cache
-            key = "a" + pickler.get_hash(details)
+            key = AOTAUTOGRAD_CACHE_PREFIX + pickler.get_hash(details)
             debug_lines = _get_debug_lines_for_cache_key(pickler, details, key)
             return key, debug_lines
         except Exception:
@@ -1232,7 +1233,8 @@ class AOTAutogradCache(GuardedCache[GenericAOTAutogradResult[Any, Any]]):
     ) -> bytes | None:
         """Pickle entry, returning None on failure."""
         try:
-            return pickle.dumps(entry)
+            with torch.utils._python_dispatch._disable_current_modes():
+                return pickle.dumps(entry)
         except (pickle.PicklingError, TypeError, AttributeError) as e:
             bad_field = AOTAutogradCache._find_unpicklable_field(entry)
             error_str = str(e)
@@ -1342,6 +1344,7 @@ class AOTAutogradCache(GuardedCache[GenericAOTAutogradResult[Any, Any]]):
         backward_state_indices: list[int] | None,
         num_symints_saved_for_bw: int | None,
         serialized_bw_module: SerializedGraphModule | None,
+        min_cut_info_str: str | None,
     ) -> GenericAOTAutogradResult[Any, Any]:
         if should_bundle_autograd_cache():
             # Helper function to unwrap all the wrappers we added during aotdispatch
@@ -1372,6 +1375,7 @@ class AOTAutogradCache(GuardedCache[GenericAOTAutogradResult[Any, Any]]):
                 aot_joint_graph_str=aot_joint_graph_str,
                 aot_forward_graph_str=aot_forward_graph_str,
                 aot_backward_graph_str=aot_backward_graph_str,
+                min_cut_info_str=min_cut_info_str,
                 runtime_metadata=runtime_metadata,
                 dispatch_wrappers=dispatch_wrappers,
                 maybe_subclass_meta=maybe_subclass_meta,
@@ -1421,6 +1425,7 @@ class AOTAutogradCache(GuardedCache[GenericAOTAutogradResult[Any, Any]]):
                 aot_joint_graph_str=aot_joint_graph_str,
                 aot_forward_graph_str=aot_forward_graph_str,
                 aot_backward_graph_str=aot_backward_graph_str,
+                min_cut_info_str=min_cut_info_str,
                 runtime_metadata=runtime_metadata,
                 dispatch_wrappers=dispatch_wrappers,
                 maybe_subclass_meta=maybe_subclass_meta,
