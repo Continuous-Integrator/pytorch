@@ -224,6 +224,33 @@ def find_pypi_package_version(package: str) -> str | None:
     return None
 
 
+def get_expected_cuda_full_version(cuda_version: str) -> str | None:
+    """Parse expected full CUDA version from generate_binary_build_matrix.py.
+
+    Reads CUDA_ARCHES_FULL_VERSION dict and extracts the full version
+    (e.g. "13.2.1") for the given CUDA version (e.g. "13.2").
+    """
+    matrix_script = (
+        PYTORCH_ROOT / ".github" / "scripts" / "generate_binary_build_matrix.py"
+    )
+    if not matrix_script.exists():
+        print(f"Warning: {matrix_script} not found, skipping CUDA full version check")
+        return None
+
+    content = matrix_script.read_text()
+    dict_match = re.search(
+        r"CUDA_ARCHES_FULL_VERSION\s*=\s*\{([^}]*)\}", content
+    )
+    if not dict_match:
+        return None
+    match = re.search(
+        rf'"{re.escape(cuda_version)}":\s*"(\d+\.\d+\.\d+)"', dict_match.group(1)
+    )
+    if match:
+        return match.group(1)
+    return None
+
+
 def get_expected_cudnn_version_linux(cuda_version: str) -> str | None:
     """Parse expected cuDNN version from generate_binary_build_matrix.py for Linux.
 
@@ -367,7 +394,30 @@ def smoke_test_cuda(
         cuda_major = cuda_compiled_version // 1000
         cuda_minor = (cuda_compiled_version // 10) % 100
         cuda_patch = cuda_compiled_version % 10
-        print(f"torch cuda full version: {cuda_major}.{cuda_minor}.{cuda_patch}")
+        torch_cuda_full_version = f"{cuda_major}.{cuda_minor}.{cuda_patch}"
+        print(f"torch cuda full version: {torch_cuda_full_version}")
+
+        expected_cuda_full_version = get_expected_cuda_full_version(gpu_arch_ver)
+        if expected_cuda_full_version is None:
+            print(
+                f"Warning: Could not determine expected full CUDA version for "
+                f"CUDA {gpu_arch_ver} from generate_binary_build_matrix.py, "
+                f"skipping full version validation"
+            )
+        elif torch_cuda_full_version != expected_cuda_full_version:
+            raise RuntimeError(
+                f"CUDA full version mismatch. "
+                f"Loaded: {torch_cuda_full_version} "
+                f"Expected: {expected_cuda_full_version} "
+                f"(from generate_binary_build_matrix.py)"
+            )
+        else:
+            print(
+                f"CUDA full version check passed: {torch_cuda_full_version} "
+                f"matches expected {expected_cuda_full_version} "
+                f"from generate_binary_build_matrix.py"
+            )
+
         torch.cuda.init()
         print("CUDA initialized successfully")
         print(f"Number of CUDA devices: {torch.cuda.device_count()}")
