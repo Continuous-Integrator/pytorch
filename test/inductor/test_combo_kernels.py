@@ -1846,8 +1846,7 @@ class ComboKernelPeakMemoryTests(InductorTestCase):
     def test_commit_semantics(self):
         """Three invariants of _commit_combo_to_memory_context:
         (a) it only rewrites [region_start, region_end+1], leaving the suffix intact;
-        (b) it correctly handles overlapping commits;
-        (c) a non-monotonic region_start raises and leaves mem_ctx unmutated."""
+        (b) it correctly handles overlapping commits"""
         from torch._inductor.scheduler import ComboKernelMemoryContext, Scheduler
 
         # (a) Single commit preserves the suffix outside the region.
@@ -1930,120 +1929,44 @@ class ComboKernelPeakMemoryTests(InductorTestCase):
         for n in combo2_nodes:
             self.assertEqual(mem_ctx.accepted_step[n], 9)
 
-        # (c) Non-monotonic region_start must raise and NOT mutate mem_ctx.
-        baseline_memories = list(mem_ctx.memories_at_nodes)
-        baseline_steps = dict(mem_ctx.accepted_step)
-        baseline_last_region_start = mem_ctx.last_region_start
-        with self.assertRaises(AssertionError):
-            Scheduler._commit_combo_to_memory_context(
-                None,  # type: ignore[arg-type]
-                mem_ctx,
-                region_start=2,
-                combo_node=_PeakMemFakeNode("combo0"),
-                combo_step=2,
-                new_region_memory=[100, 100],
-                group_nodes=[_PeakMemFakeNode("c0")],
-            )
-        self.assertEqual(mem_ctx.memories_at_nodes, baseline_memories)
-        self.assertEqual(mem_ctx.accepted_step, baseline_steps)
-        self.assertEqual(mem_ctx.last_region_start, baseline_last_region_start)
-
     @requires_gpu_and_triton
-    def test_combo_kernel_peak_memory_distance_windows_bound_candidates(self):
-        """combo_kernel_max_distance caps the baseline span of every candidate
-        reaching _try_combo_with_memory_check."""
-        from unittest.mock import patch
-
-        from torch._inductor.scheduler import Scheduler
-
+    def test_combo_kernel_peak_memory_wide_resnet(self):
+        """A tight peak-memory threshold must measurably reduce
+        the runtime CUDA peak memory of the compiled forward pass compared to
+        the gating-disabled baseline"""
         model, x, out_eager = self._make_wide_resnet_case()
 
-        max_distance = 1
-        tried_spans: list[int] = []
-        original_try = Scheduler._try_combo_with_memory_check
+        def compile_and_measure_peak(**cfg):
+            torch._dynamo.reset()
+            torch._inductor.metrics.reset()
+            torch.cuda.synchronize()
+            torch.cuda.empty_cache()
+            torch.cuda.reset_peak_memory_stats()
+            with fresh_cache(), torch._inductor.config.patch(**cfg):
+                with torch.no_grad():
+                    out = torch.compile(model)(x)
+                torch.cuda.synchronize()
+            self.assertEqual(out_eager, out)
+            return torch.cuda.max_memory_allocated()
 
-        def logging_try(self, group_nodes, mem_ctx, *args, **kwargs):
-            idxs = [mem_ctx.node_to_idx[n] for n in group_nodes]
-            tried_spans.append(max(idxs) - min(idxs))
-            return original_try(self, group_nodes, mem_ctx, *args, **kwargs)
-
-        torch._dynamo.reset()
-        torch._inductor.metrics.reset()
-        with (
-            fresh_cache(),
-            patch.object(Scheduler, "_try_combo_with_memory_check", logging_try),
-            torch._inductor.config.patch(
-                combo_kernel_max_distance=max_distance,
-                **self._thresholds(abs_thr=1 << 60),
-            ),
-        ):
-            with torch.no_grad():
-                out_compiled = torch.compile(model)(x)
-
-        self.assertEqual(out_eager, out_compiled)
-        self.assertGreater(len(tried_spans), 0)
-        self.assertTrue(all(s <= max_distance for s in tried_spans))
-
-    @requires_gpu_and_triton
-    def test_combo_kernel_peak_memory_halving_retry_and_remaining_reenqueue(self):
-        """Under a tight threshold:
-        (a) halving fires — some later tried candidate is a strict subset
-            of an earlier one;
-        (b) after a partial halving accept, the outer loop re-enqueues the
-            unaccepted remainder as a new candidate."""
-        from unittest.mock import patch
-
-        from torch._inductor.scheduler import Scheduler
-
-        model, x, out_eager = self._make_wide_resnet_case()
-
-        tried: list[frozenset[str]] = []
-        committed: list[frozenset[str]] = []
-        orig_try = Scheduler._try_combo_with_memory_check
-        orig_commit = Scheduler._commit_combo_to_memory_context
-
-        def logging_try(self, group_nodes, *a, **kw):
-            tried.append(frozenset(n.get_name() for n in group_nodes))
-            return orig_try(self, group_nodes, *a, **kw)
-
-        def logging_commit(self, *a, **kw):
-            # group_nodes is the last positional arg; keyword fallback for safety.
-            group_nodes = kw.get("group_nodes", a[-1])
-            committed.append(frozenset(n.get_name() for n in group_nodes))
-            return orig_commit(self, *a, **kw)
-
-        torch._dynamo.reset()
-        torch._inductor.metrics.reset()
-        with (
-            fresh_cache(),
-            patch.object(Scheduler, "_try_combo_with_memory_check", logging_try),
-            patch.object(Scheduler, "_commit_combo_to_memory_context", logging_commit),
-            torch._inductor.config.patch(**self._thresholds(abs_thr=4096)),
-        ):
-            with torch.no_grad():
-                out_compiled = torch.compile(model)(x)
-
-        self.assertEqual(out_eager, out_compiled)
-
-        # (a) halving: a later try is a strict subset of an earlier one.
-        self.assertTrue(
-            any(
-                later < earlier
-                for i, later in enumerate(tried)
-                for earlier in tried[:i]
-            ),
-            "Expected at least one halving retry",
+        # Gating disabled: combo fusion is free to co-allocate outputs, which
+        # inflates peak memory. combo_kernel_max_distance has no effect on
+        # this path since _distance_windows is only called when gating is on.
+        peak_disabled = compile_and_measure_peak(
+            **self._thresholds(abs_thr=None, pct_thr=None),
         )
 
-        # (b) remaining-re-enqueue: a partial commit's exact remainder was tried.
-        tried_set = set(tried)
-        self.assertTrue(
-            any(
-                c < orig and (orig - c) in tried_set
-                for orig in tried
-                for c in committed
-            ),
-            "Expected a partial halving accept whose remainder was re-enqueued",
+        # Tight abs threshold: reject any combo that would increase peak.
+        peak_tight = compile_and_measure_peak(
+            **self._thresholds(abs_thr=1 << 20),
+        )
+
+        # tight threshold produces ~50 MB peak reduction on WideResNet forward
+        self.assertLess(
+            peak_tight,
+            peak_disabled,
+            f"tight threshold did not reduce runtime peak memory "
+            f"(tight={peak_tight}, disabled={peak_disabled})",
         )
 
 

@@ -5303,7 +5303,7 @@ class Scheduler:
                             and min(mem_ctx.node_to_idx[n] for n in remaining)
                             >= region_start
                         ):
-                            candidates.append(remaining)
+                            candidates.insert(candidate_idx, remaining)
                 else:
                     # Legacy path: try the full candidate directly with no
                     # memory simulation or distance splitting.
@@ -5460,7 +5460,7 @@ class Scheduler:
                 continue
             step = accepted_step.get(n)
             if step is not None:
-                top = name_to_fused_node.get(n.get_name())
+                top = name_to_fused_node.get(n.get_first_name())
                 assert top is not None
                 # Overlapping later regions should see the earlier accepted
                 # combo at its committed step, not its stale standalone pieces.
@@ -5515,7 +5515,7 @@ class Scheduler:
 
             # If this exact node is stale, fall back to the top-level fused
             # owner that currently represents it in the schedule.
-            top = name_to_fused_node.get(node.get_name())
+            top = name_to_fused_node.get(node.get_first_name())
             if top is None:
                 return -1
 
