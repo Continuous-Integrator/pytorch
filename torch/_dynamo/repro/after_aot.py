@@ -1152,26 +1152,14 @@ def repro_common(
         load_args(input_reader)
         args = input_reader.args
 
-    # When tracing symbolically, reconstruct SymInt relationships from the
-    # serialized expressions so that derived symints (e.g. sym_size_int_65 =
-    # (sum_of_64)//160 + 866) are algebraically linked to the free symbols
-    # they were derived from. Without this, make_fx creates independent
-    # symbols for each symint input, losing the structure that drives sympy
-    # reasoning costs.
-    trace_mod: nn.Module = mod
-    trace_args: list[Any] | Sequence[Any] = args
-    if (
-        options.tracing_mode == "symbolic"
-        and hasattr(input_reader, "symint_exprs")
-        and input_reader.symint_exprs
-    ):
-        result = _build_symbolic_wrapper(mod, list(args), input_reader.symint_exprs)
-        if result is not None:
-            trace_mod, trace_args = result
-
     # Turn mod into a GraphModule the slow way
     # TODO: speed this up
-    mod = make_fx(trace_mod, tracing_mode=options.tracing_mode)(*trace_args)
+    # NOTE: symint_exprs (from reader.symint(val, expr=...)) are preserved
+    # in the repro script for documentation. A future improvement could use
+    # _build_symbolic_wrapper to reconstruct algebraic relationships between
+    # free and derived symints, but the arg reordering is fragile across
+    # different graph structures so we skip it for now.
+    mod = make_fx(mod, tracing_mode=options.tracing_mode)(*args)
 
     # pyrefly: ignore [bad-assignment]
     torch._inductor.config.generate_intermediate_hooks = True
