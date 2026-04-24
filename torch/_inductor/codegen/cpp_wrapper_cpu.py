@@ -1507,6 +1507,7 @@ class CppWrapperCpu(PythonWrapperCodegen):
             kernel_code = "None"
             needs_vec_isa = str(self.needs_vec_isa)
             kernel_needs_vec_isa = "None"
+        start_lazy_compile = str(bool(getattr(self, "_lazy_kernel_names", [])))
         # Cpp entry function for JIT with cpp wrapper
         result.splice(
             f"""
@@ -1519,6 +1520,7 @@ class CppWrapperCpu(PythonWrapperCodegen):
                     kernel_needs_vec_isa={kernel_needs_vec_isa},
                     num_outputs={len(V.graph.graph_outputs)},
                     kernel_code={kernel_code},
+                    start_lazy_compile={start_lazy_compile},
                 )
             """
         )
