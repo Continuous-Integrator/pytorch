@@ -326,16 +326,14 @@ cublasGroupedArgs::cublasGroupedArgs(
   float* beta_scalar  = alpha_scalar + 1;
 
   // Per-group scale pointer arrays: embedded for GroupWise, separate for BlockWise1x32
-  int64_t extra_offset = static_cast<int64_t>(batchCount) * 64 + 8;
   int64_t* scaleAPtrArray = nullptr;
   int64_t* scaleBPtrArray = nullptr;
   if (mata_needs_ptr && !mata_blockwise) {
-    scaleAPtrArray = reinterpret_cast<int64_t*>(base + extra_offset);
-    extra_offset += batchCount * 8;
+    scaleAPtrArray = betaPtrArray + batchCount;
   }
   if (matb_needs_ptr && !matb_blockwise) {
-    scaleBPtrArray = reinterpret_cast<int64_t*>(base + extra_offset);
-    extra_offset += batchCount * 8;
+    int64_t offset = batchCount * (scaleAPtrArray ? 2 : 1); 
+    scaleBPtrArray = betaPtrArray + offset;
   }
   // BlockWise1x32 scale pointer arrays need separate allocations
   const int blockwise_ptr_arrays = (mata_blockwise ? 1 : 0) + (matb_blockwise ? 1 : 0);
