@@ -87,20 +87,29 @@ class TestRegistry(TestCase):
     def test_override_node_dataclass(self):
         """Test _OverrideNode dataclass creation and defaults."""
 
-        def test_fn(x):
+        def cond_fn(x):
+            return True
+
+        def impl_fn(x):
             return x
 
-        node = self.registry._OverrideNode("test_dsl", "add.Tensor", "CPU", test_fn)
+        node = self.registry._OverrideNode(
+            "test_dsl", "add.Tensor", "CPU", cond_fn, impl_fn
+        )
         self.assertEqual(node.dsl_name, "test_dsl")
         self.assertEqual(node.op_symbol, "add.Tensor")
         self.assertEqual(node.dispatch_key, "CPU")
-        self.assertEqual(node.override_fn, test_fn)
+        self.assertEqual(node.cond_fn, cond_fn)
+        self.assertEqual(node.impl_fn, impl_fn)
         self.assertFalse(node.unconditional_override)
         self.assertTrue(node.active)
 
     @patch("torch.library.Library")
     def test_register_op_override_basic(self, mock_library_cls):
         """Test basic register_op_override functionality."""
+
+        def cond_fn(x):
+            return True
 
         def impl_fn(x):
             return x
@@ -109,18 +118,22 @@ class TestRegistry(TestCase):
         mock_library_cls.return_value = mock_lib
 
         self.registry.register_op_override(
-            "test_backend", "aten", "add.Tensor", "CPU", impl_fn
+            "test_backend", "aten", "add.Tensor", "CPU", cond_fn, impl_fn
         )
 
         key = ("add.Tensor", "CPU")
         self.assertEqual(len(self.registry._graphs[key]), 1)
         node = self.registry._graphs[key][0]
         self.assertEqual(node.dsl_name, "test_backend")
-        self.assertEqual(node.override_fn, impl_fn)
+        self.assertEqual(node.cond_fn, cond_fn)
+        self.assertEqual(node.impl_fn, impl_fn)
 
     @patch("torch.library.Library")
     def test_deregister_op_overrides_basic(self, mock_library_cls):
         """Test basic deregister_op_overrides functionality."""
+
+        def cond_fn(x):
+            return True
 
         def impl_fn(x):
             return x
@@ -130,7 +143,7 @@ class TestRegistry(TestCase):
 
         # Register first
         self.registry.register_op_override(
-            "test_backend", "aten", "mul.Tensor", "CPU", impl_fn
+            "test_backend", "aten", "mul.Tensor", "CPU", cond_fn, impl_fn
         )
 
         key = ("mul.Tensor", "CPU")
@@ -147,14 +160,23 @@ class TestRegistry(TestCase):
         # Set up test data
         key = ("test_reorder.Tensor", "CPU")
 
+        def cond_fn(x):
+            return True
+
         def impl_fn(x):
             return x
 
         # Create nodes in specific order
         nodes = [
-            self.registry._OverrideNode("dsl_c", "test_reorder.Tensor", "CPU", impl_fn),
-            self.registry._OverrideNode("dsl_a", "test_reorder.Tensor", "CPU", impl_fn),
-            self.registry._OverrideNode("dsl_b", "test_reorder.Tensor", "CPU", impl_fn),
+            self.registry._OverrideNode(
+                "dsl_c", "test_reorder.Tensor", "CPU", cond_fn, impl_fn
+            ),
+            self.registry._OverrideNode(
+                "dsl_a", "test_reorder.Tensor", "CPU", cond_fn, impl_fn
+            ),
+            self.registry._OverrideNode(
+                "dsl_b", "test_reorder.Tensor", "CPU", cond_fn, impl_fn
+            ),
         ]
         self.registry._graphs[key] = nodes
 
@@ -175,11 +197,14 @@ class TestRegistry(TestCase):
         # Set up test data
         key = ("test_error.Tensor", "CPU")
 
+        def cond_fn(x):
+            return True
+
         def impl_fn(x):
             return x
 
         node = self.registry._OverrideNode(
-            "test_dsl", "test_error.Tensor", "CPU", impl_fn
+            "test_dsl", "test_error.Tensor", "CPU", cond_fn, impl_fn
         )
         original_graph = [node]
         self.registry._graphs[key] = original_graph.copy()
@@ -223,6 +248,9 @@ class TestRegistry(TestCase):
     def test_integration_reorder_and_register(self):
         """Integration test: reorder then register functionality."""
 
+        def cond_fn(x):
+            return True
+
         def impl_fn1(x):
             return x + 1
 
@@ -231,10 +259,10 @@ class TestRegistry(TestCase):
 
         # Register multiple overrides
         self.registry.register_op_override(
-            "backend_z", "aten", "test.Tensor", "CPU", impl_fn1
+            "backend_z", "aten", "test.Tensor", "CPU", cond_fn, impl_fn1
         )
         self.registry.register_op_override(
-            "backend_a", "aten", "test.Tensor", "CPU", impl_fn2
+            "backend_a", "aten", "test.Tensor", "CPU", cond_fn, impl_fn2
         )
 
         key = ("test.Tensor", "CPU")
