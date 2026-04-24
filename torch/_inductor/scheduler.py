@@ -4,6 +4,7 @@ import collections
 import contextlib
 import dataclasses
 import functools
+import heapq
 import inspect
 import itertools
 import logging
@@ -5235,101 +5236,99 @@ class Scheduler:
                         )
             return None, candidate, baseline_peak, None, 0, 0
 
+        queue: list[tuple[int, int, int, list[BaseSchedulerNode]]] = []
+        counter = 0
         for num, node_list in enumerate(
             ForeachKernelSchedulerNode.group_nodes_for_combo_kernels(self)
         ):
             node_list = ForeachKernelSchedulerNode.combinable_nodes(node_list)
             if len(node_list) < 2:
                 continue
-            if num_ck_nodes is not None and count > num_ck_nodes:
-                break
             if memory_check:
                 assert mem_ctx is not None
-                # Memory-aware search limits the initial candidates up front.
-                candidates: list[list[BaseSchedulerNode]] = list(
-                    _distance_windows(node_list)
-                )
+                for window in _distance_windows(node_list):
+                    if len(window) >= 2:
+                        min_idx = min(mem_ctx.node_to_idx[n] for n in window)
+                        heapq.heappush(queue, (min_idx, counter, num, window))
+                        counter += 1
             else:
-                candidates = [node_list]
+                heapq.heappush(queue, (counter, counter, num, node_list))
+                counter += 1
 
-            candidate_idx = 0
-            while candidate_idx < len(candidates):
-                candidate = candidates[candidate_idx]
-                candidate_idx += 1
-                if len(candidate) < 2:
+        while queue:
+            if num_ck_nodes is not None and count > num_ck_nodes:
+                break
+            _, _, num, candidate = heapq.heappop(queue)
+            if len(candidate) < 2:
+                continue
+            if not self.speedup_by_combo_kernel(candidate):
+                log.debug("ComboKernels: Not speeding up %d-th group window", num)
+                continue
+
+            if memory_check:
+                assert mem_ctx is not None
+                sim_start = time.perf_counter()
+                (
+                    combo_node,
+                    accepted_nodes,
+                    new_peak,
+                    new_region_memory,
+                    region_start,
+                    combo_step,
+                ) = _try_with_halving(candidate)
+                memory_sim_time += time.perf_counter() - sim_start
+                if combo_node is None:
                     continue
-                if num_ck_nodes is not None and count > num_ck_nodes:
-                    break
-                if not self.speedup_by_combo_kernel(candidate):
-                    log.debug("ComboKernels: Not speeding up %d-th group window", num)
+                if region_start < mem_ctx.last_region_start:
                     continue
-
-                if memory_check:
-                    assert mem_ctx is not None
-                    sim_start = time.perf_counter()
-                    (
-                        combo_node,
-                        accepted_nodes,
-                        new_peak,
-                        new_region_memory,
-                        region_start,
-                        combo_step,
-                    ) = _try_with_halving(candidate)
-                    memory_sim_time += time.perf_counter() - sim_start
-                    if combo_node is None:
-                        continue
-                    assert new_region_memory is not None
-                    # Later candidates should be judged against the graph after
-                    # this accepted combo, not against the original baseline.
-                    baseline_peak = new_peak
-                    self._commit_combo_to_memory_context(
-                        mem_ctx,
-                        region_start,
-                        combo_node,
-                        combo_step,
-                        new_region_memory,
-                        accepted_nodes,
-                    )
-
-                    # Only retry a later remainder here. An earlier remainder
-                    # already failed + re-adding an earlier remainder would violate
-                    # the forward commit order of the incremental memory context.
-                    accepted = accepted_nodes
-                    if len(accepted) < len(candidate):
-                        accepted_set = OrderedSet(accepted)
-                        remaining = [n for n in candidate if n not in accepted_set]
-                        if (
-                            len(remaining) >= 2
-                            and min(mem_ctx.node_to_idx[n] for n in remaining)
-                            >= region_start
-                        ):
-                            candidates.insert(candidate_idx, remaining)
-                else:
-                    # Legacy path: try the full candidate directly with no
-                    # memory simulation or distance splitting.
-                    combo_node = ForeachKernelSchedulerNode(
-                        candidate[0].scheduler,
-                        candidate,
-                        use_custom_partition_algo=True,
-                        enable_autotune=enable_autotune,
-                    )
-                    accepted = candidate
-
-                count += 1
-                log.info(
-                    "ComboKernels: Combining %d nodes for %d-th group",
-                    len(accepted),
-                    num,
+                assert new_region_memory is not None
+                # Later candidates should be judged against the graph after
+                # this accepted combo, not against the original baseline.
+                baseline_peak = new_peak
+                self._commit_combo_to_memory_context(
+                    mem_ctx,
+                    region_start,
+                    combo_node,
+                    combo_step,
+                    new_region_memory,
+                    accepted_nodes,
                 )
-                for node in accepted:
-                    fused_nodes.remove(node)
-                fused_nodes.add(combo_node)
-                self.name_to_fused_node.update(
-                    {n.get_name(): combo_node for n in combo_node.get_nodes()}
+
+                # Re-enqueue the unaccepted remainder of a partial halving
+                # accept. The heap keeps overall order monotonic.
+                accepted = accepted_nodes
+                if len(accepted) < len(candidate):
+                    accepted_set = OrderedSet(accepted)
+                    remaining = [n for n in candidate if n not in accepted_set]
+                    if len(remaining) >= 2:
+                        rem_min = min(mem_ctx.node_to_idx[n] for n in remaining)
+                        if rem_min >= region_start:
+                            heapq.heappush(queue, (rem_min, counter, num, remaining))
+                            counter += 1
+            else:
+                combo_node = ForeachKernelSchedulerNode(
+                    candidate[0].scheduler,
+                    candidate,
+                    use_custom_partition_algo=True,
+                    enable_autotune=enable_autotune,
                 )
-                stream = self.node_to_stream.get(accepted[0])
-                if stream is not None:
-                    self.node_to_stream[combo_node] = stream
+                accepted = candidate
+
+            count += 1
+            log.info(
+                "ComboKernels: Combining %d nodes for %d-th group",
+                len(accepted),
+                num,
+            )
+            for node in accepted:
+                fused_nodes.remove(node)
+            fused_nodes.add(combo_node)
+            self.name_to_fused_node.update(
+                {n.get_name(): combo_node for n in combo_node.get_nodes()}
+            )
+            stream = self.node_to_stream.get(accepted[0])
+            if stream is not None:
+                self.node_to_stream[combo_node] = stream
 
         self.nodes = sorted(fused_nodes, key=lambda x: x.min_order)
         self.nodes = self.topological_sort_schedule(self.nodes)
@@ -5437,6 +5436,9 @@ class Scheduler:
 
         group_set = OrderedSet(group_nodes)
         assert self.nodes[region_start] in group_set
+        assert all(region_start <= node_to_idx[n] <= region_end for n in group_nodes), (
+            "combo group members must all fall within [region_start, region_end]"
+        )
         local_entries: list[tuple[int, int, BaseSchedulerNode]] = []
         seen_local_nodes: OrderedSet[BaseSchedulerNode] = OrderedSet()
         inserted_combo = False
@@ -5462,6 +5464,10 @@ class Scheduler:
             if step is not None:
                 top = name_to_fused_node.get(n.get_first_name())
                 assert top is not None
+                assert step <= region_end, (
+                    f"prior accepted combo step={step} > region_end="
+                    f"{region_end}; monotonic-commit invariant broken"
+                )
                 # Overlapping later regions should see the earlier accepted
                 # combo at its committed step, not its stale standalone pieces.
                 if region_start <= step <= region_end:
