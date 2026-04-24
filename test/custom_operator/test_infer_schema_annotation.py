@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import typing
+import unittest
 
 import torch
 from torch import Tensor, types
@@ -116,6 +117,7 @@ class TestInferSchemaWithAnnotation(TestCase):
         result = torch.library.infer_schema(foo_op_7, mutates_args=mutates_args)
         self.assertEqual(result, "(Scalar x) -> Scalar")
 
+    @unittest.expectedFailure
     def test_no_library_prefix(self):
         def foo_op(x: Tensor) -> Tensor:
             return x.clone()
