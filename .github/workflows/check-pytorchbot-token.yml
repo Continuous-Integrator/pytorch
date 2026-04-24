@@ -1,0 +1,47 @@
+name: Check pytorchbot token
+
+on:
+  workflow_dispatch:
+
+jobs:
+  check-token:
+    if: github.repository_owner == 'pytorch'
+    runs-on: ubuntu-latest
+    environment: pytorchbot-env
+    steps:
+      - name: Validate GH_PYTORCHBOT_TOKEN
+        env:
+          GH_TOKEN: ${{ secrets.GH_PYTORCHBOT_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "::error::GH_PYTORCHBOT_TOKEN is empty — secret not wired to pytorchbot-env"
+            exit 1
+          fi
+
+          # /user returns 200 for a valid token and 401 for an invalid/expired one.
+          # --fail makes curl exit non-zero on HTTP >= 400.
+          http_code=$(curl --silent --show-error --output /tmp/user.json --write-out '%{http_code}' \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            https://api.github.com/user)
+
+          echo "HTTP status: ${http_code}"
+          if [ "${http_code}" != "200" ]; then
+            echo "::error::Token is invalid or expired (HTTP ${http_code})"
+            cat /tmp/user.json
+            exit 1
+          fi
+
+          login=$(jq -r '.login' /tmp/user.json)
+          echo "Token is valid. Authenticated as: ${login}"
+
+          # Also surface the token's scopes / expiration headers for visibility.
+          curl --silent --show-error --dump-header /tmp/user.headers \
+            -o /dev/null \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            https://api.github.com/user
+          echo "---- Token metadata headers ----"
+          grep -iE '^(x-oauth-scopes|x-accepted-oauth-scopes|github-authentication-token-expiration):' /tmp/user.headers || true
