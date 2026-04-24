@@ -716,7 +716,7 @@ static float2 compute_source_index_set_grad(
     case GridSamplerPadding::Reflection:
       return compute_source_index_set_grad<PadReflection>(
           coord, size, align_corners);
-    default:
+    case GridSamplerPadding::Zeros:
       return compute_source_index_set_grad<PadZeros>(
           coord, size, align_corners);
   }
@@ -732,19 +732,14 @@ static float compute_source(
       return PadBorder::compute_source(coord, size, align_corners);
     case GridSamplerPadding::Reflection:
       return PadReflection::compute_source(coord, size, align_corners);
-    default:
+    case GridSamplerPadding::Zeros:
       return PadZeros::compute_source(coord, size, align_corners);
   }
 }
 
-inline bool within_bounds_3d(
-    int32_t z,
-    int32_t y,
-    int32_t x,
-    int32_t D,
-    int32_t H,
-    int32_t W) {
-  return z >= 0 && z < D && y >= 0 && y < H && x >= 0 && x < W;
+template <typename T>
+static bool within_bounds(T pos, T size) {
+  return all(pos >= 0 & pos < size);
 }
 
 template <typename T>
@@ -836,13 +831,7 @@ kernel void grid_sampler_3d_backward(
         const int cy = iy_0 + yi;
         const int cz = iz_0 + zi;
 
-        if (within_bounds_3d(
-                cz,
-                cy,
-                cx,
-                static_cast<int32_t>(inp_D),
-                static_cast<int32_t>(inp_H),
-                static_cast<int32_t>(inp_W))) {
+        if (within_bounds(int3(cx, cy, cz), int3(inp_W, inp_H, inp_D))) {
           const float w = wx[xi] * wy[yi] * wz[zi];
 
           if (params.compute_grad_input) {
@@ -902,13 +891,7 @@ kernel void grid_sampler_3d_backward(
     int32_t iy_n = static_cast<int32_t>(rint(src_y));
     int32_t iz_n = static_cast<int32_t>(rint(src_z));
 
-    bool in_bounds = within_bounds_3d(
-        iz_n,
-        iy_n,
-        ix_n,
-        static_cast<int32_t>(inp_D),
-        static_cast<int32_t>(inp_H),
-        static_cast<int32_t>(inp_W));
+    bool in_bounds = within_bounds(int3(ix_n, iy_n, iz_n), int3(inp_W, inp_H, inp_D));
 
     if (in_bounds) {
       const auto base_offset = n * params.grad_input_strides[0] +
@@ -985,9 +968,6 @@ REGISTER_GRID_SAMPLER_OPS(bfloat);
 
 // ========== 2D Backward kernels ==========
 
-static bool within_bounds_2d(int2 pos, int2 size) {
-  return pos.x >= 0 && pos.x < size.x && pos.y >= 0 && pos.y < size.y;
-}
 
 // Atomic safe add for grad_input
 template <typename T>
@@ -998,7 +978,7 @@ static void safe_add_2d_atomic(
     int2 size,
     opmath_t<T> delta,
     long NC_offset) {
-  if (within_bounds_2d(pos, size)) {
+  if (within_bounds(pos, size)) {
     AtomicType<T>::atomic_add(
         data,
         NC_offset + pos.y * stride.y + pos.x * stride.x,
@@ -1025,7 +1005,7 @@ static opmath_t<T> get_value_bounded_backward(
     int2 stride,
     bool align_corners) {
   int2 pos = apply_padding_2d<Pad>(x, y, size, align_corners);
-  if (within_bounds_2d(pos, size)) {
+  if (within_bounds(pos, size)) {
     return static_cast<opmath_t<T>>(data[pos.y * stride.y + pos.x * stride.x]);
   }
   return 0;
@@ -1203,25 +1183,25 @@ kernel void grid_sampler_2d_backward_bilinear_grid(
        ++c, inp_ptr_NC += inp_sC, gOut_ptr_NCHW += gOut_sC) {
     opmath_t<T> gOut = static_cast<opmath_t<T>>(*gOut_ptr_NCHW);
 
-    if (within_bounds_2d({ix_nw, iy_nw}, inp_size)) {
+    if (within_bounds({ix_nw, iy_nw}, inp_size)) {
       opmath_t<T> nw_val =
           inp_ptr_NC[iy_nw * inp_stride.y + ix_nw * inp_stride.x];
       gix -= nw_val * (iy_nw + 1 - iy.x) * gOut;
       giy -= nw_val * (ix_nw + 1 - ix.x) * gOut;
     }
-    if (within_bounds_2d({ix_nw + 1, iy_nw}, inp_size)) {
+    if (within_bounds({ix_nw + 1, iy_nw}, inp_size)) {
       opmath_t<T> ne_val =
           inp_ptr_NC[iy_nw * inp_stride.y + (ix_nw + 1) * inp_stride.x];
       gix += ne_val * (iy_nw + 1 - iy.x) * gOut;
       giy -= ne_val * (ix.x - ix_nw) * gOut;
     }
-    if (within_bounds_2d({ix_nw, iy_nw + 1}, inp_size)) {
+    if (within_bounds({ix_nw, iy_nw + 1}, inp_size)) {
       opmath_t<T> sw_val =
           inp_ptr_NC[(iy_nw + 1) * inp_stride.y + ix_nw * inp_stride.x];
       gix -= sw_val * (iy.x - iy_nw) * gOut;
       giy += sw_val * (ix_nw + 1 - ix.x) * gOut;
     }
-    if (within_bounds_2d({ix_nw + 1, iy_nw + 1}, inp_size)) {
+    if (within_bounds({ix_nw + 1, iy_nw + 1}, inp_size)) {
       opmath_t<T> se_val =
           inp_ptr_NC[(iy_nw + 1) * inp_stride.y + (ix_nw + 1) * inp_stride.x];
       gix += se_val * (iy.x - iy_nw) * gOut;
