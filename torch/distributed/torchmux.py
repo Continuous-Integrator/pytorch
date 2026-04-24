@@ -97,26 +97,22 @@ class _SharedInt:
         struct.pack_into("i", self._shm.buf, 0, v)
 
     def cleanup(self):
+        shm = getattr(self, "_shm", None)
+        if shm is None:
+            return
         try:
-            self._shm.close()
+            shm.close()
         except Exception:
             pass
         if self._owner:
             try:
-                self._shm.unlink()
+                shm.unlink()
             except Exception:
                 pass
+        self._shm = None
 
     def __del__(self):
-        try:
-            self._shm.close()
-        except Exception:
-            pass
-        if getattr(self, "_owner", False):
-            try:
-                self._shm.unlink()
-            except Exception:
-                pass
+        self.cleanup()
 
     def __getstate__(self):
         return self._shm.name

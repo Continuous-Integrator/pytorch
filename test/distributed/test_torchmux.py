@@ -718,30 +718,33 @@ class TestVNCCL(_VNCCLTestBase):
         for r, t in enumerate(results):
             self.assertEqual(t, torch.full((4,), expected))
 
-    def test_allreduce_bitwise_ops(self):
+    @parametrize(
+        "op_name,expected_fn",
+        [
+            ("BAND", lambda vals: vals[0] & vals[1] & vals[2]),
+            ("BOR", lambda vals: vals[0] | vals[1] | vals[2]),
+            ("BXOR", lambda vals: vals[0] ^ vals[1] ^ vals[2]),
+        ],
+        name_fn=lambda op_name, expected_fn: op_name.lower(),
+    )
+    def test_allreduce_bitwise(self, op_name, expected_fn):
         from torch._C._distributed_c10d import AllreduceOptions, ReduceOp
 
         pgs = self._make_pgs()
+        op = getattr(ReduceOp, op_name)
 
-        for op, expected_fn in [
-            (ReduceOp.BAND, lambda vals: vals[0] & vals[1] & vals[2]),
-            (ReduceOp.BOR, lambda vals: vals[0] | vals[1] | vals[2]),
-            (ReduceOp.BXOR, lambda vals: vals[0] ^ vals[1] ^ vals[2]),
-        ]:
-            pgs = self._make_pgs()
+        def _work(rank, pg):
+            t = [torch.tensor([rank + 1, rank + 10], dtype=torch.int64)]
+            opts = AllreduceOptions()
+            opts.reduceOp = op
+            pg.allreduce(t, opts)
+            return t[0]
 
-            def _work(rank, pg, _op=op):
-                t = [torch.tensor([rank + 1, rank + 10], dtype=torch.int64)]
-                opts = AllreduceOptions()
-                opts.reduceOp = _op
-                pg.allreduce(t, opts)
-                return t[0]
-
-            results = self._run_on_pgs(pgs, _work)
-            vals = [torch.tensor([r + 1, r + 10], dtype=torch.int64) for r in range(self._world_size)]
-            expected = expected_fn(vals)
-            for r, t in enumerate(results):
-                self.assertEqual(t, expected)
+        results = self._run_on_pgs(pgs, _work)
+        vals = [torch.tensor([r + 1, r + 10], dtype=torch.int64) for r in range(self._world_size)]
+        expected = expected_fn(vals)
+        for r, t in enumerate(results):
+            self.assertEqual(t, expected)
 
     def test_allreduce_coalesced(self):
         pgs = self._make_pgs()

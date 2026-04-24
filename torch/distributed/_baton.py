@@ -73,7 +73,7 @@ def _get_cuda():
         lib.cuCheckpointProcessGetState.restype = _c_int
         lib.cuCheckpointProcessGetState.argtypes = [_c_int, _ptr(_c_int)]
 
-        _check(lib.cuInit(0), "cuInit")
+        _check(lib.cuInit(0), "cuInit", lib=lib)
         _cuda = lib
     return _cuda
 
@@ -98,9 +98,9 @@ class _UnlockArgs(ctypes.Structure):
     _fields_ = [("reserved", ctypes.c_uint64 * 8)]
 
 
-def _check(result: int, name: str) -> None:
+def _check(result: int, name: str, lib=None) -> None:
     if result != 0:
-        cuda = _get_cuda()
+        cuda = lib if lib is not None else _get_cuda()
         err = ctypes.c_char_p()
         cuda.cuGetErrorString(result, ctypes.byref(err))
         msg = err.value.decode() if err.value else f"code {result}"

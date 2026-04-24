@@ -355,15 +355,27 @@ class VNCCLProcessGroup(dist.ProcessGroup):
         if held:
             _rng_states[self._rank] = _save_rng()
             _release_exec_lock_ordered(self._rank, self._world_size)
+        coll_failed = False
         try:
             sync = VNCCLProcessGroup._enter(op, self, seq)
             try:
                 result = sync.join(self._rank, data)
             finally:
                 VNCCLProcessGroup._leave(sync, self, seq)
+        except Exception:
+            coll_failed = True
+            raise
         finally:
             if held:
-                _acquire_exec_lock_ordered(self._rank, self._world_size)
+                if coll_failed:
+                    # After a resolver error, _next_rank was reset to 0.
+                    # Using ordered acquisition would deadlock ranks != 0.
+                    # Fall back to unordered acquisition so all ranks can
+                    # propagate the error without hanging.
+                    _exec_lock.acquire()
+                    _exec_lock_holder.held = True
+                else:
+                    _acquire_exec_lock_ordered(self._rank, self._world_size)
                 if self._rank in _rng_states:
                     _restore_rng(_rng_states[self._rank])
         return result
@@ -395,51 +407,67 @@ class VNCCLProcessGroup(dist.ProcessGroup):
 
     # -- collectives --
 
-    def allreduce(self, tensor_list, opts=AllreduceOptions()):
+    def allreduce(self, tensor_list, opts=None):
+        if opts is None:
+            opts = AllreduceOptions()
         return self._do(_AllReduce(opts.reduceOp), tensor_list)
 
-    def allreduce_coalesced(self, tensor_list, opts=AllreduceOptions()):
+    def allreduce_coalesced(self, tensor_list, opts=None):
+        if opts is None:
+            opts = AllreduceOptions()
         return self._do(_AllReduce(opts.reduceOp), tensor_list)
 
-    def broadcast(self, tensor_list, opts=BroadcastOptions()):
+    def broadcast(self, tensor_list, opts=None):
+        if opts is None:
+            opts = BroadcastOptions()
         return self._do(_Broadcast(opts.rootRank), tensor_list)
 
-    def allgather(self, output_tensors, input_tensor, opts=AllgatherOptions()):
+    def allgather(self, output_tensors, input_tensor, opts=None):
         return self._do(_AllGather(), (output_tensors, input_tensor))
 
-    def _allgather_base(self, output, input, opts=AllgatherOptions()):
+    def _allgather_base(self, output, input, opts=None):
         chunks = list(torch.chunk(output, self._world_size))
         return self.allgather([chunks], [input], opts)
 
-    def allgather_into_tensor_coalesced(self, outputs, inputs, opts=AllgatherOptions()):
+    def allgather_into_tensor_coalesced(self, outputs, inputs, opts=None):
         for o, i in zip(outputs, inputs):
             self._allgather_base(o, i)
         return _completed_work(None)
 
-    def scatter(self, output_tensors, input_tensors, opts=ScatterOptions()):
+    def scatter(self, output_tensors, input_tensors, opts=None):
+        if opts is None:
+            opts = ScatterOptions()
         return self._do(_Scatter(opts.rootRank), (output_tensors, input_tensors))
 
-    def gather(self, output_tensors, input_tensors, opts=ScatterOptions()):
+    def gather(self, output_tensors, input_tensors, opts=None):
+        if opts is None:
+            opts = ScatterOptions()
         return self._do(_Gather(opts.rootRank), (output_tensors, input_tensors))
 
-    def reduce_scatter(self, output_tensor, scatter_list, opts=ReduceScatterOptions()):
+    def reduce_scatter(self, output_tensor, scatter_list, opts=None):
+        if opts is None:
+            opts = ReduceScatterOptions()
         return self._do(_ReduceScatter(opts.reduceOp), (output_tensor, scatter_list))
 
-    def _reduce_scatter_base(self, output, input, opts=ReduceScatterOptions()):
+    def _reduce_scatter_base(self, output, input, opts=None):
+        if opts is None:
+            opts = ReduceScatterOptions()
         chunks = list(torch.chunk(input, self._world_size))
         return self.reduce_scatter([output], [chunks], opts)
 
     def reduce_scatter_tensor_coalesced(
-        self, outputs, inputs, opts=ReduceScatterOptions()
+        self, outputs, inputs, opts=None
     ):
+        if opts is None:
+            opts = ReduceScatterOptions()
         for o, i in zip(outputs, inputs):
             self._reduce_scatter_base(o, i, opts)
         return _completed_work(None)
 
-    def alltoall(self, output_list, input_list, opts=AllToAllOptions()):
+    def alltoall(self, output_list, input_list, opts=None):
         return self._do(_AllToAll(), (output_list, input_list))
 
-    def barrier(self, opts=BarrierOptions()):
+    def barrier(self, opts=None):
         return self.allreduce(tensor_list=[torch.ones(1)])
 
 
