@@ -42,7 +42,6 @@ from typing_extensions import is_typeddict
 
 import torch._dynamo.config
 import torch.nn
-from torch._C._dynamo import PyNumberSlots
 from torch._guards import Source, TracingContext
 from torch.utils._python_dispatch import is_traceable_wrapper_subclass_type
 from torch.utils._pytree import GetAttrKey, is_structseq_class
@@ -66,7 +65,6 @@ from ..source import (
     AttrSource,
     CallFunctionNoArgsSource,
     DictGetItemSource,
-    EphemeralSource,
     GetItemSource,
     RandomValueSource,
     TypeDictSource,
@@ -99,9 +97,8 @@ from ..utils import (
     unpatched_nn_module_getattr,
 )
 from .base import MutationType, NO_SUCH_SUBOBJ, ValueMutationNew, VariableTracker
-from .dicts import ConstDictVariable, pydict_check
+from .dicts import ConstDictVariable
 from .hashable import HashableTracker
-from .object_protocol import is_nb_not_implemented, type_implements_nb_slot
 from .sets import SetVariable
 
 
@@ -340,23 +337,6 @@ class UserDefinedClassVariable(UserDefinedVariable):
         if hasattr(metaclass, "__bool__") and metaclass is not type:
             return self.call_method(tx, "__bool__", [], {})
         return ConstantVariable.create(True)
-
-    def nb_or_impl(
-        self,
-        tx: "InstructionTranslator",
-        other: VariableTracker,
-        reverse: bool = False,
-    ) -> VariableTracker:
-        # CPython's type.__or__ implements _Py_union_type_or (type unions).
-        try:
-            other_val = other.as_python_constant()
-        except NotImplementedError:
-            return VariableTracker.build(tx, NotImplemented)
-        # pyrefly: ignore[bad-argument-count]
-        result = type(self.value).__or__(self.value, other_val)
-        if result is NotImplemented:
-            return VariableTracker.build(tx, NotImplemented)
-        return VariableTracker.build(tx, result)
 
     def var_getattr(self, tx: "InstructionTranslator", name: str) -> VariableTracker:
         source = AttrSource(self.source, name) if self.source is not None else None
@@ -1592,95 +1572,6 @@ class UserDefinedObjectVariable(UserDefinedVariable):
                 method, self, source_fn=source_fn, source=self.source
             ).call_function(tx, [key], {})
         return super().mp_subscript_impl(tx, key)
-
-    def forward_call_method(
-        self,
-        tx: "InstructionTranslator",
-        name: str,
-        args: list[VariableTracker],
-        kwargs: dict[str, VariableTracker],
-    ) -> VariableTracker:
-        type_attr = self.lookup_class_mro_attr(name)
-        if type_attr is NO_SUCH_SUBOBJ:
-            return variables.ConstantVariable.create(NotImplemented)
-        if type_attr is None:
-            raise_type_error(tx, "'NoneType' object is not callable")
-
-        return self.call_method(tx, name, args, kwargs)
-
-    def SLOT1BIN(
-        self,
-        tx: "InstructionTranslator",
-        other: VariableTracker,
-        dunder: str,
-        rdunder: str,
-        nb_slot: int,  # NB_OR, NB_AND, etc
-        reverse: bool,
-    ) -> VariableTracker:
-        # Implement SLOT1BIN semantics from CPython
-        # ref: https://github.com/python/cpython/blob/3.13/Objects/typeobject.c#L9202-L9246
-        def py_is_type(w_type: type, v_type: type) -> bool:
-            return w_type is v_type
-
-        def py_is_subtype(w_type: type, v_type: type) -> bool:
-            return issubclass(w_type, v_type)
-
-        # v = self
-        # w = other
-        self_, other_ = (other, self) if reverse else (self, other)
-
-        s_type = self_.python_type()
-        o_type = other_.python_type()
-
-        # Check if other is a different type and has the number slots
-        do_other = not py_is_type(s_type, o_type) and type_implements_nb_slot(
-            o_type, nb_slot
-        )
-
-        if type_implements_nb_slot(s_type, nb_slot):
-            if do_other and py_is_subtype(o_type, s_type):
-                # TODO: missing method_is_overloaded
-                r = other_.call_method(tx, rdunder, [self_], {})  # infinite recursion??
-                if not is_nb_not_implemented(r):
-                    return r
-                do_other = False
-
-            r = self_.call_method(tx, dunder, [other_], {})
-            if not is_nb_not_implemented(r) or py_is_type(o_type, s_type):
-                return r
-
-        if do_other:
-            r = other_.call_method(tx, rdunder, [self_], {})  # infinite recursion??
-            if not is_nb_not_implemented(r):
-                return r
-
-        return variables.ConstantVariable.create(NotImplemented)
-
-    def nb_or_impl(
-        self,
-        tx: "InstructionTranslator",
-        other: VariableTracker,
-        reverse: bool = False,
-    ) -> VariableTracker:
-        # ref: https://github.com/python/cpython/blob/3.13/Objects/typeobject.c#L10354-L10355
-        return self.SLOT1BIN(
-            tx,
-            other,
-            "__or__",
-            "__ror__",
-            nb_slot=PyNumberSlots.NB_OR,
-            reverse=reverse,
-        )
-
-    def nb_inplace_or_impl(
-        self,
-        tx: "InstructionTranslator",
-        other: VariableTracker,
-        reverse: bool = False,
-    ) -> VariableTracker:
-        # ref: https://github.com/python/cpython/blob/3.13/Objects/typeobject.c#L9494
-        # return self.call_method(tx, "__ior__", [other], {})
-        return self.forward_call_method(tx, "__ior__", [other], {})
 
     def call_method(
         self,
@@ -2962,12 +2853,12 @@ class UserDefinedExceptionObjectVariable(UserDefinedObjectVariable):
                 "__cause__", "__context__", "__suppress_context__", "__traceback__"
             )
         ):
-            return self._base_vt.call_setattr(tx, args[0], args[1])  # type: ignore[missing-attribute]
+            self._base_vt.call_method(tx, name, args, kwargs)  # type: ignore[missing-attribute]
         elif name == "with_traceback":
             return self._base_vt.call_method(tx, name, args, kwargs)  # type: ignore[missing-attribute]
         return super().call_method(tx, name, args, kwargs)
 
-    def var_getattr(self, tx: "InstructionTranslator", name: str) -> VariableTracker:
+    def var_getattr(self, tx: "InstructionTranslator", name: str):
         if name in (
             "args",
             "__cause__",
@@ -3274,30 +3165,6 @@ class OrderedDictVariable(UserDefinedDictVariable):
         assert self._base_vt is not None
         return collections.OrderedDict(self._base_vt.as_python_constant())
 
-    def nb_or_impl(
-        self, tx: "InstructionTranslator", other: VariableTracker, reverse: bool = False
-    ) -> VariableTracker:
-        # ref: https://github.com/python/cpython/blob/3.13/Lib/collections/__init__.py#L327C5-L339
-        if not issubclass(other.python_type(), dict):
-            return variables.ConstantVariable.create(NotImplemented)
-
-        if reverse:
-            new = VariableTracker.build(
-                tx, self.value.__class__, source=EphemeralSource()
-            ).call_function(tx, [other], {})
-            new.call_method(tx, "update", [self], {})
-        else:
-            new = self.call_method(tx, "copy", [], {})
-            new.call_method(tx, "update", [other], {})
-        return new
-
-    def nb_inplace_or_impl(
-        self, tx: "InstructionTranslator", other: VariableTracker, reverse: bool = False
-    ) -> VariableTracker:
-        # ref: https://github.com/python/cpython/blob/3.13/Lib/collections/__init__.py#L323-L325
-        self.call_method(tx, "update", [other], {})
-        return self
-
     def call_method(
         self,
         tx: "InstructionTranslator",
@@ -3475,36 +3342,6 @@ class DefaultDictVariable(UserDefinedDictVariable):
         if key in self._base_vt:  # type: ignore[operator]
             return self._base_vt.getitem_const(tx, key)  # type: ignore[union-attr]
         return self._missing_impl(tx, key)
-
-    def nb_or_impl(
-        self,
-        tx: "InstructionTranslator",
-        other: VariableTracker,
-        reverse: bool = False,
-    ) -> VariableTracker:
-        # ref: https://github.com/python/cpython/blob/v3.13.0/Modules/_collectionsmodule.c#L2356-L2395
-        # The C impl uses a naming convention of left/right for the two operands
-        # and swap self/other depending on some conditions. For simplicity, we
-        # will suffix the var names with "_"
-
-        # new_defdict(self, left) calls type(self)(self.default_factory, left),
-        # then PyDict_Update(new, right). left/right are the original operands.
-        left, right = (other, self) if reverse else (self, other)
-        ret = issubclass(left.python_type(), collections.defaultdict)
-        self_, other_ = (left, right) if ret else (right, left)
-        assert isinstance(self_, DefaultDictVariable)
-
-        if not pydict_check(other_):
-            return variables.ConstantVariable.create(NotImplemented)
-
-        assert hasattr(left, "items")
-        new = DefaultDictVariable(
-            left.items.copy(),  # type: ignore[missing-attribute]
-            default_factory=self_.default_factory,
-            mutation_type=ValueMutationNew(),
-        )
-        new.call_method(tx, "update", [right], {})
-        return new
 
     def call_method(
         self,
