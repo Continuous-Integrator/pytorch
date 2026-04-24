@@ -6203,9 +6203,8 @@
   device_check: NoCheck   # TensorIterator
   variants: function, method
   dispatch:
-    CPU, CUDA: std
+    CPU, CUDA, XPU: std
     MPS: std_mps
-    XPU: std_xpu
     QuantizedCPU: std_quantized_cpu
   tags: reduction
 
@@ -6225,9 +6224,8 @@
   device_check: NoCheck   # TensorIterator
   variants: function
   dispatch:
-    CPU, CUDA: std_mean
+    CPU, CUDA, XPU: std_mean
     MPS: std_mean_mps
-    XPU: std_mean_xpu
   autogen: std_mean.correction_out
   tags: reduction
 
@@ -6250,9 +6248,8 @@
 - func: std.correction_out(Tensor self, int[1]? dim=None, *, Scalar? correction=None, bool keepdim=False, Tensor(a!) out) -> Tensor(a!)
   device_check: NoCheck   # TensorIterator
   dispatch:
-    CPU, CUDA: std_out
+    CPU, CUDA, XPU: std_out
     QuantizedCPU: std_out_quantized_cpu
-    XPU: std_xpu_out
   tags: reduction
 
 - func: std.names_dim(Tensor self, Dimname[1] dim, bool unbiased=True, bool keepdim=False) -> Tensor
@@ -6788,9 +6785,8 @@
   device_check: NoCheck   # TensorIterator
   variants: function, method
   dispatch:
-    CPU, CUDA: var
+    CPU, CUDA, XPU: var
     MPS: var_mps
-    XPU: var_xpu
   tags: [core, reduction]
 
 - func: var.out(Tensor self, int[1]? dim, bool unbiased=True, bool keepdim=False, *, Tensor(a!) out) -> Tensor(a!)
@@ -6801,8 +6797,7 @@
 - func: var.correction_out(Tensor self, int[1]? dim=None, *, Scalar? correction=None, bool keepdim=False, Tensor(a!) out) -> Tensor(a!)
   device_check: NoCheck   # TensorIterator
   dispatch:
-    CPU, CUDA: var_out
-    XPU: var_xpu_out
+    CPU, CUDA, XPU: var_out
   tags: reduction
 
 - func: var.names_dim(Tensor self, Dimname[1] dim, bool unbiased=True, bool keepdim=False) -> Tensor
@@ -6842,9 +6837,8 @@
   device_check: NoCheck   # TensorIterator
   variants: function
   dispatch:
-    CPU, CUDA: var_mean
+    CPU, CUDA, XPU: var_mean
     MPS: var_mean_mps
-    XPU: var_mean_xpu
   autogen: var_mean.correction_out
   tags: reduction
 
@@ -15654,7 +15648,6 @@
 - func: _safe_softmax(Tensor self, int dim, ScalarType? dtype=None) -> Tensor
   dispatch:
     CompositeExplicitAutograd: _safe_softmax
-    XPU: _safe_softmax_xpu
     NestedTensorCPU, NestedTensorHPU, NestedTensorCUDA, NestedTensorXPU: _safe_softmax
 
 # Apparently, putting "forward" in the name will cause Python bindings to be skipped, so "fwd" it is.

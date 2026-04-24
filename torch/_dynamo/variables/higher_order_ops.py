@@ -572,6 +572,24 @@ class StorageAliasingTracker:
         return True
 
 
+def taint_filtered_vt(vt: VariableTracker) -> None:
+    """Mark a VT as filtered due to aliasing so it raises a clear error if used."""
+    original_as_proxy = vt.as_proxy
+
+    def tainted_as_proxy() -> Any:
+        proxy = original_as_proxy()
+        raise RuntimeError(
+            f"An intermediate tensor '{proxy.node.name}' created inside a "
+            f"higher-order op subgraph aliases an input or output, so it was "
+            f"not included in the subgraph outputs. However, it is being used "
+            f"in the outer graph (e.g., via a side effect like list.append). "
+            f"To fix this, clone the tensor before capturing it "
+            f"(e.g., use tensor.clone() instead of tensor)."
+        )
+
+    vt.as_proxy = tainted_as_proxy  # type: ignore[method-assign]
+
+
 def collect_intermediate_outputs(
     tx: "InstructionTranslator",
     subtracer: "SubgraphTracer",
@@ -604,12 +622,11 @@ def collect_intermediate_outputs(
         else:
             # Filter out intermediates that alias with inputs or outputs.
             # This is needed for HOPs like invoke_subgraph that don't support aliasing.
-            # TODO: If a filtered intermediate is captured by side effects (e.g., appended
-            # to a list), it will fail later with "does not belong to this Graph" error
-            # when the outer graph tries to use it. See test_side_effect_with_aliased_intermediate.
             assert tracker is not None
             if tracker.check_and_track(proxy.node):
                 extra_outputs.append(out)
+            else:
+                taint_filtered_vt(out)
 
     return extra_outputs
 
@@ -1401,7 +1418,16 @@ def trace_hop_function(
     if restore_side_effects:
         prev_side_effects = tx.output.side_effects.clone()
 
-    with autograd_ctx, side_effects_ctx:
+    # When restoring side effects, defer outer-scope mutation checks so
+    # context managers that flip-flop a flag don't fail immediately. After
+    # tracing, we validate that all deferred mutations were nullified.
+    deferred_ctx = (
+        tx.output.side_effects.defer_side_effect_checks()
+        if restore_side_effects
+        else contextlib.nullcontext()
+    )
+
+    with autograd_ctx, side_effects_ctx, deferred_ctx:
         output = f.call_function(tx, args, sub_kwargs)
 
     if restore_side_effects:
@@ -1434,7 +1460,13 @@ def trace_hop_function_with_auto_output_flattening(
         else contextlib.nullcontext()
     )
 
-    with autograd_ctx, side_effects_ctx:
+    deferred_ctx = (
+        tx.output.side_effects.defer_side_effect_checks()
+        if not allow_side_effects
+        else contextlib.nullcontext()
+    )
+
+    with autograd_ctx, side_effects_ctx, deferred_ctx:
         output = f.call_function(tx, args, sub_kwargs)
 
     return output
@@ -2719,7 +2751,7 @@ class AssociativeScanHigherOrderVariable(TorchHigherOrderOperatorVariable):
             unimplemented(
                 gb_type="torch.associative_scan: mismatched input/output tree structure",
                 context=f"xs: {xs_treespec.as_python_constant()}, output: {_combine_treespec.as_python_constant()}",
-                explanation="The tree structure of the xs and the outs of the combine_fn are are expected to be identical, but got "
+                explanation="The tree structure of the xs and the outs of the combine_fn are expected to be identical, but got "
                 f"xs: {xs_treespec.as_python_constant()} vs output: {_combine_treespec.as_python_constant()}.",
                 hints=[
                     *graph_break_hints.USER_ERROR,
