@@ -2,24 +2,31 @@
 from __future__ import annotations
 
 import abc
+from dataclasses import dataclass
 
 import torch
 from torch.distributed.distributed_c10d import ProcessGroup
 
 
+@dataclass(frozen=True)
+class Routing:
+    handle: object
+    topk_idx: torch.Tensor
+
+
 class TokenSwitch(abc.ABC):
     """Abstract token routing switch (e.g. expert-parallel dispatch / combine).
 
-    Typical usage: :meth:`bind_routing`, then :meth:`dispatch` / :meth:`combine`.
+    Typical usage: :meth:`create_routing`, then :meth:`dispatch` / :meth:`combine`.
     """
 
     @abc.abstractmethod
-    def bind_routing(
+    def create_routing(
         self,
         topk_idx: torch.Tensor,
         per_expert_token_counts: torch.Tensor | None = None,
-    ) -> None:
-        """Attach expert routing for the current phase (e.g. top-k indices).
+    ) -> Routing:
+        """Create expert routing for the current phase (e.g. top-k indices).
 
         ``per_expert_token_counts`` is optional 1D int32, length >= local experts:
         output buffer for per-expert receive counts (NCCL EP ``RECV_EXPERT_COUNTER``).
@@ -29,6 +36,7 @@ class TokenSwitch(abc.ABC):
     @abc.abstractmethod
     def dispatch(
         self,
+        routing: Routing,
         tokens: torch.Tensor,
         topk_weights: torch.Tensor,
         out_tokens: torch.Tensor,
@@ -37,12 +45,17 @@ class TokenSwitch(abc.ABC):
     ) -> None:
         """Route tokens to experts; writes ``out_*`` tensors.
 
-        Uses ``topk_idx`` from the prior :meth:`bind_routing` call.
+        Uses ``topk_idx`` from the provided :class:`Routing`.
         """
         raise NotImplementedError
 
     @abc.abstractmethod
-    def combine(self, expert_tokens: torch.Tensor, out_tokens: torch.Tensor) -> None:
+    def combine(
+        self,
+        routing: Routing,
+        expert_tokens: torch.Tensor,
+        out_tokens: torch.Tensor,
+    ) -> None:
         """Gather expert outputs back to token order; writes ``out_tokens``."""
         raise NotImplementedError
 
@@ -71,46 +84,48 @@ class TokenSwitchNCCL(TokenSwitch):
             0,
             0,
         )
-        self._handle = None
-        self._topk_idx: torch.Tensor | None = None
 
-    def bind_routing(
+    def create_routing(
         self,
         topk_idx: torch.Tensor,
         per_expert_token_counts: torch.Tensor | None = None,
-    ) -> None:
-        """Attach expert routing for this phase; call before :meth:`dispatch` / :meth:`combine`."""
+    ) -> Routing:
+        """Create expert routing for this phase; pass to :meth:`dispatch` / :meth:`combine`."""
         c10d = torch._C._distributed_c10d
-        self._topk_idx = topk_idx
-        self._handle = c10d._NcclEpHandle.create(
-            self._group, topk_idx, per_expert_token_counts
+        handle = c10d._NcclEpHandle.create(
+            self._group,
+            topk_idx,
+            per_expert_token_counts,
         )
+        return Routing(handle=handle, topk_idx=topk_idx)
 
     def dispatch(
         self,
+        routing: Routing,
         tokens: torch.Tensor,
         topk_weights: torch.Tensor,
         out_tokens: torch.Tensor,
         out_topk_weights: torch.Tensor,
         out_topk_idx: torch.Tensor,
     ) -> None:
-        if self._handle is None or self._topk_idx is None:
-            raise RuntimeError("Call bind_routing before dispatch().")
         torch._C._distributed_c10d._nccl_ep_dispatch(
-            self._handle,
+            routing.handle,
             tokens,
             topk_weights,
-            self._topk_idx,
+            routing.topk_idx,
             out_tokens,
             out_topk_weights,
             out_topk_idx,
         )
 
-    def combine(self, expert_tokens: torch.Tensor, out_tokens: torch.Tensor) -> None:
-        if self._handle is None:
-            raise RuntimeError("Call bind_routing before combine().")
+    def combine(
+        self,
+        routing: Routing,
+        expert_tokens: torch.Tensor,
+        out_tokens: torch.Tensor,
+    ) -> None:
         torch._C._distributed_c10d._nccl_ep_combine(
-            self._handle,
+            routing.handle,
             expert_tokens,
             out_tokens,
         )
