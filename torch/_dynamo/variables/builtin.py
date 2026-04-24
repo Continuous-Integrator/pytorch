@@ -88,6 +88,7 @@ from .dicts import (
     DictKeysVariable,
     DictViewVariable,
 )
+from .hashable import is_hashable
 from .lists import (
     BaseListVariable,
     ListIteratorVariable,

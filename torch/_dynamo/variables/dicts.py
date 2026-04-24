@@ -56,7 +56,7 @@ from .base import (
     VariableTracker,
 )
 from .constant import ConstantVariable
-from .hashable import HashableTracker, is_hashable, raise_unhashable
+from .hashable import HashableTracker, is_hashable
 from .sets import SetVariable
 
 
@@ -453,7 +453,7 @@ class ConstDictVariable(VariableTracker):
         key: VariableTracker,
     ) -> VariableTracker:
         # dict_subscript: https://github.com/python/cpython/blob/62a6e898e01/Objects/dictobject.c#L3673-L3706
-        # Unhashable key check happens inside _HashableTracker (raise_unhashable → TypeError).
+        # Unhashable key check happens inside HashableTracker (hash_impl → TypeError).
         return self.getitem_const_raise_exception_if_absent(tx, key)
 
     def call_method(

@@ -30,7 +30,7 @@ from ..source import AttrSource, is_constant_source, is_from_local_source
 from ..utils import cmp_name_to_op_mapping, istype, raise_args_mismatch
 from .base import ValueMutationNew, VariableTracker
 from .constant import ConstantVariable
-from .hashable import HashableTracker, is_hashable, raise_unhashable
+from .hashable import HashableTracker, is_hashable
 
 
 if TYPE_CHECKING:
