@@ -194,6 +194,35 @@ def grouped_gemm_lowering(
 grouped_gemm_lowering._inductor_lowering_function = True  # type: ignore[attr-defined]
 
 
+def _convert_to_0d_constant(
+    tensor_box: ir.TensorBox,
+    dtype: torch.dtype,
+    name_suffix: str = "_0d",
+) -> ir.TensorBox:
+    """
+    Normalize a tensor with all dimensions equal to 1 to a 0D ConstantBuffer.
+    """
+    unwrapped = ir.InputsKernel.unwrap_storage_for_input(tensor_box)
+    if isinstance(unwrapped, ir.ConstantBuffer):
+        tensor = V.graph.constants[tensor_box.get_name()]
+        return V.graph.add_tensor_constant(
+            tensor.reshape([]), name=tensor_box.get_name() + name_suffix
+        )
+    else:
+        # Try to extract constant value from ComputedBuffer
+        from torch._inductor.lowering import get_constant_value
+
+        if hasattr(unwrapped, "data"):
+            const_value = get_constant_value(unwrapped.data)
+            if const_value is not None:
+                return V.graph.add_tensor_constant(
+                    torch.tensor(const_value.value, dtype=dtype).reshape([]),
+                    name=tensor_box.get_name() + name_suffix,
+                )
+    # Fallback: use view() to reshape to 0D
+    return view(tensor_box, [])
+
+
 def register_onednn_fusion_ops():
     if torch._C._has_mkldnn:
         from . import mkldnn_ir
@@ -719,23 +748,9 @@ def register_onednn_fusion_ops():
                     # Corner-case discovered with LLaMA series.
                     # If all outer dims of x_scale are 1, make it a ConstantBuffer with 0D shape.
                     # Otherwise, epilogue creator will run into indexing issues.
-                    unwrapped = ir.InputsKernel.unwrap_storage_for_input(x_scale)
-                    if isinstance(unwrapped, ir.ConstantBuffer):
-                        x_scale_tensor = V.graph.constants[x_scale.get_name()]
-                        x_scale = V.graph.add_tensor_constant(
-                            x_scale_tensor.reshape([]), name=x_scale.get_name() + "_0d"
-                        )
-                    else:
-                        # x_scale is not a ConstantBuffer (e.g., ComputedBuffer with constant value)
-                        # Try to extract the constant value and convert to 0D ConstantBuffer
-                        from torch._inductor.lowering import get_constant_value
-                        if hasattr(unwrapped, 'data'):
-                            const_value = get_constant_value(unwrapped.data)
-                            if const_value is not None:
-                                x_scale = V.graph.add_tensor_constant(
-                                    torch.tensor(const_value.value, dtype=torch.float32).reshape([]),
-                                    name=x_scale.get_name() + "_0d"
-                                )
+                    x_scale = _convert_to_0d_constant(
+                        x_scale, torch.float32, "_0d"
+                    )
                 assert len(x_scale.get_size()) in [0, 1], "x_scale must be 0D or 1D"
 
             if x_zp is None:
@@ -755,23 +770,7 @@ def register_onednn_fusion_ops():
                 x_zp.realize()
                 if all(dim == 1 for dim in x_zp.get_size()):
                     # If all outer dims of x_zp are 1, make it a ConstantBuffer with 0D shape
-                    unwrapped = ir.InputsKernel.unwrap_storage_for_input(x_zp)
-                    if isinstance(unwrapped, ir.ConstantBuffer):
-                        x_zp_tensor = V.graph.constants[x_zp.get_name()]
-                        x_zp = V.graph.add_tensor_constant(
-                            x_zp_tensor.reshape([]), name=x_zp.get_name() + "_0d"
-                        )
-                    else:
-                        # x_zp is not a ConstantBuffer (e.g., ComputedBuffer with constant value)
-                        # Try to extract the constant value and convert to 0D ConstantBuffer
-                        from torch._inductor.lowering import get_constant_value
-                        if hasattr(unwrapped, 'data'):
-                            const_value = get_constant_value(unwrapped.data)
-                            if const_value is not None:
-                                x_zp = V.graph.add_tensor_constant(
-                                    torch.tensor(const_value.value, dtype=torch.int32).reshape([]),
-                                    name=x_zp.get_name() + "_0d"
-                                )
+                    x_zp = _convert_to_0d_constant(x_zp, torch.int32, "_0d")
 
             assert x_zp.get_numel() == 1, "x_zp is incompatible with oneDNN qlinear"
 
@@ -1067,23 +1066,9 @@ def register_onednn_fusion_ops():
                     # Corner-case discovered with LLaMA series.
                     # If all outer dims of x_scale are 1, make it a 0D ConstantBuffer tensor.
                     # Otherwise, epilogue creator will run into indexing issues.
-                    unwrapped = ir.InputsKernel.unwrap_storage_for_input(x_scale)
-                    if isinstance(unwrapped, ir.ConstantBuffer):
-                        x_scale_tensor = V.graph.constants[x_scale.get_name()]
-                        x_scale = V.graph.add_tensor_constant(
-                            x_scale_tensor.reshape([]), name=x_scale.get_name() + "_0d"
-                        )
-                    else:
-                        # x_scale is not a ConstantBuffer (e.g., ComputedBuffer with constant value)
-                        # Try to extract the constant value and convert to 0D ConstantBuffer
-                        from torch._inductor.lowering import get_constant_value
-                        if hasattr(unwrapped, 'data'):
-                            const_value = get_constant_value(unwrapped.data)
-                            if const_value is not None:
-                                x_scale = V.graph.add_tensor_constant(
-                                    torch.tensor(const_value.value, dtype=torch.float32).reshape([]),
-                                    name=x_scale.get_name() + "_0d"
-                                )
+                    x_scale = _convert_to_0d_constant(
+                        x_scale, torch.float32, "_0d"
+                    )
                 assert len(x_scale.get_size()) in [0, 1], "x_scale must be 0D or 1D"
 
             if x_zp is None:
@@ -1099,23 +1084,7 @@ def register_onednn_fusion_ops():
                 x_zp.realize()
                 if all(dim == 1 for dim in x_zp.get_size()):
                     # If all outer dims of x_zp are 1, make it a new ConstantBuffer with 0D shape
-                    unwrapped = ir.InputsKernel.unwrap_storage_for_input(x_zp)
-                    if isinstance(unwrapped, ir.ConstantBuffer):
-                        x_zp_tensor = V.graph.constants[x_zp.get_name()]
-                        x_zp = V.graph.add_tensor_constant(
-                            x_zp_tensor.reshape([]), name=x_zp.get_name() + "_0d"
-                        )
-                    else:
-                        # x_zp is not a ConstantBuffer (e.g., ComputedBuffer with constant value)
-                        # Try to extract the constant value and convert to 0D ConstantBuffer
-                        from torch._inductor.lowering import get_constant_value
-                        if hasattr(unwrapped, 'data'):
-                            const_value = get_constant_value(unwrapped.data)
-                            if const_value is not None:
-                                x_zp = V.graph.add_tensor_constant(
-                                    torch.tensor(const_value.value, dtype=torch.int32).reshape([]),
-                                    name=x_zp.get_name() + "_0d"
-                                )
+                    x_zp = _convert_to_0d_constant(x_zp, torch.int32, "_0d")
             if w_zp is None:
                 w_zp = V.graph.add_tensor_constant(
                     torch.tensor(0, dtype=torch.int32), name="w_zp"

@@ -3180,11 +3180,15 @@ class TestSelectAlgorithm(BaseTestSelectAlgorithm):
 
         mod = QLinearUnaryModule(out_features, in_features).eval()
 
-        compiled_mod = torch.compile(mod)
-        result = compiled_mod(qx)
+        # Test eager mode and compiled mode with numerical correctness check
+        with verify(torch.float32) as (atol, rtol):
+            expected = mod(qx)
+            compiled_mod = torch.compile(mod)
+            result = compiled_mod(qx)
 
-        self.assertIsNotNone(result)
-        self.assertEqual(result.shape, (batch_size, out_features))
+            self.assertIsNotNone(result)
+            self.assertEqual(result.shape, (batch_size, out_features))
+            self.assertEqual(result, expected, atol=atol, rtol=rtol)
 
         if not torch.version.hip:  # autotuning is not guaranteed to run on ROCm
             self.assertEqual(counters["inductor"]["select_algorithm_autotune"], 1)
@@ -3250,11 +3254,15 @@ class TestSelectAlgorithm(BaseTestSelectAlgorithm):
 
         mod = QLinearBinaryModule(out_features, in_features).eval()
 
-        compiled_mod = torch.compile(mod)
-        result = compiled_mod(qx, other)
+        # Test eager mode and compiled mode with numerical correctness check
+        with verify(torch.float32) as (atol, rtol):
+            expected = mod(qx, other)
+            compiled_mod = torch.compile(mod)
+            result = compiled_mod(qx, other)
 
-        self.assertIsNotNone(result)
-        self.assertEqual(result.shape, (batch_size, out_features))
+            self.assertIsNotNone(result)
+            self.assertEqual(result.shape, (batch_size, out_features))
+            self.assertEqual(result, expected, atol=atol, rtol=rtol)
 
         if not torch.version.hip:  # autotuning is not guaranteed to run on ROCm
             self.assertEqual(counters["inductor"]["select_algorithm_autotune"], 1)
