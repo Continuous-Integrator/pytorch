@@ -147,6 +147,68 @@ Notes:
   the first `cond` that returns `True`. See § "Registration Orders and You"
   below for how to control ordering.
 
+## Using Overrides with `torch.export` and `torch.compile`
+
+**Note** This functionality is under active development and not ready for
+general use yet. This section details the existing status and will be
+updated as the functionality expands and matures.
+
+
+The eager router above only fires when the dispatcher reaches the backend
+key (e.g. during plain eager execution). `torch.export` captures
+`aten::<op>` nodes into the graph without invoking the backend kernel, so
+those graphs preserve the original `aten` calls. `torch.compile` and
+`ExportedProgram.run_decompositions(...)` consume a decomposition table;
+to make overrides visible on those paths the registry exposes
+`native_decomp_table()`:
+
+```
+from torch._native.registry import native_decomp_table
+
+ep = torch.export.export(model, args)
+ep = ep.run_decompositions(native_decomp_table())
+# ep.graph_module now contains `_native::<node_id>` nodes wherever an
+# override's `cond` matched the corresponding FakeTensors.
+```
+
+By default `native_decomp_table()` returns `torch.export.default_decompositions()`
+merged with the registered overrides (overrides win on conflicts). Pass
+`overrides_only=True` to get just the override entries — useful when
+composing tables manually or for inspection.
+
+The registry intentionally does **not** write into any global compile/export
+decomp table on its own (in particular, not into
+`torch._inductor.decomposition.decompositions`). Callers opt in explicitly
+by passing `native_decomp_table()` where routing is desired. This keeps
+`import torch._native` cheap (no transitive inductor/dynamo/triton imports),
+lets other consumers of the global tables (ONNX, tests, third-party backends)
+remain unaffected, and gives callers full control over where overrides apply.
+
+### A note on `cond` under tracing
+
+During `run_decompositions` / `torch.compile`, your `cond` runs on
+**FakeTensors**. It must avoid APIs that aren't defined on FakeTensors
+(e.g. `_is_cow_tensor`, `.item()`). Conditions based on `dtype`, `device`,
+`ndim`, and static shapes are always safe. Conditions that compare
+symbolic dims introduce guards — they work, but affect specialization.
+If a cond raises under tracing, the registry treats it as "no match" and
+falls through to the default lowering.
+
+### Mutating / aliasing ops
+
+Overriding mutating ops (e.g. `add_.Tensor`) is supported. The user's `impl`
+must mutate its inputs in place and return the mutated tensor — just like
+aten. Don't call the same aten op from inside your impl (e.g. don't write
+`self.add_(other)` inside a `my_add_(self, other)` override), since that
+re-enters the dispatcher and recurses back into the router. Use a
+different op for the mutation (e.g. `self.copy_(self + other)`) if
+needed.
+
+Note: `torch.export` / `torch.compile` functionalize mutating calls into
+their functional counterparts (`aten::add_` → `aten::add`) before running
+decompositions. If you want overrides to fire in compiled graphs as well
+as eager, register overrides for the **functional** variant too.
+
 ## Registering a New Operator
 
 We currently don't have a use for this functionality, please come talk to us if you want it!

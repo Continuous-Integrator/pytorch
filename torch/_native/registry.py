@@ -13,6 +13,7 @@ __all__ = [
     "reenable_op_overrides",
     "deregister_op_overrides",
     "get_dsl_operations",
+    "native_decomp_table",
 ]
 
 log = logging.getLogger(__name__)
@@ -139,6 +140,29 @@ _filter_state: _FilterState = _FilterState()
 
 # Store torch.library.Library instances
 _libs: dict[tuple[str, str], torch.library.Library] = {}
+
+# Decomposition-style routers for the compile / export path, keyed by aten
+# OpOverload. Built in `_register_overrides_from_graph` alongside the eager
+# `Library.impl` routers.
+#
+# This dict is *not* written into any global compile/export decomp table (in
+# particular, not into torch._inductor.decomposition.decompositions). Users
+# opt into the overrides explicitly by passing `native_decomp_table()` to
+# `ExportedProgram.run_decompositions(...)`, or by threading it through
+# Dynamo/Inductor config for `torch.compile`. Reasons:
+#
+#   1. torch._inductor.decomposition.decompositions is an Inductor internal
+#      with no stability guarantee; writing to it couples us to Inductor's
+#      refactors.
+#   2. Global writes would affect *every* consumer of that table (tests,
+#      third-party backends, etc.), with no scoping.
+#   3. Import-time writes would force `import torch._native` to also pull in
+#      inductor → dynamo → triton, breaking
+#      `test_no_dsl_imports_after_import_torch`.
+#
+# Keeping the table registry-local means `import torch._native` stays cheap
+# and consumers control exactly when and where overrides take effect.
+_native_decomp_overrides: dict[object, Callable] = {}
 
 # store graph structures
 _GraphsType = dict[tuple[str, str], list[_OverrideNode]]
@@ -718,6 +742,60 @@ def _apply_graph_transformation(
             )
 
 
+def native_decomp_table(
+    overrides_only: bool = False,
+) -> dict[object, Callable]:
+    """
+    Return a decomposition table suitable for passing to
+    ``ExportedProgram.run_decompositions`` or to Inductor / Dynamo as a
+    decomposition set for ``torch.compile``.
+
+    This is the canonical way to apply native overrides outside of eager.
+    Callers opt in explicitly — the registry does **not** install into any
+    global compile/export decomp table on its own. This preserves three
+    properties:
+
+      * ``import torch._native`` doesn't transitively import inductor /
+        dynamo / triton.
+      * No other consumer (ONNX, tests, third-party backends) accidentally
+        picks up our overrides.
+      * Scoping is up to the caller: pass the table only where routing is
+        desired.
+
+    By default, the returned table contains
+    ``torch.export.default_decompositions()`` with native-registered
+    overrides layered on top — matching typical "run the usual
+    decompositions, plus my overrides" intent. The override entries win
+    over any same-op default, because they're merged last.
+
+    Example:
+
+        ep = torch.export.export(model, args)
+        ep = ep.run_decompositions(
+            torch._native.registry.native_decomp_table()
+        )
+
+    Args:
+        overrides_only: If True, return only the native-registered overrides
+            and no default aten decompositions. Useful for inspection /
+            debugging, or when composing tables manually.
+
+    Returns:
+        A dict mapping ``OpOverload`` to decomposition callable.
+    """
+    if overrides_only:
+        table: dict[object, Callable] = {}
+    else:
+        # Local import: keeps `import torch._native` from pulling in
+        # torch.export (and its transitive imports) at module load time.
+        from torch.export import default_decompositions
+
+        table = dict(default_decompositions())
+    # Merge overrides last so they win on conflicts.
+    table.update(_native_decomp_overrides)
+    return table
+
+
 def _register_overrides_from_graph(
     op_symbol: str,
     dispatch_key: str,
@@ -755,6 +833,8 @@ def _register_overrides_from_graph(
         else:
             node.active = False
 
+    overload = _resolve_aten_overload(op_symbol)
+
     # Tear down any existing aten override so either (a) the op cleanly
     # reverts to native aten (empty cond_impl), or (b) the subsequent
     # `get_kernel` call returns the native kernel rather than a stale
@@ -762,8 +842,10 @@ def _register_overrides_from_graph(
     _destroy_aten_override(op_symbol, dispatch_key)
 
     # If no active conds remain for this (op, key), leave the native op
-    # behavior intact.
+    # behavior intact and drop any decomp table entry.
     if not cond_impl:
+        if overload is not None:
+            _native_decomp_overrides.pop(overload, None)
         return
 
     # Capture the prior kernel at this (op, dispatch_key) *before* we install
@@ -774,9 +856,18 @@ def _register_overrides_from_graph(
     # calls bmm, which would route back to us).
     fallback_kernel = torch.library.get_kernel(f"aten::{op_symbol}", dispatch_key)
 
-    # First-match-wins dispatch over `cond_impl`. Factored into a helper so
-    # the router closure stays small and so other routers (e.g. for the
-    # compile/export path) can share the same matching logic.
+    # Build the router closures. Both share a first-match-wins loop over
+    # `cond_impl`; they differ only in
+    #   (a) whether cond exceptions fail loudly or silently, and
+    #   (b) what to do when no cond matches.
+    #
+    # Eager routers run on real tensors where cond exceptions indicate a
+    # genuine bug; missing a match falls back to the captured native kernel.
+    #
+    # Compile/export routers run under FakeTensor where some predicates are
+    # undefined (e.g. _is_cow_tensor), so we swallow cond exceptions and
+    # treat them as non-matches. On no-match we return NotImplemented so
+    # Inductor reuses the default lowering rather than recursing.
     _NO_MATCH = object()  # sentinel; impl return values of None would be valid outputs
 
     def _dispatch(args, kwargs, swallow_cond_exceptions: bool):
@@ -791,16 +882,27 @@ def _register_overrides_from_graph(
                 return getattr(torch.ops._native, impl_name)(*args, **kwargs)
         return _NO_MATCH
 
-    # Eager router: cond exceptions indicate a genuine bug (we're on real
-    # tensors); missing a match falls back to the captured native kernel.
     def eager_router(keyset, *args, _fallback=fallback_kernel, **kwargs):
         result = _dispatch(args, kwargs, swallow_cond_exceptions=False)
         if result is _NO_MATCH:
             return _fallback.call_boxed(keyset, *args, **kwargs)
         return result
 
-    # Install a fresh aten override for this (op, key).
+    def compile_router(*args, **kwargs):
+        result = _dispatch(args, kwargs, swallow_cond_exceptions=True)
+        if result is _NO_MATCH:
+            return NotImplemented
+        return result
+
+    # Eager path: install a fresh aten override for this (op, key).
     _install_aten_override(op_symbol, dispatch_key, eager_router)
+
+    # Compile / export path: record the router in our own decomp table.
+    # Callers opt in via `native_decomp_table()` — we deliberately do NOT
+    # write into torch._inductor.decomposition.decompositions (see the
+    # comment on `_native_decomp_overrides` for why).
+    if overload is not None:
+        _native_decomp_overrides[overload] = compile_router
 
 
 def _register_all_overrides() -> None:
