@@ -899,15 +899,50 @@ class TestIntSpecCompile(TestCase):
         # compile. If ``dynamic=False`` had won, we'd see 5 (one per shape).
         self.assertEqual(cnt.frame_count, 1)
 
+    @skipIfTorchDynamo()
     def test_list_form(self):
+        """List-form per-dim spec: dim 0 BACKED, dim 1 STATIC.
+
+        Two assertions, one per dim:
+
+        1. **Dim 0 (BACKED) absorbs shape changes** — varying dim 0 while
+           keeping dim 1 fixed reuses the same compile; graph count stays
+           at 1.
+        2. **Dim 1 (STATIC) forces recompiles** — varying dim 1 while
+           keeping dim 0 fixed bumps the graph count by one per distinct
+           dim-1 value.
+
+        Also inspects the final captured graph to confirm the kinds:
+        dim 0 is a backed ``SymInt``, dim 1 is a concrete ``int``.
+        """
+        backend = EagerAndRecordGraphs()
         fn = _compile_with_dynamic_shapes(
             lambda x: x + 1,
             {"x": [IntSpec.backed("batch"), IntSpec.static()]},
-            backend="eager",
+            backend=backend,
         )
-        for n in [4, 8, 16]:
-            x = torch.randn(n, 3)
-            self.assertEqual(fn(x), x + 1)
+
+        # Call 1 — initial compile.
+        fn(torch.randn(4, 3))
+        self.assertEqual(len(backend.graphs), 1)
+
+        # Vary dim 0 only (BACKED absorbs it → no new compile).
+        fn(torch.randn(8, 3))
+        fn(torch.randn(16, 3))
+        self.assertEqual(len(backend.graphs), 1)
+
+        # Vary dim 1 (STATIC pins it → each distinct value recompiles).
+        fn(torch.randn(16, 5))
+        self.assertEqual(len(backend.graphs), 2)
+        fn(torch.randn(16, 7))
+        self.assertEqual(len(backend.graphs), 3)
+
+        # The last captured graph: dim 0 backed SymInt, dim 1 concrete int=7.
+        shape = _tensor_placeholder_shape(backend.graphs[-1])
+        self.assertIsInstance(shape[0], torch.SymInt)
+        self.assertEqual(len(free_unbacked_symbols(shape[0])), 0)
+        self.assertIsInstance(shape[1], int)
+        self.assertEqual(shape[1], 7)
 
     def test_none_entry_inherits_context(self):
         """A None entry in a list-form spec should not mark the dim."""
