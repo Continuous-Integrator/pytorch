@@ -8050,6 +8050,57 @@ class TestMPS(TestCaseMPS):
         print(f"Recommended Max Memory : {max_memory / 1024 ** 3} GB")
         self.assertGreater(max_memory, 0)
 
+    def test_host_alias_storage(self):
+        n = 1024
+        dtype = torch.float32
+        elem_size = torch.tensor([], dtype=dtype).element_size()
+        nbytes = n * elem_size
+        x = torch.empty(n, dtype=dtype, device="mps")
+        torch.mps.synchronize()
+
+        try:
+            host = torch.mps._host_alias_storage(x.untyped_storage())
+        except RuntimeError as e:
+            if "shared" in str(e).lower() or "unified" in str(e).lower():
+                self.skipTest("MPS device does not support shared storage")
+            raise
+
+        self.assertEqual(host.device.type, "cpu")
+        self.assertEqual(host.nbytes(), nbytes)
+
+        # Callers turn the aliased storage into a CPU tensor view of the
+        # same shape/stride as the source MPS tensor via set_().
+        host_tensor = torch.empty(0, dtype=dtype).set_(
+            host, x.storage_offset(), x.shape, x.stride()
+        )
+        self.assertEqual(host_tensor.device.type, "cpu")
+        self.assertEqual(host_tensor.dtype, dtype)
+        self.assertEqual(host_tensor.shape, x.shape)
+        self.assertEqual(host_tensor.stride(), x.stride())
+
+        # CPU writes through the alias are visible to GPU-side reads
+        ref = torch.arange(n, dtype=dtype)
+        host_tensor.copy_(ref)
+        torch.mps.synchronize()
+        self.assertEqual(x.cpu(), ref)
+
+        # Lifetime: alias keeps the MTLBuffer valid after the source tensor
+        # is freed and the allocator cache is emptied
+        del x
+        gc.collect()
+        torch.mps.empty_cache()
+        ref2 = ref + n
+        host_tensor.copy_(ref2)
+        self.assertEqual(host_tensor, ref2)
+
+        # Non-MPS storage must be rejected
+        with self.assertRaisesRegex(ValueError, "MPS storage"):
+            torch.mps._host_alias_storage(torch.empty(4).untyped_storage())
+
+        # Non-storage input must be rejected
+        with self.assertRaisesRegex(TypeError, "UntypedStorage"):
+            torch.mps._host_alias_storage(torch.empty(4, device="mps"))
+
     # to verify this test, run XCode Instruments "Metal System Trace" or "Logging" tool,
     # press record, then run this python test, and press stop. Next expand
     # the os_signposts->PyTorchMPS and check if events or intervals are logged
@@ -10236,6 +10287,26 @@ class TestSDPA(TestCaseMPS):
         head_dim = 64  # supported head dimension for vector attention
         q, k, v = self.generate_qkv(batch, NH, q_len, s_len, head_dim, layout, dtype)
         self.run_fast_attention_test(q, k, v, with_mask)
+
+    def test_fast_vector_permuted_inputs_regression(self):
+        # Regression test for https://github.com/pytorch/pytorch/issues/181133
+        torch.manual_seed(0)
+        B, S, H, D = 84, 3, 3, 64
+        dtype = torch.float32
+        q = torch.randn(B, S, H, D, dtype=dtype)
+        k = torch.randn(B, S, H, D, dtype=dtype)
+        v = torch.randn(B, S, H, D, dtype=dtype)
+
+        q_mps = q.to("mps").permute(0, 2, 1, 3)
+        k_mps = k.to("mps").permute(0, 2, 1, 3)
+        v_mps = v.to("mps").permute(0, 2, 1, 3)
+        q_cpu = q.permute(0, 2, 1, 3)
+        k_cpu = k.permute(0, 2, 1, 3)
+        v_cpu = v.permute(0, 2, 1, 3)
+
+        y_mps = F.scaled_dot_product_attention(q_mps, k_mps, v_mps)
+        y_cpu = F.scaled_dot_product_attention(q_cpu, k_cpu, v_cpu)
+        self._compare_tensors(y_mps.cpu(), y_cpu)
 
     @unittest.skip("Full attention fast kernel not implemented yet")
     @parametrize("dtype", [torch.float16, torch.float32])
