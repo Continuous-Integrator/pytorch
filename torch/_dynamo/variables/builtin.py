@@ -3248,7 +3248,7 @@ class IsInstanceBuiltinVariable(BaseBuiltinVariable):
     _fn = isinstance
 
     def __init__(self, value: Any = isinstance, **kwargs: Any) -> None:
-        assert value is isinstance
+        assert value is type(self)._fn
         super().__init__(**kwargs)
 
     def __repr__(self) -> str:
