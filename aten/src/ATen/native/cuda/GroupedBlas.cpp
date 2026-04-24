@@ -453,10 +453,10 @@ std::optional<c10::ScalarType> out_dtype) {
                                args.mArray, args.avgM,
                                args.nArray, args.avgN,
                                args.kArray, args.avgK,
-                               args.alphaPtrArray, args.A_dtype,
+                               args.alphaPtrArray, args.alphaScalar, args.A_dtype,
                                args.APtrArray, args.ldaArray,
                                args.BPtrArray, args.ldbArray,
-                               args.betaPtrArray, args.result_dtype,
+                               args.betaPtrArray, args.betaScalar, args.result_dtype,
                                args.DPtrArray, args.lddArray,
                                args.DPtrArray, args.lddArray, args.batchCount);
   return out;
@@ -522,6 +522,16 @@ static Tensor scaled_grouped_mm_cublaslt(
   }
   TORCH_CHECK(!scale_result.has_value(), "scale_result is not supported yet for scaled grouped GEMM");
 
+  // SM 9.0 only supports tensorwise scaling for grouped GEMM
+  cudaDeviceProp* prop = at::cuda::getCurrentDeviceProperties();
+  if (prop->major == 9) {
+    TORCH_CHECK(
+        scale_a.numel() == 1 && scale_a.dtype() == at::kFloat &&
+        scale_b.numel() == 1 && scale_b.dtype() == at::kFloat,
+        "SM 9.0 grouped GEMM only supports tensorwise scaling "
+        "(single fp32 scale per tensor)");
+  }
+
   if (out_dtype.has_value()) {
     TORCH_CHECK(
       out_dtype.value() == at::kBFloat16 || out_dtype.value() == at::kHalf || out_dtype.value() == at::kFloat,
@@ -536,10 +546,10 @@ static Tensor scaled_grouped_mm_cublaslt(
       args.mArray, args.avgM,
       args.nArray, args.avgN,
       args.kArray, args.avgK,
-      args.alphaPtrArray,
+      args.alphaPtrArray, args.alphaScalar,
       args.A_dtype, args.APtrArray, args.scale_mata_ptr, args.ldaArray,
       args.B_dtype, args.BPtrArray, args.scale_matb_ptr, args.ldbArray,
-      args.betaPtrArray, args.result_dtype,
+      args.betaPtrArray, args.betaScalar, args.result_dtype,
       args.DPtrArray, args.lddArray,
       args.DPtrArray, args.scale_result_ptr, args.lddArray,
       use_fast_accum, args.batchCount,
@@ -696,6 +706,11 @@ _scaled_grouped_mm_cuda_v2(
       bool supported = recipe_a_enum[0] == ScalingType::TensorWise
           || recipe_a_enum[0] == ScalingType::GroupWise
           || recipe_a_enum[0] == ScalingType::BlockWise1x32;
+      // SM 9.0 only supports TensorWise via cublasLt grouped GEMM
+      cudaDeviceProp* prop = at::cuda::getCurrentDeviceProperties();
+      if (prop->major == 9 && recipe_a_enum[0] != ScalingType::TensorWise) {
+        supported = false;
+      }
       if (supported) {
         return scaled_grouped_mm_cublaslt(
             mat_a, mat_b, scale_a[0], scale_b[0],

@@ -2402,12 +2402,14 @@ void grouped_gemm(
     const int32_t *kArrayDev,
     int64_t avgK,
     const int64_t *alphaArrayDev,
+    const float *alphaScalar,
     ScalarType input_dtype,
     const int64_t *APtrArrayDev,
     const int32_t *ldaArrayDev,
     const int64_t *BPtrArrayDev,
     const int32_t *ldbArrayDev,
     const int64_t *betaArrayDev,
+    const float *betaScalar,
     ScalarType result_dtype,
     const int64_t *CPtrArrayDev,
     const int32_t *ldcArrayDev,
@@ -2416,13 +2418,18 @@ void grouped_gemm(
     int batchCount) {
 #if !defined(USE_ROCM) && defined(CUDA_VERSION) && CUDA_VERSION >= 13020
   cudaDeviceProp* prop = at::cuda::getCurrentDeviceProperties();
-  TORCH_CHECK(prop->major == 10 || prop->major == 11, "grouped cublasLtMatmul requires SM 10.x or 11.0");
+  const bool sm90 = prop->major == 9;
+  if (sm90) {
+    TORCH_CHECK(CUBLAS_VERSION >= 130401 && cublasLtGetVersion() >= 130401,
+        "grouped cublasLtMatmul on SM 9.0 requires cuBLAS >= 13.4.1 (CUDA Toolkit 13.2 Update 1)");
+  }
+  TORCH_CHECK(prop->major >= 9 && prop->major < 12, "grouped cublasLtMatmul requires SM 9.0-11.0");
 
   const auto computeType = CUBLAS_COMPUTE_32F;
   const auto scaleType = CUDA_R_32F;
   const auto pointer_mode = CUBLASLT_POINTER_MODE_DEVICE;
-  const int64_t alphaBatchStride = 1;
-  const int64_t betaBatchStride = 1;
+  const int64_t alphaBatchStride = sm90 ? 0 : 1;
+  const int64_t betaBatchStride = sm90 ? 0 : 1;
 
   CuBlasLtMatmulDescriptor computeDesc(computeType, scaleType);
   computeDesc.setAttribute(CUBLASLT_MATMUL_DESC_TRANSA, _cublasOpFromChar(transa));
@@ -2463,15 +2470,20 @@ void grouped_gemm(
     TORCH_CUDABLAS_CHECK(CUBLAS_STATUS_NOT_SUPPORTED);
   }
 
+  // When alphaBatchStride=0 (SM 9.0), alpha/beta are single device scalars.
+  // When alphaBatchStride=1 (SM 10.0+), alpha/beta are per-group pointer arrays.
+  const void* alpha = alphaBatchStride ? static_cast<const void*>(alphaArrayDev) : static_cast<const void*>(alphaScalar);
+  const void* beta = betaBatchStride ? static_cast<const void*>(betaArrayDev) : static_cast<const void*>(betaScalar);
+
   cublasStatus_t cublasStatus = cublasLtMatmul(
     ltHandle,
     computeDesc.descriptor(),
-    alphaArrayDev,
+    alpha,
     APtrArrayDev,
     Adesc.descriptor(),
     BPtrArrayDev,
     Bdesc.descriptor(),
-    betaArrayDev,
+    beta,
     CPtrArrayDev,
     Cdesc.descriptor(),
     DPtrArrayDev,
@@ -2502,6 +2514,7 @@ void scaled_grouped_gemm(
     const int32_t* kArrayDev,
     int64_t avgK,
     const int64_t* alphaArrayDev,
+    const float* alphaScalar,
     ScalarType A_dtype,
     const int64_t* A,
     const void* A_scale_ptr,
@@ -2511,6 +2524,7 @@ void scaled_grouped_gemm(
     const void* B_scale_ptr,
     const int32_t* ldbArrayDev,
     const int64_t* betaArrayDev,
+    const float* betaScalar,
     ScalarType result_dtype,
     const int64_t* C,
     const int32_t* ldcArrayDev,
@@ -2525,7 +2539,12 @@ void scaled_grouped_gemm(
     ScalingType b_scaling_type) {
 #if !defined(USE_ROCM) && defined(CUDA_VERSION) && CUDA_VERSION >= 13020
   cudaDeviceProp* prop = at::cuda::getCurrentDeviceProperties();
-  TORCH_CHECK(prop->major == 10 || prop->major == 11, "scaled grouped cublasLtMatmul requires SM 10.x or 11.0");
+  const bool sm90 = prop->major == 9;
+  if (sm90) {
+    TORCH_CHECK(CUBLAS_VERSION >= 130401 && cublasLtGetVersion() >= 130401,
+        "scaled grouped cublasLtMatmul on SM 9.0 requires cuBLAS >= 13.4.1 (CUDA Toolkit 13.2 Update 1)");
+  }
+  TORCH_CHECK(prop->major >= 9 && prop->major < 12, "scaled grouped cublasLtMatmul requires SM 9.0-11.0");
 
   const auto computeType = CUBLAS_COMPUTE_32F;
   const auto scaleType = CUDA_R_32F;
@@ -2533,19 +2552,28 @@ void scaled_grouped_gemm(
   int a_scale_mode = get_scale_mode(a_scaling_type, A_scale_dtype, use_fast_accum);
   int b_scale_mode = get_scale_mode(b_scaling_type, B_scale_dtype, use_fast_accum);
 
+  // SM 9.0 requires ALPHA_BATCH_STRIDE=0 and does not support block scaling.
   // Block scaling (MXFP8) requires host pointer mode — cuBLAS does not
   // support POINTER_MODE_DEVICE combined with VEC32_UE8M0 for grouped GEMM.
   const bool use_block_scaling =
       a_scaling_type == ScalingType::BlockWise1x32 ||
       b_scaling_type == ScalingType::BlockWise1x32;
+  const bool use_per_group_alpha = !sm90 && !use_block_scaling;
 
   CuBlasLtMatmulDescriptor computeDesc(computeType, scaleType);
   computeDesc.setAttribute(CUBLASLT_MATMUL_DESC_TRANSA, _cublasOpFromChar(transa));
   computeDesc.setAttribute(CUBLASLT_MATMUL_DESC_TRANSB, _cublasOpFromChar(transb));
-  if (!use_block_scaling) {
+  if (use_per_group_alpha) {
     const auto pointer_mode = CUBLASLT_POINTER_MODE_DEVICE;
     const int64_t alphaBatchStride = 1;
     const int64_t betaBatchStride = 1;
+    computeDesc.setAttribute(CUBLASLT_MATMUL_DESC_POINTER_MODE, pointer_mode);
+    computeDesc.setAttribute(CUBLASLT_MATMUL_DESC_ALPHA_BATCH_STRIDE, alphaBatchStride);
+    computeDesc.setAttribute(CUBLASLT_MATMUL_DESC_BETA_BATCH_STRIDE, betaBatchStride);
+  } else if (sm90) {
+    const auto pointer_mode = CUBLASLT_POINTER_MODE_DEVICE;
+    const int64_t alphaBatchStride = 0;
+    const int64_t betaBatchStride = 0;
     computeDesc.setAttribute(CUBLASLT_MATMUL_DESC_POINTER_MODE, pointer_mode);
     computeDesc.setAttribute(CUBLASLT_MATMUL_DESC_ALPHA_BATCH_STRIDE, alphaBatchStride);
     computeDesc.setAttribute(CUBLASLT_MATMUL_DESC_BETA_BATCH_STRIDE, betaBatchStride);
@@ -2599,17 +2627,28 @@ void scaled_grouped_gemm(
     TORCH_CUDABLAS_CHECK(CUBLAS_STATUS_NOT_SUPPORTED);
   }
 
+  const void* alpha_ptr;
+  const void* beta_ptr;
+  if (use_block_scaling) {
+    alpha_ptr = &alpha_host;
+    beta_ptr = &beta_host;
+  } else if (sm90) {
+    alpha_ptr = alphaScalar;
+    beta_ptr = betaScalar;
+  } else {
+    alpha_ptr = alphaArrayDev;
+    beta_ptr = betaArrayDev;
+  }
+
   cublasStatus_t cublasStatus = cublasLtMatmul(
     ltHandle,
     computeDesc.descriptor(),
-    use_block_scaling ? static_cast<const void*>(&alpha_host)
-                      : static_cast<const void*>(alphaArrayDev),
+    alpha_ptr,
     A,
     Adesc.descriptor(),
     B,
     Bdesc.descriptor(),
-    use_block_scaling ? static_cast<const void*>(&beta_host)
-                      : static_cast<const void*>(betaArrayDev),
+    beta_ptr,
     C,
     Cdesc.descriptor(),
     D,

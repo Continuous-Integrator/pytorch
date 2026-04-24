@@ -1040,11 +1040,10 @@ class DistMatrixOpsTest(DTensorTestBase):
         ],
     )
     def test_grouped_mm(self, backend, kwargs):
-        if backend == "cublaslt" and torch.cuda.get_device_capability()[0] not in [
-            10,
-            11,
-        ]:
-            self.skipTest("cublaslt grouped gemm requires SM 10.x or 11.0")
+        if backend == "cublaslt":
+            sm_major = torch.cuda.get_device_capability()[0]
+            if sm_major < 9 or sm_major >= 12:
+                self.skipTest("cublaslt grouped gemm requires SM 9.0-11.0")
         # TODO: torch.nn.functional.grouped_mm can take inputs of dimension (2D, 3D) x (2D, 3D)
         # More tests need to be added.
         device_mesh = self.build_device_mesh()

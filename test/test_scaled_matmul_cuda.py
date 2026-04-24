@@ -2493,8 +2493,8 @@ class TestFP8Matmul(TestCase):
 
     @skipIfRocm
     @unittest.skipIf(
-        torch.cuda.get_device_capability()[0] not in [10, 11],
-        "cublaslt grouped gemm requires SM 10.x or 11.0"
+        torch.cuda.get_device_capability()[0] not in [9, 10, 11],
+        "cublaslt grouped gemm requires SM 9.0-11.0"
     )
     @parametrize("op", ["2d/2d", "2d/3d", "3d/2d", "3d/3d"])
     @parametrize(
@@ -2509,6 +2509,8 @@ class TestFP8Matmul(TestCase):
     @parametrize("scale_mode", ["tensorwise", "groupwise"])
     @parametrize("fast_accum", [False, True])
     def test_scaled_grouped_gemm_cublaslt(self, op, dtypes, out_dtype, scale_mode, fast_accum):
+        if torch.cuda.get_device_capability()[0] == 9 and scale_mode == "groupwise":
+            self.skipTest("SM 9.0 does not support groupwise scaling for grouped GEMM")
         a_dtype, b_dtype = dtypes
         A, B_T, offs = self.scaled_grouped_gemm_cublaslt_helper(op, a_dtype, b_dtype)
         ngroups = A.shape[0] if offs is None else offs.shape[0]
@@ -2579,8 +2581,8 @@ class TestFP8Matmul(TestCase):
 
     @skipIfRocm
     @unittest.skipIf(
-        torch.cuda.get_device_capability()[0] not in [10, 11],
-        "cublaslt grouped gemm requires SM 10.x or 11.0"
+        torch.cuda.get_device_capability()[0] not in [9, 10, 11],
+        "cublaslt grouped gemm requires SM 9.0-11.0"
     )
     @parametrize("op", ["2d/2d", "2d/3d", "3d/2d", "3d/3d"])
     @parametrize(
@@ -2596,6 +2598,8 @@ class TestFP8Matmul(TestCase):
     @parametrize("fast_accum", [False, True])
     @parametrize("mode", ["default", "reduce-overhead"])
     def test_scaled_grouped_gemm_cublaslt_compiled(self, op, dtypes, out_dtype, scale_mode, fast_accum, mode):
+        if torch.cuda.get_device_capability()[0] == 9 and scale_mode == "groupwise":
+            self.skipTest("SM 9.0 does not support groupwise scaling for grouped GEMM")
         a_dtype, b_dtype = dtypes
         torch._dynamo.reset()  # each shape combination needs fresh compilation state
         a_dtype, b_dtype = dtypes

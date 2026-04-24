@@ -41,6 +41,8 @@ struct cublasGroupedArgs {
   int64_t* DPtrArray;
   int64_t* alphaPtrArray;
   int64_t* betaPtrArray;
+  float* alphaScalar;
+  float* betaScalar;
 
   void* scale_mata_ptr = nullptr;
   void* scale_matb_ptr = nullptr;

@@ -324,6 +324,8 @@ cublasGroupedArgs::cublasGroupedArgs(
 
   float* alpha_scalar = reinterpret_cast<float*>(betaPtrArray + batchCount);
   float* beta_scalar  = alpha_scalar + 1;
+  alphaScalar = alpha_scalar;
+  betaScalar = beta_scalar;
 
   // Per-group scale pointer arrays: embedded for GroupWise, separate for BlockWise1x32.
   // Place after the two float scalars (alpha_scalar, beta_scalar are 8 bytes
