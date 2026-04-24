@@ -891,7 +891,8 @@ kernel void grid_sampler_3d_backward(
     int32_t iy_n = static_cast<int32_t>(rint(src_y));
     int32_t iz_n = static_cast<int32_t>(rint(src_z));
 
-    bool in_bounds = within_bounds(int3(ix_n, iy_n, iz_n), int3(inp_W, inp_H, inp_D));
+    bool in_bounds =
+        within_bounds(int3(ix_n, iy_n, iz_n), int3(inp_W, inp_H, inp_D));
 
     if (in_bounds) {
       const auto base_offset = n * params.grad_input_strides[0] +
@@ -967,7 +968,6 @@ REGISTER_GRID_SAMPLER_OPS(half);
 REGISTER_GRID_SAMPLER_OPS(bfloat);
 
 // ========== 2D Backward kernels ==========
-
 
 // Atomic safe add for grad_input
 template <typename T>
