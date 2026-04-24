@@ -104,6 +104,7 @@ from torch._C._distributed_c10d import (
     AllToAllOptions,
     BarrierOptions,
     BroadcastOptions,
+    GatherOptions,
     ReduceOp,
     ReduceScatterOptions,
     ScatterOptions,
@@ -190,10 +191,12 @@ class _Broadcast:
 class _AllGather:
     @torch.no_grad()
     def work(self, data):
-        for src_rank in range(len(data)):
-            src_tensor = data[src_rank][1][0]
-            for dest in data:
-                dest[0][0][src_rank].detach().copy_(src_tensor)
+        num_tensors = len(data[0][1])
+        for i in range(num_tensors):
+            for src_rank in range(len(data)):
+                src_tensor = data[src_rank][1][i]
+                for dest in data:
+                    dest[0][i][src_rank].detach().copy_(src_tensor)
 
 
 class _ReduceScatter:
@@ -441,7 +444,7 @@ class VNCCLProcessGroup(dist.ProcessGroup):
 
     def gather(self, output_tensors, input_tensors, opts=None):
         if opts is None:
-            opts = ScatterOptions()
+            opts = GatherOptions()
         return self._do(_Gather(opts.rootRank), (output_tensors, input_tensors))
 
     def reduce_scatter(self, output_tensor, scatter_list, opts=None):

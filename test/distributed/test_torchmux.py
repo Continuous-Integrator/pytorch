@@ -242,6 +242,47 @@ with open(path, 'w') as f:
 """
 
 
+NEW_GROUP_SCRIPT = """
+import json
+import os
+import torch
+import torch.distributed as dist
+
+dist.init_process_group()
+rank = dist.get_rank()
+ws = dist.get_world_size()
+device = f"cuda:{rank % int(os.environ.get('TORCHMUX_NGPUS', '1'))}"
+torch.cuda.set_device(device)
+results = {}
+
+# Global allreduce to verify the default PG works
+x = torch.full((4,), float(rank + 1), device=device)
+dist.all_reduce(x)
+expected_global = ws * (ws + 1) / 2
+results['global_allreduce'] = torch.allclose(x, torch.full_like(x, expected_global))
+
+# Create a sub-group with the even ranks
+even_ranks = [r for r in range(ws) if r % 2 == 0]
+sub_group = dist.new_group(even_ranks)
+
+if rank % 2 == 0:
+    y = torch.full((4,), float(rank + 1), device=device)
+    dist.all_reduce(y, group=sub_group)
+    expected_sub = sum(r + 1 for r in even_ranks)
+    results['sub_allreduce'] = torch.allclose(y, torch.full_like(y, float(expected_sub)))
+
+# Another global allreduce after sub-group usage
+z = torch.full((4,), float(rank + 1), device=device)
+dist.all_reduce(z)
+results['post_subgroup_allreduce'] = torch.allclose(z, torch.full_like(z, expected_global))
+
+dist.destroy_process_group()
+path = os.path.join(os.environ['TORCHMUX_RESULTS_DIR'], f'rank{rank}.json')
+with open(path, 'w') as f:
+    json.dump({k: bool(v) for k, v in results.items()}, f)
+"""
+
+
 class _TorchmuxSubprocessBase(TestCase):
     """Shared base class for torchmux subprocess tests."""
 
@@ -1585,6 +1626,15 @@ class TestTorchmuxMultiGPU(_TorchmuxSubprocessBase):
     def test_ngpus_2_correctness(self):
         script = self._write_script("multigpu.py", MULTIGPU_SCRIPT)
         self._run_and_check_results(4, script, ngpus=2)
+
+
+@unittest.skipIf(not torch.cuda.is_available(), "CUDA not available")
+class TestTorchmuxNewGroup(_TorchmuxSubprocessBase):
+    """Test that dist.new_group() works through torchmux's monkey-patch."""
+
+    def test_new_group_with_subgroup_collective(self):
+        script = self._write_script("new_group.py", NEW_GROUP_SCRIPT)
+        self._run_and_check_results(4, script)
 
 
 if __name__ == "__main__":
