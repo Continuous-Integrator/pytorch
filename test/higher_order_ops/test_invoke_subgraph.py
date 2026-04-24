@@ -4548,7 +4548,10 @@ class TestInvokeSubgraphReuseHashFn(TestCase):
 
 
 class TestInvokeSubgraphTrainStepCapture(TestCase):
-    @torch._dynamo.config.patch(trace_autograd_ops=True)
+    @torch._dynamo.config.patch(
+        trace_autograd_ops=True,
+        inline_single_use_invoke_subgraph=False,
+    )
     def test_mark_non_differentiable_propagation(self):
         """invoke_subgraph wrapping an autograd.Function that calls
         mark_non_differentiable should propagate the non-differentiable
