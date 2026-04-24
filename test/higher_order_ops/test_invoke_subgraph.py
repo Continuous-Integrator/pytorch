@@ -4579,6 +4579,8 @@ class TestInvokeSubgraphReuseHashFn(TestCase):
             torch.compile(fn, backend="aot_eager", fullgraph=True)(x)
 
 
+@skipIfTorchDynamo("Not a torch._dynamo test")
+@unittest.skipIf(TEST_WITH_CROSSREF, "crossref does not support trace_autograd_ops")
 class TestInvokeSubgraphTrainStepCapture(TestCase):
     @torch._dynamo.config.patch(
         trace_autograd_ops=True,
