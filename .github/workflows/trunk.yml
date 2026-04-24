@@ -297,7 +297,8 @@ jobs:
       - get-label-type
       - job-filter
     with:
-      runner_prefix: "${{ needs.get-label-type.outputs.label-type }}"
+      # Only set the prefix when use-arc is set to true, they go together
+      runner_prefix: ""
       build-environment: linux-jammy-rocm-py3.10-mi355
       docker-image-name: ci-image:pytorch-linux-jammy-rocm-n-py3
       # TODO (huydhn): Add this back once other workflow migrates
