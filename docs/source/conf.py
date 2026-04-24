@@ -109,7 +109,7 @@ autosectionlabel_prefix_document = True
 #
 #
 
-katex_prerender = False
+katex_prerender = True
 
 # General information about the project.
 project = "PyTorch"
@@ -156,7 +156,8 @@ html_theme_options = {
         },
     ],
     "show_version_warning_banner": True,
-    "llm_disabled": False,
+    "llm_disabled": os.environ.get("CI") and os.environ.get("WITH_PUSH") != "true",
+    "llm_generate_full": "false",
     "icon_links": [
         {
             "name": "X",
@@ -2598,7 +2599,7 @@ def _skip_git_dates_on_ci(app):
     Release builds (WITH_PUSH=true) keep the original behavior so dates
     appear in published docs.
     """
-    if not os.environ.get("CI"):
+    if not os.environ.get("CI") or os.environ.get("WITH_PUSH") == "true":
         return
 
     try:
