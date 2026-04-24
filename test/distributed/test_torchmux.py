@@ -6,6 +6,7 @@ under torchmux (file-based PG), and vnccl (thread-based PG).
 """
 
 import json
+import math
 import os
 import shutil
 import subprocess
@@ -16,7 +17,12 @@ import unittest
 
 import torch
 import torch.distributed as dist
-from torch.testing._internal.common_utils import run_tests, TestCase
+from torch.testing._internal.common_utils import (
+    instantiate_parametrized_tests,
+    parametrize,
+    run_tests,
+    TestCase,
+)
 
 
 TRAIN_SCRIPT = """
@@ -98,40 +104,205 @@ with open(output_path, "w") as f:
 """
 
 
-@unittest.skipIf(not torch.cuda.is_available(), "CUDA not available")
-class TestTorchmuxTraceOrdering(TestCase):
+SINGLE_WORKER_SCRIPT = """
+import os
+import torch
+import torch.distributed as dist
+
+dist.init_process_group()
+assert dist.get_rank() == 0
+assert dist.get_world_size() == 1
+device = f"cuda:{0 % int(os.environ.get('TORCHMUX_NGPUS', '1'))}"
+torch.cuda.set_device(device)
+x = torch.ones(4, device=device)
+dist.all_reduce(x)
+assert torch.allclose(x, torch.ones(4, device=device))
+dist.destroy_process_group()
+"""
+
+
+CRASH_SCRIPT = """
+import os
+import torch
+import torch.distributed as dist
+
+dist.init_process_group()
+rank = dist.get_rank()
+device = f"cuda:{rank % int(os.environ.get('TORCHMUX_NGPUS', '1'))}"
+torch.cuda.set_device(device)
+raise RuntimeError('intentional crash')
+"""
+
+
+MODULE_TRAIN_SCRIPT = """
+import os
+import torch
+import torch.distributed as dist
+
+dist.init_process_group()
+rank = dist.get_rank()
+device = f"cuda:{rank % int(os.environ.get('TORCHMUX_NGPUS', '1'))}"
+torch.cuda.set_device(device)
+x = torch.ones(4, device=device)
+dist.all_reduce(x)
+dist.destroy_process_group()
+"""
+
+
+AVG_SCRIPT = """
+import json
+import os
+import torch
+import torch.distributed as dist
+
+dist.init_process_group()
+rank = dist.get_rank()
+ws = dist.get_world_size()
+device = f"cuda:{rank % int(os.environ.get('TORCHMUX_NGPUS', '1'))}"
+torch.cuda.set_device(device)
+results = {}
+
+x = torch.full((4,), float(rank + 1), device=device)
+dist.all_reduce(x, op=dist.ReduceOp.AVG)
+expected = (ws + 1) / 2.0
+results['allreduce_avg'] = torch.allclose(x, torch.full_like(x, expected))
+
+full = torch.full((ws * 2,), float(rank + 1), device=device)
+out = torch.zeros(2, device=device)
+dist.reduce_scatter_tensor(out, full, op=dist.ReduceOp.AVG)
+expected_rs = (ws + 1) / 2.0
+results['reduce_scatter_avg'] = torch.allclose(out, torch.full_like(out, expected_rs))
+
+dist.destroy_process_group()
+path = os.path.join(os.environ['TORCHMUX_RESULTS_DIR'], f'rank{rank}.json')
+with open(path, 'w') as f:
+    json.dump({k: bool(v) for k, v in results.items()}, f)
+"""
+
+
+COALESCED_SCRIPT = """
+import json
+import os
+import torch
+import torch.distributed as dist
+from torch.distributed import ReduceOp
+
+dist.init_process_group()
+rank = dist.get_rank()
+ws = dist.get_world_size()
+device = f"cuda:{rank % int(os.environ.get('TORCHMUX_NGPUS', '1'))}"
+torch.cuda.set_device(device)
+results = {}
+
+# allgather_into_tensor_coalesced via _allgather_base path
+inp = torch.full((2,), float(rank), device=device)
+out = torch.zeros(2 * ws, device=device)
+dist.all_gather_into_tensor(out, inp)
+expected = torch.cat([torch.full((2,), float(r), device=device) for r in range(ws)])
+results['allgather_base'] = torch.allclose(out, expected)
+
+# reduce_scatter_tensor via _reduce_scatter_base path
+full = torch.full((ws * 2,), float(rank + 1), device=device)
+out2 = torch.zeros(2, device=device)
+dist.reduce_scatter_tensor(out2, full)
+expected_rs = ws * (ws + 1) / 2
+results['reduce_scatter_base'] = torch.allclose(out2, torch.full_like(out2, expected_rs))
+
+dist.destroy_process_group()
+path = os.path.join(os.environ['TORCHMUX_RESULTS_DIR'], f'rank{rank}.json')
+with open(path, 'w') as f:
+    json.dump({k: bool(v) for k, v in results.items()}, f)
+"""
+
+
+MULTIGPU_SCRIPT = """
+import json
+import os
+import torch
+import torch.distributed as dist
+
+dist.init_process_group()
+rank = dist.get_rank()
+ws = dist.get_world_size()
+ngpus = int(os.environ.get('TORCHMUX_NGPUS', '1'))
+device = f'cuda:{rank % ngpus}'
+torch.cuda.set_device(device)
+results = {}
+
+x = torch.full((4,), float(rank + 1), device=device)
+dist.all_reduce(x)
+expected = ws * (ws + 1) / 2
+results['allreduce'] = torch.allclose(x, torch.full_like(x, expected))
+results['device_index'] = (torch.cuda.current_device() == rank % ngpus)
+
+dist.destroy_process_group()
+path = os.path.join(os.environ['TORCHMUX_RESULTS_DIR'], f'rank{rank}.json')
+with open(path, 'w') as f:
+    json.dump({k: bool(v) for k, v in results.items()}, f)
+"""
+
+
+class _TorchmuxSubprocessBase(TestCase):
+    """Shared base class for torchmux subprocess tests."""
+
     def setUp(self):
         super().setUp()
         self._tmpdir = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, self._tmpdir, True)
-        self._script = os.path.join(self._tmpdir, "train.py")
-        with open(self._script, "w") as f:
-            f.write(TRAIN_SCRIPT)
 
-    def _run_torchmux(self, nproc, script, env_extra=None):
+    def _write_script(self, name, content):
+        path = os.path.join(self._tmpdir, name)
+        with open(path, "w") as f:
+            f.write(content)
+        return path
+
+    def _run_torchmux(self, nproc, script, env_extra=None, ngpus=1, extra_args=None):
         trace_dir = os.path.join(self._tmpdir, "traces")
         os.makedirs(trace_dir, exist_ok=True)
         env = os.environ.copy()
         env["TORCHMUX_TRACE_DIR"] = trace_dir
-        env["TORCHMUX_NGPUS"] = "1"
+        env["TORCHMUX_NGPUS"] = str(ngpus)
         if env_extra:
             env.update(env_extra)
-        result = subprocess.run(
-            [
-                sys.executable, "-m", "torch.distributed.torchmux",
-                "--nproc-per-node", str(nproc), script,
-            ],
-            env=env,
-            capture_output=True,
-            text=True,
-            timeout=120,
+        cmd = [
+            sys.executable, "-m", "torch.distributed.torchmux",
+            "--nproc-per-node", str(nproc),
+        ]
+        if ngpus > 1:
+            cmd.extend(["--ngpus", str(ngpus)])
+        if extra_args:
+            cmd.extend(extra_args)
+        cmd.append(script)
+        return subprocess.run(
+            cmd, env=env, capture_output=True, text=True, timeout=120,
         )
+
+    def _run_and_check_results(self, nproc, script, env_extra=None, ngpus=1):
+        results_dir = os.path.join(self._tmpdir, "results")
+        os.makedirs(results_dir, exist_ok=True)
+        env = {"TORCHMUX_RESULTS_DIR": results_dir}
+        if env_extra:
+            env.update(env_extra)
+        result = self._run_torchmux(nproc, script, env_extra=env, ngpus=ngpus)
         self.assertEqual(
             result.returncode, 0,
             f"torchmux failed (rc={result.returncode}):\n"
             f"stdout: {result.stdout}\nstderr: {result.stderr}",
         )
-        return trace_dir
+        for rank in range(nproc):
+            rpath = os.path.join(results_dir, f"rank{rank}.json")
+            self.assertTrue(os.path.exists(rpath), f"missing results for rank {rank}")
+            with open(rpath) as f:
+                results = json.load(f)
+            for op_name, passed in results.items():
+                self.assertTrue(passed, f"rank {rank}: {op_name} failed")
+
+
+@unittest.skipIf(not torch.cuda.is_available(), "CUDA not available")
+class TestTorchmuxTraceOrdering(_TorchmuxSubprocessBase):
+    def setUp(self):
+        super().setUp()
+        self._script = self._write_script("train.py", TRAIN_SCRIPT)
 
     def test_3worker_trace_ordering(self):
         """Assert trace events follow cooperative scheduling invariants.
@@ -145,7 +316,13 @@ class TestTorchmuxTraceOrdering(TestCase):
           W0: restore -> collective_finish -> compute
           ...
         """
-        trace_dir = self._run_torchmux(3, self._script)
+        result = self._run_torchmux(3, self._script)
+        self.assertEqual(
+            result.returncode, 0,
+            f"torchmux failed (rc={result.returncode}):\n"
+            f"stdout: {result.stdout}\nstderr: {result.stderr}",
+        )
+        trace_dir = os.path.join(self._tmpdir, "traces")
 
         natural_path = os.path.join(trace_dir, "torchmux_natural.json")
         self.assertTrue(os.path.exists(natural_path))
@@ -284,48 +461,10 @@ class TestTorchmuxTraceOrdering(TestCase):
 
 
 @unittest.skipIf(not torch.cuda.is_available(), "CUDA not available")
-class TestTorchmuxCollectiveCorrectness(TestCase):
-    def setUp(self):
-        super().setUp()
-        self._tmpdir = tempfile.mkdtemp()
-        self.addCleanup(shutil.rmtree, self._tmpdir, True)
-
+class TestTorchmuxCollectiveCorrectness(_TorchmuxSubprocessBase):
     def test_collective_correctness_2workers(self):
-        script_path = os.path.join(self._tmpdir, "correctness.py")
-        with open(script_path, "w") as f:
-            f.write(CORRECTNESS_SCRIPT)
-
-        results_dir = os.path.join(self._tmpdir, "results")
-        os.makedirs(results_dir)
-
-        env = os.environ.copy()
-        env["TORCHMUX_NGPUS"] = "1"
-        env["TORCHMUX_RESULTS_DIR"] = results_dir
-        env["TORCHMUX_TRACE_DIR"] = self._tmpdir
-
-        result = subprocess.run(
-            [
-                sys.executable, "-m", "torch.distributed.torchmux",
-                "--nproc-per-node", "2", script_path,
-            ],
-            env=env,
-            capture_output=True,
-            text=True,
-            timeout=120,
-        )
-        self.assertEqual(
-            result.returncode, 0,
-            f"torchmux failed (rc={result.returncode}):\n"
-            f"stdout: {result.stdout}\nstderr: {result.stderr}",
-        )
-
-        for rank in range(2):
-            rpath = os.path.join(results_dir, f"rank{rank}.json")
-            self.assertTrue(os.path.exists(rpath), f"missing results for rank {rank}")
-            with open(rpath) as f:
-                results = json.load(f)
-            for op_name, passed in results.items():
-                self.assertTrue(passed, f"rank {rank}: {op_name} failed")
+        script = self._write_script("correctness.py", CORRECTNESS_SCRIPT)
+        self._run_and_check_results(2, script)
 
 
 class TestTorchmuxSyntheticTrace(TestCase):
@@ -496,14 +635,11 @@ class _VNCCLTestBase(TestCase):
 
     def tearDown(self):
         import torch.distributed.vnccl as vnccl
-        from torch.distributed.vnccl import VNCCLProcessGroup
 
-        VNCCLProcessGroup._active.clear()
         for pg in self._pgs:
             dist.distributed_c10d._world.pg_names.pop(pg, None)
         self._pgs = []
-        vnccl._next_rank = 0
-        vnccl._rng_states.clear()
+        vnccl._reset()
         super().tearDown()
 
     def _make_pgs(self, pg_name="vnccl_test"):
@@ -554,86 +690,33 @@ class TestVNCCL(_VNCCLTestBase):
     dist.init_process_group to avoid global state conflicts.
     """
 
-    def test_allreduce_sum(self):
+    @parametrize(
+        "op_name,expected_fn",
+        [
+            ("SUM", lambda ws: ws * (ws + 1) / 2),
+            ("AVG", lambda ws: (ws + 1) / 2.0),
+            ("PRODUCT", lambda ws: float(math.factorial(ws))),
+            ("MIN", lambda ws: 1.0),
+            ("MAX", lambda ws: float(ws)),
+        ],
+        name_fn=lambda op_name, expected_fn: op_name.lower(),
+    )
+    def test_allreduce(self, op_name, expected_fn):
+        from torch._C._distributed_c10d import AllreduceOptions, ReduceOp
+
         pgs = self._make_pgs()
 
         def _work(rank, pg):
             t = [torch.full((4,), float(rank + 1))]
-            pg.allreduce(t)
+            opts = AllreduceOptions()
+            opts.reduceOp = getattr(ReduceOp, op_name)
+            pg.allreduce(t, opts)
             return t[0]
 
         results = self._run_on_pgs(pgs, _work)
-        expected = self._world_size * (self._world_size + 1) / 2
+        expected = expected_fn(self._world_size)
         for r, t in enumerate(results):
             self.assertEqual(t, torch.full((4,), expected))
-
-    def test_allreduce_avg(self):
-        from torch._C._distributed_c10d import AllreduceOptions, ReduceOp
-
-        pgs = self._make_pgs()
-
-        def _work(rank, pg):
-            t = [torch.full((4,), float(rank + 1))]
-            opts = AllreduceOptions()
-            opts.reduceOp = ReduceOp.AVG
-            pg.allreduce(t, opts)
-            return t[0]
-
-        results = self._run_on_pgs(pgs, _work)
-        expected = (self._world_size + 1) / 2.0
-        for r, t in enumerate(results):
-            self.assertEqual(t, torch.full((4,), expected))
-
-    def test_allreduce_product(self):
-        from torch._C._distributed_c10d import AllreduceOptions, ReduceOp
-
-        pgs = self._make_pgs()
-
-        def _work(rank, pg):
-            t = [torch.full((4,), float(rank + 1))]
-            opts = AllreduceOptions()
-            opts.reduceOp = ReduceOp.PRODUCT
-            pg.allreduce(t, opts)
-            return t[0]
-
-        results = self._run_on_pgs(pgs, _work)
-        expected = 1.0
-        for r in range(self._world_size):
-            expected *= r + 1
-        for r, t in enumerate(results):
-            self.assertEqual(t, torch.full((4,), expected))
-
-    def test_allreduce_min(self):
-        from torch._C._distributed_c10d import AllreduceOptions, ReduceOp
-
-        pgs = self._make_pgs()
-
-        def _work(rank, pg):
-            t = [torch.full((4,), float(rank + 1))]
-            opts = AllreduceOptions()
-            opts.reduceOp = ReduceOp.MIN
-            pg.allreduce(t, opts)
-            return t[0]
-
-        results = self._run_on_pgs(pgs, _work)
-        for r, t in enumerate(results):
-            self.assertEqual(t, torch.full((4,), 1.0))
-
-    def test_allreduce_max(self):
-        from torch._C._distributed_c10d import AllreduceOptions, ReduceOp
-
-        pgs = self._make_pgs()
-
-        def _work(rank, pg):
-            t = [torch.full((4,), float(rank + 1))]
-            opts = AllreduceOptions()
-            opts.reduceOp = ReduceOp.MAX
-            pg.allreduce(t, opts)
-            return t[0]
-
-        results = self._run_on_pgs(pgs, _work)
-        for r, t in enumerate(results):
-            self.assertEqual(t, torch.full((4,), float(self._world_size)))
 
     def test_allreduce_bitwise_ops(self):
         from torch._C._distributed_c10d import AllreduceOptions, ReduceOp
@@ -921,10 +1004,23 @@ class TestVNCCL(_VNCCLTestBase):
             self.assertEqual(t, torch.full((4,), expected))
 
 
+instantiate_parametrized_tests(TestVNCCL)
+
+
 class TestVNCCLReduceScatterOps(_VNCCLTestBase):
     """Verify vnccl reduce_scatter works with non-SUM reduce ops."""
 
-    def test_reduce_scatter_product(self):
+    @parametrize(
+        "op_name,expected_fn",
+        [
+            ("PRODUCT", lambda ws: float(math.factorial(ws))),
+            ("MAX", lambda ws: float(ws)),
+            ("MIN", lambda ws: 1.0),
+            ("AVG", lambda ws: (ws + 1) / 2.0),
+        ],
+        name_fn=lambda op_name, expected_fn: op_name.lower(),
+    )
+    def test_reduce_scatter(self, op_name, expected_fn):
         from torch._C._distributed_c10d import ReduceOp, ReduceScatterOptions
 
         pgs = self._make_pgs()
@@ -933,69 +1029,17 @@ class TestVNCCLReduceScatterOps(_VNCCLTestBase):
             chunks = [torch.full((2,), float(rank + 1)) for _ in range(self._world_size)]
             out = [torch.zeros(2)]
             opts = ReduceScatterOptions()
-            opts.reduceOp = ReduceOp.PRODUCT
+            opts.reduceOp = getattr(ReduceOp, op_name)
             pg.reduce_scatter(out, [chunks], opts)
             return out[0]
 
         results = self._run_on_pgs(pgs, _work)
-        expected = 1.0
-        for r in range(self._world_size):
-            expected *= r + 1
+        expected = expected_fn(self._world_size)
         for r, t in enumerate(results):
             self.assertEqual(t, torch.full((2,), expected))
 
-    def test_reduce_scatter_max(self):
-        from torch._C._distributed_c10d import ReduceOp, ReduceScatterOptions
 
-        pgs = self._make_pgs()
-
-        def _work(rank, pg):
-            chunks = [torch.full((2,), float(rank + 1)) for _ in range(self._world_size)]
-            out = [torch.zeros(2)]
-            opts = ReduceScatterOptions()
-            opts.reduceOp = ReduceOp.MAX
-            pg.reduce_scatter(out, [chunks], opts)
-            return out[0]
-
-        results = self._run_on_pgs(pgs, _work)
-        expected = float(self._world_size)
-        for r, t in enumerate(results):
-            self.assertEqual(t, torch.full((2,), expected))
-
-    def test_reduce_scatter_min(self):
-        from torch._C._distributed_c10d import ReduceOp, ReduceScatterOptions
-
-        pgs = self._make_pgs()
-
-        def _work(rank, pg):
-            chunks = [torch.full((2,), float(rank + 1)) for _ in range(self._world_size)]
-            out = [torch.zeros(2)]
-            opts = ReduceScatterOptions()
-            opts.reduceOp = ReduceOp.MIN
-            pg.reduce_scatter(out, [chunks], opts)
-            return out[0]
-
-        results = self._run_on_pgs(pgs, _work)
-        for r, t in enumerate(results):
-            self.assertEqual(t, torch.full((2,), 1.0))
-
-    def test_reduce_scatter_avg(self):
-        from torch._C._distributed_c10d import ReduceOp, ReduceScatterOptions
-
-        pgs = self._make_pgs()
-
-        def _work(rank, pg):
-            chunks = [torch.full((2,), float(rank + 1)) for _ in range(self._world_size)]
-            out = [torch.zeros(2)]
-            opts = ReduceScatterOptions()
-            opts.reduceOp = ReduceOp.AVG
-            pg.reduce_scatter(out, [chunks], opts)
-            return out[0]
-
-        results = self._run_on_pgs(pgs, _work)
-        expected = (self._world_size + 1) / 2.0
-        for r, t in enumerate(results):
-            self.assertEqual(t, torch.full((2,), expected))
+instantiate_parametrized_tests(TestVNCCLReduceScatterOps)
 
 
 class TestVNCCLCoalesced(_VNCCLTestBase):
@@ -1273,42 +1317,10 @@ class TestSharedInt(TestCase):
 
 
 @unittest.skipIf(not torch.cuda.is_available(), "CUDA not available")
-class TestTorchmuxSingleWorker(TestCase):
-    def setUp(self):
-        super().setUp()
-        self._tmpdir = tempfile.mkdtemp()
-        self.addCleanup(shutil.rmtree, self._tmpdir, True)
-
+class TestTorchmuxSingleWorker(_TorchmuxSubprocessBase):
     def test_nproc_1(self):
-        script = os.path.join(self._tmpdir, "single.py")
-        with open(script, "w") as f:
-            f.write(
-                "import os, torch, torch.distributed as dist\n"
-                "dist.init_process_group()\n"
-                "assert dist.get_rank() == 0\n"
-                "assert dist.get_world_size() == 1\n"
-                "device = f\"cuda:{0 % int(os.environ.get('TORCHMUX_NGPUS', '1'))}\"\n"
-                "torch.cuda.set_device(device)\n"
-                "x = torch.ones(4, device=device)\n"
-                "dist.all_reduce(x)\n"
-                "assert torch.allclose(x, torch.ones(4, device=device))\n"
-                "dist.destroy_process_group()\n"
-            )
-        trace_dir = os.path.join(self._tmpdir, "traces")
-        os.makedirs(trace_dir)
-        env = os.environ.copy()
-        env["TORCHMUX_TRACE_DIR"] = trace_dir
-        env["TORCHMUX_NGPUS"] = "1"
-        result = subprocess.run(
-            [
-                sys.executable, "-m", "torch.distributed.torchmux",
-                "--nproc-per-node", "1", script,
-            ],
-            env=env,
-            capture_output=True,
-            text=True,
-            timeout=120,
-        )
+        script = self._write_script("single.py", SINGLE_WORKER_SCRIPT)
+        result = self._run_torchmux(1, script)
         self.assertEqual(
             result.returncode, 0,
             f"torchmux nproc=1 failed (rc={result.returncode}):\n"
@@ -1317,36 +1329,10 @@ class TestTorchmuxSingleWorker(TestCase):
 
 
 @unittest.skipIf(not torch.cuda.is_available(), "CUDA not available")
-class TestTorchmuxErrorHandling(TestCase):
-    def setUp(self):
-        super().setUp()
-        self._tmpdir = tempfile.mkdtemp()
-        self.addCleanup(shutil.rmtree, self._tmpdir, True)
-
+class TestTorchmuxErrorHandling(_TorchmuxSubprocessBase):
     def test_worker_crash_propagates(self):
-        script = os.path.join(self._tmpdir, "crash.py")
-        with open(script, "w") as f:
-            f.write(
-                "import os, torch, torch.distributed as dist\n"
-                "dist.init_process_group()\n"
-                "rank = dist.get_rank()\n"
-                "device = f\"cuda:{rank % int(os.environ.get('TORCHMUX_NGPUS', '1'))}\"\n"
-                "torch.cuda.set_device(device)\n"
-                "raise RuntimeError('intentional crash')\n"
-            )
-        env = os.environ.copy()
-        env["TORCHMUX_TRACE_DIR"] = self._tmpdir
-        env["TORCHMUX_NGPUS"] = "1"
-        result = subprocess.run(
-            [
-                sys.executable, "-m", "torch.distributed.torchmux",
-                "--nproc-per-node", "2", script,
-            ],
-            env=env,
-            capture_output=True,
-            text=True,
-            timeout=120,
-        )
+        script = self._write_script("crash.py", CRASH_SCRIPT)
+        result = self._run_torchmux(2, script)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("intentional crash", result.stderr)
 
@@ -1404,46 +1390,19 @@ class TestVNCCLErrorPropagation(_VNCCLTestBase):
 
 
 @unittest.skipIf(not torch.cuda.is_available(), "CUDA not available")
-class TestTorchmuxModuleFlag(TestCase):
-    def setUp(self):
-        super().setUp()
-        self._tmpdir = tempfile.mkdtemp()
-        self.addCleanup(shutil.rmtree, self._tmpdir, True)
-
+class TestTorchmuxModuleFlag(_TorchmuxSubprocessBase):
     def test_run_as_module(self):
         pkg_dir = os.path.join(self._tmpdir, "mypkg")
         os.makedirs(pkg_dir)
         with open(os.path.join(pkg_dir, "__init__.py"), "w") as f:
             f.write("")
         with open(os.path.join(pkg_dir, "train.py"), "w") as f:
-            f.write(
-                "import os, torch, torch.distributed as dist\n"
-                "dist.init_process_group()\n"
-                "rank = dist.get_rank()\n"
-                "device = f\"cuda:{rank % int(os.environ.get('TORCHMUX_NGPUS', '1'))}\"\n"
-                "torch.cuda.set_device(device)\n"
-                "x = torch.ones(4, device=device)\n"
-                "dist.all_reduce(x)\n"
-                "dist.destroy_process_group()\n"
-            )
+            f.write(MODULE_TRAIN_SCRIPT)
 
-        trace_dir = os.path.join(self._tmpdir, "traces")
-        os.makedirs(trace_dir)
-        env = os.environ.copy()
-        env["TORCHMUX_TRACE_DIR"] = trace_dir
-        env["TORCHMUX_NGPUS"] = "1"
-        env["PYTHONPATH"] = self._tmpdir + os.pathsep + env.get("PYTHONPATH", "")
-
-        result = subprocess.run(
-            [
-                sys.executable, "-m", "torch.distributed.torchmux",
-                "--nproc-per-node", "2", "-m", "mypkg.train",
-            ],
-            env=env,
-            capture_output=True,
-            text=True,
-            timeout=120,
-        )
+        env = {
+            "PYTHONPATH": self._tmpdir + os.pathsep + os.environ.get("PYTHONPATH", ""),
+        }
+        result = self._run_torchmux(2, "mypkg.train", env_extra=env, extra_args=["-m"])
         self.assertEqual(
             result.returncode, 0,
             f"torchmux -m failed (rc={result.returncode}):\n"
@@ -1493,148 +1452,20 @@ class TestSharedIntCrossProcess(TestCase):
 
 
 @unittest.skipIf(not torch.cuda.is_available(), "CUDA not available")
-class TestTorchmuxAVGCorrectness(TestCase):
-    def setUp(self):
-        super().setUp()
-        self._tmpdir = tempfile.mkdtemp()
-        self.addCleanup(shutil.rmtree, self._tmpdir, True)
-
+class TestTorchmuxAVGCorrectness(_TorchmuxSubprocessBase):
     def test_allreduce_avg(self):
-        script = os.path.join(self._tmpdir, "avg_test.py")
-        with open(script, "w") as f:
-            f.write(
-                "import json, os, torch, torch.distributed as dist\n"
-                "dist.init_process_group()\n"
-                "rank = dist.get_rank()\n"
-                "ws = dist.get_world_size()\n"
-                "device = f\"cuda:{rank % int(os.environ.get('TORCHMUX_NGPUS', '1'))}\"\n"
-                "torch.cuda.set_device(device)\n"
-                "results = {}\n"
-                "x = torch.full((4,), float(rank + 1), device=device)\n"
-                "dist.all_reduce(x, op=dist.ReduceOp.AVG)\n"
-                "expected = (ws + 1) / 2.0\n"
-                "results['allreduce_avg'] = torch.allclose(\n"
-                "    x, torch.full_like(x, expected)\n"
-                ")\n"
-                "full = torch.full((ws * 2,), float(rank + 1), device=device)\n"
-                "out = torch.zeros(2, device=device)\n"
-                "dist.reduce_scatter_tensor(out, full, op=dist.ReduceOp.AVG)\n"
-                "expected_rs = (ws + 1) / 2.0\n"
-                "results['reduce_scatter_avg'] = torch.allclose(\n"
-                "    out, torch.full_like(out, expected_rs)\n"
-                ")\n"
-                "dist.destroy_process_group()\n"
-                "path = os.path.join(os.environ['TORCHMUX_RESULTS_DIR'],\n"
-                "                    f'rank{rank}.json')\n"
-                "with open(path, 'w') as f:\n"
-                "    json.dump({k: bool(v) for k, v in results.items()}, f)\n"
-            )
-
-        results_dir = os.path.join(self._tmpdir, "results")
-        os.makedirs(results_dir)
-        env = os.environ.copy()
-        env["TORCHMUX_NGPUS"] = "1"
-        env["TORCHMUX_RESULTS_DIR"] = results_dir
-        env["TORCHMUX_TRACE_DIR"] = self._tmpdir
-
-        result = subprocess.run(
-            [
-                sys.executable, "-m", "torch.distributed.torchmux",
-                "--nproc-per-node", "2", script,
-            ],
-            env=env,
-            capture_output=True,
-            text=True,
-            timeout=120,
-        )
-        self.assertEqual(
-            result.returncode, 0,
-            f"torchmux AVG test failed (rc={result.returncode}):\n"
-            f"stdout: {result.stdout}\nstderr: {result.stderr}",
-        )
-
-        for rank in range(2):
-            rpath = os.path.join(results_dir, f"rank{rank}.json")
-            self.assertTrue(os.path.exists(rpath))
-            with open(rpath) as f:
-                results = json.load(f)
-            for op_name, passed in results.items():
-                self.assertTrue(passed, f"rank {rank}: {op_name} failed")
+        script = self._write_script("avg_test.py", AVG_SCRIPT)
+        self._run_and_check_results(2, script)
 
 
 @unittest.skipIf(not torch.cuda.is_available(), "CUDA not available")
-class TestTorchmuxCoalescedCollectives(TestCase):
+class TestTorchmuxCoalescedCollectives(_TorchmuxSubprocessBase):
     """Test allgather_into_tensor_coalesced and reduce_scatter_tensor_coalesced
     through the full torchmux subprocess path."""
 
-    def setUp(self):
-        super().setUp()
-        self._tmpdir = tempfile.mkdtemp()
-        self.addCleanup(shutil.rmtree, self._tmpdir, True)
-
     def test_coalesced_correctness(self):
-        script = os.path.join(self._tmpdir, "coalesced.py")
-        with open(script, "w") as f:
-            f.write(
-                "import json, os, torch, torch.distributed as dist\n"
-                "from torch.distributed import ReduceOp\n"
-                "dist.init_process_group()\n"
-                "rank = dist.get_rank()\n"
-                "ws = dist.get_world_size()\n"
-                "device = f\"cuda:{rank % int(os.environ.get('TORCHMUX_NGPUS', '1'))}\"\n"
-                "torch.cuda.set_device(device)\n"
-                "results = {}\n"
-                "\n"
-                "# allgather_into_tensor_coalesced via _allgather_base path\n"
-                "inp = torch.full((2,), float(rank), device=device)\n"
-                "out = torch.zeros(2 * ws, device=device)\n"
-                "dist.all_gather_into_tensor(out, inp)\n"
-                "expected = torch.cat([torch.full((2,), float(r), device=device) for r in range(ws)])\n"
-                "results['allgather_base'] = torch.allclose(out, expected)\n"
-                "\n"
-                "# reduce_scatter_tensor via _reduce_scatter_base path\n"
-                "full = torch.full((ws * 2,), float(rank + 1), device=device)\n"
-                "out2 = torch.zeros(2, device=device)\n"
-                "dist.reduce_scatter_tensor(out2, full)\n"
-                "expected_rs = ws * (ws + 1) / 2\n"
-                "results['reduce_scatter_base'] = torch.allclose(out2, torch.full_like(out2, expected_rs))\n"
-                "\n"
-                "dist.destroy_process_group()\n"
-                "path = os.path.join(os.environ['TORCHMUX_RESULTS_DIR'], f'rank{rank}.json')\n"
-                "with open(path, 'w') as f:\n"
-                "    json.dump({k: bool(v) for k, v in results.items()}, f)\n"
-            )
-
-        results_dir = os.path.join(self._tmpdir, "results")
-        os.makedirs(results_dir)
-        env = os.environ.copy()
-        env["TORCHMUX_NGPUS"] = "1"
-        env["TORCHMUX_RESULTS_DIR"] = results_dir
-        env["TORCHMUX_TRACE_DIR"] = self._tmpdir
-
-        result = subprocess.run(
-            [
-                sys.executable, "-m", "torch.distributed.torchmux",
-                "--nproc-per-node", "2", script,
-            ],
-            env=env,
-            capture_output=True,
-            text=True,
-            timeout=120,
-        )
-        self.assertEqual(
-            result.returncode, 0,
-            f"torchmux coalesced test failed (rc={result.returncode}):\n"
-            f"stdout: {result.stdout}\nstderr: {result.stderr}",
-        )
-
-        for rank in range(2):
-            rpath = os.path.join(results_dir, f"rank{rank}.json")
-            self.assertTrue(os.path.exists(rpath))
-            with open(rpath) as f:
-                results = json.load(f)
-            for op_name, passed in results.items():
-                self.assertTrue(passed, f"rank {rank}: {op_name} failed")
+        script = self._write_script("coalesced.py", COALESCED_SCRIPT)
+        self._run_and_check_results(2, script)
 
 
 class TestVNCCLSequenceNumbering(_VNCCLTestBase):
@@ -1745,75 +1576,12 @@ class TestVNCCLEmptyTensors(_VNCCLTestBase):
     not torch.cuda.is_available() or torch.cuda.device_count() < 2,
     "requires >= 2 CUDA GPUs",
 )
-class TestTorchmuxMultiGPU(TestCase):
+class TestTorchmuxMultiGPU(_TorchmuxSubprocessBase):
     """Test torchmux with --ngpus 2 to verify multi-GPU device mapping."""
 
-    def setUp(self):
-        super().setUp()
-        self._tmpdir = tempfile.mkdtemp()
-        self.addCleanup(shutil.rmtree, self._tmpdir, True)
-
     def test_ngpus_2_correctness(self):
-        script = os.path.join(self._tmpdir, "multigpu.py")
-        with open(script, "w") as f:
-            f.write(
-                "import json, os, torch, torch.distributed as dist\n"
-                "dist.init_process_group()\n"
-                "rank = dist.get_rank()\n"
-                "ws = dist.get_world_size()\n"
-                "ngpus = int(os.environ.get('TORCHMUX_NGPUS', '1'))\n"
-                "device = f'cuda:{rank % ngpus}'\n"
-                "torch.cuda.set_device(device)\n"
-                "results = {}\n"
-                "x = torch.full((4,), float(rank + 1), device=device)\n"
-                "dist.all_reduce(x)\n"
-                "expected = ws * (ws + 1) / 2\n"
-                "results['allreduce'] = torch.allclose(\n"
-                "    x, torch.full_like(x, expected)\n"
-                ")\n"
-                "results['device_index'] = (\n"
-                "    torch.cuda.current_device() == rank % ngpus\n"
-                ")\n"
-                "dist.destroy_process_group()\n"
-                "path = os.path.join(\n"
-                "    os.environ['TORCHMUX_RESULTS_DIR'], f'rank{rank}.json'\n"
-                ")\n"
-                "with open(path, 'w') as f:\n"
-                "    json.dump({k: bool(v) for k, v in results.items()}, f)\n"
-            )
-
-        results_dir = os.path.join(self._tmpdir, "results")
-        os.makedirs(results_dir)
-        trace_dir = os.path.join(self._tmpdir, "traces")
-        os.makedirs(trace_dir)
-        env = os.environ.copy()
-        env["TORCHMUX_NGPUS"] = "2"
-        env["TORCHMUX_RESULTS_DIR"] = results_dir
-        env["TORCHMUX_TRACE_DIR"] = trace_dir
-
-        result = subprocess.run(
-            [
-                sys.executable, "-m", "torch.distributed.torchmux",
-                "--nproc-per-node", "4", "--ngpus", "2", script,
-            ],
-            env=env,
-            capture_output=True,
-            text=True,
-            timeout=120,
-        )
-        self.assertEqual(
-            result.returncode, 0,
-            f"torchmux --ngpus 2 failed (rc={result.returncode}):\n"
-            f"stdout: {result.stdout}\nstderr: {result.stderr}",
-        )
-
-        for rank in range(4):
-            rpath = os.path.join(results_dir, f"rank{rank}.json")
-            self.assertTrue(os.path.exists(rpath), f"missing results for rank {rank}")
-            with open(rpath) as f:
-                results = json.load(f)
-            for op_name, passed in results.items():
-                self.assertTrue(passed, f"rank {rank}: {op_name} failed")
+        script = self._write_script("multigpu.py", MULTIGPU_SCRIPT)
+        self._run_and_check_results(4, script, ngpus=2)
 
 
 if __name__ == "__main__":

@@ -421,7 +421,10 @@ class _MuxPG(dist.ProcessGroup):
     # ---- collectives ----
 
     @torch.no_grad()
-    def allreduce(self, tensor_list, opts=AllreduceOptions()):
+    def allreduce(self, tensor_list, opts=None):
+        if opts is None:
+            opts = AllreduceOptions()
+
         def _run():
             cid = self._next_coll()
             op = opts.reduceOp if hasattr(opts, "reduceOp") else ReduceOp.SUM
@@ -447,11 +450,13 @@ class _MuxPG(dist.ProcessGroup):
         return self._do_collective("allreduce", _run)
 
     @torch.no_grad()
-    def allreduce_coalesced(self, tensor_list, opts=AllreduceOptions()):
+    def allreduce_coalesced(self, tensor_list, opts=None):
         return self.allreduce(tensor_list, opts)
 
     @torch.no_grad()
-    def broadcast(self, tensor_list, opts=BroadcastOptions()):
+    def broadcast(self, tensor_list, opts=None):
+        if opts is None:
+            opts = BroadcastOptions()
         def _run():
             cid = self._next_coll()
             root = opts.rootRank
@@ -471,7 +476,9 @@ class _MuxPG(dist.ProcessGroup):
         return self._do_collective("broadcast", _run)
 
     @torch.no_grad()
-    def allgather(self, output_tensors, input_tensor, opts=AllgatherOptions()):
+    def allgather(self, output_tensors, input_tensor, opts=None):
+        if opts is None:
+            opts = AllgatherOptions()
         def _run():
             cid = self._next_coll()
             for i, t in enumerate(input_tensor):
@@ -491,7 +498,9 @@ class _MuxPG(dist.ProcessGroup):
         return self._do_collective("allgather", _run)
 
     @torch.no_grad()
-    def _allgather_base(self, output, input, opts=AllgatherOptions()):
+    def _allgather_base(self, output, input, opts=None):
+        if opts is None:
+            opts = AllgatherOptions()
         def _run():
             cid = self._next_coll()
             _save_tensor(self._in_path(cid, self._rank, 0), input)
@@ -510,13 +519,17 @@ class _MuxPG(dist.ProcessGroup):
         return self._do_collective("allgather", _run)
 
     @torch.no_grad()
-    def allgather_into_tensor_coalesced(self, outputs, inputs, opts=AllgatherOptions()):
+    def allgather_into_tensor_coalesced(self, outputs, inputs, opts=None):
+        if opts is None:
+            opts = AllgatherOptions()
         for o, i in zip(outputs, inputs):
             self._allgather_base(o, i, opts)
         return _completed_work()
 
     @torch.no_grad()
-    def _reduce_scatter_base(self, output, input, opts=ReduceScatterOptions()):
+    def _reduce_scatter_base(self, output, input, opts=None):
+        if opts is None:
+            opts = ReduceScatterOptions()
         def _run():
             cid = self._next_coll()
             op = opts.reduceOp if hasattr(opts, "reduceOp") else ReduceOp.SUM
@@ -546,7 +559,9 @@ class _MuxPG(dist.ProcessGroup):
         return self._do_collective("reduce_scatter", _run)
 
     @torch.no_grad()
-    def reduce_scatter(self, output_tensor, scatter_list, opts=ReduceScatterOptions()):
+    def reduce_scatter(self, output_tensor, scatter_list, opts=None):
+        if opts is None:
+            opts = ReduceScatterOptions()
         def _run():
             cid = self._next_coll()
             op = opts.reduceOp if hasattr(opts, "reduceOp") else ReduceOp.SUM
@@ -587,26 +602,30 @@ class _MuxPG(dist.ProcessGroup):
 
     @torch.no_grad()
     def reduce_scatter_tensor_coalesced(
-        self, outputs, inputs, opts=ReduceScatterOptions()
+        self, outputs, inputs, opts=None
     ):
+        if opts is None:
+            opts = ReduceScatterOptions()
         for o, i in zip(outputs, inputs):
             self._reduce_scatter_base(o, i, opts)
         return _completed_work()
 
     @torch.no_grad()
-    def scatter(self, output, input, opts=ScatterOptions()):
+    def scatter(self, output, input, opts=None):
         raise NotImplementedError("_MuxPG.scatter")
 
     @torch.no_grad()
-    def gather(self, output, input, opts=ScatterOptions()):
+    def gather(self, output, input, opts=None):
         raise NotImplementedError("_MuxPG.gather")
 
     @torch.no_grad()
-    def alltoall(self, output, input, opts=AllToAllOptions()):
+    def alltoall(self, output, input, opts=None):
         raise NotImplementedError("_MuxPG.alltoall")
 
     @torch.no_grad()
-    def barrier(self, opts=BarrierOptions()):
+    def barrier(self, opts=None):
+        if opts is None:
+            opts = BarrierOptions()
         def _run():
             cid = self._next_coll()
             self._mark_ready(cid)

@@ -73,7 +73,7 @@ def _get_cuda():
         lib.cuCheckpointProcessGetState.restype = _c_int
         lib.cuCheckpointProcessGetState.argtypes = [_c_int, _ptr(_c_int)]
 
-        lib.cuInit(0)
+        _check(lib.cuInit(0), "cuInit")
         _cuda = lib
     return _cuda
 

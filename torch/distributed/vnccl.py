@@ -158,7 +158,7 @@ _REDUCE_OPS = {
 
 class _AllReduce:
     def __init__(self, op):
-        self.op = op.op
+        self.op = op if isinstance(op, int) else op.op
 
     @torch.no_grad()
     def work(self, data):
@@ -412,13 +412,9 @@ class VNCCLProcessGroup(dist.ProcessGroup):
         return self.allgather([chunks], [input], opts)
 
     def allgather_into_tensor_coalesced(self, outputs, inputs, opts=AllgatherOptions()):
-        # Each tensor pair is a separate collective barrier rather than a
-        # single batched operation. Correct but not performance-equivalent
-        # to real NCCL's coalesced implementation.
-        res = None
         for o, i in zip(outputs, inputs):
-            res = self._allgather_base(o, i)
-        return res
+            self._allgather_base(o, i)
+        return _completed_work(None)
 
     def scatter(self, output_tensors, input_tensors, opts=ScatterOptions()):
         return self._do(_Scatter(opts.rootRank), (output_tensors, input_tensors))
@@ -436,19 +432,25 @@ class VNCCLProcessGroup(dist.ProcessGroup):
     def reduce_scatter_tensor_coalesced(
         self, outputs, inputs, opts=ReduceScatterOptions()
     ):
-        # Each tensor pair is a separate collective barrier rather than a
-        # single batched operation. Correct but not performance-equivalent
-        # to real NCCL's coalesced implementation.
-        res = None
         for o, i in zip(outputs, inputs):
-            res = self._reduce_scatter_base(o, i, opts)
-        return res
+            self._reduce_scatter_base(o, i, opts)
+        return _completed_work(None)
 
     def alltoall(self, output_list, input_list, opts=AllToAllOptions()):
         return self._do(_AllToAll(), (output_list, input_list))
 
     def barrier(self, opts=BarrierOptions()):
         return self.allreduce(tensor_list=[torch.ones(1)])
+
+
+def _reset():
+    """Reset module-global state for clean re-initialization."""
+    global _next_rank
+    with _next_rank_cond:
+        _next_rank = 0
+        _next_rank_cond.notify_all()
+    _rng_states.clear()
+    VNCCLProcessGroup._active.clear()
 
 
 def _create_vnccl(prefix_store, rank, world_size, timeout):
