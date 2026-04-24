@@ -7,8 +7,9 @@ high-performance GEMM kernels for NVIDIA GPUs.
 """
 
 import itertools
+import re
 from enum import auto, Enum
-from typing import Any, Optional, Union
+from typing import Any
 
 import torch
 from torch._inductor import config
@@ -65,22 +66,22 @@ class NVUniversalGemmBenchmarkRequest(GPUDeviceBenchmarkMixin, BenchmarkRequest)
     def __init__(
         self,
         kernel_name: str,
-        input_tensor_meta: Union[TensorMeta, list[TensorMeta]],
-        output_tensor_meta: Union[TensorMeta, list[TensorMeta]],
+        input_tensor_meta: TensorMeta | list[TensorMeta],
+        output_tensor_meta: TensorMeta | list[TensorMeta],
         kernel,  # cutlass_api.Kernel object
         accumulator_type: torch.dtype,
         variant: GemmVariant,
         workspace_size: int = 0,
-        scale_type_a: Optional[Any] = None,
-        scale_type_b: Optional[Any] = None,
-        swizzle_type_a: Optional[Any] = None,
-        swizzle_type_b: Optional[Any] = None,
+        scale_type_a: Any | None = None,
+        scale_type_b: Any | None = None,
+        swizzle_type_a: Any | None = None,
+        swizzle_type_b: Any | None = None,
     ) -> None:
         super().__init__(kernel_name, input_tensor_meta, output_tensor_meta, ())
         self.kernel = kernel
         self.accumulator_type = accumulator_type
         self._compiled_artifact = None
-        self._workspace: Optional[torch.Tensor] = None
+        self._workspace: torch.Tensor | None = None
         self.workspace_size = workspace_size
         self.variant = variant
         self.scale_type_a = scale_type_a
@@ -91,7 +92,7 @@ class NVUniversalGemmBenchmarkRequest(GPUDeviceBenchmarkMixin, BenchmarkRequest)
     def benchmark(
         self,
         *input_tensors: torch.Tensor,
-        out: Optional[torch.Tensor] = None,
+        out: torch.Tensor | None = None,
     ) -> float:
         """Benchmark the NVIDIA Universal GEMM kernel.
 
@@ -205,10 +206,10 @@ class NVUniversalGemmCaller(ChoiceCaller):
         accumulator_type: torch.dtype,
         variant: GemmVariant,
         workspace_size: int = 0,
-        scale_type_a: Optional[Any] = None,
-        scale_type_b: Optional[Any] = None,
-        swizzle_type_a: Optional[Any] = None,
-        swizzle_type_b: Optional[Any] = None,
+        scale_type_a: Any | None = None,
+        scale_type_b: Any | None = None,
+        swizzle_type_a: Any | None = None,
+        swizzle_type_b: Any | None = None,
         supports_epilogue_fusion: bool = False,
     ) -> None:
         super().__init__(
@@ -335,6 +336,7 @@ class NVUniversalGemmCaller(ChoiceCaller):
 
             render_kernel = NVUniversalGemmKernel(
                 kernel_name=kernel_name,
+                # pyrefly: ignore [bad-argument-type]
                 input_nodes=processed_inputs,
                 output_node=out_node,
                 kernel_metadata=kernel_metadata,
@@ -360,7 +362,7 @@ class NVUniversalGemmCaller(ChoiceCaller):
         return make_kernel_render
 
 
-def _create_dummy_tensor_from_layout(layout: Layout) -> Optional[torch.Tensor]:
+def _create_dummy_tensor_from_layout(layout: Layout) -> torch.Tensor | None:
     """
     Create a FakeTensor from a Layout for kernel filtering.
 
@@ -374,9 +376,21 @@ def _create_dummy_tensor_from_layout(layout: Layout) -> Optional[torch.Tensor]:
         return None
 
 
+_TILE_RE = re.compile(r"tile(\d+)x\d+x\d+")
+
+
 def _include_efc_kernels_only(metadata) -> bool:
-    """Filter to include only EFC (Epilogue Fusion Compatible) kernels."""
-    return "EFC" in metadata.kernel_class.__name__
+    """Filter to include only EFC (Epilogue Fusion Compatible) kernels.
+
+    Excludes tile_M=64 EFC kernels: cutlass_api has a broadcast bug in the
+    epilogue thread operation for aux-tensor inputs with tile_M=64, and we
+    don't yet know at autotune time whether fusion will consume aux tensors.
+    Non-EFC kernels still cover tile_M=64, so plain GEMM autotune is unaffected.
+    """
+    if "EFC" not in metadata.kernel_class.__name__:
+        return False
+    match = _TILE_RE.search(metadata.kernel_name)
+    return match is None or int(match.group(1)) >= 128
 
 
 def _exclude_efc_kernels(metadata) -> bool:
@@ -390,11 +404,11 @@ def _add_nv_gemm_choices_impl(
     input_nodes: list[Buffer],
     variant: GemmVariant,
     accumulator_type: torch.dtype,
-    mm_inputs: Optional[MMKernelInputs] = None,
-    scale_type_a: Optional[Any] = None,
-    scale_type_b: Optional[Any] = None,
-    swizzle_type_a: Optional[Any] = None,
-    swizzle_type_b: Optional[Any] = None,
+    mm_inputs: MMKernelInputs | None = None,
+    scale_type_a: Any | None = None,
+    scale_type_b: Any | None = None,
+    swizzle_type_a: Any | None = None,
+    swizzle_type_b: Any | None = None,
 ) -> None:
     """
     Unified implementation for adding NVIDIA Universal GEMM choices.
@@ -493,7 +507,9 @@ def _add_nv_gemm_choices_impl(
         log.debug("No compatible %s kernels found", variant.op_name)
         return
 
-    max_configs = config.nvgemm_max_profiling_configs or max(len(non_efc_kernels), len(efc_kernels))
+    max_configs = config.nvgemm_max_profiling_configs or max(
+        len(non_efc_kernels), len(efc_kernels)
+    )
     if variant == GemmVariant.GEMM and mm_inputs is not None:
         heuristics = get_nvgemm_heuristics()
         non_efc_kernels = heuristics.filter_kernels(
@@ -503,7 +519,7 @@ def _add_nv_gemm_choices_impl(
             efc_kernels, mm_inputs, max_configs, accumulator_type
         )
     else:
-        # TODO(nikhilap): Enable heuristics for grouped and scaled GEMMs
+        # TODO(nikhilap): Enable heuristics for grouped GEMM
         # when nvMatmulHeuristics adds support
         non_efc_kernels = non_efc_kernels[:max_configs]
         efc_kernels = efc_kernels[:max_configs]
@@ -545,7 +561,7 @@ def add_nv_universal_gemm_choices(
     choices: list[ChoiceCaller],
     layout: Layout,
     inputs: MMKernelInputs,
-    accumulator_type: Optional[torch.dtype] = None,
+    accumulator_type: torch.dtype | None = None,
 ) -> None:
     """
     Add NVIDIA Universal GEMM kernels to the autotune choices.
@@ -570,7 +586,7 @@ def add_nv_universal_grouped_gemm_choices(
     choices: list[ChoiceCaller],
     layout: Layout,
     input_nodes: list[Buffer],
-    accumulator_type: Optional[torch.dtype] = None,
+    accumulator_type: torch.dtype | None = None,
 ) -> None:
     """
     Add NVIDIA Universal Grouped GEMM kernels to the autotune choices.
@@ -602,7 +618,8 @@ def add_nv_universal_scaled_gemm_choices(
     choices: list[ChoiceCaller],
     layout: Layout,
     input_nodes: list[Buffer],
-    accumulator_type: Optional[torch.dtype] = None,
+    accumulator_type: torch.dtype | None = None,
+    kernel_inputs: MMKernelInputs | None = None,
 ) -> None:
     """
     Add NVIDIA Universal Scaled GEMM (FP8) kernels to the autotune choices.
@@ -635,6 +652,7 @@ def add_nv_universal_scaled_gemm_choices(
         input_nodes=input_nodes,
         variant=GemmVariant.SCALED_GEMM,
         accumulator_type=accumulator_type or torch.float32,
+        mm_inputs=kernel_inputs,
         scale_type_a=scale_type_a,
         scale_type_b=scale_type_b,
         swizzle_type_a=swizzle_type_a,

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
-from typing import Any, Optional, TYPE_CHECKING, Union
+from typing import Any, TYPE_CHECKING
 
 from torch._inductor.codegen.common import (
     IndentedBuffer,
@@ -43,7 +43,7 @@ log = logging.getLogger(__name__)
 class NVUniversalGemmKernelWrapper:
     """Wrapper to provide .run() interface for NVIDIA Universal GEMM kernels."""
 
-    def __init__(self, kernel_fn, kernel_path: Optional[str] = None):
+    def __init__(self, kernel_fn, kernel_path: str | None = None):
         self.kernel_fn = kernel_fn
         self.kernel_path = kernel_path
 
@@ -70,14 +70,14 @@ class NVUniversalGemmKernel(Kernel):
         accumulator_type: Any,
         variant: GemmVariant,
         workspace_size: int = 0,
-        scale_type_a: Optional[Any] = None,
-        scale_type_b: Optional[Any] = None,
-        swizzle_type_a: Optional[Any] = None,
-        swizzle_type_b: Optional[Any] = None,
-        epilogue_fn_code: Optional[str] = None,
-        epilogue_reads: Optional[list[str]] = None,
-        epilogue_writes: Optional[list[str]] = None,
-        epilogue_var_renames: Optional[dict[str, Any]] = None,
+        scale_type_a: Any | None = None,
+        scale_type_b: Any | None = None,
+        swizzle_type_a: Any | None = None,
+        swizzle_type_b: Any | None = None,
+        epilogue_fn_code: str | None = None,
+        epilogue_reads: list[str] | None = None,
+        epilogue_writes: list[str] | None = None,
+        epilogue_var_renames: dict[str, Any] | None = None,
     ) -> None:
         super().__init__()
         self.kernel_name = kernel_name
@@ -105,6 +105,7 @@ class NVUniversalGemmKernel(Kernel):
             self._seen_input_args.add(param_name)
 
     def render(self) -> str:
+        """Render the Python source for the NVGEMM kernel wrapper."""
         from torch._inductor.codegen.nv_universal_gemm.nv_universal_gemm import (
             GemmVariant,
         )
@@ -153,8 +154,10 @@ class NVUniversalGemmKernel(Kernel):
             scale_mode_b, swizzle_mode_b = to_cutlass_scale_mode(
                 self.scale_type_b, self.swizzle_type_b
             )
-            extra_imports = ("from cutlass_api.arguments import ScaledTensor\n"
-                             "from cutlass_api.library import ScaleMode, ScaleSwizzleMode")
+            extra_imports = (
+                "from cutlass_api.arguments import ScaledTensor\n"
+                "from cutlass_api.library import ScaleMode, ScaleSwizzleMode"
+            )
             cache_key = "(in_ptr0.shape, in_ptr0.dtype, in_ptr1.shape, in_ptr1.dtype, in_ptr2.shape, in_ptr3.shape)"
             sma = scale_mode_a.name if scale_mode_a else ""
             smb = scale_mode_b.name if scale_mode_b else ""
@@ -175,13 +178,15 @@ class NVUniversalGemmKernel(Kernel):
 
         # --- Epilogue-specific overrides ---
         if has_epilogue:
+            assert self.epilogue_fn_code is not None  # narrowed by has_epilogue
             epilogue_kwargs = self._render_epilogue_kwargs()
             source_hash = hashlib.sha256(self.epilogue_fn_code.encode()).hexdigest()
 
             kernel_cache_import = "from torch._inductor.codegen.nv_universal_gemm.kernel_cache import get_efc_kernel_with_epilogue"
             epilogue_import = "from cutlass_api.arguments import EpilogueArguments"
-            epilogue_fn_def = (self.epilogue_fn_code
-                               + f'\n_EPILOGUE_FN_SOURCE = "{source_hash}"')
+            epilogue_fn_def = (
+                self.epilogue_fn_code + f'\n_EPILOGUE_FN_SOURCE = "{source_hash}"'
+            )
 
             epilogue_setup = f"""
     epi_args = EpilogueArguments(epilogue_fn=_epilogue_fn, {epilogue_kwargs})
@@ -260,7 +265,7 @@ def {self.kernel_name}_main({params_str}):
 
         return ", ".join(kwargs_parts)
 
-    def _get_reinterpret_view(self, node) -> Optional[ReinterpretView]:
+    def _get_reinterpret_view(self, node) -> ReinterpretView | None:
         """Extract or convert to ReinterpretView from a node, handling all views."""
         while isinstance(node, MutableBox):
             node = node.data
@@ -279,8 +284,8 @@ def {self.kernel_name}_main({params_str}):
 
         call_args: list[str] = []
         arg_types: list[Any] = []
-        raw_args: list[Union[Buffer, ReinterpretView, None]] = []
-        raw_keys: list[Optional[str]] = []
+        raw_args: list[Buffer | ReinterpretView | None] = []
+        raw_keys: list[str | None] = []
 
         # Add GEMM input args (A, B)
         for param_name, input_node in self._template_input_args:
@@ -316,11 +321,12 @@ def {self.kernel_name}_main({params_str}):
             buf = V.graph.get_buffer(read_name)
             if buf is None:
                 buf = V.graph.graph_inputs.get(read_name)
+            # pyrefly: ignore [bad-argument-type]
             raw_args.append(buf)
             raw_keys.append(read_name)
 
         # Allocate workspace if needed
-        ws: Optional[WorkspaceArg] = None
+        ws: WorkspaceArg | None = None
         if self.workspace_size > 0:
             ws = WorkspaceArg(
                 count=self.workspace_size,

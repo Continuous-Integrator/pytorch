@@ -13,7 +13,7 @@ dict for O(1) lookup (~0.1 μs).
 import logging
 import threading
 from collections.abc import Callable
-from typing import Any, Optional
+from typing import Any
 
 
 log = logging.getLogger(__name__)
@@ -21,7 +21,7 @@ log = logging.getLogger(__name__)
 _cache_lock = threading.Lock()
 
 # Global cache: kernel_name -> kernel object
-_kernel_by_name_cache: Optional[dict[str, Any]] = None
+_kernel_by_name_cache: dict[str, Any] | None = None
 
 
 def _build_kernel_cache() -> dict[str, Any]:
@@ -29,6 +29,14 @@ def _build_kernel_cache() -> dict[str, Any]:
     import cutlass_api
 
     log.debug("Building NVGEMM kernel cache (this may take a few seconds)...")
+
+    try:
+        from torch._inductor.kernel.vendored_templates.cutedsl import (  # noqa: F401
+            wrappers,
+        )
+    except ImportError:
+        log.debug("Vendored kernel wrappers not available")
+
     all_kernels = cutlass_api.get_kernels()
     cache = {k.metadata.kernel_name: k for k in all_kernels}
     log.debug("NVGEMM kernel cache built: %d kernels", len(cache))
@@ -38,7 +46,7 @@ def _build_kernel_cache() -> dict[str, Any]:
 def get_compatible_kernels(
     args: Any,
     cc: int,
-    metadata_filter: Optional[Callable[[Any], bool]] = None,
+    metadata_filter: Callable[[Any], bool] | None = None,
 ) -> list[Any]:
     """Get kernels compatible with the given arguments from the cache."""
     global _kernel_by_name_cache
@@ -112,6 +120,7 @@ class _NVGEMMCacheWrapper:
 
 
 from torch._inductor.utils import clear_on_fresh_cache
+
 
 clear_on_fresh_cache(_NVGEMMCacheWrapper())
 

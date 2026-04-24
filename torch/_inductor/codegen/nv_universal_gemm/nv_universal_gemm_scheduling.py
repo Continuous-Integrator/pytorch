@@ -17,7 +17,14 @@ from torch.utils._ordered_set import OrderedSet
 
 from ... import config
 from ...codecache import code_hash, get_path
-from ...ir import ComputedBuffer, MultiTemplateBuffer, NVUniversalGemmBuffer, Pointwise
+from ...ir import (
+    Buffer,
+    ComputedBuffer,
+    Layout,
+    MultiTemplateBuffer,
+    NVUniversalGemmBuffer,
+    Pointwise,
+)
 from ...scheduler import (
     BaseSchedulerNode,
     BaseScheduling,
@@ -129,6 +136,7 @@ class NVUniversalGemmScheduling(BaseScheduling):
                         raise RuntimeError("No NVUniversalGemmCaller found in choices")
                     selected_choice = best_nvgemm
             tensor_box = selected_choice.output_node()
+            # pyrefly: ignore [missing-attribute]
             return cast(NVUniversalGemmBuffer, tensor_box.data.data)
 
         raise TypeError(
@@ -140,7 +148,15 @@ class NVUniversalGemmScheduling(BaseScheduling):
         if not isinstance(node, FusedSchedulerNode):
             return False
         template_node = node.get_template_node()
-        return self.is_nv_universal_gemm_template(template_node)
+        if isinstance(template_node, NVUniversalGemmBuffer):
+            return True
+        if isinstance(template_node, MultiTemplateBuffer):
+            try:
+                min_choice, _ = template_node.get_min_choice()
+                return isinstance(min_choice, NVUniversalGemmCaller)
+            except (RuntimeError, ValueError):
+                return False
+        return False
 
     def can_fuse_vertical(
         self, node1: BaseSchedulerNode, node2: BaseSchedulerNode
@@ -159,8 +175,10 @@ class NVUniversalGemmScheduling(BaseScheduling):
         elif self.is_nv_universal_gemm_fused_template(node1):
             fnode1 = cast(FusedSchedulerNode, node1)
             template_node = fnode1.get_template_node()
+            if template_node is None:
+                return False
             return self._can_fuse_epilogue_impl(
-                template_node,
+                cast(SchedulerNode, template_node),
                 self._unwrap_epilogue_nodes(fnode1),
                 node2,
             )
@@ -194,6 +212,8 @@ class NVUniversalGemmScheduling(BaseScheduling):
             return False
 
         ir_node = gemm_template_node.node
+        if not isinstance(ir_node, (NVUniversalGemmBuffer, MultiTemplateBuffer)):
+            return False
 
         # Epilogue fusion only supported for plain GEMM, not grouped/scaled,
         # and only when an EFC kernel is available.
@@ -241,11 +261,10 @@ class NVUniversalGemmScheduling(BaseScheduling):
         # Checks on constituent nodes
         for s_node in scheduler_nodes_to_fuse:
             node = s_node.node
-
             if not isinstance(node, ComputedBuffer):
                 log.debug("NVGEMM epilogue fusion: %s is not a ComputedBuffer", node)
                 return False
-            elif not isinstance(node.data, Pointwise):
+            if not isinstance(node.data, Pointwise):
                 log.debug("NVGEMM epilogue fusion: %s is not a Pointwise op", node)
                 return False
 
@@ -420,6 +439,7 @@ class NVUniversalGemmScheduling(BaseScheduling):
 
         # Get the original buffer name (for epilogue processing - could be MultiTemplateBuffer name)
         original_ir_node = template_node.node
+        assert isinstance(original_ir_node, Buffer)
         original_buffer_name = original_ir_node.get_name()
 
         # Get the NVUniversalGemmBuffer (extract from MultiTemplateBuffer if needed)
@@ -495,7 +515,7 @@ class NVUniversalGemmScheduling(BaseScheduling):
             return src_code
 
         with V.set_kernel_handler(kernel):
-            node_schedule = [template_node]
+            node_schedule: list[BaseSchedulerNode] = [template_node]
             # Include epilogue nodes in schedule if they were fused
             if epilogue_fn_code and epilogue_nodes:
                 node_schedule.extend(epilogue_nodes)
@@ -512,6 +532,7 @@ class NVUniversalGemmScheduling(BaseScheduling):
         self,
         nodes: Sequence[BaseSchedulerNode],
         benchmark_kernel: bool = False,
+        hint_override: int | None = None,
     ) -> str:
         """
         Generate kernel source code from nodes for benchmarking.
@@ -520,7 +541,9 @@ class NVUniversalGemmScheduling(BaseScheduling):
         without actually defining or calling the kernel.
         """
         # Extract template and epilogue nodes
-        prologue, template, epilogue = nodes[0].get_prologue_template_epilogue(nodes)
+        prologue, template, epilogue = nodes[0].get_prologue_template_epilogue(
+            list(nodes)
+        )
 
         with config.patch("benchmark_kernel", benchmark_kernel):
             src_code = self.codegen_template(
@@ -559,11 +582,12 @@ class NVUniversalGemmScheduling(BaseScheduling):
 
         # Get the original buffer name (important for MultiTemplateBuffer case)
         # This name is what the epilogue nodes reference as their input
+        assert isinstance(template_node.node, Buffer)
         original_buffer_name = template_node.node.get_name()
 
         # Get input shapes and dtypes
-        input_nodes = ctb.inputs
-        output_layout = ctb.layout
+        input_nodes = cast(list[Buffer], ctb.inputs)
+        output_layout = cast(Layout, ctb.layout)
 
         # Pre-compute epilogue reads if there are epilogue nodes
         epilogue_reads: list[str] = []
@@ -595,8 +619,8 @@ class NVUniversalGemmScheduling(BaseScheduling):
 
             # Generate random tensors for each input
             for i, inp in enumerate(input_nodes):
-                size = V.graph.sizevars.size_hints(inp.get_size())
-                stride = V.graph.sizevars.size_hints(inp.get_stride())
+                size = V.graph.sizevars.optimization_hints(inp.get_size())
+                stride = V.graph.sizevars.optimization_hints(inp.get_stride())
                 dtype = inp.get_dtype()
                 device = inp.get_device()
                 args_code.writeline(f"# Input {i}: {inp.get_name()}")
@@ -605,8 +629,8 @@ class NVUniversalGemmScheduling(BaseScheduling):
                 )
 
             # Generate output tensor
-            out_size = V.graph.sizevars.size_hints(output_layout.size)
-            out_stride = V.graph.sizevars.size_hints(output_layout.stride)
+            out_size = V.graph.sizevars.optimization_hints(output_layout.size)
+            out_stride = V.graph.sizevars.optimization_hints(output_layout.stride)
             out_dtype = output_layout.dtype
             out_device = output_layout.device
             args_code.writeline("# Output")
@@ -618,8 +642,8 @@ class NVUniversalGemmScheduling(BaseScheduling):
             for read_name in epilogue_reads:
                 buf = V.graph.get_buffer(read_name)
                 if buf is not None:
-                    size = V.graph.sizevars.size_hints(buf.get_size())
-                    stride = V.graph.sizevars.size_hints(buf.get_stride())
+                    size = V.graph.sizevars.optimization_hints(buf.get_size())
+                    stride = V.graph.sizevars.optimization_hints(buf.get_stride())
                     dtype = buf.get_dtype()
                     device = buf.get_device()
                     args_code.writeline(f"# Epilogue input: {read_name}")
