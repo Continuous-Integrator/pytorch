@@ -1604,8 +1604,10 @@ class TestFlexAttention(InductorTestCase):
             enable_gqa=True,
             kernel_options={"BACKEND": "TRITON"},
         )
-        self.assertEqual(
-            out_partial[:, :, :shared_prefix], out_full[:, :, :shared_prefix]
+        self.assertTrue(
+            torch.equal(
+                out_partial[:, :, :shared_prefix], out_full[:, :, :shared_prefix]
+            )
         )
 
     @supported_platform
