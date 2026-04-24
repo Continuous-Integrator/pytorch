@@ -1974,14 +1974,17 @@ class TestMetaKernelRegistrations(TestCase):
         self.assertEqual(cpp_result, decomp_result)
 
     @skipIfTorchDynamo("tests raw meta kernel, not dynamo")
-    def test_linalg_eig_strides(self):
-        A_cpu = torch.randn(3, 3)
-        A_meta = torch.randn(3, 3, device="meta")
-        _, eigvecs_cpu = torch.linalg.eig(A_cpu)
-        _, eigvecs_meta = torch.linalg.eig(A_meta)
-        self.assertEqual(eigvecs_cpu.stride(), eigvecs_meta.stride())
-        self.assertEqual(eigvecs_cpu.shape, eigvecs_meta.shape)
-        self.assertEqual(eigvecs_cpu.dtype, eigvecs_meta.dtype)
+    def test_linalg_eig_strides_cpu(self):
+        from torch._subclasses.fake_tensor import FakeTensorMode
+
+        matrix = torch.randn(3, 3)
+        _, eigvecs = torch.linalg.eig(matrix)
+        with FakeTensorMode():
+            matrix_fake = torch.randn(3, 3, device="cpu")
+            _, eigvecs_fake = torch.linalg.eig(matrix_fake)
+        self.assertEqual(eigvecs.stride(), eigvecs_fake.stride())
+        self.assertEqual(eigvecs.shape, eigvecs_fake.shape)
+        self.assertEqual(eigvecs.dtype, eigvecs_fake.dtype)
 
     @skipIfTorchDynamo("tests raw meta kernel, not dynamo")
     def test_randint_like_tensor_dtype_kwarg(self):
