@@ -1483,6 +1483,21 @@ class ComboKernelTestsMaxAutotune(TestCase):
         self.assertEqual([[0], [1]], [g["member_indices"] for g in groups])
 
     @requires_gpu_and_triton
+    def test_combo_per_subkernel_blocks_skips_max_persistent_rblock(self):
+        def fn(a, b):
+            return a.sum(-1), b.sum(-1)
+
+        inps = [
+            torch.rand(32, 256, device=GPU_TYPE),
+            torch.rand(32, 1024, device=GPU_TYPE),
+        ]
+        out_eager = fn(*inps)
+        out_compiled, code = run_and_get_code(torch.compile(fn), *inps)
+        self.assertEqual(out_eager, out_compiled)
+        joined = " ".join(code)
+        self.assertNotIn("'max_persistent_rblock'", joined)
+
+    @requires_gpu_and_triton
     def test_combo_kernel_coordesc_tunes_largest_subkernel_first(self):
         def fn(a, b, c):
             return (

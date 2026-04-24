@@ -747,14 +747,15 @@ class ComboKernel(Kernel):
         # The max_persistent_rblock mirrors how R0_BLOCK is computed in
         # codegen_static_numels_sub_kernel() for persistent reductions.
         max_persistent_rblock = 0
-        for sub in self.sub_kernels:
-            if sub.persistent_reduction:
-                for tree in sub.range_trees:
-                    if tree.is_reduction:
-                        simplified_numel = V.graph.sizevars.simplify(tree.numel)
-                        if isinstance(simplified_numel, (Integer, int)):
-                            val = next_power_of_2(int(simplified_numel))
-                            max_persistent_rblock = max(max_persistent_rblock, val)
+        if not config.combo_kernel_per_subkernel_blocks:
+            for sub in self.sub_kernels:
+                if sub.persistent_reduction:
+                    for tree in sub.range_trees:
+                        if tree.is_reduction:
+                            simplified_numel = V.graph.sizevars.simplify(tree.numel)
+                            if isinstance(simplified_numel, (Integer, int)):
+                                val = next_power_of_2(int(simplified_numel))
+                                max_persistent_rblock = max(max_persistent_rblock, val)
 
         inductor_meta = {
             "grid_type": dispatch.grid_expr.__name__,
