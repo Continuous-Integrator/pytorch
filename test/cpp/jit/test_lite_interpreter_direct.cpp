@@ -23,9 +23,23 @@
 
 #include <unordered_set>
 
+#include <filesystem>
+
 // Tests go in torch::jit
 namespace torch {
 namespace jit {
+
+static std::string resolveTestDataFile(
+    const char* sourceFile,
+    const char* relative) {
+  std::string srcDir(sourceFile);
+  srcDir = srcDir.substr(0, srcDir.find_last_of("/\\") + 1);
+  auto candidate = srcDir + relative;
+  if (std::filesystem::exists(candidate))
+    return candidate;
+  auto exeDir = std::filesystem::read_symlink("/proc/self/exe").parent_path();
+  return (exeDir / relative).string();
+}
 
 TEST(LiteInterpreterDirectTest, UpsampleNearest2d) {
   Module m("m");
@@ -410,10 +424,8 @@ TEST(LiteInterpreterDirectTest, GetRuntimeOperatorsVersion) {
  * build/run does).
  */
 TEST(LiteInterpreterDirectTest, GetByteCodeVersion) {
-  std::string filePath(__FILE__);
   auto test_model_file_v4 =
-      filePath.substr(0, filePath.find_last_of("/\\") + 1);
-  test_model_file_v4.append("script_module_v4.ptl");
+      resolveTestDataFile(__FILE__, "script_module_v4.ptl");
 
   auto version_v4 = _get_model_bytecode_version(test_model_file_v4);
   AT_ASSERT(version_v4 == 4);
