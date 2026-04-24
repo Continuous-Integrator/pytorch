@@ -12,10 +12,12 @@ from torch.distributed.fsdp import DataParallelMeshDims, fully_shard
 from torch.distributed.spmd_types import (
     assert_type as spmd_assert_type,
     get_local_type,
+    get_partition_spec,
     has_local_type,
     I,
     is_available as spmd_types_available,
     MeshAxis,
+    P,
     R,
     S,
     set_current_mesh,
@@ -23,11 +25,10 @@ from torch.distributed.spmd_types import (
     typecheck,
     V,
 )
+from spmd_types.types import PartitionSpec  # pyrefly: ignore
 from torch.distributed.tensor import (
-    distribute_tensor,
     DTensor,
     init_device_mesh,
-    Replicate,
     Shard,
 )
 from torch.testing._internal.common_distributed import skip_if_lt_x_gpu
@@ -39,12 +40,12 @@ device_type = torch.device(get_devtype())
 
 
 def _annotate_params_with_spmd_types(model, mesh):
-    """Annotate all model parameters with spmd_types R (Replicate) on all dims."""
+    """Annotate all model parameters with spmd_types I (Invariant) on all dims."""
     for param in model.parameters():
         local_type = {}
         for name in mesh.mesh_dim_names:
             axis = MeshAxis.of(mesh.get_group(name))
-            local_type[axis] = R
+            local_type[axis] = I
         set_local_type(param, local_type)
 
 
@@ -105,11 +106,13 @@ class TestFullyShardSpmdTypes(FSDPTest):
 
                 optim.zero_grad()
                 output = model(inp)
-
                 local_type = get_local_type(output)
                 self.assertIn(fsdp_axis, local_type)
                 self.assertEqual(local_type[fsdp_axis], V)
                 spmd_assert_type(output, {fsdp_axis: S(0)})
+                self.assertEqual(
+                    get_partition_spec(output), PartitionSpec(fsdp_axis, None)
+                )
 
                 loss = output.sum()
                 loss.backward()
@@ -155,6 +158,9 @@ class TestFullyShardSpmdTypes(FSDPTest):
             local_type = get_local_type(param)
             self.assertIn(fsdp_axis, local_type)
             self.assertIs(local_type[fsdp_axis], V)
+            spec = get_partition_spec(param)
+            self.assertIsNotNone(spec)
+            self.assertIn(fsdp_axis, spec.axes_with_partition_spec())
 
         replicate(
             ref_model,
@@ -164,70 +170,8 @@ class TestFullyShardSpmdTypes(FSDPTest):
             model, ref_model, dist.group.WORLD, mesh=mesh, mlp_dim=mlp_dim
         )
 
-    @skip_if_lt_x_gpu(4)
-    def test_fsdp_tp_spmd_types_sharded_param_correctness(self):
-        """Verify sharded param types for FSDP+TP with spmd_types."""
-        dp_size = 2
-        tp_size = self.world_size // dp_size
-        mesh = init_device_mesh(
-            device_type.type,
-            (dp_size, tp_size),
-            mesh_dim_names=("fsdp", "tp"),
-        )
-        fsdp_axis = MeshAxis.of(mesh.get_group("fsdp"))
-        tp_axis = MeshAxis.of(mesh.get_group("tp"))
-
-        model = MLP(16, device=device_type)
-
-        tp_plan = {
-            "in_proj.weight": (S(0), Shard(0)),
-            "in_proj.bias": (R, None),
-            "out_proj.weight": (S(1), Shard(1)),
-            "out_proj.bias": (R, None),
-        }
-
-        for fqn, param in model.named_parameters():
-            tp_type, tp_placement = tp_plan[fqn]
-            set_local_type(param, {fsdp_axis: R, tp_axis: tp_type})
-
-            if tp_placement is not None:
-                dt = distribute_tensor(
-                    param.data, mesh, [Replicate(), tp_placement]
-                )
-                local_data = dt._local_tensor.clone()
-            else:
-                local_data = param.data
-
-            module_name, param_name = fqn.rsplit(".", 1)
-            module = model.get_submodule(module_name)
-            new_param = nn.Parameter(local_data, requires_grad=param.requires_grad)
-            set_local_type(new_param, get_local_type(param))
-            module.register_parameter(param_name, new_param)
-
-        def shard_fn(param):
-            lt = get_local_type(param)
-            tp_type = lt.get(tp_axis)
-            if isinstance(tp_type, S) and tp_type.dim == 0:
-                return Shard(1)
-            return Shard(0)
-
-        fully_shard(
-            model,
-            mesh=mesh,
-            shard_placement_fn=shard_fn,
-            dp_mesh_dims=DataParallelMeshDims(shard="fsdp"),
-        )
-
-        for name, param in model.named_parameters():
-            self.assertNotIsInstance(param, DTensor)
-            local_type = get_local_type(param)
-            self.assertIn(fsdp_axis, local_type)
-            self.assertIs(local_type[fsdp_axis], V)
-            self.assertIn(tp_axis, local_type)
-
-    @skip_if_lt_x_gpu(4)
-    def test_fsdp_tp_optimizer_state_spmd_types(self):
-        """Optimizer state for FSDP+TP should be plain tensors."""
+    def _make_fsdp_tp_model(self):
+        """Create an FSDP+TP model with spmd_types annotations."""
         from spmd_types import all_reduce, convert
 
         dp_size = 2
@@ -240,6 +184,11 @@ class TestFullyShardSpmdTypes(FSDPTest):
         fsdp_axis = MeshAxis.of(mesh.get_group("fsdp"))
         tp_axis = MeshAxis.of(mesh.get_group("tp"))
         tp_pg = mesh.get_group("tp")
+
+        tp_plan = {
+            "in_proj.weight": S(0),
+            "out_proj.weight": S(1),
+        }
 
         class SpmdTypesTPMLP(nn.Module):
             def __init__(self, dim, tp_size, device=None):
@@ -262,13 +211,8 @@ class TestFullyShardSpmdTypes(FSDPTest):
 
         torch.manual_seed(42)
         model = SpmdTypesTPMLP(16, tp_size, device=device_type)
-
-        tp_plan = {
-            "in_proj.weight": S(0),
-            "out_proj.weight": S(1),
-        }
         for fqn, param in model.named_parameters():
-            set_local_type(param, {fsdp_axis: R, tp_axis: tp_plan[fqn]})
+            set_local_type(param, {fsdp_axis: I, tp_axis: tp_plan[fqn]})
 
         def shard_fn(param):
             lt = get_local_type(param)
@@ -283,28 +227,56 @@ class TestFullyShardSpmdTypes(FSDPTest):
             shard_placement_fn=shard_fn,
             dp_mesh_dims=DataParallelMeshDims(shard="fsdp"),
         )
-        optim = torch.optim.Adam(model.parameters(), lr=1e-2, foreach=False)
+        return model, mesh, tp_plan
 
-        torch.manual_seed(42 + self.rank + 1)
-        inp = torch.randn((2, 16), device=device_type)
-        with set_current_mesh(mesh):
-            model(inp).sum().backward()
-            with typecheck(strict_mode="permissive"):
-                optim.step()
+    @skip_if_lt_x_gpu(4)
+    def test_fsdp_tp_sharded_param_types(self):
+        """Verify sharded param types and partition specs for FSDP+TP."""
+        model, mesh, tp_plan = self._make_fsdp_tp_model()
+        fsdp_axis = MeshAxis.of(mesh.get_group("fsdp"))
+        tp_axis = MeshAxis.of(mesh.get_group("tp"))
 
+        expected_specs = {
+            "in_proj.weight": PartitionSpec(tp_axis, fsdp_axis),
+            "out_proj.weight": PartitionSpec(fsdp_axis, tp_axis),
+        }
         for name, param in model.named_parameters():
             self.assertNotIsInstance(param, DTensor)
             self.assertTrue(has_local_type(param))
             local_type = get_local_type(param)
             self.assertIs(local_type[fsdp_axis], V)
             self.assertIn(tp_axis, local_type)
+            self.assertEqual(get_partition_spec(param), expected_specs[name])
 
+    @skip_if_lt_x_gpu(4)
+    def test_fsdp_tp_optimizer_state_spmd_types(self):
+        """Optimizer state should be plain tensors with spmd_types after step."""
+        model, mesh, tp_plan = self._make_fsdp_tp_model()
+        fsdp_axis = MeshAxis.of(mesh.get_group("fsdp"))
+        tp_axis = MeshAxis.of(mesh.get_group("tp"))
+        optim = torch.optim.Adam(model.parameters(), lr=1e-2, foreach=False)
+
+        torch.manual_seed(42 + self.rank + 1)
+        inp = torch.randn((2, 16), device=device_type)
+        spmd_assert_type(inp, {fsdp_axis: S(0), tp_axis: I})
+        with set_current_mesh(mesh), typecheck(strict_mode="permissive", local=False):
+            output = model(inp)
+            output_type = get_local_type(output)
+            self.assertIs(output_type[fsdp_axis], V)
+            self.assertIs(output_type[tp_axis], I)
+            self.assertEqual(
+                get_partition_spec(output), PartitionSpec(fsdp_axis, None)
+            )
+            output.sum().backward()
+        with set_current_mesh(mesh), typecheck(strict_mode="permissive"):
+            optim.step()
+
+        for name, param in model.named_parameters():
             state = optim.state[param]
             for key in ("exp_avg", "exp_avg_sq"):
                 self.assertIn(key, state)
                 self.assertNotIsInstance(state[key], DTensor)
                 self.assertEqual(state[key].shape, param.shape)
-                self.assertTrue(has_local_type(state[key]))
 
 
 if __name__ == "__main__":

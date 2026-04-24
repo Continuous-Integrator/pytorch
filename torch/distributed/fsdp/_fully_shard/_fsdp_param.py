@@ -16,6 +16,7 @@ from torch.distributed.spmd_types import (
     assert_type as spmd_assert_type,
     get_local_type,
     has_local_type,
+    I,
     MeshAxis,
     R,
     S,
@@ -548,14 +549,19 @@ class FSDPParam:
         local_type = get_local_type(param)
         fsdp_axis = MeshAxis.of(spmd_mesh.get_group(dp_dim_names.shard_names[0]))
         param_type = local_type.get(fsdp_axis)
-        if param_type is not R and param_type is not V:
+        if param_type is not I and param_type is not R and param_type is not V:
             raise ValueError(
-                f"Expected R or V on FSDP shard axis but got {param_type} "
+                f"Expected I, R, or V on FSDP shard axis but got {param_type} "
                 f"for parameter '{self._module_info.param_name}'"
             )
 
-        # Store spmd_types metadata for unshard/reshard annotation
-        self._spmd_types_unsharded_type = local_type
+        # Normalize I to R for the unsharded type: after all-gather, each
+        # rank uses the param with different inputs, so gradients are partial
+        # and need reduce-scatter. This matches R (grad = P) semantics.
+        unsharded_type = dict(local_type)
+        if param_type is I:
+            unsharded_type[fsdp_axis] = R
+        self._spmd_types_unsharded_type = unsharded_type
         self._spmd_types_fsdp_axis = fsdp_axis
         self._spmd_types_mesh = spmd_mesh
 
