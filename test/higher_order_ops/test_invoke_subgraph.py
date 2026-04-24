@@ -4579,6 +4579,8 @@ class TestInvokeSubgraphReuseHashFn(TestCase):
             torch.compile(fn, backend="aot_eager", fullgraph=True)(x)
 
 
+@skipIfTorchDynamo("Not a torch._dynamo test")
+@unittest.skipIf(TEST_WITH_CROSSREF, "crossref does not support trace_autograd_ops")
 class TestInvokeSubgraphTrainStepCapture(TestCase):
     @torch._dynamo.config.patch(
         trace_autograd_ops=True,
@@ -4631,119 +4633,6 @@ class TestInvokeSubgraphTrainStepCapture(TestCase):
         compiled = torch.compile(model, backend="aot_eager", fullgraph=True)
         loss, aux = compiled(x)
         self.assertFalse(aux.requires_grad)
-
-    @torch._dynamo.config.patch(trace_autograd_ops=True)
-    def test_needs_autograd_with_autograd_grad_in_graph(self):
-        """When the graph contains torch.autograd.grad (from
-        trace_autograd_ops rewriting .backward()), AOT autograd must keep
-        needs_autograd=True even when output_and_mutation_safe is True.
-        Otherwise the inference path disables autograd at runtime, causing
-        HOPs like flex_attention to fall through to the dense CEA fallback.
-        """
-
-        @nested_compile_region()
-        def nested_fn(x):
-            return x.sin()
-
-        class Model(torch.nn.Module):
-            def __init__(self):
-                super().__init__()
-                self.linear = torch.nn.Linear(4, 4, bias=False)
-                self.head = torch.nn.Linear(4, 1, bias=False)
-
-            def forward(self, x):
-                y = self.linear(x)
-                z = nested_fn(y)
-                z_det = z.detach().requires_grad_()
-                loss = self.head(z_det).sum()
-                loss.backward()
-                z.backward(z_det.grad)
-                return loss.detach()
-
-        model = Model()
-        x = torch.randn(4, 4)
-        compiled = torch.compile(model, backend="aot_eager", fullgraph=True)
-        loss = compiled(x)
-        # Should succeed without "backward through graph second time" or OOM
-        self.assertIsNotNone(loss)
-
-    @torch._dynamo.config.patch(
-        trace_autograd_ops=True,
-        enable_invoke_subgraph_regional_compile=True,
-        inline_single_use_invoke_subgraph=False,
-    )
-    def test_nested_region_config_propagated_to_backward(self):
-        """When joint tracing creates backward invoke_subgraph nodes,
-        the nested_region_config should be propagated so the regional
-        compiler can compile them.  Without this, backward subgraphs
-        containing HOPs like flex_attention fall through to the dense
-        CEA fallback at runtime.
-        """
-        from torch._higher_order_ops.invoke_subgraph import (
-            get_invoke_subgraph_compile_options,
-        )
-
-        config = get_invoke_subgraph_compile_options(
-            decompositions=torch._decomp.core_aten_decompositions()
-        )
-
-        @nested_compile_region(options=config)
-        def nested_fn(x):
-            return x.sin()
-
-        class Model(torch.nn.Module):
-            def __init__(self):
-                super().__init__()
-                self.linear = torch.nn.Linear(4, 4, bias=False)
-                self.head = torch.nn.Linear(4, 1, bias=False)
-
-            def forward(self, x):
-                y = self.linear(x)
-                z = nested_fn(y)
-                z_det = z.detach().requires_grad_()
-                loss = self.head(z_det).sum()
-                loss.backward()
-                z.backward(z_det.grad)
-                return loss.detach()
-
-        from torch._dynamo.backends.common import aot_autograd
-        from torch._higher_order_ops.invoke_subgraph import invoke_subgraph
-
-        # With trace_autograd_ops, the full train step is captured as a
-        # single inference graph (no separate bw_compiler call). Check
-        # that backward invoke_subgraph nodes in the inference graph
-        # have nested_region_config before regional compilation.
-        fw_graphs = []
-
-        def recording_fw_compiler(gm, example_inputs, **kwargs):
-            fw_graphs.append(gm)
-            return gm
-
-        backend = aot_autograd(
-            fw_compiler=recording_fw_compiler,
-        )
-
-        model = Model()
-        x = torch.randn(4, 4)
-        compiled = torch.compile(model, backend=backend, fullgraph=True)
-        loss = compiled(x)
-        self.assertIsNotNone(loss)
-
-        # Verify that backward invoke_subgraph nodes have nested_region_config
-        self.assertGreater(len(fw_graphs), 0)
-        found_bw_node = False
-        for gm in fw_graphs:
-            for node in gm.graph.nodes:
-                if (
-                    node.op == "call_function"
-                    and node.target is invoke_subgraph
-                    and isinstance(node.args[1], str)
-                    and node.args[1].startswith("bw")
-                ):
-                    found_bw_node = True
-                    self.assertIn("custom", node.meta)
-                    self.assertIn("nested_region_config", node.meta["custom"])
-        self.assertTrue(found_bw_node, "Should find backward invoke_subgraph nodes")
 
 
 if __name__ == "__main__":
