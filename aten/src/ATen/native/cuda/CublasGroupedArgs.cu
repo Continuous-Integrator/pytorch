@@ -289,9 +289,9 @@ cublasGroupedArgs::cublasGroupedArgs(
   }
 
   // Single device allocation for all arrays:
-  //   6 x int32[batchCount]  = batchCount * 24 bytes  (m,n,k,lda,ldb,ldd)
-  //   5 x int64[batchCount]  = batchCount * 40 bytes  (A,B,D,alpha,beta ptrs)
-  //   2 x float              = 8 bytes          (alpha, beta)
+  //   6 x int32[batchCount]  (m, n, k, lda, ldb, ldd)
+  //   5 x int64[batchCount]  (A, B, D, alpha, beta ptrs)
+  //   2 x float              (alpha, beta scalars)
   // + optionally up to 2 x int64[batchCount] for per-group scale pointer arrays
   //   (GroupWise scales: embedded in the main buffer)
   //   (BlockWise1x32 scales: separate allocation required by cuBLAS)
@@ -300,29 +300,30 @@ cublasGroupedArgs::cublasGroupedArgs(
   const int embedded_ptr_arrays =
       ((mata_needs_ptr && !mata_blockwise) ? 1 : 0) +
       ((matb_needs_ptr && !matb_blockwise) ? 1 : 0);
-  const int64_t buf_bytes = static_cast<int64_t>(batchCount) * 64 + 8
-      + static_cast<int64_t>(embedded_ptr_arrays) * batchCount * 8;
+  const int64_t buf_bytes =
+      static_cast<int64_t>(batchCount) * 6 * sizeof(int32_t) +
+      static_cast<int64_t>(batchCount) * 5 * sizeof(int64_t) +
+      2 * sizeof(float) +
+      static_cast<int64_t>(embedded_ptr_arrays) * batchCount * sizeof(int64_t);
   buf = at::empty({buf_bytes}, mat1.options().dtype(at::kByte));
-  char* base = static_cast<char*>(buf.data_ptr());
 
-  // int32 arrays (6 x batchCount)
-  mArray   = reinterpret_cast<void*>(base);
-  nArray   = reinterpret_cast<void*>(base + batchCount * 4);
-  kArray   = reinterpret_cast<void*>(base + batchCount * 8);
-  ldaArray = reinterpret_cast<void*>(base + batchCount * 12);
-  ldbArray = reinterpret_cast<void*>(base + batchCount * 16);
-  lddArray = reinterpret_cast<void*>(base + batchCount * 20);
+  // Typed pointer arithmetic (same pattern as GroupMM.cu).
+  // reinterpret_cast only at type boundaries.
+  mArray   = reinterpret_cast<int32_t*>(buf.data_ptr());
+  nArray   = mArray + batchCount;
+  kArray   = nArray + batchCount;
+  ldaArray = kArray + batchCount;
+  ldbArray = ldaArray + batchCount;
+  lddArray = ldbArray + batchCount;
 
-  // int64 arrays (5 x batchCount), starting at offset batchCount * 24
-  APtrArray     = reinterpret_cast<void*>(base + batchCount * 24);
-  BPtrArray     = reinterpret_cast<void*>(base + batchCount * 32);
-  DPtrArray     = reinterpret_cast<void*>(base + batchCount * 40);
-  alphaPtrArray = reinterpret_cast<void*>(base + batchCount * 48);
-  betaPtrArray  = reinterpret_cast<void*>(base + batchCount * 56);
+  APtrArray     = reinterpret_cast<int64_t*>(lddArray + batchCount);
+  BPtrArray     = APtrArray + batchCount;
+  DPtrArray     = BPtrArray + batchCount;
+  alphaPtrArray = DPtrArray + batchCount;
+  betaPtrArray  = alphaPtrArray + batchCount;
 
-  // Alpha/beta scalars at the end of the fixed-size region
-  float* alpha_scalar = reinterpret_cast<float*>(base + batchCount * 64);
-  float* beta_scalar  = reinterpret_cast<float*>(base + batchCount * 64 + 4);
+  float* alpha_scalar = reinterpret_cast<float*>(betaPtrArray + batchCount);
+  float* beta_scalar  = alpha_scalar + 1;
 
   // Per-group scale pointer arrays: embedded for GroupWise, separate for BlockWise1x32
   int64_t extra_offset = static_cast<int64_t>(batchCount) * 64 + 8;
@@ -411,17 +412,10 @@ cublasGroupedArgs::cublasGroupedArgs(
         a_offs_stride, a_idx_stride,
         b_offs_stride, b_idx_stride,
         d_offs_stride, d_idx_stride,
-        static_cast<int32_t*>(mArray),
-        static_cast<int32_t*>(nArray),
-        static_cast<int32_t*>(kArray),
-        static_cast<int32_t*>(ldaArray),
-        static_cast<int32_t*>(ldbArray),
-        static_cast<int32_t*>(lddArray),
-        static_cast<int64_t*>(APtrArray),
-        static_cast<int64_t*>(BPtrArray),
-        static_cast<int64_t*>(DPtrArray),
-        static_cast<int64_t*>(alphaPtrArray),
-        static_cast<int64_t*>(betaPtrArray),
+        mArray, nArray, kArray,
+        ldaArray, ldbArray, lddArray,
+        APtrArray, BPtrArray, DPtrArray,
+        alphaPtrArray, betaPtrArray,
         alpha_scalar, beta_scalar,
         base_scale_a, base_scale_b,
         scale_a_stride_bytes, scale_b_stride_bytes,

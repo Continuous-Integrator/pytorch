@@ -30,17 +30,17 @@ struct cublasGroupedArgs {
   Tensor buf;
   // BlockWise1x32 scale pointer arrays need a separate allocation
   Tensor scale_ptr_buf;
-  void* mArray;
-  void* nArray;
-  void* kArray;
-  void* ldaArray;
-  void* ldbArray;
-  void* lddArray;
-  void* APtrArray;
-  void* BPtrArray;
-  void* DPtrArray;
-  void* alphaPtrArray;
-  void* betaPtrArray;
+  int32_t* mArray;
+  int32_t* nArray;
+  int32_t* kArray;
+  int32_t* ldaArray;
+  int32_t* ldbArray;
+  int32_t* lddArray;
+  int64_t* APtrArray;
+  int64_t* BPtrArray;
+  int64_t* DPtrArray;
+  int64_t* alphaPtrArray;
+  int64_t* betaPtrArray;
 
   void* scale_mata_ptr = nullptr;
   void* scale_matb_ptr = nullptr;
