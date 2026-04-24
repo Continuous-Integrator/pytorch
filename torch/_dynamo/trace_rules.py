@@ -78,6 +78,7 @@ from .variables import (
     SetAttrBuiltinVariable,
     SkipFunctionVariable,
     StrBuiltinVariable,
+    TypeBuiltinVariable,
     SparseTensorCreationSkipVariable,
     TorchInGraphFunctionVariable,
     UserFunctionVariable,
@@ -4012,6 +4013,7 @@ BUILTIN_CALLABLES = {
     list: ListBuiltinVariable,
     setattr: SetAttrBuiltinVariable,
     str: StrBuiltinVariable,
+    type: TypeBuiltinVariable,
 }
 
 
