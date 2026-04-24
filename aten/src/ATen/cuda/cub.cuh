@@ -68,7 +68,7 @@ using cccl_constant_iterator = ::cuda::constant_iterator<T>;
 template<class T>
 using cccl_counting_iterator = ::cuda::counting_iterator<T>;
 using cccl_discard_iterator  = ::cuda::discard_iterator;
-using cccl_make_reverse_iterator ::cuda::std::make_reverse_iterator;
+using cccl_make_reverse_iterator = ::cuda::std::make_reverse_iterator;
 #elif CUB_V3_PLUS()
 #include <thrust/iterator/transform_iterator.h>
 #include <thrust/iterator/counting_iterator.h>
