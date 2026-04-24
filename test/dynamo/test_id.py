@@ -335,8 +335,8 @@ class IdTests(torch._dynamo.test_case.TestCase):
 
     def test_id_sourceless_int_as_key(self):
         def fn(x):
-            d = {id(42): True}
-            if id(42) in d:
+            d = {id(1000000): True}
+            if id(1000000) in d:
                 return x + 1.0
             return x + 2.0
 
