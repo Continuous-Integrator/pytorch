@@ -1,9 +1,10 @@
 # Owner(s): ["module: custom-operators"]
 import torch
 from torch._library.utils import is_inplace
-from torch.testing._internal.common_utils import run_tests, TestCase
+from torch.testing._internal.common_utils import run_tests, skipIfTorchDynamo, TestCase
 
 
+@skipIfTorchDynamo("custom operator tests not applicable to dynamo")
 class TestInplaceTag(TestCase):
     def setUp(self):
         self.lib = torch.library.Library("_TestInplaceTag", "FRAGMENT")  # noqa: TOR901
