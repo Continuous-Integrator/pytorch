@@ -729,8 +729,6 @@ class AsyncCompile:
         _compile_end()
 
     def _wait_futures(self, scope: dict[str, Any]) -> None:
-        from concurrent.futures import TimeoutError as _FutTimeoutError
-
         kernels = {
             key: value
             for key, value in scope.items()
@@ -742,36 +740,22 @@ class AsyncCompile:
             disable=config.disable_progress,
             delay=0,
         )
-        wait_timeout = config.compile_worker_wait_timeout
+        # compile_worker_wait_timeout=0 (default) means "wait forever"; map
+        # it to None so both Future.result() and CodeCacheFuture.result()
+        # receive the same "no timeout" sentinel.
+        wait_timeout = config.compile_worker_wait_timeout or None
         for key, result in kernels.items():
             if config.verbose_progress and not isinstance(pbar, _Faketqdm):
                 pbar.set_postfix_str(key)
-            # Bound cross-process futures with compile_worker_wait_timeout so
-            # a stuck worker doesn't block the parent indefinitely.
-            # Synchronous CodeCacheFuture subclasses without a .future
-            # attribute don't need bounding.
-            underlying: Future | None = None
-            if isinstance(result, Future):
-                underlying = result
-            else:
-                underlying = getattr(result, "future", None)
-                if not isinstance(underlying, Future):
-                    underlying = None
-            if underlying is not None and wait_timeout > 0:
-                try:
-                    underlying.result(timeout=wait_timeout)
-                except _FutTimeoutError as e:
-                    raise RuntimeError(
-                        f"Inductor compile-worker future for {key!r} did not "
-                        f"complete within {wait_timeout}s. Override with "
-                        "TORCHINDUCTOR_COMPILE_WORKER_WAIT_TIMEOUT=<seconds>."
-                    ) from e
-                except BrokenProcessPool:
-                    # Fall through to the outer handler for a consistent message.
-                    pass
             try:
-                kernel = result.result()
+                kernel = result.result(timeout=wait_timeout)
                 scope[key] = kernel
+            except TimeoutError as e:
+                raise RuntimeError(
+                    f"Inductor compile-worker future for {key!r} did not "
+                    f"complete within {wait_timeout}s. Override with "
+                    "TORCHINDUCTOR_COMPILE_WORKER_WAIT_TIMEOUT=<seconds>."
+                ) from e
             except BrokenProcessPool as e:
                 raise RuntimeError(
                     "A compilation subprocess exited unexpectedly. This "

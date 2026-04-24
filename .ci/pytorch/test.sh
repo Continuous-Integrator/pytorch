@@ -74,6 +74,11 @@ NUM_TEST_SHARDS="${NUM_TEST_SHARDS:=1}"
 # enable debug asserts in serialization
 export TORCH_SERIALIZATION_DEBUG=1
 
+# Bound Inductor compile-worker futures so a stuck Triton compile fails fast
+# with a clear RuntimeError naming the kernel, instead of blocking until the
+# outer test timeout kills the shard and loses all context.
+export TORCHINDUCTOR_COMPILE_WORKER_WAIT_TIMEOUT=300
+
 export VALGRIND=ON
 # export TORCH_INDUCTOR_INSTALL_GXX=ON
 if [[ "$BUILD_ENVIRONMENT" == *clang9* || "$BUILD_ENVIRONMENT" == *xpu* ]]; then
