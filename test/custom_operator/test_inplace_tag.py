@@ -134,6 +134,21 @@ class TestInplaceTag(TestCase):
         self.assertEqual(result, expected)
         self.assertEqual(x_compiled, expected)
 
+    @parametrize("backend", ("aot_eager", "inductor"))
+    def test_compile_inplace_duplicated_base(self, backend):
+        # add_(x, x): self and other are the same tensor.
+        def fn(x):
+            return torch.ops._TestInplaceTag.add_(x, x)
+
+        x = torch.randn(3, 4)
+        expected = x * 2
+
+        compiled_fn = torch.compile(fn, backend=backend, fullgraph=True)
+        x_compiled = x.clone()
+        result = compiled_fn(x_compiled)
+        self.assertEqual(result, expected)
+        self.assertEqual(x_compiled, expected)
+
     def test_compile_inplace_functionalized_graph(self):
         def fn(x, y):
             return torch.ops._TestInplaceTag.add_(x, y)
