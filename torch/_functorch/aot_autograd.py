@@ -1230,6 +1230,28 @@ def aot_module_simplified(
                 shape_env,
             )
             aot_state.fw_metadata.act_input_indices = act_input_indices
+
+            # If the graph contains torch.autograd.grad (e.g. train step
+            # capture with trace_autograd_ops=True), keep needs_autograd=True
+            # even when output_and_mutation_safe downgraded it to False.
+            # The graph still needs autograd at runtime for:
+            # 1. torch.autograd.grad inside the graph to function
+            # 2. HOPs like flex_attention to dispatch through the autograd
+            #    key to efficient kernels (CEA fallback causes OOM)
+            # The joint tracing will produce an empty backward since no
+            # outputs require grad.
+            graph_has_autograd_grad = isinstance(mod, torch.fx.GraphModule) and any(
+                n.target is torch.autograd.grad
+                for n in mod.graph.nodes
+                if n.op == "call_function"
+            )
+            aot_state.fw_metadata.graph_has_autograd_grad = graph_has_autograd_grad
+
+            if not aot_state.needs_autograd and graph_has_autograd_grad:
+                aot_state.needs_autograd = True
+                if partition_fn is None:
+                    partition_fn = default_partition
+
             aot_graph_capture = aot_stage1_graph_capture(aot_state, functional_call)
             compiled_fn, _ = aot_stage2_compile(
                 aot_state,

@@ -523,6 +523,11 @@ class ViewAndMutationMeta:
     # Filled after tracing joint function.
     num_backward_tokens: int = 0
 
+    # Whether the Dynamo graph contains torch.autograd.grad (from train
+    # step capture with trace_autograd_ops=True).  Set by aot_module_simplified
+    # before graph capture.
+    graph_has_autograd_grad: bool = False
+
     # Number of rng states that will get thread into the forward and backward for
     # cudagraph compatible run_and_save_rng
     num_graphsafe_rng_states: int = 0
