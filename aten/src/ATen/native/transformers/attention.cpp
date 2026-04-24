@@ -36,6 +36,8 @@
 #include <ATen/ops/_scaled_dot_product_attention_math.h>
 #include <ATen/ops/_scaled_dot_product_attention_math_for_mps.h>
 #include <ATen/ops/_scaled_dot_product_attention_math_for_mps_native.h>
+#include <ATen/ops/_scaled_dot_product_attention_math_for_mps_v2.h>
+#include <ATen/ops/_scaled_dot_product_attention_math_for_mps_v2_native.h>
 #include <ATen/ops/_scaled_dot_product_attention_math_native.h>
 #include <ATen/ops/_scaled_dot_product_efficient_attention.h>
 #include <ATen/ops/_scaled_dot_product_flash_attention.h>
@@ -794,7 +796,7 @@ Tensor scaled_dot_product_attention(
     case SDPBackend::math: {
       const bool any_inputs_require_grad = query_.requires_grad() || key.requires_grad() || value.requires_grad();
       if (query_device_type == c10::kMPS && !(at::GradMode::is_enabled() && any_inputs_require_grad)) {
-        return std::get<0>(at::_scaled_dot_product_attention_math_for_mps(
+        return std::get<0>(at::_scaled_dot_product_attention_math_for_mps_v2(
             query_,
             key,
             value,
