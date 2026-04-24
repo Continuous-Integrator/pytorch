@@ -1564,18 +1564,6 @@ class VariableBuilder:
                 value,
                 source=self.source,
             )
-        elif type(value) is torch._C.Generator:
-            # Generator is registered as an opaque reference type for make_fx
-            # tracing, but in dynamo we handle it as a regular object so that
-            # trace_rules-based graph breaks (e.g. initial_seed, manual_seed)
-            # work gracefully — allowing dynamo to compile code before and
-            # after the generator call. TorchScriptObjectVariable's var_getattr
-            # and call_method are decorated with @_raise_hard_error_if_graph_break,
-            # which turns any graph break into a hard error that falls back to
-            # eager for the entire function. Generator methods intentionally
-            # graph-break (they mutate/read RNG state), so they need the
-            # UserDefinedObjectVariable path which supports graceful graph breaks.
-            return self.wrap_user_defined(value)
         elif TorchScriptObjectVariable.is_matching_cls(type(value)):
             from ..source import (
                 FlattenScriptObjectSource,
@@ -3611,7 +3599,7 @@ def infer_subclass_type(value: T) -> type[T] | None:
         # Ordinarily, we would fakeify a tensor so that it can get dynamic
         # shapes and be computed on without triggering actual operations.
         # However, how can we fakeify a tensor subclass?  Ordinary
-        # inheritance (nor multiple inheritance) won't work work.
+        # inheritance (nor multiple inheritance) won't work.
         #
         # Instead, our plan is to *manually simulate* the tensor subclass
         # inheriting from a fake tensor with dynamo.  This means our
@@ -3942,13 +3930,13 @@ def _automatic_dynamic(
     specialize_on = []
     for i in range(e.dim()):
         # NB: mark dynamic has precedence over static
-        marked_strict_unbacked = i in getattr(
-            e, "_dynamo_strict_unbacked_indices", set()
-        )
-        marked_unbacked = i in getattr(e, "_dynamo_unbacked_indices", set())
-        marked_dynamic = i in getattr(e, "_dynamo_dynamic_indices", set())
-        marked_weak_dynamic = i in getattr(e, "_dynamo_weak_dynamic_indices", set())
-        marked_static = i in getattr(e, "_dynamo_static_indices", set())
+        marked_strict_unbacked = i in getattr(e, "_dynamo_strict_unbacked_indices", ())
+        marked_unbacked = i in getattr(e, "_dynamo_unbacked_indices", ())
+        marked_dynamic = i in getattr(e, "_dynamo_dynamic_indices", ())
+        marked_weak_dynamic = i in getattr(
+            e, "_dynamo_weak_dynamic_indices", ()
+        ) or i in getattr(e, "_dynamo_propagated_dynamic_indices", ())
+        marked_static = i in getattr(e, "_dynamo_static_indices", ())
 
         specialize_on.append(getattr(e, "_specialize_on", {}).get(i, []))
 
