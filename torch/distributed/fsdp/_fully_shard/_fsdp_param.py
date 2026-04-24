@@ -12,6 +12,15 @@ from torch._prims_common import make_contiguous_strides_for
 from torch.distributed._functional_collectives import AsyncCollectiveTensor
 from torch.distributed.device_mesh import DeviceMesh
 from torch.distributed.fsdp._fully_shard._fsdp_common import DDPMeshInfo
+from torch.distributed.spmd_types import (
+    assert_type as spmd_assert_type,
+    get_local_type,
+    has_local_type,
+    MeshAxis,
+    R,
+    S,
+    V,
+)
 from torch.distributed.tensor import DTensor, Replicate, Shard
 from torch.distributed.tensor._dtensor_spec import DTensorSpec, TensorMeta
 from torch.distributed.tensor.placement_types import _StridedShard, Placement
@@ -336,22 +345,15 @@ class FSDPParam:
 
     @staticmethod
     def _has_spmd_local_type(param: nn.Parameter) -> bool:
-        try:
-            from spmd_types.runtime import has_local_type  # pyrefly: ignore
-        except ImportError:
-            return False
         return has_local_type(param)
 
     def _annotate_spmd_types(self, tensor: torch.Tensor, sharded: bool) -> None:
         """Set spmd_types annotation on a tensor for the FSDP shard axis."""
-        from spmd_types._type_attr import set_local_type  # pyrefly: ignore
-        from spmd_types.types import S  # pyrefly: ignore
-
         local_type = dict(self._spmd_types_unsharded_type)
         fsdp_axis = self._spmd_types_fsdp_axis
         if sharded:
             local_type[fsdp_axis] = S(self.fsdp_placement.dim)
-        set_local_type(tensor, local_type)
+        spmd_assert_type(tensor, local_type)
 
     def _init_sharding_spec(
         self,
@@ -536,10 +538,6 @@ class FSDPParam:
         shard_dim: int,
     ) -> torch.Tensor:
         """spmd_types path: param is a plain tensor with spmd_types annotations."""
-        from spmd_types._mesh_axis import MeshAxis  # pyrefly: ignore
-        from spmd_types._type_attr import get_local_type  # pyrefly: ignore
-        from spmd_types.types import R, Shard as SpmdShard  # pyrefly: ignore
-
         spmd_mesh = self.mesh_info.spmd_mesh
         if spmd_mesh is None or spmd_mesh.mesh_dim_names is None:
             raise ValueError("spmd_types path requires a named SPMD mesh")
@@ -550,9 +548,9 @@ class FSDPParam:
         local_type = get_local_type(param)
         fsdp_axis = MeshAxis.of(spmd_mesh.get_group(dp_dim_names.shard_names[0]))
         param_type = local_type.get(fsdp_axis)
-        if param_type is not R and not isinstance(param_type, SpmdShard):
+        if param_type is not R and param_type is not V:
             raise ValueError(
-                f"Expected R or S on FSDP shard axis but got {param_type} "
+                f"Expected R or V on FSDP shard axis but got {param_type} "
                 f"for parameter '{self._module_info.param_name}'"
             )
 

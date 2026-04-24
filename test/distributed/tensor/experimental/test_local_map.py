@@ -3,15 +3,21 @@
 
 import unittest
 
-from spmd_types._mesh_axis import MeshAxis
-from spmd_types._type_attr import get_local_type
-from spmd_types.runtime import assert_type as spmd_assert_type, has_local_type
-from spmd_types.types import I, R, SpmdTypeError, V
-
 import torch
 import torch.distributed as dist
 import torch.distributed._functional_collectives as funcol
 from torch.distributed._local_tensor import LocalTensorMode
+from torch.distributed.spmd_types import (
+    assert_type as spmd_assert_type,
+    get_local_type,
+    has_local_type,
+    I,
+    is_available as spmd_types_available,
+    MeshAxis,
+    R,
+    SpmdTypeError,
+    V,
+)
 from torch.distributed.device_mesh import init_device_mesh
 from torch.distributed.tensor import (
     distribute_tensor,
@@ -437,6 +443,7 @@ class TestLocalMap(DTensorTestBase):
         self.assertEqual(Y_dt.device_mesh, mesh_2d)
 
 
+@unittest.skipUnless(spmd_types_available(), "requires spmd_types")
 class TestLocalMapSpmdTypes(unittest.TestCase):
     """Single-process tests for local_map with spmd_types type checking."""
 
