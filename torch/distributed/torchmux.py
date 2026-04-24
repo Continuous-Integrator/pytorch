@@ -268,7 +268,7 @@ def _save_tensor(path, tensor):
             f"rank {_rank}: failed to save tensor to {tmp} "
             f"(collective data dir: {_coll_dir}): {e}"
         ) from e
-    os.rename(tmp, path)
+    os.replace(tmp, path)
 
 
 def _load_tensor(path):
@@ -325,7 +325,7 @@ class _MuxPG(dist.ProcessGroup):
     load the collective result.
     """
 
-    # Per-process counter (not globally unique). Each forked worker gets
+    # Per-process counter (not globally unique). Each spawned worker gets
     # its own copy, but that's fine: collective data paths include both
     # pg_id and rank, so there are no cross-process collisions.
     _next_pg_id = 0

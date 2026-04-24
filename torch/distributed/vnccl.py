@@ -30,7 +30,7 @@ from functools import partial
 
 import torch
 
-__all__ = ["VNCCLProcessGroup"]
+__all__: list[str] = []
 
 # Cooperative scheduling lock. When held, only one worker thread runs.
 # Workers release it inside _do() before blocking on a collective
