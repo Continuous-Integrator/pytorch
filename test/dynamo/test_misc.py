@@ -407,10 +407,13 @@ graph():
 
         x = torch.ones(5)
         with YoloMode():
-            out = torch.compile(torch.add, backend=backend, fullgraph=True)(x, x)
-
+            out = torch.compile(torch.add, backend=backend, fullgraph=False)(x, x)
         self.assertEqual(out.sum().item(), 5.0)
         self.assertEqual(len(backend.graphs), 0)
+
+        with YoloMode():
+            with self.assertRaisesRegex(RuntimeError, "found no compiled frames"):
+                torch.compile(torch.add, backend=backend, fullgraph=True)(x, x)
 
     def test_compile_non_infra_empty_with_disalloed_dispatch_mode(self):
         from torch.utils._python_dispatch import TorchDispatchMode
@@ -570,7 +573,7 @@ graph():
                 return False
 
             def __torch_dispatch__(self, func, types, args=(), kwargs=None):
-                out = torch.compile(func, backend=backend, fullgraph=True)(
+                out = torch.compile(func, backend=backend, fullgraph=False)(
                     *args, **kwargs
                 )
                 return out
@@ -1599,6 +1602,9 @@ str(L['x'].device) == 'cpu'
 L['x'].requires_grad == False
 L['x'].ndimension() == 2
 hasattr(L['x'], '_dynamo_dynamic_indices') == False
+hasattr(L['x'], '_dynamo_weak_dynamic_indices') == False
+hasattr(L['x'], '_dynamo_unbacked_indices') == False
+hasattr(L['x'], '_dynamo_static_indices') == False
 L['x'] is L['y']
 not ___dict_contains('aaaaaaaa', G['sys'].modules)
 not ___dict_contains('bbbbbbbb', G['sys'].modules)
@@ -4597,6 +4603,36 @@ not ___dict_contains('cccccccc', G['sys'].modules)""",
         self.assertEqual(result, correct)
         # Verify deepcopy didn't mutate original
         self.assertEqual(cfg.inner.scale, 2.0)
+
+    def test_deepcopy_with_getattribute_override(self):
+        # Regression test: classes that override __getattribute__ (like
+        # HuggingFace PretrainedConfig) caused a graph break on
+        # __reduce_ex__ because SuperVariable.call_method for
+        # object.__getattribute__ bypassed the polyfill detection in
+        # resolve_type_attr.
+        class Config:
+            attribute_map = {}
+
+            def __init__(self, hidden_size=768, num_layers=6):
+                self.hidden_size = hidden_size
+                self.num_layers = num_layers
+
+            def __getattribute__(self, key):
+                if key != "attribute_map" and key in super().__getattribute__(
+                    "attribute_map"
+                ):
+                    key = super().__getattribute__("attribute_map")[key]
+                return super().__getattribute__(key)
+
+        def fn(x, config):
+            c = copy.deepcopy(config)
+            return x * c.hidden_size + c.num_layers
+
+        x = torch.randn(3)
+        config = Config()
+        correct = fn(x, config)
+        result = torch.compile(fn, backend="eager", fullgraph=True)(x, config)
+        self.assertEqual(result, correct)
 
     def test_global_state_guard_serialization(self):
         GlobalStateGuard = torch._C._dynamo.guards.GlobalStateGuard
@@ -14245,6 +14281,67 @@ fn
 
         self.assertEqual(expected, actual)
 
+    def test_data_ptr_detach_equality_fullgraph(self):
+        def f(x):
+            detached = x.detach()
+            same_data = (
+                x.data_ptr() == detached.data_ptr()
+                and x.stride() == detached.stride()
+                and x.shape == detached.shape
+            )
+            return torch.tensor([same_data], dtype=torch.long, device=x.device)
+
+        x = torch.randn(1, 1, 1, 3)
+
+        expected = f(x)
+        actual = torch.compile(f, backend="eager", fullgraph=True)(x)
+
+        self.assertEqual(expected, actual)
+
+    def test_data_ptr_equality_after_mutation_graph_break(self):
+        def f(x):
+            ptr_before = x.data_ptr()
+            x.add_(1)
+            ptr_after = x.detach().data_ptr()
+            return torch.tensor([ptr_before == ptr_after], dtype=torch.long)
+
+        x = torch.randn(4)
+
+        with self.assertRaises(torch._dynamo.exc.Unsupported):
+            torch.compile(f, backend="eager", fullgraph=True)(x.clone())
+
+        expected = f(x.clone())
+        actual = torch.compile(f, backend="eager")(x.clone())
+
+        self.assertEqual(expected, actual)
+
+    def test_data_ptr_constant_comparison_graph_break(self):
+        def ptr_eq_zero(x):
+            return x.data_ptr() == 0
+
+        def zero_eq_ptr(x):
+            return 0 == x.data_ptr()
+
+        def ptr_ne_zero(x):
+            return x.data_ptr() != 0
+
+        def zero_ne_ptr(x):
+            return 0 != x.data_ptr()
+
+        x = torch.randn(4)
+
+        for fn in (ptr_eq_zero, zero_eq_ptr, ptr_ne_zero, zero_ne_ptr):
+            with self.assertRaises(torch._dynamo.exc.Unsupported):
+                torch.compile(fn, backend="eager", fullgraph=True)(x)
+
+            torch._dynamo.reset()
+
+            expected = fn(x)
+            actual = torch.compile(fn, backend="eager")(x)
+
+            self.assertEqual(expected, actual)
+            torch._dynamo.reset()
+
     def test_data_ptr_graph_break_aten(self):
         def f(a):
             # torch.add not implemented for DataPtrVariable
@@ -14913,6 +15010,17 @@ fn
         self.assertEqual(res[8], -1)
         self.assertEqual(res[9], float.fromhex("0x1.ffffp10"))
         self.assertEqual(res[10], "0x1.8000000000000p+0")
+
+    def test_builtin_constant_fold_str_conversions(self):
+        @torch.compile(backend="eager", fullgraph=True)
+        def fn(x):
+            s = hex(255) + oct(8) + bin(3) + ascii("hello") + format(42, "x")
+            return x + len(s)
+
+        x = torch.randn(4)
+        res = fn(x)
+        expected = hex(255) + oct(8) + bin(3) + ascii("hello") + format(42, "x")
+        self.assertEqual(res, x + len(expected))
 
     def test_guard_string_escaped(self):
         d = {frozenset({0}): {frozenset({0}): 1}}

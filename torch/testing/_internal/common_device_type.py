@@ -3,6 +3,7 @@
 import copy
 import gc
 import inspect
+import logging
 import os
 import runpy
 import sys
@@ -67,6 +68,8 @@ try:
 except ModuleNotFoundError:
     HAS_PSUTIL = False
     psutil = None
+
+log = logging.getLogger(__name__)
 
 # Note [Writing Test Templates]
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -327,6 +330,16 @@ class DeviceTypeTestBase(TestCase):
     # device-generic and removing @onlyCUDA on tests that should be device-generic.
     bypass_device_restrictions: bool = False
 
+    # Decorators and skips to apply to tests that are parametrized by ops.
+    # Keys are OpInfo.full_name (e.g. "op" or "linalg.norm"), NOT OpInfo.name.
+    # Note that OpInfo.full_name and OpInfo.name have difference: OpInfo.full_name
+    # includes the variant suffix (e.g., "div.floor_rounding") if it has, otherwise,
+    # OpInfo.full_name identical to OpInfo.name.
+    # These are intentionally placed on DeviceTypeTestBase (rather than solely on
+    # PrivateUse1TestBase) so that in-tree backends can adopt the same mechanism
+    # in the future.
+    op_overrides = None  # type: Optional[dict[str, list[DecorateInfo]]]
+
     # Flag to disable test suite early due to unrecoverable error such as CUDA error.
     _stop_test_suite = False
 
@@ -350,6 +363,27 @@ class DeviceTypeTestBase(TestCase):
     @rel_tol.setter
     def rel_tol(self, prec):
         self._tls.rel_tol = prec
+
+    @classmethod
+    def _apply_op_overrides(cls, ops):
+        if cls.op_overrides is None:
+            return
+
+        op_dict = {op.full_name: op for op in copy.deepcopy(ops.op_list)}
+
+        if cls.op_overrides is not None:
+            for op_name, decorators in cls.op_overrides.items():
+                for decorator in decorators:
+                    if cls.device_type == "privateuse1":
+                        decorator.device_type = torch._C._get_privateuse1_backend_name()
+                    else:
+                        decorator.device_type = cls.device_type
+                    # op_name may not be in op_dict if @ops() has restricted the
+                    # OpInfo list to a smaller set than op_overrides covers.
+                    if op_name in op_dict:
+                        op_dict[op_name].decorators += (decorator,)
+
+        ops.op_list = list(op_dict.values())
 
     # Returns a string representing the device that single device tests should use.
     # Note: single device tests use this device exclusively.
@@ -1094,6 +1128,7 @@ class ops(_TestParametrizer):
                 "instantiate_parametrized_tests()"
             )
 
+        device_cls._apply_op_overrides(self)
         op = check_exhausted_iterator = object()
         for op in self.op_list:
             # Determine the set of dtypes to use.
@@ -1178,7 +1213,7 @@ class ops(_TestParametrizer):
                         except Exception as e:
                             tracked_input = get_tracked_input()
                             if PRINT_REPRO_ON_FAILURE and tracked_input is not None:
-                                e_tracked = Exception(  # noqa: TRY002
+                                e_tracked = Exception(
                                     f"{str(e)}\n\nCaused by {tracked_input.type_desc} "
                                     f"at index {tracked_input.index}: "
                                     f"{_serialize_sample(tracked_input.val)}"
@@ -1213,9 +1248,13 @@ class ops(_TestParametrizer):
                     yield (test_wrapper, test_name, param_kwargs, decorator_fn)
                 except Exception as ex:
                     # Provides an error message for debugging before rethrowing the exception
-                    print(f"Failed to instantiate {test_name} for op {op.name}!")
+                    log.info("Failed to instantiate %s for op %s", test_name, op.name)
                     raise ex
         if op is check_exhausted_iterator:
+            # When OPINFO_RESTRICT_TO_DSL narrows op_db to a DSL subset, many
+            # per-test op lists legitimately become empty -don't fail collection.
+            if os.environ.get("OPINFO_RESTRICT_TO_DSL"):
+                return
             raise ValueError(
                 "An empty op_list was passed to @ops. "
                 "Note that this may result from reuse of a generator."
