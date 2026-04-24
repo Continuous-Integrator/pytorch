@@ -1373,7 +1373,7 @@ class UserDefinedObjectVariable(UserDefinedVariable):
         if isinstance(
             self.value,
             (enum.Enum, torch.DispatchKey, torch._C._functorch.TransformType),
-        ): or is_pybind11_enum_member(self.value):
+        ) or is_pybind11_enum_member(self.value):
             return self.value
 
         if self.is_pytree_constant_class and self.source:
