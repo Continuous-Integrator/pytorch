@@ -859,6 +859,8 @@ include_patterns = [
 ]
 exclude_patterns = [
     'torch/spmd_types.py',
+    'torch/distributed/spmd_types/__init__.py',
+    'torch/distributed/spmd_types/_stubs.py',
 ]
 command = [
     'python3',
@@ -867,8 +869,8 @@ command = [
     '--linter-name=DIRECT_SPMD_TYPES_IMPORT',
     '--error-name=direct import of spmd_types',
     """--error-description=\
-        Do not import spmd_types directly; use torch.spmd_types instead, \
-        e.g., 'from torch.spmd_types import Shard'.
+        Do not import spmd_types directly; use torch.distributed.spmd_types instead, \
+        e.g., 'from torch.distributed.spmd_types import R'.
     """,
     '--',
     '@{{PATHSFILE}}'
