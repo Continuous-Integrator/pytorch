@@ -2575,7 +2575,6 @@ def compile(
     *,
     fullgraph: builtins.bool = False,
     dynamic: builtins.bool | None = None,
-    dynamic_shapes: dict | None = None,
     backend: str | _Callable = "inductor",
     mode: str | None = None,
     options: dict[str, str | builtins.int | builtins.bool | _Callable] | None = None,
@@ -2590,7 +2589,6 @@ def compile(
     *,
     fullgraph: builtins.bool = False,
     dynamic: builtins.bool | None = None,
-    dynamic_shapes: dict | None = None,
     backend: str | _Callable = "inductor",
     mode: str | None = None,
     options: dict[str, str | builtins.int | builtins.bool | _Callable] | None = None,
@@ -2604,7 +2602,6 @@ def compile(
     *,
     fullgraph: builtins.bool = False,
     dynamic: builtins.bool | None = None,
-    dynamic_shapes: dict | None = None,
     backend: str | _Callable | None = None,
     mode: str | None = None,
     options: dict[str, str | builtins.int | builtins.bool | _Callable] | None = None,
@@ -2741,7 +2738,6 @@ def compile(
                 model,
                 fullgraph=fullgraph,
                 dynamic=dynamic,
-                dynamic_shapes=dynamic_shapes,
                 backend=backend,
                 mode=mode,
                 options=options,
@@ -2805,11 +2801,6 @@ def compile(
         guard_filter_fn=guard_filter_fn,
         recompile_limit=recompile_limit,
     )(model)  # type: ignore[return-value]
-
-    if dynamic_shapes is not None:
-        from torch._dynamo.dynamic_spec import _apply_dynamic_shapes
-
-        compiled = _apply_dynamic_shapes(compiled, model, dynamic_shapes)
 
     return compiled
 
