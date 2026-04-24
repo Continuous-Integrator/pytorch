@@ -964,20 +964,20 @@ def _create_runtime_wrapper(
         rw_globals["_force_view_tracking_"] = (
             torch.autograd._force_original_view_tracking
         )
+        rw_lines.append(
+            "        with _force_view_tracking_(True), torch.enable_grad():"
+        )
+        rw_lines.append("            _on_before_call_()")
         if disable_amp:
             rw_globals["_DisableAutocast_"] = torch._C._DisableAutocast
+            rw_lines.append("            with _DisableAutocast_():")
             rw_lines.append(
-                "        with _force_view_tracking_(True), "
-                "torch.enable_grad(), _DisableAutocast_():"
+                "                all_outs = _normalize_as_list_(_compiled_fn_(args_))"
             )
         else:
             rw_lines.append(
-                "        with _force_view_tracking_(True), torch.enable_grad():"
+                "            all_outs = _normalize_as_list_(_compiled_fn_(args_))"
             )
-        rw_lines.append("            _on_before_call_()")
-        rw_lines.append(
-            "            all_outs = _normalize_as_list_(_compiled_fn_(args_))"
-        )
     else:
         # inference path: disable grad
         rw_lines.append("        grad_enabled = torch.is_grad_enabled()")
@@ -985,15 +985,14 @@ def _create_runtime_wrapper(
         rw_lines.append(
             "            if grad_enabled: torch._C._set_grad_enabled(False)"
         )
+        rw_lines.append("            _on_before_call_()")
         if disable_amp:
             rw_globals["_DisableAutocast_"] = torch._C._DisableAutocast
             rw_lines.append("            with _DisableAutocast_():")
-            rw_lines.append("                _on_before_call_()")
             rw_lines.append(
                 "                all_outs = _normalize_as_list_(_compiled_fn_(args))"
             )
         else:
-            rw_lines.append("            _on_before_call_()")
             rw_lines.append(
                 "            all_outs = _normalize_as_list_(_compiled_fn_(args))"
             )
