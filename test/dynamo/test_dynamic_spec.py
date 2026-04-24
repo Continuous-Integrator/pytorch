@@ -153,14 +153,14 @@ class TestIntSpecConstruction(TestCase):
         self.assertEqual(s._max, 64)
 
     def test_static_with_positional_int_rejected(self):
-        # IntSpec.static(10) would silently bind 10 to `name`. Must fail
-        # loudly and point users at the `value=` keyword.
+        # ``IntSpec.static(10)`` would silently bind 10 to ``name``. Must
+        # fail with a clear redirect to the kwarg form.
         with self.assertRaises(TypeError) as cm:
             IntSpec.static(10)  # type: ignore[arg-type]
         self.assertEqual(
             str(cm.exception),
             "IntSpec.name must be str or None, got int; "
-            "if you meant to pass a value, use a keyword argument "
+            "if you meant to pass a value/hint, use a keyword argument "
             "(e.g. IntSpec.static(value=10))",
         )
 
@@ -170,7 +170,7 @@ class TestIntSpecConstruction(TestCase):
         self.assertEqual(
             str(cm.exception),
             "IntSpec.name must be str or None, got int; "
-            "if you meant to pass a value, use a keyword argument "
+            "if you meant to pass a value/hint, use a keyword argument "
             "(e.g. IntSpec.static(value=10))",
         )
 
@@ -180,7 +180,7 @@ class TestIntSpecConstruction(TestCase):
         self.assertEqual(
             str(cm.exception),
             "IntSpec.name must be str or None, got int; "
-            "if you meant to pass a value, use a keyword argument "
+            "if you meant to pass a value/hint, use a keyword argument "
             "(e.g. IntSpec.static(value=10))",
         )
 
@@ -190,7 +190,7 @@ class TestIntSpecConstruction(TestCase):
         self.assertEqual(
             str(cm.exception),
             "IntSpec.name must be str or None, got int; "
-            "if you meant to pass a value, use a keyword argument "
+            "if you meant to pass a value/hint, use a keyword argument "
             "(e.g. IntSpec.static(value=10))",
         )
 
