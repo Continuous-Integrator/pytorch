@@ -20,7 +20,6 @@ from torch.testing._internal.common_methods_invocations import (
     spectral_funcs, SpectralFuncType)
 from torch._prims_common import corresponding_complex_dtype
 
-from typing import Optional
 from packaging import version
 
 
@@ -249,6 +248,22 @@ class TestFFT(TestCase):
                   torch.fft.hfft, torch.fft.hfft2, torch.fft.hfftn]:
             with self.assertRaisesRegex(RuntimeError, match):
                 f(t)
+
+    # Regression test for https://github.com/pytorch/pytorch/issues/141448:
+    # _fft_c2r used to crash (heap-buffer-overflow under ASAN, or trip an
+    # INTERNAL ASSERT on the MKL path) when last_dim_size was inconsistent
+    # with the input's last transformed dimension.
+    @onlyNativeDeviceTypes
+    def test_fft_c2r_invalid_last_dim_size(self, device):
+        t = torch.full((3, 1, 3, 1), 0.372049, dtype=torch.cfloat, device=device)
+        with self.assertRaisesRegex(
+                RuntimeError,
+                r"Expected size of last transformed dimension of input to be"):
+            torch._fft_c2r(t, [2], 2, 536870912)
+
+        with self.assertRaisesRegex(
+                RuntimeError, r"Invalid number of data points"):
+            torch._fft_c2r(t, [2], 2, 0)
 
     @onlyNativeDeviceTypes
     def test_fft_invalid_dtypes(self, device):
@@ -599,7 +614,7 @@ class TestFFT(TestCase):
                 else:
                     numpy_fn = getattr(np.fft, fname)
 
-                def fn(t: torch.Tensor, s: Optional[list[int]], dim: list[int] = (-2, -1), norm: Optional[str] = None):
+                def fn(t: torch.Tensor, s: list[int] | None, dim: list[int] = (-2, -1), norm: str | None = None):
                     return torch_fn(t, s, dim, norm)
 
                 torch_fns = (torch_fn, torch.jit.script(fn))
