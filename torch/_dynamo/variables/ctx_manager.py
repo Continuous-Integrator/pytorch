@@ -757,13 +757,14 @@ class _DeviceExchangeVariable(ContextWrappingVariable):
     _exchange_device: Any
     _maybe_exchange_device: Any
     _module_name: str
-    _fn_name = "device"
     _python_type: type[Any]
-    _exit_return: Any = None
+    _exit_return: bool | None
 
     @staticmethod
-    def normalize_target(device: Any) -> Any:
-        return device
+    def normalize_target(device):
+        raise NotImplementedError(
+            "The method normalize_target must be implemented by subclasses."
+        )
 
     @classmethod
     def create(
@@ -784,6 +785,7 @@ class _DeviceExchangeVariable(ContextWrappingVariable):
         super().__init__(
             target_values=target_values, initial_values=initial_values, **kwargs
         )
+        self.proxy = None
 
     def enter(self, tx: "InstructionTranslator") -> VariableTracker:
         prev_idx = self._exchange_device(*self.target_values)
@@ -808,11 +810,22 @@ class _DeviceExchangeVariable(ContextWrappingVariable):
         )
         return variables.ConstantVariable.create(self._exit_return)
 
-    def fn_name(self) -> str:
-        return self._fn_name
+    def enter(self, tx: "InstructionTranslator") -> VariableTracker:
+        prev_idx = self._exchange_device(*self.target_values)
+        self.set_cleanup_hook(tx, lambda: self._maybe_exchange_device(prev_idx))
+        self.proxy = tx.output.create_node(
+            "call_function",
+            self._exchange_device,
+            (*self.target_values,),
+            {},
+        )
+        return variables.ConstantVariable.create(None)
 
     def module_name(self) -> str:
         return self._module_name
+
+    def fn_name(self) -> str:
+        return "device"
 
     def python_type(self) -> type:
         return self._python_type
@@ -828,7 +841,7 @@ class CUDADeviceVariable(_DeviceExchangeVariable):
     _exit_return = False
 
     @staticmethod
-    def normalize_target(device: Any) -> Any:
+    def normalize_target(device):
         return torch.cuda._get_device_index(device, optional=True)
 
 
@@ -839,32 +852,11 @@ class XPUDeviceVariable(_DeviceExchangeVariable):
     _maybe_exchange_device = torch.xpu._maybe_exchange_device
     _module_name = "torch.xpu"
     _python_type = torch.xpu.device
+    _exit_return = None
 
     @staticmethod
-    def normalize_target(device: Any) -> Any:
+    def normalize_target(device):
         return torch.xpu._get_device_index(device, optional=True)
-
-
-class AcceleratorDeviceIndexVariable(_DeviceExchangeVariable):
-    """represents torch.accelerator.device_index"""
-
-    _exchange_device = torch._C._accelerator_exchangeDevice
-    _maybe_exchange_device = torch._C._accelerator_maybeExchangeDevice
-    _module_name = "torch.accelerator"
-    _fn_name = "device_index"
-    _python_type = torch.accelerator.device_index
-
-    def enter(self, tx: "InstructionTranslator") -> VariableTracker:
-        if self.target_values[0] is None:
-            return variables.ConstantVariable.create(None)
-        return super().enter(tx)
-
-    def exit(
-        self, tx: "InstructionTranslator", *args: VariableTracker
-    ) -> VariableTracker:
-        if self.target_values[0] is None:
-            return variables.ConstantVariable.create(self._exit_return)
-        return super().exit(tx, *args)
 
 
 class TorchFunctionDisableVariable(ContextWrappingVariable):

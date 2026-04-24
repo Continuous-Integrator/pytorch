@@ -27,7 +27,6 @@ from .builtin import (
 )
 from .constant import ConstantVariable
 from .ctx_manager import (
-    AcceleratorDeviceIndexVariable,
     CatchWarningsCtxManagerVariable,
     ContextWrappingVariable,
     CUDADeviceVariable,
@@ -188,7 +187,6 @@ from .user_defined import (
 
 
 __all__ = [
-    "AcceleratorDeviceIndexVariable",
     "AutogradFunctionContextVariable",
     "AutogradFunctionVariable",
     "BackwardHookVariable",

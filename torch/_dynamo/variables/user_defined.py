@@ -187,14 +187,6 @@ def is_data_descriptor(obj: object) -> bool:
     )
 
 
-def is_hashable(obj: object) -> bool:
-    try:
-        hash(obj)
-        return True
-    except TypeError:
-        return False
-
-
 class UserDefinedVariable(VariableTracker):
     value: object
 
@@ -294,8 +286,6 @@ class UserDefinedClassVariable(UserDefinedVariable):
 
     @staticmethod
     def is_supported_new_method(value: object) -> bool:
-        if not is_hashable(value):
-            return False
         if value in UserDefinedClassVariable.supported_c_new_functions():
             return True
         # Structseq types each define their own C tp_new.
@@ -919,18 +909,6 @@ class UserDefinedClassVariable(UserDefinedVariable):
                 raise_type_error(tx, "torch.xpu.device() requires a constant argument")
             return variables.XPUDeviceVariable.create(tx, args[0].as_python_constant())
         elif (
-            self.value is torch.accelerator.device_index
-            and not kwargs
-            and len(args) == 1
-        ):
-            if not args[0].is_python_constant():
-                raise_type_error(
-                    tx, "torch.accelerator.device_index() requires a constant argument"
-                )
-            return variables.AcceleratorDeviceIndexVariable.create(
-                tx, args[0].as_python_constant()
-            )
-        elif (
             issubclass(type(self.value), type)
             and hasattr(
                 self.value, "__enter__"
@@ -1380,12 +1358,10 @@ class UserDefinedObjectVariable(UserDefinedVariable):
         return self.value
 
     def as_python_constant(self) -> object:
-        from ..utils import is_pybind11_enum_member
-
         if isinstance(
             self.value,
             (enum.Enum, torch.DispatchKey, torch._C._functorch.TransformType),
-        ) or is_pybind11_enum_member(self.value):
+        ):
             return self.value
 
         if self.is_pytree_constant_class and self.source:
