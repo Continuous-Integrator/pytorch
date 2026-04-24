@@ -82,13 +82,18 @@ else:
         raise NotImplementedError("PyTorch was compiled without XPU support")
 
 
-def _parse_visible_devices() -> list[int]:
+def _parse_visible_devices(strict=False) -> list[int]:
     r"""Parse ``ZE_AFFINITY_MASK`` and return visible device ordinals.
 
     Returns a list of non-negative device ordinals specified by the mask.
     When the mask is unset, returns ``[0, 1, ..., 127]`` (the maximum range
     for ``int8_t`` device indices).  Returns an empty list for unsupported
     COMPOSITE-style masks (e.g. ``"0.0,0.1"``).
+
+    Args:
+        strict (bool): If ``True``, raises ``ValueError`` on unsupported mask
+            formats (e.g. COMPOSITE-style ``"0.0,0.1"``).  If ``False``
+            (default), returns an empty list instead.
     """
     var = os.getenv("ZE_AFFINITY_MASK")
     if var is None:
@@ -104,6 +109,10 @@ def _parse_visible_devices() -> list[int]:
             # A non-integer token (e.g. "0.0" in COMPOSITE-mode format)
             # means the mask is unsupported here; signal that by returning
             # an empty list.
+            if strict:
+                raise ValueError(
+                    f"Unsupported ZE_AFFINITY_MASK format: '{var}'. Expected a comma-separated list of integers, e.g. '0,1,2'."
+                ) from None
             return []
         if x >= 0 and x not in visible_devices:
             visible_devices.append(x)
@@ -780,7 +789,7 @@ def _get_zes_temperature_handle(device: Device = None) -> c_void_p:
     device = _get_device_index(device, optional=True)
     global _cached_zes_device_infos
     if not _cached_zes_device_infos:
-        if _enum_zes_device_infos(_parse_visible_devices()) < 0:
+        if _enum_zes_device_infos(_parse_visible_devices(strict=True)) < 0:
             raise RuntimeError("Failed to enumerate devices via Level Zero Sysman.")
 
     total_devices = len(_cached_zes_device_infos)
