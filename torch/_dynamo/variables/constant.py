@@ -206,6 +206,15 @@ its type to `common_constant_types`.
             raise NotImplementedError
         return member
 
+    def tp_iter_impl(self, tx: InstructionTranslator) -> VariableTracker:
+        from .lists import ListIteratorVariable
+
+        if istype(self.value, str):
+            return ListIteratorVariable(
+                self.unpack_var_sequence(tx), mutation_type=ValueMutationNew()
+            )
+        return super().tp_iter_impl(tx)
+
     def call_method(
         self,
         tx: InstructionTranslator,
@@ -233,14 +242,6 @@ its type to `common_constant_types`.
                 return ConstantVariable.create(self.value.join(arg_const))
             except NotImplementedError:
                 return super().call_method(tx, name, args, kwargs)
-        elif name == "__iter__" and istype(self.value, str):
-            # this could be some generic iterator to avoid the circular import,
-            # but ListIterator does what we want
-            from .lists import ListIteratorVariable
-
-            return ListIteratorVariable(
-                self.unpack_var_sequence(tx), mutation_type=ValueMutationNew()
-            )
 
         if any(isinstance(x, SymNodeVariable) for x in args):
             # Promote to SymNodeVariable for operations involving dynamic shapes.
@@ -253,6 +254,9 @@ its type to `common_constant_types`.
             const_kwargs = {k: v.as_python_constant() for k, v in kwargs.items()}
         except NotImplementedError:
             return super().call_method(tx, name, args, kwargs)
+
+        if name == "__iter__":
+            return self.tp_iter_impl(tx)
 
         if isinstance(self.value, str) and name in str.__dict__:
             method = getattr(self.value, name)
@@ -404,6 +408,24 @@ its type to `common_constant_types`.
         if isinstance(self.value, (int, bool)):
             return ConstantVariable.create(operator.index(self.value))
         return super().nb_index_impl(tx)
+
+    def nb_int_impl(
+        self,
+        tx: Any,
+    ) -> VariableTracker:
+        # CPython: int defines nb_int (long_long, returns copy).
+        # bool inherits nb_int from int via slot inheritance.
+        # float defines nb_int (truncates toward zero via PyLong_FromDouble).
+        return ConstantVariable.create(int(self.value))
+
+    def nb_float_impl(
+        self,
+        tx: Any,
+    ) -> VariableTracker:
+        # CPython: float defines nb_float (float_float, returns copy).
+        # int defines nb_float (long_float, converts to float).
+        # bool inherits nb_float from int via slot inheritance.
+        return ConstantVariable.create(float(self.value))
 
 
 CONSTANT_VARIABLE_NONE = ConstantVariable(None)

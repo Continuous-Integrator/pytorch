@@ -51,11 +51,11 @@ from torch.testing._internal.common_utils import (
 )
 from torch.testing._utils import wrapper_set_seed
 
-import torch._refs as refs  # noqa: F401
+import torch._refs as refs
 import torch._refs.nn.functional
 import torch._refs.special
 import torch._refs.linalg
-import torch._prims as prims  # noqa: F401
+import torch._prims as prims
 from torch.utils import _pytree as pytree
 
 
@@ -1253,6 +1253,43 @@ def sample_inputs_mv(self, device, dtype, requires_grad, **kwargs):
 def sample_inputs_bmm(self, device, dtype, requires_grad, **kwargs):
     make_arg = partial(make_tensor, dtype=dtype, device=device, low=None, high=None, requires_grad=requires_grad)
     yield SampleInput(make_arg(M, S, M), make_arg(M, M, S))
+
+
+def sample_inputs_triton_bmm_outer_product(op_info, device, dtype, requires_grad, **kwargs):
+    """Generate (B, M, 1) x (B, 1, N) -> (B, M, N) outer-product samples for the
+    Triton BMM kernel. The kernel requires contiguous inputs with these exact
+    shape contracts; it does not accept broadcasts or non-contiguous strides."""
+    make_arg = partial(make_tensor, device=device, dtype=dtype, requires_grad=False)
+
+    test_configs = [
+        (2, 16, 32),
+        (4, 64, 64),
+        (8, 128, 256),
+        (1, 512, 128),
+        (16, 32, 64),
+        (3, 7, 11),
+    ]
+
+    for batch_size, m_dim, n_dim in test_configs:
+        a = make_arg((batch_size, m_dim, 1)).contiguous()
+        b = make_arg((batch_size, 1, n_dim)).contiguous()
+        yield SampleInput(a, args=(b,))
+
+        yield SampleInput(
+            make_arg((batch_size, m_dim, 1), low=-2.0, high=2.0).contiguous(),
+            args=(make_arg((batch_size, 1, n_dim), low=-2.0, high=2.0).contiguous(),),
+        )
+
+        yield SampleInput(
+            make_arg((batch_size, m_dim, 1), low=0.1, high=1.0).contiguous(),
+            args=(make_arg((batch_size, 1, n_dim), low=0.1, high=1.0).contiguous(),),
+        )
+
+
+def reference_bmm_outer_product(a, b):
+    # Inputs are ndarrays: TestCommon.test_numpy_ref calls SampleInput.numpy() first.
+    return np.matmul(a, b)
+
 
 def sample_inputs_dot_vdot(self, device, dtype, requires_grad, **kwargs):
     make_arg = partial(make_tensor, device=device, dtype=dtype, requires_grad=requires_grad)
@@ -3184,7 +3221,14 @@ def sample_inputs_histc(op_info, device, dtype, requires_grad, **kwargs):
 
     sizes = ((), (S,), (S, S), (S, S, S), (S, 1, S), (S, 0, S))
 
-    for size, min, max in product(sizes, [0, -10], [0, 10]):
+    minima = [0]
+    maxima = [10]
+
+    if dtype.is_signed:
+        minima.append(-10)
+        maxima.append(0)
+
+    for size, min, max in product(sizes, minima, maxima):
         # construct sample input omitting bins arg
         yield SampleInput(make_arg(size), min=min, max=max)
 
@@ -13625,7 +13669,7 @@ op_db: list[OpInfo] = [
                # undefined value tensor:
                #   File "<string>", line 3
                # def the_method(i0):
-               #     return torch.cov(i0, correction=0, fweights=None, aweights=tensor([0.0518, 0.4681], dtype=torch.float32, requires_grad=True)) # noqa: B950
+               #     return torch.cov(i0, correction=0, fweights=None, aweights=tensor([0.0518, 0.4681], dtype=torch.float32, requires_grad=True))
                #                                                                ~~~~~~ <--- HERE
                DecorateInfo(unittest.expectedFailure, 'TestJit', 'test_variant_consistency_jit'),
                DecorateInfo(toleranceOverride({torch.float16: tol(atol=8e-3, rtol=1.4e-3)}),
@@ -14370,7 +14414,7 @@ op_db: list[OpInfo] = [
                # see discussion : https://github.com/pytorch/pytorch/issues/56660
                # RuntimeError:
                # Arguments for call are not valid.
-               DecorateInfo(unittest.skip("Skipped!"), 'TestJit', 'test_variant_consistency_jit', dtypes=(torch.float32, torch.complex64)),  # noqa: B950
+               DecorateInfo(unittest.skip("Skipped!"), 'TestJit', 'test_variant_consistency_jit', dtypes=(torch.float32, torch.complex64)),
                DecorateInfo(unittest.skip("Skipped!"), 'TestNNCOpInfo', 'test_nnc_correctness'),
                DecorateInfo(unittest.skip("Skipped!"), 'TestCudaFuserOpInfo'),
            ),
@@ -15524,8 +15568,8 @@ op_db: list[OpInfo] = [
            sample_inputs_func=sample_inputs_as_strided_scatter,
            error_inputs_func=error_inputs_as_strided_scatter,
            skips=(
-               DecorateInfo(unittest.skip('Works for int64, fails for everything else'), 'TestCommon', 'test_noncontiguous_samples'),  # noqa: B950
-               DecorateInfo(unittest.skip('Fails in most cases, passes on LAZY for some reason'), 'TestCommon', 'test_variant_consistency_eager'),  # noqa: B950
+               DecorateInfo(unittest.skip('Works for int64, fails for everything else'), 'TestCommon', 'test_noncontiguous_samples'),
+               DecorateInfo(unittest.skip('Fails in most cases, passes on LAZY for some reason'), 'TestCommon', 'test_variant_consistency_eager'),
                DecorateInfo(unittest.skip('Fails on cuda'), 'TestCommon', 'test_complex_half_reference_testing',
                             active_if=not TEST_WITH_ROCM),
                DecorateInfo(unittest.expectedFailure, 'TestBwdGradients', 'test_fn_grad'),
@@ -17679,7 +17723,8 @@ op_db: list[OpInfo] = [
     ),
     BinaryUfuncInfo('nextafter',
                     dtypes=floating_types_and(torch.bfloat16, torch.half),
-                    supports_autograd=False,
+                    supports_forward_ad=True,
+                    supports_fwgrad_bwgrad=True,
                     supports_rhs_python_scalar=False),
     OpInfo(
         "to",
@@ -20647,6 +20692,9 @@ op_db: list[OpInfo] = [
     OpInfo('histc',
            dtypes=floating_types_and(torch.bfloat16, torch.float16),
            dtypesIfCUDA=floating_types_and(torch.int8, torch.uint8, torch.int16, torch.int32, torch.int64),
+           dtypesIfMPS=floating_types_and(
+               torch.bfloat16, torch.float16, torch.int8, torch.uint8, torch.int16, torch.int32, torch.int64
+           ),
            sample_inputs_func=sample_inputs_histc,
            supports_out=True,
            supports_autograd=False,
@@ -22160,12 +22208,6 @@ op_db: list[OpInfo] = [
         sample_inputs_func=sample_inputs_grid_sample,
         reference_inputs_func=reference_inputs_grid_sample,
         supports_gradgrad=True,
-        skips=(
-            # Exception: The operator 'aten::grid_sampler_2d_backward' is not currently implemented for the MPS device
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_dtypes', device_type='mps'),
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_variant_consistency_eager', device_type='mps'),
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_noncontiguous_samples', device_type='mps'),
-        ),
         gradcheck_nondet_tol=1e-15),
     # TODO: delete this OpInfo once we add meta support for grid_sampler_3d
     OpInfo(
@@ -22178,10 +22220,9 @@ op_db: list[OpInfo] = [
         skips=(
             DecorateInfo(slowTest, 'TestDecomp', 'test_comprehensive', dtypes=(torch.float32, torch.float64),
                          active_if=IS_WINDOWS),
-            # Exception: The operator 'aten::grid_sampler_2d_backward' is not currently implemented for the MPS device
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_dtypes', device_type='mps'),
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_variant_consistency_eager', device_type='mps'),
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_noncontiguous_samples', device_type='mps'),
+            DecorateInfo(toleranceOverride({torch.float32: tol(atol=2e-5, rtol=2e-6),
+                                            torch.float16: tol(atol=5e-3, rtol=4e-3)}),
+                         "TestConsistency", "test_output_grad_match", device_type="mps"),
         ),),
     # TODO: Remove grid_sampler_3d tests once `nn.functional.grid_sample` has
     # MPS support for all cases.
@@ -22198,14 +22239,13 @@ op_db: list[OpInfo] = [
             DecorateInfo(unittest.skip('Skipped!'), device_type='cuda'),
             DecorateInfo(unittest.skip('Skipped!'), device_type='xpu'),
             DecorateInfo(unittest.skip('Skipped!'), device_type='meta'),
-            # Error: The operator 'aten::grid_sampler_3d_backward' is not currently implemented for the MPS device.
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_dtypes', device_type='mps'),
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_variant_consistency_eager', device_type='mps'),
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_noncontiguous_samples', device_type='mps'),
-            DecorateInfo(toleranceOverride({torch.float32: tol(atol=1e-4, rtol=1e-4),
-                                            torch.float16: tol(atol=1e-4, rtol=1e-4),
-                                            torch.bfloat16: tol(atol=1e-4, rtol=1e-4)}),
+            DecorateInfo(toleranceOverride({torch.float32: tol(atol=1e-4, rtol=1e-4)}),
                          "TestConsistency", "test_output_match", device_type="mps"),
+            DecorateInfo(toleranceOverride({torch.float32: tol(atol=1e-3, rtol=2e-6),
+                                            torch.float16: tol(atol=5e-3, rtol=2e-2)}),
+                         "TestConsistency", "test_output_grad_match", device_type="mps"),
+            DecorateInfo(toleranceOverride({torch.float32: tol(atol=5e-5, rtol=5e-4)}),
+                         "TestCommon", "test_noncontiguous_samples", device_type="mps"),
         ),),
     OpInfo(
         "argwhere",
@@ -22706,6 +22746,8 @@ op_db: list[OpInfo] = [
             DecorateInfo(unittest.expectedFailure, 'TestDTensorOps', 'test_dtensor_op_db'),
             # Error: The operator 'aten::hash_tensor.out' is not currently implemented for the MPS device
             DecorateInfo(unittest.expectedFailure, 'TestCommon', device_type='mps'),
+            # NotImplementedError: aten::hash_tensor.out
+            DecorateInfo(unittest.expectedFailure, 'TestReductions', 'test_dim_default', device_type='mps'),
         )
     ),
     OpInfo(
@@ -23116,24 +23158,78 @@ op_db: list[OpInfo] = [
     ),
 ]
 
-# Add python_native ops tests
+# DSL OpInfos. The underlying kernels live under torch/_native/ops; import failures
+# (e.g. no Triton installed) just disable the corresponding OpInfo.
 try:
-    import sys
-    import os
-
-    # Add test directory to path if not already present
-    # Use pathlib pattern like other PyTorch files (similar to common_utils.py style)
-    from pathlib import Path
-    repo_root = Path(__file__).resolve().parents[3]
-    test_dir = str(repo_root / 'test')
-    if test_dir not in sys.path:
-        sys.path.insert(0, test_dir)
-
-    from python_native.ops import dsl_opinfos
-    op_db.extend(dsl_opinfos)
+    from torch._native.ops.bmm_outer_product.triton_kernels import (
+        bmm_outer_product as _triton_bmm_outer_product_kernel,
+    )
+    _HAS_TRITON_BMM = True
 except ImportError:
-    # python_native ops tests not available (optional)
-    pass
+    def _triton_bmm_outer_product_kernel(a, b):
+        return torch.ops.aten.bmm(a, b)
+    _HAS_TRITON_BMM = False
+
+op_db.append(
+    # Plain OpInfo (not BinaryUfuncInfo) because this op is shape-contracting rather
+    # than elementwise: TestCommon drives it via sample_inputs/ref, bypassing the
+    # TestBinaryUfuncs elementwise shape generators.
+    OpInfo(
+        "triton_bmm_outer_product",
+        op=_triton_bmm_outer_product_kernel,
+        dsl_name="triton",
+        dtypes=(),
+        dtypesIfCUDA=floating_types_and(torch.half, torch.bfloat16),
+        sample_inputs_func=sample_inputs_triton_bmm_outer_product,
+        ref=reference_bmm_outer_product,
+        supports_autograd=False,
+        supports_forward_ad=False,
+        supports_fwgrad_bwgrad=False,
+        supports_out=False,
+        inplace_variant=None,
+        # Direct Triton kernel launches don't interoperate with tensor subclasses
+        # (CompositeCompliantTensor, COW wrapper) or FakeTensor.
+        supports_cow_input_no_materialize_forward=False,
+        decorators=[
+            DecorateInfo(
+                toleranceOverride({
+                    torch.float32: tol(atol=1e-5, rtol=1e-5),
+                    torch.float64: tol(atol=1e-8, rtol=1e-8),
+                    torch.float16: tol(atol=1e-3, rtol=1e-3),
+                    torch.bfloat16: tol(atol=1e-2, rtol=1e-2),
+                }),
+                device_type="cuda",
+            ),
+            DecorateInfo(onlyCUDA),
+        ],
+        skips=(
+            DecorateInfo(skipCUDAIf(not torch.cuda.is_available(), "CUDA not available")),
+            DecorateInfo(unittest.skipIf(not _HAS_TRITON_BMM, "Triton BMM outer product not available")),
+            # noncontiguous_like() on (B,M,1)/(B,1,N) breaks the shape contract the
+            # kernel requires, so skip the generic non-contig test.
+            DecorateInfo(
+                unittest.skip("Outer-product kernel requires contiguous (B,M,1)/(B,1,N)"),
+                "TestCommon",
+                "test_noncontiguous_samples",
+            ),
+            # Triton kernels take raw pointers and can't dispatch through tensor
+            # subclasses (CompositeCompliantTensor, CrossRefFakeMode, etc.).
+            DecorateInfo(unittest.skip("Triton kernel incompatible with tensor subclasses"),
+                         "TestCompositeCompliance"),
+            DecorateInfo(unittest.skip("Triton kernel incompatible with FakeTensor"),
+                         "TestFakeTensor"),
+            DecorateInfo(unittest.skip("Triton kernel not introspectable for tag inference"),
+                         "TestTags"),
+            DecorateInfo(unittest.skip("Triton kernel not introspectable for conjugate/negate views"),
+                         "TestMathBits"),
+            # Sample generator only targets the primary CUDA device.
+            DecorateInfo(unittest.skip("Sample generator allocates on the primary CUDA device"),
+                         "TestCommon",
+                         "test_multiple_devices"),
+        ),
+        variant_test_name="triton_optimized",
+    )
+)
 
 op_db += opinfo.definitions.op_db
 
@@ -25322,15 +25418,6 @@ python_ref_db = [
             DecorateInfo(
                 unittest.expectedFailure, 'TestCommon', 'test_python_ref_torch_fallback',
                 dtypes=(torch.complex32,), device_type='cuda'
-            ),
-            # TypeError: Trying to convert ComplexDouble to the MPS backend but it does not have support for that dtype
-            DecorateInfo(
-                unittest.expectedFailure, 'TestCommon', 'test_python_ref',
-                device_type='mps', dtypes=(torch.complex32,)
-            ),
-            DecorateInfo(
-                unittest.expectedFailure, 'TestCommon', 'test_python_ref_torch_fallback',
-                device_type='mps', dtypes=(torch.complex32,)
             ),
         )
     ),
