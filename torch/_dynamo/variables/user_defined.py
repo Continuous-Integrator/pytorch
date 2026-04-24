@@ -2853,7 +2853,7 @@ class UserDefinedExceptionObjectVariable(UserDefinedObjectVariable):
                 "__cause__", "__context__", "__suppress_context__", "__traceback__"
             )
         ):
-            self._base_vt.call_method(tx, name, args, kwargs)  # type: ignore[missing-attribute]
+            return self._base_vt.call_method(tx, name, args, kwargs)  # type: ignore[missing-attribute]
         elif name == "with_traceback":
             return self._base_vt.call_method(tx, name, args, kwargs)  # type: ignore[missing-attribute]
         return super().call_method(tx, name, args, kwargs)
