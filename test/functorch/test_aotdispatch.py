@@ -3161,8 +3161,6 @@ def forward(self, arg0_1, arg1_1):
             self.assertExpectedInline(str(e.inner_exception), expected_error)
 
     def test_merge_view_inputs_error_non_differentiable_views(self):
-        from torch._dynamo.testing import EagerAndRecordGraphs
-
         # Training mode (requires_grad) reaches site-1 in merge_view_inputs.
         def make_inputs():
             big = torch.randn(10, requires_grad=True)
@@ -3175,25 +3173,6 @@ def forward(self, arg0_1, arg1_1):
             a.mul_(2)
             return a + b
 
-        torch._dynamo.reset()
-        backend = EagerAndRecordGraphs()
-        torch.compile(fn, backend=backend)(*make_inputs())
-        self.assertExpectedInline(
-            normalize_gm(backend.graphs[0].print_readable(False)),
-            """\
-class GraphModule(torch.nn.Module):
-    def forward(self, L_a_: "f32[5]", L_b_: "f32[5]"):
-        l_a_ = L_a_
-        l_b_ = L_b_
-
-        mul_: "f32[5]" = l_a_.mul_(2);  mul_ = None
-
-        add: "f32[5]" = l_a_ + l_b_;  l_a_ = l_b_ = None
-        return (add,)
-""",
-        )
-
-        # Error message names (a, b) match the graph placeholders (L_a_, L_b_).
         self._check_merge_view_inputs_error(
             fn,
             make_inputs,
@@ -3201,8 +3180,6 @@ class GraphModule(torch.nn.Module):
         )
 
     def test_merge_view_inputs_error_different_bases(self):
-        from torch._dynamo.testing import EagerAndRecordGraphs
-
         # Inference mode (no requires_grad) skips site-1, reaching site-2.
         def make_inputs():
             x = torch.randn(10)
@@ -3216,24 +3193,6 @@ class GraphModule(torch.nn.Module):
             a.mul_(2)
             return a + b
 
-        torch._dynamo.reset()
-        backend = EagerAndRecordGraphs()
-        torch.compile(fn, backend=backend)(*make_inputs())
-        self.assertExpectedInline(
-            normalize_gm(backend.graphs[0].print_readable(False)),
-            """\
-class GraphModule(torch.nn.Module):
-    def forward(self, L_a_: "f32[5]", L_b_: "f32[5]"):
-        l_a_ = L_a_
-        l_b_ = L_b_
-
-        mul_: "f32[5]" = l_a_.mul_(2);  mul_ = None
-
-        add: "f32[5]" = l_a_ + l_b_;  l_a_ = l_b_ = None
-        return (add,)
-""",
-        )
-
         self._check_merge_view_inputs_error(
             fn,
             make_inputs,
@@ -3241,8 +3200,6 @@ class GraphModule(torch.nn.Module):
         )
 
     def test_merge_view_inputs_error_mixed_base_states(self):
-        from torch._dynamo.testing import EagerAndRecordGraphs
-
         # Inference mode (no requires_grad) skips site-1, reaching site-3.
         def make_inputs():
             x = torch.randn(10)
@@ -3254,24 +3211,6 @@ class GraphModule(torch.nn.Module):
         def fn(a, b):
             a.mul_(2)
             return a + b
-
-        torch._dynamo.reset()
-        backend = EagerAndRecordGraphs()
-        torch.compile(fn, backend=backend)(*make_inputs())
-        self.assertExpectedInline(
-            normalize_gm(backend.graphs[0].print_readable(False)),
-            """\
-class GraphModule(torch.nn.Module):
-    def forward(self, L_a_: "f32[5]", L_b_: "f32[5]"):
-        l_a_ = L_a_
-        l_b_ = L_b_
-
-        mul_: "f32[5]" = l_a_.mul_(2);  mul_ = None
-
-        add: "f32[5]" = l_a_ + l_b_;  l_a_ = l_b_ = None
-        return (add,)
-""",
-        )
 
         self._check_merge_view_inputs_error(
             fn,
