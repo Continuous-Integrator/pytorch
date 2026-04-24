@@ -363,6 +363,11 @@ def smoke_test_cuda(
             )
 
         print(f"torch cuda: {torch.version.cuda}")
+        cuda_compiled_version = torch._C._cuda_getCompiledVersion()
+        cuda_major = cuda_compiled_version // 1000
+        cuda_minor = (cuda_compiled_version // 10) % 100
+        cuda_patch = cuda_compiled_version % 10
+        print(f"torch cuda full version: {cuda_major}.{cuda_minor}.{cuda_patch}")
         torch.cuda.init()
         print("CUDA initialized successfully")
         print(f"Number of CUDA devices: {torch.cuda.device_count()}")
