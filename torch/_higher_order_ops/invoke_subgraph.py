@@ -571,7 +571,7 @@ def trace_joint_graph_as_bwd(
                     )(*joint_operands)
 
 
-def get_non_differentiable_indices(subgraph) -> set[int]:
+def get_non_differentiable_indices(subgraph) -> list[int]:
     """Inspect a subgraph's output node metadata to find outputs that
     were non-differentiable (requires_grad=False) during Dynamo tracing.
 
@@ -588,23 +588,23 @@ def get_non_differentiable_indices(subgraph) -> set[int]:
     non-differentiable status at the outer level.
     """
     if not isinstance(subgraph, torch.fx.GraphModule):
-        return set()
+        return []
 
     output_nodes = [n for n in subgraph.graph.nodes if n.op == "output"]
     if not output_nodes:
-        return set()
+        return []
 
     output_args = output_nodes[0].args[0]
     if not isinstance(output_args, (tuple, list)):
-        return set()
+        output_args = [output_args]
 
-    non_differentiable: set[int] = set()
+    non_differentiable: list[int] = []
     for out_idx, arg in enumerate(output_args):
         if not isinstance(arg, torch.fx.Node):
             continue
         example = arg.meta.get("example_value")
         if isinstance(example, torch.Tensor) and not example.requires_grad:
-            non_differentiable.add(out_idx)
+            non_differentiable.append(out_idx)
 
     return non_differentiable
 
@@ -659,7 +659,8 @@ class InvokeSubgraphAutogradOp(torch.autograd.Function):
         non_differentiable_indices = get_non_differentiable_indices(subgraph)
         if non_differentiable_indices:
             non_differentiable = [
-                out[i] for i in non_differentiable_indices
+                out[i]
+                for i in non_differentiable_indices
                 if isinstance(out[i], torch.Tensor)
             ]
             if non_differentiable:
@@ -686,11 +687,17 @@ class InvokeSubgraphAutogradOp(torch.autograd.Function):
         filtered_grad_outs = []
         for idx, o in enumerate(grad_outs):
             if o is None:
-                if idx not in output_metadata.indexes_with_symint and idx not in non_differentiable_indices:
+                if (
+                    idx not in output_metadata.indexes_with_symint
+                    and idx not in non_differentiable_indices
+                ):
                     raise AssertionError(
                         f"unexpected None grad_out at index {idx}, not in indexes_with_symint"
                     )
-            elif idx in output_metadata.indexes_with_no_grad or idx in non_differentiable_indices:
+            elif (
+                idx in output_metadata.indexes_with_no_grad
+                or idx in non_differentiable_indices
+            ):
                 # Deliberately skip over the grad_outs which we know should be
                 # None because the corresponding fwd_out does not require_grad.
                 pass
