@@ -24,11 +24,7 @@ from torch.testing._internal.common_device_type import (
 )
 from torch.testing._internal.common_dtype import floating_types_and
 from torch.testing._internal.common_utils import run_tests
-from torch.testing._internal.opinfo.core import (
-    DecorateInfo,
-    OpInfo,
-    SampleInput,
-)
+from torch.testing._internal.opinfo.core import DecorateInfo, OpInfo, SampleInput
 
 
 def sample_inputs_triton_bmm_outer_product(
@@ -184,7 +180,9 @@ triton_bmm_outer_product_opinfo = OpInfo(
             "TestTags",
         ),
         DecorateInfo(
-            unittest.skip("Triton kernel not introspectable for conjugate/negate views"),
+            unittest.skip(
+                "Triton kernel not introspectable for conjugate/negate views"
+            ),
             "TestMathBits",
         ),
         # Sample generator only targets the primary CUDA device.
