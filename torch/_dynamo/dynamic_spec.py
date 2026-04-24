@@ -27,15 +27,10 @@ symbolically proven, with a change of introducing a clone.
 
 For more info see
 https://dev-discuss.pytorch.org/t/backed-to-unbacked-from-guardable-to-guardless-shapes-in-pytorch/3333.
-
-.. TODO::
-
-    Expand this documentation once ``TensorSpec`` and ``ModelSpec`` land, with
-    end-to-end examples covering per-tensor and per-model specifications.
 """
 
 import enum
-from typing import Any
+from typing import Any, ClassVar, NoReturn
 
 
 __all__ = ["IntSpecType", "IntSpec"]
@@ -64,25 +59,68 @@ class IntSpec:
     """Shape specification for a single integer (dimension size or scalar arg).
 
     Constructed via one of the three mode-specific classmethod factories —
-    :meth:`static`, :meth:`backed`, :meth:`unbacked`. The mode is required at
-    construction time and cannot be changed afterwards.
+    :meth:`static`, :meth:`backed`, :meth:`unbacked` — or by calling the
+    constructor directly with an explicit :class:`IntSpecType`. The mode must
+    be supplied at construction time; there is no valid "unspecified" mode.
+
+    An :class:`IntSpec` is **immutable** once constructed. All fields —
+    ``name``, ``type``, ``min``, ``max``, ``value``, ``guarding_hint``,
+    ``optimization_hint`` — are fixed at construction time. Attempting to
+    reassign any of them (including the private ``_type``, ``_value``, etc.
+    backing slots) raises :class:`AttributeError`. To produce a spec with
+    different values, construct a new instance or use a fluent setter (e.g.
+    ``spec.guarding_hint(64)``), which returns a fresh :class:`IntSpec`.
+
+    **Why immutable for every field, not just `type`.** From a pure JIT
+    correctness standpoint only ``type`` (mode) is a hard semantic commitment
+    — ``value`` / ``guarding_hint`` / ``optimization_hint`` are tuning knobs
+    whose mutation would only shift specialization or autotuning decisions.
+    But AOT flows (``torch.export``, ``AOTInductor``) snapshot the spec's
+    fields into the compiled artifact at capture time: mutating a hint after
+    export would silently desync the live spec from the sealed artifact
+    (compiled code says 32, live spec says 64, no error signal). Compilation
+    caches have the same requirement — cache keys must be content-addressed,
+    not reference-addressed, which is only safe if the spec's identity can't
+    drift. Rather than partition the invariant by consumer, the class holds
+    the stronger one uniformly; incremental updates go through
+    ``_replace`` / fluent setters, which yield fresh instances.
 
     Example::
 
+        IntSpec("x", IntSpecType.STATIC, value=10)
         IntSpec.static("x", value=10)
         IntSpec.backed("batch", min=1, max=64, guarding_hint=32)
         IntSpec.unbacked("seq", min=1, max=2048, optimization_hint=512)
-
-    The ``__init__`` constructor is used by the factories and by callers that
-    need to round-trip a spec via its fields; external users should prefer
-    the factories.
     """
+
+    # Slot annotations. Pyrefly / mypy can't see the backing slots because
+    # ``__init__`` populates them via ``object.__setattr__(self, "<name>", ...)``
+    # with string literals to bypass our own ``__setattr__`` override. These
+    # annotations make the slot types visible to static checkers without
+    # creating class-level values.
+    _name: str | None
+    _type: IntSpecType
+    _min: int | None
+    _max: int | None
+    _value: int | None
+    _guarding_hint: int | None
+    _optimization_hint: int | None
+
+    __slots__ = (
+        "_name",
+        "_type",
+        "_min",
+        "_max",
+        "_value",
+        "_guarding_hint",
+        "_optimization_hint",
+    )
 
     def __init__(
         self,
-        name: str | None = None,
-        *,
+        name: str | None,
         type: IntSpecType,
+        *,
         min: int | None = None,
         max: int | None = None,
         value: int | None = None,
@@ -91,53 +129,87 @@ class IntSpec:
     ) -> None:
         if not isinstance(type, IntSpecType):
             raise TypeError(f"IntSpec.type must be an IntSpecType, got {type!r}")
-        self.name = name
-        self._type = type
-        self._min = min
-        self._max = max
-        self._value = value
-        self._guarding_hint = guarding_hint
-        self._optimization_hint = optimization_hint
+        # Route each argument to the right slot by type. Catches e.g.
+        # ``IntSpec.static(10)`` where 10 would otherwise silently bind to
+        # ``name``.
+        if name is not None and not isinstance(name, str):
+            raise TypeError(
+                f"IntSpec.name must be str or None, got {name.__class__.__name__}; "
+                f"if you meant to pass a value, use a keyword argument "
+                f"(e.g. IntSpec.static(value=10))"
+            )
+        for field_name, field_val in (
+            ("min", min),
+            ("max", max),
+            ("value", value),
+            ("guarding_hint", guarding_hint),
+            ("optimization_hint", optimization_hint),
+        ):
+            if field_val is not None and (
+                not isinstance(field_val, int) or isinstance(field_val, bool)
+            ):
+                raise TypeError(
+                    f"IntSpec.{field_name} must be int or None, got "
+                    f"{field_val.__class__.__name__}"
+                )
+        # Bypass our own __setattr__ (which blocks all writes post-construction)
+        # by going through object.__setattr__ during initialization.
+        setattr_ = object.__setattr__
+        setattr_(self, "_name", name)
+        setattr_(self, "_type", type)
+        setattr_(self, "_min", min)
+        setattr_(self, "_max", max)
+        setattr_(self, "_value", value)
+        setattr_(self, "_guarding_hint", guarding_hint)
+        setattr_(self, "_optimization_hint", optimization_hint)
         self._validate()
 
+    def __setattr__(self, key: str, value: Any) -> NoReturn:
+        raise AttributeError(f"IntSpec is immutable; cannot set attribute {key!r}")
+
+    def __delattr__(self, key: str) -> NoReturn:
+        raise AttributeError(f"IntSpec is immutable; cannot delete attribute {key!r}")
+
     # -- validation --------------------------------------------------------
+    #
+    # Per-mode field rules are expressed as two tables instead of a branching
+    # tree: ``_ALLOWED_FIELDS`` lists which non-identity fields each mode
+    # accepts, and ``_FIELD_REJECT_MESSAGE`` holds the user-facing message
+    # for every field that can be rejected. ``_validate`` walks each set
+    # field and rejects any that isn't allowed for the mode. Cross-field
+    # checks (like ``min <= max``) are spelled out below the loop.
+
+    _ALLOWED_FIELDS: ClassVar[dict[IntSpecType, frozenset[str]]] = {
+        IntSpecType.STATIC: frozenset({"value"}),
+        IntSpecType.BACKED: frozenset({"min", "max", "guarding_hint"}),
+        IntSpecType.UNBACKED: frozenset({"min", "max", "optimization_hint"}),
+    }
+
+    _FIELD_REJECT_MESSAGE: ClassVar[dict[str, str]] = {
+        "value": "value is only valid for STATIC IntSpec",
+        "guarding_hint": "guarding_hint is only valid for BACKED IntSpec",
+        "optimization_hint": "optimization_hint is only valid for UNBACKED IntSpec",
+        "min": "min/max are only valid for BACKED/UNBACKED IntSpec, not STATIC",
+        "max": "min/max are only valid for BACKED/UNBACKED IntSpec, not STATIC",
+    }
 
     def _validate(self) -> None:
-        if self._type is IntSpecType.STATIC:
-            if self._min is not None or self._max is not None:
-                raise ValueError(
-                    "min/max are only valid for BACKED/UNBACKED IntSpec, not STATIC"
-                )
-            if self._guarding_hint is not None:
-                raise ValueError("guarding_hint is only valid for BACKED IntSpec")
-            if self._optimization_hint is not None:
-                raise ValueError("optimization_hint is only valid for UNBACKED IntSpec")
-        elif self._type is IntSpecType.BACKED:
-            if self._value is not None:
-                raise ValueError("value is only valid for STATIC IntSpec")
-            if self._optimization_hint is not None:
-                raise ValueError("optimization_hint is only valid for UNBACKED IntSpec")
-            if (
-                self._min is not None
-                and self._max is not None
-                and self._min > self._max
-            ):
-                raise ValueError(
-                    f"min must be <= max, got min={self._min}, max={self._max}"
-                )
-        elif self._type is IntSpecType.UNBACKED:
-            if self._value is not None:
-                raise ValueError("value is only valid for STATIC IntSpec")
-            if self._guarding_hint is not None:
-                raise ValueError("guarding_hint is only valid for BACKED IntSpec")
-            if (
-                self._min is not None
-                and self._max is not None
-                and self._min > self._max
-            ):
-                raise ValueError(
-                    f"min must be <= max, got min={self._min}, max={self._max}"
-                )
+        allowed = IntSpec._ALLOWED_FIELDS[self._type]
+        fields = {
+            "min": self._min,
+            "max": self._max,
+            "value": self._value,
+            "guarding_hint": self._guarding_hint,
+            "optimization_hint": self._optimization_hint,
+        }
+        for name, val in fields.items():
+            if val is None or name in allowed:
+                continue
+            raise ValueError(IntSpec._FIELD_REJECT_MESSAGE[name])
+        if self._min is not None and self._max is not None and self._min > self._max:
+            raise ValueError(
+                f"min must be <= max, got min={self._min}, max={self._max}"
+            )
 
     # -- factories ---------------------------------------------------------
 
@@ -195,43 +267,60 @@ class IntSpec:
             optimization_hint=optimization_hint,
         )
 
-    # -- read-only properties ----------------------------------------------
+    # -- identity (read) ---------------------------------------------------
+
+    @property
+    def name(self) -> str | None:
+        return self._name
 
     @property
     def type(self) -> IntSpecType:
         return self._type
 
-    @property
-    def min(self) -> int | None:
-        return self._min
+    # -- fluent setters ----------------------------------------------------
+    #
+    # Each returns a new :class:`IntSpec` with the given field replaced; the
+    # receiver is unchanged. Per-mode validity (e.g. ``guarding_hint`` only
+    # on BACKED) is enforced by the constructor, so e.g.
+    # ``IntSpec.static("x").guarding_hint(10)`` raises ``ValueError``.
+    #
+    # Users who want to inspect a spec's field values should use ``repr()``;
+    # the backing-slot reads (``_min``/``_max``/etc.) are private to the
+    # module and consumed by the dynamo integration (and privileged tests
+    # that verify the integration landed a value in the right slot).
 
-    @property
-    def max(self) -> int | None:
-        return self._max
+    # Private: only the five fluent setters below call this, each passing
+    # one of the five replaceable data fields by name. ``name`` and ``type``
+    # stay pinned from the original instance — changing them would not be
+    # a "replace" operation. External use is unsupported — users should
+    # chain fluent setters directly.
+    def _replace(self, **overrides: int | None) -> "IntSpec":
+        return IntSpec(
+            self._name,
+            self._type,
+            min=overrides.get("min", self._min),
+            max=overrides.get("max", self._max),
+            value=overrides.get("value", self._value),
+            guarding_hint=overrides.get("guarding_hint", self._guarding_hint),
+            optimization_hint=overrides.get(
+                "optimization_hint", self._optimization_hint
+            ),
+        )
 
-    @property
-    def value(self) -> int | None:
-        if self._type is not IntSpecType.STATIC:
-            raise AttributeError(
-                f"value is only defined for STATIC IntSpec, got {self._type.value}"
-            )
-        return self._value
+    def min(self, value: int) -> "IntSpec":
+        return self._replace(min=value)
 
-    @property
-    def guarding_hint(self) -> int | None:
-        if self._type is not IntSpecType.BACKED:
-            raise AttributeError(
-                f"guarding_hint is only defined for BACKED IntSpec, got {self._type.value}"
-            )
-        return self._guarding_hint
+    def max(self, value: int) -> "IntSpec":
+        return self._replace(max=value)
 
-    @property
-    def optimization_hint(self) -> int | None:
-        if self._type is not IntSpecType.UNBACKED:
-            raise AttributeError(
-                f"optimization_hint is only defined for UNBACKED IntSpec, got {self._type.value}"
-            )
-        return self._optimization_hint
+    def value(self, value: int) -> "IntSpec":
+        return self._replace(value=value)
+
+    def guarding_hint(self, value: int) -> "IntSpec":
+        return self._replace(guarding_hint=value)
+
+    def optimization_hint(self, value: int) -> "IntSpec":
+        return self._replace(optimization_hint=value)
 
     # -- dunder ------------------------------------------------------------
 
@@ -239,7 +328,7 @@ class IntSpec:
         parts: list[str] = []
         if self.name is not None:
             parts.append(f"name={self.name!r}")
-        parts.append(f"type={self._type.value}")
+        parts.append(f"type={self._type.name}")
         if self._value is not None:
             parts.append(f"value={self._value}")
         if self._min is not None:
@@ -251,101 +340,3 @@ class IntSpec:
         if self._optimization_hint is not None:
             parts.append(f"optimization_hint={self._optimization_hint}")
         return f"IntSpec({', '.join(parts)})"
-
-    def __eq__(self, other: object) -> bool:
-        if not isinstance(other, IntSpec):
-            return NotImplemented
-        return (
-            self.name == other.name
-            and self._type == other._type
-            and self._min == other._min
-            and self._max == other._max
-            and self._value == other._value
-            and self._guarding_hint == other._guarding_hint
-            and self._optimization_hint == other._optimization_hint
-        )
-
-    def __hash__(self) -> int:
-        return hash(
-            (
-                self.name,
-                self._type,
-                self._min,
-                self._max,
-                self._value,
-                self._guarding_hint,
-                self._optimization_hint,
-            )
-        )
-
-
-# TODO: temporary scaffolding. laithsakka flagged (PR review) that translating
-# specs into tensor properties via mark_*:
-#   - does not work for scalar int inputs (a primary IntSpec use case),
-#   - silently installs guards that haven't been decided on.
-# Replace with proper plumbing through the compile context in the follow-up
-# integration PR, then delete _apply_intspec_to_tensor and
-# _apply_dynamic_shapes.
-def _apply_intspec_to_tensor(tensor: Any, shape_spec: Any) -> None:
-    """Apply per-dimension IntSpec entries to a tensor via ``mark_*``."""
-    from torch._dynamo.decorators import mark_static, mark_unbacked, maybe_mark_dynamic
-
-    if isinstance(shape_spec, dict):
-        items: Any = shape_spec.items()
-    elif isinstance(shape_spec, (list, tuple)):
-        items = enumerate(shape_spec)
-    else:
-        return
-
-    for idx, spec in items:
-        if spec is None:
-            continue
-        if not isinstance(spec, IntSpec):
-            raise TypeError(
-                f"Expected IntSpec or None in dynamic_shapes, got {type(spec).__name__}"
-            )
-        if spec.type is IntSpecType.STATIC:
-            mark_static(tensor, idx)
-        elif spec.type is IntSpecType.BACKED:
-            maybe_mark_dynamic(tensor, idx)
-        elif spec.type is IntSpecType.UNBACKED:
-            mark_unbacked(tensor, idx)
-
-
-def _apply_dynamic_shapes(
-    compiled: Any, original: Any, dynamic_shapes: dict[str, Any]
-) -> Any:
-    """Wrap a compiled callable to apply ``dynamic_shapes`` IntSpec on each call.
-
-    The wrapper is decorated with :func:`torch._dynamo.disable` so that dynamo
-    does not attempt to trace the tensor-marking logic. The inner
-    ``compiled()`` call re-enters dynamo normally.
-    """
-    import functools
-    import inspect
-
-    import torch
-    import torch._dynamo
-
-    sig = inspect.signature(
-        original.forward if isinstance(original, torch.nn.Module) else original
-    )
-
-    @torch._dynamo.disable
-    @functools.wraps(
-        compiled if not isinstance(compiled, torch.nn.Module) else compiled.forward
-    )
-    def wrapper(*args: Any, **kwargs: Any) -> Any:
-        bound = sig.bind(*args, **kwargs)
-        bound.apply_defaults()
-        for name, shape_spec in dynamic_shapes.items():
-            if name in bound.arguments:
-                arg = bound.arguments[name]
-                if isinstance(arg, torch.Tensor):
-                    _apply_intspec_to_tensor(arg, shape_spec)
-        return compiled(*bound.args, **bound.kwargs)
-
-    if isinstance(compiled, torch.nn.Module):
-        compiled.forward = wrapper  # type: ignore[method-assign]
-        return compiled
-    return wrapper
