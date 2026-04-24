@@ -157,21 +157,15 @@ class OperatorBase:
 
         return inner
 
-    def py_impl_traceable_wrapper_subclass_fallback(
+    def py_traceable_wrapper_subclass_fallback(
         self, fn: Callable[_P, _T]
     ) -> Callable[_P, _T]:
         """
-        Registers a fallback handler for all traceable wrapper subclasses.
+        Registers a fallback handler for traceable wrapper subclasses.
 
-        This handler will be called for any traceable wrapper subclass that doesn't
-        have a specific registration via py_impl. This is useful for HOPs that want
-        to handle all tensor subclasses generically using __tensor_flatten__ and
-        __tensor_unflatten__.
+        The handler is called with (subclass_type, *args, **kwargs) when no
+        specific py_impl registration exists for the dispatching subclass type.
         """
-        if self._traceable_wrapper_subclass_fallback is not None:
-            raise AssertionError(
-                "traceable_wrapper_subclass_fallback already registered"
-            )
         self._traceable_wrapper_subclass_fallback = fn
         return fn
 
@@ -493,7 +487,7 @@ class HigherOrderOperator(OperatorBase, abc.ABC):
 
                     if is_traceable_wrapper_subclass_type(subclass_type):
                         result = self._traceable_wrapper_subclass_fallback(
-                            *args, **kwargs
+                            subclass_type, *args, **kwargs
                         )
                     else:
                         raise NotImplementedError(
