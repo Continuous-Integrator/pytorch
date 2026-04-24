@@ -8,7 +8,6 @@ import torch.distributed as dist
 import torch.distributed._functional_collectives as funcol
 from torch.distributed._local_tensor import LocalTensorMode
 from torch.distributed.spmd_types import (
-    assert_type as spmd_assert_type,
     get_local_type,
     has_local_type,
     I,
@@ -586,26 +585,28 @@ class TestLocalMapSpmdTypes(unittest.TestCase):
         wrapped(X_dt)
 
     def test_type_error_on_invalid_op(self):
-        """Type checking catches invalid type combinations (I + V)."""
+        """I + V is invalid: adding a Shard input to a Replicate(grad=Replicate) input."""
         X_dt = DTensor.from_local(
             torch.randn(4, 8), self.mesh, [Shard(0)], run_check=False
         )
+        W_dt = DTensor.from_local(
+            torch.randn(4, 8), self.mesh, [Replicate()], run_check=False
+        )
 
-        def bad_fn(X):
-            bogus = torch.ones_like(X)
-            spmd_assert_type(bogus, {self.mesh.get_group("tp"): I})
-            return X + bogus
+        def add_fn(X, W):
+            return X + W
 
         wrapped = local_map(
-            bad_fn,
+            add_fn,
             out_placements=[Shard(0)],
-            in_placements=([Shard(0)],),
+            in_placements=([Shard(0)], [Replicate()]),
+            in_grad_placements=([Shard(0)], [Replicate()]),
             device_mesh=self.mesh,
             spmd_types=True,
         )
 
         with self.assertRaises(SpmdTypeError):
-            wrapped(X_dt)
+            wrapped(X_dt, W_dt)
 
 
 if __name__ == "__main__":
