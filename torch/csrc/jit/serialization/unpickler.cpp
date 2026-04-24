@@ -3,6 +3,7 @@
 #ifdef USE_RPC
 #include <torch/csrc/distributed/rpc/rref_context.h>
 #endif
+#include <c10/util/safe_numerics.h>
 #include <torch/csrc/jit/api/function_impl.h>
 #include <torch/csrc/jit/mobile/type_parser.h>
 #include <torch/csrc/jit/serialization/storage_context.h>
@@ -568,7 +569,14 @@ PickleOpCode Unpickler::readInstruction() {
         storage = storage_context_->getStorage(key);
       } else {
         int64_t numel = args.at(4).toInt();
+        size_t nbytes = 0;
         auto dtype = scalarTypeToTypeMeta(type);
+
+        TORCH_CHECK(numel >= 0, "Numel can not be negative");
+        TORCH_CHECK(
+            !c10::mul_overflows(
+                static_cast<size_t>(numel), dtype.itemsize(), &nbytes),
+            "Tensor storage size overflowed");
 
         at::DataPtr storage_ptr;
         if (numel > 0) {
@@ -580,7 +588,7 @@ PickleOpCode Unpickler::readInstruction() {
 
         storage = at::Storage(
             c10::Storage::use_byte_size_t(),
-            numel * dtype.itemsize(),
+            nbytes,
             std::move(storage_ptr),
             /*allocator=*/nullptr,
             /*resizable=*/false); // NB: we didn't set any allocator for the
