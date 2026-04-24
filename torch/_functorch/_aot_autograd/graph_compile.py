@@ -747,7 +747,7 @@ def _get_partition_fn(
         ].partitioner
         if hop_partition_fn is not None:
             if callable(hop_partition_fn):
-                return True, hop_partition_fn
+                return True, hop_partition_fn  # pyrefly: ignore[bad-return]
             if not isinstance(hop_partition_fn, str):
                 raise AssertionError(
                     f"expected hop_partition_fn to be str, got {type(hop_partition_fn)}"
