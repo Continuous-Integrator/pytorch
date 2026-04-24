@@ -1675,7 +1675,13 @@ class SliceVariable(VariableTracker):
     def as_python_constant(self) -> slice:
         return slice(*[guard_if_dyn(x) for x in self.items])
 
+    def is_hashable(self) -> bool:
+        # Slices became hashable in Python 3.12 (CPython slicehash).
+        return sys.version_info >= (3, 12)
+
     def hash_impl(self, tx: "InstructionTranslator") -> tuple[int, bool]:
+        if sys.version_info < (3, 12):
+            raise_type_error(tx, "unhashable type: 'slice'")
         # CPython slicehash: https://github.com/python/cpython/blob/e76aa128fe/Objects/sliceobject.c#L667
         return hash(self.as_python_constant()), False
 

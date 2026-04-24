@@ -81,6 +81,7 @@ from ..utils import (
     has_torch_function,
     is_lru_cache_wrapped_function,
     is_namedtuple_cls,
+    is_pybind11_enum_member,
     is_wrapper_or_member_descriptor,
     istype,
     list_methods,
@@ -2584,7 +2585,15 @@ class UserDefinedObjectVariable(UserDefinedVariable):
                         ],
                     )
                 return result.as_python_constant(), False
-            if cls.__module__ == "builtins" or type_hash in _safe_c_tp_hash_funcs():
+            try:
+                in_allowlist = type_hash in _safe_c_tp_hash_funcs()
+            except TypeError:
+                in_allowlist = False
+            if (
+                cls.__module__ == "builtins"
+                or in_allowlist
+                or is_pybind11_enum_member(self.value)
+            ):
                 # C hash we know is safe to call at trace time.
                 break
             unimplemented(

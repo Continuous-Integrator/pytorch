@@ -1,6 +1,8 @@
 # Owner(s): ["module: dynamo"]
 """Tests for hash_impl: unified hash() / __hash__ protocol in Dynamo."""
 
+import sys
+
 import torch
 import torch._dynamo.test_case
 import torch._dynamo.testing
@@ -139,7 +141,12 @@ class TpHashTests(torch._dynamo.test_case.TestCase):
 
     def test_hash_slice(self):
         """SliceVariable: CPython slicehash (hashable in 3.12+)."""
-        self._assert_hash_equals(slice(1, 10, 2))
+        if sys.version_info >= (3, 12):
+            self._assert_hash_equals(slice(1, 10, 2))
+        else:
+            self._assert_hash_raises(
+                lambda: slice(1, 10, 2), expect_msg="unhashable type: 'slice'"
+            )
 
     # --- Unhashable types raise TypeError ---
 

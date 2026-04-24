@@ -473,6 +473,23 @@ class FakeIdVariable(VariableTracker):
             return self.value == other.as_python_constant()
         return False
 
+    def call_method(
+        self,
+        tx: InstructionTranslator,
+        name: str,
+        args: list[VariableTracker],
+        kwargs: dict[str, VariableTracker],
+    ) -> VariableTracker:
+        from ..utils import cmp_name_to_op_mapping
+
+        if name in cmp_name_to_op_mapping and len(args) == 1 and not kwargs:
+            other = args[0]
+            if isinstance(other, (FakeIdVariable, ConstantVariable)):
+                return ConstantVariable.create(
+                    cmp_name_to_op_mapping[name](self.value, other.as_python_constant())
+                )
+        return super().call_method(tx, name, args, kwargs)
+
     def reconstruct(self, codegen: Any) -> None:
         unimplemented(
             gb_type="Reconstruction of FakeIdVariable",

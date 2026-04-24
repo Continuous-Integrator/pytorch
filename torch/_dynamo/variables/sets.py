@@ -137,6 +137,7 @@ class SetVariable(VariableTracker):
 
     def has_new_items(self) -> bool:
         return self.should_reconstruct_all or any(
+            # pyrefly: ignore [bad-argument-type]
             self.is_new_item(self.original_items.get(key.vt), value)
             for key, value in self.items.items()
         )
