@@ -38,6 +38,7 @@
 #include <ATen/ops/_addmm_activation.h>
 #include <ATen/ops/_embedding_bag.h>
 #include <ATen/ops/_fft_c2c.h>
+#include <ATen/ops/_scaled_dot_product_attention_math_for_mps.h>
 #include <ATen/ops/_scaled_dot_product_efficient_attention.h>
 #include <ATen/ops/_scaled_dot_product_flash_attention.h>
 #include <ATen/ops/_scaled_mm.h>
@@ -701,6 +702,61 @@ AOTITorchError aoti_torch__scaled_dot_product_flash_attention(
       ret6,
       ret7,
       ret8);
+}
+
+AOTITorchError
+aoti_torch_mps__scaled_dot_product_attention_math_for_mps_v2(
+    AtenTensorHandle query,
+    AtenTensorHandle key,
+    AtenTensorHandle value,
+    AtenTensorHandle* attn_mask,
+    double dropout_p,
+    int32_t is_causal,
+    AtenTensorHandle* dropout_mask,
+    double* scale,
+    int32_t enable_gqa,
+    AtenTensorHandle* ret0,
+    AtenTensorHandle* ret1) {
+  AOTI_TORCH_CONVERT_EXCEPTION_TO_ERROR_CODE({
+    auto tmp_result = at::_scaled_dot_product_attention_math_for_mps(
+        *tensor_handle_to_tensor_pointer(query),
+        *tensor_handle_to_tensor_pointer(key),
+        *tensor_handle_to_tensor_pointer(value),
+        resolve_tensor_dispatch_flags(attn_mask),
+        dropout_p,
+        is_causal,
+        resolve_tensor_dispatch_flags(dropout_mask),
+        pointer_to_optional<double>(scale),
+        enable_gqa);
+    *ret0 = new_tensor_handle(std::move(std::get<0>(tmp_result)));
+    *ret1 = new_tensor_handle(std::move(std::get<1>(tmp_result)));
+  });
+}
+
+AOTITorchError
+aoti_torch_mps__scaled_dot_product_attention_math_for_mps(
+    AtenTensorHandle query,
+    AtenTensorHandle key,
+    AtenTensorHandle value,
+    AtenTensorHandle* attn_mask,
+    double dropout_p,
+    int32_t is_causal,
+    AtenTensorHandle* dropout_mask,
+    double* scale,
+    AtenTensorHandle* ret0,
+    AtenTensorHandle* ret1) {
+  return aoti_torch_mps__scaled_dot_product_attention_math_for_mps_v2(
+      query,
+      key,
+      value,
+      attn_mask,
+      dropout_p,
+      is_causal,
+      dropout_mask,
+      scale,
+      /*enable_gqa=*/0,
+      ret0,
+      ret1);
 }
 
 AOTITorchError aoti_torch__scaled_dot_product_efficient_attention(
