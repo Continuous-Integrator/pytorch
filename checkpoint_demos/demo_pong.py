@@ -6,13 +6,11 @@ Run via ``run_ping_pong.py`` — don't launch directly.
 """
 
 import argparse
-import sys
 import time
 
-import torch
-
-sys.path.insert(0, __file__.rsplit("/", 1)[0])
 from baton import Baton
+
+import torch
 
 
 def log(*args):
@@ -55,19 +53,25 @@ def main():
         del big
         torch.cuda.synchronize()
 
-        log(f"iter {i}: pre-release y.sum={y.sum().item():.4f}, ptr={hex(y.data_ptr())}")
+        log(
+            f"iter {i}: pre-release y.sum={y.sum().item():.4f}, ptr={hex(y.data_ptr())}"
+        )
 
         t0 = time.monotonic()
         baton.release()
-        log(f"iter {i}: released (checkpoint took {time.monotonic()-t0:.2f}s); waiting for ping...")
+        log(
+            f"iter {i}: released (checkpoint took {time.monotonic() - t0:.2f}s); waiting for ping..."
+        )
 
         took = baton.acquire()
         if not took:
             log("ping is done; exiting")
             break
-        log(f"iter {i}: reacquired after {time.monotonic()-t0:.2f}s total")
+        log(f"iter {i}: reacquired after {time.monotonic() - t0:.2f}s total")
 
-        assert y.data_ptr() == ptr, f"pointer changed! {hex(ptr)} -> {hex(y.data_ptr())}"
+        assert y.data_ptr() == ptr, (
+            f"pointer changed! {hex(ptr)} -> {hex(y.data_ptr())}"
+        )
         torch.testing.assert_close(y.cpu(), baseline)
         log(f"iter {i}: post-restore y.sum={y.sum().item():.4f} (OK)")
 

@@ -28,11 +28,7 @@ BENCH = os.path.join(HERE, "bench_baton.py")
 
 def sweep_A_size(full: bool):
     """Total size sweep (both roles symmetric)."""
-    sizes = (
-        [64, 256, 1024, 4096, 16384, 40960]
-        if full
-        else [64, 256]
-    )
+    sizes = [64, 256, 1024, 4096, 16384, 40960] if full else [64, 256]
     for size_mb in sizes:
         config_id = f"size_mb={size_mb}"
         yield (
@@ -45,11 +41,7 @@ def sweep_A_size(full: bool):
 
 def sweep_B_count(full: bool):
     """Tensor count sweep (both roles symmetric, total size fixed at 1 GiB)."""
-    counts = (
-        [1, 10, 100, 1_000, 10_000, 100_000]
-        if full
-        else [1, 10]
-    )
+    counts = [1, 10, 100, 1_000, 10_000, 100_000] if full else [1, 10]
     for n in counts:
         config_id = f"num_tensors={n}"
         yield (
@@ -140,14 +132,24 @@ def _run_pair(sweep_name, config_id, ping_cfg, pong_cfg, iters, out_csv, gpu):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--full", action="store_true",
-                    help="Run the large sweep configs (tens of minutes).")
-    ap.add_argument("--iters", type=int, default=3,
-                    help="Hop iterations per config (iter 0 = warmup).")
+    ap.add_argument(
+        "--full",
+        action="store_true",
+        help="Run the large sweep configs (tens of minutes).",
+    )
+    ap.add_argument(
+        "--iters",
+        type=int,
+        default=3,
+        help="Hop iterations per config (iter 0 = warmup).",
+    )
     ap.add_argument("--out-csv", default="bench_results.csv")
-    ap.add_argument("--gpu", type=int, default=0,
-                    help="Pin both ping and pong to this GPU via "
-                         "CUDA_VISIBLE_DEVICES (default 0).")
+    ap.add_argument(
+        "--gpu",
+        type=int,
+        default=0,
+        help="Pin both ping and pong to this GPU via CUDA_VISIBLE_DEVICES (default 0).",
+    )
     args = ap.parse_args()
 
     # Fresh CSV each run.
@@ -164,10 +166,16 @@ def main():
                 flush=True,
             )
             t0 = time.monotonic()
-            _run_pair(sweep_name, config_id, ping_cfg, pong_cfg,
-                      args.iters, args.out_csv, args.gpu)
-            print(f"[run_bench]   done in {time.monotonic() - t0:.1f}s",
-                  flush=True)
+            _run_pair(
+                sweep_name,
+                config_id,
+                ping_cfg,
+                pong_cfg,
+                args.iters,
+                args.out_csv,
+                args.gpu,
+            )
+            print(f"[run_bench]   done in {time.monotonic() - t0:.1f}s", flush=True)
             run_count += 1
 
     print(

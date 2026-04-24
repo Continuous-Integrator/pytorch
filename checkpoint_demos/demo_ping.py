@@ -6,13 +6,11 @@ Run via ``run_ping_pong.py`` — don't launch directly.
 """
 
 import argparse
-import sys
 import time
 
-import torch
-
-sys.path.insert(0, __file__.rsplit("/", 1)[0])
 from baton import Baton
+
+import torch
 
 
 def log(*args):
@@ -47,25 +45,33 @@ def main():
         x.sub_(1.0)
         torch.cuda.synchronize()
 
-        log(f"iter {i}: pre-release x.sum={x.sum().item():.4f}, ptr={hex(x.data_ptr())}")
+        log(
+            f"iter {i}: pre-release x.sum={x.sum().item():.4f}, ptr={hex(x.data_ptr())}"
+        )
         log(f"iter {i}: pre-release free VRAM = {torch.cuda.mem_get_info()[0]} B")
 
         # Yield the GPU.
         t0 = time.monotonic()
         baton.release()
-        log(f"iter {i}: released (checkpoint took {time.monotonic()-t0:.2f}s); waiting for pong...")
+        log(
+            f"iter {i}: released (checkpoint took {time.monotonic() - t0:.2f}s); waiting for pong..."
+        )
 
         # Now we own no GPU. Wait for pong to finish.
         took = baton.acquire()
         if not took:
             log("peer is done; exiting early")
             break
-        log(f"iter {i}: reacquired after {time.monotonic()-t0:.2f}s total")
+        log(f"iter {i}: reacquired after {time.monotonic() - t0:.2f}s total")
 
         # Verify pointer stability and value preservation.
-        assert x.data_ptr() == ptr, f"pointer changed! {hex(ptr)} -> {hex(x.data_ptr())}"
+        assert x.data_ptr() == ptr, (
+            f"pointer changed! {hex(ptr)} -> {hex(x.data_ptr())}"
+        )
         torch.testing.assert_close(x.cpu(), baseline)
-        log(f"iter {i}: post-restore x.sum={x.sum().item():.4f}, ptr={hex(x.data_ptr())} (OK)")
+        log(
+            f"iter {i}: post-restore x.sum={x.sum().item():.4f}, ptr={hex(x.data_ptr())} (OK)"
+        )
 
     log("all iterations done; signaling done")
     baton.done()

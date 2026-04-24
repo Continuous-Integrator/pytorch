@@ -16,10 +16,17 @@ import tempfile
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--iters", type=int, default=3)
-    ap.add_argument("--keep-dir", action="store_true",
-                    help="Don't delete baton dir on exit (useful for debugging)")
-    ap.add_argument("--gpu", type=int, default=0,
-                    help="Pin both processes to this GPU via CUDA_VISIBLE_DEVICES.")
+    ap.add_argument(
+        "--keep-dir",
+        action="store_true",
+        help="Don't delete baton dir on exit (useful for debugging)",
+    )
+    ap.add_argument(
+        "--gpu",
+        type=int,
+        default=0,
+        help="Pin both processes to this GPU via CUDA_VISIBLE_DEVICES.",
+    )
     args = ap.parse_args()
 
     here = os.path.dirname(os.path.abspath(__file__))
@@ -29,8 +36,7 @@ def main():
     # Seed the token so ping starts as the holder.
     with open(os.path.join(baton_dir, "token.tmp"), "w") as f:
         f.write("ping")
-    os.replace(os.path.join(baton_dir, "token.tmp"),
-               os.path.join(baton_dir, "token"))
+    os.replace(os.path.join(baton_dir, "token.tmp"), os.path.join(baton_dir, "token"))
 
     common = ["--baton-dir", baton_dir, "--iters", str(args.iters)]
     ping_cmd = [sys.executable, "-u", os.path.join(here, "demo_ping.py"), *common]
@@ -39,10 +45,16 @@ def main():
     env = os.environ.copy()
     env["CUDA_VISIBLE_DEVICES"] = str(args.gpu)
 
-    print(f"[orchestrator] launching ping: {' '.join(ping_cmd)} "
-          f"(CUDA_VISIBLE_DEVICES={args.gpu})", flush=True)
-    print(f"[orchestrator] launching pong: {' '.join(pong_cmd)} "
-          f"(CUDA_VISIBLE_DEVICES={args.gpu})", flush=True)
+    print(
+        f"[orchestrator] launching ping: {' '.join(ping_cmd)} "
+        f"(CUDA_VISIBLE_DEVICES={args.gpu})",
+        flush=True,
+    )
+    print(
+        f"[orchestrator] launching pong: {' '.join(pong_cmd)} "
+        f"(CUDA_VISIBLE_DEVICES={args.gpu})",
+        flush=True,
+    )
 
     # Both share this stdout/stderr so we see output interleaved.
     ping = subprocess.Popen(ping_cmd, env=env)

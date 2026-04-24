@@ -21,8 +21,12 @@ import time
 
 import torch
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from baton import Baton, checkpoint_self, restore_self  # noqa: E402
+
+sys.path.insert(
+    0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "checkpoint")
+)
+from baton import Baton
+from cuda_checkpoint import checkpoint_self, restore_self
 
 
 def log(role, *args):

@@ -23,8 +23,11 @@ def _p95(xs):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("csv", nargs="?", default="bench_results.csv")
-    ap.add_argument("--include-warmup", action="store_true",
-                    help="Include iter 0 (otherwise treated as warmup).")
+    ap.add_argument(
+        "--include-warmup",
+        action="store_true",
+        help="Include iter 0 (otherwise treated as warmup).",
+    )
     args = ap.parse_args()
 
     # key -> list of elapsed_ms
