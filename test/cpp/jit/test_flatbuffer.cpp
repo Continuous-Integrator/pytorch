@@ -28,8 +28,6 @@
 #include <torch/csrc/jit/serialization/import_export_functions.h>
 #include <unordered_set>
 
-#include <filesystem>
-
 #if defined(FB_XPLAT_BUILD) || defined(FBCODE_CAFFE2)
 #include <torch/csrc/jit/serialization/mobile_bytecode_generated_fbsource.h> // NOLINT
 namespace flatbuffers = flatbuffers_fbsource;
@@ -40,18 +38,6 @@ namespace flatbuffers = flatbuffers_fbsource;
 // Tests go in torch::jit
 namespace torch {
 namespace jit {
-
-static std::string resolveTestDataFile(
-    const char* sourceFile,
-    const char* relative) {
-  std::string srcDir(sourceFile);
-  srcDir = srcDir.substr(0, srcDir.find_last_of("/\\") + 1);
-  auto candidate = srcDir + relative;
-  if (std::filesystem::exists(candidate))
-    return candidate;
-  auto exeDir = std::filesystem::read_symlink("/proc/self/exe").parent_path();
-  return (exeDir / relative).string();
-}
 
 namespace {
 mobile::Module parse_mobile_module(

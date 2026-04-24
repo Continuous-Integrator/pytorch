@@ -23,23 +23,9 @@
 
 #include <unordered_set>
 
-#include <filesystem>
-
 // Tests go in torch::jit
 namespace torch {
 namespace jit {
-
-static std::string resolveTestDataFile(
-    const char* sourceFile,
-    const char* relative) {
-  std::string srcDir(sourceFile);
-  srcDir = srcDir.substr(0, srcDir.find_last_of("/\\") + 1);
-  auto candidate = srcDir + relative;
-  if (std::filesystem::exists(candidate))
-    return candidate;
-  auto exeDir = std::filesystem::read_symlink("/proc/self/exe").parent_path();
-  return (exeDir / relative).string();
-}
 
 TEST(LiteInterpreterDirectTest, UpsampleNearest2d) {
   Module m("m");
