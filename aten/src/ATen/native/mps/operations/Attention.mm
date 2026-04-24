@@ -445,20 +445,8 @@ std::tuple<Tensor, Tensor> _scaled_dot_product_attention_math_mps(const Tensor& 
                                                                   double dropout_p,
                                                                   bool is_causal,
                                                                   const std::optional<Tensor>& dropout_mask,
-                                                                  std::optional<double> scale) {
-  return _scaled_dot_product_attention_math_mps_v2(
-      query, key_, value_, attn_mask, dropout_p, is_causal, dropout_mask, scale, /*enable_gqa=*/false);
-}
-
-std::tuple<Tensor, Tensor> _scaled_dot_product_attention_math_mps_v2(const Tensor& query,
-                                                                     const Tensor& key_,
-                                                                     const Tensor& value_,
-                                                                     const std::optional<Tensor>& attn_mask,
-                                                                     double dropout_p,
-                                                                     bool is_causal,
-                                                                     const std::optional<Tensor>& dropout_mask,
-                                                                     std::optional<double> scale,
-                                                                     bool enable_gqa) {
+                                                                  std::optional<double> scale,
+                                                                  bool enable_gqa) {
   TORCH_CHECK_NOT_IMPLEMENTED(c10::isFloatingType(query.scalar_type()),
                               "scaled_dot_product_attention for MPS does not support dtype ",
                               query.scalar_type());

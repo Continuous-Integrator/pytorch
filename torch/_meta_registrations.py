@@ -6271,10 +6271,17 @@ def meta__scaled_dot_product_flash_attention_for_cpu_backward(
     return grad_q, grad_k, grad_v
 
 
-def _meta_sdpa_mps_impl(
+@register_meta([aten._scaled_dot_product_attention_math_for_mps])
+def meta__scaled_dot_product_attention_math_for_mps(
     query: Tensor,
     key: Tensor,
     value: Tensor,
+    attn_mask: Tensor | None = None,
+    dropout_p: float = 0.0,
+    is_causal: bool = False,
+    dropout_mask: Tensor | None = None,
+    scale: float | None = None,
+    enable_gqa: bool = False,
 ) -> tuple[Tensor, Tensor]:
     def ensure_4d(x):
         if x.dim() == 3:
@@ -6311,35 +6318,6 @@ def _meta_sdpa_mps_impl(
     # sdpa_vector_2pass_mps and sdpa_vector_fast_mps are intentionally left out.
     # See https://github.com/pytorch/pytorch/issues/177603 for additional context.
     return sdpa_general_mps()
-
-
-@register_meta([aten._scaled_dot_product_attention_math_for_mps])
-def meta__scaled_dot_product_attention_math_for_mps(
-    query: Tensor,
-    key: Tensor,
-    value: Tensor,
-    attn_mask: Tensor | None = None,
-    dropout_p: float = 0.0,
-    is_causal: bool = False,
-    dropout_mask: Tensor | None = None,
-    scale: float | None = None,
-) -> tuple[Tensor, Tensor]:
-    return _meta_sdpa_mps_impl(query, key, value)
-
-
-@register_meta([aten._scaled_dot_product_attention_math_for_mps_v2])
-def meta__scaled_dot_product_attention_math_for_mps_v2(
-    query: Tensor,
-    key: Tensor,
-    value: Tensor,
-    attn_mask: Tensor | None = None,
-    dropout_p: float = 0.0,
-    is_causal: bool = False,
-    dropout_mask: Tensor | None = None,
-    scale: float | None = None,
-    enable_gqa: bool = False,
-) -> tuple[Tensor, Tensor]:
-    return _meta_sdpa_mps_impl(query, key, value)
 
 
 @register_meta([aten._scaled_dot_product_efficient_attention])
