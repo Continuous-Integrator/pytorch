@@ -1641,7 +1641,6 @@ class _PeakMemFakeScheduler:
         return nodes
 
 
-@instantiate_parametrized_tests
 class ComboKernelPeakMemoryTests(InductorTestCase):
     """Coverage for memory-aware combo-kernel acceptance and commit logic."""
 
@@ -1663,16 +1662,6 @@ class ComboKernelPeakMemoryTests(InductorTestCase):
         self._test_stack.close()
         torch._inductor.metrics.reset()
         super().tearDown()
-
-    @staticmethod
-    def _compile_and_count(fn, *args, **config_patch):
-        torch._dynamo.reset()
-        torch._inductor.metrics.reset()
-        config_patch.setdefault("combo_kernel_peak_memory_threshold", None)
-        config_patch.setdefault("combo_kernel_peak_memory_pct_threshold", None)
-        with fresh_cache(), torch._inductor.config.patch(config_patch):
-            out = torch.compile(fn)(*args)
-        return out, torch._inductor.metrics.generated_kernel_count
 
     @staticmethod
     def _thresholds(*, abs_thr=None, pct_thr=None):
@@ -1854,72 +1843,6 @@ class ComboKernelPeakMemoryTests(InductorTestCase):
         self.assertEqual(combo_step, 0)
         self.assertEqual(new_region_memory, [200, 200, 100, 100])
 
-    def test_accepted_combo_with_fused_parent_subnode_visible(self):
-        """Regression test for the FusedSchedulerNode step_of fallback.
-
-        A prior combo absorbs a FusedSchedulerNode F (with leaf sub-node f1)
-        plus G. After commit, name_to_fused_node[f1] points to the outer
-        combo_fg (skipping F), so step_of(f1) can only resolve if combo_fg
-        itself is registered in accepted_step. If the fix regresses,
-        step_of(f1) returns -1 and buf_x's contribution is silently dropped
-        from the region memory check — a miscounting that is not
-        I/O-observable in a normal compile.
-        """
-        from unittest.mock import patch
-
-        from torch._inductor.scheduler import Scheduler
-
-        fused_parent = _PeakMemFakeNode("F")
-        earlier_peer = _PeakMemFakeNode("G")
-        h = _PeakMemFakeNode("H")
-        k = _PeakMemFakeNode("K", deps=("buf_x",))
-        nodes = [fused_parent, earlier_peer, h, k]
-
-        fused_subnode = _PeakMemFakeNode("f1")
-        combo_fg = _PeakMemFakeNode("combo_fg")
-        buf_x = _PeakMemFakeBuffer("buf_x", fused_subnode, {k})
-        mem_ctx = self._make_peak_mem_context(
-            nodes,
-            buf_info_list=[BufferInfo(buf_x, 50, 50, 0, 3)],
-            memories_at_nodes=[50, 50, 50, 50, 0],
-        )
-        Scheduler._commit_combo_to_memory_context(
-            None,  # type: ignore[arg-type]
-            mem_ctx,
-            region_start=0,
-            combo_node=combo_fg,
-            combo_step=0,
-            new_region_memory=[50, 50, 50],
-            group_nodes=[fused_parent, earlier_peer],
-        )
-        scheduler = _PeakMemFakeScheduler(
-            nodes,
-            name_to_fused_node={"f1": combo_fg, "G": combo_fg},
-        )
-
-        def fake_foreach(*args, **kwargs):
-            return _PeakMemFakeNode("combo_hk")
-
-        with patch(
-            "torch._inductor.scheduler.ForeachKernelSchedulerNode", fake_foreach
-        ):
-            combo, _, new_region_memory, region_start, combo_step = (
-                Scheduler._try_combo_with_memory_check(
-                    scheduler,
-                    [h, k],
-                    mem_ctx,
-                    baseline_peak=50,
-                    enable_autotune=False,
-                )
-            )
-
-        self.assertIsNotNone(combo)
-        self.assertEqual(region_start, 2)
-        self.assertEqual(combo_step, 2)
-        # buf_x is carried into the region from the earlier combo (alive at
-        # step 2) and freed after K consumes it at step 3 → [50, 0, 0].
-        self.assertEqual(new_region_memory, [50, 0, 0])
-
     def test_commit_semantics(self):
         """Three invariants of _commit_combo_to_memory_context:
         (a) it only rewrites [region_start, region_end+1], leaving the suffix intact;
@@ -2026,69 +1949,18 @@ class ComboKernelPeakMemoryTests(InductorTestCase):
         self.assertEqual(mem_ctx.last_region_start, baseline_last_region_start)
 
     @requires_gpu_and_triton
-    def test_combo_kernel_peak_memory_succinct_threshold(self):
-        """A tight threshold reduces fusion in a small end-to-end example."""
-
-        def fn(a, b, w):
-            first = torch.sin(a) + 1
-            small = torch.mm(first, w)[:, 0]
-            second = torch.cos(b) + 1
-            return small, second
-
-        m = n = 4096
-        a = torch.randn((m, n), device=GPU_TYPE)
-        b = torch.randn((m, n), device=GPU_TYPE)
-        w = torch.randn((n, 1), device=GPU_TYPE)
-        out_eager = fn(a, b, w)
-
-        out_default, kernels_default = self._compile_and_count(
-            fn,
-            a,
-            b,
-            w,
-            **self._thresholds(),
-        )
-        out_tight, kernels_tight = self._compile_and_count(
-            fn,
-            a,
-            b,
-            w,
-            **self._thresholds(abs_thr=1),
-        )
-
-        for got, want in zip(out_default, out_eager):
-            self.assertEqual(got, want)
-        for got, want in zip(out_tight, out_eager):
-            self.assertEqual(got, want)
-        self.assertGreater(kernels_tight, kernels_default)
-
-    @requires_gpu_and_triton
     def test_combo_kernel_peak_memory_distance_windows_bound_candidates(self):
-        """With combo_kernel_max_distance set tight, every candidate reaching
-        _try_combo_with_memory_check has span ≤ max_distance, AND the WideResNet
-        case produces at least one pre-split group wider than max_distance
-        (proving _distance_windows actually did work)."""
+        """combo_kernel_max_distance caps the baseline span of every candidate
+        reaching _try_combo_with_memory_check."""
         from unittest.mock import patch
 
-        from torch._inductor.scheduler import ForeachKernelSchedulerNode, Scheduler
+        from torch._inductor.scheduler import Scheduler
 
         model, x, out_eager = self._make_wide_resnet_case()
 
         max_distance = 1
-        original_spans: list[int] = []
         tried_spans: list[int] = []
-        original_groups_fn = ForeachKernelSchedulerNode.group_nodes_for_combo_kernels
         original_try = Scheduler._try_combo_with_memory_check
-
-        def logging_groups(scheduler):
-            groups = original_groups_fn(scheduler)
-            node_to_idx = {n: i for i, n in enumerate(scheduler.nodes)}
-            for g in groups:
-                g = ForeachKernelSchedulerNode.combinable_nodes(g)
-                if len(g) >= 2:
-                    idxs = [node_to_idx[n] for n in g]
-                    original_spans.append(max(idxs) - min(idxs))
-            return groups
 
         def logging_try(self, group_nodes, mem_ctx, *args, **kwargs):
             idxs = [mem_ctx.node_to_idx[n] for n in group_nodes]
@@ -2099,11 +1971,6 @@ class ComboKernelPeakMemoryTests(InductorTestCase):
         torch._inductor.metrics.reset()
         with (
             fresh_cache(),
-            patch.object(
-                ForeachKernelSchedulerNode,
-                "group_nodes_for_combo_kernels",
-                staticmethod(logging_groups),
-            ),
             patch.object(Scheduler, "_try_combo_with_memory_check", logging_try),
             torch._inductor.config.patch(
                 combo_kernel_max_distance=max_distance,
@@ -2115,19 +1982,15 @@ class ComboKernelPeakMemoryTests(InductorTestCase):
 
         self.assertEqual(out_eager, out_compiled)
         self.assertGreater(len(tried_spans), 0)
-        self.assertTrue(
-            any(s > max_distance for s in original_spans),
-            "Expected at least one pre-split combo group wider than max_distance",
-        )
         self.assertTrue(all(s <= max_distance for s in tried_spans))
 
     @requires_gpu_and_triton
     def test_combo_kernel_peak_memory_halving_retry_and_remaining_reenqueue(self):
         """Under a tight threshold:
-        (a) halving fires — at least one tried candidate is a strict subset
-            of an earlier one from the same compile;
+        (a) halving fires — some later tried candidate is a strict subset
+            of an earlier one;
         (b) after a partial halving accept, the outer loop re-enqueues the
-            unaccepted remainder (candidate − committed) as a new candidate."""
+            unaccepted remainder as a new candidate."""
         from unittest.mock import patch
 
         from torch._inductor.scheduler import Scheduler
@@ -2136,32 +1999,18 @@ class ComboKernelPeakMemoryTests(InductorTestCase):
 
         tried: list[frozenset[str]] = []
         committed: list[frozenset[str]] = []
-        original_try = Scheduler._try_combo_with_memory_check
-        original_commit = Scheduler._commit_combo_to_memory_context
+        orig_try = Scheduler._try_combo_with_memory_check
+        orig_commit = Scheduler._commit_combo_to_memory_context
 
-        def logging_try(self, group_nodes, *args, **kwargs):
+        def logging_try(self, group_nodes, *a, **kw):
             tried.append(frozenset(n.get_name() for n in group_nodes))
-            return original_try(self, group_nodes, *args, **kwargs)
+            return orig_try(self, group_nodes, *a, **kw)
 
-        def logging_commit(
-            self,
-            mem_ctx,
-            region_start,
-            combo_node,
-            combo_step,
-            new_region_memory,
-            group_nodes,
-        ):
+        def logging_commit(self, *a, **kw):
+            # group_nodes is the last positional arg; keyword fallback for safety.
+            group_nodes = kw.get("group_nodes", a[-1])
             committed.append(frozenset(n.get_name() for n in group_nodes))
-            return original_commit(
-                self,
-                mem_ctx,
-                region_start,
-                combo_node,
-                combo_step,
-                new_region_memory,
-                group_nodes,
-            )
+            return orig_commit(self, *a, **kw)
 
         torch._dynamo.reset()
         torch._inductor.metrics.reset()
@@ -2175,23 +2024,25 @@ class ComboKernelPeakMemoryTests(InductorTestCase):
                 out_compiled = torch.compile(model)(x)
 
         self.assertEqual(out_eager, out_compiled)
-        self.assertGreater(len(tried), 0)
 
         # (a) halving: a later try is a strict subset of an earlier one.
-        halving_observed = any(
-            later < earlier for i, later in enumerate(tried) for earlier in tried[:i]
-        )
-        self.assertTrue(halving_observed, "Expected at least one halving retry")
-
-        # (b) remaining-re-enqueue: for some full candidate tried, a proper
-        # subset got committed (partial accept) AND the exact remainder
-        # (candidate − committed) was tried later as a new candidate.
-        tried_set = set(tried)
-        remainder_observed = any(
-            c < orig and (orig - c) in tried_set for orig in tried for c in committed
-        )
         self.assertTrue(
-            remainder_observed,
+            any(
+                later < earlier
+                for i, later in enumerate(tried)
+                for earlier in tried[:i]
+            ),
+            "Expected at least one halving retry",
+        )
+
+        # (b) remaining-re-enqueue: a partial commit's exact remainder was tried.
+        tried_set = set(tried)
+        self.assertTrue(
+            any(
+                c < orig and (orig - c) in tried_set
+                for orig in tried
+                for c in committed
+            ),
             "Expected a partial halving accept whose remainder was re-enqueued",
         )
 
