@@ -1,29 +1,35 @@
 # Owner(s): ["module: dtensor"]
 
+import unittest
+
 import torch
 import torch.distributed as dist
 from torch.distributed._local_tensor import LocalTensorMode
-from torch.spmd_types import (
-    _reset,
-    all_gather,
-    all_reduce,
-    assert_type,
-    convert,
-    get_axis_local_type,
-    get_partition_spec,
-    I,
-    no_typecheck,
-    normalize_axis,
-    P,
-    PartitionSpec,
-    R,
-    reduce_scatter,
-    reinterpret,
-    S,
-    SpmdTypeError,
-    typecheck,
-    V,
-)
+from torch.distributed.spmd_types import is_available as spmd_types_available
+
+if spmd_types_available():
+    from torch.distributed.spmd_types import (
+        _reset,
+        all_gather,
+        all_reduce,
+        assert_type,
+        convert,
+        get_axis_local_type,
+        get_partition_spec,
+        I,
+        no_typecheck,
+        normalize_axis,
+        P,
+        PartitionSpec,
+        R,
+        reduce_scatter,
+        reinterpret,
+        S,
+        SpmdTypeError,
+        typecheck,
+        V,
+    )
+
 from torch.testing._internal.common_utils import run_tests, TestCase
 from torch.testing._internal.distributed.fake_pg import FakeStore
 
@@ -33,9 +39,10 @@ from torch.testing._internal.distributed.fake_pg import FakeStore
 # ---------------------------------------------------------------------------
 
 
+@unittest.skipUnless(spmd_types_available(), "requires spmd_types")
 class TestTypeSystem(TestCase):
     def test_enum_identity_and_aliases(self):
-        from torch.spmd_types import Invariant, Partial, Replicate, Varying
+        from torch.distributed.spmd_types import Invariant, Partial, Replicate, Varying  # noqa: F811
 
         self.assertIs(Replicate, R)
         self.assertIs(Invariant, I)
@@ -77,6 +84,7 @@ def _teardown_fake_dist():
     _reset()
 
 
+@unittest.skipUnless(spmd_types_available(), "requires spmd_types")
 class TestSpmdTypes(TestCase):
     @classmethod
     def setUpClass(cls):

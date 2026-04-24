@@ -472,7 +472,7 @@ class TestLocalMapSpmdTypes(unittest.TestCase):
         _reset()
 
     def setUp(self):
-        from torch.spmd_types import _reset
+        from torch.distributed.spmd_types import _reset
 
         _reset()
         self.mode = LocalTensorMode(self.WORLD_SIZE)
