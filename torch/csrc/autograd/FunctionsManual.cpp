@@ -2317,7 +2317,6 @@ Tensor error_for_max_pool2d_double_backward() { // This is mps-only.
       "max_pool2d with `return_indices=False` is not infinitely differentiable.",
       " If you want to calculate higher order derivatives, e.g. second order,",
       " set `return_indices=True`.");
-  return Tensor();
 }
 
 Tensor glu_double_backward(
@@ -7239,7 +7238,7 @@ std::tuple<Tensor, Tensor> scatter_reduce_backward(
     // GradMode::is_enabled() - adding the autograd Node is a no-op if autograd
     // is disabled; this also avoids having the item() call in the usual case.
     if (GradMode::is_enabled() && (src_num_zeros > 1).any().item<bool>()) {
-      auto node = std::make_shared<DelayedError>(
+      auto node = c10::make_intrusive<DelayedError>(
           "scatter_reduce(): Double backward is unsupported for src when >1 zeros in src are scattered to the same position in self",
           /* num inputs */ 1);
       auto result = node->apply({std::move(grad_src1)});
@@ -7336,7 +7335,7 @@ std::tuple<Tensor, Tensor> index_reduce_backward(
     // GradMode::is_enabled() - adding the autograd Node is a no-op if autograd
     // is disabled this also avoids having the item() call in the usual case
     if (GradMode::is_enabled() && (src_num_zeros > 1).any().item<bool>()) {
-      auto node = std::make_shared<DelayedError>(
+      auto node = c10::make_intrusive<DelayedError>(
           "index_reduce(): Double backward is unsupported for source when >1 zeros in source are scattered to the same position in self",
           /* num inputs */ 1);
       auto result = node->apply({std::move(grad_src1)});

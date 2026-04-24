@@ -249,7 +249,7 @@ The preferred testing method is to co-opt the existing `OpInfo` and `op_db` clas
 * `test_torchinductor_opinfo.py`
 * `test_export_opinfo.py`
 
-Each op added under `torch/_native/ops` should have a corresponding entry in `test/python_native/ops`, which exposes a `*_opinfo` instance - this will then be added to the main `op_db` list of `OpInfo` instances for testing.
+Each op added under `torch/_native/ops` should have a corresponding `OpInfo` entry registered in `torch/testing/_internal/common_methods_invocations.py` with `dsl_name` set. That ensures it participates in the existing `op_db`-driven test suites.
 
 ## Testing only Native ops
 
