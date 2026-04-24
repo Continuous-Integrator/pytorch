@@ -4,7 +4,6 @@ import functools
 import inspect
 import re
 import sys
-import warnings
 import weakref
 from collections.abc import Callable, Sequence
 from typing import Any, overload, TYPE_CHECKING, TypeVar, Union
@@ -153,13 +152,12 @@ def _validate_inplace_schema(schema: "str | torch._C.FunctionSchema") -> None:
     if isinstance(schema, str):
         schema = torch._C.parse_schema(schema)
     args = schema.arguments
-    positional_args = [arg for arg in args if not arg.kwarg_only]
-    if not positional_args:
+    if not args or args[0].kwarg_only:
         raise ValueError(
             f"Schema tagged with torch.Tag.inplace must have at least one positional argument. "
             f"Got: {schema}"
         )
-    first_arg = positional_args[0]
+    first_arg = args[0]
     if first_arg.alias_info is None or not first_arg.alias_info.is_write:
         raise ValueError(
             f"Schema tagged with torch.Tag.inplace requires the first positional argument "
@@ -193,17 +191,10 @@ def _validate_inplace_schema(schema: "str | torch._C.FunctionSchema") -> None:
     other_mutable = [
         arg
         for arg in args[1:]
-        if not arg.kwarg_only
         if arg.alias_info is not None and arg.alias_info.is_write
     ]
-    kwarg_mutable = [
-        arg
-        for arg in args
-        if arg.kwarg_only
-        if arg.alias_info is not None and arg.alias_info.is_write
-    ]
-    if other_mutable or kwarg_mutable:
-        names = [a.name for a in other_mutable + kwarg_mutable]
+    if other_mutable:
+        names = [a.name for a in other_mutable]
         raise ValueError(
             f"Schema tagged with torch.Tag.inplace must only mutate the first positional argument. "
             f"Found additional mutable args: {names}. Got: {schema}"
@@ -492,19 +483,6 @@ class Library:
             dispatcher_op_name = name
             if "::" not in dispatcher_op_name:
                 dispatcher_op_name = f"{self.ns}::{dispatcher_op_name}"
-
-            op = torch._library.utils.lookup_op(dispatcher_op_name)
-            if torch._library.utils.is_out(op) and not torch._library.utils.is_builtin(
-                op
-            ):
-                warnings.warn(
-                    f"Registering a Meta kernel for operator '{dispatcher_op_name}' "
-                    f"which has torch.Tag.out. Operators with Tag.out automatically "
-                    f"get a fake kernel that returns the out= arguments. We "
-                    f"recommend not registering a fake/meta kernel manually "
-                    f"because it is easy to get wrong.",
-                    stacklevel=2,
-                )
 
             # Internally, we shouldn't be registering meta kernels for any operators that
             # have CompositeImplicitAutograd kernels.
