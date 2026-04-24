@@ -68,7 +68,8 @@ using cccl_constant_iterator = ::cuda::constant_iterator<T>;
 template<class T>
 using cccl_counting_iterator = ::cuda::counting_iterator<T>;
 using cccl_discard_iterator  = ::cuda::discard_iterator;
-using cccl_make_reverse_iterator = ::cuda::std::make_reverse_iterator;
+template<class Iter>
+auto cccl_make_reverse_iterator(Iter it) { return ::cuda::std::make_reverse_iterator(it); }
 #elif CUB_V3_PLUS()
 #include <thrust/iterator/transform_iterator.h>
 #include <thrust/iterator/counting_iterator.h>
@@ -84,7 +85,8 @@ using cccl_constant_iterator = ::thrust::constant_iterator<T>;
 template<class T>
 using cccl_counting_iterator = ::thrust::counting_iterator<T>;
 using cccl_discard_iterator  = ::thrust::discard_iterator<>;
-using cccl_make_reverse_iterator = ::thrust::make_reverse_iterator;
+template<class Iter>
+auto cccl_make_reverse_iterator(Iter it) { return ::thrust::make_reverse_iterator(it); }
 #else
 #include <thrust/iterator/transform_iterator.h>
 #include <thrust/iterator/counting_iterator.h>
@@ -100,7 +102,8 @@ using cccl_constant_iterator = ::thrust::constant_iterator<T>;
 template<class T>
 using cccl_counting_iterator = ::thrust::counting_iterator<T>;
 using cccl_discard_iterator  = ::thrust::discard_iterator<>;
-using cccl_make_reverse_iterator = ::thrust::make_reverse_iterator;
+template<class Iter>
+auto cccl_make_reverse_iterator(Iter it) { return ::thrust::make_reverse_iterator(it); }
 #endif
 
 #if defined(USE_ROCM)
