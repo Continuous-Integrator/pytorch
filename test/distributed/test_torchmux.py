@@ -1211,6 +1211,32 @@ class TestMuxPGNotImplemented(TestCase):
             pg.alltoall(None, None)
 
 
+class TestCudaBatonStructLayouts(TestCase):
+    """Verify ctypes struct sizes match the CUDA driver API expectations.
+
+    The cuCheckpointProcess* functions expect argument structs of exactly
+    64 bytes (8 x uint64). If ctypes packing changes or the struct
+    definitions drift, the driver call will corrupt memory or segfault.
+    """
+
+    def test_struct_sizes(self):
+        from torch.distributed._baton import (
+            _CheckpointArgs,
+            _LockArgs,
+            _RestoreArgs,
+            _UnlockArgs,
+        )
+
+        import ctypes
+
+        for cls in (_LockArgs, _CheckpointArgs, _RestoreArgs, _UnlockArgs):
+            self.assertEqual(
+                ctypes.sizeof(cls),
+                64,
+                f"{cls.__name__} should be 64 bytes, got {ctypes.sizeof(cls)}",
+            )
+
+
 class TestSharedInt(TestCase):
     def test_basic_read_write(self):
         from torch.distributed.torchmux import _SharedInt

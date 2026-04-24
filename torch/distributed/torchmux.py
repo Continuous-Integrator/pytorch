@@ -112,6 +112,11 @@ class _SharedInt:
             self._shm.close()
         except Exception:
             pass
+        if getattr(self, "_owner", False):
+            try:
+                self._shm.unlink()
+            except Exception:
+                pass
 
     def __getstate__(self):
         return self._shm.name
@@ -852,6 +857,9 @@ def main():
             f"--ngpus ({ngpus}) must be <= --nproc-per-node ({nproc})"
         )
 
+    # Bind to port 0 to get a random free port. There is a TOCTOU
+    # window between closing this socket and workers connecting, but
+    # in practice collisions are rare on ephemeral ports.
     with socket.socket() as s:
         s.bind(("", 0))
         port = s.getsockname()[1]

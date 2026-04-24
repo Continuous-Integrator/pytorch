@@ -193,9 +193,23 @@ def _split_into_phases(events_by_rank, nproc):
 def _write(path, trace_events):
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     trace = {"traceEvents": trace_events, "displayTimeUnit": "ms"}
-    # Write to a temp file and rename to avoid following symlinks and to
-    # ensure readers never see a partially-written trace file.
+    # Write to a temp file and rename atomically. Use O_CREAT|O_EXCL
+    # on the tmp file to avoid following symlinks (an attacker placing
+    # a symlink at the tmp path would cause os.open to fail rather
+    # than overwriting the symlink target).
     tmp = path + f".tmp.{os.getpid()}"
-    with open(tmp, "w") as f:
-        json.dump(trace, f)
+    try:
+        os.unlink(tmp)
+    except FileNotFoundError:
+        pass
+    fd = os.open(tmp, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(trace, f)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
     os.replace(tmp, path)
