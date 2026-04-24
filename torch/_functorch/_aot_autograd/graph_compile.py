@@ -461,12 +461,6 @@ def aot_stage2_inference(
         )
     _apply_tensorify_python_scalars(fw_module)
 
-    # When trace_autograd_ops=True, the inference graph may contain fw/bw
-    # invoke_subgraph pairs from traced torch.autograd.grad/backward calls.
-    # Run the same HOP partitioning that the training path uses so the
-    # backward subgraphs don't redundantly recompute forward ops.
-    fw_module = run_joint_graph_passes_on_hops(fw_module, None, aot_config)
-
     compiled_fw = _aot_stage2b_inference_compile(
         fw_module,
         updated_flat_args,  # type: ignore[arg-type]
