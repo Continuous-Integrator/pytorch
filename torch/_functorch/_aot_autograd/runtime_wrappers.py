@@ -868,23 +868,29 @@ def _create_runtime_wrapper(
                     assert meta.mutates_data, (  # noqa: S101
                         f"expected mutates_data for input {inpt_idx}"
                     )
+                has_stream = (
+                    runtime_metadata.mutated_inp_stream_indices is not None
+                    and i < len(runtime_metadata.mutated_inp_stream_indices)
+                    and runtime_metadata.mutated_inp_stream_indices[i] is not None
+                )
+                if has_stream:
+                    msg_name = f"_stream_err_{i}"
+                    mut_globals[msg_name] = (
+                        "Mutations on inputs with user-specified streams are not yet supported. "
+                        "See: https://github.com/pytorch/pytorch/issues/172522"
+                    )
                 if meta.is_leaf:
                     mut_lines.append(
                         f"    if {oi}.requires_grad: {oi}.detach().copy_({ui})"
                     )
-                    mut_lines.append(f"    else: {oi}.copy_({ui})")
-                else:
-                    has_stream = (
-                        runtime_metadata.mutated_inp_stream_indices is not None
-                        and i < len(runtime_metadata.mutated_inp_stream_indices)
-                        and runtime_metadata.mutated_inp_stream_indices[i] is not None
-                    )
                     if has_stream:
-                        msg_name = f"_stream_err_{i}"
-                        mut_globals[msg_name] = (
-                            "Mutations on inputs with user-specified streams are not yet supported. "
-                            "See: https://github.com/pytorch/pytorch/issues/172522"
+                        mut_lines.append(
+                            f"    else: raise RuntimeError({msg_name})"
                         )
+                    else:
+                        mut_lines.append(f"    else: {oi}.copy_({ui})")
+                else:
+                    if has_stream:
                         mut_lines.append(f"    raise RuntimeError({msg_name})")
                     else:
                         mut_lines.append(f"    {oi}.copy_({ui})")

@@ -13,15 +13,11 @@ Tests verify that a "runtime_wrapper_orchestration" artifact is emitted
 via trace_structured.
 """
 
-import logging
-from contextlib import contextmanager
+from common_utils import capture_codegen_source
 
 import torch
 import torch._dynamo
 from torch.testing._internal.common_utils import run_tests, skipIfTorchDynamo, TestCase
-
-
-trace_log = logging.getLogger("torch.__trace")
 
 
 class TestCodegenRuntimeWrapper(TestCase):
@@ -29,38 +25,12 @@ class TestCodegenRuntimeWrapper(TestCase):
         super().setUp()
         torch._dynamo.reset()
 
-    @contextmanager
-    def _capture_codegen_source(self, artifact_name):
-        captured: list[str] = []
-
-        class _ArtifactHandler(logging.Handler):
-            def emit(self, record):
-                metadata = getattr(record, "metadata", {})
-                if (
-                    "artifact" in metadata
-                    and metadata["artifact"].get("name") == artifact_name
-                ):
-                    payload = getattr(record, "payload", None)
-                    if payload is not None:
-                        captured.append(payload)
-
-        handler = _ArtifactHandler()
-        handler.setLevel(logging.DEBUG)
-        old_level = trace_log.level
-        trace_log.setLevel(logging.DEBUG)
-        trace_log.addHandler(handler)
-        try:
-            yield captured
-        finally:
-            trace_log.removeHandler(handler)
-            trace_log.setLevel(old_level)
-
     def test_inference_simple(self):
         """
         Simple inference: no mutations, no aliases. Generated code should
         use the inference path (grad disabled) with empty orig_inputs.
         """
-        with self._capture_codegen_source("runtime_wrapper_orchestration") as captured:
+        with capture_codegen_source("runtime_wrapper_orchestration") as captured:
 
             @torch.compile(backend="aot_eager")
             def f(x):
@@ -81,7 +51,7 @@ class TestCodegenRuntimeWrapper(TestCase):
         Simple training path: no mutations. Generated code should use
         the training path (enable_grad + force_view_tracking).
         """
-        with self._capture_codegen_source("runtime_wrapper_orchestration") as captured:
+        with capture_codegen_source("runtime_wrapper_orchestration") as captured:
 
             @torch.compile(backend="aot_eager")
             def f(x):
@@ -106,7 +76,7 @@ class TestCodegenRuntimeWrapper(TestCase):
         the joint graph to avoid "backward through graph a second time"
         errors. Generated code should contain inline detach calls.
         """
-        with self._capture_codegen_source("runtime_wrapper_orchestration") as captured:
+        with capture_codegen_source("runtime_wrapper_orchestration") as captured:
             y_base = torch.randn(4, requires_grad=True)
             y = y_base * 2  # non-leaf tensor with grad_fn
 
@@ -131,7 +101,7 @@ class TestCodegenRuntimeWrapper(TestCase):
         mutations are kept in-graph so the runtime wrapper just increments
         versions (no runtime _apply_mutations_ needed).
         """
-        with self._capture_codegen_source("runtime_wrapper_orchestration") as captured:
+        with capture_codegen_source("runtime_wrapper_orchestration") as captured:
 
             @torch.compile(backend="aot_eager")
             def f(x):
@@ -154,7 +124,7 @@ class TestCodegenRuntimeWrapper(TestCase):
         Inference with output aliased to input. Generated code should
         capture orig_inputs and call _replay_aliases_.
         """
-        with self._capture_codegen_source("runtime_wrapper_orchestration") as captured:
+        with capture_codegen_source("runtime_wrapper_orchestration") as captured:
 
             @torch.compile(backend="aot_eager")
             def f(x):
@@ -177,7 +147,7 @@ class TestCodegenRuntimeWrapper(TestCase):
         keep_inference_input_mutations, mutations are in-graph. The
         runtime wrapper handles the alias replay.
         """
-        with self._capture_codegen_source("runtime_wrapper_orchestration") as captured:
+        with capture_codegen_source("runtime_wrapper_orchestration") as captured:
 
             @torch.compile(backend="aot_eager")
             def f(x):
@@ -199,7 +169,7 @@ class TestCodegenRuntimeWrapper(TestCase):
         """
         Training path with output alias and backward correctness.
         """
-        with self._capture_codegen_source("runtime_wrapper_orchestration") as captured:
+        with capture_codegen_source("runtime_wrapper_orchestration") as captured:
 
             @torch.compile(backend="aot_eager")
             def f(x):
@@ -221,7 +191,7 @@ class TestCodegenRuntimeWrapper(TestCase):
         Multiple inputs with mutations. Generated code should increment
         versions for all mutated inputs.
         """
-        with self._capture_codegen_source("runtime_wrapper_orchestration") as captured:
+        with capture_codegen_source("runtime_wrapper_orchestration") as captured:
 
             @torch.compile(backend="aot_eager")
             def f(x, y):
@@ -247,7 +217,7 @@ class TestCodegenRuntimeWrapper(TestCase):
         The expected output arity should be baked into the generated code
         as a constant, not computed at runtime.
         """
-        with self._capture_codegen_source("runtime_wrapper_orchestration") as captured:
+        with capture_codegen_source("runtime_wrapper_orchestration") as captured:
 
             @torch.compile(backend="aot_eager")
             def f(x):
@@ -270,7 +240,7 @@ class TestCodegenRuntimeWrapper(TestCase):
         from functorch.compile import nop
         from torch._functorch.aot_autograd import aot_function
 
-        with self._capture_codegen_source("runtime_wrapper_orchestration") as captured:
+        with capture_codegen_source("runtime_wrapper_orchestration") as captured:
 
             def f(x, y):
                 x.add_(1)
@@ -294,7 +264,7 @@ class TestCodegenRuntimeWrapper(TestCase):
         from functorch.compile import nop
         from torch._functorch.aot_autograd import aot_function
 
-        with self._capture_codegen_source("runtime_wrapper_orchestration") as captured:
+        with capture_codegen_source("runtime_wrapper_orchestration") as captured:
 
             def f(x):
                 x.transpose_(1, 0)
@@ -315,7 +285,7 @@ class TestCodegenRuntimeWrapper(TestCase):
         Inference path with autocast active at compile time. Generated code
         should wrap the compiled fn call in _DisableAutocast_.
         """
-        with self._capture_codegen_source("runtime_wrapper_orchestration") as captured:
+        with capture_codegen_source("runtime_wrapper_orchestration") as captured:
 
             @torch.compile(backend="aot_eager")
             def f(x):
@@ -335,7 +305,7 @@ class TestCodegenRuntimeWrapper(TestCase):
         should use _DisableAutocast_ alongside force_view_tracking and
         enable_grad.
         """
-        with self._capture_codegen_source("runtime_wrapper_orchestration") as captured:
+        with capture_codegen_source("runtime_wrapper_orchestration") as captured:
 
             @torch.compile(backend="aot_eager")
             def f(x):
@@ -357,7 +327,7 @@ class TestCodegenRuntimeWrapper(TestCase):
         With dynamic=True, output dimensions are symbolic. Generated code
         should call _maybe_mark_dynamic_helper_ for dynamic outputs.
         """
-        with self._capture_codegen_source("runtime_wrapper_orchestration") as captured:
+        with capture_codegen_source("runtime_wrapper_orchestration") as captured:
 
             @torch.compile(backend="aot_eager", dynamic=True)
             def f(x):
@@ -378,7 +348,7 @@ class TestCodegenRuntimeWrapper(TestCase):
         from functorch.compile import nop
         from torch._functorch.aot_autograd import aot_function
 
-        with self._capture_codegen_source("runtime_wrapper_orchestration") as captured:
+        with capture_codegen_source("runtime_wrapper_orchestration") as captured:
 
             def f(x):
                 torch._C._set_grad_enabled(False)
@@ -401,7 +371,7 @@ class TestCodegenRuntimeWrapper(TestCase):
         Five inputs all mutated. Generated code should increment versions
         for all of them.
         """
-        with self._capture_codegen_source("runtime_wrapper_orchestration") as captured:
+        with capture_codegen_source("runtime_wrapper_orchestration") as captured:
 
             @torch.compile(backend="aot_eager")
             def f(a, b, c, d, e):
@@ -430,7 +400,7 @@ class TestCodegenRuntimeWrapper(TestCase):
         Two outputs aliasing two different inputs. Generated code should
         capture both inputs in orig_inputs and call _replay_aliases_.
         """
-        with self._capture_codegen_source("runtime_wrapper_orchestration") as captured:
+        with capture_codegen_source("runtime_wrapper_orchestration") as captured:
 
             @torch.compile(backend="aot_eager")
             def f(x, y):
@@ -450,6 +420,34 @@ class TestCodegenRuntimeWrapper(TestCase):
         self.assertIn("_replay_aliases_", source)
         self.assertIn("0: args[0]", source)
         self.assertIn("1: args[1]", source)
+
+    @skipIfTorchDynamo("dynamo handles mutations in-graph")
+    def test_leaf_no_grad_mutation_uses_copy(self):
+        """
+        Leaf input without requires_grad that is mutated via detach().
+        The codegen should emit a plain copy_() (not detach().copy_()),
+        matching the original _apply_input_mutations behavior.
+        """
+        from functorch.compile import nop
+        from torch._functorch.aot_autograd import aot_function
+
+        with capture_codegen_source("mutation_epilogue") as captured:
+
+            def f(x):
+                x.detach().mul_(2)
+                return x + 1
+
+            x = torch.randn(4)
+            x_ref = x.clone()
+            compiled_f = aot_function(f, nop, keep_inference_input_mutations=False)
+            out = compiled_f(x)
+
+        self.assertEqual(x, x_ref * 2)
+        self.assertEqual(out, x_ref * 2 + 1)
+        self.assertEqual(len(captured), 1)
+        source = captured[0]
+        self.assertIn(".requires_grad", source)
+        self.assertIn(".copy_(", source)
 
 
 if __name__ == "__main__":
