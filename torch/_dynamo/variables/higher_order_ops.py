@@ -1418,7 +1418,16 @@ def trace_hop_function(
     if restore_side_effects:
         prev_side_effects = tx.output.side_effects.clone()
 
-    with autograd_ctx, side_effects_ctx:
+    # When restoring side effects, defer outer-scope mutation checks so
+    # context managers that flip-flop a flag don't fail immediately. After
+    # tracing, we validate that all deferred mutations were nullified.
+    deferred_ctx = (
+        tx.output.side_effects.defer_side_effect_checks()
+        if restore_side_effects
+        else contextlib.nullcontext()
+    )
+
+    with autograd_ctx, side_effects_ctx, deferred_ctx:
         output = f.call_function(tx, args, sub_kwargs)
 
     if restore_side_effects:
@@ -1451,7 +1460,13 @@ def trace_hop_function_with_auto_output_flattening(
         else contextlib.nullcontext()
     )
 
-    with autograd_ctx, side_effects_ctx:
+    deferred_ctx = (
+        tx.output.side_effects.defer_side_effect_checks()
+        if not allow_side_effects
+        else contextlib.nullcontext()
+    )
+
+    with autograd_ctx, side_effects_ctx, deferred_ctx:
         output = f.call_function(tx, args, sub_kwargs)
 
     return output
@@ -2736,7 +2751,7 @@ class AssociativeScanHigherOrderVariable(TorchHigherOrderOperatorVariable):
             unimplemented(
                 gb_type="torch.associative_scan: mismatched input/output tree structure",
                 context=f"xs: {xs_treespec.as_python_constant()}, output: {_combine_treespec.as_python_constant()}",
-                explanation="The tree structure of the xs and the outs of the combine_fn are are expected to be identical, but got "
+                explanation="The tree structure of the xs and the outs of the combine_fn are expected to be identical, but got "
                 f"xs: {xs_treespec.as_python_constant()} vs output: {_combine_treespec.as_python_constant()}.",
                 hints=[
                     *graph_break_hints.USER_ERROR,
