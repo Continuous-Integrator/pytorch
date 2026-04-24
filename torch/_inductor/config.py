@@ -681,7 +681,9 @@ use_pre_grad_passes: bool = True
 #   requires custom passes to implement uuid() for the cache key.
 # "default": resolves to "late" when possible (no custom pass, or custom pass
 #   with uuid), falls back to "early" otherwise.
-pre_grad_pass_timing: Literal["early", "late", "default"] = "default"
+pre_grad_pass_timing: Literal["early", "late", "default"] = (
+    "late" if is_fbcode() else "default"
+)
 
 
 use_joint_graph_passes: bool = True
@@ -2005,7 +2007,8 @@ class triton:
 
     # Don't allow multi-stages by default to avoid out of shared memory
     mix_order_reduction_allow_multi_stages = (
-        os.environ.get("TORCHINDUCTOR_MIX_ORDER_REDUCTION_ALLOW_MULTI_STAGES") == "1"
+        os.environ.get("TORCHINDUCTOR_MIX_ORDER_REDUCTION_ALLOW_MULTI_STAGES", "1")
+        == "1"
     )
 
     # Map for storing the amount of kernel runs with dumped input tensors
@@ -2037,6 +2040,8 @@ class triton:
     proton_per_cta_occupancy: bool = (
         os.environ.get("TORCHINDUCTOR_TRITON_PROTON_PER_CTA_OCCUPANCY", "1") == "1"
     )
+
+    dynamic_disable_pipelining = True
 
 
 class aot_inductor:
