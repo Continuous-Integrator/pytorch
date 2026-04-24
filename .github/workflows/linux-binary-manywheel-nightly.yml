@@ -92,7 +92,10 @@ jobs:
       DESIRED_PYTHON: ${{ matrix.config.python_version }}
       runner_prefix: ${{ needs.get-label-type.outputs.label-type }}
       PYTORCH_EXTRA_INSTALL_REQUIREMENTS: ${{ matrix.config.pytorch_extra_install_requirements }}
-      timeout-minutes: ${{ matrix.config.gpu_arch_type == 'rocm' && 420 || 240 }}
+      # Use 420 uniformly (worst-case for ROCm); CPU/CUDA builds finish well
+      # inside that and GitHub doesn't support number-typed ternary expressions
+      # through workflow_call inputs.
+      timeout-minutes: 420
       build_name: ${{ matrix.config.build_name }}
       build_environment: linux-binary-manywheel
     secrets:
@@ -169,16 +172,13 @@ jobs:
       DESIRED_PYTHON: ${{ matrix.config.python_version }}
       build_name: ${{ matrix.config.build_name }}
 
-  # Upload depends on whichever test job covers this config. We list all
-  # three test jobs in `needs` and rely on the matrix cell that doesn't
-  # match simply being satisfied (needs are per-job, not per-cell; we
-  # guard with `!failure() && !cancelled()` to tolerate an entire test
-  # family being skipped on an OS where it has no cells).
+  # Upload depends on whichever test job covers this config. Use
+  # `!cancelled()` so that a conditionally-skipped test family (e.g.
+  # test-rocm on an OS with no ROCm configs) doesn't block the uploads
+  # for the other configs.
   upload:
     name: ${{ matrix.config.build_name }}-upload
-    if: |
-      !failure() && !cancelled()
-      && github.repository_owner == 'pytorch'
+    if: ${{ !cancelled() && github.repository_owner == 'pytorch' }}
     permissions:
       id-token: write
       contents: read

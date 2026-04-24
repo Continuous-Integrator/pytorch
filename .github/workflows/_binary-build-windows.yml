@@ -9,7 +9,7 @@ on:
       PYTORCH_ROOT:
         required: false
         type: string
-        default: ${{ github.workspace }}
+        default: ""
       PACKAGE_TYPE:
         required: true
         type: string
@@ -58,7 +58,9 @@ jobs:
     runs-on: ${{ inputs.runner_prefix }}${{ inputs.runs_on }}
     timeout-minutes: ${{ inputs.timeout-minutes }}
     env:
-      PYTORCH_ROOT: ${{ inputs.PYTORCH_ROOT }}
+      # Fall back to runner workspace when the caller doesn't pass PYTORCH_ROOT
+      # (defaults for workflow_call inputs cannot reference github context).
+      PYTORCH_ROOT: ${{ inputs.PYTORCH_ROOT != '' && inputs.PYTORCH_ROOT || github.workspace }}
       PACKAGE_TYPE: ${{ inputs.PACKAGE_TYPE }}
       # TODO: This is a legacy variable that we eventually want to get rid of in
       #       favor of GPU_ARCH_VERSION
