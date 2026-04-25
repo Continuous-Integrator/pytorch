@@ -1043,13 +1043,13 @@ def _create_runtime_wrapper(
 
     # dynamic dims
     if runtime_metadata.dynamic_outputs:
-        rw_globals["_maybe_mark_dynamic_helper_"] = maybe_mark_dynamic_helper
+        rw_globals["_mark_dynamic_"] = mark_dynamo_propagated_dynamic_indices
         for i, o in enumerate(runtime_metadata.output_info):
             if o.dynamic_dims is not None:
                 dims_name = f"_dyn_dims_{i}"
                 rw_globals[dims_name] = o.dynamic_dims
                 rw_lines.append(
-                    f"    _maybe_mark_dynamic_helper_(ret_outs[{i}], {dims_name})"
+                    f"    _mark_dynamic_(ret_outs[{i}], {dims_name})"
                 )
 
     # grad_enabled_mutation
