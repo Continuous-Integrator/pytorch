@@ -243,10 +243,9 @@ class IntSpec:
     def type(self) -> IntSpecType:
         return self._type
 
-    # -- fluent get-or-set -------------------------------------------------
+    # -- fluent setters ----------------------------------------------------
     #
-    # Each method does double duty: no argument reads the current value,
-    # one argument mutates in place + revalidates + returns ``self`` for
+    # Each setter mutates in place, revalidates, and returns ``self`` for
     # chaining. Per-mode validity is enforced on each set, so e.g.
     # ``IntSpec.static("x").guarding_hint(10)`` raises ``ValueError``.
 
@@ -261,39 +260,27 @@ class IntSpec:
             setattr(self, slot, old)
             raise
 
-    def name(self, value: str | None = None) -> Any:
-        if value is None:
-            return self._name
+    def name(self, value: str) -> "IntSpec":
         self._try_set("_name", value)
         return self
 
-    def min(self, value: int | None = None) -> Any:
-        if value is None:
-            return self._min
+    def min(self, value: int) -> "IntSpec":
         self._try_set("_min", value)
         return self
 
-    def max(self, value: int | None = None) -> Any:
-        if value is None:
-            return self._max
+    def max(self, value: int) -> "IntSpec":
         self._try_set("_max", value)
         return self
 
-    def value(self, value: int | None = None) -> Any:
-        if value is None:
-            return self._value
+    def value(self, value: int) -> "IntSpec":
         self._try_set("_value", value)
         return self
 
-    def guarding_hint(self, value: int | None = None) -> Any:
-        if value is None:
-            return self._guarding_hint
+    def guarding_hint(self, value: int) -> "IntSpec":
         self._try_set("_guarding_hint", value)
         return self
 
-    def optimization_hint(self, value: int | None = None) -> Any:
-        if value is None:
-            return self._optimization_hint
+    def optimization_hint(self, value: int) -> "IntSpec":
         self._try_set("_optimization_hint", value)
         return self
 
