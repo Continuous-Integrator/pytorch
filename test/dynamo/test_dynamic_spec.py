@@ -95,37 +95,35 @@ def _compile_with_dynamic_shapes(fn, dynamic_shapes, **compile_kwargs):
 class TestIntSpecConstruction(TestCase):
     """Construction via the classmethod factories.
 
-    Field reads in tests use the no-arg fluent form (``s.name()``,
-    ``s.min()``, etc.) — the public API. Tests also touch private slots
-    (``s._min``, ``s._value``) directly to verify "the constructor landed
-    this value in this slot," which is implementation-level verification.
+    Field reads use the private slots (``s._name``, ``s._min``, etc.) since
+    the fluent setters are write-only.
     """
 
     def test_static(self):
         s = IntSpec.static("x", value=10)
-        self.assertEqual(s.name(), "x")
+        self.assertEqual(s._name, "x")
         self.assertEqual(s.type, IntSpecType.STATIC)
-        self.assertEqual(s.value(), 10)
+        self.assertEqual(s._value, 10)
 
     def test_static_no_value(self):
         s = IntSpec.static()
         self.assertEqual(s.type, IntSpecType.STATIC)
-        self.assertIsNone(s.value())
+        self.assertIsNone(s._value)
 
     def test_backed(self):
         s = IntSpec.backed("batch", min=1, max=64, guarding_hint=32)
-        self.assertEqual(s.name(), "batch")
+        self.assertEqual(s._name, "batch")
         self.assertEqual(s.type, IntSpecType.BACKED)
-        self.assertEqual(s.min(), 1)
-        self.assertEqual(s.max(), 64)
-        self.assertEqual(s.guarding_hint(), 32)
+        self.assertEqual(s._min, 1)
+        self.assertEqual(s._max, 64)
+        self.assertEqual(s._guarding_hint, 32)
 
     def test_unbacked(self):
         s = IntSpec.unbacked("seq", min=1, max=2048, optimization_hint=512)
         self.assertEqual(s.type, IntSpecType.UNBACKED)
-        self.assertEqual(s.min(), 1)
-        self.assertEqual(s.max(), 2048)
-        self.assertEqual(s.optimization_hint(), 512)
+        self.assertEqual(s._min, 1)
+        self.assertEqual(s._max, 2048)
+        self.assertEqual(s._optimization_hint, 512)
 
     def test_type_required_on_init(self):
         with self.assertRaises(TypeError) as cm:
@@ -146,10 +144,10 @@ class TestIntSpecConstruction(TestCase):
 
     def test_type_as_positional_arg(self):
         s = IntSpec("batch", IntSpecType.BACKED, min=1, max=64)
-        self.assertEqual(s.name(), "batch")
+        self.assertEqual(s._name, "batch")
         self.assertEqual(s.type, IntSpecType.BACKED)
-        self.assertEqual(s.min(), 1)
-        self.assertEqual(s.max(), 64)
+        self.assertEqual(s._min, 1)
+        self.assertEqual(s._max, 64)
 
     def test_static_with_positional_int_rejected(self):
         # ``IntSpec.static(10)`` would silently bind 10 to ``name``. Must
@@ -191,6 +189,25 @@ class TestIntSpecConstruction(TestCase):
             "IntSpec.name must be str or None, got int; "
             "if you meant to pass a value/hint, use a keyword argument "
             "(e.g. IntSpec.static(value=10))",
+        )
+
+    def test_repr(self):
+        # Anonymous, no fields set.
+        self.assertEqual(repr(IntSpec.static()), "IntSpec(type=STATIC)")
+        # Named + value.
+        self.assertEqual(
+            repr(IntSpec.static("x", value=10)),
+            "IntSpec(name='x', type=STATIC, value=10)",
+        )
+        # BACKED with full set of fields.
+        self.assertEqual(
+            repr(IntSpec.backed("batch", min=1, max=64, guarding_hint=32)),
+            "IntSpec(name='batch', type=BACKED, min=1, max=64, guarding_hint=32)",
+        )
+        # UNBACKED with full set of fields.
+        self.assertEqual(
+            repr(IntSpec.unbacked("seq", min=1, max=2048, optimization_hint=512)),
+            "IntSpec(name='seq', type=UNBACKED, min=1, max=2048, optimization_hint=512)",
         )
 
 
@@ -260,34 +277,33 @@ class TestIntSpecImmutable(TestCase):
 class TestIntSpecFluent(TestCase):
     """Fluent setters (``name`` / ``min`` / ``max`` / ``value`` /
     ``guarding_hint`` / ``optimization_hint``) mutate the receiver in place
-    and return ``self`` for chaining. Called with no argument, they read
-    the current value. Each chain is equivalent to the kwargs-only factory
-    form."""
+    and return ``self`` for chaining. Each chain is equivalent to the
+    kwargs-only factory form."""
 
     def test_unbacked_chain_matches_kwargs_form(self):
         fluent = IntSpec.unbacked("seq").min(1).max(2048).optimization_hint(512)
         kwargs = IntSpec.unbacked("seq", min=1, max=2048, optimization_hint=512)
-        self.assertEqual(fluent.name(), kwargs.name())
+        self.assertEqual(fluent._name, kwargs._name)
         self.assertEqual(fluent.type, kwargs.type)
-        self.assertEqual(fluent.min(), kwargs.min())
-        self.assertEqual(fluent.max(), kwargs.max())
-        self.assertEqual(fluent.optimization_hint(), kwargs.optimization_hint())
+        self.assertEqual(fluent._min, kwargs._min)
+        self.assertEqual(fluent._max, kwargs._max)
+        self.assertEqual(fluent._optimization_hint, kwargs._optimization_hint)
 
     def test_backed_chain_matches_kwargs_form(self):
         fluent = IntSpec.backed("batch").min(1).max(64).guarding_hint(32)
         kwargs = IntSpec.backed("batch", min=1, max=64, guarding_hint=32)
-        self.assertEqual(fluent.name(), kwargs.name())
+        self.assertEqual(fluent._name, kwargs._name)
         self.assertEqual(fluent.type, kwargs.type)
-        self.assertEqual(fluent.min(), kwargs.min())
-        self.assertEqual(fluent.max(), kwargs.max())
-        self.assertEqual(fluent.guarding_hint(), kwargs.guarding_hint())
+        self.assertEqual(fluent._min, kwargs._min)
+        self.assertEqual(fluent._max, kwargs._max)
+        self.assertEqual(fluent._guarding_hint, kwargs._guarding_hint)
 
     def test_static_value_chain_matches_kwargs_form(self):
         fluent = IntSpec.static("x").value(10)
         kwargs = IntSpec.static("x", value=10)
-        self.assertEqual(fluent.name(), kwargs.name())
+        self.assertEqual(fluent._name, kwargs._name)
         self.assertEqual(fluent.type, kwargs.type)
-        self.assertEqual(fluent.value(), kwargs.value())
+        self.assertEqual(fluent._value, kwargs._value)
 
     def test_setter_returns_self_for_chaining(self):
         base = IntSpec.unbacked("seq")
@@ -296,15 +312,6 @@ class TestIntSpecFluent(TestCase):
         self.assertIs(base, chained)
         self.assertEqual(base._min, 1)
         self.assertEqual(base._max, 2048)
-
-    def test_no_arg_call_reads_value(self):
-        s = IntSpec.backed("batch", min=1, max=64, guarding_hint=32)
-        self.assertEqual(s.name(), "batch")
-        self.assertEqual(s.min(), 1)
-        self.assertEqual(s.max(), 64)
-        self.assertEqual(s.guarding_hint(), 32)
-        self.assertIsNone(s.value())
-        self.assertIsNone(s.optimization_hint())
 
     def test_fluent_preserves_existing_fields(self):
         s = IntSpec.backed("batch", min=1, guarding_hint=32).max(64)
