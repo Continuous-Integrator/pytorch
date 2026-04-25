@@ -812,10 +812,9 @@ def _(subgraph, identifier, *operands):
     return autograd_fn_callable(*operands)
 
 
-def invoke_subgraph_subclass(subclass_type, subgraph, identifier, *operands):
+@invoke_subgraph.py_traceable_wrapper_subclass_fallback
+def _invoke_subgraph_subclass_fallback(subclass_type, subgraph, identifier, *operands):
     """
-    Handle invoke_subgraph when some inputs are tensor subclasses.
-
     Only flattens/unflattens tensors matching subclass_type, leaving other
     subclasses untouched for their own dispatch layer to handle.
     """
@@ -857,14 +856,6 @@ def invoke_subgraph_subclass(subclass_type, subgraph, identifier, *operands):
     inner_result = invoke_subgraph(wrapped, identifier, *inner_operands)  # type: ignore[arg-type]
 
     return unflatten_tensor_subclasses(inner_result, output_flatten_info)
-
-
-# Register the traceable wrapper subclass fallback for generic tensor subclass support.
-# This allows invoke_subgraph to handle any traceable wrapper subclass (like DTensor)
-# without needing per-subclass registrations.
-@invoke_subgraph.py_traceable_wrapper_subclass_fallback
-def _invoke_subgraph_subclass_fallback(subclass_type, subgraph, identifier, *operands):
-    return invoke_subgraph_subclass(subclass_type, subgraph, identifier, *operands)
 
 
 @invoke_subgraph.py_impl(DebugMode)

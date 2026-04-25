@@ -463,6 +463,8 @@ def _collect_fake_inputs(inputs):
                     elif is_traceable_wrapper_subclass(val):
                         for attr_name in val.__tensor_flatten__()[0]:
                             unwrapped_input = getattr(val, attr_name)
+                            if not isinstance(unwrapped_input, torch.Tensor):
+                                continue
                             if not isinstance(unwrapped_input, FakeTensor):
                                 raise AssertionError(
                                     f"Expected FakeTensor after unwrapping, got {type(unwrapped_input)}"
