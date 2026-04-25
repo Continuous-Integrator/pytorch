@@ -3660,7 +3660,7 @@ class LinearCrossEntropyOptions:
     entropy operation.
     """
 
-    grad_inplace: bool | None = False
+    grad_inplace: bool = False
     """When True, backward will use inplace multiplication to compute
     the gradients to save extra storage space but
     torch.autograd.gradcheck will likely fail and the operation will
@@ -3716,7 +3716,7 @@ class LinearCrossEntropyOptions:
 
     acc_dtype: torch.dtype | None = None
     """A dtype used in accumulating computation results to increase
-    numrical accuracy. By default, use the same as input dtype.
+    numerical accuracy. By default, use the same as input dtype.
     """
 
     def adjust(self, num_batches, in_features, num_classes, dtype):
@@ -3749,7 +3749,7 @@ class LinearCrossEntropyOptions:
                     ).bit_length()
                 )
                 if factor < 0:
-                    batch_chunk_size //= 2**-factor
+                    batch_chunk_size = max(batch_chunk_size // 2**-factor, 1)
                 else:
                     batch_chunk_size *= 2**factor
 

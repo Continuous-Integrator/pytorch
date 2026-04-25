@@ -7567,8 +7567,8 @@ tensor(..., device='meta', size=(1,), requires_grad=True)""")
 
                 max_ulp_diff = diff_ulp(loss.linear.weight.grad, ref_loss.linear.weight.grad.to(dtype)).max().item()
                 err = grad_error(loss.linear.weight.grad, ref_loss.linear.weight.grad.to(dtype))
-                if 0:
-                    self.assertTrue(err < feps or max_ulp_diff < {torch.float16: 14}.get(dtype, 3))
+
+                # self.assertTrue(err < feps or max_ulp_diff < {torch.float16: 14}.get(dtype, 3))  # TODO: enable this line
                 grad_errors2.append(err)
                 grad_ulp2.append(max_ulp_diff)
             else:
@@ -7585,11 +7585,9 @@ tensor(..., device='meta', size=(1,), requires_grad=True)""")
     @unittest.skipIf(not torch.cuda.is_available(), "CUDA not available")
     def test_linear_cross_entropy_loss_with_acc_dtype(self):
         import itertools
-        all_acc_policies = [''.join(p) for p in itertools.product('AT', repeat=5)]
+        all_acc_policies = [''.join(p) for p in itertools.product('AT', repeat=6)]
         for acc_policy in all_acc_policies:
-            if acc_policy not in {'TATAA', 'TAAAA', 'AATAA', 'AAAAA'}:
-                continue
-            self._test_linear_cross_entropy_loss(device='cuda', dtype=torch.float16, acc_policy=acc_policy,
+            self._test_linear_cross_entropy_loss(device='cuda', dtype=torch.bfloat16, acc_policy=acc_policy,
                                                  acc_dtype=torch.float32)
 
     @unittest.skipIf(not torch.cuda.is_available(), "CUDA not available")
