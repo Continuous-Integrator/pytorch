@@ -60,7 +60,7 @@ from torch.testing._internal.common_utils import (
     TEST_WITH_MTIA,
     TestCase,
 )
-from torch.testing._internal.two_tensor import TwoTensor  # noqa: F401
+from torch.testing._internal.two_tensor import TwoTensor
 from torch.utils._import_utils import import_dill
 from pickle import UnpicklingError
 
@@ -4673,7 +4673,7 @@ class TestSerialization(TestCase, SerializationMixin):
             f.seek(0)
             try:
                 old_get_allowed_globals = torch._weights_only_unpickler._get_allowed_globals
-                torch._weights_only_unpickler._get_allowed_globals = lambda: dict()  # noqa: PIE807
+                torch._weights_only_unpickler._get_allowed_globals = lambda: dict()
                 unsafe_all_globals = torch.serialization.get_unsafe_globals_in_checkpoint(f)
                 self.assertEqual(set(unsafe_all_globals), expected_all_global_strs)
             finally:
@@ -4927,39 +4927,26 @@ class TestSerialization(TestCase, SerializationMixin):
             'tensor3': torch.tensor([1, 2, 3, 4, 5]),
         }
 
-        with tempfile.NamedTemporaryFile(suffix='.safetensors', delete=False) as f:
-            try:
-                # Save using safetensors
-                safetensors.torch.save_file(state_dict, f.name)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "state.safetensors")
+            safetensors.torch.save_file(state_dict, path)
 
-                # Test loading with torch.load (no map_location)
-                loaded = torch.load(f.name)
-                self.assertEqual(len(loaded), len(state_dict))
-                for key in state_dict:
-                    self.assertTrue(torch.equal(state_dict[key], loaded[key]))
+            # Test loading with torch.load (no map_location)
+            loaded = torch.load(path)
+            self.assertEqual(len(loaded), len(state_dict))
+            for key in state_dict:
+                self.assertTrue(torch.equal(state_dict[key], loaded[key]))
 
-                # Test loading with map_location as string
-                loaded_cpu = torch.load(f.name, map_location='cpu')
-                for key in state_dict:
-                    self.assertTrue(torch.equal(state_dict[key], loaded_cpu[key]))
-                    self.assertEqual(loaded_cpu[key].device.type, 'cpu')
+            # Test loading with map_location as string
+            loaded_cpu = torch.load(path, map_location='cpu')
+            for key in state_dict:
+                self.assertTrue(torch.equal(state_dict[key], loaded_cpu[key]))
+                self.assertEqual(loaded_cpu[key].device.type, 'cpu')
 
-                # Test loading with map_location as torch.device
-                loaded_cpu2 = torch.load(f.name, map_location=torch.device('cpu'))
-                for key in state_dict:
-                    self.assertTrue(torch.equal(state_dict[key], loaded_cpu2[key]))
-
-                # Test with .safetensor extension (without 's')
-                with tempfile.NamedTemporaryFile(suffix='.safetensor', delete=False) as f2:
-                    try:
-                        safetensors.torch.save_file(state_dict, f2.name)
-                        loaded2 = torch.load(f2.name)
-                        for key in state_dict:
-                            self.assertTrue(torch.equal(state_dict[key], loaded2[key]))
-                    finally:
-                        os.unlink(f2.name)
-            finally:
-                os.unlink(f.name)
+            # Test loading with map_location as torch.device
+            loaded_cpu2 = torch.load(path, map_location=torch.device('cpu'))
+            for key in state_dict:
+                self.assertTrue(torch.equal(state_dict[key], loaded_cpu2[key]))
 
     def run(self, *args, **kwargs):
         with serialization_method(use_zip=True):

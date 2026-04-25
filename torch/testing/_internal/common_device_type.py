@@ -17,6 +17,7 @@ from typing_extensions import ParamSpec
 
 import torch
 from torch._inductor.utils import GPU_TYPES
+from torch._utils import _is_privateuse1_backend_available
 from torch.testing._internal.common_cuda import (
     _get_torch_cuda_version,
     _get_torch_hipblaslt_version,
@@ -33,7 +34,6 @@ from torch.testing._internal.common_utils import (
     get_tracked_input,
     IS_FBCODE,
     IS_MACOS,
-    is_privateuse1_backend_available,
     IS_REMOTE_GPU,
     IS_S390X,
     IS_SANDCASTLE,
@@ -318,6 +318,25 @@ def _update_param_kwargs(param_kwargs, name, value):
 class DeviceTypeTestBase(TestCase):
     device_type: str = "generic_device_type"
 
+    # When True, @onlyOn-based decorators (@onlyCUDA, @onlyMPS, etc.) will not
+    # skip tests for this device type. This is a pragmatic short-term solution to
+    # allow PrivateUse1 backends to run tests that are currently gated behind
+    # device-specific decorators. It is intended to be used together with the
+    # skip mechanism (see https://github.com/pytorch/pytorch/issues/177253).
+    # In the longer term, we are incrementally migrating accelerator tests to be
+    # device-generic and removing @onlyCUDA on tests that should be device-generic.
+    bypass_device_restrictions: bool = False
+
+    # Decorators and skips to apply to tests that are parametrized by ops.
+    # Keys are OpInfo.full_name (e.g. "op" or "linalg.norm"), NOT OpInfo.name.
+    # Note that OpInfo.full_name and OpInfo.name have difference: OpInfo.full_name
+    # includes the variant suffix (e.g., "div.floor_rounding") if it has, otherwise,
+    # OpInfo.full_name identical to OpInfo.name.
+    # These are intentionally placed on DeviceTypeTestBase (rather than solely on
+    # PrivateUse1TestBase) so that in-tree backends can adopt the same mechanism
+    # in the future.
+    op_overrides = None  # type: Optional[dict[str, list[DecorateInfo]]]
+
     # Flag to disable test suite early due to unrecoverable error such as CUDA error.
     _stop_test_suite = False
 
@@ -341,6 +360,27 @@ class DeviceTypeTestBase(TestCase):
     @rel_tol.setter
     def rel_tol(self, prec):
         self._tls.rel_tol = prec
+
+    @classmethod
+    def _apply_op_overrides(cls, ops):
+        if cls.op_overrides is None:
+            return
+
+        op_dict = {op.full_name: op for op in copy.deepcopy(ops.op_list)}
+
+        if cls.op_overrides is not None:
+            for op_name, decorators in cls.op_overrides.items():
+                for decorator in decorators:
+                    if cls.device_type == "privateuse1":
+                        decorator.device_type = torch._C._get_privateuse1_backend_name()
+                    else:
+                        decorator.device_type = cls.device_type
+                    # op_name may not be in op_dict if @ops() has restricted the
+                    # OpInfo list to a smaller set than op_overrides covers.
+                    if op_name in op_dict:
+                        op_dict[op_name].decorators += (decorator,)
+
+        ops.op_list = list(op_dict.values())
 
     # Returns a string representing the device that single device tests should use.
     # Note: single device tests use this device exclusively.
@@ -670,6 +710,7 @@ class PrivateUse1TestBase(DeviceTypeTestBase):
     primary_device: ClassVar[str]
     device_mod = None
     device_type = "privateuse1"
+    bypass_device_restrictions = False
 
     @classmethod
     def get_primary_device(cls):
@@ -723,7 +764,7 @@ def get_device_type_test_bases():
         if torch.cuda.is_available():
             test_bases.append(CUDATestBase)
 
-        if is_privateuse1_backend_available():
+        if _is_privateuse1_backend_available():
             test_bases.append(PrivateUse1TestBase)
         # Disable MPS testing in generic device testing temporarily while we're
         # ramping up support.
@@ -750,7 +791,7 @@ def filter_desired_device_types(device_type_test_bases, except_for=None, only_fo
     # This handles the case where PrivateUse1TestBase.device_type has been
     # changed from "privateuse1" to the actual backend name (e.g., "openreg")
     # by setUpClass being called during previous instantiate_device_type_tests calls
-    if is_privateuse1_backend_available():
+    if _is_privateuse1_backend_available():
         privateuse1_backend_name = torch._C._get_privateuse1_backend_name()
 
         def func_replace(x: str) -> str:
@@ -1084,6 +1125,7 @@ class ops(_TestParametrizer):
                 "instantiate_parametrized_tests()"
             )
 
+        device_cls._apply_op_overrides(self)
         op = check_exhausted_iterator = object()
         for op in self.op_list:
             # Determine the set of dtypes to use.
@@ -1168,7 +1210,7 @@ class ops(_TestParametrizer):
                         except Exception as e:
                             tracked_input = get_tracked_input()
                             if PRINT_REPRO_ON_FAILURE and tracked_input is not None:
-                                e_tracked = Exception(  # noqa: TRY002
+                                e_tracked = Exception(
                                     f"{str(e)}\n\nCaused by {tracked_input.type_desc} "
                                     f"at index {tracked_input.index}: "
                                     f"{_serialize_sample(tracked_input.val)}"
@@ -1444,6 +1486,8 @@ class onlyOn:
         @wraps(fn)
         def only_fn(slf, *args, **kwargs):
             if slf.device_type not in self.device_type:
+                if getattr(slf, "bypass_device_restrictions", False):
+                    return fn(slf, *args, **kwargs)
                 reason = f"Only runs on {self.device_type}"
                 if IS_SANDCASTLE or IS_FBCODE:
                     print(
