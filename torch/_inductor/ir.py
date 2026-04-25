@@ -6357,9 +6357,7 @@ class ExternKernel(InputsKernel):
                 # already-compiled artifacts.
                 from torchgen.aoti.fallback_ops import inductor_fallback_ops
 
-                version_info = inductor_fallback_ops.get(
-                    f"aten.{kernel.__name__}", {}
-                )
+                version_info = inductor_fallback_ops.get(f"aten.{kernel.__name__}", {})
                 latest_version = max(
                     (int(v[1:]) for v in version_info if v.startswith("v")),
                     default=1,
