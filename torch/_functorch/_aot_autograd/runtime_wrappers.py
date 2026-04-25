@@ -1048,9 +1048,7 @@ def _create_runtime_wrapper(
             if o.dynamic_dims is not None:
                 dims_name = f"_dyn_dims_{i}"
                 rw_globals[dims_name] = o.dynamic_dims
-                rw_lines.append(
-                    f"    _mark_dynamic_(ret_outs[{i}], {dims_name})"
-                )
+                rw_lines.append(f"    _mark_dynamic_(ret_outs[{i}], {dims_name})")
 
     # grad_enabled_mutation
     if runtime_metadata.grad_enabled_mutation is not None:
