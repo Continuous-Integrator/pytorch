@@ -330,12 +330,11 @@ inline Tensor reshape_bias(int64_t dim, const Tensor& bias) {
   return bias.reshape(shape);
 }
 
-namespace detail {
 // Shared logic for cuDNN / MIOpen memory-format suggestion.
 // enabled: backend gate (compiled-with-X && not-float64). If false, return Contiguous.
 // allow_cl: extra opt-in (e.g. MIOpen's PYTORCH_MIOPEN_SUGGEST_NHWC); if false, return Contiguous.
 // Dispatches by weight.ndim: 4 -> CL, 5 -> CL3d, else Contiguous.
-inline at::MemoryFormat conv_suggest_memory_format_impl(
+inline at::MemoryFormat _conv_suggest_memory_format_impl(
     const at::Tensor& input, const at::Tensor& weight, bool enabled, bool allow_cl) {
   if (!enabled || !allow_cl) {
     return at::MemoryFormat::Contiguous;
@@ -356,12 +355,11 @@ inline at::MemoryFormat conv_suggest_memory_format_impl(
   }
   return at::MemoryFormat::Contiguous;
 }
-} // namespace detail
 
 inline at::MemoryFormat cudnn_conv_suggest_memory_format(const at::Tensor& input, const at::Tensor& weight) {
   bool enabled = at::detail::getCUDAHooks().compiledWithCuDNN() &&
       input.scalar_type() != at::kDouble && weight.scalar_type() != at::kDouble;
-  return detail::conv_suggest_memory_format_impl(input, weight, enabled, /*allow_cl=*/true);
+  return _conv_suggest_memory_format_impl(input, weight, enabled, /*allow_cl=*/true);
 }
 
 // controls whether emptyCache will be called following cudnn conv benchmarking
@@ -376,7 +374,7 @@ inline at::MemoryFormat miopen_conv_suggest_memory_format(const at::Tensor& inpu
   // See https://github.com/pytorch/pytorch/issues/64427.
   // Non-static read so tests can toggle the env var at runtime.
   bool allow_cl = c10::utils::check_env("PYTORCH_MIOPEN_SUGGEST_NHWC").value_or(false);
-  return detail::conv_suggest_memory_format_impl(input, weight, enabled, allow_cl);
+  return _conv_suggest_memory_format_impl(input, weight, enabled, allow_cl);
 }
 
 // deprecated, but to remove would be BC-breaking
