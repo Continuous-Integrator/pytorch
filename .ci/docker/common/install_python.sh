@@ -13,3 +13,4 @@ source /var/lib/jenkins/ci_env/bin/activate
 
 python -mpip install --upgrade pip
 python -mpip install -r /opt/requirements-ci.txt
+python -mpip install --no-deps spmd_types==0.2.0
