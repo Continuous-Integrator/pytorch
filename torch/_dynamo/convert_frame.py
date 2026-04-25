@@ -636,6 +636,7 @@ class ConvertFrameAssert:
     def __call__(
         self,
         frame: DynamoFrameType,
+        cache_entry: CacheEntry | None,
         hooks: Hooks,
         frame_state: dict[str, int | FrameStateSizeEntry],
         *,
@@ -780,6 +781,7 @@ class ConvertFrameAssert:
                     self._export,
                     self._export_constraints,
                     hooks,
+                    cache_entry,
                     cache_entries,
                     cache_entries_for_reasons,
                     cache_size,
@@ -1572,6 +1574,7 @@ def _compile(
     export: bool,
     export_constraints: Any | None,
     hooks: Hooks,
+    cache_entry: CacheEntry | None,
     cache_entries: list[CacheEntry],
     cache_entries_for_reasons: list[CacheEntry],
     cache_size: CacheSizeRelevantForFrame,
@@ -1787,6 +1790,7 @@ def _compile(
 
         assert output.guards is not None
         CleanupManager.instance[out_code] = output.cleanups
+        nonlocal cache_entry
         # Temporarily restore the mode stack so guard expressions that
         # reference modes can evaluate.  DisableTorchFunction prevents
         # __torch_function__ dispatch during guard construction so modes
@@ -2203,6 +2207,7 @@ class ConvertFrame:
     def __call__(
         self,
         frame: DynamoFrameType,
+        cache_entry: CacheEntry | None,
         hooks: Hooks,
         frame_state: dict[str, int | FrameStateSizeEntry],
         skip: int = 0,
@@ -2210,7 +2215,9 @@ class ConvertFrame:
         input_codes.add(frame.f_code)
         counters["frames"]["total"] += 1
         try:
-            result = self._inner_convert(frame, hooks, frame_state, skip=skip + 1)
+            result = self._inner_convert(
+                frame, cache_entry, hooks, frame_state, skip=skip + 1
+            )
             counters["frames"]["ok"] += 1
             return result
         except Exception as e:
@@ -2355,6 +2362,7 @@ def replay(filename: str) -> None:
                 export=False,
                 export_constraints=None,
                 hooks=Hooks(),
+                cache_entry=None,
                 cache_entries=[],
                 cache_entries_for_reasons=[],
                 cache_size=CacheSizeRelevantForFrame(0, 0),
@@ -2379,6 +2387,7 @@ class ConvertFrameProtocol(typing.Protocol):
     def __call__(
         self,
         frame: DynamoFrameType,
+        cache_entry: CacheEntry | None,
         hooks: Hooks,
         frame_state: dict[str, int | FrameStateSizeEntry],
         *,
@@ -2395,6 +2404,7 @@ class CatchErrorsWrapper:
     def __call__(
         self,
         frame: DynamoFrameType,
+        cache_entry: CacheEntry | None,
         frame_state: dict[str, int | FrameStateSizeEntry],
     ) -> ConvertFrameReturn:
         assert frame_state is not None
@@ -2488,12 +2498,14 @@ class CatchErrorsWrapper:
                             ddp_optimizer.compile_fn,
                         )
                     )
-                    return hijacked_callback(frame, self.hooks, frame_state)
+                    return hijacked_callback(
+                        frame, cache_entry, self.hooks, frame_state
+                    )
 
         with compile_lock, _disable_current_modes():
             # skip=1: skip this frame
             result = self._torchdynamo_orig_backend(
-                frame, self.hooks, frame_state, skip=1
+                frame, cache_entry, self.hooks, frame_state, skip=1
             )
             return result
 

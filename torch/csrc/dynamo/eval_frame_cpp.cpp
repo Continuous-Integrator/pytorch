@@ -258,14 +258,20 @@ static py::object dynamo_call_callback(
     py::handle callback,
     THP_EVAL_API_FRAME_OBJECT* _frame,
     FrameLocalsMapping* locals,
+    CacheEntry* cache_entry,
     FrameState* frame_state) {
   THPPyInterpreterFrame* frame = THPPyInterpreterFrame_New(_frame);
   TORCH_CHECK(
       frame, "Dynamo failed to initialize CPython interpreter frame wrapper");
   frame->locals = (PyObject*)framelocals_mapping_to_dict(locals);
 
-  py::object result =
-      callback(py::handle((PyObject*)frame), py::handle(frame_state));
+  py::object cache_entry_obj = py::none();
+  if (cache_entry) {
+    cache_entry_obj = py::cast(cache_entry, py::return_value_policy::reference);
+  }
+
+  py::object result = callback(
+      py::handle((PyObject*)frame), cache_entry_obj, py::handle(frame_state));
   Py_DECREF(frame);
   return result;
 }
@@ -585,6 +591,7 @@ PyObject* dynamo__custom_eval_frame(
   }
 
   // call callback
+  CacheEntry* cache_entry = extract_cache_entry(extra, isolate_recompiles_id);
   FrameState* frame_state = extract_frame_state(extra);
   py::object callback_result;
   FrameExecStrategy new_strategy;
@@ -599,8 +606,8 @@ PyObject* dynamo__custom_eval_frame(
       return eval_result;
     }
     PreserveGlobalState preserve_global_state;
-    callback_result =
-        dynamo_call_callback(callback, frame, locals.get(), frame_state);
+    callback_result = dynamo_call_callback(
+        callback, frame, locals.get(), cache_entry, frame_state);
     new_strategy =
         callback_result.attr("frame_exec_strategy").cast<FrameExecStrategy>();
     apply_to_code = callback_result.attr("apply_to_code").cast<bool>();
