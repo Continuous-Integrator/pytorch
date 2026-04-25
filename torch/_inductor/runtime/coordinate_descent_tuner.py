@@ -168,7 +168,7 @@ class CoordescTuner:
     def get_neighbour_values(self, name, orig_val, radius=None, include_self=False):
         """
         Get neighbour values in 'radius' steps. The original value is not
-        returned as its own neighbour.
+        returned as it's own neighbour.
         """
         if radius is None:
             radius = 1
