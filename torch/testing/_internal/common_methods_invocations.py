@@ -6801,7 +6801,12 @@ def sample_inputs_linear_cross_entropy(op_info, device, dtype, requires_grad, **
     if not dtype.is_floating_point:
         raise ValueError(f"linear_cross_entropy requires floating point type inputs, got {dtype}")
     reductions = ("mean", "sum", "none")
+
     LinearCrossEntropyOptions = torch.nn.functional.LinearCrossEntropyOptions
+    # Samples with non-zero label_smoothing are not generated because
+    # linear_cross_entropy relies on cross_entropy that fails on
+    # composite-compliance tests (cross_entropy calls `masked_fill_`
+    # internally).
     kwargs_list: list[dict[str, Any]] = [
         {},
         *[dict(reduction=reduction) for reduction in reductions if reduction != "mean"],

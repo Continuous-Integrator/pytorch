@@ -1509,7 +1509,9 @@ class LinearCrossEntropyLoss(_WeightedLoss):
             raise RuntimeError(
                 f"expected weight shape to be {(num_classes,)}, got {tuple(weight.shape)}"
             )
-        super().__init__(weight, None, None, reduction)
+        super().__init__(
+            weight=weight, size_average=None, reduce=None, reduction=reduction
+        )
         self.num_classes = num_classes
         self.out_features = out_features
         self.ignore_index = ignore_index
@@ -1522,9 +1524,9 @@ class LinearCrossEntropyLoss(_WeightedLoss):
         self.linear = Linear(
             in_features,
             math.prod(out_features, start=num_classes),
-            False,
-            device,
-            dtype,
+            bias=False,
+            device=device,
+            dtype=dtype,
         )
         self.options = options
 

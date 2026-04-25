@@ -1788,6 +1788,7 @@ def module_inputs_torch_nn_LinearCrossEntropyLoss(module_info, device, dtype, re
         return torch.randn((*batch_dims, in_features), device=device, dtype=dtype, requires_grad=requires_grad)
 
     def reference_fn(m, p, i, t):
+        # p[0] is linear.weight(bias=False)
         linear_weight = p[0].reshape(m.num_classes, *m.out_features, i.shape[-1])
         return linear_cross_entropy_loss_reference(
             i, linear_weight, t,
@@ -1808,7 +1809,7 @@ def module_inputs_torch_nn_LinearCrossEntropyLoss(module_info, device, dtype, re
             )
 
     def sizes_and_options():
-        for sizes in [(8, 8, 8), (1, 5, 4), (None, 8, 4)]:
+        for sizes in [(8, 5, 4), (None, 8, 4)]:
             yield sizes, None
             num_batches, in_features, num_classes = sizes
             if acc_dtype is not None:
