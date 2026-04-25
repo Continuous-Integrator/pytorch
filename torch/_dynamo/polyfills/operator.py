@@ -16,7 +16,15 @@ if TYPE_CHECKING:
 
 
 # Most unary and binary operators are handled by BuiltinVariable (e.g., `pos`, `add`)
-__all__ = ["attrgetter", "concat", "countOf", "iconcat", "indexOf", "itemgetter", "methodcaller"]
+__all__ = [
+    "attrgetter",
+    "concat",
+    "countOf",
+    "iconcat",
+    "indexOf",
+    "itemgetter",
+    "methodcaller",
+]
 
 
 _T = TypeVar("_T")
