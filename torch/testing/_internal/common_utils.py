@@ -6119,7 +6119,10 @@ def with_highest_f32_precision(f):
         old_cuda_fp32 = torch.backends.cuda.matmul.fp32_precision
         old_mkldnn_fp32 = torch.backends.mkldnn.matmul.fp32_precision  # type: ignore[attr-defined]
         try:
+            # set_float32_matmul_precision only affects CUDA; set mkldnn
+            # explicitly so the decorator also forces IEEE on CPU.
             torch.set_float32_matmul_precision("highest")
+            torch.backends.mkldnn.matmul.fp32_precision = "ieee"  # type: ignore[attr-defined]
             return f(*args, **kwargs)
         finally:
             torch.backends.mkldnn.matmul.fp32_precision = old_mkldnn_fp32  # type: ignore[attr-defined]
