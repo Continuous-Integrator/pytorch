@@ -19,6 +19,9 @@ import unittest
 import torch
 import torch._dynamo.test_case
 import torch._dynamo.testing
+from torch._dynamo.variables.base import VariableTracker
+from torch._dynamo.variables.constant import ConstantVariable
+from torch._dynamo.variables.lists import BaseListVariable, DequeVariable, RangeVariable
 from torch.testing._internal.inductor_utils import HAS_CUDA_AND_TRITON, HAS_GPU
 
 
@@ -1041,6 +1044,21 @@ class GetItemTests(torch._dynamo.test_case.TestCase):
 
         x = torch.randn(4)
         self.assertEqual(fn(x), self._compile(fn, x))
+
+    # ===================================================================
+    # sq_item_impl override checks
+    # These types have mp_subscript so Branch 1 always wins at runtime.
+    # Verify the defensive sq_item_impl overrides exist and aren't the
+    # base class fallback (which calls unimplemented).
+    # ===================================================================
+
+    def test_sq_item_impl_overrides(self):
+        """All sequence types override sq_item_impl from the base class."""
+        base = VariableTracker.sq_item_impl
+        for cls in (BaseListVariable, RangeVariable, ConstantVariable, DequeVariable):
+            self.assertIsNot(
+                cls.sq_item_impl, base, f"{cls.__name__} must override sq_item_impl"
+            )
 
 
 if __name__ == "__main__":
