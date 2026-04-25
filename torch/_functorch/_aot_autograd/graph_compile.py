@@ -119,7 +119,9 @@ _thread_local = threading.local()
 def _should_save_cache(*compiled_fns: Callable[..., Any]) -> bool:
     if should_bundle_autograd_cache():
         return True
-    return all(hasattr(fn, "_fx_graph_cache_key") for fn in compiled_fns)
+    return all(
+        getattr(fn, "_fx_graph_cache_key", None) is not None for fn in compiled_fns
+    )
 
 
 @contextmanager
@@ -1914,7 +1916,7 @@ def _categorize_saved_tensors_for_backward(
 # We can do this by manually detach'ing y before sending it through the `CompiledFunction`.
 #
 # Note that this solution is not bulletproof.
-# It's possible to construct a case where eager may or may not have have tried to autograd through y,
+# It's possible to construct a case where eager may or may not have tried to autograd through y,
 # depending on the actual grad_outputs that were passed in during the backward.
 # There is no easy fix for this: the simplest fix would be to run with `retain_graph=True`,
 # allowing autograd to reuse the graph.
