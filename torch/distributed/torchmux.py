@@ -6,15 +6,15 @@ Usage:
     python -m torch.distributed.torchmux --nproc-per-node 8 --ngpus 2 train.py [args...]
 
 Launches N worker processes mapped round-robin onto M physical GPUs.
-Workers execute cooperatively: only one runs per GPU at a time, yielding
-at collective boundaries. When a worker yields it checkpoints its entire
-CUDA context via the driver API (VRAM returned to the driver) and
-restores it when rescheduled. Collectives are resolved by bookkeeping
-each rank's tensor contribution on disk — no NCCL is needed.
+Workers on different GPUs run in parallel; workers sharing a GPU run
+cooperatively, yielding at collective boundaries. When a worker yields
+it checkpoints its entire CUDA context via the driver API (VRAM returned
+to the driver) and restores it when rescheduled. Collectives are resolved
+by bookkeeping each rank's tensor contribution on disk — no NCCL is needed.
 
 Produces two chrome://tracing traces (set TORCHMUX_TRACE_DIR):
-a natural trace showing actual serial execution with snapshot/restore
-overhead, and a synthetic trace reconstructing what parallel execution
+a natural trace showing actual execution with per-GPU interleaving,
+and a synthetic trace reconstructing what fully parallel execution
 would look like.
 
 Note [torchmux device remapping]:
@@ -125,8 +125,15 @@ class _SharedInt:
 
 
 # ---- Cooperative scheduling ----
+#
+# Per-GPU scheduling: each physical GPU has its own scheduling token
+# (_SharedInt). Workers on different GPUs run in parallel; workers
+# sharing a GPU take turns via their GPU's token.
 
-_sched = None  # _SharedInt — which rank may run
+_gpu_scheds = None  # list[_SharedInt], one per physical GPU
+_gpu_id = None  # which physical GPU this worker uses
+_gpu_peers = None  # list of ranks sharing this GPU, in scheduling order
+_gpu_peer_idx = None  # index of this rank within _gpu_peers
 _rank = None
 _ws = None
 _held = False
@@ -137,13 +144,15 @@ _ACQUIRE_TIMEOUT_S = float(os.environ.get("TORCHMUX_ACQUIRE_TIMEOUT", "300"))
 
 def _acquire(*, restore=True):
     global _held
+    sched = _gpu_scheds[_gpu_id]
     deadline = time.monotonic() + _ACQUIRE_TIMEOUT_S
     delay = 1e-5
-    while _sched.value != _rank:
+    while sched.value != _rank:
         if time.monotonic() > deadline:
             raise RuntimeError(
-                f"rank {_rank}: timed out waiting for scheduling token after "
-                f"{_ACQUIRE_TIMEOUT_S}s (likely a worker crash)"
+                f"rank {_rank}: timed out waiting for GPU {_gpu_id} "
+                f"scheduling token after {_ACQUIRE_TIMEOUT_S}s "
+                f"(likely a worker crash)"
             )
         time.sleep(delay)
         delay = min(delay * 2, 1e-2)
@@ -156,9 +165,8 @@ def _release(*, snapshot=True):
     global _held
     if snapshot:
         _snapshot_gpu()
-    # Safe without locking: only the token holder calls _release, and no
-    # other process writes _sched until we advance it here.
-    _sched.value = (_rank + 1) % _ws
+    next_idx = (_gpu_peer_idx + 1) % len(_gpu_peers)
+    _gpu_scheds[_gpu_id].value = _gpu_peers[next_idx]
     _held = False
 
 
@@ -663,7 +671,7 @@ def _create_mux_pg(store, rank, world_size, timeout):
 
     pg = _MuxPG(rank, world_size)
     if _held:
-        _release(snapshot=False)
+        _release()
     _store_based_barrier(rank, store, "", world_size, timeout)
     if not _held:
         _acquire(restore=False)
@@ -677,19 +685,27 @@ def _worker(
     rank,
     world_size,
     ngpus,
-    sched_next,
+    gpu_scheds_list,
     master_port,
     coll_dir_path,
     script,
     script_args,
     run_as_module,
 ):
-    global _ngpus, _sched, _rank, _ws, _held, _coll_dir, _baton
+    global _ngpus, _gpu_scheds, _gpu_id, _gpu_peers, _gpu_peer_idx
+    global _rank, _ws, _held, _coll_dir, _baton
     _ngpus = ngpus
-    _sched = sched_next
+    _gpu_scheds = gpu_scheds_list
     _rank = rank
     _ws = world_size
     _coll_dir = coll_dir_path
+
+    _gpu_id = rank % ngpus
+    peers_by_gpu = {}
+    for r in range(world_size):
+        peers_by_gpu.setdefault(r % ngpus, []).append(r)
+    _gpu_peers = peers_by_gpu[_gpu_id]
+    _gpu_peer_idx = _gpu_peers.index(rank)
 
     os.environ.update(
         {
@@ -732,7 +748,7 @@ def _worker(
         _end_compute()
         t0 = _us()
         if _held:
-            _release(snapshot=False)
+            _release()
         try:
             _orig_destroy()
         finally:
@@ -744,7 +760,7 @@ def _worker(
         _end_compute()
         t0 = _us()
         if _held:
-            _release(snapshot=False)
+            _release()
         try:
             return _orig_new_group(*args, **kwargs)
         finally:
@@ -770,12 +786,13 @@ def _worker(
             runpy.run_path(script, run_name="__main__")
     finally:
         _end_compute()
-        if _held:
-            _release()
 
-        synthetic_path = os.path.join(coll_dir_path, f"trace_rank{rank}.json")
-        with open(synthetic_path, "w") as f:
+        trace_path = os.path.join(coll_dir_path, f"trace_rank{rank}.json")
+        with open(trace_path, "w") as f:
             json.dump(_trace_events, f)
+
+        if _held:
+            _release(snapshot=False)
 
 
 # ---- Entry point ----
@@ -879,7 +896,11 @@ def main():
         s.bind(("", 0))
         port = s.getsockname()[1]
 
-    sched = _SharedInt()
+    gpu_scheds = []
+    for g in range(ngpus):
+        s = _SharedInt()
+        s.value = g
+        gpu_scheds.append(s)
     shm = "/dev/shm" if os.path.isdir("/dev/shm") else None
     if shm is None:
         log.warning(
@@ -902,7 +923,7 @@ def main():
             args=(
                 nproc,
                 ngpus,
-                sched,
+                gpu_scheds,
                 port,
                 coll_dir,
                 args.training_script,
@@ -943,7 +964,8 @@ def main():
         if events_by_rank:
             _print_timing_summary(events_by_rank)
 
-        sched.cleanup()
+        for s in gpu_scheds:
+            s.cleanup()
         shutil.rmtree(coll_dir, ignore_errors=True)
 
 
