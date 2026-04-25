@@ -3760,7 +3760,7 @@ class LinearCrossEntropyOptions:
                     warnings.warn(
                         f"Specified batch_chunk_size (={self.batch_chunk_size}) is different"
                         f" from one (={batch_chunk_size}) computed using chunking method"
-                        f"('{self.chunking_method}'). Using the latter.",
+                        f" ('{self.chunking_method}'). Using the latter.",
                         stacklevel=2,
                     )
             else:

@@ -7573,10 +7573,11 @@ tensor(..., device='meta', size=(1,), requires_grad=True)""")
                 grad_ulp2.append(max_ulp_diff)
             else:
                 torch.autograd.gradcheck(ref_loss, (ref_input, target))
-        print(f'\n{acc_policy=}')
-        print(f'mean/max(errors)={sum(errors)/len(errors):.2e}/{max(errors):.2e} {max(ulp)=}')
-        print(f'mean/max(grad_errors1)={sum(grad_errors1)/len(grad_errors1):.2e}/{max(grad_errors1):.2e} {max(grad_ulp1)=}')
-        print(f'mean/max(grad_errors2)={sum(grad_errors2)/len(grad_errors2):.2e}/{max(grad_errors2):.2e} {max(grad_ulp2)=}')
+        import sys
+        print(f'\n{acc_policy=}', file=sys.__stdout__)
+        print(f'mean/max(errors)={sum(errors) / len(errors):.2e}/{max(errors):.2e} {max(ulp)=}', file=sys.__stdout__)
+        print(f'mean/max(grad_errors1)={sum(grad_errors1) / len(grad_errors1):.2e}/{max(grad_errors1):.2e} {max(grad_ulp1)=}', file=sys.__stdout__)
+        print(f'mean/max(grad_errors2)={sum(grad_errors2) / len(grad_errors2):.2e}/{max(grad_errors2):.2e} {max(grad_ulp2)=}', file=sys.__stdout__)
 
     def test_linear_cross_entropy_loss_default(self):
         self._test_linear_cross_entropy_loss(device='cpu', dtype=torch.float32, acc_dtype=None)
@@ -7584,10 +7585,9 @@ tensor(..., device='meta', size=(1,), requires_grad=True)""")
 
     @unittest.skipIf(not torch.cuda.is_available(), "CUDA not available")
     def test_linear_cross_entropy_loss_with_acc_dtype(self):
-        import itertools
         all_acc_policies = [''.join(p) for p in itertools.product('AT', repeat=6)]
         for acc_policy in all_acc_policies:
-            self._test_linear_cross_entropy_loss(device='cuda', dtype=torch.bfloat16, acc_policy=acc_policy,
+            self._test_linear_cross_entropy_loss(device='cuda', dtype=torch.float16, acc_policy=acc_policy,
                                                  acc_dtype=torch.float32)
 
     @unittest.skipIf(not torch.cuda.is_available(), "CUDA not available")

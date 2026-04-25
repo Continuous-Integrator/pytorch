@@ -106,9 +106,9 @@ def linear_cross_entropy_batch_chunking_cls(
             grad_input=m[acc_policy[1]],
             grad_linear_weight=m[acc_policy[2]],
             X=m[acc_policy[3]],
-            G=m[min(acc_policy[4:])],
+            G=m["A" if "A" in acc_policy[4:] else "T"],
             GX=m[acc_policy[4]],
-            GL=m[acc_policy[-1]],
+            GL=m[acc_policy[5]],
         )
     else:
         dtypes = dict(
@@ -150,44 +150,31 @@ def linear_cross_entropy_batch_chunking_cls(
         requires_grad=False,
     )
 
+    # Allocate junk buffers used in grad_input and grad_linear_weight computations:
     GX_factor = dtypes["G"].itemsize // dtypes["GX"].itemsize
     GL_factor = dtypes["G"].itemsize // dtypes["GL"].itemsize
-    # A chunk buffer used in grad_linear_weight computation:
-    if compute_input_grad and compute_linear_weight_grad:
-        tmp_size = (
-            max(num_classes // GL_factor, batch_chunk_size // GX_factor) * in_features
+    tmp_size = (
+        max(
+            batch_chunk_size // GX_factor if compute_input_grad else 0,
+            num_classes // GL_factor if compute_linear_weight_grad else 0,
         )
-        tmp_shape = (
-            max(num_classes // GL_factor, batch_chunk_size // GX_factor),
-            in_features,
-        )
-    elif compute_input_grad:
-        tmp_size = (batch_chunk_size // GX_factor) * in_features
-        tmp_shape = ((batch_chunk_size) // GX_factor, in_features)
-    elif compute_linear_weight_grad:
-        tmp_size = (num_classes // GL_factor) * in_features
-        tmp_shape = ((num_classes) // GL_factor, in_features)
-    else:
-        tmp_size = 0
-        tmp_shape = ()
-
-    # tmp = torch.empty(tmp_shape, device=device, dtype=dtypes["G"], requires_grad=False)
+        * in_features
+    )
     tmp = torch.empty(tmp_size, device=device, dtype=dtypes["G"], requires_grad=False)
-    if tmp_shape:
-        GX = tmp.view(dtypes["GX"])
-        GX = torch.narrow(
-            GX, 0, 0, (batch_chunk_size * in_features) if compute_input_grad else 0
+    GX = (
+        torch.narrow(tmp.view(dtypes["GX"]), 0, 0, batch_chunk_size * in_features).view(
+            (batch_chunk_size, in_features)
         )
-        GL = tmp.view(dtypes["GL"])
-        GL = torch.narrow(
-            GL, 0, 0, (num_classes * in_features) if compute_linear_weight_grad else 0
+        if compute_input_grad
+        else tmp
+    )
+    GL = (
+        torch.narrow(tmp.view(dtypes["GL"]), 0, 0, num_classes * in_features).view(
+            (num_classes, in_features)
         )
-        if compute_input_grad:
-            GX = GX.view((batch_chunk_size, in_features))
-        if compute_linear_weight_grad:
-            GL = GL.view((num_classes, in_features))
-    else:
-        GX = GL = tmp
+        if compute_linear_weight_grad
+        else tmp
+    )
 
     if reduction in {"mean", "sum"}:
         output = torch.zeros(
