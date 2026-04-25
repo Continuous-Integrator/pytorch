@@ -2793,7 +2793,7 @@ def compile(
     else:
         backend = _TorchCompileWrapper(backend, mode, options, dynamic)
 
-    torch._dynamo.optimize(
+    return torch._dynamo.optimize(
         backend=backend,
         nopython=fullgraph,
         dynamic=dynamic,
