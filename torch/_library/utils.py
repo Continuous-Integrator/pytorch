@@ -76,6 +76,12 @@ def is_builtin(op: OpOverload) -> bool:
     return op.namespace in {"aten", "prim", "prims"}
 
 
+def is_out(op: OpOverload) -> bool:
+    """Returns True if the operator has "out" semantics: its mutable arguments
+    are write-only output buffers that are not read from."""
+    return torch.Tag.out in op.tags
+
+
 def is_functional_schema(schema: Any, *, allow_valid_view: bool = False) -> bool:
     """Check if the schema is functional.
 
@@ -632,6 +638,9 @@ def is_impure(
                 return args[0] in _side_effectful_functions
 
         if _get_effect(op) is not None:
+            return True
+
+        if op in _side_effectful_functions:
             return True
 
         return False
