@@ -1591,7 +1591,7 @@ class UserDefinedObjectVariable(UserDefinedVariable):
             ).call_function(tx, [key], {})
         return super().mp_subscript_impl(tx, key)
 
-    def forward_call_method(
+    def call_tp_slot(
         self,
         tx: "InstructionTranslator",
         name: str,
@@ -1604,6 +1604,9 @@ class UserDefinedObjectVariable(UserDefinedVariable):
         if type_attr is None:
             raise_type_error(tx, "'NoneType' object is not callable")
 
+        # TODO(guilhermeleobas): Do not use self.call_method here as this
+        # can potentially cause infinite recursion. This needs to retrieve the tp_slot
+        # directly and call it.
         return self.call_method(tx, name, args, kwargs)
 
     def SLOT1BIN(
@@ -1612,43 +1615,90 @@ class UserDefinedObjectVariable(UserDefinedVariable):
         other: VariableTracker,
         dunder: str,
         rdunder: str,
-        nb_slot: int,  # NB_OR, NB_AND, etc
+        nb_slot: PyNumberSlots,  # NB_OR, NB_AND, etc
         reverse: bool,
     ) -> VariableTracker:
         # Implement SLOT1BIN semantics from CPython
         # ref: https://github.com/python/cpython/blob/3.13/Objects/typeobject.c#L9202-L9246
+        #
+        # Direct translation of CPython's SLOT1BINFULL macro
+        # (Objects/typeobject.c). The logic is a bit convoluted, but the main
+        # idea remains the same. While implementing this I had some questions
+        # that might be worth answering here:
+        #
+        # Q1) What does SLOT1BIN do? It bridges a C nb_slot to the corresponding
+        # Python-level dunder methods, handling dispatch order (subclass
+        # priority, reflected calls) correctly.
+        #
+        # Q2) Why does this macro exist? For built-in types, CPython dispatches
+        # binary operations through C-level tp_as_number slots (e.g., nb_or).
+        # User-defined types don't have a native C slot implementation, so
+        # CPython installs a wrapper function (e.g., slot_nb_or) that maps the C
+        # slot interface to the Python-level dunder methods (e.g., __or__ /
+        # __ror__). SLOT1BINFULL is the body of that wrapper.
+        #
+        # Q3) Does SLOT1BIN implement the same logic as binary_op1? Not quite.
+        # binary_op1 (Objects/abstract.c) reads C slot pointers and dispatches
+        # based on pointer identity. SLOT1BINFULL runs *inside* a slot call and
+        # handles Python-level dispatch (MRO lookup, subclass priority,
+        # NotImplemented fallthrough). They are complementary layers.
+        #
+        # Q4) What types can self and other be? SLOT1BINFULL is installed as the
+        # C slot for Python-defined types, so at least one operand always has
+        # the slot wrapper (e.g., slot_nb_or). The do_other / TESTFUNC checks
+        # determine if the *other* operand also has a Python-defined slot:
+        #
+        #     int do_other = !Py_IS_TYPE(self, Py_TYPE(other)) &&
+        #         Py_TYPE(other)->tp_as_number != NULL &&
+        #         Py_TYPE(other)->tp_as_number->SLOTNAME == TESTFUNC;
+        #     if (Py_TYPE(self)->tp_as_number != NULL &&
+        #         Py_TYPE(self)->tp_as_number->SLOTNAME == TESTFUNC) { ... }
+        #
+        # TESTFUNC == slot_nb_or (for the | operator), so this is basically
+        # asking "does this operand's type have a Python-defined dunder?" Native
+        # C types (e.g., int) fail the check and are skipped.
+        #
+        # Q5) Can this cause infinite recursion? Not if the dunder methods are
+        # called directly (MRO lookup + direct call), which is what CPython's
+        # vectorcall_maybe does. This is equivalent to calling a.__or__(b)
+        # directly, NOT a | b, which would re-enter the C slot layer and loop.
+        # In Dynamo, this means using call_tp_slot (direct invocation) rather
+        # than call_method, which would route back through nb_or dispatch.
+
         def py_is_type(w_type: type, v_type: type) -> bool:
             return w_type is v_type
 
         def py_is_subtype(w_type: type, v_type: type) -> bool:
             return issubclass(w_type, v_type)
 
-        # v = self
-        # w = other
         self_, other_ = (other, self) if reverse else (self, other)
 
         s_type = self_.python_type()
         o_type = other_.python_type()
 
         # Check if other is a different type and has the number slots
-        do_other = not py_is_type(s_type, o_type) and type_implements_nb_slot(
-            o_type, nb_slot
+        do_other = (
+            not py_is_type(s_type, o_type)
+            and type_implements_nb_slot(o_type, nb_slot)
+            and isinstance(other_, UserDefinedObjectVariable)
         )
 
-        if type_implements_nb_slot(s_type, nb_slot):
+        if isinstance(self_, UserDefinedObjectVariable) and type_implements_nb_slot(
+            s_type, nb_slot
+        ):
             if do_other and py_is_subtype(o_type, s_type):
                 # TODO: missing method_is_overloaded
-                r = other_.call_method(tx, rdunder, [self_], {})  # infinite recursion??
+                r = other_.call_tp_slot(tx, rdunder, [self_], {})
                 if not is_nb_not_implemented(r):
                     return r
                 do_other = False
 
-            r = self_.call_method(tx, dunder, [other_], {})
+            r = self_.call_tp_slot(tx, dunder, [other_], {})
             if not is_nb_not_implemented(r) or py_is_type(o_type, s_type):
                 return r
 
         if do_other:
-            r = other_.call_method(tx, rdunder, [self_], {})  # infinite recursion??
+            r = other_.call_tp_slot(tx, rdunder, [self_], {})  # infinite recursion??
             if not is_nb_not_implemented(r):
                 return r
 
@@ -1678,7 +1728,7 @@ class UserDefinedObjectVariable(UserDefinedVariable):
     ) -> VariableTracker:
         # ref: https://github.com/python/cpython/blob/3.13/Objects/typeobject.c#L9494
         # return self.call_method(tx, "__ior__", [other], {})
-        return self.forward_call_method(tx, "__ior__", [other], {})
+        return self.call_tp_slot(tx, "__ior__", [other], {})
 
     def call_method(
         self,
@@ -3491,12 +3541,20 @@ class DefaultDictVariable(UserDefinedDictVariable):
         if not pydict_check(other_):
             return variables.ConstantVariable.create(NotImplemented)
 
-        assert hasattr(left, "items")
-        new = DefaultDictVariable(
-            left.items.copy(),  # type: ignore[missing-attribute]
-            default_factory=self_.default_factory,
-            mutation_type=ValueMutationNew(),
+        if isinstance(left, ConstDictVariable):
+            items = left.items
+        else:
+            assert isinstance(left, UserDefinedDictVariable), left
+            items = left._base_vt.items  # type: ignore[missing-attribute]
+
+        new = tx.output.side_effects.track_new_user_defined_object(
+            VariableTracker.build(tx, dict),
+            VariableTracker.build(tx, collections.defaultdict),
+            [],
         )
+        new.default_factory = self.default_factory  # type: ignore[missing-attribute]
+        new._base_vt = ConstDictVariable(items.copy(), mutation_type=ValueMutationNew())  # type: ignore[missing-attribute]
+        tx.output.side_effects.store_attr(new, "default_factory", new.default_factory)  # type: ignore[missing-attribute]
         new.call_method(tx, "update", [right], {})
         return new
 
