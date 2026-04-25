@@ -221,9 +221,7 @@ def gen_arguments(
             if arg.default is not None:
                 from torchgen.api.cpp import default_expr
 
-                callsite_exprs.append(
-                    default_expr(arg.default, arg.type, symint=False)
-                )
+                callsite_exprs.append(default_expr(arg.default, arg.type, symint=False))
             else:
                 callsite_exprs.append("std::nullopt")
             continue
