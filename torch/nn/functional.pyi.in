@@ -462,8 +462,8 @@ def linear_cross_entropy(
     target: Tensor,
     *,
     weight: Tensor | None = ...,
-    ignore_index: int | None = ...,
     reduction: str = ...,
+    ignore_index: int | None = ...,
     label_smoothing: float = ...,
 ) -> Tensor: ...
 
