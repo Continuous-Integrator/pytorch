@@ -326,34 +326,38 @@ inline Tensor reshape_bias(int64_t dim, const Tensor& bias) {
   return bias.reshape(shape);
 }
 
-inline at::MemoryFormat cudnn_conv_suggest_memory_format(const at::Tensor& input, const at::Tensor& weight) {
-  // disable NHWC for float64 input.
-  if (!at::detail::getCUDAHooks().compiledWithCuDNN() ||
-      input.scalar_type() == at::kDouble ||
-      weight.scalar_type() == at::kDouble) {
+namespace detail {
+// Shared logic for cuDNN / MIOpen memory-format suggestion.
+// enabled: backend gate (compiled-with-X && not-float64). If false, return Contiguous.
+// allow_cl: extra opt-in (e.g. MIOpen's PYTORCH_MIOPEN_SUGGEST_NHWC); if false, return Contiguous.
+// Dispatches by weight.ndim: 4 -> CL, 5 -> CL3d, else Contiguous.
+inline at::MemoryFormat conv_suggest_memory_format_impl(
+    const at::Tensor& input, const at::Tensor& weight, bool enabled, bool allow_cl) {
+  if (!enabled || !allow_cl) {
     return at::MemoryFormat::Contiguous;
   }
-  auto input_memory_format = input.suggest_memory_format();
-  auto weight_memory_format = weight.suggest_memory_format();
+  auto input_mf = input.suggest_memory_format();
+  auto weight_mf = weight.suggest_memory_format();
   auto weight_ndim = weight.ndimension();
 
-  bool can_use_cudnn_channels_last_2d = weight_ndim == 4 && (
-    (input_memory_format  == at::MemoryFormat::ChannelsLast) ||
-    (weight_memory_format == at::MemoryFormat::ChannelsLast)
-  );
-  if (can_use_cudnn_channels_last_2d) {
+  if (weight_ndim == 4 &&
+      (input_mf == at::MemoryFormat::ChannelsLast ||
+       weight_mf == at::MemoryFormat::ChannelsLast)) {
     return at::MemoryFormat::ChannelsLast;
   }
-
-  bool can_use_cudnn_channels_last_3d = weight_ndim == 5 && (
-    (input_memory_format  == at::MemoryFormat::ChannelsLast3d) ||
-    (weight_memory_format == at::MemoryFormat::ChannelsLast3d)
-  );
-  if (can_use_cudnn_channels_last_3d) {
+  if (weight_ndim == 5 &&
+      (input_mf == at::MemoryFormat::ChannelsLast3d ||
+       weight_mf == at::MemoryFormat::ChannelsLast3d)) {
     return at::MemoryFormat::ChannelsLast3d;
   }
-
   return at::MemoryFormat::Contiguous;
+}
+} // namespace detail
+
+inline at::MemoryFormat cudnn_conv_suggest_memory_format(const at::Tensor& input, const at::Tensor& weight) {
+  bool enabled = at::detail::getCUDAHooks().compiledWithCuDNN() &&
+      input.scalar_type() != at::kDouble && weight.scalar_type() != at::kDouble;
+  return detail::conv_suggest_memory_format_impl(input, weight, enabled, /*allow_cl=*/true);
 }
 
 // controls whether emptyCache will be called following cudnn conv benchmarking
@@ -362,39 +366,13 @@ TORCH_API bool _cudnn_get_conv_benchmark_empty_cache();
 
 
 inline at::MemoryFormat miopen_conv_suggest_memory_format(const at::Tensor& input, const at::Tensor& weight) {
-  // disable NHWC for float64 input.
-  if (!at::detail::getCUDAHooks().compiledWithMIOpen() ||
-      input.scalar_type() == at::kDouble ||
-      weight.scalar_type() == at::kDouble) {
-    return at::MemoryFormat::Contiguous;
-  }
-
-  // TODO: Remove PYTORCH_MIOPEN_SUGGEST_NHWC once ROCm officially supports NHWC in MIOpen
+  bool enabled = at::detail::getCUDAHooks().compiledWithMIOpen() &&
+      input.scalar_type() != at::kDouble && weight.scalar_type() != at::kDouble;
+  // TODO: Remove PYTORCH_MIOPEN_SUGGEST_NHWC once ROCm officially supports NHWC in MIOpen.
   // See https://github.com/pytorch/pytorch/issues/64427.
-  // non static variable is used to be able to change environment variable in runtime for testing
-  bool suggest_nhwc = c10::utils::check_env("PYTORCH_MIOPEN_SUGGEST_NHWC").value_or(false);
-
-  auto input_memory_format = input.suggest_memory_format();
-  auto weight_memory_format = weight.suggest_memory_format();
-  auto weight_ndim = weight.ndimension();
-
-  bool can_use_miopen_channels_last_2d = suggest_nhwc && (weight_ndim == 4) && (
-    (input_memory_format  == at::MemoryFormat::ChannelsLast) ||
-    (weight_memory_format == at::MemoryFormat::ChannelsLast)
-  );
-  if (can_use_miopen_channels_last_2d) {
-    return at::MemoryFormat::ChannelsLast;
-  }
-
-  bool can_use_miopen_channels_last_3d = suggest_nhwc && (weight_ndim == 5) && (
-    (input_memory_format  == at::MemoryFormat::ChannelsLast3d) ||
-    (weight_memory_format == at::MemoryFormat::ChannelsLast3d)
-  );
-  if (can_use_miopen_channels_last_3d) {
-    return at::MemoryFormat::ChannelsLast3d;
-  }
-
-  return at::MemoryFormat::Contiguous;
+  // Non-static read so tests can toggle the env var at runtime.
+  bool allow_cl = c10::utils::check_env("PYTORCH_MIOPEN_SUGGEST_NHWC").value_or(false);
+  return detail::conv_suggest_memory_format_impl(input, weight, enabled, allow_cl);
 }
 
 // deprecated, but to remove would be BC-breaking
