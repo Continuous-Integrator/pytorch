@@ -27,7 +27,7 @@ from ..bytecode_transformation import create_call_function, create_instruction
 from ..exc import raise_observed_exception
 from ..guards import GuardBuilder, install_guard
 from ..source import AttrSource, is_constant_source, is_from_local_source
-from ..utils import cmp_name_to_op_mapping, istype, raise_args_mismatch
+from ..utils import cmp_name_to_op_mapping, istype, raise_args_mismatch, set_methods
 from .base import ValueMutationNew, VariableTracker
 from .constant import ConstantVariable
 from .hashable import HashableTracker, is_hashable, raise_unhashable
@@ -572,6 +572,13 @@ class SetVariable(VariableTracker):
     ) -> VariableTracker:
         raise RuntimeError("Illegal to getitem on a set")
 
+    def tp_iter_impl(self, tx: "InstructionTranslator") -> VariableTracker:
+        from .iter import SetIterator
+
+        if self.source and not is_constant_source(self.source):
+            tx.output.guard_on_key_order.add(self.source)
+        return SetIterator(self.items)
+
     def nb_or_impl(
         self, tx: "InstructionTranslator", other: VariableTracker, reverse: bool = False
     ) -> VariableTracker:
@@ -628,8 +635,6 @@ class OrderedSetClassVariable(VariableTracker):
         args: list[VariableTracker],
         kwargs: dict[str, VariableTracker],
     ) -> VariableTracker:
-        from .builtin import set_methods
-
         if name == "__new__":
             if len(args) != 2 or kwargs:
                 raise_args_mismatch(

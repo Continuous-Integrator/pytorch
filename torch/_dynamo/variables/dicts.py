@@ -458,6 +458,14 @@ class ConstDictVariable(VariableTracker):
         # Unhashable key check happens inside _HashableTracker (raise_unhashable → TypeError).
         return self.getitem_const_raise_exception_if_absent(tx, key)
 
+    def tp_iter_impl(self, tx: "InstructionTranslator") -> VariableTracker:
+        from .iter import DictIterator
+
+        if self.source and not is_constant_source(self.source):
+            install_guard(self.make_guard(GuardBuilder.DICT_KEYS_MATCH))
+            tx.output.guard_on_key_order.add(self.source)
+        return DictIterator(self.items.keys())
+
     def call_method(
         self,
         tx: "InstructionTranslator",
@@ -714,14 +722,6 @@ class ConstDictVariable(VariableTracker):
                 tx,
                 not self.call_method(tx, "__eq__", args, kwargs).value,  # type: ignore[attr-defined]
             )
-        elif name == "__iter__":
-            from .lists import ListIteratorVariable
-
-            if self.source and not is_constant_source(self.source):
-                tx.output.guard_on_key_order.add(self.source)
-            return ListIteratorVariable(
-                self.unpack_var_sequence(tx), mutation_type=ValueMutationNew()
-            )
         else:
             return super().call_method(tx, name, args, kwargs)
 
@@ -883,6 +883,9 @@ class MappingProxyVariable(VariableTracker):
         self._check_mutation_guard(tx)
         return self.dv_dict.call_method(tx, name, args, kwargs)
 
+    def tp_iter_impl(self, tx: "InstructionTranslator") -> VariableTracker:
+        return self.dv_dict.tp_iter_impl(tx)
+
     def mp_length(self, tx: "InstructionTranslator") -> VariableTracker:
         return self.dv_dict.mp_length(tx)
 
@@ -955,13 +958,7 @@ class DictViewVariable(VariableTracker):
         args: list[VariableTracker],
         kwargs: dict[str, VariableTracker],
     ) -> VariableTracker:
-        if name == "__iter__":
-            from .lists import ListIteratorVariable
-
-            return ListIteratorVariable(
-                self.view_items_vt, mutation_type=ValueMutationNew()
-            )
-        elif name == "__repr__":
+        if name == "__repr__":
             return VariableTracker.build(tx, self.debug_repr())
         return super().call_method(tx, name, args, kwargs)
 
@@ -998,6 +995,13 @@ class DictKeysVariable(DictViewVariable):
 
     def python_type(self) -> type:
         return dict_keys
+
+    def tp_iter_impl(self, tx: "InstructionTranslator") -> VariableTracker:
+        from .iter import DictKeysIterator
+
+        if self.dv_dict.source and not is_constant_source(self.dv_dict.source):
+            tx.output.guard_on_key_order.add(self.dv_dict.source)
+        return DictKeysIterator(self.dv_dict.items)
 
     def debug_repr(self) -> str:
         if not self.view_items:
@@ -1066,6 +1070,13 @@ class DictValuesVariable(DictViewVariable):
     def python_type(self) -> type:
         return dict_values
 
+    def tp_iter_impl(self, tx: "InstructionTranslator") -> VariableTracker:
+        from .iter import DictValuesIterator
+
+        if self.dv_dict.source and not is_constant_source(self.dv_dict.source):
+            tx.output.guard_on_key_order.add(self.dv_dict.source)
+        return DictValuesIterator(self.dv_dict.items)
+
     def debug_repr(self) -> str:
         if not self.view_items:
             return "dict_values([])"
@@ -1111,6 +1122,13 @@ class DictItemsVariable(DictViewVariable):
                 items.append(f"({key_str}, {val_str})")
             return "dict_items([" + ",".join(items) + "])"
 
+    def tp_iter_impl(self, tx: "InstructionTranslator") -> VariableTracker:
+        from .iter import DictItemsIterator
+
+        if self.dv_dict.source and not is_constant_source(self.dv_dict.source):
+            tx.output.guard_on_key_order.add(self.dv_dict.source)
+        return DictItemsIterator(self.dv_dict.items)
+
     def call_method(
         self,
         tx: "InstructionTranslator",
@@ -1139,12 +1157,6 @@ class DictItemsVariable(DictViewVariable):
                     len(self.set_items ^ args[0].set_items) == 0,
                 )
             return ConstantVariable.create(False)
-        elif name == "__iter__":
-            from .lists import ListIteratorVariable
-
-            return ListIteratorVariable(
-                self.view_items_vt, mutation_type=ValueMutationNew()
-            )
         elif name in (
             "__and__",
             "__iand__",

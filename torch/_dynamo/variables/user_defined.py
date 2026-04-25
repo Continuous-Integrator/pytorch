@@ -598,6 +598,22 @@ class UserDefinedClassVariable(UserDefinedVariable):
     def mp_length(self, tx: "InstructionTranslator") -> VariableTracker:
         return self.len_impl(tx)
 
+    def tp_iter_impl(self, tx: "InstructionTranslator") -> VariableTracker:
+        m = self._maybe_get_baseclass_method("__iter__")
+        if m:
+            source = self.source and AttrSource(self.source, "__iter__")
+            return variables.UserMethodVariable(
+                m, self, source_fn=source
+            ).call_function(tx, [], {})
+        try:
+            items = self.unpack_var_sequence(tx)
+            return variables.ListIteratorVariable(
+                items, mutation_type=ValueMutationNew()
+            )
+        except NotImplementedError:
+            pass
+        return super().tp_iter_impl(tx)
+
     def _call_cross_entropy_loss(
         self,
         tx: "InstructionTranslator",
@@ -1437,20 +1453,19 @@ class UserDefinedObjectVariable(UserDefinedVariable):
     ) -> "VariableTracker | None":
         # Mirrors slot_nb_bool:
         # https://github.com/python/cpython/blob/c09ccd9c429/Objects/typeobject.c#L9408-L9458
-        if self._maybe_get_baseclass_method("__bool__"):
-            result = self.call_method(tx, "__bool__", [], {})
-            if result.is_python_constant():
-                result_value = result.as_python_constant()
-                if not isinstance(result_value, bool):
-                    raise_observed_exception(
-                        TypeError,
-                        tx,
-                        args=[
-                            f"__bool__ should return bool, returned {type(result_value).__name__}"
-                        ],
-                    )
-            return result
-        return None
+        type_attr = self.lookup_class_mro_attr("__bool__")
+        if type_attr is NO_SUCH_SUBOBJ:
+            return None
+        if type_attr is None:
+            raise_type_error(tx, "'NoneType' object is not callable")
+
+        result = self.call_method(tx, "__bool__", [], {})
+        if result.python_type() is not bool:
+            raise_type_error(
+                tx,
+                f"__bool__ should return bool, returned {result.python_type().__name__}",
+            )
+        return result
 
     def nb_index_impl(
         self,
@@ -1558,6 +1573,25 @@ class UserDefinedObjectVariable(UserDefinedVariable):
             kwargs,
         )
 
+    def tp_iter_impl(self, tx: "InstructionTranslator") -> VariableTracker:
+        method = self._maybe_get_baseclass_method("__iter__")
+        if (
+            self._base_vt is not None
+            and self._base_methods is not None
+            and method in self._base_methods
+        ):
+            return self._base_vt.tp_iter_impl(tx)
+
+        if isinstance(method, types.FunctionType):
+            source_fn = self.source and self.get_source_by_walking_mro(tx, "__iter__")
+            return variables.UserMethodVariable(
+                method,
+                self,
+                source_fn=source_fn,
+                source=self.source,
+            ).call_function(tx, [], {})
+        return super().tp_iter_impl(tx)
+
     @staticmethod
     @functools.cache
     def _supported_random_functions() -> set[Any]:
@@ -1615,7 +1649,7 @@ class UserDefinedObjectVariable(UserDefinedVariable):
         other: VariableTracker,
         dunder: str,
         rdunder: str,
-        nb_slot: PyNumberSlots,  # NB_OR, NB_AND, etc
+        nb_slot: int,  # NB_OR, NB_AND, etc
         reverse: bool,
     ) -> VariableTracker:
         # Implement SLOT1BIN semantics from CPython
@@ -1688,16 +1722,21 @@ class UserDefinedObjectVariable(UserDefinedVariable):
         ):
             if do_other and py_is_subtype(o_type, s_type):
                 # TODO: missing method_is_overloaded
-                r = other_.call_tp_slot(tx, rdunder, [self_], {})
-                if not is_nb_not_implemented(r):
-                    return r
-                do_other = False
+                method_is_overloaded = self_._maybe_get_baseclass_method(
+                    rdunder
+                ) != other_._maybe_get_baseclass_method(rdunder)
+                if method_is_overloaded:
+                    r = other_.call_tp_slot(tx, rdunder, [self_], {})
+                    if not is_nb_not_implemented(r):
+                        return r
+                    do_other = False
 
             r = self_.call_tp_slot(tx, dunder, [other_], {})
             if not is_nb_not_implemented(r) or py_is_type(o_type, s_type):
                 return r
 
         if do_other:
+            assert isinstance(other_, UserDefinedObjectVariable)
             r = other_.call_tp_slot(tx, rdunder, [self_], {})  # infinite recursion??
             if not is_nb_not_implemented(r):
                 return r
