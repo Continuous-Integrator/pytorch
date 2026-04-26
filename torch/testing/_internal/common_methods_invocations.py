@@ -15529,6 +15529,7 @@ op_db: list[OpInfo] = [
         supports_out=False,
         supports_forward_ad=True,
         supports_fwgrad_bwgrad=True,
+        gradcheck_nondet_tol=GRADCHECK_NONDET_TOL,
         allow_cow_input_materialize_forward=[2],
         allow_cow_input_materialize_backward=[2, 'output grad 0'],
         decorators=(
