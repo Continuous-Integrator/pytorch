@@ -1,0 +1,566 @@
+commit 5aa9f58d3c29c75d6fdcdef2be935e2e58893bb6
+Author: Pian Pawakapan <pianpwk@meta.com>
+Date:   Fri Apr 24 10:05:26 2026 -0700
+
+    [spmd types] fully_shard in spmd_types
+    
+    ghstack-source-id: 247c0f73146399d1125c68f24c1e76f30dbf9fc5
+    Pull Request resolved: https://github.com/pytorch/pytorch/pull/181199
+
+diff --git a/test/distributed/_composable/fsdp/test_fully_shard_spmd_types.py b/test/distributed/_composable/fsdp/test_fully_shard_spmd_types.py
+new file mode 100644
+index 00000000000..676b36b3c22
+--- /dev/null
++++ b/test/distributed/_composable/fsdp/test_fully_shard_spmd_types.py
+@@ -0,0 +1,311 @@
++# Owner(s): ["oncall: distributed"]
++
++import copy
++import unittest
++from contextlib import ExitStack
++
++import torch
++import torch.distributed as dist
++import torch.nn as nn
++from torch.distributed._composable import replicate
++from torch.distributed.fsdp import DataParallelMeshDims, fully_shard
++from torch.distributed.spmd_types import (
++    assert_type as spmd_assert_type,
++    get_local_type,
++    has_local_type,
++    I,
++    is_available as spmd_types_available,
++    MeshAxis,
++    R,
++    S,
++    set_current_mesh,
++    set_local_type,
++    typecheck,
++    V,
++)
++from torch.distributed.tensor import (
++    distribute_tensor,
++    DTensor,
++    init_device_mesh,
++    Replicate,
++    Shard,
++)
++from torch.testing._internal.common_distributed import skip_if_lt_x_gpu
++from torch.testing._internal.common_fsdp import FSDPTest, get_devtype, MLP
++from torch.testing._internal.common_utils import run_tests
++
++
++device_type = torch.device(get_devtype())
++
++
++def _annotate_params_with_spmd_types(model, mesh):
++    """Annotate all model parameters with spmd_types R (Replicate) on all dims."""
++    for param in model.parameters():
++        local_type = {}
++        for name in mesh.mesh_dim_names:
++            axis = MeshAxis.of(mesh.get_group(name))
++            local_type[axis] = R
++        set_local_type(param, local_type)
++
++
++@unittest.skipUnless(spmd_types_available(), "requires spmd_types")
++class TestFullyShardSpmdTypes(FSDPTest):
++    @property
++    def world_size(self):
++        return min(4, torch.cuda.device_count())
++
++    def setUp(self):
++        super().setUp()
++        from torch.distributed.spmd_types import _reset
++
++        _reset()
++
++    def _run_train_parity(self, model, ref_model, dp_pg, mesh, num_iters=5, mlp_dim=16):
++        fsdp_axis = MeshAxis.of(mesh.get_group("fsdp"))
++
++        optim = torch.optim.Adam(model.parameters(), lr=1e-2, foreach=False)
++        ref_optim = torch.optim.Adam(ref_model.parameters(), lr=1e-2, foreach=False)
++
++        def check_spmd_types_hook(module, args):
++            for name, param in module.named_parameters(recurse=False):
++                self.assertNotIsInstance(
++                    param.data,
++                    DTensor,
++                    f"{name} should be a plain tensor during forward, not DTensor",
++                )
++                self.assertTrue(
++                    has_local_type(param),
++                    f"Missing spmd_types on {name} during forward",
++                )
++
++        for m in model.modules():
++            if isinstance(m, nn.Linear):
++                m.register_forward_pre_hook(check_spmd_types_hook)
++
++        tc_stack = ExitStack()
++
++        def enter_typecheck(module, args):
++            tc_stack.enter_context(typecheck(strict_mode="strict"))
++            spmd_assert_type(args[0], {fsdp_axis: S(0)})
++
++        def exit_typecheck(module, args, output):
++            tc_stack.close()
++
++        model.register_forward_pre_hook(enter_typecheck, prepend=False)
++        model.register_forward_hook(exit_typecheck)
++
++        torch.manual_seed(42 + dp_pg.rank() + 1)
++        with set_current_mesh(mesh):
++            for i in range(num_iters):
++                inp = torch.randn((2, mlp_dim), device=device_type)
++                ref_optim.zero_grad()
++                ref_loss = ref_model(inp).sum()
++                ref_loss.backward()
++                ref_optim.step()
++
++                optim.zero_grad()
++                output = model(inp)
++
++                local_type = get_local_type(output)
++                self.assertIn(fsdp_axis, local_type)
++                self.assertEqual(local_type[fsdp_axis], V)
++                spmd_assert_type(output, {fsdp_axis: S(0)})
++
++                loss = output.sum()
++                loss.backward()
++                optim.step()
++
++                self.assertEqual(ref_loss, loss)
++
++        for (n1, p1), (n2, p2) in zip(
++            ref_model.named_parameters(), model.named_parameters(), strict=True
++        ):
++            if isinstance(p2, DTensor):
++                p2_full = p2.full_tensor()
++            elif has_local_type(p2):
++                gathered = [torch.empty_like(p2) for _ in range(dp_pg.size())]
++                dist.all_gather(gathered, p2, group=dp_pg)
++                p2_full = torch.cat(gathered, dim=0)
++            else:
++                p2_full = p2
++            self.assertEqual(p1, p2_full, msg=f"Param mismatch: {n1} vs {n2}")
++
++    @skip_if_lt_x_gpu(2)
++    def test_fsdp_1d_spmd_types_train_parity(self):
++        """Train parity and sharded param correctness with 1D FSDP."""
++        mlp_dim = 16
++        mesh = init_device_mesh(
++            device_type.type, (self.world_size,), mesh_dim_names=("fsdp",)
++        )
++        fsdp_axis = MeshAxis.of(mesh.get_group("fsdp"))
++
++        torch.manual_seed(42)
++        model = MLP(mlp_dim, device=device_type)
++        ref_model = copy.deepcopy(model)
++
++        _annotate_params_with_spmd_types(model, mesh)
++        fully_shard(
++            model,
++            mesh=mesh,
++            dp_mesh_dims=DataParallelMeshDims(shard="fsdp"),
++        )
++
++        for param in model.parameters():
++            self.assertNotIsInstance(param, DTensor)
++            local_type = get_local_type(param)
++            self.assertIn(fsdp_axis, local_type)
++            self.assertIs(local_type[fsdp_axis], V)
++
++        replicate(
++            ref_model,
++            device_ids=[self.rank] if device_type.type != "cpu" else None,
++        )
++        self._run_train_parity(
++            model, ref_model, dist.group.WORLD, mesh=mesh, mlp_dim=mlp_dim
++        )
++
++    @skip_if_lt_x_gpu(4)
++    def test_fsdp_tp_spmd_types_sharded_param_correctness(self):
++        """Verify sharded param types for FSDP+TP with spmd_types."""
++        dp_size = 2
++        tp_size = self.world_size // dp_size
++        mesh = init_device_mesh(
++            device_type.type,
++            (dp_size, tp_size),
++            mesh_dim_names=("fsdp", "tp"),
++        )
++        fsdp_axis = MeshAxis.of(mesh.get_group("fsdp"))
++        tp_axis = MeshAxis.of(mesh.get_group("tp"))
++
++        model = MLP(16, device=device_type)
++
++        tp_plan = {
++            "in_proj.weight": (S(0), Shard(0)),
++            "in_proj.bias": (R, None),
++            "out_proj.weight": (S(1), Shard(1)),
++            "out_proj.bias": (R, None),
++        }
++
++        for fqn, param in model.named_parameters():
++            tp_type, tp_placement = tp_plan[fqn]
++            set_local_type(param, {fsdp_axis: R, tp_axis: tp_type})
++
++            if tp_placement is not None:
++                dt = distribute_tensor(
++                    param.data, mesh, [Replicate(), tp_placement]
++                )
++                local_data = dt._local_tensor.clone()
++            else:
++                local_data = param.data
++
++            module_name, param_name = fqn.rsplit(".", 1)
++            module = model.get_submodule(module_name)
++            new_param = nn.Parameter(local_data, requires_grad=param.requires_grad)
++            set_local_type(new_param, get_local_type(param))
++            module.register_parameter(param_name, new_param)
++
++        def shard_fn(param):
++            lt = get_local_type(param)
++            tp_type = lt.get(tp_axis)
++            if isinstance(tp_type, S) and tp_type.dim == 0:
++                return Shard(1)
++            return Shard(0)
++
++        fully_shard(
++            model,
++            mesh=mesh,
++            shard_placement_fn=shard_fn,
++            dp_mesh_dims=DataParallelMeshDims(shard="fsdp"),
++        )
++
++        for name, param in model.named_parameters():
++            self.assertNotIsInstance(param, DTensor)
++            local_type = get_local_type(param)
++            self.assertIn(fsdp_axis, local_type)
++            self.assertIs(local_type[fsdp_axis], V)
++            self.assertIn(tp_axis, local_type)
++
++    @skip_if_lt_x_gpu(4)
++    def test_fsdp_tp_optimizer_state_spmd_types(self):
++        """Optimizer state for FSDP+TP should be plain tensors."""
++        from spmd_types import all_reduce, convert
++
++        dp_size = 2
++        tp_size = self.world_size // dp_size
++        mesh = init_device_mesh(
++            device_type.type,
++            (dp_size, tp_size),
++            mesh_dim_names=("fsdp", "tp"),
++        )
++        fsdp_axis = MeshAxis.of(mesh.get_group("fsdp"))
++        tp_axis = MeshAxis.of(mesh.get_group("tp"))
++        tp_pg = mesh.get_group("tp")
++
++        class SpmdTypesTPMLP(nn.Module):
++            def __init__(self, dim, tp_size, device=None):
++                super().__init__()
++                self.in_proj = nn.Linear(
++                    dim, dim * 4 // tp_size, bias=False, device=device
++                )
++                self.out_proj = nn.Linear(
++                    dim * 4 // tp_size, dim, bias=False, device=device
++                )
++
++            def forward(self, x):
++                x = convert(x, tp_pg, src=I, dst=R)
++                z = self.in_proj(x)
++                z = torch.nn.functional.relu(z)
++                z = self.out_proj(z)
++                z = all_reduce(z, tp_pg, dst=I)
++                z = torch.nn.functional.relu(z)
++                return z
++
++        torch.manual_seed(42)
++        model = SpmdTypesTPMLP(16, tp_size, device=device_type)
++
++        tp_plan = {
++            "in_proj.weight": S(0),
++            "out_proj.weight": S(1),
++        }
++        for fqn, param in model.named_parameters():
++            set_local_type(param, {fsdp_axis: R, tp_axis: tp_plan[fqn]})
++
++        def shard_fn(param):
++            lt = get_local_type(param)
++            tp_type = lt.get(tp_axis)
++            if isinstance(tp_type, S) and tp_type.dim == 0:
++                return Shard(1)
++            return Shard(0)
++
++        fully_shard(
++            model,
++            mesh=mesh,
++            shard_placement_fn=shard_fn,
++            dp_mesh_dims=DataParallelMeshDims(shard="fsdp"),
++        )
++        optim = torch.optim.Adam(model.parameters(), lr=1e-2, foreach=False)
++
++        torch.manual_seed(42 + self.rank + 1)
++        inp = torch.randn((2, 16), device=device_type)
++        with set_current_mesh(mesh):
++            model(inp).sum().backward()
++            with typecheck(strict_mode="permissive"):
++                optim.step()
++
++        for name, param in model.named_parameters():
++            self.assertNotIsInstance(param, DTensor)
++            self.assertTrue(has_local_type(param))
++            local_type = get_local_type(param)
++            self.assertIs(local_type[fsdp_axis], V)
++            self.assertIn(tp_axis, local_type)
++
++            state = optim.state[param]
++            for key in ("exp_avg", "exp_avg_sq"):
++                self.assertIn(key, state)
++                self.assertNotIsInstance(state[key], DTensor)
++                self.assertEqual(state[key].shape, param.shape)
++                self.assertTrue(has_local_type(state[key]))
++
++
++if __name__ == "__main__":
++    run_tests()
+diff --git a/torch/distributed/fsdp/_fully_shard/_fsdp_collectives.py b/torch/distributed/fsdp/_fully_shard/_fsdp_collectives.py
+index 0f15723ae69..2292d6602fe 100644
+--- a/torch/distributed/fsdp/_fully_shard/_fsdp_collectives.py
++++ b/torch/distributed/fsdp/_fully_shard/_fsdp_collectives.py
+@@ -761,16 +761,22 @@ def foreach_reduce(
+                     # ensure that the D2H copy finishes before the optimizer
+                     fsdp_param.grad_offload_event = post_reduce_stream.record_event()
+             if to_accumulate_grad:
+-                if not isinstance(fsdp_param.sharded_param.grad, DTensor):
+-                    raise AssertionError(
+-                        f"Expected fsdp_param.sharded_param.grad to be DTensor, got {type(fsdp_param.sharded_param.grad)}"
+-                    )
+-                fsdp_param.sharded_param.grad._local_tensor += new_sharded_grad
++                if fsdp_param.is_spmd_types:
++                    fsdp_param.sharded_param.grad += new_sharded_grad  # pyrefly: ignore
++                else:
++                    if not isinstance(fsdp_param.sharded_param.grad, DTensor):
++                        raise AssertionError(
++                            f"Expected fsdp_param.sharded_param.grad to be DTensor, got {type(fsdp_param.sharded_param.grad)}"
++                        )
++                    fsdp_param.sharded_param.grad._local_tensor += new_sharded_grad
+             else:
+-                new_sharded_dtensor_grad = fsdp_param.to_sharded_dtensor(
+-                    new_sharded_grad
+-                )
+-                fsdp_param.sharded_param.grad = new_sharded_dtensor_grad
++                if fsdp_param.is_spmd_types:
++                    fsdp_param.sharded_param.grad = new_sharded_grad
++                else:
++                    new_sharded_dtensor_grad = fsdp_param.to_sharded_dtensor(
++                        new_sharded_grad
++                    )
++                    fsdp_param.sharded_param.grad = new_sharded_dtensor_grad
+             for hook in (
+                 getattr(fsdp_param.sharded_param, "_post_accumulate_grad_hooks", {})
+                 or {}
+diff --git a/torch/distributed/fsdp/_fully_shard/_fsdp_param.py b/torch/distributed/fsdp/_fully_shard/_fsdp_param.py
+index f09e7b8dcd0..844e74f707e 100644
+--- a/torch/distributed/fsdp/_fully_shard/_fsdp_param.py
++++ b/torch/distributed/fsdp/_fully_shard/_fsdp_param.py
+@@ -12,6 +12,15 @@ from torch._prims_common import make_contiguous_strides_for
+ from torch.distributed._functional_collectives import AsyncCollectiveTensor
+ from torch.distributed.device_mesh import DeviceMesh
+ from torch.distributed.fsdp._fully_shard._fsdp_common import DDPMeshInfo
++from torch.distributed.spmd_types import (
++    assert_type as spmd_assert_type,
++    get_local_type,
++    has_local_type,
++    MeshAxis,
++    R,
++    S,
++    V,
++)
+ from torch.distributed.tensor import DTensor, Replicate, Shard
+ from torch.distributed.tensor._dtensor_spec import DTensorSpec, TensorMeta
+ from torch.distributed.tensor.placement_types import _StridedShard, Placement
+@@ -261,6 +270,7 @@ class FSDPParam:
+         # `distribute_tensor` after https://github.com/pytorch/pytorch/issues/116101
+         # TODO: Simplify the following sharded parameter padding logic after
+         # https://github.com/pytorch/pytorch/issues/113045
++        self.is_spmd_types = self._has_spmd_local_type(param)
+         self.is_dtensor = isinstance(param, DTensor)
+         self._orig_param_uid = _get_orig_param_uid(param)
+         param_data = self._init_sharding_spec(param, fsdp_placement, shard_dim)
+@@ -318,15 +328,33 @@ class FSDPParam:
+             raise AssertionError(
+                 f"Expected contiguous tensor with {self.fsdp_placement=}"
+             )
+-        self.sharded_param = nn.Parameter(
+-            self.to_sharded_dtensor(sharded_param),
+-            requires_grad=param.requires_grad,
+-        )
++        if self.is_spmd_types:
++            self.sharded_param = nn.Parameter(
++                sharded_param, requires_grad=param.requires_grad
++            )
++            self._annotate_spmd_types(self.sharded_param, sharded=True)
++        else:
++            self.sharded_param = nn.Parameter(
++                self.to_sharded_dtensor(sharded_param),
++                requires_grad=param.requires_grad,
++            )
+         # Let `param_data` be freed normally when its ref count reaches 0 when
+         # the `fully_shard` call returns to allow provided parameters to alias
+         self._setattr_on_modules(self.sharded_param)
+         self.sharded_state = ShardedState.SHARDED
+ 
++    @staticmethod
++    def _has_spmd_local_type(param: nn.Parameter) -> bool:
++        return has_local_type(param)
++
++    def _annotate_spmd_types(self, tensor: torch.Tensor, sharded: bool) -> None:
++        """Set spmd_types annotation on a tensor for the FSDP shard axis."""
++        local_type = dict(self._spmd_types_unsharded_type)
++        fsdp_axis = self._spmd_types_fsdp_axis
++        if sharded:
++            local_type[fsdp_axis] = S(self.fsdp_placement.dim)
++        spmd_assert_type(tensor, local_type)
++
+     def _init_sharding_spec(
+         self,
+         param: nn.Parameter,
+@@ -338,6 +366,8 @@ class FSDPParam:
+         return the local tensor data to be sharded.
+         """
+         self._unsharded_dtensor_spec = None
++        if self.is_spmd_types and self.mesh_info.is_spmd_mesh:
++            return self._init_sharding_spec_spmd_types(param, fsdp_placement, shard_dim)
+         if self.mesh_info.is_spmd_mesh and not self.is_dtensor:
+             raise ValueError(
+                 "When dp_mesh_dims is provided, all parameters must be "
+@@ -501,6 +531,41 @@ class FSDPParam:
+         )
+         return param
+ 
++    def _init_sharding_spec_spmd_types(
++        self,
++        param: nn.Parameter,
++        fsdp_placement: Shard,
++        shard_dim: int,
++    ) -> torch.Tensor:
++        """spmd_types path: param is a plain tensor with spmd_types annotations."""
++        spmd_mesh = self.mesh_info.spmd_mesh
++        if spmd_mesh is None or spmd_mesh.mesh_dim_names is None:
++            raise ValueError("spmd_types path requires a named SPMD mesh")
++        dp_dim_names = self.mesh_info.dp_mesh_dims
++        if dp_dim_names is None:
++            raise AssertionError("dp_dim_names must not be None for SPMD mesh")
++
++        local_type = get_local_type(param)
++        fsdp_axis = MeshAxis.of(spmd_mesh.get_group(dp_dim_names.shard_names[0]))
++        param_type = local_type.get(fsdp_axis)
++        if param_type is not R and param_type is not V:
++            raise ValueError(
++                f"Expected R or V on FSDP shard axis but got {param_type} "
++                f"for parameter '{self._module_info.param_name}'"
++            )
++
++        # Store spmd_types metadata for unshard/reshard annotation
++        self._spmd_types_unsharded_type = local_type
++        self._spmd_types_fsdp_axis = fsdp_axis
++        self._spmd_types_mesh = spmd_mesh
++
++        # Build a DTensorSpec so the DTensor code paths (that we don't use)
++        # don't crash if accidentally accessed. But we don't actually wrap
++        # as DTensor.
++        self._spmd_mesh = spmd_mesh
++        self._sharding_spec = None  # type: ignore[assignment]
++        return param
++
+     def _init_sharded_post_forward_param_metadata(self, param: torch.Tensor) -> None:
+         mesh_info = self.post_forward_mesh_info
+         if mesh_info is None:
+@@ -611,13 +676,18 @@ class FSDPParam:
+             self._contiguous_orig_stride,
+             storage_offset=0,
+         )
+-        if self._unsharded_dtensor_spec is not None:
++        if self.is_spmd_types:
++            pass  # keep as plain tensor; annotate after Parameter creation
++        elif self._unsharded_dtensor_spec is not None:
+             unsharded_param = _from_local_no_grad(
+                 unsharded_param, self._unsharded_dtensor_spec
+             )
+         self._unsharded_param = nn.Parameter(
+             unsharded_param, requires_grad=self.sharded_param.requires_grad
+         )
++        if self.is_spmd_types:
++            self._annotate_spmd_types(self._unsharded_param, sharded=False)
++            self._annotate_spmd_types(self._unsharded_param.data, sharded=False)
+ 
+     def _unflatten_all_gather_outputs(self) -> tuple[torch.Tensor, ...]:
+         return tuple(
+@@ -854,6 +924,8 @@ class FSDPParam:
+         return self._get_grad_inner_tensor(grad)
+ 
+     def _get_grad_inner_tensor(self, grad: torch.Tensor) -> torch.Tensor:
++        if self.is_spmd_types:
++            return grad
+         if self.is_dtensor:
+             if isinstance(grad, AsyncCollectiveTensor):
+                 grad = grad.wait()
+@@ -890,6 +962,8 @@ class FSDPParam:
+ 
+     @property
+     def _sharded_local_tensor(self) -> torch.Tensor:
++        if self.is_spmd_types:
++            return self.sharded_param
+         return cast(DTensor, self.sharded_param)._local_tensor
+ 
+     def _init_shard_mesh(self) -> DeviceMesh:
+@@ -928,7 +1002,10 @@ class FSDPParam:
+                 )
+             self.sharded_param = new_param
+ 
+-        local_tensor = new_param._local_tensor
++        if self.is_spmd_types:
++            local_tensor = new_param.data
++        else:
++            local_tensor = new_param._local_tensor
+         if local_tensor.is_meta:
+             return
+         updated_local_tensor = False
+@@ -968,18 +1045,26 @@ class FSDPParam:
+             updated_local_tensor = True
+         if not same_local_tensor:
+             self._sharded_param_data = local_tensor.view(-1)
+-        if not isinstance(self.sharded_param, DTensor):
+-            raise AssertionError(f"Expected DTensor, got {type(self.sharded_param)}")
+-        if updated_local_tensor:
+-            # Only change the local tensor object if needed
+-            self.sharded_param._local_tensor = local_tensor.narrow(
+-                dim=shard_dim, start=0, length=length
+-            )
+-            if not self.sharded_param._local_tensor.is_contiguous():
++        if self.is_spmd_types:
++            if updated_local_tensor:
++                self.sharded_param.data = local_tensor.narrow(
++                    dim=shard_dim, start=0, length=length
++                )
++                self._annotate_spmd_types(self.sharded_param, sharded=True)
++        else:
++            if not isinstance(self.sharded_param, DTensor):
+                 raise AssertionError(
+-                    "Expected sharded_param._local_tensor to be contiguous"
++                    f"Expected DTensor, got {type(self.sharded_param)}"
+                 )
+-        self._sharding_spec = self.sharded_param._spec
++            if updated_local_tensor:
++                self.sharded_param._local_tensor = local_tensor.narrow(
++                    dim=shard_dim, start=0, length=length
++                )
++                if not self.sharded_param._local_tensor.is_contiguous():
++                    raise AssertionError(
++                        "Expected sharded_param._local_tensor to be contiguous"
++                    )
++            self._sharding_spec = self.sharded_param._spec
+ 
+     def __repr__(self):
+         return f"FSDPParam(fqn={self._param_fqn}, orig_size={self._orig_size})"

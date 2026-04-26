@@ -1,0 +1,16 @@
+I0424 13:09:39.513000 3496846 torch/testing/_internal/common_distributed.py:895] Started process 0 with pid 3497728
+I0424 13:09:39.514000 3496846 torch/testing/_internal/common_distributed.py:895] Started process 1 with pid 3497729
+I0424 13:09:39.515000 3496846 torch/testing/_internal/common_distributed.py:895] Started process 2 with pid 3497730
+I0424 13:09:39.516000 3496846 torch/testing/_internal/common_distributed.py:895] Started process 3 with pid 3497731
+dist init r=1, world=4
+NCCL version 2.28.9+cuda12.4
+dist init r=0, world=4
+NCCL version 2.28.9+cuda12.4
+dist init r=2, world=4
+NCCL version 2.28.9+cuda12.4
+dist init r=3, world=4
+.
+----------------------------------------------------------------------
+Ran 1 test in 9.732s
+
+OK

@@ -1,0 +1,27 @@
+Diagnosis
+The revert is legitimate. The PR introduces changes to how tensors are chunked and gathered for distributed operations, specifically to handle unbacked symints better. However, these changes broke the micro-pipeline TP pattern matching tests.
+
+Root Cause: The PR made two key changes that affect the graph structure:
+
+_maybe_view_chunk_cat in torch/_utils.py - Changed all_gather_tensor to use a new implementation that conditionally uses view (when dimensions allow) or falls back to narrow+cat instead of the previous chunk+cat. During tracing, this generates different graph nodes than before.
+
+pad_tensor/unpad_tensor in _collective_utils.py - Changed from if pad_size == 0 to if guard_or_false(pad_size == 0), meaning padding operations are now always traced even when pad_size could be zero at runtime. This inserts extra nodes into the graph.
+
+Specific Failures:
+
+test_find_all_gather_patterns (line 118): Expected gather_dim=1 but got a different value. The new _maybe_view_chunk_cat function changes how all-gathers with gather_dim != 0 are represented in the graph. The pattern matching in micro_pipeline_tp.py expects specific node patterns (like aten.cat after wait_tensor) but the new view-based optimization path produces different nodes.
+
+test_find_reduce_scatter_patterns (line 155): Expected input_node.op == "placeholder" but got "call_function". This is because the PR now always inserts padding operations (via guard_or_false), so there's now a pad call between the placeholder and the reduce_scatter.
+
+test_fuse_matmul_reduce_scatter* tests: Warning says "no producer matmul found for reduce scatter, skipping fusion" - the inserted padding/narrow nodes break the pattern matching that looks for direct matmul->reduce_scatter connections.
+
+Fix Guidance
+@pianpwk The author needs to update the pattern matching in torch/_inductor/fx_passes/micro_pipeline_tp.py to handle the new graph structure:
+
+Update find_all_gather_patterns: Account for the new view-based optimization path in _maybe_view_chunk_cat. When gather_dim != 0 and dimensions allow the view optimization, the graph will have a view node instead of narrow+cat nodes.
+
+Update find_reduce_scatter_patterns: Allow the input_node to be a call_function (specifically pad or similar operations), not just a placeholder. The pattern should trace through padding ops to find the actual input.
+
+Update the matmul fusion patterns: Need to look through potential pad/narrow wrapper nodes to find the actual matmul producer.
+
+Alternatively, consider conditionally applying the unbacked-symint-friendly paths only during symbolic tracing (when there are actual unbacked symints), to avoid changing the graph structure for backed/concrete tensor cases that these tests use.

@@ -1,0 +1,494 @@
+aten_op,sharding_path,decomp_detail,num_opinfos,opinfo_names,replicate_ok_count,replicate_fail_count,replicate_fail_errors
+aten._adaptive_avg_pool2d.default,decomp,explicit,3,nn.functional.adaptive_avg_pool1d; nn.functional.adaptive_avg_pool2d; nn.functional.interpolate(area),0,3,nn.functional.adaptive_avg_pool1d: Operator aten._adaptive_avg_pool2d.default does not have a sharding strategy registered.; nn.functional.adaptive_avg_pool2d: Operator aten._adaptive_avg_pool2d.default does not have a sharding strategy registered.; nn.functional.interpolate(area): Operator aten._adaptive_avg_pool2d.default does not have a sharding strategy registered.
+aten._adaptive_avg_pool3d.default,,,2,nn.functional.adaptive_avg_pool3d; nn.functional.interpolate(area),0,2,nn.functional.adaptive_avg_pool3d: Operator aten._adaptive_avg_pool3d.default does not have a sharding strategy registered.; nn.functional.interpolate(area): Operator aten._adaptive_avg_pool3d.default does not have a sharding strategy registered.
+aten._batch_norm_with_update.default,decomp,explicit,1,_batch_norm_with_update,0,1,_batch_norm_with_update: Operator aten._batch_norm_with_update.default does not have a sharding strategy registered.
+aten._cdist_forward.default,,,1,cdist,0,1,cdist: Operator aten._cdist_forward.default does not have a sharding strategy registered.
+aten._conj.default,single_dim,,7,fft.hfft; fft.hfft2; fft.hfftn; fft.ifft; fft.ihfft; fft.ihfft2; fft.ihfftn,7,0,
+aten._conj_physical.default,,,2,fft.ihfft2; fft.ihfftn,0,2,fft.ihfft2: Operator aten._conj_physical.default does not have a sharding strategy registered.; fft.ihfftn: Operator aten._conj_physical.default does not have a sharding strategy registered.
+aten._ctc_loss.Tensor,,,1,nn.functional.ctc_loss,0,1,nn.functional.ctc_loss: aten._ctc_loss.Tensor
+aten._ctc_loss.default,,,1,nn.functional.ctc_loss,0,1,nn.functional.ctc_loss: aten._ctc_loss.default
+aten._embedding_bag_forward_only.default,,,1,nn.functional.embedding_bag,0,1,nn.functional.embedding_bag: Operator aten._embedding_bag_forward_only.default does not have a sharding strategy registered.
+aten._euclidean_dist.default,decomp,explicit,1,cdist,1,0,
+aten._fft_c2c.default,single_dim,,8,fft.fft2; fft.fftn; fft.hfft2; fft.hfftn; fft.ifft2; fft.ifftn; fft.ihfft2; fft.ihfftn,6,2,fft.ihfft2: Operator aten._conj_physical.default does not have a sharding strategy registered.; fft.ihfftn: Operator aten._conj_physical.default does not have a sharding strategy registered.
+aten._fft_c2r.default,single_dim,,6,fft.hfft; fft.hfft2; fft.hfftn; fft.irfft; fft.irfft2; fft.irfftn,6,0,
+aten._fft_r2c.default,single_dim,,9,fft.fft; fft.ifft; fft.ihfft; fft.ihfft2; fft.ihfftn; fft.rfft; fft.rfft2; fft.rfftn; stft,8,3,fft.ihfft2: Operator aten._conj_physical.default does not have a sharding strategy registered.; fft.ihfftn: Operator aten._conj_physical.default does not have a sharding strategy registered.; stft: Operator aten.reflection_pad1d.default does not have a sharding strategy registered.
+aten._histogramdd_bin_edges.default,,,1,histogramdd,0,1,histogramdd: Operator aten._histogramdd_bin_edges.default does not have a sharding strategy registered.
+aten._histogramdd_from_bin_cts.default,,,1,histogramdd,0,1,histogramdd: Operator aten._histogramdd_bin_edges.default does not have a sharding strategy registered.
+aten._histogramdd_from_bin_tensors.default,,,1,histogramdd,0,1,histogramdd: Operator aten._histogramdd_from_bin_tensors.default does not have a sharding strategy registered.
+aten._linalg_check_errors.default,,,8,linalg.cholesky; linalg.inv; linalg.ldl_factor; linalg.lu_factor; linalg.matrix_power; linalg.solve; linalg.tensorinv; linalg.tensorsolve,0,8,linalg.cholesky: Operator aten.linalg_cholesky_ex.default does not have a sharding strategy registered.; linalg.inv: Operator aten.linalg_inv_ex.default does not have a sharding strategy registered.; linalg.ldl_factor: Operator aten.linalg_ldl_factor_ex.default does not have a sharding strategy registered.; linalg.lu_factor: Operator aten.linalg_lu_factor_ex.default does not have a sharding strategy registered.; linalg.matrix_power: Operator aten.linalg_inv_ex.default does not have a sharding strategy registered.
+aten._linalg_det.default,,,1,linalg.det,0,1,linalg.det: Operator aten._linalg_det.default does not have a sharding strategy registered.
+aten._linalg_eigh.default,op_strategy,,3,linalg.eigh; linalg.eigvalsh; linalg.matrix_rank(hermitian),3,0,
+aten._linalg_slogdet.default,,,2,linalg.slogdet; logdet,0,2,linalg.slogdet: Operator aten._linalg_slogdet.default does not have a sharding strategy registered.; logdet: Operator aten._linalg_slogdet.default does not have a sharding strategy registered.
+aten._linalg_solve_ex.default,,,3,linalg.solve; linalg.solve_ex; linalg.tensorsolve,0,3,linalg.solve: Operator aten._linalg_solve_ex.default does not have a sharding strategy registered.; linalg.solve_ex: Operator aten._linalg_solve_ex.default does not have a sharding strategy registered.; linalg.tensorsolve: Operator aten._linalg_solve_ex.default does not have a sharding strategy registered.
+aten._linalg_svd.default,op_strategy,,11,linalg.cond; linalg.matrix_norm; linalg.matrix_rank; linalg.norm; linalg.norm(subgradients_at_zero); linalg.svd; linalg.svdvals; norm(nuc); pca_lowrank; svd; svd_lowrank,9,2,"pca_lowrank: aten.mm.default got mixed torch.Tensor and DTensor, need to convert all torch.Tensor to DTensor before calling distribut; svd_lowrank: aten.mm.default got mixed torch.Tensor and DTensor, need to convert all torch.Tensor to DTensor before calling distribut"
+aten._local_scalar_dense.default,op_strategy,,4,item; narrow; nn.functional.gaussian_nll_loss; tensor_split,4,0,
+aten._log_softmax.default,op_strategy,explicit,4,log_softmax; log_softmax(with_dtype); masked.log_softmax; nn.functional.cross_entropy,4,0,
+aten._native_batch_norm_legit.default,decomp,explicit,1,_native_batch_norm_legit,1,1,_native_batch_norm_legit: Operator aten._native_batch_norm_legit.default does not have a sharding strategy registered.
+aten._native_batch_norm_legit.no_stats,decomp,explicit,1,_native_batch_norm_legit,0,1,_native_batch_norm_legit: Operator aten._native_batch_norm_legit.no_stats does not have a sharding strategy registered.
+aten._pdist_forward.default,,,1,nn.functional.pdist,0,1,nn.functional.pdist: Operator aten._pdist_forward.default does not have a sharding strategy registered.
+aten._prelu_kernel.default,decomp,explicit,1,nn.functional.prelu,1,0,
+aten._safe_softmax.default,op_strategy,explicit,2,nn.functional.scaled_dot_product_attention; torch.ops.aten._safe_softmax.default,2,1,"nn.functional.scaled_dot_product_attention: aten.add.Tensor got mixed torch.Tensor and DTensor, need to convert all torch.Tensor to DTensor before calling distribut"
+aten._scaled_dot_product_flash_attention_for_cpu.default,decomp,explicit,1,nn.functional.scaled_dot_product_attention,1,1,nn.functional.scaled_dot_product_attention: Operator aten._scaled_dot_product_flash_attention_for_cpu.default does not have a sharding strategy registered.
+aten._scaled_mm.default,op_strategy,,1,torch._scaled_mm,0,1,"torch._scaled_mm: not enough values to unpack (expected at least 6, got 4)"
+aten._softmax.default,op_strategy,explicit,7,masked.softmax; masked.softmin; nn.functional.multi_head_attention_forward; nn.functional.softmin; nn.functional.softmin(with_dtype); softmax; softmax(with_dtype),7,0,
+aten._softmax_backward_data.default,op_strategy,explicit,1,_softmax_backward_data,1,0,
+aten._sparse_mm_reduce_impl.default,,,1,sparse.mm(reduce),0,1,sparse.mm(reduce): Sparse CSR tensors do not have is_contiguous
+aten._to_copy.default,op_strategy,explicit,34,bfloat16; bool; byte; cdouble; cfloat; chalf; char; double; fft.fft2; fft.fftn; fft.hfft; fft.hfft2; fft.hfftn; fft.ifft2; fft.ifftn; fft.irfft; fft.irfft2; fft.irfftn; float; float_power; half; int; log_softmax(with_dtype); long; masked.argmax; masked.argmin; masked.std; masked.var; nanquantile; nn.functional.softmin(with_dtype); quantile; short; softmax(with_dtype); to,34,0,
+aten._to_sparse.default,,,1,to_sparse,0,1,to_sparse: Operator aten._to_sparse.default does not have a sharding strategy registered.
+aten._to_sparse.sparse_dim,,,1,to_sparse,0,1,to_sparse: Operator aten._to_sparse.sparse_dim does not have a sharding strategy registered.
+aten._trilinear.default,,,1,nn.functional.bilinear,0,1,nn.functional.bilinear: Operator aten._trilinear.default does not have a sharding strategy registered.
+aten._unique2.default,,,1,unique,0,1,unique: aten._unique2.default
+aten._unsafe_masked_index.default,decomp,explicit,1,_unsafe_masked_index,0,1,_unsafe_masked_index: Operator aten._unsafe_masked_index.default does not have a sharding strategy registered.
+aten._unsafe_masked_index_put_accumulate.default,decomp,explicit,1,_unsafe_masked_index_put_accumulate,0,1,_unsafe_masked_index_put_accumulate: Operator aten._unsafe_masked_index_put_accumulate.default does not have a sharding strategy registered.
+aten._unsafe_view.default,op_strategy,explicit,11,__rmatmul__; cartesian_prod; kron; linalg.matrix_power; linalg.pinv(singular); linalg.tensorsolve; matmul; nn.functional.linear; nn.functional.scaled_dot_product_attention; pca_lowrank; svd_lowrank,7,5,"linalg.pinv(singular): Operator aten.linalg_pinv.atol_rtol_tensor does not have a sharding strategy registered.; linalg.tensorsolve: Operator aten._linalg_solve_ex.default does not have a sharding strategy registered.; nn.functional.scaled_dot_product_attention: aten.add.Tensor got mixed torch.Tensor and DTensor, need to convert all torch.Tensor to DTensor before calling distribut; pca_lowrank: aten.mm.default got mixed torch.Tensor and DTensor, need to convert all torch.Tensor to DTensor before calling distribut; svd_lowrank: aten.mm.default got mixed torch.Tensor and DTensor, need to convert all torch.Tensor to DTensor before calling distribut"
+aten._upsample_bilinear2d_aa.default,,,1,_upsample_bilinear2d_aa,0,1,_upsample_bilinear2d_aa: Operator aten._upsample_bilinear2d_aa.default does not have a sharding strategy registered.
+aten._upsample_nearest_exact1d.default,decomp,explicit+cia,1,nn.functional.interpolate(nearest-exact),0,1,nn.functional.interpolate(nearest-exact): Operator aten._upsample_nearest_exact1d.default does not have a sharding strategy registered.
+aten._upsample_nearest_exact2d.default,decomp,explicit+cia,1,nn.functional.interpolate(nearest-exact),0,1,nn.functional.interpolate(nearest-exact): Operator aten._upsample_nearest_exact2d.default does not have a sharding strategy registered.
+aten._upsample_nearest_exact3d.default,decomp,explicit+cia,1,nn.functional.interpolate(nearest-exact),0,1,nn.functional.interpolate(nearest-exact): Operator aten._upsample_nearest_exact3d.default does not have a sharding strategy registered.
+aten.abs.default,single_dim,explicit,7,abs; isclose; isfinite; linalg.matrix_rank(hermitian); nn.functional.l1_loss; nn.functional.smooth_l1_loss; nn.functional.softsign,7,0,
+aten.acos.default,single_dim,explicit,1,acos,1,0,
+aten.acosh.default,single_dim,explicit,1,acosh,1,0,
+aten.adaptive_max_pool2d.default,,,2,nn.functional.adaptive_max_pool1d; nn.functional.adaptive_max_pool2d,0,2,nn.functional.adaptive_max_pool1d: Operator aten.adaptive_max_pool2d.default does not have a sharding strategy registered.; nn.functional.adaptive_max_pool2d: Operator aten.adaptive_max_pool2d.default does not have a sharding strategy registered.
+aten.adaptive_max_pool3d.default,,,1,nn.functional.adaptive_max_pool3d,0,1,nn.functional.adaptive_max_pool3d: Operator aten.adaptive_max_pool3d.default does not have a sharding strategy registered.
+aten.add.Scalar,single_dim,explicit,10,isclose; nn.functional.alpha_dropout; nn.functional.cosine_embedding_loss; nn.functional.feature_alpha_dropout(with_train); nn.functional.margin_ranking_loss; nn.functional.pairwise_distance; nn.functional.poisson_nll_loss; nn.functional.triplet_margin_loss; nn.functional.triplet_margin_with_distance_loss; special.ndtr,10,0,
+aten.add.Tensor,single_dim,explicit,16,__radd__; add; cumulative_trapezoid; gradient; nn.functional.bilinear; nn.functional.cosine_embedding_loss; nn.functional.gaussian_nll_loss; nn.functional.hinge_embedding_loss; nn.functional.local_response_norm; nn.functional.multilabel_soft_margin_loss; nn.functional.poisson_nll_loss; nn.functional.scaled_dot_product_attention; nn.functional.softsign; nn.functional.triplet_margin_with_distance_loss; trapezoid; trapz,13,3,"nn.functional.bilinear: Operator aten._trilinear.default does not have a sharding strategy registered.; nn.functional.local_response_norm: Operator aten.avg_pool2d.default does not have a sharding strategy registered.; nn.functional.scaled_dot_product_attention: aten.add.Tensor got mixed torch.Tensor and DTensor, need to convert all torch.Tensor to DTensor before calling distribut"
+aten.add_.Scalar,single_dim,explicit,3,nn.functional.alpha_dropout; nn.functional.feature_alpha_dropout(with_train); nn.functional.rms_norm,3,0,
+aten.add_.Tensor,single_dim,explicit,4,nn.functional.alpha_dropout; nn.functional.feature_alpha_dropout(with_train); nn.functional.gaussian_nll_loss; nn.functional.poisson_nll_loss,4,0,
+aten.addbmm.default,,,1,addbmm,0,1,addbmm: Operator aten.addbmm.default does not have a sharding strategy registered.
+aten.addcdiv.default,single_dim,explicit,1,addcdiv,1,0,
+aten.addcmul.default,single_dim,explicit,1,addcmul,1,0,
+aten.addmm.default,single_dim,explicit,4,addmm; addmm(decomposed); nn.functional.linear; nn.functional.multi_head_attention_forward,4,0,
+aten.addmv.default,decomp,explicit,1,addmv,1,0,
+aten.addr.default,decomp,explicit,1,addr,1,0,
+aten.alias.default,op_strategy,explicit,1,nn.functional.instance_norm,0,1,nn.functional.instance_norm: Operator aten.native_batch_norm.default does not have a sharding strategy registered.
+aten.alias_copy.default,decomp,explicit,1,alias_copy,1,0,
+aten.all.default,op_strategy,explicit,3,all; nanquantile; quantile,3,0,
+aten.all.dim,op_strategy,explicit,1,all,1,0,
+aten.all.dims,decomp,explicit,1,all,1,0,
+aten.allclose.default,,,1,allclose,0,1,allclose: aten.allclose.default
+aten.amax.default,op_strategy,explicit,6,amax; linalg.matrix_norm; linalg.matrix_rank(hermitian); linalg.norm; linalg.norm(subgradients_at_zero); masked.amax,6,0,
+aten.amin.default,op_strategy,explicit,5,amin; linalg.matrix_norm; linalg.norm; linalg.norm(subgradients_at_zero); masked.amin,5,0,
+aten.aminmax.default,decomp,explicit,1,aminmax,1,0,
+aten.angle.default,single_dim,,1,angle,1,0,
+aten.any.default,op_strategy,explicit,2,any; nn.functional.gaussian_nll_loss,2,0,
+aten.any.dim,op_strategy,explicit,2,any; quantile,2,0,
+aten.any.dims,op_strategy,explicit,1,any,1,0,
+aten.arange.default,decomp,explicit,1,combinations,0,1,combinations: aten.masked_select.default
+aten.arange.start_step,decomp,explicit,1,nn.functional.embedding_bag,0,1,"nn.functional.embedding_bag: aten._embedding_bag_forward_only.default got mixed torch.Tensor and DTensor, need to convert all torch.Tensor to DTensor"
+aten.argmax.default,op_strategy,,2,argmax; masked.argmax,2,0,
+aten.argmin.default,op_strategy,,2,argmin; masked.argmin,2,0,
+aten.as_strided.default,,,3,as_strided; as_strided(partial_views); stft,1,2,as_strided(partial_views): as_strided not supported with DTensor; stft: Operator aten.reflection_pad1d.default does not have a sharding strategy registered.
+aten.as_strided_copy.default,decomp,explicit,1,as_strided_copy,0,1,as_strided_copy: Operator aten.as_strided_copy.default does not have a sharding strategy registered.
+aten.as_strided_scatter.default,decomp,explicit,1,as_strided_scatter,0,1,as_strided_scatter: Operator aten.as_strided_scatter.default does not have a sharding strategy registered.
+aten.asin.default,single_dim,explicit,1,asin,1,0,
+aten.asinh.default,single_dim,explicit,1,asinh,1,0,
+aten.atan.default,single_dim,explicit,1,atan,1,0,
+aten.atan2.default,single_dim,explicit,1,atan2,1,0,
+aten.atanh.default,single_dim,explicit,1,atanh,1,0,
+aten.avg_pool2d.default,,,3,nn.functional.avg_pool1d; nn.functional.avg_pool2d; nn.functional.local_response_norm,0,3,nn.functional.avg_pool1d: Operator aten.avg_pool2d.default does not have a sharding strategy registered.; nn.functional.avg_pool2d: Operator aten.avg_pool2d.default does not have a sharding strategy registered.; nn.functional.local_response_norm: Operator aten.avg_pool2d.default does not have a sharding strategy registered.
+aten.avg_pool3d.default,,,1,nn.functional.avg_pool3d,0,1,nn.functional.avg_pool3d: Operator aten.avg_pool3d.default does not have a sharding strategy registered.
+aten.baddbmm.default,single_dim,explicit,2,baddbmm; nn.functional.multi_head_attention_forward,2,1,"nn.functional.multi_head_attention_forward: The expanded size of the tensor (4) must match the existing size (6) at non-singleton dimension 2.  Target sizes: [1, 3,"
+aten.bernoulli.default,op_strategy,explicit,1,bernoulli,1,0,
+aten.bernoulli_.float,op_strategy,,7,nn.functional.alpha_dropout; nn.functional.dropout; nn.functional.dropout2d; nn.functional.dropout3d; nn.functional.feature_alpha_dropout(with_train); nn.functional.multi_head_attention_forward; nn.functional.scaled_dot_product_attention,7,1,"nn.functional.scaled_dot_product_attention: aten.add.Tensor got mixed torch.Tensor and DTensor, need to convert all torch.Tensor to DTensor before calling distribut"
+aten.binary_cross_entropy.default,decomp,explicit,1,nn.functional.binary_cross_entropy,1,0,
+aten.binary_cross_entropy_with_logits.default,decomp,explicit,1,nn.functional.binary_cross_entropy_with_logits,1,0,
+aten.bitwise_and.Tensor,single_dim,explicit,1,isclose,1,0,
+aten.bitwise_and_.Tensor,single_dim,explicit,1,isclose,1,0,
+aten.bitwise_or_.Tensor,single_dim,explicit,1,isclose,1,0,
+aten.block_diag.default,decomp,explicit,1,block_diag,0,1,block_diag: Operator aten.block_diag.default does not have a sharding strategy registered.
+aten.bmm.default,single_dim,,9,__rmatmul__; bmm; linalg.matrix_power; linalg.pinv(singular); matmul; nn.functional.multi_head_attention_forward; nn.functional.scaled_dot_product_attention; pca_lowrank; svd_lowrank,6,4,"linalg.pinv(singular): Operator aten.linalg_pinv.atol_rtol_tensor does not have a sharding strategy registered.; nn.functional.scaled_dot_product_attention: aten.add.Tensor got mixed torch.Tensor and DTensor, need to convert all torch.Tensor to DTensor before calling distribut; pca_lowrank: aten.mm.default got mixed torch.Tensor and DTensor, need to convert all torch.Tensor to DTensor before calling distribut; svd_lowrank: aten.mm.default got mixed torch.Tensor and DTensor, need to convert all torch.Tensor to DTensor before calling distribut"
+aten.bucketize.Tensor,single_dim,explicit,1,bucketize,1,0,
+aten.cat.default,op_strategy,explicit,4,diff; gradient; linalg.vander; nn.functional.multi_head_attention_forward,3,1,linalg.vander: Operator aten.cumprod.default does not have a sharding strategy registered.
+aten.cauchy_.default,decomp,explicit,1,cauchy,1,0,
+aten.ceil.default,single_dim,explicit,1,ceil,1,0,
+aten.ceil_.default,single_dim,explicit,2,nanquantile; quantile,2,0,
+aten.celu.default,decomp,explicit,1,nn.functional.celu,1,0,
+aten.channel_shuffle.default,decomp,explicit,1,nn.functional.channel_shuffle,1,0,
+aten.cholesky.default,,,1,cholesky,0,1,cholesky: Operator aten.cholesky.default does not have a sharding strategy registered.
+aten.cholesky_inverse.default,,,1,cholesky_inverse,0,1,cholesky_inverse: Operator aten.cholesky_inverse.default does not have a sharding strategy registered.
+aten.cholesky_solve.default,,,1,cholesky_solve,0,1,cholesky_solve: Operator aten.cholesky_solve.default does not have a sharding strategy registered.
+aten.clamp.Tensor,single_dim,explicit,1,clamp,1,0,
+aten.clamp.default,single_dim,explicit,1,corrcoef,1,0,
+aten.clamp_.default,single_dim,explicit,1,nn.functional.gaussian_nll_loss,1,0,
+aten.clamp_max.Tensor,single_dim,explicit,1,clamp_max,1,0,
+aten.clamp_min.Tensor,single_dim,explicit,1,clamp_min,1,0,
+aten.clamp_min.default,single_dim,explicit,4,nn.functional.ctc_loss; nn.functional.normalize; nn.functional.triplet_margin_loss; nn.functional.triplet_margin_with_distance_loss,3,1,nn.functional.ctc_loss: aten._ctc_loss.Tensor
+aten.clamp_min_.Tensor,decomp,explicit,1,nn.functional.cosine_similarity,1,0,
+aten.clamp_min_.default,decomp,explicit,3,nn.functional.cosine_embedding_loss; nn.functional.hinge_embedding_loss; nn.functional.margin_ranking_loss,3,0,
+aten.clone.default,op_strategy,explicit,38,cartesian_prod; cdist; clone; fft.hfft; fft.hfft2; fft.hfftn; linalg.matrix_power; linalg.tensorsolve; masked.amax; masked.amin; masked.argmax; masked.argmin; masked.cumprod; masked.cumsum; masked.log_softmax; masked.logaddexp; masked.logsumexp; masked.mean; masked.median; masked.norm; masked.prod; masked.softmax; masked.softmin; masked.std; masked.sum; masked.var; nn.functional.batch_norm; nn.functional.batch_norm(without_cudnn); nn.functional.cosine_similarity; nn.functional.embedding_bag; nn.functional.gaussian_nll_loss; nn.functional.multi_head_attention_forward; nn.functional.scaled_dot_product_attention; ravel; repeat_interleave; resize_; resize_as_; zero_,32,7,"linalg.tensorsolve: Operator aten._linalg_solve_ex.default does not have a sharding strategy registered.; masked.cumprod: Operator aten.cumprod.default does not have a sharding strategy registered.; masked.median: Operator aten.nanmedian.dim does not have a sharding strategy registered.; nn.functional.embedding_bag: Operator aten._embedding_bag_forward_only.default does not have a sharding strategy registered.; nn.functional.scaled_dot_product_attention: aten.add.Tensor got mixed torch.Tensor and DTensor, need to convert all torch.Tensor to DTensor before calling distribut"
+aten.complex.default,decomp,explicit,1,complex,1,1,complex: Operator aten.complex.default does not have a sharding strategy registered.
+aten.constant_pad_nd.default,op_strategy,explicit,18,constant_pad_nd; fft.fft; fft.fft2; fft.fftn; fft.ifft; fft.ifft2; fft.ifftn; fft.ihfft; fft.ihfft2; fft.ihfftn; fft.rfft; fft.rfft2; fft.rfftn; nn.functional.conv2d; nn.functional.conv3d; nn.functional.local_response_norm; nn.functional.multi_head_attention_forward; nn.functional.pad(constant),15,5,"fft.ihfft2: Operator aten._conj_physical.default does not have a sharding strategy registered.; fft.ihfftn: Operator aten._conj_physical.default does not have a sharding strategy registered.; nn.functional.conv2d: Dilation must be 1 for tensor parallel convolution.; nn.functional.local_response_norm: Operator aten.avg_pool2d.default does not have a sharding strategy registered.; nn.functional.multi_head_attention_forward: The expanded size of the tensor (4) must match the existing size (6) at non-singleton dimension 2.  Target sizes: [1, 3,"
+aten.convolution.default,,,6,nn.functional.conv1d; nn.functional.conv2d; nn.functional.conv3d; nn.functional.conv_transpose1d; nn.functional.conv_transpose2d; nn.functional.conv_transpose3d,2,5,nn.functional.conv1d: Stride must be 1 when there is padding for tensor parallel convolution.; nn.functional.conv2d: Stride must be 1 when there is padding for tensor parallel convolution.; nn.functional.conv_transpose1d: Stride must be 1 when there is padding for tensor parallel convolution.; nn.functional.conv_transpose2d: Stride must be 1 when there is padding for tensor parallel convolution.; nn.functional.conv_transpose3d: Stride must be 1 when there is padding for tensor parallel convolution.
+aten.copy_.default,single_dim,,4,diff; linalg.matrix_power; nn.functional.instance_norm; nn.functional.pad(circular),3,1,nn.functional.instance_norm: Operator aten.native_batch_norm.default does not have a sharding strategy registered.
+aten.copysign.Scalar,single_dim,explicit,1,copysign,1,0,
+aten.copysign.Tensor,single_dim,explicit,1,copysign,1,0,
+aten.cos.default,single_dim,explicit,1,cos,1,0,
+aten.cosh.default,single_dim,explicit,1,cosh,1,0,
+aten.count_nonzero.default,decomp,explicit,1,count_nonzero,1,0,
+aten.count_nonzero.dim_IntList,decomp,explicit,1,count_nonzero,1,0,
+aten.cummax.default,,,1,cummax,0,1,cummax: Operator aten.cummax.default does not have a sharding strategy registered.
+aten.cummin.default,,,1,cummin,0,1,cummin: Operator aten.cummin.default does not have a sharding strategy registered.
+aten.cumprod.default,decomp,explicit,3,cumprod; linalg.vander; masked.cumprod,2,3,cumprod: Operator aten.cumprod.default does not have a sharding strategy registered.; linalg.vander: Operator aten.cumprod.default does not have a sharding strategy registered.; masked.cumprod: Operator aten.cumprod.default does not have a sharding strategy registered.
+aten.cumsum.default,op_strategy,explicit,3,cumsum; cumulative_trapezoid; masked.cumsum,3,0,
+aten.deg2rad.default,single_dim,explicit,1,deg2rad,1,0,
+aten.detach.default,op_strategy,explicit,3,nanmean; nn.functional.embedding; nn.functional.embedding_bag,0,3,nanmean: Operator aten.nansum.default does not have a sharding strategy registered.; nn.functional.embedding: Operator aten.embedding_renorm_.default does not have a sharding strategy registered.; nn.functional.embedding_bag: Operator aten.embedding_renorm_.default does not have a sharding strategy registered.
+aten.diag_embed.default,op_strategy,explicit,3,diag; diag_embed; diagflat,3,0,
+aten.diagonal.default,op_strategy,explicit,4,corrcoef; diagonal; einsum; linalg.diagonal,4,0,
+aten.diagonal_copy.default,op_strategy,explicit,2,diag; diagonal_copy,2,0,
+aten.diagonal_scatter.default,decomp,explicit,1,diagonal_scatter,0,1,diagonal_scatter: Operator aten.diagonal_scatter.default does not have a sharding strategy registered.
+aten.digamma.default,single_dim,explicit,1,digamma,1,0,
+aten.dist.default,decomp,explicit,1,dist,1,0,
+aten.div.Scalar,single_dim,explicit,5,cumulative_trapezoid; gradient; nn.functional.cross_entropy; trapezoid; trapz,5,0,
+aten.div.Tensor,single_dim,explicit,20,corrcoef; cov; div(no_rounding_mode); gradient; linalg.cond; masked.mean; masked.normalize; masked.std; masked.var; nanmean; nn.functional.cosine_embedding_loss; nn.functional.cosine_similarity; nn.functional.ctc_loss; nn.functional.gaussian_nll_loss; nn.functional.kl_div; nn.functional.local_response_norm; nn.functional.multilabel_soft_margin_loss; nn.functional.normalize; nn.functional.softsign; true_divide,17,3,nanmean: Operator aten.nansum.default does not have a sharding strategy registered.; nn.functional.ctc_loss: aten._ctc_loss.Tensor; nn.functional.local_response_norm: Operator aten.avg_pool2d.default does not have a sharding strategy registered.
+aten.div.Tensor_mode,single_dim,explicit,2,div(floor_rounding); div(trunc_rounding),2,0,
+aten.div_.Scalar,single_dim,explicit,5,nn.functional.dropout; nn.functional.dropout2d; nn.functional.dropout3d; nn.functional.multi_head_attention_forward; nn.functional.scaled_dot_product_attention,5,1,"nn.functional.scaled_dot_product_attention: aten.add.Tensor got mixed torch.Tensor and DTensor, need to convert all torch.Tensor to DTensor before calling distribut"
+aten.dot.default,op_strategy,explicit,5,__rmatmul__; dot; inner; matmul; tensordot,5,0,
+aten.elu.default,decomp,explicit,2,nn.functional.elu; nn.functional.selu,2,0,
+aten.embedding.default,op_strategy,explicit,1,nn.functional.embedding,1,0,
+aten.embedding_renorm_.default,,,2,nn.functional.embedding; nn.functional.embedding_bag,0,2,nn.functional.embedding: Operator aten.embedding_renorm_.default does not have a sharding strategy registered.; nn.functional.embedding_bag: Operator aten.embedding_renorm_.default does not have a sharding strategy registered.
+aten.empty.memory_format,,,6,empty; linalg.matrix_rank; linalg.matrix_rank(hermitian); nn.functional.batch_norm; nn.functional.batch_norm(without_cudnn); nn.functional.instance_norm,5,3,nn.functional.batch_norm: Operator aten.native_batch_norm.default does not have a sharding strategy registered.; nn.functional.batch_norm(without_cudnn): Operator aten.native_batch_norm.default does not have a sharding strategy registered.; nn.functional.instance_norm: Operator aten.native_batch_norm.default does not have a sharding strategy registered.
+aten.empty_like.default,op_strategy,explicit,8,empty_like; nn.functional.alpha_dropout; nn.functional.cosine_embedding_loss; nn.functional.dropout; nn.functional.hinge_embedding_loss; nn.functional.multi_head_attention_forward; nn.functional.rrelu; nn.functional.scaled_dot_product_attention,7,2,"nn.functional.rrelu: Operator aten.rrelu_with_noise.default does not have a sharding strategy registered.; nn.functional.scaled_dot_product_attention: aten.add.Tensor got mixed torch.Tensor and DTensor, need to convert all torch.Tensor to DTensor before calling distribut"
+aten.eq.Scalar,single_dim,explicit,3,logdet; nn.functional.cosine_embedding_loss; nn.functional.ctc_loss,1,2,logdet: Operator aten._linalg_slogdet.default does not have a sharding strategy registered.; nn.functional.ctc_loss: aten._ctc_loss.default
+aten.eq.Tensor,single_dim,explicit,3,eq; isclose; isfinite,3,0,
+aten.equal.default,op_strategy,,5,corrcoef; cov; equal; nanquantile; quantile,5,0,
+aten.erf.default,single_dim,explicit,2,erf; special.ndtr,2,0,
+aten.erfc.default,single_dim,explicit,1,erfc,1,0,
+aten.erfinv.default,single_dim,explicit,1,erfinv,1,0,
+aten.exp.default,single_dim,explicit,3,exp; nn.functional.kl_div; nn.functional.poisson_nll_loss,3,0,
+aten.exp2.default,single_dim,explicit,1,exp2,1,0,
+aten.expand.default,op_strategy,explicit,41,__rmatmul__; broadcast_tensors; broadcast_to; cartesian_prod; cdist; combinations; expand; expand_as; linalg.matrix_power; linalg.pinv(singular); linalg.vander; masked.amax; masked.amin; masked.argmax; masked.argmin; masked.cumprod; masked.cumsum; masked.log_softmax; masked.logaddexp; masked.logsumexp; masked.mean; masked.median; masked.norm; masked.prod; masked.softmax; masked.softmin; masked.std; masked.sum; masked.var; matmul; meshgrid(list_of_tensors); meshgrid(variadic_tensors); nn.functional.binary_cross_entropy; nn.functional.cosine_similarity; nn.functional.normalize; nn.functional.scaled_dot_product_attention; pca_lowrank; quantile; repeat_interleave; svd_lowrank; take_along_dim,34,8,combinations: aten.masked_select.default; linalg.pinv(singular): Operator aten.linalg_pinv.atol_rtol_tensor does not have a sharding strategy registered.; linalg.vander: Operator aten.cumprod.default does not have a sharding strategy registered.; masked.cumprod: Operator aten.cumprod.default does not have a sharding strategy registered.; masked.median: Operator aten.nanmedian.dim does not have a sharding strategy registered.
+aten.expand_copy.default,op_strategy,explicit,1,expand_copy,1,0,
+aten.expm1.default,single_dim,explicit,1,expm1,1,0,
+aten.exponential_.default,decomp,explicit,1,exponential,0,1,exponential: Operator aten.exponential_.default does not have a sharding strategy registered.
+aten.eye.default,decomp,explicit,1,linalg.matrix_power,1,0,
+aten.fill.Scalar,decomp,explicit,1,fill,1,0,
+aten.fill_.Scalar,op_strategy,explicit,4,linalg.matrix_rank; linalg.matrix_rank(hermitian); nn.functional.cosine_embedding_loss; nn.functional.hinge_embedding_loss,4,0,
+aten.flip.default,single_dim,explicit,3,flip; fliplr; flipud,3,0,
+aten.floor.default,single_dim,explicit,1,floor,1,0,
+aten.floor_divide.default,decomp,explicit,1,floor_divide,1,0,
+aten.fmax.default,single_dim,explicit,1,fmax,1,0,
+aten.fmin.default,single_dim,explicit,1,fmin,1,0,
+aten.fmod.Tensor,single_dim,explicit,1,fmod,1,0,
+aten.frac.default,single_dim,explicit,1,frac,1,0,
+aten.fractional_max_pool2d.default,,,1,nn.functional.fractional_max_pool2d,0,1,"nn.functional.fractional_max_pool2d: aten.fractional_max_pool2d.default got mixed torch.Tensor and DTensor, need to convert all torch.Tensor to DTensor befor"
+aten.fractional_max_pool3d.default,,,1,nn.functional.fractional_max_pool3d,0,1,"nn.functional.fractional_max_pool3d: aten.fractional_max_pool3d.default got mixed torch.Tensor and DTensor, need to convert all torch.Tensor to DTensor befor"
+aten.frexp.Tensor,decomp,explicit,1,frexp,1,0,
+aten.full.default,decomp,explicit,5,combinations; linalg.matrix_rank; linalg.matrix_rank(hermitian); linalg.pinv; pinverse,2,3,combinations: aten.masked_select.default; linalg.pinv: Operator aten.linalg_pinv.atol_rtol_tensor does not have a sharding strategy registered.; pinverse: Operator aten.linalg_pinv.atol_rtol_tensor does not have a sharding strategy registered.
+aten.full_like.default,op_strategy,,3,full_like; nanquantile; quantile,3,0,
+aten.gather.default,op_strategy,,4,gather; nanquantile; quantile; take_along_dim,4,0,
+aten.ge.Scalar,single_dim,explicit,3,cov; nanquantile; quantile,3,0,
+aten.ge.Tensor,single_dim,explicit,1,ge,1,0,
+aten.gelu.default,single_dim,explicit,1,nn.functional.gelu,1,0,
+aten.geometric_.default,decomp,explicit,1,geometric,1,0,
+aten.geqrf.default,,,1,geqrf,0,1,geqrf: Operator aten.geqrf.default does not have a sharding strategy registered.
+aten.glu.default,decomp,explicit,1,nn.functional.glu,1,0,
+aten.grid_sampler_2d.default,decomp,explicit,2,grid_sampler_2d; nn.functional.grid_sample,0,2,grid_sampler_2d: Operator aten.grid_sampler_2d.default does not have a sharding strategy registered.; nn.functional.grid_sample: Operator aten.grid_sampler_2d.default does not have a sharding strategy registered.
+aten.grid_sampler_3d.default,,,2,grid_sampler_3d; nn.functional.grid_sample,0,2,grid_sampler_3d: Operator aten.grid_sampler_3d.default does not have a sharding strategy registered.; nn.functional.grid_sample: Operator aten.grid_sampler_3d.default does not have a sharding strategy registered.
+aten.gt.Scalar,single_dim,explicit,1,linalg.matrix_rank,1,0,
+aten.gt.Tensor,single_dim,explicit,3,gt; linalg.matrix_rank; linalg.matrix_rank(hermitian),3,0,
+aten.hardshrink.default,decomp,explicit,1,nn.functional.hardshrink,0,1,nn.functional.hardshrink: Operator aten.hardshrink.default does not have a sharding strategy registered.
+aten.hardsigmoid.default,decomp,explicit,1,nn.functional.hardsigmoid,1,0,
+aten.hardswish.default,decomp,explicit,1,nn.functional.hardswish,1,0,
+aten.hardtanh.default,decomp,explicit,2,nn.functional.hardtanh; nn.functional.relu6,2,0,
+aten.hash_tensor.default,,,1,hash_tensor,0,1,hash_tensor: Operator aten.hash_tensor.default does not have a sharding strategy registered.
+aten.heaviside.default,single_dim,explicit,1,heaviside,1,0,
+aten.histc.default,op_strategy,,1,histc,1,0,
+aten.histogram.bin_ct,,,1,histogram,0,1,histogram: Operator aten.histogram.bin_ct does not have a sharding strategy registered.
+aten.histogram.bins_tensor,,,1,histogram,0,1,histogram: Operator aten.histogram.bins_tensor does not have a sharding strategy registered.
+aten.huber_loss.default,decomp,explicit,1,nn.functional.huber_loss,1,0,
+aten.hypot.default,single_dim,explicit,1,hypot,1,0,
+aten.i0.default,single_dim,explicit,1,i0,1,0,
+aten.igamma.default,single_dim,explicit,1,igamma,1,0,
+aten.igammac.default,single_dim,explicit,1,igammac,1,0,
+aten.im2col.default,decomp,explicit,1,nn.functional.unfold,0,1,nn.functional.unfold: Operator aten.im2col.default does not have a sharding strategy registered.
+aten.index.Tensor,,,1,__getitem__,1,1,"__getitem__: aten.index.Tensor: got mixed torch.Tensor and DTensor, need to convert all torch.Tensor to DTensor before calling distri"
+aten.index_add.default,decomp,explicit,1,index_add,1,0,
+aten.index_copy.default,decomp,explicit,1,index_copy,1,0,
+aten.index_fill.int_Scalar,decomp,explicit,1,index_fill,0,1,index_fill: Operator aten.index_fill.int_Scalar does not have a sharding strategy registered.
+aten.index_fill.int_Tensor,decomp,explicit,1,index_fill,1,0,
+aten.index_put.default,single_dim,,1,index_put,1,0,
+aten.index_reduce.default,,,4,index_reduce(amax); index_reduce(amin); index_reduce(mean); index_reduce(prod),0,4,index_reduce(amax): Operator aten.index_reduce.default does not have a sharding strategy registered.; index_reduce(amin): Operator aten.index_reduce.default does not have a sharding strategy registered.; index_reduce(mean): Operator aten.index_reduce.default does not have a sharding strategy registered.; index_reduce(prod): Operator aten.index_reduce.default does not have a sharding strategy registered.
+aten.index_select.default,decomp,explicit,2,index_select; repeat_interleave,1,1,repeat_interleave: aten.repeat_interleave.Tensor
+aten.isin.Tensor_Tensor,decomp,explicit,1,isin,1,0,
+aten.isinf.default,single_dim,explicit,1,isinf,1,0,
+aten.isnan.default,single_dim,explicit,4,isclose; isnan; nanquantile; quantile,4,0,
+aten.isneginf.default,single_dim,explicit,1,isneginf,1,0,
+aten.isposinf.default,single_dim,explicit,1,isposinf,1,0,
+aten.kthvalue.default,,,1,kthvalue,0,1,kthvalue: Operator aten.kthvalue.default does not have a sharding strategy registered.
+aten.ldexp.Tensor,single_dim,explicit,1,ldexp,1,0,
+aten.le.Scalar,single_dim,explicit,5,corrcoef; cov; nanquantile; nn.functional.poisson_nll_loss; quantile,5,0,
+aten.le.Tensor,single_dim,explicit,3,combinations; isclose; le,2,1,combinations: aten.masked_select.default
+aten.leaky_relu.default,decomp,explicit,1,nn.functional.leaky_relu,1,0,
+aten.lerp.Scalar,single_dim,explicit,1,lerp,1,0,
+aten.lerp.Tensor,single_dim,explicit,1,lerp,1,0,
+aten.lerp_.Tensor,single_dim,explicit,2,nanquantile; quantile,2,0,
+aten.lgamma.default,single_dim,explicit,1,lgamma,1,0,
+aten.lift_fresh.default,decomp,explicit,19,__getitem__; masked.amax; masked.amin; masked.argmax; masked.argmin; masked.cumprod; masked.cumsum; masked.log_softmax; masked.logaddexp; masked.logsumexp; masked.mean; masked.median; masked.norm; masked.prod; masked.softmax; masked.softmin; masked.std; masked.sum; masked.var,17,4,"__getitem__: aten.index.Tensor: got mixed torch.Tensor and DTensor, need to convert all torch.Tensor to DTensor before calling distri; masked.cumprod: Operator aten.cumprod.default does not have a sharding strategy registered.; masked.logsumexp: Expected reduce_dims to not be None; masked.median: Operator aten.nanmedian.dim does not have a sharding strategy registered."
+aten.linalg_cholesky_ex.default,,,2,linalg.cholesky; linalg.cholesky_ex,0,2,linalg.cholesky: Operator aten.linalg_cholesky_ex.default does not have a sharding strategy registered.; linalg.cholesky_ex: Operator aten.linalg_cholesky_ex.default does not have a sharding strategy registered.
+aten.linalg_cross.default,decomp,explicit,2,cross; linalg.cross,0,2,cross: Operator aten.linalg_cross.default does not have a sharding strategy registered.; linalg.cross: Operator aten.linalg_cross.default does not have a sharding strategy registered.
+aten.linalg_eig.default,,,2,linalg.eig; linalg.eigvals,0,2,linalg.eig: Operator aten.linalg_eig.default does not have a sharding strategy registered.; linalg.eigvals: Operator aten.linalg_eig.default does not have a sharding strategy registered.
+aten.linalg_householder_product.default,,,1,linalg.householder_product,0,1,linalg.householder_product: Operator aten.linalg_householder_product.default does not have a sharding strategy registered.
+aten.linalg_inv_ex.default,,,4,linalg.inv; linalg.inv_ex; linalg.matrix_power; linalg.tensorinv,0,4,linalg.inv: Operator aten.linalg_inv_ex.default does not have a sharding strategy registered.; linalg.inv_ex: Operator aten.linalg_inv_ex.default does not have a sharding strategy registered.; linalg.matrix_power: Operator aten.linalg_inv_ex.default does not have a sharding strategy registered.; linalg.tensorinv: Operator aten.linalg_inv_ex.default does not have a sharding strategy registered.
+aten.linalg_ldl_factor_ex.default,,,2,linalg.ldl_factor; linalg.ldl_factor_ex,0,2,linalg.ldl_factor: Operator aten.linalg_ldl_factor_ex.default does not have a sharding strategy registered.; linalg.ldl_factor_ex: Operator aten.linalg_ldl_factor_ex.default does not have a sharding strategy registered.
+aten.linalg_ldl_solve.default,,,1,linalg.ldl_solve,0,1,linalg.ldl_solve: Operator aten.linalg_ldl_solve.default does not have a sharding strategy registered.
+aten.linalg_lstsq.default,,,2,linalg.lstsq; linalg.lstsq(grad_oriented),0,2,linalg.lstsq: aten.linalg_lstsq.default; linalg.lstsq(grad_oriented): aten.linalg_lstsq.default
+aten.linalg_lu.default,,,1,linalg.lu,0,1,linalg.lu: Operator aten.linalg_lu.default does not have a sharding strategy registered.
+aten.linalg_lu_factor_ex.default,,,3,linalg.lu_factor; linalg.lu_factor_ex; lu,0,3,linalg.lu_factor: Operator aten.linalg_lu_factor_ex.default does not have a sharding strategy registered.; linalg.lu_factor_ex: Operator aten.linalg_lu_factor_ex.default does not have a sharding strategy registered.; lu: Operator aten.linalg_lu_factor_ex.default does not have a sharding strategy registered.
+aten.linalg_lu_solve.default,,,2,linalg.lu_solve; lu_solve,0,2,linalg.lu_solve: Operator aten.linalg_lu_solve.default does not have a sharding strategy registered.; lu_solve: Operator aten.linalg_lu_solve.default does not have a sharding strategy registered.
+aten.linalg_matrix_exp.default,,,1,matrix_exp,0,1,matrix_exp: Operator aten.linalg_matrix_exp.default does not have a sharding strategy registered.
+aten.linalg_pinv.atol_rtol_tensor,,,4,linalg.pinv; linalg.pinv(hermitian); linalg.pinv(singular); pinverse,0,4,linalg.pinv: Operator aten.linalg_pinv.atol_rtol_tensor does not have a sharding strategy registered.; linalg.pinv(hermitian): Operator aten.linalg_pinv.atol_rtol_tensor does not have a sharding strategy registered.; linalg.pinv(singular): Operator aten.linalg_pinv.atol_rtol_tensor does not have a sharding strategy registered.; pinverse: Operator aten.linalg_pinv.atol_rtol_tensor does not have a sharding strategy registered.
+aten.linalg_qr.default,op_strategy,,4,linalg.qr; pca_lowrank; qr; svd_lowrank,2,2,"pca_lowrank: aten.mm.default got mixed torch.Tensor and DTensor, need to convert all torch.Tensor to DTensor before calling distribut; svd_lowrank: aten.mm.default got mixed torch.Tensor and DTensor, need to convert all torch.Tensor to DTensor before calling distribut"
+aten.linalg_solve_triangular.default,,,1,linalg.solve_triangular,0,1,linalg.solve_triangular: Operator aten.linalg_solve_triangular.default does not have a sharding strategy registered.
+aten.linalg_vector_norm.default,op_strategy,explicit,11,linalg.matrix_norm; linalg.norm; linalg.norm(subgradients_at_zero); linalg.vector_norm; masked.norm; masked.normalize; nn.functional.cosine_similarity; nn.functional.normalize; norm; norm(fro); norm(inf),11,0,
+aten.linspace.Tensor_Scalar,decomp,explicit,1,linspace(tensor_overload),0,1,linspace(tensor_overload): Operator aten.linspace.Tensor_Scalar does not have a sharding strategy registered.
+aten.linspace.Tensor_Tensor,decomp,explicit,1,linspace(tensor_overload),0,1,linspace(tensor_overload): Operator aten.linspace.Tensor_Tensor does not have a sharding strategy registered.
+aten.log.default,single_dim,explicit,3,log; nn.functional.gaussian_nll_loss; nn.functional.poisson_nll_loss,3,0,
+aten.log10.default,single_dim,explicit,1,log10,1,0,
+aten.log1p.default,single_dim,explicit,1,log1p,1,0,
+aten.log2.default,single_dim,explicit,1,log2,1,0,
+aten.log_normal_.default,decomp,explicit,1,log_normal,1,0,
+aten.log_sigmoid_forward.default,decomp,explicit,2,nn.functional.logsigmoid; nn.functional.multilabel_soft_margin_loss,2,0,
+aten.logaddexp.default,single_dim,explicit,2,logaddexp; masked.logaddexp,2,0,
+aten.logaddexp2.default,single_dim,explicit,1,logaddexp2,1,0,
+aten.logcumsumexp.default,,,1,logcumsumexp,0,1,logcumsumexp: Operator aten.logcumsumexp.default does not have a sharding strategy registered.
+aten.logical_and.default,single_dim,explicit,1,logical_and,1,0,
+aten.logical_and_.default,single_dim,explicit,2,nanquantile; quantile,2,0,
+aten.logical_not.default,single_dim,explicit,1,logical_not,1,0,
+aten.logical_not_.default,single_dim,explicit,2,nanmean; nanquantile,1,1,nanmean: Operator aten.nansum.default does not have a sharding strategy registered.
+aten.logical_or.default,single_dim,explicit,1,logical_or,1,0,
+aten.logical_xor.default,single_dim,explicit,1,logical_xor,1,0,
+aten.logit.default,single_dim,explicit,1,logit,1,0,
+aten.logspace.Tensor_Scalar,decomp,explicit,1,logspace(tensor_overload),0,1,logspace(tensor_overload): Operator aten.logspace.Tensor_Scalar does not have a sharding strategy registered.
+aten.logspace.Tensor_Tensor,decomp,explicit,1,logspace(tensor_overload),0,1,logspace(tensor_overload): Operator aten.logspace.Tensor_Tensor does not have a sharding strategy registered.
+aten.logsumexp.default,op_strategy,explicit,2,logsumexp; masked.logsumexp,2,2,logsumexp: Expected reduce_dims to not be None; masked.logsumexp: Expected reduce_dims to not be None
+aten.lt.Scalar,single_dim,explicit,2,nanquantile; nn.functional.gaussian_nll_loss,2,0,
+aten.lt.Tensor,single_dim,explicit,2,combinations; lt,1,1,combinations: aten.masked_select.default
+aten.lu_unpack.default,,,1,lu_unpack,0,1,lu_unpack: Operator aten.lu_unpack.default does not have a sharding strategy registered.
+aten.masked_fill.Scalar,single_dim,explicit,3,masked_fill; nn.functional.poisson_nll_loss; quantile,3,0,
+aten.masked_fill.Tensor,decomp,explicit,1,masked_fill,1,0,
+aten.masked_fill_.Scalar,single_dim,explicit,1,nanquantile,1,0,
+aten.masked_scatter.default,,,1,masked_scatter,0,1,masked_scatter: Operator aten.masked_scatter.default does not have a sharding strategy registered.
+aten.masked_select.default,,,2,combinations; masked_select,0,2,combinations: aten.masked_select.default; masked_select: aten.masked_select.default
+aten.max.default,op_strategy,,1,max(reduction_no_dim),1,0,
+aten.max.dim,op_strategy,,1,max(reduction_with_dim),1,0,
+aten.max_pool2d_with_indices.default,,,3,max_pool2d_with_indices_backward; nn.functional.max_pool1d; nn.functional.max_pool2d,0,3,max_pool2d_with_indices_backward: Operator aten.max_pool2d_with_indices.default does not have a sharding strategy registered.; nn.functional.max_pool1d: Operator aten.max_pool2d_with_indices.default does not have a sharding strategy registered.; nn.functional.max_pool2d: Operator aten.max_pool2d_with_indices.default does not have a sharding strategy registered.
+aten.max_pool2d_with_indices_backward.default,,,1,max_pool2d_with_indices_backward,0,1,max_pool2d_with_indices_backward: Operator aten.max_pool2d_with_indices.default does not have a sharding strategy registered.
+aten.max_pool3d_with_indices.default,,,1,nn.functional.max_pool3d,0,1,nn.functional.max_pool3d: Operator aten.max_pool3d_with_indices.default does not have a sharding strategy registered.
+aten.max_unpool2d.default,decomp,explicit,4,nn.functional.max_unpool1d; nn.functional.max_unpool1d(grad); nn.functional.max_unpool2d; nn.functional.max_unpool2d(grad),0,4,nn.functional.max_unpool1d: Operator aten.max_unpool2d.default does not have a sharding strategy registered.; nn.functional.max_unpool1d(grad): Operator aten.max_unpool2d.default does not have a sharding strategy registered.; nn.functional.max_unpool2d: Operator aten.max_unpool2d.default does not have a sharding strategy registered.; nn.functional.max_unpool2d(grad): Operator aten.max_unpool2d.default does not have a sharding strategy registered.
+aten.max_unpool3d.default,decomp,explicit,2,nn.functional.max_unpool3d; nn.functional.max_unpool3d(grad),0,2,nn.functional.max_unpool3d: Operator aten.max_unpool3d.default does not have a sharding strategy registered.; nn.functional.max_unpool3d(grad): Operator aten.max_unpool3d.default does not have a sharding strategy registered.
+aten.maximum.default,single_dim,explicit,7,linalg.matrix_rank; linalg.matrix_rank(hermitian); masked.normalize; masked.std; masked.var; max(binary); maximum,7,0,
+aten.mean.default,op_strategy,explicit,13,mean; nn.functional.cosine_embedding_loss; nn.functional.ctc_loss; nn.functional.gaussian_nll_loss; nn.functional.hinge_embedding_loss; nn.functional.kl_div; nn.functional.l1_loss; nn.functional.margin_ranking_loss; nn.functional.multilabel_soft_margin_loss; nn.functional.poisson_nll_loss; nn.functional.smooth_l1_loss; nn.functional.triplet_margin_loss; nn.functional.triplet_margin_with_distance_loss,12,1,nn.functional.ctc_loss: aten._ctc_loss.Tensor
+aten.mean.dim,op_strategy,explicit,7,mean; nn.functional.adaptive_avg_pool1d; nn.functional.adaptive_avg_pool3d; nn.functional.instance_norm; nn.functional.multi_head_attention_forward; nn.functional.rms_norm; pca_lowrank,5,2,"nn.functional.instance_norm: Operator aten.native_batch_norm.default does not have a sharding strategy registered.; pca_lowrank: aten.mm.default got mixed torch.Tensor and DTensor, need to convert all torch.Tensor to DTensor before calling distribut"
+aten.median.default,,,1,median,0,1,median: Operator aten.median.default does not have a sharding strategy registered.
+aten.median.dim,,,1,median,0,1,median: Operator aten.median.dim does not have a sharding strategy registered.
+aten.min.default,op_strategy,,2,cov; min(reduction_no_dim),2,0,
+aten.min.dim,op_strategy,,1,min(reduction_with_dim),1,0,
+aten.minimum.default,single_dim,explicit,4,min(binary); minimum; nn.functional.triplet_margin_loss; nn.functional.triplet_margin_with_distance_loss,4,0,
+aten.mish.default,decomp,explicit,1,nn.functional.mish,1,0,
+aten.mm.default,single_dim,,11,__rmatmul__; corrcoef; cov; linalg.matrix_power; linalg.pinv(singular); matmul; mm; nn.functional.linear; pca_lowrank; svd_lowrank; tensordot,8,3,"linalg.pinv(singular): Operator aten.linalg_pinv.atol_rtol_tensor does not have a sharding strategy registered.; pca_lowrank: aten.mm.default got mixed torch.Tensor and DTensor, need to convert all torch.Tensor to DTensor before calling distribut; svd_lowrank: aten.mm.default got mixed torch.Tensor and DTensor, need to convert all torch.Tensor to DTensor before calling distribut"
+aten.mode.default,,,1,mode,0,1,mode: Operator aten.mode.default does not have a sharding strategy registered.
+aten.mse_loss.default,decomp,explicit,1,nn.functional.mse_loss,1,0,
+aten.mul.Scalar,single_dim,explicit,10,cov; cumulative_trapezoid; gradient; isclose; nn.functional.poisson_nll_loss; nn.functional.scaled_dot_product_attention; quantile; special.ndtr; trapezoid; trapz,10,1,"nn.functional.scaled_dot_product_attention: aten.add.Tensor got mixed torch.Tensor and DTensor, need to convert all torch.Tensor to DTensor before calling distribut"
+aten.mul.Tensor,single_dim,explicit,38,__rdiv__; __rmul__; cov; cumulative_trapezoid; gradient; inner; isclose; isfinite; kron; linalg.matrix_rank; linalg.matrix_rank(hermitian); linalg.vecdot; masked.std; masked.var; mul; nanquantile; nn.functional.alpha_dropout; nn.functional.cosine_embedding_loss; nn.functional.cosine_similarity; nn.functional.cross_entropy; nn.functional.dropout; nn.functional.dropout2d; nn.functional.dropout3d; nn.functional.feature_alpha_dropout(with_train); nn.functional.gaussian_nll_loss; nn.functional.kl_div; nn.functional.local_response_norm; nn.functional.margin_ranking_loss; nn.functional.multi_head_attention_forward; nn.functional.multilabel_soft_margin_loss; nn.functional.poisson_nll_loss; nn.functional.rms_norm; nn.functional.scaled_dot_product_attention; outer; stft; tensordot; trapezoid; trapz,36,3,"nn.functional.local_response_norm: Operator aten.avg_pool2d.default does not have a sharding strategy registered.; nn.functional.scaled_dot_product_attention: aten.add.Tensor got mixed torch.Tensor and DTensor, need to convert all torch.Tensor to DTensor before calling distribut; stft: Operator aten.reflection_pad1d.default does not have a sharding strategy registered."
+aten.mul_.Scalar,single_dim,explicit,2,nn.functional.alpha_dropout; nn.functional.feature_alpha_dropout(with_train),2,0,
+aten.mul_.Tensor,single_dim,explicit,1,combinations,0,1,combinations: aten.masked_select.default
+aten.multi_margin_loss.default,decomp,explicit,1,nn.functional.multi_margin_loss,0,1,nn.functional.multi_margin_loss: Operator aten.multi_margin_loss.default does not have a sharding strategy registered.
+aten.multilabel_margin_loss_forward.default,decomp,explicit,1,nn.functional.multilabel_margin_loss,0,1,nn.functional.multilabel_margin_loss: Operator aten.multilabel_margin_loss_forward.default does not have a sharding strategy registered.
+aten.multinomial.default,,,1,multinomial,0,1,multinomial: Operator aten.multinomial.default does not have a sharding strategy registered.
+aten.mv.default,decomp,explicit,3,__rmatmul__; matmul; mv,3,0,
+aten.mvlgamma.default,single_dim,explicit,3,mvlgamma(mvlgamma_p_1); mvlgamma(mvlgamma_p_3); mvlgamma(mvlgamma_p_5),3,0,
+aten.nan_to_num.default,single_dim,explicit,1,nan_to_num,1,0,
+aten.nanmedian.default,,,1,nanmedian,0,1,nanmedian: Operator aten.nanmedian.default does not have a sharding strategy registered.
+aten.nanmedian.dim,,,2,masked.median; nanmedian,0,2,masked.median: Operator aten.nanmedian.dim does not have a sharding strategy registered.; nanmedian: Operator aten.nanmedian.dim does not have a sharding strategy registered.
+aten.nansum.default,decomp,explicit,2,nanmean; nansum,0,2,nanmean: Operator aten.nansum.default does not have a sharding strategy registered.; nansum: Operator aten.nansum.default does not have a sharding strategy registered.
+aten.narrow_copy.default,decomp,explicit,1,narrow_copy,1,0,
+aten.native_batch_norm.default,decomp,explicit+cia,4,native_batch_norm; nn.functional.batch_norm; nn.functional.batch_norm(without_cudnn); nn.functional.instance_norm,3,4,native_batch_norm: Operator aten.native_batch_norm.default does not have a sharding strategy registered.; nn.functional.batch_norm: Operator aten.native_batch_norm.default does not have a sharding strategy registered.; nn.functional.batch_norm(without_cudnn): Operator aten.native_batch_norm.default does not have a sharding strategy registered.; nn.functional.instance_norm: Operator aten.native_batch_norm.default does not have a sharding strategy registered.
+aten.native_dropout_backward.default,single_dim,explicit,1,native_dropout_backward,1,0,
+aten.native_group_norm.default,decomp,explicit,1,nn.functional.group_norm,0,1,nn.functional.group_norm: Operator aten.native_group_norm.default does not have a sharding strategy registered.
+aten.native_layer_norm.default,op_strategy,explicit,2,native_layer_norm; nn.functional.layer_norm,2,0,
+aten.ne.Scalar,single_dim,explicit,4,cov; isclose; isfinite; nn.functional.hinge_embedding_loss,4,0,
+aten.ne.Tensor,decomp,explicit,2,nanmean; ne,1,1,nanmean: Operator aten.nansum.default does not have a sharding strategy registered.
+aten.neg.default,single_dim,explicit,8,gradient; masked.softmin; neg; nn.functional.cross_entropy; nn.functional.margin_ranking_loss; nn.functional.multilabel_soft_margin_loss; nn.functional.softmin; nn.functional.softmin(with_dtype),8,0,
+aten.new_empty.default,op_strategy,explicit,5,new_empty; nn.functional.dropout2d; nn.functional.dropout3d; nn.functional.feature_alpha_dropout(with_train); nn.functional.pad(circular),5,0,
+aten.new_empty_strided.default,op_strategy,explicit,1,new_empty_strided,1,0,
+aten.new_full.default,op_strategy,explicit,2,masked.normalize; new_full,2,0,
+aten.new_ones.default,op_strategy,explicit,6,corrcoef; cov; linalg.vander; nanquantile; new_ones; quantile,5,1,linalg.vander: Operator aten.cumprod.default does not have a sharding strategy registered.
+aten.new_zeros.default,op_strategy,explicit,3,masked.std; masked.var; new_zeros,3,0,
+aten.nextafter.default,single_dim,explicit,1,nextafter,1,0,
+aten.nll_loss2d_forward.default,op_strategy,explicit,2,nn.functional.cross_entropy; nn.functional.nll_loss,2,0,
+aten.nll_loss_forward.default,op_strategy,explicit,2,nn.functional.cross_entropy; nn.functional.nll_loss,2,0,
+aten.nonzero.default,,,2,argwhere; nonzero,0,2,argwhere: aten.nonzero.default; nonzero: aten.nonzero.default
+aten.nonzero_static.default,,,1,nonzero_static,0,1,nonzero_static: Operator aten.nonzero_static.default does not have a sharding strategy registered.
+aten.norm.ScalarOpt_dim,decomp,explicit,3,nn.functional.pairwise_distance; nn.functional.triplet_margin_loss; nn.functional.triplet_margin_with_distance_loss,3,0,
+aten.normal.Tensor_Tensor,decomp,explicit,1,normal,0,1,normal: Operator aten.normal.Tensor_Tensor does not have a sharding strategy registered.
+aten.normal.Tensor_float,decomp,explicit,1,normal,0,1,normal: Operator aten.normal.Tensor_float does not have a sharding strategy registered.
+aten.normal_.default,op_strategy,explicit,1,normal(in_place),1,0,
+aten.ones.default,decomp,explicit,5,masked.mean; masked.std; masked.var; nn.functional.scaled_dot_product_attention; ones,4,1,"nn.functional.scaled_dot_product_attention: aten.add.Tensor got mixed torch.Tensor and DTensor, need to convert all torch.Tensor to DTensor before calling distribut"
+aten.ones_like.default,op_strategy,explicit,3,isreal; max_pool2d_with_indices_backward; ones_like,2,1,max_pool2d_with_indices_backward: Operator aten.max_pool2d_with_indices.default does not have a sharding strategy registered.
+aten.ormqr.default,,,1,ormqr,0,1,ormqr: Operator aten.ormqr.default does not have a sharding strategy registered.
+aten.permute.default,op_strategy,explicit,11,T; einsum; inner; linalg.matrix_norm; linalg.norm; linalg.norm(subgradients_at_zero); linalg.tensorsolve; movedim; norm(nuc); permute; tensordot,10,1,linalg.tensorsolve: Operator aten._linalg_solve_ex.default does not have a sharding strategy registered.
+aten.permute_copy.default,decomp,explicit,1,permute_copy,1,0,
+aten.pixel_shuffle.default,decomp,explicit,1,nn.functional.pixel_shuffle,1,0,
+aten.pixel_unshuffle.default,decomp,explicit,1,nn.functional.pixel_unshuffle,1,0,
+aten.polar.default,decomp,explicit,1,polar,1,1,polar: Operator aten.polar.default does not have a sharding strategy registered.
+aten.polygamma.default,single_dim,,6,polygamma(polygamma_n_0); polygamma(polygamma_n_1); polygamma(polygamma_n_2); polygamma(polygamma_n_3); polygamma(polygamma_n_4); special.polygamma(special_polygamma_n_0),6,0,
+aten.pow.Tensor_Scalar,single_dim,explicit,4,nn.functional.gaussian_nll_loss; nn.functional.local_response_norm; nn.functional.rms_norm; square,3,1,nn.functional.local_response_norm: Operator aten.avg_pool2d.default does not have a sharding strategy registered.
+aten.pow.Tensor_Tensor,single_dim,explicit,3,__rpow__; float_power; pow,3,0,
+aten.prod.default,op_strategy,explicit,1,prod,1,0,
+aten.prod.dim_int,op_strategy,explicit,2,masked.prod; prod,2,0,
+aten.put.default,,,1,put,0,1,put: Operator aten.put.default does not have a sharding strategy registered.
+aten.rad2deg.default,single_dim,explicit,1,rad2deg,1,0,
+aten.rand.default,,,2,nn.functional.fractional_max_pool2d; nn.functional.fractional_max_pool3d,0,2,"nn.functional.fractional_max_pool2d: aten.fractional_max_pool2d.default got mixed torch.Tensor and DTensor, need to convert all torch.Tensor to DTensor befor; nn.functional.fractional_max_pool3d: aten.fractional_max_pool3d.default got mixed torch.Tensor and DTensor, need to convert all torch.Tensor to DTensor befor"
+aten.randint_like.default,op_strategy,,1,randint_like,1,0,
+aten.randint_like.low_dtype,op_strategy,,1,randint_like,1,0,
+aten.randn.default,decomp,explicit,3,pca_lowrank; randn; svd_lowrank,1,2,"pca_lowrank: aten.mm.default got mixed torch.Tensor and DTensor, need to convert all torch.Tensor to DTensor before calling distribut; svd_lowrank: aten.mm.default got mixed torch.Tensor and DTensor, need to convert all torch.Tensor to DTensor before calling distribut"
+aten.randn_like.default,op_strategy,,2,rand_like; randn_like,2,0,
+aten.reciprocal.default,single_dim,explicit,2,__rdiv__; reciprocal,2,0,
+aten.reflection_pad1d.default,decomp,explicit,2,nn.functional.pad(reflect); stft,0,2,nn.functional.pad(reflect): Operator aten.reflection_pad1d.default does not have a sharding strategy registered.; stft: Operator aten.reflection_pad1d.default does not have a sharding strategy registered.
+aten.reflection_pad2d.default,decomp,explicit,1,nn.functional.pad(reflect),0,1,nn.functional.pad(reflect): Operator aten.reflection_pad2d.default does not have a sharding strategy registered.
+aten.reflection_pad3d.default,decomp,explicit,1,nn.functional.pad(reflect),0,1,nn.functional.pad(reflect): Operator aten.reflection_pad3d.default does not have a sharding strategy registered.
+aten.relu.default,single_dim,explicit,1,nn.functional.relu,1,0,
+aten.remainder.Scalar,single_dim,explicit,1,take_along_dim,1,0,
+aten.remainder.Tensor,single_dim,explicit,2,__rmod__; remainder,2,0,
+aten.renorm.default,decomp,explicit,1,renorm,0,1,renorm: Operator aten.renorm.default does not have a sharding strategy registered.
+aten.repeat.default,op_strategy,explicit,4,nn.functional.instance_norm; nn.functional.multi_head_attention_forward; repeat; tile,3,1,nn.functional.instance_norm: Operator aten.native_batch_norm.default does not have a sharding strategy registered.
+aten.repeat_interleave.Tensor,,,1,repeat_interleave,0,1,repeat_interleave: aten.repeat_interleave.Tensor
+aten.replication_pad1d.default,decomp,explicit,1,nn.functional.pad(replicate),0,1,nn.functional.pad(replicate): Operator aten.replication_pad1d.default does not have a sharding strategy registered.
+aten.replication_pad2d.default,decomp,explicit,2,nn.functional.pad(replicate); nn.functional.pad(replicate_negative),0,2,nn.functional.pad(replicate): Operator aten.replication_pad2d.default does not have a sharding strategy registered.; nn.functional.pad(replicate_negative): Operator aten.replication_pad2d.default does not have a sharding strategy registered.
+aten.replication_pad3d.default,decomp,explicit,1,nn.functional.pad(replicate),0,1,nn.functional.pad(replicate): Operator aten.replication_pad3d.default does not have a sharding strategy registered.
+aten.resize_.default,,,1,resize_,0,1,resize_: Operator aten.resize_.default does not have a sharding strategy registered.
+aten.resize_as_.default,,,1,resize_as_,0,1,resize_as_: Operator aten.resize_as_.default does not have a sharding strategy registered.
+aten.roll.default,single_dim,explicit,3,fft.fftshift; fft.ifftshift; roll,3,0,
+aten.rot90.default,decomp,explicit,1,rot90,1,0,
+aten.round.decimals,single_dim,explicit,3,round(decimals_0); round(decimals_3); round(decimals_neg_3),3,0,
+aten.round.default,single_dim,explicit,1,round,1,0,
+aten.rrelu_with_noise.default,,,1,nn.functional.rrelu,0,1,nn.functional.rrelu: Operator aten.rrelu_with_noise.default does not have a sharding strategy registered.
+aten.rsqrt.default,single_dim,explicit,2,nn.functional.rms_norm; rsqrt,2,0,
+aten.rsub.Scalar,single_dim,explicit,1,nn.functional.multilabel_soft_margin_loss,1,0,
+aten.rsub.Tensor,decomp,explicit,2,__rsub__; rsub,2,0,
+aten.scalar_tensor.default,,,7,corrcoef; cov; logdet; nanquantile; nn.functional.cosine_similarity; nn.functional.scaled_dot_product_attention; quantile,5,2,"logdet: Operator aten._linalg_slogdet.default does not have a sharding strategy registered.; nn.functional.scaled_dot_product_attention: aten.add.Tensor got mixed torch.Tensor and DTensor, need to convert all torch.Tensor to DTensor before calling distribut"
+aten.scatter.reduce,,,1,scatter,0,1,scatter: Operator aten.scatter.reduce does not have a sharding strategy registered.
+aten.scatter.src,op_strategy,,1,scatter,1,0,
+aten.scatter.value,op_strategy,,1,scatter,1,0,
+aten.scatter.value_reduce,,,1,scatter,0,1,scatter: Operator aten.scatter.value_reduce does not have a sharding strategy registered.
+aten.scatter_add.default,op_strategy,,1,scatter_add,1,0,
+aten.scatter_reduce.two,,,5,scatter_reduce(amax); scatter_reduce(amin); scatter_reduce(mean); scatter_reduce(prod); scatter_reduce(sum),0,5,scatter_reduce(amax): Operator aten.scatter_reduce.two does not have a sharding strategy registered.; scatter_reduce(amin): Operator aten.scatter_reduce.two does not have a sharding strategy registered.; scatter_reduce(mean): Operator aten.scatter_reduce.two does not have a sharding strategy registered.; scatter_reduce(prod): Operator aten.scatter_reduce.two does not have a sharding strategy registered.; scatter_reduce(sum): Operator aten.scatter_reduce.two does not have a sharding strategy registered.
+aten.searchsorted.Scalar,,,1,searchsorted,0,1,searchsorted: Operator aten.searchsorted.Scalar does not have a sharding strategy registered.
+aten.searchsorted.Tensor,,,1,searchsorted,0,1,searchsorted: Operator aten.searchsorted.Tensor does not have a sharding strategy registered.
+aten.segment_reduce.default,,,2,_segment_reduce(lengths); _segment_reduce(offsets),0,2,_segment_reduce(lengths): Operator aten.segment_reduce.default does not have a sharding strategy registered.; _segment_reduce(offsets): Operator aten.segment_reduce.default does not have a sharding strategy registered.
+aten.select.int,op_strategy,,5,__getitem__; gradient; select; trapezoid; trapz,5,0,
+aten.select_scatter.default,decomp,explicit,1,select_scatter,0,1,select_scatter: Operator aten.select_scatter.default does not have a sharding strategy registered.
+aten.sgn.default,single_dim,explicit,1,sgn,1,0,
+aten.sigmoid.default,single_dim,explicit,1,sigmoid,1,0,
+aten.sign.default,single_dim,explicit,1,sign,1,0,
+aten.signbit.default,single_dim,explicit,1,signbit,1,0,
+aten.silu.default,single_dim,explicit,2,nn.functional.silu; nn.functional.silu(complex),2,0,
+aten.sin.default,single_dim,explicit,1,sin,1,0,
+aten.sinc.default,single_dim,explicit,1,sinc,1,0,
+aten.sinh.default,single_dim,explicit,1,sinh,1,0,
+aten.slice.Tensor,op_strategy,explicit,29,__getitem__; cumulative_trapezoid; diff; dsplit; fft.fft2; fft.fftn; fft.hfft; fft.hfft2; fft.hfftn; fft.ifft2; fft.ifftn; fft.ihfft2; fft.ihfftn; fft.irfft; fft.irfft2; fft.irfftn; fft.rfft2; fft.rfftn; gradient; hsplit; linalg.cond; linalg.matrix_rank; narrow; nn.functional.pad(circular); slice; tensor_split; trapezoid; trapz; vsplit,27,3,"fft.ihfft2: Operator aten._conj_physical.default does not have a sharding strategy registered.; fft.ihfftn: Operator aten._conj_physical.default does not have a sharding strategy registered.; tensor_split: The tensor has a non-zero number of elements, but its data is not allocated yet."
+aten.slice_scatter.default,op_strategy,explicit,1,slice_scatter,1,0,
+aten.smooth_l1_loss.default,decomp,explicit,1,nn.functional.smooth_l1_loss,1,0,
+aten.soft_margin_loss.default,decomp,explicit,1,nn.functional.soft_margin_loss,1,0,
+aten.softplus.default,decomp,explicit,1,nn.functional.softplus,1,0,
+aten.softshrink.default,decomp,explicit,1,nn.functional.softshrink,1,0,
+aten.sort.default,op_strategy,,5,argsort; msort; nanquantile; quantile; sort,5,0,
+aten.sort.stable,op_strategy,,2,argsort; sort,2,0,
+aten.sparse_sampled_addmm.default,,,1,sparse.sampled_addmm,0,1,sparse.sampled_addmm: Sparse CSR tensors do not have is_contiguous
+aten.special_airy_ai.default,,,1,special.airy_ai,0,1,special.airy_ai: Operator aten.special_airy_ai.default does not have a sharding strategy registered.
+aten.special_bessel_j0.default,decomp,explicit,1,special.bessel_j0,1,0,
+aten.special_bessel_j1.default,decomp,explicit,1,special.bessel_j1,1,0,
+aten.special_bessel_y0.default,,,1,special.bessel_y0,0,1,special.bessel_y0: Operator aten.special_bessel_y0.default does not have a sharding strategy registered.
+aten.special_bessel_y1.default,,,1,special.bessel_y1,0,1,special.bessel_y1: Operator aten.special_bessel_y1.default does not have a sharding strategy registered.
+aten.special_chebyshev_polynomial_t.default,,,1,special.chebyshev_polynomial_t,0,1,special.chebyshev_polynomial_t: Operator aten.special_chebyshev_polynomial_t.default does not have a sharding strategy registered.
+aten.special_chebyshev_polynomial_u.default,,,1,special.chebyshev_polynomial_u,0,1,special.chebyshev_polynomial_u: Operator aten.special_chebyshev_polynomial_u.default does not have a sharding strategy registered.
+aten.special_chebyshev_polynomial_v.default,,,1,special.chebyshev_polynomial_v,0,1,special.chebyshev_polynomial_v: Operator aten.special_chebyshev_polynomial_v.default does not have a sharding strategy registered.
+aten.special_chebyshev_polynomial_w.default,,,1,special.chebyshev_polynomial_w,0,1,special.chebyshev_polynomial_w: Operator aten.special_chebyshev_polynomial_w.default does not have a sharding strategy registered.
+aten.special_entr.default,decomp,explicit,1,special.entr,0,1,special.entr: Operator aten.special_entr.default does not have a sharding strategy registered.
+aten.special_erfcx.default,single_dim,explicit,1,special.erfcx,1,0,
+aten.special_hermite_polynomial_h.default,,,1,special.hermite_polynomial_h,0,1,special.hermite_polynomial_h: Operator aten.special_hermite_polynomial_h.default does not have a sharding strategy registered.
+aten.special_hermite_polynomial_he.default,,,1,special.hermite_polynomial_he,0,1,special.hermite_polynomial_he: Operator aten.special_hermite_polynomial_he.default does not have a sharding strategy registered.
+aten.special_i0e.default,decomp,explicit,1,special.i0e,1,0,
+aten.special_i1.default,decomp,explicit,1,special.i1,1,0,
+aten.special_i1e.default,decomp,explicit,1,special.i1e,1,0,
+aten.special_laguerre_polynomial_l.default,,,1,special.laguerre_polynomial_l,0,1,special.laguerre_polynomial_l: Operator aten.special_laguerre_polynomial_l.default does not have a sharding strategy registered.
+aten.special_legendre_polynomial_p.default,,,1,special.legendre_polynomial_p,0,1,special.legendre_polynomial_p: Operator aten.special_legendre_polynomial_p.default does not have a sharding strategy registered.
+aten.special_log_ndtr.default,decomp,explicit,1,special.log_ndtr,1,0,
+aten.special_modified_bessel_i0.default,,,1,special.modified_bessel_i0,0,1,special.modified_bessel_i0: Operator aten.special_modified_bessel_i0.default does not have a sharding strategy registered.
+aten.special_modified_bessel_i1.default,,,1,special.modified_bessel_i1,0,1,special.modified_bessel_i1: Operator aten.special_modified_bessel_i1.default does not have a sharding strategy registered.
+aten.special_modified_bessel_k0.default,,,1,special.modified_bessel_k0,0,1,special.modified_bessel_k0: Operator aten.special_modified_bessel_k0.default does not have a sharding strategy registered.
+aten.special_modified_bessel_k1.default,,,1,special.modified_bessel_k1,0,1,special.modified_bessel_k1: Operator aten.special_modified_bessel_k1.default does not have a sharding strategy registered.
+aten.special_ndtri.default,decomp,explicit,1,special.ndtri,1,0,
+aten.special_scaled_modified_bessel_k0.default,,,1,special.scaled_modified_bessel_k0,0,1,special.scaled_modified_bessel_k0: Operator aten.special_scaled_modified_bessel_k0.default does not have a sharding strategy registered.
+aten.special_scaled_modified_bessel_k1.default,,,1,special.scaled_modified_bessel_k1,0,1,special.scaled_modified_bessel_k1: Operator aten.special_scaled_modified_bessel_k1.default does not have a sharding strategy registered.
+aten.special_shifted_chebyshev_polynomial_t.default,,,1,special.shifted_chebyshev_polynomial_t,0,1,special.shifted_chebyshev_polynomial_t: Operator aten.special_shifted_chebyshev_polynomial_t.default does not have a sharding strategy registered.
+aten.special_shifted_chebyshev_polynomial_u.default,,,1,special.shifted_chebyshev_polynomial_u,0,1,special.shifted_chebyshev_polynomial_u: Operator aten.special_shifted_chebyshev_polynomial_u.default does not have a sharding strategy registered.
+aten.special_shifted_chebyshev_polynomial_v.default,,,1,special.shifted_chebyshev_polynomial_v,0,1,special.shifted_chebyshev_polynomial_v: Operator aten.special_shifted_chebyshev_polynomial_v.default does not have a sharding strategy registered.
+aten.special_shifted_chebyshev_polynomial_w.default,,,1,special.shifted_chebyshev_polynomial_w,0,1,special.shifted_chebyshev_polynomial_w: Operator aten.special_shifted_chebyshev_polynomial_w.default does not have a sharding strategy registered.
+aten.special_spherical_bessel_j0.default,decomp,explicit,1,special.spherical_bessel_j0,1,0,
+aten.special_xlog1py.default,decomp,explicit,1,special.xlog1py,0,1,special.xlog1py: Operator aten.special_xlog1py.default does not have a sharding strategy registered.
+aten.special_zeta.default,decomp,explicit,1,special.zeta,1,0,
+aten.split.Tensor,op_strategy,explicit,3,chunk; nn.functional.multi_head_attention_forward; split,3,0,
+aten.split_with_sizes.default,op_strategy,explicit,2,split(list_args); split_with_sizes,2,0,
+aten.split_with_sizes_copy.default,op_strategy,explicit,1,split_with_sizes_copy,1,0,
+aten.sqrt.default,single_dim,explicit,3,corrcoef; masked.std; sqrt,3,0,
+aten.sqrt_.default,single_dim,explicit,1,nn.functional.cosine_embedding_loss,1,0,
+aten.squeeze.default,op_strategy,explicit,4,corrcoef; cov; squeeze; tensordot,4,0,
+aten.squeeze.dim,op_strategy,explicit,20,__rmatmul__; linalg.cond; matmul; nn.functional.adaptive_avg_pool1d; nn.functional.adaptive_max_pool1d; nn.functional.avg_pool1d; nn.functional.conv1d; nn.functional.conv2d; nn.functional.conv3d; nn.functional.conv_transpose1d; nn.functional.conv_transpose2d; nn.functional.conv_transpose3d; nn.functional.dropout3d; nn.functional.interpolate(area); nn.functional.local_response_norm; nn.functional.max_pool1d; nn.functional.max_unpool1d; nn.functional.max_unpool1d(grad); nn.functional.multi_head_attention_forward; squeeze,9,13,nn.functional.adaptive_avg_pool1d: Operator aten._adaptive_avg_pool2d.default does not have a sharding strategy registered.; nn.functional.adaptive_max_pool1d: Operator aten.adaptive_max_pool2d.default does not have a sharding strategy registered.; nn.functional.avg_pool1d: Operator aten.avg_pool2d.default does not have a sharding strategy registered.; nn.functional.conv1d: Stride must be 1 when there is padding for tensor parallel convolution.; nn.functional.conv2d: Stride must be 1 when there is padding for tensor parallel convolution.
+aten.squeeze.dims,op_strategy,explicit,1,squeeze(multiple),1,1,squeeze(multiple): '>=' not supported between instances of 'list' and 'int'
+aten.squeeze_.dim,op_strategy,,6,__rmatmul__; matmul; nanquantile; nn.functional.linear; quantile; stft,5,1,stft: Operator aten.reflection_pad1d.default does not have a sharding strategy registered.
+aten.squeeze_copy.default,decomp,explicit,1,squeeze_copy,1,0,
+aten.squeeze_copy.dim,decomp,explicit,1,squeeze_copy,1,0,
+aten.stack.default,op_strategy,explicit,2,cartesian_prod; combinations,1,1,combinations: aten.masked_select.default
+aten.std.correction,op_strategy,explicit,2,std; std(unbiased),2,0,
+aten.std_mean.correction,decomp,explicit,2,std_mean; std_mean(unbiased),2,0,
+aten.sub.Scalar,single_dim,explicit,3,cov; nanquantile; nn.functional.cosine_embedding_loss,3,0,
+aten.sub.Tensor,single_dim,explicit,25,corrcoef; cov; cumulative_trapezoid; diff; gradient; isclose; masked.std; masked.var; nanquantile; nn.functional.gaussian_nll_loss; nn.functional.kl_div; nn.functional.l1_loss; nn.functional.margin_ranking_loss; nn.functional.pairwise_distance; nn.functional.poisson_nll_loss; nn.functional.smooth_l1_loss; nn.functional.tanhshrink; nn.functional.triplet_margin_loss; nn.functional.triplet_margin_with_distance_loss; pca_lowrank; quantile; sub; svd_lowrank; trapezoid; trapz,23,2,"pca_lowrank: aten.mm.default got mixed torch.Tensor and DTensor, need to convert all torch.Tensor to DTensor before calling distribut; svd_lowrank: aten.mm.default got mixed torch.Tensor and DTensor, need to convert all torch.Tensor to DTensor before calling distribut"
+aten.sub_.Tensor,single_dim,explicit,2,nn.functional.cosine_embedding_loss; nn.functional.hinge_embedding_loss,2,0,
+aten.sum.default,op_strategy,explicit,15,cov; nn.functional.cosine_embedding_loss; nn.functional.cross_entropy; nn.functional.ctc_loss; nn.functional.gaussian_nll_loss; nn.functional.hinge_embedding_loss; nn.functional.kl_div; nn.functional.l1_loss; nn.functional.margin_ranking_loss; nn.functional.poisson_nll_loss; nn.functional.triplet_margin_loss; nn.functional.triplet_margin_with_distance_loss; sum; sum_to_size; tensordot,14,1,nn.functional.ctc_loss: aten._ctc_loss.default
+aten.sum.dim_IntList,op_strategy,explicit,25,corrcoef; cov; einsum; linalg.matrix_norm; linalg.matrix_rank; linalg.matrix_rank(hermitian); linalg.norm; linalg.norm(subgradients_at_zero); linalg.vecdot; masked.mean; masked.std; masked.sum; masked.var; nanmean; nanquantile; nn.functional.cosine_embedding_loss; nn.functional.cosine_similarity; nn.functional.cross_entropy; nn.functional.multilabel_soft_margin_loss; norm(nuc); sum; sum_to_size; tensordot; trapezoid; trapz,24,1,nanmean: Operator aten.nansum.default does not have a sharding strategy registered.
+aten.t.default,op_strategy,explicit,5,corrcoef; cov; nn.functional.linear; nn.functional.multi_head_attention_forward; t,5,0,
+aten.t_copy.default,decomp,explicit,1,t_copy,1,0,
+aten.take.default,decomp,explicit,1,take,1,0,
+aten.tan.default,single_dim,explicit,1,tan,1,0,
+aten.tanh.default,single_dim,explicit,2,nn.functional.tanhshrink; tanh,2,0,
+aten.threshold.default,decomp,explicit,1,nn.functional.threshold,0,1,nn.functional.threshold: Operator aten.threshold.default does not have a sharding strategy registered.
+aten.topk.default,op_strategy,,1,topk,1,0,
+aten.trace.default,decomp,explicit,1,trace,1,0,
+aten.transpose.int,op_strategy,explicit,14,H; __rmatmul__; linalg.pinv(singular); mH; mT; matmul; nanquantile; nn.functional.multi_head_attention_forward; nn.functional.scaled_dot_product_attention; pca_lowrank; quantile; svd; svd_lowrank; transpose,11,4,"linalg.pinv(singular): Operator aten.linalg_pinv.atol_rtol_tensor does not have a sharding strategy registered.; nn.functional.scaled_dot_product_attention: aten.add.Tensor got mixed torch.Tensor and DTensor, need to convert all torch.Tensor to DTensor before calling distribut; pca_lowrank: aten.mm.default got mixed torch.Tensor and DTensor, need to convert all torch.Tensor to DTensor before calling distribut; svd_lowrank: aten.mm.default got mixed torch.Tensor and DTensor, need to convert all torch.Tensor to DTensor before calling distribut"
+aten.transpose_.default,,,3,nanquantile; quantile; stft,0,3,nanquantile: Operator aten.unsqueeze_.default does not have a sharding strategy registered.; quantile: Operator aten.unsqueeze_.default does not have a sharding strategy registered.; stft: Operator aten.reflection_pad1d.default does not have a sharding strategy registered.
+aten.transpose_copy.int,decomp,explicit,1,transpose_copy,1,0,
+aten.triangular_solve.default,,,1,triangular_solve,0,1,triangular_solve: Operator aten.triangular_solve.default does not have a sharding strategy registered.
+aten.tril.default,op_strategy,explicit,2,nn.functional.scaled_dot_product_attention; tril,1,1,"nn.functional.scaled_dot_product_attention: aten.add.Tensor got mixed torch.Tensor and DTensor, need to convert all torch.Tensor to DTensor before calling distribut"
+aten.triu.default,op_strategy,explicit,1,triu,1,0,
+aten.trunc.default,single_dim,explicit,1,trunc,1,0,
+aten.unbind.int,op_strategy,explicit,2,nonzero; unbind,1,1,nonzero: aten.nonzero.default
+aten.unbind_copy.int,decomp,explicit,1,unbind_copy,1,0,
+aten.unfold.default,decomp,explicit,1,unfold,0,1,unfold: Operator aten.unfold.default does not have a sharding strategy registered.
+aten.unfold_copy.default,decomp,explicit,1,unfold_copy,0,1,unfold_copy: Operator aten.unfold_copy.default does not have a sharding strategy registered.
+aten.uniform_.default,op_strategy,explicit,1,uniform,1,0,
+aten.unique_consecutive.default,,,1,unique_consecutive,0,1,unique_consecutive: aten.unique_consecutive.default
+aten.unique_dim.default,,,1,unique,0,1,unique: aten.unique_dim.default
+aten.unsafe_split.Tensor,decomp,explicit,2,unsafe_chunk; unsafe_split,2,0,
+aten.unsqueeze.default,op_strategy,explicit,36,__rmatmul__; atleast_2d; atleast_3d; corrcoef; cov; linalg.matrix_norm; linalg.matrix_rank; linalg.matrix_rank(hermitian); linalg.norm; linalg.norm(subgradients_at_zero); linalg.vander; matmul; nanquantile; nn.functional.adaptive_avg_pool1d; nn.functional.adaptive_max_pool1d; nn.functional.avg_pool1d; nn.functional.conv1d; nn.functional.conv2d; nn.functional.conv3d; nn.functional.conv_transpose1d; nn.functional.conv_transpose2d; nn.functional.conv_transpose3d; nn.functional.dropout3d; nn.functional.gaussian_nll_loss; nn.functional.interpolate(area); nn.functional.linear; nn.functional.local_response_norm; nn.functional.max_pool1d; nn.functional.max_unpool1d; nn.functional.max_unpool1d(grad); nn.functional.multi_head_attention_forward; nonzero; quantile; repeat_interleave; stft; unsqueeze,22,16,linalg.vander: Operator aten.cumprod.default does not have a sharding strategy registered.; nn.functional.adaptive_avg_pool1d: Operator aten._adaptive_avg_pool2d.default does not have a sharding strategy registered.; nn.functional.adaptive_max_pool1d: Operator aten.adaptive_max_pool2d.default does not have a sharding strategy registered.; nn.functional.avg_pool1d: Operator aten.avg_pool2d.default does not have a sharding strategy registered.; nn.functional.conv1d: Stride must be 1 when there is padding for tensor parallel convolution.
+aten.unsqueeze_.default,,,2,nanquantile; quantile,0,2,nanquantile: Operator aten.unsqueeze_.default does not have a sharding strategy registered.; quantile: Operator aten.unsqueeze_.default does not have a sharding strategy registered.
+aten.unsqueeze_copy.default,decomp,explicit,1,unsqueeze_copy,1,0,
+aten.upsample_bicubic2d.default,op_strategy,explicit,1,nn.functional.interpolate(bicubic),1,0,
+aten.upsample_bilinear2d.default,op_strategy,explicit,2,nn.functional.interpolate(bilinear); nn.functional.upsample_bilinear,2,0,
+aten.upsample_linear1d.default,op_strategy,explicit,1,nn.functional.interpolate(linear),1,0,
+aten.upsample_nearest1d.default,decomp,explicit+cia,2,nn.functional.interpolate(nearest); nn.functional.upsample_nearest,0,2,nn.functional.interpolate(nearest): Operator aten.upsample_nearest1d.default does not have a sharding strategy registered.; nn.functional.upsample_nearest: Operator aten.upsample_nearest1d.default does not have a sharding strategy registered.
+aten.upsample_nearest2d.default,op_strategy,explicit+cia,2,nn.functional.interpolate(nearest); nn.functional.upsample_nearest,2,0,
+aten.upsample_nearest3d.default,decomp,explicit+cia,2,nn.functional.interpolate(nearest); nn.functional.upsample_nearest,0,2,nn.functional.interpolate(nearest): Operator aten.upsample_nearest3d.default does not have a sharding strategy registered.; nn.functional.upsample_nearest: Operator aten.upsample_nearest3d.default does not have a sharding strategy registered.
+aten.upsample_trilinear3d.default,op_strategy,explicit,1,nn.functional.interpolate(trilinear),1,0,
+aten.var.correction,op_strategy,explicit,2,var; var(unbiased),2,0,
+aten.var_mean.correction,op_strategy,explicit,2,var_mean; var_mean(unbiased),2,0,
+aten.vdot.default,decomp,explicit,2,linalg.vecdot; vdot,2,0,
+aten.view.default,op_strategy,explicit,48,__rmatmul__; atleast_1d; atleast_2d; atleast_3d; cartesian_prod; cdist; combinations; corrcoef; cov; cumulative_trapezoid; diagflat; flatten; gradient; inner; linalg.matrix_power; linalg.pinv(singular); linalg.tensorinv; linalg.tensorsolve; masked.std; masked.var; matmul; meshgrid(list_of_tensors); meshgrid(variadic_tensors); nanquantile; nn.functional.bilinear; nn.functional.cross_entropy; nn.functional.embedding_bag; nn.functional.instance_norm; nn.functional.linear; nn.functional.multi_head_attention_forward; nn.functional.prelu; nn.functional.scaled_dot_product_attention; outer; pca_lowrank; quantile; ravel; repeat_interleave; reshape; reshape_as; stft; svd_lowrank; take_along_dim; tensordot; trapezoid; trapz; unflatten; view; view_as,38,11,combinations: aten.masked_select.default; linalg.pinv(singular): Operator aten.linalg_pinv.atol_rtol_tensor does not have a sharding strategy registered.; linalg.tensorinv: Operator aten.linalg_inv_ex.default does not have a sharding strategy registered.; linalg.tensorsolve: Operator aten._linalg_solve_ex.default does not have a sharding strategy registered.; nn.functional.bilinear: Operator aten._trilinear.default does not have a sharding strategy registered.
+aten.view_as_complex.default,single_dim,,1,view_as_complex,1,0,
+aten.view_as_real.default,op_strategy,,1,stft,0,1,stft: Operator aten.reflection_pad1d.default does not have a sharding strategy registered.
+aten.view_copy.default,op_strategy,explicit,1,view_copy,1,0,
+aten.where.self,single_dim,explicit,25,linalg.matrix_rank; logdet; masked.amax; masked.amin; masked.argmax; masked.argmin; masked.cumprod; masked.cumsum; masked.log_softmax; masked.logaddexp; masked.logsumexp; masked.mean; masked.median; masked.norm; masked.prod; masked.softmax; masked.softmin; masked.std; masked.sum; masked.var; nn.functional.cosine_embedding_loss; nn.functional.ctc_loss; nn.functional.hinge_embedding_loss; nn.functional.scaled_dot_product_attention; where,21,6,logdet: Operator aten._linalg_slogdet.default does not have a sharding strategy registered.; masked.cumprod: Operator aten.cumprod.default does not have a sharding strategy registered.; masked.logsumexp: Expected reduce_dims to not be None; masked.median: Operator aten.nanmedian.dim does not have a sharding strategy registered.; nn.functional.ctc_loss: aten._ctc_loss.default
+aten.xlogy.Tensor,single_dim,explicit,2,nn.functional.kl_div; xlogy,2,0,
+aten.zero_.default,op_strategy,explicit,1,zero_,1,0,
+aten.zeros.default,decomp,explicit,11,linalg.matrix_rank; linalg.matrix_rank(hermitian); linalg.norm; linalg.norm(subgradients_at_zero); nn.functional.alpha_dropout; nn.functional.ctc_loss; nn.functional.dropout; nn.functional.dropout2d; nn.functional.dropout3d; nn.functional.feature_alpha_dropout(with_train); zeros,10,1,nn.functional.ctc_loss: aten._ctc_loss.default
+aten.zeros_like.default,op_strategy,explicit,4,diff; nn.functional.cosine_embedding_loss; nn.functional.hinge_embedding_loss; zeros_like,4,0,

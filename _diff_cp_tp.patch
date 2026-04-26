@@ -1,0 +1,94 @@
+diff --git a/torch/distributed/tensor/experimental/_context_parallel/_attention.py b/torch/distributed/tensor/experimental/_context_parallel/_attention.py
+index 5edf94eaa43..99a09c7006e 100644
+--- a/torch/distributed/tensor/experimental/_context_parallel/_attention.py
++++ b/torch/distributed/tensor/experimental/_context_parallel/_attention.py
+@@ -1384,19 +1384,45 @@ class _ContextParallel(ParallelStyle):
+         kwargs: dict[str, Any],
+         mesh: DeviceMesh,
+     ) -> tuple[tuple[Any, ...], dict[str, Any]]:
+-        placement = [Shard(self.seq_dim)]
++        placement = (Shard(self.seq_dim),)
+         all_args = []
++        # Track foreign-mesh DTensor spec (e.g., from TP) so sdpa_output_fn
++        # can re-wrap the output. We use the first tensor's spec (query).
++        foreign_spec = None
++        found_first_tensor = False
+ 
+         for arg in itertools.chain(args, kwargs.values()):
+             if isinstance(arg, torch.Tensor):
+                 if isinstance(arg, DTensor):
+-                    if arg._spec.placements != placement:
+-                        raise AssertionError
++                    if arg._spec.mesh == mesh:
++                        # Same CP mesh: verify placement is correct
++                        if tuple(arg._spec.placements) != placement:
++                            raise AssertionError(
++                                f"Expected placements {placement} on CP mesh, "
++                                f"got {arg._spec.placements}"
++                            )
++                    else:
++                        # Foreign mesh (e.g., TP mesh): extract local tensor
++                        # with correct grad_placements for backward, then
++                        # re-wrap as a CP DTensor.
++                        if not found_first_tensor:
++                            foreign_spec = arg._spec
++                        local_tensor = arg.to_local(
++                            grad_placements=arg._spec.placements
++                        )
++                        arg = DTensor.from_local(
++                            local_tensor, mesh, placement, run_check=False
++                        )
+                 else:
+                     arg = DTensor.from_local(arg, mesh, placement, run_check=False)
++                found_first_tensor = True
+ 
+             all_args.append(arg)
+ 
++        # Stash for sdpa_output_fn to restore TP DTensor wrapping
++        if module is not None:
++            module._cp_foreign_mesh_spec = foreign_spec
++
+         new_args = tuple(all_args[0 : len(args)])
+         new_kwargs = dict(zip(kwargs.keys(), all_args[len(args) :]))
+         return new_args, new_kwargs
+@@ -1404,11 +1430,27 @@ class _ContextParallel(ParallelStyle):
+     def sdpa_output_fn(
+         self, module: nn.Module | None, inputs: Any, outputs: Any, mesh: DeviceMesh
+     ) -> Any:
++        foreign_spec = getattr(module, "_cp_foreign_mesh_spec", None) if module else None
+         new_outputs = []
+         for output in [outputs] if isinstance(outputs, torch.Tensor) else outputs:
+-            output = output.to_local() if isinstance(output, DTensor) else output
++            if isinstance(output, DTensor):
++                output = output.to_local(
++                    grad_placements=(Shard(self.seq_dim),)
++                )
++            # Re-wrap as DTensor on the original foreign mesh (e.g., TP)
++            if foreign_spec is not None:
++                output = DTensor.from_local(
++                    output,
++                    foreign_spec.mesh,
++                    tuple(foreign_spec.placements),
++                    run_check=False,
++                )
+             new_outputs.append(output)
+ 
++        # Clean up stashed state
++        if module is not None and hasattr(module, "_cp_foreign_mesh_spec"):
++            del module._cp_foreign_mesh_spec
++
+         if isinstance(outputs, torch.Tensor):
+             return new_outputs[0]
+ 
+diff --git a/torch/distributed/tensor/parallel/style.py b/torch/distributed/tensor/parallel/style.py
+index 22169c2a4e4..b19143ce5aa 100644
+--- a/torch/distributed/tensor/parallel/style.py
++++ b/torch/distributed/tensor/parallel/style.py
+@@ -526,6 +526,7 @@ class PrepareModuleInput(ParallelStyle):
+         input_layout: Placement | None,
+         desired_layout: Placement | None,
+     ):
++        print("prepare_input_arg", input_layout, desired_layout)
+         if input_layout is not None:
+             if isinstance(input, DTensor):
+                 # TODO: re-enable the check once we fix the compile path

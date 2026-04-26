@@ -1,0 +1,213 @@
+commit de9587120c65bf0068be8a2252f14f0288b9c982
+Author: Pian Pawakapan <pianpwk@meta.com>
+Date:   Fri Apr 24 17:30:07 2026 -0700
+
+    add spmd_types==0.2.0 to pytorch
+    
+    ghstack-source-id: d81465c975277a9dd0ae71fdc8686c42f2adcb6b
+    Pull Request resolved: https://github.com/pytorch/pytorch/pull/180880
+
+diff --git a/.ci/docker/common/install_conda.sh b/.ci/docker/common/install_conda.sh
+index 547eec0d401..f950a2ae71c 100755
+--- a/.ci/docker/common/install_conda.sh
++++ b/.ci/docker/common/install_conda.sh
+@@ -87,6 +87,7 @@ if [ -n "$ANACONDA_PYTHON_VERSION" ]; then
+ 
+   # Install some other packages, including those needed for Python test reporting
+   pip_install -r /opt/conda/requirements-ci.txt
++  pip_install --no-deps spmd_types==0.2.0
+ 
+   if [ -n "$DOCS" ]; then
+     apt-get update
+diff --git a/.ci/docker/requirements-ci.txt b/.ci/docker/requirements-ci.txt
+index 612a71a00b6..ef12d78c759 100644
+--- a/.ci/docker/requirements-ci.txt
++++ b/.ci/docker/requirements-ci.txt
+@@ -419,3 +419,8 @@ tqdm>=4.66.0
+ 
+ aiohttp==3.13.4
+ #Description: required for torch.distributed.debug
++
++# spmd_types is installed with --no-deps in install_python.sh / install_conda.sh
++# to avoid pulling in a PyPI torch as a transitive dependency.
++#Description: SPMD type system for distributed training
++#test that import: test_fully_shard_spmd_types.py, test_local_map.py
+diff --git a/.lintrunner.toml b/.lintrunner.toml
+index cd4f0a3dce7..5c2c49fd208 100644
+--- a/.lintrunner.toml
++++ b/.lintrunner.toml
+@@ -852,6 +852,29 @@ command = [
+     '@{{PATHSFILE}}'
+ ]
+ 
++[[linter]]
++code = 'DIRECT_SPMD_TYPES_IMPORT'
++include_patterns = [
++    'torch/**/*.py',
++]
++exclude_patterns = [
++    'torch/distributed/spmd_types/__init__.py',
++    'torch/distributed/spmd_types/_stubs.py',
++]
++command = [
++    'python3',
++    'tools/linter/adapters/grep_linter.py',
++    '--pattern=(^|\\s)(import spmd_types|from spmd_types)',
++    '--linter-name=DIRECT_SPMD_TYPES_IMPORT',
++    '--error-name=direct import of spmd_types',
++    """--error-description=\
++        Do not import spmd_types directly; use torch.distributed.spmd_types instead, \
++        e.g., 'from torch.distributed.spmd_types import R'.
++    """,
++    '--',
++    '@{{PATHSFILE}}'
++]
++
+ [[linter]]
+ code = 'DEPLOY_DETECTION'
+ include_patterns = [
+diff --git a/torch/distributed/spmd_types/__init__.py b/torch/distributed/spmd_types/__init__.py
+new file mode 100644
+index 00000000000..ff3102765d8
+--- /dev/null
++++ b/torch/distributed/spmd_types/__init__.py
+@@ -0,0 +1,58 @@
++"""
++Re-export shim for spmd_types.
++
++When the ``spmd_types`` package is installed, the needed APIs are
++re-exported here.  When it is *not* installed, lightweight stubs are
++provided so that downstream code can import without ``try/except``
++and type-checking features simply become no-ops.
++
++Use ``is_available()`` to check at runtime whether the real package is
++present.
++"""
++
++import importlib as _importlib
++
++
++_HAS_SPMD_TYPES = _importlib.util.find_spec("spmd_types") is not None
++
++
++def is_available() -> bool:
++    """Return True if the real spmd_types package is installed."""
++    return _HAS_SPMD_TYPES
++
++
++if _HAS_SPMD_TYPES:
++    from spmd_types._checker import (  # pyrefly: ignore
++        get_partition_spec,
++        no_typecheck,
++        typecheck,
++    )
++    from spmd_types._mesh import set_current_mesh  # pyrefly: ignore
++    from spmd_types._mesh_axis import _reset, MeshAxis  # pyrefly: ignore
++    from spmd_types._type_attr import get_local_type, set_local_type  # pyrefly: ignore
++    from spmd_types.runtime import assert_type, has_local_type  # pyrefly: ignore
++    from spmd_types.types import (  # pyrefly: ignore
++        I,
++        normalize_axis,
++        P,
++        PartitionSpec,
++        R,
++        S,
++        Shard as SpmdShard,
++        SpmdTypeError,
++        V,
++    )
++else:
++    from torch.distributed.spmd_types._stubs import (
++        assert_type,
++        get_local_type,
++        has_local_type,
++        I,
++        MeshAxis,
++        P,
++        R,
++        S,
++        set_current_mesh,
++        typecheck,
++        V,
++    )
+diff --git a/torch/distributed/spmd_types/_stubs.py b/torch/distributed/spmd_types/_stubs.py
+new file mode 100644
+index 00000000000..844f0837b39
+--- /dev/null
++++ b/torch/distributed/spmd_types/_stubs.py
+@@ -0,0 +1,75 @@
++"""
++Stubs for when spmd_types is not installed.
++
++Type constants are copied from spmd_types/types.py.
++Everything else is a no-op.
++"""
++
++from __future__ import annotations
++
++from contextlib import contextmanager
++from dataclasses import dataclass
++from enum import Enum
++from typing import Any
++
++
++class PerMeshAxisLocalSpmdType(Enum):
++    R = "R"
++    I = "I"
++    V = "V"
++    P = "P"
++
++    def __repr__(self):
++        return self.value
++
++
++@dataclass(frozen=True)
++class Shard:
++    dim: int
++
++    def __repr__(self):
++        return f"S({self.dim})"
++
++
++R = PerMeshAxisLocalSpmdType.R
++I = PerMeshAxisLocalSpmdType.I
++V = PerMeshAxisLocalSpmdType.V
++P = PerMeshAxisLocalSpmdType.P
++S = Shard
++
++
++class MeshAxis:
++    def __init__(self, key: Any = None) -> None:
++        self._key = key
++
++    @classmethod
++    def of(cls, pg: Any, stride: Any = None) -> MeshAxis:
++        return cls(key=id(pg))
++
++    def __hash__(self) -> int:
++        return hash(self._key)
++
++    def __eq__(self, other: object) -> bool:
++        return isinstance(other, MeshAxis) and self._key == other._key
++
++
++def assert_type(tensor: Any, type: Any = None, **kwargs: Any) -> Any:
++    return tensor
++
++
++def has_local_type(tensor: Any) -> bool:
++    return False
++
++
++def get_local_type(tensor: Any) -> dict:
++    return {}
++
++
++@contextmanager
++def typecheck(strict_mode: Any = None, local: Any = None):
++    yield
++
++
++@contextmanager
++def set_current_mesh(axes: Any = None):
++    yield
