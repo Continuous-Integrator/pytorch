@@ -1,7 +1,6 @@
 #include <c10/core/Device.h>
 #include <c10/core/DispatchKey.h>
 #include <c10/util/Exception.h>
-#include <shim_exception_state.h>
 #include <torch/csrc/inductor/aoti_runtime/utils.h>
 #include <torch/csrc/inductor/aoti_torch/c/shim.h>
 #include <torch/csrc/inductor/aoti_torch/tensor_converter.h>
