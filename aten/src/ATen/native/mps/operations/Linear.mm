@@ -14,6 +14,13 @@ using namespace mps;
 static void _mps_linear_nograph(const Tensor& input, const Tensor& weight, const Tensor& bias, Tensor& output) {
   bool is_bias_defined = bias.defined();
 
+  // MPSNDArrayMatrixMultiplication produces non-deterministic results on M5 for >2D
+  // fp16/bf16 inputs. Flatten to 2D for the matmul, then reshape the output.
+  // See https://github.com/pytorch/pytorch/issues/180776.
+  bool needFlatten = input.dim() > 2 && (!is_bias_defined || bias.dim() <= 1);
+  auto input2d = needFlatten ? input.flatten(0, -2) : input;
+  auto output2d = needFlatten ? output.flatten(0, -2) : output;
+
   MPSStream* mpsStream = getCurrentMPSStream();
   id<MTLDevice> device = MPSDevice::getInstance()->device();
 
@@ -27,8 +34,8 @@ static void _mps_linear_nograph(const Tensor& input, const Tensor& weight, const
 
       MPSDataType mpsDataType = getMPSDataType(weight.scalar_type());
 
-      auto inputNDArray = getMPSNDArray(input, input.sizes(), input.strides());
-      auto outNDArray = getMPSNDArray(output, output.sizes(), output.strides());
+      auto inputNDArray = getMPSNDArray(input2d, input2d.sizes(), input2d.strides());
+      auto outNDArray = getMPSNDArray(output2d, output2d.sizes(), output2d.strides());
 
       id<MTLBuffer> weightBuf = getMTLBufferStorage(weight);
       MPSNDArrayDescriptor* weightDesc = [MPSNDArrayDescriptor descriptorWithDataType:mpsDataType
@@ -141,13 +148,11 @@ Tensor _mps_linear(const Tensor& input, const Tensor& weight_arg, const std::opt
                                                               dimension:-1
                                                           withDimension:-2
                                                                    name:nil];
-      // matrixMultiplicationWithPrimary crashes for 5D tensors, see https://github.com/pytorch/pytorch/issues/114942
-      bool doReshape = input.dim() > 4;
-      if (!doReshape && is_bias_defined) {
-        // workaround to improve the performance with 3D+ inputs
-        doReshape =
-            input_size.size() > 2 && input_size[0] > 1 && input_size[1] >= 1 && input_size[1] <= 32 && bias.dim() <= 1;
-      }
+      // matrixMultiplicationWithPrimary crashes for 5D tensors (see #114942)
+      // and produces non-deterministic results for >2D fp16/bf16 inputs
+      // (see #180776). Flatten to 2D unless bias has >1 dims (which would
+      // change broadcast semantics).
+      bool doReshape = input.dim() > 2 && (!is_bias_defined || bias.dim() <= 1);
       auto inputFlattened = doReshape ? [mpsGraph flatten2DTensor:inputTensor axis:-1 name:nil] : inputTensor;
       auto outputTensor = [mpsGraph matrixMultiplicationWithPrimaryTensor:inputFlattened
                                                           secondaryTensor:weightTransposeTensor
