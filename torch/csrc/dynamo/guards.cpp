@@ -3119,7 +3119,7 @@ class GuardManager {
         Py_DECREF(old_ptr);
       }
     }
-    _tensor_pointers[value] = tensor_pointers;
+    _tensor_pointers[value] = std::move(tensor_pointers);
   }
 
   void stash_tensor_metadata(
@@ -3277,8 +3277,7 @@ class GuardManager {
         return false;
       }
       auto tensor = THPVariable_Unpack(recorded_tensor.tensor_ptr);
-      if (!recorded_tensor.check.check(
-              get_local_state(_root), tensor)) {
+      if (!recorded_tensor.check.check(get_local_state(_root), tensor)) {
         return false;
       }
     }

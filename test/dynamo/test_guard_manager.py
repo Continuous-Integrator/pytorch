@@ -1440,7 +1440,6 @@ class TagSafetyChecks(RecursiveDictTagTests):
         )
 
 
-
 class RecursiveDictGuardTests(RecursiveDictTagTests):
     def test_disabling(self):
         class Mod(torch.nn.Module):
