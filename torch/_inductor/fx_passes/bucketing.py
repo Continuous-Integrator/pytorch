@@ -65,14 +65,14 @@ def _restore_node_group_names(
             continue
         if node.target.namespace not in ("_c10d_functional", "c10d_functional"):
             continue
-        new_args = list(node.args)
-        changed = False
-        for i, arg in enumerate(new_args):
-            if isinstance(arg, str) and arg == group_name_str:
-                new_args[i] = group_name_node
-                changed = True
-        if changed:
-            node.args = tuple(new_args)
+        schema = node.target._schema
+        for i, schema_arg in enumerate(schema.arguments):
+            if schema_arg.name == "group_name" and i < len(node.args):
+                if isinstance(node.args[i], str) and node.args[i] == group_name_str:
+                    new_args = list(node.args)
+                    new_args[i] = group_name_node
+                    node.args = tuple(new_args)
+                break
 
 
 BucketMode: TypeAlias = Literal[
