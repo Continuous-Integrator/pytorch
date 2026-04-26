@@ -16,6 +16,15 @@
 #endif
 
 namespace at::native {
+namespace mps {
+
+#ifndef PYTORCH_JIT_COMPILE_SHADERS
+static auto& lib = MetalShaderLibrary::getBundledLibrary();
+#else
+#include <ATen/native/mps/SoftMaxKernel_metallib.h>
+#endif
+
+} // namespace mps
 
 static void get_shapes(MPSShape* input_shape_readonly,
                        NSMutableArray<NSNumber*>*& input_shape,
@@ -34,13 +43,18 @@ static void get_shapes(MPSShape* input_shape_readonly,
   }
 }
 
-// Note - Currently only supported for 4D image tensors
+static bool canUseMetalSoftmax(const Tensor& input, int64_t dim) {
+  int64_t ndim = input.dim();
+  if (ndim == 0)
+    return false;
+  int64_t wrapped = maybe_wrap_dim(dim, ndim);
+  return wrapped == ndim - 1 && input.is_contiguous();
+}
 
 TORCH_IMPL_FUNC(softmax_mps_out)
 (const Tensor& input_, const int64_t dim, const bool half_to_float, const Tensor& output) {
   TORCH_CHECK(!half_to_float, "softmax with half to float conversion is not supported on MPS");
   TORCH_CHECK(c10::isFloatingType(input_.scalar_type()), "softmax only supported for floating types");
-  static const bool is_macOS_15_0_or_newer = is_macos_13_or_newer(MacOSVersion::MACOS_VER_15_0_PLUS);
 
   if (input_.numel() == 0) {
     return;
@@ -55,9 +69,44 @@ TORCH_IMPL_FUNC(softmax_mps_out)
   int64_t dim_ = maybe_wrap_dim(dim, input.dim());
   TORCH_CHECK(dim_ >= 0 && dim_ < input.dim(), "Softmax:dim must be non-negative and less than input dimensions");
 
+  // Metal kernel path for last-dim softmax
+  if (canUseMetalSoftmax(input, dim_)) {
+    using namespace mps;
+    MPSStream* stream = getCurrentMPSStream();
+
+    int64_t axis_size = input.size(dim_);
+    int64_t outer_size = input.numel() / axis_size;
+
+    @autoreleasepool {
+      dispatch_sync_with_rethrow(stream->queue(), ^() {
+        const int N_READS = 4;
+        auto metalType = mps::scalarToMetalTypeString(input);
+        id<MTLComputePipelineState> kernel;
+        if (axis_size <= 1024 * N_READS) {
+          kernel = mps::lib.getPipelineStateForFunc("softmax_forward_single_row_" + metalType);
+        } else {
+          kernel = mps::lib.getPipelineStateForFunc("softmax_forward_looped_" + metalType);
+        }
+
+        id<MTLComputeCommandEncoder> encoder = stream->commandEncoder();
+        [encoder setComputePipelineState:kernel];
+
+        uint axis_size_u = static_cast<uint>(axis_size);
+        mps::mtl_setArgs(encoder, input, output, axis_size_u);
+
+        MTLSize threadsPerGroup = MTLSizeMake(
+            std::min(static_cast<int64_t>((axis_size + N_READS - 1) / N_READS), static_cast<int64_t>(1024)), 1, 1);
+        MTLSize numGroups = MTLSizeMake(outer_size, 1, 1);
+        [encoder dispatchThreadgroups:numGroups threadsPerThreadgroup:threadsPerGroup];
+      });
+    }
+    return;
+  }
+
+  // MPSGraph fallback for non-last-dim or non-contiguous tensors
+  static const bool is_macOS_15_0_or_newer = is_macos_13_or_newer(MacOSVersion::MACOS_VER_15_0_PLUS);
+
   const auto memory_format = input.suggest_memory_format();
-  // TORCH_CHECK(input.suggest_memory_format() == output.suggest_memory_format(), "Input and output memory format should
-  // match")
 
   using namespace mps;
   using CachedGraph = MPSUnaryCachedGraph;
@@ -152,6 +201,41 @@ TORCH_IMPL_FUNC(softmax_backward_mps_out)
   int64_t dim_ = maybe_wrap_dim(dim, grad.dim());
   TORCH_CHECK(dim_ >= 0 && dim_ < grad.dim(), "Grad:dim must be non-negative and less than input dimensions");
 
+  // Metal kernel path for last-dim backward
+  if (canUseMetalSoftmax(output, dim_) && canUseMetalSoftmax(grad, dim_)) {
+    using namespace mps;
+    MPSStream* stream = getCurrentMPSStream();
+
+    int64_t axis_size = output.size(dim_);
+    int64_t outer_size = output.numel() / axis_size;
+
+    @autoreleasepool {
+      dispatch_sync_with_rethrow(stream->queue(), ^() {
+        const int N_READS = 4;
+        auto metalType = mps::scalarToMetalTypeString(output);
+        id<MTLComputePipelineState> kernel;
+        if (axis_size <= 1024 * N_READS) {
+          kernel = mps::lib.getPipelineStateForFunc("softmax_backward_single_row_" + metalType);
+        } else {
+          kernel = mps::lib.getPipelineStateForFunc("softmax_backward_looped_" + metalType);
+        }
+
+        id<MTLComputeCommandEncoder> encoder = stream->commandEncoder();
+        [encoder setComputePipelineState:kernel];
+
+        uint axis_size_u = static_cast<uint>(axis_size);
+        mps::mtl_setArgs(encoder, grad, output, grad_input, axis_size_u);
+
+        MTLSize threadsPerGroup = MTLSizeMake(
+            std::min(static_cast<int64_t>((axis_size + N_READS - 1) / N_READS), static_cast<int64_t>(1024)), 1, 1);
+        MTLSize numGroups = MTLSizeMake(outer_size, 1, 1);
+        [encoder dispatchThreadgroups:numGroups threadsPerThreadgroup:threadsPerGroup];
+      });
+    }
+    return;
+  }
+
+  // MPSGraph fallback
   using namespace mps;
   using CachedGraph = MPSUnaryGradCachedGraph;
   MPSStream* stream = getCurrentMPSStream();
