@@ -457,23 +457,33 @@ class AOTInductorModelContainer {
       assert_all_constants(constants_map);
     }
 
-    int32_t model_device_type = models_[0]->get_device_type();
-    int32_t cpu_device_type = aoti_torch_device_type_cpu();
-    // In a mixed-device model the auxiliary device must be CPU (matching
-    // the constraint in load_constants, model_base.h).
-    for (const auto& kv : constants_map) {
+    auto num_constants = models_[0]->num_constants();
+    for (size_t idx = 0; idx < num_constants; idx++) {
+      if (models_[0]->constant_from_folded(static_cast<int64_t>(idx))) {
+        continue;
+      }
+      auto constant_name =
+          std::string(models_[0]->constant_name(static_cast<int64_t>(idx)));
+      auto it = constants_map.find(constant_name);
+      if (it == constants_map.end()) {
+        continue;
+      }
+      int32_t expected_const_device_type =
+          models_[0]->constant_device_type(static_cast<int64_t>(idx));
       int32_t tensor_device_type = 0;
-      aoti_torch_get_device_type(kv.second, &tensor_device_type);
-      if (tensor_device_type != model_device_type &&
-          tensor_device_type != cpu_device_type) {
+      AOTI_TORCH_ERROR_CODE_CHECK(
+          aoti_torch_get_device_type(it->second, &tensor_device_type));
+      if (tensor_device_type != expected_const_device_type) {
         throw std::runtime_error(
-            "update_constant_buffer: constant '" + kv.first +
-            "' has unsupported device type " +
-            std::to_string(tensor_device_type) + " (model device type is " +
-            std::to_string(model_device_type) +
-            "; only the model's device or CPU is supported)");
+            "update_constant_buffer: constant '" + constant_name +
+            "' is on device type " + std::to_string(tensor_device_type) +
+            " but expected device type " +
+            std::to_string(expected_const_device_type));
       }
     }
+
+    int32_t model_device_type = models_[0]->get_device_type();
+    int32_t cpu_device_type = aoti_torch_device_type_cpu();
 
     ConstantState& const_folded = use_inactive == use_secondary_
         ? constant_folded_
@@ -483,7 +493,6 @@ class AOTInductorModelContainer {
     auto original_constants_map = get_constants_map(!use_inactive);
     auto constants_map_to_update = get_constants_map(use_inactive);
 
-    auto num_constants = models_[0]->num_constants();
     // Running indices into constants_internal_offset_ and
     // aux_cpu_constants_internal_offset_, which hold per-blob offsets
     // only for non-folded constants (mirrors compute_constant_blob's
