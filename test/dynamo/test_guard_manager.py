@@ -1357,6 +1357,89 @@ class TagSafetyChecks(RecursiveDictTagTests):
         with install_guard_manager_testing_hook(hook):
             opt_fn(torch.randn(4, 4))
 
+    @torch._dynamo.config.patch(skip_tensor_guards_with_matching_dict_tags=True)
+    def test_recorded_tensor_kept_alive(self):
+        """record_tensor_metadata must Py_INCREF the stored tensor pointer.
+
+        Before the fix, raw PyObject* pointers were stored without Py_INCREF.
+        If the tensor was later deallocated externally, the dangling pointer
+        would cause a use-after-free crash in check_tensor_metadata_fast.
+
+        We verify the fix by running a subprocess that:
+        1. Compiles an nn.Module with torch.compile (triggers dict-tag
+           recording which calls record_tensor_metadata).
+        2. Uses ctypes.Py_DecRef to reduce the tensor's refcount by 1
+           WITHOUT modifying any dict (so dict watchers don't fire and the
+           fast path stays enabled).
+        3. Overwrites freed memory, then triggers guard evaluation.
+
+        With the fix (Py_INCREF): the guard system's reference keeps the
+        tensor alive despite the ctypes decref → exit code 0.
+        Without the fix (no Py_INCREF): the tensor is freed, and
+        check_tensor_metadata_fast dereferences the dangling pointer →
+        SIGSEGV (exit code -11 or 139).
+        """
+        import subprocess
+        import sys
+        import textwrap
+
+        script = textwrap.dedent("""\
+            import os, gc, ctypes, torch, torch.nn as nn, torch._dynamo
+            torch._dynamo.config.use_recursive_dict_tags_for_guards = True
+            torch._dynamo.config.skip_tensor_guards_with_matching_dict_tags = True
+
+            class Mod(nn.Module):
+                def __init__(self):
+                    super().__init__()
+                    self.t = torch.randn(4)
+                    self.a = 4
+                def forward(self, x):
+                    return x + self.t + self.a
+
+            mod = Mod()
+            x = torch.randn(4)
+            def fn(x):
+                return mod(x)
+
+            # Compile: triggers dict-tag recording -> Py_INCREF(tensor_ptr)
+            opt_fn = torch.compile(fn, backend="eager", fullgraph=True)
+            opt_fn(x)
+
+            # Get tensor address, drop local ref
+            t = mod.t
+            addr = id(t)
+            del t
+
+            # Reduce refcount by 1 via ctypes (bypasses dict watcher)
+            decref = ctypes.pythonapi.Py_DecRef
+            decref.argtypes = [ctypes.c_void_p]
+            decref.restype = None
+            decref(addr)
+
+            # Overwrite freed memory to make crash deterministic
+            gc.collect()
+            junk = [torch.randn(4) for _ in range(50000)]
+
+            # Guard evaluation: without fix -> SIGSEGV; with fix -> OK
+            opt_fn(x)
+            os._exit(0)
+        """)
+
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            timeout=120,
+            capture_output=True,
+        )
+        self.assertEqual(
+            result.returncode,
+            0,
+            f"Subprocess crashed (code {result.returncode}). "
+            f"This means record_tensor_metadata did not Py_INCREF "
+            f"the stored tensor pointer, causing use-after-free.\n"
+            f"stderr: {result.stderr[-500:] if result.stderr else '(empty)'}",
+        )
+
+
 
 class RecursiveDictGuardTests(RecursiveDictTagTests):
     def test_disabling(self):

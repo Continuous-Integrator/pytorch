@@ -3006,6 +3006,16 @@ class GuardManager {
   virtual ~GuardManager() {
     cleanup_tag_safe_entries();
     disable_recursive_dict_tag_optimization();
+    for (auto& [key, vec] : _tensor_pointers) {
+      for (auto* ptr : vec) {
+        Py_DECREF(ptr);
+      }
+    }
+    for (auto& [key, vec] : _tensor_metadata_pointers) {
+      for (auto& entry : vec) {
+        Py_DECREF(entry.tensor_ptr);
+      }
+    }
   }
 
   void cleanup_tag_safe_entries() {
@@ -3103,12 +3113,24 @@ class GuardManager {
   void stash_tensor_pointers(
       PyObject* value,
       std::vector<PyObject*> tensor_pointers) {
+    auto it = _tensor_pointers.find(value);
+    if (it != _tensor_pointers.end()) {
+      for (auto* old_ptr : it->second) {
+        Py_DECREF(old_ptr);
+      }
+    }
     _tensor_pointers[value] = tensor_pointers;
   }
 
   void stash_tensor_metadata(
       PyObject* value,
       std::vector<RecordedTensorMetadata>&& tensor_metadata) {
+    auto it = _tensor_metadata_pointers.find(value);
+    if (it != _tensor_metadata_pointers.end()) {
+      for (auto& old_entry : it->second) {
+        Py_DECREF(old_entry.tensor_ptr);
+      }
+    }
     _tensor_metadata_pointers[value] = std::move(tensor_metadata);
   }
 
@@ -3251,10 +3273,12 @@ class GuardManager {
       return true;
     }
     for (auto& recorded_tensor : it->second) {
-      if (!THPVariable_Check(recorded_tensor.tensor_ptr) ||
-          !recorded_tensor.check.check(
-              get_local_state(_root),
-              THPVariable_Unpack(recorded_tensor.tensor_ptr))) {
+      if (!THPVariable_Check(recorded_tensor.tensor_ptr)) {
+        return false;
+      }
+      auto tensor = THPVariable_Unpack(recorded_tensor.tensor_ptr);
+      if (!recorded_tensor.check.check(
+              get_local_state(_root), tensor)) {
         return false;
       }
     }
@@ -4033,7 +4057,13 @@ class RootGuardManager : public GuardManager {
     _is_recording_dict_pointers = false;
     _current_tag_safe_root = nullptr;
     _recorded_dict_pointers.clear();
+    for (auto* ptr : _recorded_tensor_pointers) {
+      Py_DECREF(ptr);
+    }
     _recorded_tensor_pointers.clear();
+    for (auto& entry : _recorded_tensor_metadata) {
+      Py_DECREF(entry.tensor_ptr);
+    }
     _recorded_tensor_metadata.clear();
   }
 
@@ -4060,13 +4090,19 @@ class RootGuardManager : public GuardManager {
   }
 
   void record_tensor_pointer(PyObject* tensor_pointer) {
+    Py_INCREF(tensor_pointer);
     _recorded_tensor_pointers.push_back(tensor_pointer);
   }
 
   void record_tensor_metadata(PyObject* tensor_pointer) {
+    auto tensor = THPVariable_Unpack(tensor_pointer);
+    if (!tensor.defined()) {
+      return;
+    }
+    Py_INCREF(tensor_pointer);
     _recorded_tensor_metadata.push_back(RecordedTensorMetadata{
         tensor_pointer,
-        make_tensor_check(_local_state, THPVariable_Unpack(tensor_pointer)),
+        make_tensor_check(_local_state, tensor),
     });
   }
 
