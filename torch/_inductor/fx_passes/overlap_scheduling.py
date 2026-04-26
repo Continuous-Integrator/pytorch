@@ -1702,7 +1702,7 @@ def gather_node_runtime_estimations(
             compute_analytical,
         )
 
-    if log_estimations and collective_nodes:
+    if log_estimations and collective_nodes and custom_runtime_estimation is None:
         from torch._inductor.fx_passes.node_runtime_estimation import (
             _log_collective_benchmarks,
         )
