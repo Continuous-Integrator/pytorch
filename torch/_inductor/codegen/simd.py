@@ -2331,22 +2331,27 @@ class SIMDScheduling(BaseScheduling):
         for pn, nodes in zip(subkernel_nodes, fused_node_lists):
             _, (numel, rnumel) = max(nodes, key=lambda x: int(x.is_reduction())).group
             node_schedule = self.generate_node_schedule(nodes, numel, rnumel)
-            if torch._inductor.config.triton.coalesce_tiling_analysis:
-                assert isinstance(
-                    pn, (scheduler.FusedSchedulerNode, scheduler.SchedulerNode)
+            tiling_scores = None
+            if config.combo_kernel_per_subkernel_blocks:
+                if torch._inductor.config.triton.coalesce_tiling_analysis:
+                    assert isinstance(
+                        pn, (scheduler.FusedSchedulerNode, scheduler.SchedulerNode)
+                    )
+                    coalesce_analysis = analyze_memory_coalescing(pn)
+                else:
+                    coalesce_analysis = None
+                features = SIMDKernelFeatures(
+                    node_schedule, numel, rnumel, coalesce_analysis=coalesce_analysis
                 )
-                coalesce_analysis = analyze_memory_coalescing(pn)
+                tiling, tiling_scores = self.get_tiling_and_scores(
+                    node_schedule,
+                    numel,
+                    rnumel,
+                    features.coalesce_analysis,
+                )
             else:
-                coalesce_analysis = None
-            features = SIMDKernelFeatures(
-                node_schedule, numel, rnumel, coalesce_analysis=coalesce_analysis
-            )
-            tiling, tiling_scores = self.get_tiling_and_scores(
-                node_schedule,
-                numel,
-                rnumel,
-                features.coalesce_analysis,
-            )
+                features = SIMDKernelFeatures(node_schedule, numel, rnumel)
+                tiling = self.select_tiling(node_schedule, numel, rnumel)
             is_persistent_reduction = (
                 features.is_reduction()
                 and V.choices.should_use_persistent_reduction(
