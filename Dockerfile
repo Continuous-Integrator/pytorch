@@ -44,10 +44,9 @@ ARG INSTALL_CHANNEL=whl/nightly
 # Automatically set by buildx
 ARG TARGETPLATFORM
 
-RUN WHEEL_CUDA_PATH="${CUDA_PATH#.}"; \
-    case ${TARGETPLATFORM} in \
+RUN case ${TARGETPLATFORM} in \
          "linux/arm64")  pip3 install --extra-index-url https://download.pytorch.org/whl/cpu/ torch torchvision torchaudio ;; \
-         *)              pip3 install --index-url https://download.pytorch.org/${INSTALL_CHANNEL}/${WHEEL_CUDA_PATH}/ torch torchvision torchaudio ;; \
+         *)              pip3 install --index-url https://download.pytorch.org/${INSTALL_CHANNEL}/${CUDA_PATH}/ torch torchvision torchaudio ;; \
     esac
 RUN pip3 install torchelastic
 RUN IS_CUDA=$(python3 -c 'import torch ; print(torch.cuda._is_compiled())'); \
