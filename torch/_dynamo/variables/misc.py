@@ -2095,8 +2095,9 @@ class LoggingLoggerVariable(VariableTracker):
     def get_real_python_backed_value(self) -> logging.Logger:
         return self.value
 
-    # Safe to skip: these methods only emit log output and never return
-    # meaningful values or affect program state.
+    # Safe to skip when args are all constants: these methods only emit
+    # log output and never affect program state. We graph break if any
+    # arg is a tensor or symbolic value to avoid silently dropping them.
     SAFE_LOGGER_METHODS = frozenset(
         {
             "debug",
@@ -2127,12 +2128,16 @@ class LoggingLoggerVariable(VariableTracker):
 
         ignore_set = torch._dynamo.config.ignore_logging_functions
 
-        if (
-            method in ignore_set
-            or function in ignore_set
-            or name in self.SAFE_LOGGER_METHODS
-        ):
+        if method in ignore_set or function in ignore_set:
             return variables.ConstantVariable.create(None)
+
+        if name in self.SAFE_LOGGER_METHODS:
+            has_graph_arg = any(
+                a.is_tensor() or a.is_symnode_like()
+                for a in itertools.chain(args, kwargs.values())
+            )
+            if not has_graph_arg:
+                return variables.ConstantVariable.create(None)
 
         unimplemented(
             gb_type="logging.Logger method not supported for non-export cases",
