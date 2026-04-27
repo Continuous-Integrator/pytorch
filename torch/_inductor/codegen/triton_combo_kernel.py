@@ -749,14 +749,19 @@ class ComboKernel(Kernel):
         # The max_persistent_rblock mirrors how R0_BLOCK is computed in
         # codegen_static_numels_sub_kernel() for persistent reductions.
         max_persistent_rblock = 0
-        for sub in self.sub_kernels:
-            if sub.persistent_reduction:
-                for tree in sub.range_trees:
-                    if tree.is_reduction:
-                        simplified_numel = V.graph.sizevars.simplify(tree.numel)
-                        if isinstance(simplified_numel, (Integer, int)):
-                            val = next_power_of_2(int(simplified_numel))
-                            max_persistent_rblock = max(max_persistent_rblock, val)
+        if not config.combo_kernel_per_subkernel_blocks:
+            max_persistent_rblock = max(
+                (
+                    next_power_of_2(int(simplified))
+                    for sub in self.sub_kernels
+                    if sub.persistent_reduction
+                    for tree in sub.range_trees
+                    if tree.is_reduction
+                    for simplified in [V.graph.sizevars.simplify(tree.numel)]
+                    if isinstance(simplified, (Integer, int))
+                ),
+                default=0,
+            )
 
         inductor_meta = {
             "grid_type": dispatch.grid_expr.__name__,
@@ -771,16 +776,6 @@ class ComboKernel(Kernel):
         }
         if max_persistent_rblock > 0:
             inductor_meta["max_persistent_rblock"] = max_persistent_rblock
-
-        # Sum per-sub-kernel bandwidth / FLOP estimates for the combo launch.
-        sub_metas = [sub.inductor_meta_per_kernel() for sub in self.sub_kernels]
-        self._kernel_num_gb = sum(m.get("kernel_num_gb") or 0 for m in sub_metas)
-        if config.benchmark_kernel or config.profile_bandwidth:
-            inductor_meta["kernel_num_gb"] = self._kernel_num_gb
-        if config.benchmark_kernel:
-            inductor_meta["kernel_flop"] = sum(
-                m.get("kernel_flop") or 0 for m in sub_metas
-            )
 
         sub_kernel = selected_kernel
         if heuristics == "foreach":
@@ -994,7 +989,7 @@ class ComboKernel(Kernel):
                 code.writeline(f'pl.exit_scope("{kernel_name}")')
 
         if config.benchmark_combo_kernel:
-            code.splice(self.codegen_kernel_benchmark(num_gb=self._kernel_num_gb))
+            code.splice(self.codegen_kernel_benchmark(num_gb=0))
 
         return code.getvalue()
 
@@ -1170,9 +1165,6 @@ class ComboKernel(Kernel):
         meta: dict[str, Any] = {
             "num_kernels": num_kernels,
             "min_blocks": min_blocks,
-            # Captured at codegen time so runtime sees the same value the
-            # source was generated with, regardless of later config changes.
-            "autotune_grouping": config.combo_kernel_autotune_grouping,
         }
 
         if not self.enable_autotune:
