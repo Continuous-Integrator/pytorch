@@ -2,8 +2,8 @@ name: Claude Operator Benchmark Monitoring
 
 on:
   schedule:
-    # Run daily at 08:00 UTC (after operator_microbenchmark runs at 06:00 UTC)
-    - cron: '0 8 * * *'
+    # Run daily at 21:00 UTC (15 hours after operator_microbenchmark runs at 06:00 UTC)
+    - cron: '0 21 * * *'
   workflow_dispatch: {}
 
 jobs:
