@@ -66,7 +66,7 @@ static hipblasStatus_t rocBLASStatusToHIPStatus(rocblas_status error)
 
 // hipblas does not have hipblasLtMatmulAlgoCheck
 // cublasLtMatmulAlgoCheck is only run on CUDA
-#define cublasLtMatmulAlgoCheck(__VA_ARGS__) HIPBLAS_STATUS_SUCCESS
+#define cublasLtMatmulAlgoCheck(...) HIPBLAS_STATUS_SUCCESS
 
 // until we use hiblas v2
 // hipify correctly maps things like CUDA_R_16F to HIP_R_16F,
