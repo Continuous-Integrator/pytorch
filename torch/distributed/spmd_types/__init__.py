@@ -43,16 +43,4 @@ if _HAS_SPMD_TYPES:
         V,
     )
 else:
-    from torch.distributed.spmd_types._stubs import (
-        assert_type,
-        get_local_type,
-        has_local_type,
-        I,
-        MeshAxis,
-        P,
-        R,
-        S,
-        set_current_mesh,
-        typecheck,
-        V,
-    )
+    pass
