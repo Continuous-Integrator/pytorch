@@ -128,22 +128,22 @@ class CompilerBisector:
 
     @classmethod
     def clear_call_counter_debug_info(
-        cls, backend_name: str, subsystem_name: str | None
+        cls, backend_name: str, subsystem_name: str
     ) -> None:
-        # subsystem_name == None only happens when clearing a call counter that cannot
-        # otherwise be written to; ignore it.
-        if subsystem_name:
-            file_path = os.path.join(
-                cls.get_dir(),
-                backend_name,
-                f"{subsystem_name}_call_counter_debug_info.txt",
-            )
-            cls.write_lines_to_file(file_path, [])
+        file_path = os.path.join(
+            cls.get_dir(),
+            backend_name,
+            f"{subsystem_name}_call_counter_debug_info.txt",
+        )
+        cls.write_lines_to_file(file_path, [])
 
     @classmethod
-    def reset_counters(cls, backend_name: str, subsystem_name: str | None) -> None:
+    def reset_counters(cls) -> None:
         subsystem_call_counter.clear()
-        cls.clear_call_counter_debug_info(backend_name, subsystem_name)
+        for backend, subsystem_list in BACKENDS.items():
+            for subsystem in subsystem_list:
+                if isinstance(subsystem, BisectSubsystem):
+                    cls.clear_call_counter_debug_info(backend, subsystem.name)
 
     @classmethod
     def get_dir(cls) -> str:
@@ -365,7 +365,7 @@ class CompilerBisector:
         cls,
         backend: str,
         subsystem: str,
-        debug_info: str | None = None,
+        debug_info: Callable[[], str] | None = None,
     ) -> bool:
         if not cls.bisection_enabled:
             return False
@@ -408,7 +408,7 @@ class CompilerBisector:
                 and debug_info is not None
             ):
                 cls.add_call_counter_debug_info(
-                    backend, subsystem, call_counter, debug_info
+                    backend, subsystem, call_counter, debug_info()
                 )
 
             return call_counter > midpoint
@@ -472,7 +472,7 @@ class CompilerBisector:
         assert isinstance(curr_subsystem, Subsystem)
         while True:
             run_state = cls.get_run_state(curr_backend, curr_subsystem.name)
-            cls.reset_counters(curr_backend, curr_subsystem.name)
+            cls.reset_counters()
             if run_state == "test_disable":
                 if not fn():
                     next_subsystem = cls.advance_subsystem(curr_backend, curr_subsystem)
@@ -592,7 +592,7 @@ class CompilerBisector:
         )
         while True:
             assert curr_backend is not None
-            cls.reset_counters(curr_backend, curr_subsystem_name)
+            cls.reset_counters()
             if curr_subsystem:
                 result = cls.process_subsystem(
                     curr_backend, curr_subsystem, fn, cli_interface=cli_interface

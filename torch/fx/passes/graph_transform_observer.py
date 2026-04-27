@@ -114,7 +114,7 @@ class GraphTransformObserver:
         from torch._inductor.compiler_bisector import CompilerBisector
 
         return CompilerBisector.disable_subsystem(
-            "inductor", self.subsystem, self.passname
+            "inductor", self.subsystem, lambda: self.passname
         )
 
     def __enter__(self) -> "GraphTransformObserver":
