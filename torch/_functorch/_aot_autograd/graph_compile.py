@@ -119,7 +119,9 @@ _thread_local = threading.local()
 def _should_save_cache(*compiled_fns: Callable[..., Any]) -> bool:
     if should_bundle_autograd_cache():
         return True
-    return all(hasattr(fn, "_fx_graph_cache_key") for fn in compiled_fns)
+    return all(
+        getattr(fn, "_fx_graph_cache_key", None) is not None for fn in compiled_fns
+    )
 
 
 @contextmanager
@@ -987,9 +989,7 @@ def run_joint_graph_passes_on_hops(
                 # have "val" metadata. Fetch the actual attribute value.
                 out_example_vals.append(getattr(new_hop_gm, n.target))
             else:
-                raise KeyError(
-                    f"Node {n.name} (op={n.op}) missing 'val' in meta"
-                )
+                raise KeyError(f"Node {n.name} (op={n.op}) missing 'val' in meta")
         new_call_function_node.meta["val"] = tuple(out_example_vals)
 
     for bw_node in reversed(bw_hop_nodes):
