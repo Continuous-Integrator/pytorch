@@ -4,9 +4,9 @@ name: linux-binary-container-build
 # `docker run ...` inside a runner step, we let GitHub Actions launch the
 # build container via the `container:` directive — all subsequent steps
 # (checkout, populate-env, build) run directly inside the container.
-#
-# The build scripts in .ci/* are unchanged: they read PYTORCH_ROOT,
-# PYTORCH_FINAL_PACKAGE_DIR and other env vars exactly as before.
+# The .ci/* shell scripts are unchanged: they read the same env vars
+# (PYTORCH_ROOT, PYTORCH_FINAL_PACKAGE_DIR, BINARY_ENV_FILE, ...) as in the
+# legacy DinD flow.
 
 on:
   workflow_call:
@@ -77,8 +77,6 @@ jobs:
     env:
       PYTORCH_ROOT: ${{ github.workspace }}
       PACKAGE_TYPE: ${{ inputs.PACKAGE_TYPE }}
-      # TODO: This is a legacy variable that we eventually want to get rid of in
-      #       favor of GPU_ARCH_VERSION
       DESIRED_CUDA: ${{ inputs.DESIRED_CUDA }}
       GPU_ARCH_VERSION: ${{ inputs.GPU_ARCH_VERSION }}
       GPU_ARCH_TYPE: ${{ inputs.GPU_ARCH_TYPE }}

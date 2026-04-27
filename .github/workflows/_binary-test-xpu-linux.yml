@@ -1,45 +1,41 @@
 name: linux-binary-test-xpu
 
+# Reusable workflow that runs the XPU binary test (setup-xpu, ECR login,
+# docker pull, test-pytorch-binary, teardown-xpu). Called from the
+# matrix-driven manywheel-test-xpu job in
+# generated-linux-binary-manywheel-nightly.yml.
+
 on:
   workflow_call:
     inputs:
       build_name:
         required: true
         type: string
-        description: The build's name (matches the downloaded artifact name)
       PYTORCH_ROOT:
         required: true
         type: string
-        description: Root directory for the pytorch/pytorch repository
       PACKAGE_TYPE:
         required: true
         type: string
-        description: Package type
       DESIRED_CUDA:
         required: true
         type: string
-        description: Desired CUDA / XPU identifier (always "xpu" here)
       GPU_ARCH_TYPE:
         required: true
         type: string
-        description: GPU arch type (always "xpu" here)
       DOCKER_IMAGE:
         required: true
         type: string
-        description: Base docker image name
       DOCKER_IMAGE_TAG_PREFIX:
         required: true
         type: string
-        description: Docker image tag prefix (e.g. xpu)
       DESIRED_PYTHON:
         required: false
         type: string
-        description: Desired python version
       runs_on:
         required: false
         type: string
         default: linux.idc.xpu
-        description: XPU runner label
       timeout-minutes:
         required: false
         type: number
@@ -47,13 +43,13 @@ on:
 
 permissions:
   id-token: write
+  contents: read
 
 jobs:
   # XPU test runs the test container via the GHA `container:` directive.
-  # The /dev/dri device passthrough required for XPU is supplied via
-  # container.options. setup-xpu/teardown-xpu helpers from the legacy flow
-  # ran on the host runner; under container: the docker image already
-  # carries the oneAPI runtime, so no host-side setup is needed.
+  # /dev/dri device passthrough required for XPU is supplied via
+  # container.options. The docker image already carries the oneAPI runtime
+  # so no host-side setup is needed.
   test:
     runs-on: ${{ inputs.runs_on }}
     timeout-minutes: ${{ inputs.timeout-minutes }}

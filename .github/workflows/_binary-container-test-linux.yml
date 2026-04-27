@@ -1,9 +1,9 @@
 name: linux-binary-container-test
 
-# Container-directive variant of _binary-test-linux.yml: GitHub Actions
+# Container-directive variant of _binary-test-linux.yml. GitHub Actions
 # launches the test container via the `container:` directive instead of the
-# legacy docker-in-docker dance. The test scripts in .ci/* read PYTORCH_ROOT
-# and PYTORCH_FINAL_PACKAGE_DIR exactly as before.
+# legacy docker-in-docker dance. Test scripts in .ci/* read PYTORCH_ROOT,
+# PYTORCH_FINAL_PACKAGE_DIR exactly as before.
 
 on:
   workflow_call:

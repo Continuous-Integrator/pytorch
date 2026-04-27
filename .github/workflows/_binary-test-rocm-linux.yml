@@ -1,49 +1,44 @@
 name: linux-binary-test-rocm
 
+# Reusable workflow that runs the ROCm binary test (setup-rocm, GPU device
+# passthrough, ECR docker pull, test-pytorch-binary, teardown-rocm). Called
+# from the matrix-driven manywheel-test-rocm job in
+# generated-linux-binary-manywheel-nightly.yml.
+
 on:
   workflow_call:
     inputs:
       build_name:
         required: true
         type: string
-        description: The build's name (matches the downloaded artifact name)
       PYTORCH_ROOT:
         required: true
         type: string
-        description: Root directory for the pytorch/pytorch repository
       PACKAGE_TYPE:
         required: true
         type: string
-        description: Package type
       DESIRED_CUDA:
         required: true
         type: string
-        description: Desired CUDA / ROCm identifier (e.g. rocm7.1)
       GPU_ARCH_VERSION:
         required: true
         type: string
-        description: ROCm version (e.g. 7.1)
       GPU_ARCH_TYPE:
         required: true
         type: string
-        description: GPU arch type (always "rocm" here)
       DOCKER_IMAGE:
         required: true
         type: string
-        description: Base docker image name
       DOCKER_IMAGE_TAG_PREFIX:
         required: true
         type: string
-        description: Docker image tag prefix (e.g. rocm7.1)
       DESIRED_PYTHON:
         required: false
         type: string
-        description: Desired python version
       runs_on:
         required: false
         type: string
         default: linux.rocm.gpu.gfx942.1
-        description: ROCm runner label
       timeout-minutes:
         required: false
         type: number
@@ -51,12 +46,12 @@ on:
 
 permissions:
   id-token: write
+  contents: read
 
 jobs:
   # ROCm test runs the test container via the GHA `container:` directive.
-  # The ROCm device passthrough (-device, -group-add) is supplied via
-  # container.options. Same approach as the standard
-  # _binary-container-test-linux.yml.
+  # ROCm device passthrough flags go through container.options. Same shape
+  # as the standard _binary-container-test-linux.yml.
   test:
     runs-on: ${{ inputs.runs_on }}
     timeout-minutes: ${{ inputs.timeout-minutes }}
