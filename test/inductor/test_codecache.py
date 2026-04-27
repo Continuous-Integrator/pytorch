@@ -15,6 +15,7 @@ import textwrap
 import types
 import unittest
 from contextlib import contextmanager
+from typing import Any, cast
 from typing_extensions import override
 from unittest import mock
 
@@ -36,8 +37,10 @@ from torch._inductor.cache_key import (
 )
 from torch._inductor.codecache import (
     BypassFxGraphCache,
+    CacheabilityValidator,
     CacheBase,
     CUDACodeCache,
+    FxGraphCache,
     FxGraphCachePickler,
     FxGraphHashDetails,
     PyCodeCache,
@@ -276,6 +279,17 @@ class MyModelConv2d(torch.nn.Module):
         torch._dynamo.graph_break()
         x = self.conv2(x)
         return x
+
+
+class _CyclicOpaque(torch._opaque_base.OpaqueBase):
+    """Test helper: opaque type whose instances can form reference cycles."""
+
+    def __init__(self):
+        self.child = None
+
+
+if not torch._library.opaque_object.is_opaque_type(_CyclicOpaque):
+    torch._library.opaque_object.register_opaque_type(_CyclicOpaque, typ="reference")
 
 
 class TestPyCodeCache(TestCase):
@@ -2681,6 +2695,67 @@ class TestCustomPartitionerFn(CustomPartitionerFn):
 
 
 class TestFxGraphCacheHashing(TestCase):
+    @unittest.skipIf(not torch.backends.mkldnn.is_available(), "requires MKLDNN")
+    def test_cacheability_validator_checks_mkldnn_constant(self):
+        graph = torch.fx.Graph()
+        output = graph.get_attr("mkldnn_weight")
+        graph.output(output)
+        gm = torch.fx.GraphModule(
+            {"mkldnn_weight": torch.randn(2, 2).to_mkldnn()}, graph
+        )
+
+        with self.assertRaisesRegex(BypassFxGraphCache, "mkldnn tensors unpickleable"):
+            CacheabilityValidator(gm, require_shape_env=False).validate()
+
+    @unittest.skipIf(not torch.backends.mkldnn.is_available(), "requires MKLDNN")
+    def test_check_for_hop_skips_constants(self):
+        graph = torch.fx.Graph()
+        output = graph.get_attr("mkldnn_weight")
+        graph.output(output)
+        gm = torch.fx.GraphModule(
+            {"mkldnn_weight": torch.randn(2, 2).to_mkldnn()}, graph
+        )
+
+        FxGraphCache._check_for_hop(gm)
+
+    def test_check_can_cache_checks_backward_state_example_inputs(self):
+        gm = torch.fx.GraphModule({}, torch.fx.Graph())
+
+        with self.assertRaisesRegex(BypassFxGraphCache, "Reduce unsupported"):
+            FxGraphCache._check_can_cache(
+                gm,
+                [torch.fx.experimental._backward_state.BackwardState()],
+                require_shape_env=False,
+            )
+
+    @unittest.skipIf(not torch.backends.mkldnn.is_available(), "requires MKLDNN")
+    def test_check_can_cache_checks_nested_fx_kwargs_tensor(self):
+        gm = torch.fx.GraphModule({}, torch.fx.Graph())
+        fx_kwargs = cast(
+            Any, {"nested": {"mkldnn_weight": torch.randn(2, 2).to_mkldnn()}}
+        )
+
+        with self.assertRaisesRegex(BypassFxGraphCache, "mkldnn tensors unpickleable"):
+            FxGraphCache._check_can_cache(
+                gm,
+                fx_kwargs=fx_kwargs,
+                require_shape_env=False,
+            )
+
+    def test_bypass_for_pickle_error_logs_traceback(self):
+        with self.assertLogs("torch._inductor.codecache", level="WARNING") as logs:
+            with self.assertRaisesRegex(
+                BypassFxGraphCache, "Failed to pickle cache key"
+            ):
+                try:
+                    raise RuntimeError("pickle failed")
+                except RuntimeError as e:
+                    CacheabilityValidator.bypass_for_pickle_error(e)
+
+        self.assertEqual(len(logs.records), 1)
+        self.assertIn("Failed to pickle cache key", logs.records[0].getMessage())
+        self.assertIsNotNone(logs.records[0].exc_info)
+
     def test_parameter_constants(self):
         """
         Test the hashing of parameter constants.
@@ -3273,6 +3348,30 @@ class TestFxGraphCacheHashing(TestCase):
             pickler.dumps([s1, s1]),
             pickler.dumps([s1, s2]),
         )
+
+    def test_pickle_opaque_type_with_cyclic_references(self):
+        """
+        Test that FxGraphCachePickler can pickle a FakeScriptObject wrapping an
+        opaque type whose real_obj has cyclic references.  Before the fix,
+        fast-mode pickling (no memo table) would hit a ValueError on cycles.
+        """
+        from torch._library.fake_class_registry import FakeScriptObject
+
+        obj = _CyclicOpaque()
+        obj.child = obj  # create a cycle
+
+        fake = FakeScriptObject(
+            wrapped_obj=None,
+            script_class_name="test::_CyclicOpaque",
+            x=obj,
+        )
+
+        gm = torch.fx.GraphModule({}, torch.fx.Graph())
+        pickler = FxGraphCachePickler(gm)
+        # Should succeed — the pickler disables fast mode for opaque types
+        # so the memo table can track the cycle.
+        data = pickler.dumps(fake)
+        self.assertIsNotNone(data)
 
     def test_get_hash_for_files(self):
         """
