@@ -5955,7 +5955,7 @@ class CPUReproTests(TestCase):
             check_metrics_vec_kernel_count(1)
             _, code = run_and_get_cpp_code(torch.compile(fn), x)
             FileCheck().check_count(
-                "tmp1 + tmp2",
+                "tmp1 + tmp4",
                 2,
                 exactly=True,
             ).run(code)
