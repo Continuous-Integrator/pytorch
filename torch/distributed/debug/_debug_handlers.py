@@ -1,8 +1,15 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
-from tabulate import tabulate
+try:
+    from tabulate import tabulate
+except ImportError:
+
+    def tabulate(
+        tabular_data: Any, headers: Any = (), tablefmt: str | None = None
+    ) -> str:
+        return str(tabular_data)
 
 from torch.distributed.debug._frontend import (
     DebugHandler,
