@@ -54,9 +54,12 @@ jobs:
       DESIRED_PYTHON: ${{ inputs.DESIRED_PYTHON }}
       LIBTORCH_CONFIG: ${{ inputs.LIBTORCH_CONFIG }}
       LIBTORCH_VARIANT: ${{ inputs.LIBTORCH_VARIANT }}
-      # arm64-specific paths consumed by bootstrap_*.bat. These were set at
-      # workflow-level env: in the legacy (non-reusable) workflow; a reusable
-      # workflow doesn't inherit caller env, so redeclare them here.
+      # arm64-specific paths consumed by bootstrap_*.bat and the
+      # `if [[ "$OS" == "windows-arm64" ]]` branch in
+      # .ci/pytorch/binary_windows_build.sh. These were set at workflow-level
+      # env: in the legacy (non-reusable) workflow; a reusable workflow
+      # doesn't inherit caller env, so redeclare them here.
+      OS: windows-arm64
       DOWNLOADS_DIR: c:\temp\downloads
       DEPENDENCIES_DIR: c:\temp\dependencies
       ENABLE_APL: 1
