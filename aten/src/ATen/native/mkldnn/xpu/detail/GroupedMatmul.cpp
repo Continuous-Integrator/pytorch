@@ -32,12 +32,15 @@ struct ScaleSpec {
 inline ScaleSpec make_scale_spec(
     at::blas::ScalingType scaling_type,
     int64_t K,
-    const std::string& arg_type) {
+    const std::string& arg_type,
+    bool a_is_2d,
+    bool b_is_2d) {
   TORCH_CHECK(
       arg_type == "src" || arg_type == "wei",
       "Expected arg_type to be 'src' or 'wei', but got '",
       arg_type,
       "'");
+  TORCH_CHECK(a_is_2d && !b_is_2d, "Currently only 2d x 3d grouped matmul with offsets is supported");
   bool is_src = (arg_type == "src");
 
   switch (scaling_type) {
@@ -68,7 +71,7 @@ inline ScaleSpec make_scale_spec(
   }
 }
 
-std::tuple<dnnl::memory::desc, dnnl::memory::desc, dnnl::memory::desc> get_grouped_gemm_mds(
+std::tuple<dnnl::memory::desc, dnnl::memory::desc, dnnl::memory::desc> get_grouped_gemm_md(
     int64_t M,
     int64_t N,
     int64_t K,
@@ -99,7 +102,7 @@ std::tuple<dnnl::memory::desc, dnnl::memory::desc, dnnl::memory::desc> get_group
   return {src_md, weights_md, dst_md};
 }
 
-std::tuple<dnnl::memory, dnnl::memory, dnnl::memory> make_grouped_gemm_mems(
+std::tuple<dnnl::memory, dnnl::memory, dnnl::memory> make_grouped_gemm_mem(
     const dnnl::memory::desc& src_md,
     const dnnl::memory::desc& weights_md,
     const dnnl::memory::desc& dst_md,
@@ -156,14 +159,14 @@ sycl::event scaled_grouped_matmul(
   // 1.1 Create memory descriptor
   dnnl::memory::data_type dtype = get_onednn_dtype(mat_a);
   dnnl::memory::data_type dst_dtype = get_onednn_dtype(out);
-  auto [src_md, weights_md, dst_md] = get_grouped_gemm_mds(M, N, K, group_count, dtype, dst_dtype, a_is_2d, b_is_2d);
+  auto [src_md, weights_md, dst_md] = get_grouped_gemm_md(M, N, K, group_count, dtype, dst_dtype, a_is_2d, b_is_2d);
 
   // 1.2 Create the matmul primitive descriptor
   dnnl::primitive_attr op_attr = dnnl::primitive_attr();
 
   if (scaling_choice_a.has_value() && scaling_choice_b.has_value()) {
-    const ScaleSpec src_spec = make_scale_spec(scaling_choice_a.value(), K, "src");
-    const ScaleSpec wei_spec = make_scale_spec(scaling_choice_b.value(), K, "wei");
+    const ScaleSpec src_spec = make_scale_spec(scaling_choice_a.value(), K, "src", a_is_2d, b_is_2d);
+    const ScaleSpec wei_spec = make_scale_spec(scaling_choice_b.value(), K, "wei", a_is_2d, b_is_2d);
     src_spec.apply(op_attr, DNNL_ARG_SRC);
     wei_spec.apply(op_attr, DNNL_ARG_WEIGHTS);
   } 
@@ -192,7 +195,7 @@ sycl::event scaled_grouped_matmul(
             engine, src_md, weights_md, dst_md, op_attr);
 
   // 2. Prepare memory
-  auto [src_mem, weights_mem, dst_mem] = make_grouped_gemm_mems(
+  auto [src_mem, weights_mem, dst_mem] = make_grouped_gemm_mem(
       src_md, weights_md, dst_md, contiguous_mat_a, contiguous_mat_b, contiguous_out, offs, engine, a_is_2d, b_is_2d);
   dnnl::memory scratchpad =
       make_onednn_memory(matmul_pd.scratchpad_desc(), engine, nullptr);
