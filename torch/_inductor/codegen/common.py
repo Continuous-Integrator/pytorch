@@ -508,13 +508,12 @@ def init_backend_registration() -> None:
     from .wrapper_fxir import WrapperFxCodegen
     from .xpu.xpu_combined_scheduling import XPUCombinedScheduling
 
+    def _halide_scheduling(scheduling):
+        from .halide import HalideScheduling
+
+        return HalideScheduling(scheduling)
+
     if get_scheduling_for_device("cpu") is None:
-
-        def _halide_scheduling(scheduling):
-            from .halide import HalideScheduling
-
-            return HalideScheduling(scheduling)
-
         cpu_backends: dict[str, Any] = {
             "cpp": CppScheduling,
             "halide": _halide_scheduling,
