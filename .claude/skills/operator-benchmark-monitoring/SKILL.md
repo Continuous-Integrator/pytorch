@@ -188,19 +188,19 @@ regressions and no existing issues.
 ### Action Types
 
 - **`create`**: New regression detected. Requires `repo`, `title`, `summary`, `labels`, `assignees`, `details`.
-  
+
   Title format: `[Operator Benchmark] Performance regression in <operator>`
-  
+
   Labels must include: `perf-regression`, `operator-benchmark`
   Add category label if applicable: `module: linear algebra`, `module: conv`, etc.
-  
+
   Assignees: Always include `jainapurva`
-  
+
   **`summary`** — brief summary for notifications (~1-2 paragraphs):
   ```
   Performance regression detected in torch.matmul on CUDA devices.
   Execution time increased by 25% compared to baseline.
-  
+
   - **Severity**: High
   - **Affected devices**: CUDA (H100, A100)
   - **Baseline**: 150.2μs
@@ -208,55 +208,55 @@ regressions and no existing issues.
   - **Change**: +25.0%
   - **First detected**: 2026-04-24
   ```
-  
+
   **`details`** — full detailed analysis (posted as first comment):
   ```
   ## Summary
-  
+
   Performance regression detected in torch.matmul on CUDA devices.
-  
+
   ## Regression Details
-  
+
   | Operator | Device | Config | Baseline | Current | Change |
   |----------|--------|--------|----------|---------|--------|
   | torch.matmul | CUDA H100 | M=1024, N=1024, K=1024, fp32 | 150.2μs | 187.8μs | +25.0% |
   | torch.matmul | CUDA A100 | M=1024, N=1024, K=1024, fp32 | 180.5μs | 228.1μs | +26.4% |
-  
+
   ## Timeline
-  
+
   - First detected: 2026-04-24 in daily benchmark run
   - Confirmed in 2 consecutive runs
   - [Benchmark run logs](https://github.com/pytorch/pytorch/actions/runs/...)
-  
+
   ## Potential Causes
-  
+
   Recent commits to aten/src/ATen/native/cuda/Blas.cpp:
   - abc1234: "Optimize matmul for small matrices"
   - def5678: "Update cuBLAS version"
-  
+
   ## Impact
-  
+
   torch.matmul is a critical operator used in most neural network models.
   A 25% regression will significantly impact training and inference performance.
-  
+
   ## Recommendation
-  
+
   - Investigate recent CUDA kernel changes
   - Consider reverting if no clear justification
   - Add performance tests to CI to catch future regressions
-  
+
   ## Dashboard
-  
+
   [View on HUD](https://hud.pytorch.org/benchmark/v3/dashboard/pytorch_operator_microbenchmark)
   ```
 
 - **`update`**: Update an existing issue. Requires `repo`, `issue_number`, `details`.
   Optional: `summary`, `comment`.
-  
+
   Use when severity has changed or new operators are affected.
-  
+
 - **`noop`**: No change needed. Requires `repo`, `issue_number`, `reason`.
-  
+
 - **`close`**: Close a resolved issue. Requires `repo`, `issue_number`, `comment`.
 
 ### Validation
