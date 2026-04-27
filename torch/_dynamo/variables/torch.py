@@ -2092,7 +2092,7 @@ class TorchInGraphFunctionVariable(BaseTorchVariable):
                     message_eager = message_vt.get_function()
                 except ClosureConversionError:
                     unimplemented(
-                        gb_type="Can't extract message from torch._check*()",
+                        gb_type="Can't convert torch._check*() message closure",
                         context=str(message_vt),
                         explanation=(
                             "The message argument of torch._check*() must be a function "
@@ -2112,8 +2112,10 @@ class TorchInGraphFunctionVariable(BaseTorchVariable):
             if predicate_vt.is_python_constant():
                 if predicate_vt.as_python_constant():
                     return ConstantVariable.create(None)
-                msg = message_eager() if message_eager is not None else (
-                    "Expected cond to be True, but got False."
+                msg = (
+                    message_eager()
+                    if message_eager is not None
+                    else ("Expected cond to be True, but got False.")
                 )
                 raise_observed_exception(error_type, tx, args=[msg])
 
@@ -2167,15 +2169,17 @@ class TorchInGraphFunctionVariable(BaseTorchVariable):
                 error_type_vt = None
                 rest_args = args
 
+            _CHECK_ERROR_TYPES: dict[object, type[Exception]] = {
+                torch._check_index: IndexError,
+                torch._check_value: ValueError,
+                torch._check_type: TypeError,
+                torch._check_not_implemented: NotImplementedError,
+            }
+
             error_type = (
                 error_type_vt.as_python_constant()
                 if error_type_vt is not None
-                else {
-                    torch._check_index: IndexError,
-                    torch._check_value: ValueError,
-                    torch._check_type: TypeError,
-                    torch._check_not_implemented: NotImplementedError,
-                }.get(self.value, RuntimeError)
+                else _CHECK_ERROR_TYPES.get(self.value, RuntimeError)
             )
 
             predicate_vt = rest_args[0] if rest_args else kwargs.get("cond")
@@ -2208,6 +2212,9 @@ class TorchInGraphFunctionVariable(BaseTorchVariable):
             cond_vt = rest_args[0] if rest_args else kwargs.get("cond")
             rest_args = rest_args[1:] if rest_args else ()
             message_vt = rest_args[0] if rest_args else kwargs.get("message")
+
+            if cond_vt is None:
+                return check_impl(self, tx, None, message_vt, error_type)
 
             scalar_vt = cond_vt.call_method(tx, "_is_all_true", [], {}).call_method(
                 tx, "item", [], {}
