@@ -227,7 +227,7 @@ class CompilerBisector:
             cls.get_dir(), backend_name, f"{subsystem_name}_call_counter_debug_info.txt"
         )
         for line in reversed(cls.read_lines_from_file(file_path)):
-            counter_str, debug_info = line.split("=", maxsplit=1)
+            counter_str, debug_info = line.strip().split("=", maxsplit=1)
             if int(counter_str) == call_counter:
                 return debug_info
         return None
