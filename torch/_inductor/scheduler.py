@@ -4368,6 +4368,12 @@ class Scheduler:
             nodes, benchmark_kernel=True, hint_override=hint_override
         )
         mod = PyCodeCache.load(src_code)
+
+        # Non-Triton backends (e.g. NVGEMM) emit modules without the triton_ wrapper;
+        # they don't go through async triton compile.
+        if not hasattr(mod, "triton_"):
+            return (None, mod)
+
         async_compile = torch._inductor.async_compile.AsyncCompile()
         if not async_compile.use_process_pool():
             fut = None
@@ -4450,27 +4456,6 @@ class Scheduler:
                         node2.get_buffer_names(),
                         red_text(f"{ms_fused / (ms1 + ms2):.3f}"),
                     )
-
-        async_compile = torch._inductor.async_compile.AsyncCompile()
-
-        def compile_kernel(
-            nodes: Sequence[BaseSchedulerNode], hint_override: int | None = None
-        ) -> tuple[LambdaFuture | None, ModuleType]:
-            src_code = self.generate_kernel_code_from_nodes(
-                nodes, benchmark_kernel=True, hint_override=hint_override
-            )
-            mod = PyCodeCache.load(src_code)
-
-            has_triton = hasattr(mod, "triton_")
-            if not has_triton:
-                fut = None
-            elif not async_compile.use_process_pool():
-                fut = None
-            else:
-                fut = async_compile.triton(kernel_name="triton_", source_code=src_code)
-                assert isinstance(fut, LambdaFuture)
-
-            return (fut, mod)
 
         if is_multi_template and any(
             n.get_template_node() is not None for n in (node1, node2)
@@ -4616,13 +4601,13 @@ class Scheduler:
                         # pyrefly: ignore [bad-argument-type]
                         with multi_node.swap_as_triton_caller(choice):
                             future_choices.append(
-                                (choice, *compile_kernel(node_list_fused))
+                                (choice, *self.compile_kernel(node_list_fused))
                             )
                     elif is_nvgemm:
                         # pyrefly: ignore [missing-attribute]
                         with multi_node.swap_as_nvgemm_caller(choice):
                             future_choices.append(
-                                (choice, *compile_kernel(node_list_fused))
+                                (choice, *self.compile_kernel(node_list_fused))
                             )
                 except CantSplit:
                     continue
@@ -4706,6 +4691,16 @@ class Scheduler:
 
                         is_nvgemm_choice = isinstance(choice, NVUniversalGemmCaller)
                         if is_nvgemm_choice and fusible_choice:
+                            # NVGEMM kernels come from cutlass_api with fixed,
+                            # pre-tuned register allocations; the epilogue is a
+                            # downstream computation in the same kernel and does
+                            # not change MMA register pressure. Triton's
+                            # n_regs / n_spills heuristic doesn't apply here —
+                            # if an NVGEMM choice was determined fusible by
+                            # `fusible_choice`, we accept it. Picking the first
+                            # one in sorted-by-unfused-time order matches what
+                            # Triton would do if `_fuse_epilogue` always
+                            # returned True.
                             ms_fused_choice = choice
                             break
                         elif res and fusible_choice:
