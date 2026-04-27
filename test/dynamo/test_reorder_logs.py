@@ -75,6 +75,20 @@ class IgnoreLogsTests(torch._dynamo.test_case.TestCase):
         else:
             self.assertEqual(len(counters["graph_break"]), 0)
 
+    def test_logger_with_tensor_arg_graph_breaks(self):
+        counters.clear()
+
+        def f(x):
+            x = x + x
+            logger.info("tensor: %s", x)
+            x = x * x
+            return x
+
+        x = torch.randn(3, 3)
+        opt_f = torch.compile(backend="eager")(f)
+        opt_f(x)
+        self.assertGreater(len(counters["graph_break"]), 0)
+
     def test_ignore_arbitrary_function_noop(self):
         counters.clear()
         calls = []
