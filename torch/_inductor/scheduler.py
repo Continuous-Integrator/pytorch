@@ -5442,9 +5442,6 @@ class Scheduler:
             if len(subset) < 2 or not self.speedup_by_combo_kernel(subset):
                 continue
 
-            # Call through `Scheduler.<method>(self, ...)` so tests can
-            # mock the gate via `patch.object(Scheduler, ...)`. At
-            # runtime this is the same as `self.<method>(...)`.
             combo_node, new_peak, combo_step = Scheduler._try_combo_with_memory_check(
                 self, subset, mem_ctx, baseline_peak, enable_autotune
             )
