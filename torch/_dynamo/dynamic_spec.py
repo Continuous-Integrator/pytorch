@@ -303,32 +303,51 @@ class TensorSpec:
     """Per-dimension shape specification for a tensor.
 
     A list-like container of ``IntSpec | None`` with length equal to the
-    tensor's rank. ``None`` entries inherit the default dynamism policy from
+    tensor's dim. ``None`` entries inherit the default dynamism policy from
     the compile context.
+
+    Construct from any of:
+
+    - ``int`` — number of dims; all entries start as ``None``.
+    - ``list`` / ``tuple`` of ``IntSpec | None`` — dim is inferred from
+      length, entries used as-is.
+    - ``dict[int, IntSpec | None]`` — sparse per-dim spec; dim is inferred
+      from ``max(keys) + 1``. Empty dict rejected.
 
     Example::
 
-        ts = TensorSpec(3)
-        ts.set(0, IntSpec.backed("batch", min=1, max=64))
-        # dims 1 and 2 are None -> inherit context default
+        TensorSpec(3)  # rank 3, all None
+        TensorSpec([IntSpec.backed("batch"), None])  # rank 2, dim 0 backed
+        TensorSpec({0: IntSpec.backed("batch")})  # rank 1, dim 0 backed
     """
 
-    def __init__(self, rank: int) -> None:
-        if rank < 0:
-            raise ValueError(f"rank must be non-negative, got {rank}")
-        self._rank = rank
-        self._specs: list[IntSpec | None] = [None] * rank
-
-    @classmethod
-    def from_list(cls, specs: list[IntSpec | None]) -> "TensorSpec":
-        """Construct from an existing list of specs."""
-        ts = cls(len(specs))
-        ts._specs = list(specs)
-        return ts
+    def __init__(
+        self,
+        spec: int
+        | list[IntSpec | None]
+        | tuple[IntSpec | None, ...]
+        | dict[int, IntSpec | None],
+    ) -> None:
+        if isinstance(spec, int):
+            self._dim = spec
+            self._specs: list[IntSpec | None] = [None] * spec
+        elif isinstance(spec, (list, tuple)):
+            self._dim = len(spec)
+            self._specs = list(spec)
+        elif isinstance(spec, dict):
+            self._dim = max(spec.keys()) + 1
+            self._specs = [None] * self._dim
+            for k, v in spec.items():
+                self._specs[k] = v
+        else:
+            raise TypeError(
+                f"TensorSpec expects int / list / tuple / dict, "
+                f"got {type(spec).__name__}"
+            )
 
     @property
-    def rank(self) -> int:
-        return self._rank
+    def dim(self) -> int:
+        return self._dim
 
     def set(self, index: int, spec: IntSpec) -> "TensorSpec":
         """Set the spec at ``index`` and return ``self`` for chaining."""
@@ -342,7 +361,7 @@ class TensorSpec:
         self._specs[index] = spec
 
     def __len__(self) -> int:
-        return self._rank
+        return self._dim
 
     def __iter__(self) -> Iterator[IntSpec | None]:
         return iter(self._specs)
@@ -351,7 +370,7 @@ class TensorSpec:
         specified = [
             f"{i}: {spec!r}" for i, spec in enumerate(self._specs) if spec is not None
         ]
-        return f"TensorSpec(rank={self._rank}, {{{', '.join(specified)}}})"
+        return f"TensorSpec(dim={self._dim}, {{{', '.join(specified)}}})"
 
     # No ``__eq__`` / ``__hash__``: matches :class:`IntSpec`'s design — specs
     # are immutable compile-time inputs compared via ``repr()`` when needed.
