@@ -507,8 +507,44 @@ for arch_version in CUDA_ARCHES:
 del arch_version
 
 
+def _emit_runtime_matrix(os_arg: str) -> None:
+    """Emit generate_wheels_matrix(os_arg) as JSON, both to stdout and
+    (when inside GitHub Actions) to $GITHUB_OUTPUT as `configs=<json>`.
+
+    Used by the generated-linux-*-binary-manywheel-nightly workflows to
+    feed a strategy.matrix at runtime, so adding a new CUDA/ROCm version
+    in this file is picked up on the next workflow run without any
+    regeneration of the YAML.
+    """
+    import sys
+
+    configs = generate_wheels_matrix(os_arg)
+    payload = json.dumps(configs)
+    print(payload)
+    gh_output = os.environ.get("GITHUB_OUTPUT")
+    if gh_output:
+        with open(gh_output, "a") as f:
+            f.write(f"configs={payload}\n")
+    # libtorch extraction matrix (one per unique arch variant, py3.10)
+    libtorch = generate_libtorch_extraction_configs(os_arg, configs)
+    lt_payload = json.dumps(libtorch)
+    if gh_output:
+        with open(gh_output, "a") as f:
+            f.write(f"libtorch-configs={lt_payload}\n")
+
+
 if __name__ == "__main__":
-    # Used by tools/nightly.py
-    (SCRIPT_DIR / "nightly_source_matrix.json").write_text(
-        json.dumps(NIGHTLY_SOURCE_MATRIX, indent=4) + "\n"
-    )
+    import sys
+
+    if "--runtime-matrix" in sys.argv:
+        # Usage: generate_binary_build_matrix.py --runtime-matrix <os>
+        idx = sys.argv.index("--runtime-matrix")
+        if idx + 1 >= len(sys.argv):
+            print("--runtime-matrix requires an OS argument", file=sys.stderr)
+            sys.exit(1)
+        _emit_runtime_matrix(sys.argv[idx + 1])
+    else:
+        # Default: used by tools/nightly.py
+        (SCRIPT_DIR / "nightly_source_matrix.json").write_text(
+            json.dumps(NIGHTLY_SOURCE_MATRIX, indent=4) + "\n"
+        )
