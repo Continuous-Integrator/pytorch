@@ -8,15 +8,7 @@ import torch.distributed as dist
 import torch.distributed._functional_collectives as funcol
 from torch.distributed._local_tensor import LocalTensorMode
 from torch.distributed.device_mesh import init_device_mesh
-from torch.distributed.spmd_types import (
-    get_local_type,
-    I,
-    is_available as spmd_types_available,
-    MeshAxis,
-    R,
-    SpmdTypeError,
-    V,
-)
+import torch.distributed.spmd_types as spmd
 from torch.distributed.tensor import (
     distribute_tensor,
     DTensor,
@@ -440,7 +432,7 @@ class TestLocalMap(DTensorTestBase):
         # output lives in mesh_2d
         self.assertEqual(Y_dt.device_mesh, mesh_2d)
 
-    @unittest.skipUnless(spmd_types_available(), "requires spmd_types")
+    @unittest.skipUnless(spmd.is_available(), "requires spmd_types")
     @with_comms()
     def test_spmd_types_dp_matmul(self):
         """DP matmul with custom autograd functions.
@@ -450,7 +442,7 @@ class TestLocalMap(DTensorTestBase):
         version skips the all-reduce.
 
         Step 1: BuggyDPMatmul without spmd_types → wrong W gradient.
-        Step 2: BuggyDPMatmul with spmd_types=True → SpmdTypeError (V + I).
+        Step 2: BuggyDPMatmul with spmd_types=True → spmd.SpmdTypeError (V + I).
         Step 3: CorrectDPMatmul with spmd_types=True → correct gradients.
         """
         from spmd_types import (
@@ -494,10 +486,10 @@ class TestLocalMap(DTensorTestBase):
             @staticmethod
             def typecheck_forward(X, W, mesh):
                 dp = MeshAxis.of(mesh.get_group("dp"))
-                assert_type(X, {dp: V})
-                assert_type(W, {dp: I})
+                assert_type(X, {dp: spmd.V})
+                assert_type(W, {dp: spmd.I})
                 out = CorrectDPMatmul.apply(X, W, mesh)
-                assert_type(out, {dp: V})
+                assert_type(out, {dp: spmd.V})
                 return out
 
         device_mesh = init_device_mesh(
@@ -551,7 +543,7 @@ class TestLocalMap(DTensorTestBase):
             device_mesh=device_mesh,
             spmd_types=True,
         )
-        with self.assertRaises(SpmdTypeError):
+        with self.assertRaises(spmd.SpmdTypeError):
             buggy_typed(X_dt, W_dt)
 
         # Step 3: CorrectDPMatmul with spmd_types=True → correct gradients
@@ -572,7 +564,7 @@ class TestLocalMap(DTensorTestBase):
         self.assertEqual(W_dt.grad.full_tensor(), W_ref.grad)
 
 
-@unittest.skipUnless(spmd_types_available(), "requires spmd_types")
+@unittest.skipUnless(spmd.is_available(), "requires spmd_types")
 class TestLocalMapSpmdTypes(TestCase):
     """Single-process tests for local_map with spmd_types type checking."""
 
@@ -590,7 +582,7 @@ class TestLocalMapSpmdTypes(TestCase):
             backend="fake", rank=0, world_size=cls.WORLD_SIZE, store=store
         )
         cls.mesh = init_device_mesh("cpu", (cls.WORLD_SIZE,), mesh_dim_names=("tp",))
-        cls.tp_axis = MeshAxis.of(cls.mesh.get_group("tp"))
+        cls.tp_axis = spmd.MeshAxis.of(cls.mesh.get_group("tp"))
 
     @classmethod
     def tearDownClass(cls):
@@ -621,8 +613,8 @@ class TestLocalMapSpmdTypes(TestCase):
         )
 
         def mm_fn(X, W):
-            self.assertIs(get_local_type(X)[tp_axis], V)
-            self.assertIs(get_local_type(W)[tp_axis], V)
+            self.assertIs(spmd.get_local_type(X)[tp_axis], spmd.V)
+            self.assertIs(spmd.get_local_type(W)[tp_axis], spmd.V)
             return torch.mm(X, W)
 
         wrapped = local_map(
@@ -655,7 +647,7 @@ class TestLocalMapSpmdTypes(TestCase):
             spmd_types=True,
         )
 
-        with self.assertRaises(SpmdTypeError):
+        with self.assertRaises(spmd.SpmdTypeError):
             wrapped(X_dt, W_dt)
 
     def test_replicate_grad_typing(self):
@@ -671,7 +663,7 @@ class TestLocalMapSpmdTypes(TestCase):
         )
 
         def check_fn(W):
-            self.assertIs(get_local_type(W)[tp_axis], R)
+            self.assertIs(spmd.get_local_type(W)[tp_axis], spmd.R)
             return W
 
         wrapped = local_map(
@@ -690,7 +682,7 @@ class TestLocalMapSpmdTypes(TestCase):
 
         # Replicate grad
         def check_fn(X):
-            self.assertIs(get_local_type(X)[tp_axis], I)
+            self.assertIs(spmd.get_local_type(X)[tp_axis], spmd.I)
             return X
 
         wrapped = local_map(
