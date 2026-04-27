@@ -103,7 +103,7 @@ class TestCompilerBisector(TestCase):
         from torch._inductor import config
 
         # similar setup to test_joint_graph (see below)
-        class custom_pre_pass(CustomGraphPass):
+        class CustomPrePass(CustomGraphPass):
             def __call__(self, graph: torch.fx.Graph):
                 nodes = graph.find_nodes(op="call_function", target=operator.add)
                 if len(nodes) != 1:
@@ -128,7 +128,7 @@ class TestCompilerBisector(TestCase):
 
             return torch.allclose(out, out_c)
 
-        with config.patch(pre_grad_custom_pass=custom_pre_pass()):
+        with config.patch(pre_grad_custom_pass=CustomPrePass()):
             out = CompilerBisector.do_bisect(test_fn)
         self.assertEqual(out.backend, "inductor")
         self.assertEqual(out.subsystem, "pre_grad_passes")
@@ -138,7 +138,7 @@ class TestCompilerBisector(TestCase):
     def test_joint_graph(self):
         from torch._inductor import config
 
-        class custom_post_pass(CustomGraphPass):
+        class CustomPostPass(CustomGraphPass):
             def __call__(self, graph: torch.fx.Graph):
                 nodes = graph.find_nodes(
                     op="call_function", target=torch.ops.aten.add.Tensor
@@ -165,7 +165,7 @@ class TestCompilerBisector(TestCase):
 
             return torch.allclose(out, out_c)
 
-        with config.patch(joint_custom_post_pass=custom_post_pass()):
+        with config.patch(joint_custom_post_pass=CustomPostPass()):
             out = CompilerBisector.do_bisect(test_fn)
         self.assertEqual(out.backend, "inductor")
         self.assertEqual(out.subsystem, "joint_graph_passes")
