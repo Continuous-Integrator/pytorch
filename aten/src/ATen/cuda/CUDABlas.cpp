@@ -2546,6 +2546,16 @@ void scaled_grouped_gemm(
   }
   TORCH_CHECK(prop->major >= 9 && prop->major < 12, "scaled grouped cublasLtMatmul requires SM 9.0-11.0");
 
+  // VEC128/BLK128x128 only supported on SM 9.0 for grouped GEMM
+  const bool uses_vec128_blk128 =
+      a_scaling_type == ScalingType::BlockWise1x128 ||
+      a_scaling_type == ScalingType::BlockWise128x128 ||
+      b_scaling_type == ScalingType::BlockWise1x128 ||
+      b_scaling_type == ScalingType::BlockWise128x128;
+  if (uses_vec128_blk128) {
+    TORCH_CHECK(sm90, "VEC128/BLK128x128 grouped GEMM is only supported on SM 9.0");
+  }
+
   const auto computeType = CUBLAS_COMPUTE_32F;
   const auto scaleType = CUDA_R_32F;
 

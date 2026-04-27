@@ -14,6 +14,14 @@ namespace at::native {
 
 namespace {
 
+// Scale size modes for the GPU kernel
+enum ScaleSizeMode : int8_t {
+  SCALE_NONE = 0,
+  SCALE_VEC32 = 1,
+  SCALE_VEC128 = 2,
+  SCALE_BLK128x128 = 3,
+};
+
 // cuBLAS VEC32_UE8M0 scale tensor size (bytes, since e8m0 is 1 byte each).
 // Mirrors getScaleTensorSize() from the cuBLAS samples.
 __device__ __forceinline__ int64_t cublas_vec32_scale_size(int inner, int outer) {
@@ -23,6 +31,28 @@ __device__ __forceinline__ int64_t cublas_vec32_scale_size(int inner, int outer)
   int64_t s_rows = ((inner + BLOCK_ROWS - 1) / BLOCK_ROWS) * (BLOCK_ROWS / S_VSCALE);
   int64_t s_cols = ((outer + BLOCK_COLS - 1) / BLOCK_COLS) * BLOCK_COLS;
   return s_rows * s_cols;
+}
+
+// VEC128_32F scale tensor size in bytes. One float32 per 128-element block
+// along the inner dimension.
+__device__ __forceinline__ int64_t cublas_vec128_scale_size(int inner, int outer) {
+  return static_cast<int64_t>(outer) * ((inner + 127) / 128) * 4;
+}
+
+// BLK128x128_32F scale tensor size in bytes. One float32 per 128x128 block
+// with L4 padding on the inner dimension.
+__device__ __forceinline__ int64_t cublas_blk128x128_scale_size(int inner, int outer) {
+  int64_t L4 = ((inner + 127) / 128 + 3) / 4 * 4;
+  return L4 * ((outer + 127) / 128) * 4;
+}
+
+__device__ __forceinline__ int64_t compute_scale_bytes(int inner, int outer, int8_t mode) {
+  switch (mode) {
+    case SCALE_VEC32: return cublas_vec32_scale_size(inner, outer);
+    case SCALE_VEC128: return cublas_vec128_scale_size(inner, outer);
+    case SCALE_BLK128x128: return cublas_blk128x128_scale_size(inner, outer);
+    default: return 0;
+  }
 }
 
 __global__ void populate_cublas_grouped_args_kernel(
@@ -43,7 +73,8 @@ __global__ void populate_cublas_grouped_args_kernel(
     int64_t scale_a_stride_bytes, int64_t scale_b_stride_bytes,
     int32_t scale_a_inner, int32_t scale_a_outer,
     int32_t scale_b_inner, int32_t scale_b_outer,
-    int64_t* __restrict__ scalePtrA_out, int64_t* __restrict__ scalePtrB_out) {
+    int64_t* __restrict__ scalePtrA_out, int64_t* __restrict__ scalePtrB_out,
+    int8_t scale_a_mode, int8_t scale_b_mode) {
   int i = threadIdx.x;
 
   if (i == 0) {
@@ -87,7 +118,7 @@ __global__ void populate_cublas_grouped_args_kernel(
         int32_t dim_j = (j == 0) ? offs[j] : offs[j] - offs[j - 1];
         int32_t inner = scale_a_inner ? scale_a_inner : dim_j;
         int32_t outer = scale_a_outer ? scale_a_outer : dim_j;
-        offset += cublas_vec32_scale_size(inner, outer);
+        offset += compute_scale_bytes(inner, outer, scale_a_mode);
       }
       scalePtrA_out[i] = base_scale_a + offset;
     }
@@ -101,7 +132,7 @@ __global__ void populate_cublas_grouped_args_kernel(
         int32_t dim_j = (j == 0) ? offs[j] : offs[j] - offs[j - 1];
         int32_t inner = scale_b_inner ? scale_b_inner : dim_j;
         int32_t outer = scale_b_outer ? scale_b_outer : dim_j;
-        offset += cublas_vec32_scale_size(inner, outer);
+        offset += compute_scale_bytes(inner, outer, scale_b_mode);
       }
       scalePtrB_out[i] = base_scale_b + offset;
     }
@@ -128,6 +159,7 @@ void launch_populate_cublas_grouped_args(
     int32_t scale_a_inner, int32_t scale_a_outer,
     int32_t scale_b_inner, int32_t scale_b_outer,
     int64_t* scalePtrA_out, int64_t* scalePtrB_out,
+    int8_t scale_a_mode, int8_t scale_b_mode,
     cudaStream_t stream) {
   TORCH_CHECK(batchCount > 0 && batchCount <= 1024,
       "batchCount must be in [1, 1024], got ", batchCount);
@@ -148,7 +180,8 @@ void launch_populate_cublas_grouped_args(
       scale_a_stride_bytes, scale_b_stride_bytes,
       scale_a_inner, scale_a_outer,
       scale_b_inner, scale_b_outer,
-      scalePtrA_out, scalePtrB_out);
+      scalePtrA_out, scalePtrB_out,
+      scale_a_mode, scale_b_mode);
   C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
@@ -226,20 +259,24 @@ cublasGroupedArgs::cublasGroupedArgs(
       return at::blas::ScalingType::GroupWise;
     };
     // mata corresponds to scale_b (cuBLAS-A = mat2)
-    scale_mata_scaling_type = scaling_choice_a.value_or(infer(*scale_b));
+    // scaling_choice_b is the user's B recipe → cuBLAS-A scale mode
+    scale_mata_scaling_type = scaling_choice_b.value_or(infer(*scale_b));
     // matb corresponds to scale_a (cuBLAS-B = mat1)
-    scale_matb_scaling_type = scaling_choice_b.value_or(infer(*scale_a));
+    // scaling_choice_a is the user's A recipe → cuBLAS-B scale mode
+    scale_matb_scaling_type = scaling_choice_a.value_or(infer(*scale_a));
   }
   if (scale_result) {
     scale_result_ptr = scale_result->data_ptr();
   }
 
-  // GroupWise and BlockWise1x32 scales need device-side pointer arrays
-  // (one pointer per group) because cuBLAS expects the scale pointer to
-  // be an array of device pointers for grouped GEMM.
+  // GroupWise, BlockWise1x32, and VEC128/BLK128x128 scales need device-side
+  // pointer arrays (one pointer per group) because cuBLAS expects the scale
+  // pointer to be an array of device pointers for grouped GEMM.
   auto needs_ptr_array = [](at::blas::ScalingType st) {
     return st == at::blas::ScalingType::GroupWise
-        || st == at::blas::ScalingType::BlockWise1x32;
+        || st == at::blas::ScalingType::BlockWise1x32
+        || st == at::blas::ScalingType::BlockWise1x128
+        || st == at::blas::ScalingType::BlockWise128x128;
   };
   const bool mata_needs_ptr = needs_ptr_array(scale_mata_scaling_type);
   const bool matb_needs_ptr = needs_ptr_array(scale_matb_scaling_type);
@@ -293,13 +330,13 @@ cublasGroupedArgs::cublasGroupedArgs(
   //   5 x int64[batchCount]  (A, B, D, alpha, beta ptrs)
   //   2 x float              (alpha, beta scalars)
   // + optionally up to 2 x int64[batchCount] for per-group scale pointer arrays
-  //   (GroupWise scales: embedded in the main buffer)
+  //   (GroupWise + VEC128/BLK128x128 scales: embedded in the main buffer)
   //   (BlockWise1x32 scales: separate allocation required by cuBLAS)
-  const bool mata_blockwise = scale_mata_scaling_type == at::blas::ScalingType::BlockWise1x32;
-  const bool matb_blockwise = scale_matb_scaling_type == at::blas::ScalingType::BlockWise1x32;
+  const bool mata_blockwise_1x32 = scale_mata_scaling_type == at::blas::ScalingType::BlockWise1x32;
+  const bool matb_blockwise_1x32 = scale_matb_scaling_type == at::blas::ScalingType::BlockWise1x32;
   const int embedded_ptr_arrays =
-      ((mata_needs_ptr && !mata_blockwise) ? 1 : 0) +
-      ((matb_needs_ptr && !matb_blockwise) ? 1 : 0);
+      ((mata_needs_ptr && !mata_blockwise_1x32) ? 1 : 0) +
+      ((matb_needs_ptr && !matb_blockwise_1x32) ? 1 : 0);
   const int64_t buf_bytes =
       static_cast<int64_t>(batchCount) * 6 * sizeof(int32_t) +
       static_cast<int64_t>(batchCount) * 5 * sizeof(int64_t) +
@@ -327,32 +364,33 @@ cublasGroupedArgs::cublasGroupedArgs(
   alphaScalar = alpha_scalar;
   betaScalar = beta_scalar;
 
-  // Per-group scale pointer arrays: embedded for GroupWise, separate for BlockWise1x32.
+  // Per-group scale pointer arrays: embedded for GroupWise/VEC128/BLK128x128,
+  // separate for BlockWise1x32.
   // Place after the two float scalars (alpha_scalar, beta_scalar are 8 bytes
   // total, so the next int64_t is naturally aligned).
   int64_t* scaleAPtrArray = nullptr;
   int64_t* scaleBPtrArray = nullptr;
   int64_t* scale_ptr_base = reinterpret_cast<int64_t*>(beta_scalar + 1);
-  if (mata_needs_ptr && !mata_blockwise) {
+  if (mata_needs_ptr && !mata_blockwise_1x32) {
     scaleAPtrArray = scale_ptr_base;
     scale_ptr_base += batchCount;
   }
-  if (matb_needs_ptr && !matb_blockwise) {
+  if (matb_needs_ptr && !matb_blockwise_1x32) {
     scaleBPtrArray = scale_ptr_base;
   }
   // BlockWise1x32 scale pointer arrays need separate allocations
-  const int blockwise_ptr_arrays = (mata_blockwise ? 1 : 0) + (matb_blockwise ? 1 : 0);
+  const int blockwise_ptr_arrays = (mata_blockwise_1x32 ? 1 : 0) + (matb_blockwise_1x32 ? 1 : 0);
   if (blockwise_ptr_arrays > 0) {
     scale_ptr_buf = at::empty(
         {static_cast<int64_t>(blockwise_ptr_arrays) * batchCount * 8},
         mat1.options().dtype(at::kByte));
     char* sbase = static_cast<char*>(scale_ptr_buf.data_ptr());
     int64_t soffset = 0;
-    if (mata_blockwise) {
+    if (mata_blockwise_1x32) {
       scaleAPtrArray = reinterpret_cast<int64_t*>(sbase + soffset);
       soffset += batchCount * 8;
     }
-    if (matb_blockwise) {
+    if (matb_blockwise_1x32) {
       scaleBPtrArray = reinterpret_cast<int64_t*>(sbase + soffset);
     }
   }
@@ -363,10 +401,15 @@ cublasGroupedArgs::cublasGroupedArgs(
 
   // Byte stride between consecutive groups' scale data.
   // For GroupWise (1D float): stride(0)*elem_size = 1*4 = sizeof(float).
-  // For BlockWise1x32 3D/3D: stride(0)*elem_size = per_group_numel*1.
-  // For BlockWise1x32 with jagged dims: 0 signals variable-size mode.
-  const bool blockwise_variable_a = mata_blockwise && (a_is_2d || b_is_2d);
-  const bool blockwise_variable_b = matb_blockwise && (a_is_2d || b_is_2d);
+  // For BlockWise 3D/3D: stride(0)*elem_size = per_group_numel*elem_size.
+  // For BlockWise with jagged dims: 0 signals variable-size mode.
+  auto is_blockwise = [](at::blas::ScalingType st) {
+    return st == at::blas::ScalingType::BlockWise1x32
+        || st == at::blas::ScalingType::BlockWise1x128
+        || st == at::blas::ScalingType::BlockWise128x128;
+  };
+  const bool blockwise_variable_a = is_blockwise(scale_mata_scaling_type) && (a_is_2d || b_is_2d);
+  const bool blockwise_variable_b = is_blockwise(scale_matb_scaling_type) && (a_is_2d || b_is_2d);
   const int64_t scale_a_stride_bytes = blockwise_variable_a ? 0 :
       (scale_b && scale_b->dim() >= 2
           ? scale_b->stride(0) * scale_b->element_size()
@@ -376,11 +419,11 @@ cublasGroupedArgs::cublasGroupedArgs(
           ? scale_a->stride(0) * scale_a->element_size()
           : (scale_a ? scale_a->element_size() : 0));
 
-  // For variable-size BlockWise1x32, pass inner/outer dims for per-group
+  // For variable-size blockwise scales, pass inner/outer dims for per-group
   // scale size computation. A value of 0 means "substitute the jagged
   // dimension (delta from offsets) at runtime".
-  // cuBLAS-A scale: getScaleTensorSize(inner=K, outer=cublas_m=user_N)
-  // cuBLAS-B scale: getScaleTensorSize(inner=K, outer=cublas_n=user_M)
+  // cuBLAS-A scale: size(inner=K, outer=cublas_m=user_N)
+  // cuBLAS-B scale: size(inner=K, outer=cublas_n=user_M)
   int32_t scale_a_inner = 0, scale_a_outer = 0;
   int32_t scale_b_inner = 0, scale_b_outer = 0;
   if (blockwise_variable_a) {
@@ -406,6 +449,17 @@ cublasGroupedArgs::cublasGroupedArgs(
 
   cudaStream_t stream = at::cuda::getCurrentCUDAStream();
 
+  auto to_scale_mode = [](at::blas::ScalingType st) -> int8_t {
+    switch (st) {
+      case at::blas::ScalingType::BlockWise1x32: return SCALE_VEC32;
+      case at::blas::ScalingType::BlockWise1x128: return SCALE_VEC128;
+      case at::blas::ScalingType::BlockWise128x128: return SCALE_BLK128x128;
+      default: return SCALE_NONE;
+    }
+  };
+  const int8_t scale_a_mode = to_scale_mode(scale_mata_scaling_type);
+  const int8_t scale_b_mode = to_scale_mode(scale_matb_scaling_type);
+
   launch_populate_cublas_grouped_args(
         batchCount, offs_ptr,
         base_A, base_B, base_D,
@@ -425,6 +479,7 @@ cublasGroupedArgs::cublasGroupedArgs(
         scale_a_inner, scale_a_outer,
         scale_b_inner, scale_b_outer,
         scaleAPtrArray, scaleBPtrArray,
+        scale_a_mode, scale_b_mode,
         stream);
 
   // For per-group scales, point to the device-side pointer arrays
