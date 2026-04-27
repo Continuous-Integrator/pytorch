@@ -340,7 +340,7 @@ class TestCodegenRuntimeWrapper(TestCase):
 
         self.assertEqual(len(captured), 1)
         source = captured[0]
-        self.assertIn("_maybe_mark_dynamic_helper_", source)
+        self.assertIn("_mark_dynamic_", source)
 
     @skipIfTorchDynamo("dynamo handles grad mode changes in-graph")
     def test_grad_enabled_mutation(self):
