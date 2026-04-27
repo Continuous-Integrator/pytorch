@@ -2647,8 +2647,10 @@ class TestFP8Matmul(TestCase):
                 s, e = g * k_g, (g + 1) * k_g
                 sa, aq = to_mxfp(A_bf16[:, s:e].contiguous(), format="mxfp8")
                 sb, bq = to_mxfp(B_bf16[:, s:e].contiguous(), format="mxfp8")
-                a_fp8_list.append(aq); a_sb_list.append(to_blocked(sa))
-                b_fp8_list.append(bq); b_sb_list.append(to_blocked(sb))
+                a_fp8_list.append(aq)
+                a_sb_list.append(to_blocked(sa))
+                b_fp8_list.append(bq)
+                b_sb_list.append(to_blocked(sb))
             A = torch.cat(a_fp8_list, dim=1).contiguous()
             B_T = torch.cat(b_fp8_list, dim=1).contiguous()
             scale_a = torch.cat(a_sb_list)
@@ -2667,8 +2669,10 @@ class TestFP8Matmul(TestCase):
             for g in range(ngroups):
                 sa, aq = to_mxfp(A_bf16[g * m_per_group:(g + 1) * m_per_group], format="mxfp8")
                 sb, bq = to_mxfp(B_bf16[g], format="mxfp8")
-                a_fp8_list.append(aq); a_sb_list.append(to_blocked(sa))
-                b_fp8_list.append(bq); b_sb_list.append(to_blocked(sb))
+                a_fp8_list.append(aq)
+                a_sb_list.append(to_blocked(sa))
+                b_fp8_list.append(bq)
+                b_sb_list.append(to_blocked(sb))
             A = torch.cat(a_fp8_list, dim=0).contiguous()
             B_T = torch.stack(b_fp8_list, dim=0).contiguous()
             scale_a = torch.cat(a_sb_list).reshape(-1, k // block_size)
@@ -2687,8 +2691,10 @@ class TestFP8Matmul(TestCase):
             for g in range(ngroups):
                 sa, aq = to_mxfp(A_bf16[g], format="mxfp8")
                 sb, bq = to_mxfp(B_bf16[g * n_per_group:(g + 1) * n_per_group], format="mxfp8")
-                a_fp8_list.append(aq); a_sb_list.append(to_blocked(sa))
-                b_fp8_list.append(bq); b_sb_list.append(to_blocked(sb))
+                a_fp8_list.append(aq)
+                a_sb_list.append(to_blocked(sa))
+                b_fp8_list.append(bq)
+                b_sb_list.append(to_blocked(sb))
             A = torch.stack(a_fp8_list, dim=0).contiguous()
             B_T = torch.cat(b_fp8_list, dim=0).contiguous()
             scale_a = torch.stack(a_sb_list, dim=0)
@@ -2702,8 +2708,10 @@ class TestFP8Matmul(TestCase):
             for g in range(ngroups):
                 sa, aq = to_mxfp(A_bf16[g], format="mxfp8")
                 sb, bq = to_mxfp(B_bf16[g], format="mxfp8")
-                a_fp8_list.append(aq); a_sb_list.append(to_blocked(sa))
-                b_fp8_list.append(bq); b_sb_list.append(to_blocked(sb))
+                a_fp8_list.append(aq)
+                a_sb_list.append(to_blocked(sa))
+                b_fp8_list.append(bq)
+                b_sb_list.append(to_blocked(sb))
             A = torch.stack(a_fp8_list, dim=0).contiguous()
             B_T = torch.stack(b_fp8_list, dim=0).contiguous()
             scale_a = torch.stack(a_sb_list, dim=0)
@@ -2820,7 +2828,6 @@ class TestFP8Matmul(TestCase):
         for testing the cuBLASLt grouped GEMM path."""
         device = "cuda"
         ngroups = 4
-        block_size = 16
 
         def quantize_group(t_bf16):
             """Quantize a bf16 tensor to NVFP4, returning (fp4, blocked_scale, global_scale, hp_ref)."""
@@ -2842,10 +2849,16 @@ class TestFP8Matmul(TestCase):
             b_lp_list, b_sb_list, b_gs_list, b_hp_list = [], [], [], []
             for g in range(ngroups):
                 s, e = g * k_g, (g + 1) * k_g
-                alp, asb, ags, ahp = quantize_group(A_bf16[:, s:e].contiguous())
-                blp, bsb, bgs, bhp = quantize_group(B_bf16[:, s:e].contiguous())
-                a_lp_list.append(alp); a_sb_list.append(asb); a_gs_list.append(ags); a_hp_list.append(ahp)
-                b_lp_list.append(blp); b_sb_list.append(bsb); b_gs_list.append(bgs); b_hp_list.append(bhp)
+                a_lp, a_sb, a_gs, a_hp = quantize_group(A_bf16[:, s:e].contiguous())
+                b_lp, b_sb, b_gs, b_hp = quantize_group(B_bf16[:, s:e].contiguous())
+                a_lp_list.append(a_lp)
+                a_sb_list.append(a_sb)
+                a_gs_list.append(a_gs)
+                a_hp_list.append(a_hp)
+                b_lp_list.append(b_lp)
+                b_sb_list.append(b_sb)
+                b_gs_list.append(b_gs)
+                b_hp_list.append(b_hp)
             A = torch.cat(a_lp_list, dim=1).contiguous()
             B_T = torch.cat(b_lp_list, dim=1).contiguous()
             scale_a = torch.cat(a_sb_list)
@@ -2867,10 +2880,16 @@ class TestFP8Matmul(TestCase):
             a_lp_list, a_sb_list, a_gs_list, a_hp_list = [], [], [], []
             b_lp_list, b_sb_list, b_gs_list, b_hp_list = [], [], [], []
             for g in range(ngroups):
-                alp, asb, ags, ahp = quantize_group(A_bf16[g * m_per_group:(g + 1) * m_per_group])
-                blp, bsb, bgs, bhp = quantize_group(B_bf16[g])
-                a_lp_list.append(alp); a_sb_list.append(asb); a_gs_list.append(ags); a_hp_list.append(ahp)
-                b_lp_list.append(blp); b_sb_list.append(bsb); b_gs_list.append(bgs); b_hp_list.append(bhp)
+                a_lp, a_sb, a_gs, a_hp = quantize_group(A_bf16[g * m_per_group:(g + 1) * m_per_group])
+                b_lp, b_sb, b_gs, b_hp = quantize_group(B_bf16[g])
+                a_lp_list.append(a_lp)
+                a_sb_list.append(a_sb)
+                a_gs_list.append(a_gs)
+                a_hp_list.append(a_hp)
+                b_lp_list.append(b_lp)
+                b_sb_list.append(b_sb)
+                b_gs_list.append(b_gs)
+                b_hp_list.append(b_hp)
             A = torch.cat(a_lp_list, dim=0).contiguous()
             B_T = torch.stack(b_lp_list, dim=0).contiguous()
             # For 2D A with per-group scales along M: reshape blocked scales to (m_total_rounded, scale_cols)
@@ -2893,10 +2912,16 @@ class TestFP8Matmul(TestCase):
             a_lp_list, a_sb_list, a_gs_list, a_hp_list = [], [], [], []
             b_lp_list, b_sb_list, b_gs_list, b_hp_list = [], [], [], []
             for g in range(ngroups):
-                alp, asb, ags, ahp = quantize_group(A_bf16[g])
-                blp, bsb, bgs, bhp = quantize_group(B_bf16[g * n_per_group:(g + 1) * n_per_group])
-                a_lp_list.append(alp); a_sb_list.append(asb); a_gs_list.append(ags); a_hp_list.append(ahp)
-                b_lp_list.append(blp); b_sb_list.append(bsb); b_gs_list.append(bgs); b_hp_list.append(bhp)
+                a_lp, a_sb, a_gs, a_hp = quantize_group(A_bf16[g])
+                b_lp, b_sb, b_gs, b_hp = quantize_group(B_bf16[g * n_per_group:(g + 1) * n_per_group])
+                a_lp_list.append(a_lp)
+                a_sb_list.append(a_sb)
+                a_gs_list.append(a_gs)
+                a_hp_list.append(a_hp)
+                b_lp_list.append(b_lp)
+                b_sb_list.append(b_sb)
+                b_gs_list.append(b_gs)
+                b_hp_list.append(b_hp)
             A = torch.stack(a_lp_list, dim=0).contiguous()
             B_T = torch.cat(b_lp_list, dim=0).contiguous()
             scale_a = torch.stack(a_sb_list, dim=0)
@@ -2913,10 +2938,16 @@ class TestFP8Matmul(TestCase):
             a_lp_list, a_sb_list, a_gs_list, a_hp_list = [], [], [], []
             b_lp_list, b_sb_list, b_gs_list, b_hp_list = [], [], [], []
             for g in range(ngroups):
-                alp, asb, ags, ahp = quantize_group(A_bf16[g])
-                blp, bsb, bgs, bhp = quantize_group(B_bf16[g])
-                a_lp_list.append(alp); a_sb_list.append(asb); a_gs_list.append(ags); a_hp_list.append(ahp)
-                b_lp_list.append(blp); b_sb_list.append(bsb); b_gs_list.append(bgs); b_hp_list.append(bhp)
+                a_lp, a_sb, a_gs, a_hp = quantize_group(A_bf16[g])
+                b_lp, b_sb, b_gs, b_hp = quantize_group(B_bf16[g])
+                a_lp_list.append(a_lp)
+                a_sb_list.append(a_sb)
+                a_gs_list.append(a_gs)
+                a_hp_list.append(a_hp)
+                b_lp_list.append(b_lp)
+                b_sb_list.append(b_sb)
+                b_gs_list.append(b_gs)
+                b_hp_list.append(b_hp)
             A = torch.stack(a_lp_list, dim=0).contiguous()
             B_T = torch.stack(b_lp_list, dim=0).contiguous()
             scale_a = torch.stack(a_sb_list, dim=0)
