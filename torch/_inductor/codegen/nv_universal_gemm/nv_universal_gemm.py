@@ -358,7 +358,6 @@ class NVUniversalGemmCaller(ChoiceCaller):
 
             return render_kernel, render
 
-        make_kernel_render._is_nvgemm = True  # type: ignore[attr-defined]
         return make_kernel_render
 
 
@@ -386,11 +385,22 @@ def _include_efc_kernels_only(metadata) -> bool:
     epilogue thread operation for aux-tensor inputs with tile_M=64, and we
     don't yet know at autotune time whether fusion will consume aux tensors.
     Non-EFC kernels still cover tile_M=64, so plain GEMM autotune is unaffected.
+
+    Strictly requires the kernel name to encode tile dims; if cutlass_api ever
+    changes the naming scheme, this raises rather than silently letting the
+    broken tile_M=64 kernels through.
     """
     if "EFC" not in metadata.kernel_class.__name__:
         return False
     match = _TILE_RE.search(metadata.kernel_name)
-    return match is None or int(match.group(1)) >= 128
+    if match is None:
+        raise RuntimeError(
+            f"NVGEMM EFC kernel name does not match expected tile pattern "
+            f"'tileMxNxK': {metadata.kernel_name}. The tile_M=64 broadcast "
+            f"workaround in _include_efc_kernels_only depends on this naming "
+            f"convention; update the regex or move to metadata-based filtering."
+        )
+    return int(match.group(1)) >= 128
 
 
 def _exclude_efc_kernels(metadata) -> bool:

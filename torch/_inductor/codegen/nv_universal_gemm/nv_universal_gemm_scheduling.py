@@ -425,7 +425,7 @@ class NVUniversalGemmScheduling(BaseScheduling):
         if not is_nvgemm and isinstance(template_node, SchedulerNode):
             ir_node = template_node.node
             if isinstance(ir_node, MultiTemplateBuffer):
-                is_nvgemm = getattr(ir_node.make_kernel_render, "_is_nvgemm", False)
+                is_nvgemm = ir_node._render_kind == "nvgemm"
         assert is_nvgemm, (
             "Template node passed to NVUniversalGemmScheduling.codegen_template must be a "
             "SchedulerNode that wraps a NVUniversalGemmBuffer or MultiTemplateBuffer with NVGEMM choice"

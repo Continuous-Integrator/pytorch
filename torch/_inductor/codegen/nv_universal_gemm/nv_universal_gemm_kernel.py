@@ -191,9 +191,9 @@ class NVUniversalGemmKernel(Kernel):
             epilogue_setup = f"""
     epi_args = EpilogueArguments(epilogue_fn=_epilogue_fn, {epilogue_kwargs})
 """
-            kernel_lookup = f"""    kernel = get_efc_kernel_with_epilogue("{kernel_name_str}", epi_args, epilogue_source=_EPILOGUE_FN_SOURCE)
+            kernel_lookup = f"""    kernel = get_efc_kernel_with_epilogue({kernel_name_str!r}, epi_args, epilogue_source=_EPILOGUE_FN_SOURCE)
     if kernel is None:
-        raise RuntimeError(f"Could not find EFC kernel: {kernel_name_str}")"""
+        raise RuntimeError(f"Could not find EFC kernel: {{{kernel_name_var}}}")"""
 
             create_args = f"""    args = cutlass_api.arguments.GemmArguments(
         in_ptr0, in_ptr1, out_ptr0,
@@ -222,7 +222,7 @@ import cutlass_api
 
 {epilogue_fn_def}
 
-{kernel_name_var} = "{kernel_name_str}"
+{kernel_name_var} = {kernel_name_str!r}
 {cache_var} = {{}}
 
 def {self.kernel_name}_main({params_str}):
@@ -302,10 +302,11 @@ def {self.kernel_name}_main({params_str}):
             raw_keys.append(param_name)
 
         # Add output arg
-        # When epilogue is fused, use the epilogue output; otherwise use GEMM output
+        # When epilogue is fused, use the epilogue's last write (the EVT codegen's
+        # 'D' output) as the kernel call's output name. Inductor's removed_buffers
+        # mechanism aliases the GEMM output buffer to the planner's allocated
+        # output, so writing to epilogue_writes[-1] resolves correctly downstream.
         if self.epilogue_writes:
-            # The epilogue's D output is stored in epilogue_writes
-            # Use the last epilogue write as the actual output
             output_name = self.epilogue_writes[-1]
         else:
             output_name = self.output_node.get_name()
