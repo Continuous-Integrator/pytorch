@@ -23180,7 +23180,7 @@ dsl_ops_by_dsl.setdefault('triton', []).append(
     OpInfo(
         "triton_bmm_outer_product",
         op=_triton_bmm_outer_product_kernel,
-        dtypes=(),
+        dtypes=floating_types_and(torch.half, torch.bfloat16),
         dtypesIfCUDA=floating_types_and(torch.half, torch.bfloat16),
         sample_inputs_func=sample_inputs_triton_bmm_outer_product,
         ref=reference_bmm_outer_product,
@@ -26955,7 +26955,7 @@ if OPINFO_RESTRICT_TO_DSL:
         op_db = []
 else:
     for ops in dsl_ops_by_dsl.values():
-        op_db += ops
+        op_db.extend(ops)
 
 # Common operator groupings
 ops_and_refs = op_db + python_ref_db
