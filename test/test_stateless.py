@@ -770,11 +770,18 @@ class TestStatelessOptimizerReparam(TestCase):
         state_before,
         state_dict_before,
         params_before,
+        group_metadata_before,
     ):
         self.assertTrue(optimizer.state is state_before)
         self.assertEqual(optimizer.state_dict(), state_dict_before)
-        for group, params in zip(optimizer.param_groups, params_before, strict=True):
+        for group, params, metadata in zip(
+            optimizer.param_groups, params_before, group_metadata_before, strict=True
+        ):
             self.assertTrue(group["params"] is params)
+            self.assertEqual(
+                {key: value for key, value in group.items() if key != "params"},
+                metadata,
+            )
             for current_param, original_param in zip(group["params"], params, strict=True):
                 self.assertTrue(current_param is original_param)
 
@@ -818,11 +825,90 @@ class TestStatelessOptimizerReparam(TestCase):
             ):
                 pass
 
+    def test_reparametrize_optimizer_rejects_bad_top_level_shape(self):
+        _, optimizer, parameters, _ = self._make_reparam_inputs()
+
+        with self.assertRaisesRegex(
+            RuntimeError,
+            re.escape(
+                "_reparametrize_optimizer requires an optimizer.state_dict()-style "
+                "state_dict with 'state' and 'param_groups' entries."
+            ),
+        ):
+            with stateless._reparametrize_optimizer(
+                optimizer,
+                parameters,
+                {"state": [], "param_groups": {}},
+            ):
+                pass
+
+    def test_reparametrize_optimizer_rejects_param_group_count_mismatch(self):
+        _, optimizer, parameters, optimizer_state_dict = self._make_reparam_inputs()
+        optimizer_state_dict["param_groups"].pop()
+
+        with self.assertRaisesRegex(
+            RuntimeError,
+            re.escape(
+                "optimizer_state_dict has a different number of parameter groups than "
+                "the live optimizer."
+            ),
+        ):
+            with stateless._reparametrize_optimizer(
+                optimizer, parameters, optimizer_state_dict
+            ):
+                pass
+
+    def test_reparametrize_optimizer_rejects_param_group_size_mismatch(self):
+        _, optimizer, parameters, optimizer_state_dict = self._make_reparam_inputs()
+        optimizer_state_dict["param_groups"][0]["params"].pop()
+
+        with self.assertRaisesRegex(
+            RuntimeError,
+            re.escape(
+                "optimizer_state_dict param group does not match the size of "
+                "live optimizer param group 0."
+            ),
+        ):
+            with stateless._reparametrize_optimizer(
+                optimizer, parameters, optimizer_state_dict
+            ):
+                pass
+
+    def test_reparametrize_optimizer_rejects_non_dict_param_state(self):
+        _, optimizer, parameters, optimizer_state_dict = self._make_reparam_inputs()
+        first_param_id = optimizer_state_dict["param_groups"][0]["params"][0]
+        optimizer_state_dict["state"][first_param_id] = torch.tensor(1.0)
+
+        with self.assertRaisesRegex(
+            RuntimeError,
+            re.escape(
+                "_reparametrize_optimizer requires per-parameter optimizer "
+                "state entries to be dictionaries."
+            ),
+        ):
+            with stateless._reparametrize_optimizer(
+                optimizer, parameters, optimizer_state_dict
+            ):
+                pass
+
+    def test_reparametrize_optimizer_preserves_passthrough_state(self):
+        _, optimizer, parameters, optimizer_state_dict = self._make_reparam_inputs()
+        optimizer_state_dict["state"]["global_step"] = 42
+
+        with stateless._reparametrize_optimizer(
+            optimizer, parameters, optimizer_state_dict
+        ):
+            self.assertEqual(optimizer.state["global_step"], 42)
+
     def test_reparametrize_optimizer_restores_after_exception(self):
         _, optimizer, parameters, optimizer_state_dict = self._make_reparam_inputs()
         state_before = optimizer.state
         state_dict_before = deepcopy(optimizer.state_dict())
         params_before = [group["params"] for group in optimizer.param_groups]
+        group_metadata_before = [
+            {key: value for key, value in group.items() if key != "params"}
+            for group in optimizer.param_groups
+        ]
         try:
             with stateless._reparametrize_optimizer(
                 optimizer, parameters, optimizer_state_dict
@@ -838,7 +924,11 @@ class TestStatelessOptimizerReparam(TestCase):
                 raise self._TestException
         except self._TestException:
             self._assert_optimizer_restored(
-                optimizer, state_before, state_dict_before, params_before
+                optimizer,
+                state_before,
+                state_dict_before,
+                params_before,
+                group_metadata_before,
             )
 
     def test_reparametrize_optimizer_reflects_state_mutations(self):
@@ -846,6 +936,10 @@ class TestStatelessOptimizerReparam(TestCase):
         state_before = optimizer.state
         state_dict_before = deepcopy(optimizer.state_dict())
         params_before = [group["params"] for group in optimizer.param_groups]
+        group_metadata_before = [
+            {key: value for key, value in group.items() if key != "params"}
+            for group in optimizer.param_groups
+        ]
 
         with stateless._reparametrize_optimizer(
             optimizer, parameters, optimizer_state_dict
@@ -856,7 +950,11 @@ class TestStatelessOptimizerReparam(TestCase):
             optimizer.param_groups[0]["lr"] = 5.0
 
         self._assert_optimizer_restored(
-            optimizer, state_before, state_dict_before, params_before
+            optimizer,
+            state_before,
+            state_dict_before,
+            params_before,
+            group_metadata_before,
         )
         first_param_id = optimizer_state_dict["param_groups"][0]["params"][0]
         self.assertEqual(

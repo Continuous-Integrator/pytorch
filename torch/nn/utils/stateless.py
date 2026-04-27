@@ -184,7 +184,7 @@ def _prepare_optimizer_reparametrization(
     if not isinstance(state, dict) or not isinstance(param_groups, list):
         raise RuntimeError(
             "_reparametrize_optimizer requires an optimizer.state_dict()-style "
-            "with 'state' and 'param_groups' entries."
+            "state_dict with 'state' and 'param_groups' entries."
         )
     if any(isinstance(name, torch.Tensor) for name in state):
         raise RuntimeError(
@@ -216,7 +216,9 @@ def _prepare_optimizer_reparametrization(
                 "to be a dictionary."
             )
         names = saved_group.get("params")
-        if not isinstance(names, list) or any(isinstance(name, str) for name in names):
+        if not isinstance(names, list) or not all(
+            isinstance(param_id, int) for param_id in names
+        ):
             raise RuntimeError(
                 "_reparametrize_optimizer requires optimizer.state_dict()-style "
                 "param_groups[*]['params'] entries keyed by packed parameter ids."
@@ -244,6 +246,16 @@ def _prepare_optimizer_reparametrization(
                     "_reparametrize_optimizer requires per-parameter optimizer "
                     "state entries to be dictionaries."
                 )
+
+        missing_group_keys = [
+            key for key in saved_group if key != "params" and key not in group
+        ]
+        if missing_group_keys:
+            raise RuntimeError(
+                "_reparametrize_optimizer requires optimizer.state_dict()-style "
+                "param group keys to match the live optimizer group keys. "
+                f"Missing live keys for group {idx}: {missing_group_keys}"
+            )
 
         group_rebind_infos.append(
             (
