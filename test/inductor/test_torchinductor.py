@@ -27,7 +27,7 @@ from typing_extensions import ParamSpec
 from unittest.mock import patch
 
 import numpy as np
-
+from torch.testing._internal.common_cuda import SM100OrLater
 import torch
 import torch._dynamo.config as dynamo_config
 import torch._inductor.aoti_eager
@@ -16675,6 +16675,13 @@ if RUN_GPU:
                     # one kernel, with extra workspace/semaphore args
                     0: (0, 1, 2, 3, 5),
                 }
+            elif(
+                SM100OrLater
+            ):
+                self.assertEqual(len(kernels), 1)
+                expected_divisible = {
+                     0: (0, 1, 3),
+                 }
             else:
                 self.assertEqual(len(kernels), 2)
 
