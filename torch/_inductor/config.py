@@ -1028,7 +1028,7 @@ combo_kernels_pointwise_only = False
 #   0: allow no graph-peak increase
 #   value: allow peak delta up to that limit for one combo attempt
 # The accepted delta is measured against the current graph peak after earlier
-# accepted combos. When both thresholds are set, the looser limit wins.
+# accepted combos. When both thresholds are set, the tighter limit wins.
 combo_kernel_peak_memory_threshold: int | None = 512 << 20
 combo_kernel_peak_memory_pct_threshold: float | None = 0.05
 # Maximum baseline-index span of a single combo candidate. Groups whose
