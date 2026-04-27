@@ -241,15 +241,13 @@ Adding operators means that they should be tested. Given that we're dealing with
 
 The preferred testing method is to co-opt the existing `OpInfo` and `op_db` class/list and benefit from all the infrastructure built around that functionality.
 
-`OpInfo` has been extended to include an optional `dsl_name` argument, identifying the op to be tested as using a given DSL, and that information is used at test time to discover and filter relevant tests. Test files that use `op_db` include:
+Each op should have a corresponding entry added in `torch/testing/_internal/common_methods_invocations.py`, with a input method appropriate for the overrides(s) in terms of shapes and dtypes. Instead of adding directly into `op_db`, add to the appropriate entry in `dsl_ops_by_dsl`, a dictionary, where the key will be the name of the DSL used - this must be present in `torch.backends.python_native.available_dsl`. These entries are then later added to `op_db` as appropriate for use in:
 
 * `test_ops.py`
 * `test_unary_ufuncs.py`
 * `test_ops_gradients.py`
 * `test_torchinductor_opinfo.py`
 * `test_export_opinfo.py`
-
-Each op added under `torch/_native/ops` should have a corresponding `OpInfo` entry registered in `torch/testing/_internal/common_methods_invocations.py` with `dsl_name` set. That ensures it participates in the existing `op_db`-driven test suites.
 
 ## Testing only Native ops
 
