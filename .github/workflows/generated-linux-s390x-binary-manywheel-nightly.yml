@@ -1,7 +1,10 @@
 # @generated DO NOT EDIT MANUALLY
-
-# Template is at:    .github/templates/linux_binary_build_workflow.yml.j2
-# Generation script: .github/scripts/generate_ci_workflows.py
+#
+# Matrix-driven binary build workflow for linux-s390x manywheel.
+# The list of python / arch combinations is produced at runtime by
+# .github/scripts/generate_binary_build_matrix.py --runtime-matrix linux-s390x
+# so adding a new python or CPU variant in that script is picked up on the
+# next workflow run without regenerating this YAML.
 name: linux-s390x-binary-manywheel
 
 
@@ -48,475 +51,99 @@ jobs:
       issue_owner: ${{ github.event.pull_request.user.login || github.event.issue.user.login }}
       curr_branch: ${{ github.head_ref || github.ref_name }}
       curr_ref_type: ${{ github.ref_type }}
-  manywheel-py3_10-cpu-s390x-build:
+
+  generate-matrix:
+    if: github.repository_owner == 'pytorch'
+    runs-on: ubuntu-latest
+    outputs:
+      configs: ${{ steps.generate.outputs.configs }}
+    steps:
+      - name: Checkout PyTorch
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 1
+          submodules: false
+          show-progress: false
+      - name: Generate matrix
+        id: generate
+        run: python3 .github/scripts/generate_binary_build_matrix.py --runtime-matrix linux-s390x
+
+  build:
+    name: ${{ matrix.config.build_name }}-build
     if: ${{ github.repository_owner == 'pytorch' }}
+    needs: [get-label-type, generate-matrix]
+    strategy:
+      fail-fast: false
+      matrix:
+        config: ${{ fromJSON(needs.generate-matrix.outputs.configs) }}
     uses: ./.github/workflows/_binary-build-linux.yml
-    needs: get-label-type
     with:
       PYTORCH_ROOT: /pytorch
       PACKAGE_TYPE: manywheel
       # TODO: This is a legacy variable that we eventually want to get rid of in
       #       favor of GPU_ARCH_VERSION
-      DESIRED_CUDA: cpu
-      GPU_ARCH_TYPE: cpu-s390x
-      DOCKER_IMAGE: pytorch/manylinuxs390x-builder
-      DOCKER_IMAGE_TAG_PREFIX: cpu-s390x
-      DESIRED_PYTHON: "3.10"
+      DESIRED_CUDA: ${{ matrix.config.desired_cuda }}
+      GPU_ARCH_TYPE: ${{ matrix.config.gpu_arch_type }}
+      DOCKER_IMAGE: ${{ matrix.config.container_image }}
+      DOCKER_IMAGE_TAG_PREFIX: ${{ matrix.config.container_image_tag_prefix }}
+      DESIRED_PYTHON: ${{ matrix.config.python_version }}
       runs_on: linux.s390x
       ALPINE_IMAGE: "docker.io/s390x/alpine"
       timeout-minutes: 420
-      build_name: manywheel-py3_10-cpu-s390x
+      build_name: ${{ matrix.config.build_name }}
       build_environment: linux-s390x-binary-manywheel
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
 
-  manywheel-py3_10-cpu-s390x-test:  # Testing
+  test:
+    name: ${{ matrix.config.build_name }}-test
     if: ${{ github.repository_owner == 'pytorch' }}
-    needs:
-      - manywheel-py3_10-cpu-s390x-build
-      - get-label-type
+    needs: [get-label-type, generate-matrix, build]
+    strategy:
+      fail-fast: false
+      matrix:
+        config: ${{ fromJSON(needs.generate-matrix.outputs.configs) }}
     uses: ./.github/workflows/_binary-test-linux.yml
     with:
       PYTORCH_ROOT: /pytorch
       PACKAGE_TYPE: manywheel
       # TODO: This is a legacy variable that we eventually want to get rid of in
       #       favor of GPU_ARCH_VERSION
-      DESIRED_CUDA: cpu
-      GPU_ARCH_TYPE: cpu-s390x
-      DOCKER_IMAGE: pytorch/manylinuxs390x-builder
-      DOCKER_IMAGE_TAG_PREFIX: cpu-s390x
-      DESIRED_PYTHON: "3.10"
-      build_name: manywheel-py3_10-cpu-s390x
+      DESIRED_CUDA: ${{ matrix.config.desired_cuda }}
+      GPU_ARCH_TYPE: ${{ matrix.config.gpu_arch_type }}
+      DOCKER_IMAGE: ${{ matrix.config.container_image }}
+      DOCKER_IMAGE_TAG_PREFIX: ${{ matrix.config.container_image_tag_prefix }}
+      DESIRED_PYTHON: ${{ matrix.config.python_version }}
+      build_name: ${{ matrix.config.build_name }}
       build_environment: linux-s390x-binary-manywheel
       runs_on: linux.s390x
       ALPINE_IMAGE: "docker.io/s390x/alpine"
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
-  manywheel-py3_10-cpu-s390x-upload:  # Uploading
+
+  upload:
+    name: ${{ matrix.config.build_name }}-upload
     if: ${{ github.repository_owner == 'pytorch' }}
     permissions:
       id-token: write
       contents: read
-    needs: manywheel-py3_10-cpu-s390x-test
+    needs: [generate-matrix, test]
+    strategy:
+      fail-fast: false
+      matrix:
+        config: ${{ fromJSON(needs.generate-matrix.outputs.configs) }}
     with:
       PYTORCH_ROOT: /pytorch
       PACKAGE_TYPE: manywheel
       # TODO: This is a legacy variable that we eventually want to get rid of in
       #       favor of GPU_ARCH_VERSION
-      DESIRED_CUDA: cpu
-      GPU_ARCH_TYPE: cpu-s390x
-      DOCKER_IMAGE: pytorch/manylinuxs390x-builder
-      DOCKER_IMAGE_TAG_PREFIX: cpu-s390x
-      DESIRED_PYTHON: "3.10"
-      build_name: manywheel-py3_10-cpu-s390x
-    secrets:
-      github-token: ${{ secrets.GITHUB_TOKEN }}
-      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
-      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-    uses: ./.github/workflows/_binary-upload.yml
-
-  manywheel-py3_11-cpu-s390x-build:
-    if: ${{ github.repository_owner == 'pytorch' }}
-    uses: ./.github/workflows/_binary-build-linux.yml
-    needs: get-label-type
-    with:
-      PYTORCH_ROOT: /pytorch
-      PACKAGE_TYPE: manywheel
-      # TODO: This is a legacy variable that we eventually want to get rid of in
-      #       favor of GPU_ARCH_VERSION
-      DESIRED_CUDA: cpu
-      GPU_ARCH_TYPE: cpu-s390x
-      DOCKER_IMAGE: pytorch/manylinuxs390x-builder
-      DOCKER_IMAGE_TAG_PREFIX: cpu-s390x
-      DESIRED_PYTHON: "3.11"
-      runs_on: linux.s390x
-      ALPINE_IMAGE: "docker.io/s390x/alpine"
-      timeout-minutes: 420
-      build_name: manywheel-py3_11-cpu-s390x
-      build_environment: linux-s390x-binary-manywheel
-    secrets:
-      github-token: ${{ secrets.GITHUB_TOKEN }}
-
-  manywheel-py3_11-cpu-s390x-test:  # Testing
-    if: ${{ github.repository_owner == 'pytorch' }}
-    needs:
-      - manywheel-py3_11-cpu-s390x-build
-      - get-label-type
-    uses: ./.github/workflows/_binary-test-linux.yml
-    with:
-      PYTORCH_ROOT: /pytorch
-      PACKAGE_TYPE: manywheel
-      # TODO: This is a legacy variable that we eventually want to get rid of in
-      #       favor of GPU_ARCH_VERSION
-      DESIRED_CUDA: cpu
-      GPU_ARCH_TYPE: cpu-s390x
-      DOCKER_IMAGE: pytorch/manylinuxs390x-builder
-      DOCKER_IMAGE_TAG_PREFIX: cpu-s390x
-      DESIRED_PYTHON: "3.11"
-      build_name: manywheel-py3_11-cpu-s390x
-      build_environment: linux-s390x-binary-manywheel
-      runs_on: linux.s390x
-      ALPINE_IMAGE: "docker.io/s390x/alpine"
-    secrets:
-      github-token: ${{ secrets.GITHUB_TOKEN }}
-  manywheel-py3_11-cpu-s390x-upload:  # Uploading
-    if: ${{ github.repository_owner == 'pytorch' }}
-    permissions:
-      id-token: write
-      contents: read
-    needs: manywheel-py3_11-cpu-s390x-test
-    with:
-      PYTORCH_ROOT: /pytorch
-      PACKAGE_TYPE: manywheel
-      # TODO: This is a legacy variable that we eventually want to get rid of in
-      #       favor of GPU_ARCH_VERSION
-      DESIRED_CUDA: cpu
-      GPU_ARCH_TYPE: cpu-s390x
-      DOCKER_IMAGE: pytorch/manylinuxs390x-builder
-      DOCKER_IMAGE_TAG_PREFIX: cpu-s390x
-      DESIRED_PYTHON: "3.11"
-      build_name: manywheel-py3_11-cpu-s390x
-    secrets:
-      github-token: ${{ secrets.GITHUB_TOKEN }}
-      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
-      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-    uses: ./.github/workflows/_binary-upload.yml
-
-  manywheel-py3_12-cpu-s390x-build:
-    if: ${{ github.repository_owner == 'pytorch' }}
-    uses: ./.github/workflows/_binary-build-linux.yml
-    needs: get-label-type
-    with:
-      PYTORCH_ROOT: /pytorch
-      PACKAGE_TYPE: manywheel
-      # TODO: This is a legacy variable that we eventually want to get rid of in
-      #       favor of GPU_ARCH_VERSION
-      DESIRED_CUDA: cpu
-      GPU_ARCH_TYPE: cpu-s390x
-      DOCKER_IMAGE: pytorch/manylinuxs390x-builder
-      DOCKER_IMAGE_TAG_PREFIX: cpu-s390x
-      DESIRED_PYTHON: "3.12"
-      runs_on: linux.s390x
-      ALPINE_IMAGE: "docker.io/s390x/alpine"
-      timeout-minutes: 420
-      build_name: manywheel-py3_12-cpu-s390x
-      build_environment: linux-s390x-binary-manywheel
-    secrets:
-      github-token: ${{ secrets.GITHUB_TOKEN }}
-
-  manywheel-py3_12-cpu-s390x-test:  # Testing
-    if: ${{ github.repository_owner == 'pytorch' }}
-    needs:
-      - manywheel-py3_12-cpu-s390x-build
-      - get-label-type
-    uses: ./.github/workflows/_binary-test-linux.yml
-    with:
-      PYTORCH_ROOT: /pytorch
-      PACKAGE_TYPE: manywheel
-      # TODO: This is a legacy variable that we eventually want to get rid of in
-      #       favor of GPU_ARCH_VERSION
-      DESIRED_CUDA: cpu
-      GPU_ARCH_TYPE: cpu-s390x
-      DOCKER_IMAGE: pytorch/manylinuxs390x-builder
-      DOCKER_IMAGE_TAG_PREFIX: cpu-s390x
-      DESIRED_PYTHON: "3.12"
-      build_name: manywheel-py3_12-cpu-s390x
-      build_environment: linux-s390x-binary-manywheel
-      runs_on: linux.s390x
-      ALPINE_IMAGE: "docker.io/s390x/alpine"
-    secrets:
-      github-token: ${{ secrets.GITHUB_TOKEN }}
-  manywheel-py3_12-cpu-s390x-upload:  # Uploading
-    if: ${{ github.repository_owner == 'pytorch' }}
-    permissions:
-      id-token: write
-      contents: read
-    needs: manywheel-py3_12-cpu-s390x-test
-    with:
-      PYTORCH_ROOT: /pytorch
-      PACKAGE_TYPE: manywheel
-      # TODO: This is a legacy variable that we eventually want to get rid of in
-      #       favor of GPU_ARCH_VERSION
-      DESIRED_CUDA: cpu
-      GPU_ARCH_TYPE: cpu-s390x
-      DOCKER_IMAGE: pytorch/manylinuxs390x-builder
-      DOCKER_IMAGE_TAG_PREFIX: cpu-s390x
-      DESIRED_PYTHON: "3.12"
-      build_name: manywheel-py3_12-cpu-s390x
-    secrets:
-      github-token: ${{ secrets.GITHUB_TOKEN }}
-      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
-      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-    uses: ./.github/workflows/_binary-upload.yml
-
-  manywheel-py3_13-cpu-s390x-build:
-    if: ${{ github.repository_owner == 'pytorch' }}
-    uses: ./.github/workflows/_binary-build-linux.yml
-    needs: get-label-type
-    with:
-      PYTORCH_ROOT: /pytorch
-      PACKAGE_TYPE: manywheel
-      # TODO: This is a legacy variable that we eventually want to get rid of in
-      #       favor of GPU_ARCH_VERSION
-      DESIRED_CUDA: cpu
-      GPU_ARCH_TYPE: cpu-s390x
-      DOCKER_IMAGE: pytorch/manylinuxs390x-builder
-      DOCKER_IMAGE_TAG_PREFIX: cpu-s390x
-      DESIRED_PYTHON: "3.13"
-      runs_on: linux.s390x
-      ALPINE_IMAGE: "docker.io/s390x/alpine"
-      timeout-minutes: 420
-      build_name: manywheel-py3_13-cpu-s390x
-      build_environment: linux-s390x-binary-manywheel
-    secrets:
-      github-token: ${{ secrets.GITHUB_TOKEN }}
-
-  manywheel-py3_13-cpu-s390x-test:  # Testing
-    if: ${{ github.repository_owner == 'pytorch' }}
-    needs:
-      - manywheel-py3_13-cpu-s390x-build
-      - get-label-type
-    uses: ./.github/workflows/_binary-test-linux.yml
-    with:
-      PYTORCH_ROOT: /pytorch
-      PACKAGE_TYPE: manywheel
-      # TODO: This is a legacy variable that we eventually want to get rid of in
-      #       favor of GPU_ARCH_VERSION
-      DESIRED_CUDA: cpu
-      GPU_ARCH_TYPE: cpu-s390x
-      DOCKER_IMAGE: pytorch/manylinuxs390x-builder
-      DOCKER_IMAGE_TAG_PREFIX: cpu-s390x
-      DESIRED_PYTHON: "3.13"
-      build_name: manywheel-py3_13-cpu-s390x
-      build_environment: linux-s390x-binary-manywheel
-      runs_on: linux.s390x
-      ALPINE_IMAGE: "docker.io/s390x/alpine"
-    secrets:
-      github-token: ${{ secrets.GITHUB_TOKEN }}
-  manywheel-py3_13-cpu-s390x-upload:  # Uploading
-    if: ${{ github.repository_owner == 'pytorch' }}
-    permissions:
-      id-token: write
-      contents: read
-    needs: manywheel-py3_13-cpu-s390x-test
-    with:
-      PYTORCH_ROOT: /pytorch
-      PACKAGE_TYPE: manywheel
-      # TODO: This is a legacy variable that we eventually want to get rid of in
-      #       favor of GPU_ARCH_VERSION
-      DESIRED_CUDA: cpu
-      GPU_ARCH_TYPE: cpu-s390x
-      DOCKER_IMAGE: pytorch/manylinuxs390x-builder
-      DOCKER_IMAGE_TAG_PREFIX: cpu-s390x
-      DESIRED_PYTHON: "3.13"
-      build_name: manywheel-py3_13-cpu-s390x
-    secrets:
-      github-token: ${{ secrets.GITHUB_TOKEN }}
-      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
-      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-    uses: ./.github/workflows/_binary-upload.yml
-
-  manywheel-py3_13t-cpu-s390x-build:
-    if: ${{ github.repository_owner == 'pytorch' }}
-    uses: ./.github/workflows/_binary-build-linux.yml
-    needs: get-label-type
-    with:
-      PYTORCH_ROOT: /pytorch
-      PACKAGE_TYPE: manywheel
-      # TODO: This is a legacy variable that we eventually want to get rid of in
-      #       favor of GPU_ARCH_VERSION
-      DESIRED_CUDA: cpu
-      GPU_ARCH_TYPE: cpu-s390x
-      DOCKER_IMAGE: pytorch/manylinuxs390x-builder
-      DOCKER_IMAGE_TAG_PREFIX: cpu-s390x
-      DESIRED_PYTHON: "3.13t"
-      runs_on: linux.s390x
-      ALPINE_IMAGE: "docker.io/s390x/alpine"
-      timeout-minutes: 420
-      build_name: manywheel-py3_13t-cpu-s390x
-      build_environment: linux-s390x-binary-manywheel
-    secrets:
-      github-token: ${{ secrets.GITHUB_TOKEN }}
-
-  manywheel-py3_13t-cpu-s390x-test:  # Testing
-    if: ${{ github.repository_owner == 'pytorch' }}
-    needs:
-      - manywheel-py3_13t-cpu-s390x-build
-      - get-label-type
-    uses: ./.github/workflows/_binary-test-linux.yml
-    with:
-      PYTORCH_ROOT: /pytorch
-      PACKAGE_TYPE: manywheel
-      # TODO: This is a legacy variable that we eventually want to get rid of in
-      #       favor of GPU_ARCH_VERSION
-      DESIRED_CUDA: cpu
-      GPU_ARCH_TYPE: cpu-s390x
-      DOCKER_IMAGE: pytorch/manylinuxs390x-builder
-      DOCKER_IMAGE_TAG_PREFIX: cpu-s390x
-      DESIRED_PYTHON: "3.13t"
-      build_name: manywheel-py3_13t-cpu-s390x
-      build_environment: linux-s390x-binary-manywheel
-      runs_on: linux.s390x
-      ALPINE_IMAGE: "docker.io/s390x/alpine"
-    secrets:
-      github-token: ${{ secrets.GITHUB_TOKEN }}
-  manywheel-py3_13t-cpu-s390x-upload:  # Uploading
-    if: ${{ github.repository_owner == 'pytorch' }}
-    permissions:
-      id-token: write
-      contents: read
-    needs: manywheel-py3_13t-cpu-s390x-test
-    with:
-      PYTORCH_ROOT: /pytorch
-      PACKAGE_TYPE: manywheel
-      # TODO: This is a legacy variable that we eventually want to get rid of in
-      #       favor of GPU_ARCH_VERSION
-      DESIRED_CUDA: cpu
-      GPU_ARCH_TYPE: cpu-s390x
-      DOCKER_IMAGE: pytorch/manylinuxs390x-builder
-      DOCKER_IMAGE_TAG_PREFIX: cpu-s390x
-      DESIRED_PYTHON: "3.13t"
-      build_name: manywheel-py3_13t-cpu-s390x
-    secrets:
-      github-token: ${{ secrets.GITHUB_TOKEN }}
-      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
-      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-    uses: ./.github/workflows/_binary-upload.yml
-
-  manywheel-py3_14-cpu-s390x-build:
-    if: ${{ github.repository_owner == 'pytorch' }}
-    uses: ./.github/workflows/_binary-build-linux.yml
-    needs: get-label-type
-    with:
-      PYTORCH_ROOT: /pytorch
-      PACKAGE_TYPE: manywheel
-      # TODO: This is a legacy variable that we eventually want to get rid of in
-      #       favor of GPU_ARCH_VERSION
-      DESIRED_CUDA: cpu
-      GPU_ARCH_TYPE: cpu-s390x
-      DOCKER_IMAGE: pytorch/manylinuxs390x-builder
-      DOCKER_IMAGE_TAG_PREFIX: cpu-s390x
-      DESIRED_PYTHON: "3.14"
-      runs_on: linux.s390x
-      ALPINE_IMAGE: "docker.io/s390x/alpine"
-      timeout-minutes: 420
-      build_name: manywheel-py3_14-cpu-s390x
-      build_environment: linux-s390x-binary-manywheel
-    secrets:
-      github-token: ${{ secrets.GITHUB_TOKEN }}
-
-  manywheel-py3_14-cpu-s390x-test:  # Testing
-    if: ${{ github.repository_owner == 'pytorch' }}
-    needs:
-      - manywheel-py3_14-cpu-s390x-build
-      - get-label-type
-    uses: ./.github/workflows/_binary-test-linux.yml
-    with:
-      PYTORCH_ROOT: /pytorch
-      PACKAGE_TYPE: manywheel
-      # TODO: This is a legacy variable that we eventually want to get rid of in
-      #       favor of GPU_ARCH_VERSION
-      DESIRED_CUDA: cpu
-      GPU_ARCH_TYPE: cpu-s390x
-      DOCKER_IMAGE: pytorch/manylinuxs390x-builder
-      DOCKER_IMAGE_TAG_PREFIX: cpu-s390x
-      DESIRED_PYTHON: "3.14"
-      build_name: manywheel-py3_14-cpu-s390x
-      build_environment: linux-s390x-binary-manywheel
-      runs_on: linux.s390x
-      ALPINE_IMAGE: "docker.io/s390x/alpine"
-    secrets:
-      github-token: ${{ secrets.GITHUB_TOKEN }}
-  manywheel-py3_14-cpu-s390x-upload:  # Uploading
-    if: ${{ github.repository_owner == 'pytorch' }}
-    permissions:
-      id-token: write
-      contents: read
-    needs: manywheel-py3_14-cpu-s390x-test
-    with:
-      PYTORCH_ROOT: /pytorch
-      PACKAGE_TYPE: manywheel
-      # TODO: This is a legacy variable that we eventually want to get rid of in
-      #       favor of GPU_ARCH_VERSION
-      DESIRED_CUDA: cpu
-      GPU_ARCH_TYPE: cpu-s390x
-      DOCKER_IMAGE: pytorch/manylinuxs390x-builder
-      DOCKER_IMAGE_TAG_PREFIX: cpu-s390x
-      DESIRED_PYTHON: "3.14"
-      build_name: manywheel-py3_14-cpu-s390x
-    secrets:
-      github-token: ${{ secrets.GITHUB_TOKEN }}
-      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
-      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-    uses: ./.github/workflows/_binary-upload.yml
-
-  manywheel-py3_14t-cpu-s390x-build:
-    if: ${{ github.repository_owner == 'pytorch' }}
-    uses: ./.github/workflows/_binary-build-linux.yml
-    needs: get-label-type
-    with:
-      PYTORCH_ROOT: /pytorch
-      PACKAGE_TYPE: manywheel
-      # TODO: This is a legacy variable that we eventually want to get rid of in
-      #       favor of GPU_ARCH_VERSION
-      DESIRED_CUDA: cpu
-      GPU_ARCH_TYPE: cpu-s390x
-      DOCKER_IMAGE: pytorch/manylinuxs390x-builder
-      DOCKER_IMAGE_TAG_PREFIX: cpu-s390x
-      DESIRED_PYTHON: "3.14t"
-      runs_on: linux.s390x
-      ALPINE_IMAGE: "docker.io/s390x/alpine"
-      timeout-minutes: 420
-      build_name: manywheel-py3_14t-cpu-s390x
-      build_environment: linux-s390x-binary-manywheel
-    secrets:
-      github-token: ${{ secrets.GITHUB_TOKEN }}
-
-  manywheel-py3_14t-cpu-s390x-test:  # Testing
-    if: ${{ github.repository_owner == 'pytorch' }}
-    needs:
-      - manywheel-py3_14t-cpu-s390x-build
-      - get-label-type
-    uses: ./.github/workflows/_binary-test-linux.yml
-    with:
-      PYTORCH_ROOT: /pytorch
-      PACKAGE_TYPE: manywheel
-      # TODO: This is a legacy variable that we eventually want to get rid of in
-      #       favor of GPU_ARCH_VERSION
-      DESIRED_CUDA: cpu
-      GPU_ARCH_TYPE: cpu-s390x
-      DOCKER_IMAGE: pytorch/manylinuxs390x-builder
-      DOCKER_IMAGE_TAG_PREFIX: cpu-s390x
-      DESIRED_PYTHON: "3.14t"
-      build_name: manywheel-py3_14t-cpu-s390x
-      build_environment: linux-s390x-binary-manywheel
-      runs_on: linux.s390x
-      ALPINE_IMAGE: "docker.io/s390x/alpine"
-    secrets:
-      github-token: ${{ secrets.GITHUB_TOKEN }}
-  manywheel-py3_14t-cpu-s390x-upload:  # Uploading
-    if: ${{ github.repository_owner == 'pytorch' }}
-    permissions:
-      id-token: write
-      contents: read
-    needs: manywheel-py3_14t-cpu-s390x-test
-    with:
-      PYTORCH_ROOT: /pytorch
-      PACKAGE_TYPE: manywheel
-      # TODO: This is a legacy variable that we eventually want to get rid of in
-      #       favor of GPU_ARCH_VERSION
-      DESIRED_CUDA: cpu
-      GPU_ARCH_TYPE: cpu-s390x
-      DOCKER_IMAGE: pytorch/manylinuxs390x-builder
-      DOCKER_IMAGE_TAG_PREFIX: cpu-s390x
-      DESIRED_PYTHON: "3.14t"
-      build_name: manywheel-py3_14t-cpu-s390x
+      DESIRED_CUDA: ${{ matrix.config.desired_cuda }}
+      GPU_ARCH_TYPE: ${{ matrix.config.gpu_arch_type }}
+      DOCKER_IMAGE: ${{ matrix.config.container_image }}
+      DOCKER_IMAGE_TAG_PREFIX: ${{ matrix.config.container_image_tag_prefix }}
+      DESIRED_PYTHON: ${{ matrix.config.python_version }}
+      build_name: ${{ matrix.config.build_name }}
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
       R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
