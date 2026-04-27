@@ -10551,6 +10551,35 @@ scipy_lobpcg  | {eq_err_scipy:10.2e}  | {eq_err_general_scipy:10.2e}  | {iters2:
         out_cpu = torch.logaddexp(input=input_complex.cpu(), other=other_complex.cpu())
         self.assertEqual(out_gpu.cpu(), out_cpu)
 
+    @onlyCPU
+    @skipCPUIfNoLapack
+    @dtypes(torch.float64)
+    def test_inverse_batched_multithread(self, device, dtype):
+        # Regression test: batched linalg.inv with large matrices and multiple
+        # threads used to trigger MKL DLASWP thread-safety errors because
+        # apply_lu_factor's grain_size heuristic produced grain_size=0 for
+        # large matrices, which at::parallel_for interprets as "always
+        # parallelize" instead of the intended "serialize".
+        num_threads = torch.get_num_threads()
+        try:
+            torch.set_num_threads(4)
+            n = 256
+            batch = 8
+            A = torch.randn(batch, n, n, dtype=dtype, device=device)
+            # Make matrices well-conditioned by adding n*I
+            A = A + n * torch.eye(n, dtype=dtype, device=device)
+            A_inv = torch.linalg.inv(A)
+            identity = torch.eye(n, dtype=dtype, device=device)
+            residual = A @ A_inv - identity.expand_as(A)
+            self.assertEqual(
+                residual,
+                torch.zeros_like(residual),
+                atol=1e-5,
+                rtol=1e-5,
+            )
+        finally:
+            torch.set_num_threads(num_threads)
+
 instantiate_device_type_tests(TestLinalg, globals())
 
 if __name__ == '__main__':
