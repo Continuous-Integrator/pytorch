@@ -1876,8 +1876,8 @@ def module_inputs_torch_nn_LinearCrossEntropyLoss(module_info, device, dtype, re
                         target[num_batches // 2] = ii
                         if ii < 0 or ii >= num_classes:
                             # tests the correctness of out-of-range ii
-                            # mapping to 0 (see
-                            # linear_cross_entropy_batch_chunking_cls)
+                            # mapping to 0 (see the batch chunking
+                            # logic in the next PR)
                             target[0] = 0
                         yield module_args, module_kwargs, (input, target)
 
