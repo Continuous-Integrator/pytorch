@@ -2933,7 +2933,8 @@ class TestFP8Matmul(TestCase):
         "cublaslt grouped gemm requires SM 10.x or 11.0"
     )
     @parametrize("op", ["2d/2d", "2d/3d", "3d/2d", "3d/3d"])
-    def test_scaled_grouped_gemm_cublaslt_nvfp4(self, op):
+    @parametrize("out_dtype", [torch.bfloat16, torch.float16, torch.float32])
+    def test_scaled_grouped_gemm_cublaslt_nvfp4(self, op, out_dtype):
         (A, B_T, scale_a, scale_b, global_scale_a, global_scale_b,
          A_hp, B_hp, offs) = self.scaled_grouped_gemm_cublaslt_nvfp4_helper(op)
 
@@ -2950,17 +2951,49 @@ class TestFP8Matmul(TestCase):
             swizzle_a=SwizzleType.SWIZZLE_32_4_4,
             swizzle_b=SwizzleType.SWIZZLE_32_4_4,
             offs=offs,
-            out_dtype=torch.bfloat16,
+            out_dtype=out_dtype,
             wrap_v2=True,
         )
 
-        # bf16 reference: use the reconstructed hp tensors
         C_ref = grouped_mm(
             A_hp, B_hp.transpose(-2, -1), offs=offs, out_dtype=torch.bfloat16
-        )
+        ).to(out_dtype)
 
         self.assertFalse(C.isnan().any(), "output contains NaN")
         torch.testing.assert_close(C, C_ref, atol=8.0e-2, rtol=8.0e-2)
+
+    @skipIfRocm
+    @unittest.skipIf(
+        torch.cuda.get_device_capability()[0] not in [10, 11],
+        "cublaslt grouped gemm requires SM 10.x or 11.0"
+    )
+    @unittest.skip("_scaled_grouped_mm_v2 lacks meta registration for torch.compile")
+    @parametrize("op", ["2d/2d", "2d/3d", "3d/2d", "3d/3d"])
+    @parametrize("mode", ["default", "reduce-overhead"])
+    def test_scaled_grouped_gemm_cublaslt_nvfp4_compiled(self, op, mode):
+        out_dtype = torch.bfloat16
+        (A, B_T, scale_a, scale_b, global_scale_a, global_scale_b,
+         A_hp, B_hp, offs) = self.scaled_grouped_gemm_cublaslt_nvfp4_helper(op)
+
+        torch._dynamo.reset()
+        os.environ["TORCH_GROUPED_MM_PREFER_CUBLASLT"] = "1"
+        self.addCleanup(os.environ.pop, "TORCH_GROUPED_MM_PREFER_CUBLASLT", None)
+
+        recipe = [ScalingType.BlockWise1x16.value, ScalingType.TensorWise.value]
+        swizzle = [SwizzleType.SWIZZLE_32_4_4.value]
+
+        f_ref = torch._scaled_grouped_mm_v2
+        f = torch.compile(f_ref, fullgraph=True, mode=mode)
+
+        args = (
+            A, B_T.transpose(-2, -1),
+            [scale_a, global_scale_a], recipe, swizzle,
+            [scale_b, global_scale_b], recipe, swizzle,
+            offs, None, out_dtype, (), False,
+        )
+        C_ref = f_ref(*args)
+        C = f(*args)
+        self.assertEqual(C, C_ref)
 
     @unittest.skipIf(not PLATFORM_SUPPORTS_MX_GEMM, mx_skip_msg)
     def test_blockwise_mxfp8_compile(self) -> None:
