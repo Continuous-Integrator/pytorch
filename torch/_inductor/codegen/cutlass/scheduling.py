@@ -121,6 +121,17 @@ class CUTLASSScheduling(BaseScheduling):
             wrapper.define_kernel(
                 kernel_name, compile_wrapper.getvalue(), metadata_comment
             )
+
+            # For JIT cpp_wrapper, the kernel call site emits a bare
+            # `extern "C"` symbol reference; capture the .so path so the
+            # wrapper compile links against it via extra_flags.
+            if V.graph.cpp_wrapper and not V.graph.aot_mode:
+                from ...codecache import CUDACodeCache
+
+                _, input_path = CUDACodeCache.write(src_code, "so")
+                so_path = input_path[: -len(CUDACodeCache._SOURCE_CODE_SUFFIX)] + "so"
+                if so_path not in wrapper.cutlass_kernel_libs:
+                    wrapper.cutlass_kernel_libs.append(so_path)
         return kernel_name
 
     def codegen_template(

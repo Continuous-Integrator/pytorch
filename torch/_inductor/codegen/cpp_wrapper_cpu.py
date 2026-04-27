@@ -694,9 +694,7 @@ class CppWrapperCpu(PythonWrapperCodegen):
     def codegen_additional_funcs(self):
         pass
 
-    def codegen_model_kernels(self):
-        self.prefix.writeline("namespace {")
-
+    def codegen_initialized_kernel_decls(self):
         # Tell compiler we need to link with the non-mangled symbols
         for kernel in self.initialized_kernels.values():
             assert hasattr(kernel, "get_signature"), (
@@ -705,6 +703,9 @@ class CppWrapperCpu(PythonWrapperCodegen):
             signature = kernel.get_signature()
             self.prefix.writeline(f'extern "C" {signature};')
 
+    def codegen_model_kernels(self):
+        self.prefix.writeline("namespace {")
+        self.codegen_initialized_kernel_decls()
         self.prefix.writeline(
             "class AOTInductorModelKernels : public AOTInductorModelKernelsBase {"
         )
@@ -1054,6 +1055,10 @@ class CppWrapperCpu(PythonWrapperCodegen):
             self.codegen_const_run_driver()
             aot_mode_decls.writeline("} // namespace torch::aot_inductor")
             aot_mode_decls.writeline("using namespace torch::aot_inductor;")
+        elif not V.graph.is_const_graph and self.initialized_kernels:
+            # JIT cpp_wrapper: emit extern "C" decls for kernels we link
+            # against (e.g. CUTLASS .so passed via extra_flags).
+            self.codegen_initialized_kernel_decls()
 
         self.prefix = cache_decls = IndentedBuffer()
         for dtype in self.used_cached_dtypes:
@@ -1196,6 +1201,14 @@ class CppWrapperCpu(PythonWrapperCodegen):
             result.splice('"""\n)')
 
         kernel_code = "kernel_src" if config.cpp_wrapper_build_separate else "None"
+        # Link any precompiled CUTLASS .so kernels into the wrapper, with
+        # rpath entries so the dynamic linker can find them at module load.
+        extra_flags: list[str] = list(self.cutlass_kernel_libs)
+        rpath_dirs = list(
+            dict.fromkeys(os.path.dirname(p) for p in self.cutlass_kernel_libs)
+        )
+        extra_flags.extend(f"-Wl,-rpath,{d}" for d in rpath_dirs)
+        extra_flags_repr = repr(tuple(extra_flags))
         # Cpp entry function for JIT with cpp wrapper
         result.splice(
             f"""
@@ -1205,6 +1218,7 @@ class CppWrapperCpu(PythonWrapperCodegen):
                 device_type="{self.device}",
                 num_outputs={len(V.graph.graph_outputs)},
                 kernel_code={kernel_code},
+                extra_flags={extra_flags_repr},
             )
             """
         )

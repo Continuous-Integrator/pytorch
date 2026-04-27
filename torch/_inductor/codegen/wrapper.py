@@ -1326,6 +1326,10 @@ class PythonWrapperCodegen(CodeGen):
         # Additional files that are dependent to the wrapper (ex. cubin files)
         self.additional_files = []
 
+        # Compiled CUTLASS .so paths to link into the JIT cpp_wrapper.
+        # Populated by CUTLASSScheduling.define_kernel when not aot_mode.
+        self.cutlass_kernel_libs: list[str] = []
+
     @staticmethod
     def create(
         is_subgraph: bool,

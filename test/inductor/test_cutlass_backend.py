@@ -574,6 +574,45 @@ class TestCutlassBackend(TestCase):
 
             torch.testing.assert_close(actual, expected)
 
+    @unittest.skipIf(torch.version.hip is not None, "ROCm not supported")
+    @skipCUDAIf(not SM90OrLater, "need sm_90")
+    @parametrize("dtype", (torch.float16, torch.bfloat16))
+    @mock.patch.dict(os.environ, {"PATH": _get_path_without_sccache()})
+    def test_max_autotune_cutlass_backend_cpp_wrapper(
+        self,
+        dtype: torch.dtype,
+    ):
+        """
+        Verify that CUTLASS GEMM templates work under JIT cpp_wrapper mode
+        """
+        M, N, K = 128, 128, 16
+
+        class MyModel(torch.nn.Module):
+            def forward(self, a, b):
+                return a @ b
+
+        model = MyModel().to(GPU_TYPE)
+        a = torch.randn(M, K, device=GPU_TYPE, dtype=dtype)
+        b = torch.randn(K, N, device=GPU_TYPE, dtype=dtype)
+        expected = model(a, b)
+
+        with config.patch(
+            {
+                "max_autotune": True,
+                "max_autotune_gemm_backends": "CUTLASS",
+                "cutlass.cutlass_max_profiling_configs": 2,
+                "cpp_wrapper": True,
+            }
+        ):
+            from torch._inductor.utils import run_and_get_code
+
+            compiled = torch.compile(model, fullgraph=True)
+            actual, codes = run_and_get_code(compiled, a, b)
+            torch.testing.assert_close(actual, expected)
+            # JIT path must call the bare extern "C" symbol, not via the
+            # AOT-only `kernels.` member.
+            FileCheck().check("cutlass_").check_not("kernels.cutlass_").run(codes[0])
+
     @skipXPUIf(True, "XPU SYCL-TLA has not supported fp8 yet")
     @skipCUDAIf(not SM90OrLater, "need sm_90")
     @parametrize("dynamic", (False, True))
