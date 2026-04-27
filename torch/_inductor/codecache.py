@@ -4411,6 +4411,16 @@ class CUTLASSCodeCache:
         return key, input_path
 
     @classmethod
+    def get_output_path(cls, source_code: str, dst_file_ext: str) -> str:
+        """
+        Returns the deterministic output path for `compile(source_code, dst_file_ext)`
+        without performing the compile. Useful when a caller needs to reference the
+        compiled artifact path before an async compile has finished.
+        """
+        _, input_path = cls.write(source_code, dst_file_ext)
+        return input_path[: -len(cls._SOURCE_CODE_SUFFIX)] + dst_file_ext
+
+    @classmethod
     def compile(
         cls, source_code: str, dst_file_ext: str, extra_args: list[str] | None = None
     ) -> tuple[str, str, str]:
@@ -4683,6 +4693,12 @@ class XPUCodeCache(CUTLASSCodeCache):
 
 @clear_on_fresh_cache
 class ROCmCodeCache:
+    """
+    A cache for managing the compilation and loading source code specifically for ROCm.
+    This class handles writing source code to files, compiling them into shared objects, and caching
+    the results to avoid redundant compilations.
+    """
+
     @dataclasses.dataclass
     class CacheEntry:
         input_path: str
@@ -4712,6 +4728,16 @@ class ROCmCodeCache:
             source_code, cls._SOURCE_CODE_SUFFIX, extra=cuda_command
         )
         return key, input_path
+
+    @classmethod
+    def get_output_path(cls, source_code: str, dst_file_ext: str) -> str:
+        """
+        Returns the deterministic output path for `compile(source_code, dst_file_ext)`
+        without performing the compile. Useful when a caller needs to reference the
+        compiled artifact path before an async compile has finished.
+        """
+        _, input_path = cls.write(source_code, dst_file_ext)
+        return input_path[: -len(cls._SOURCE_CODE_SUFFIX)] + dst_file_ext
 
     @classmethod
     def compile(

@@ -694,9 +694,7 @@ class CppWrapperCpu(PythonWrapperCodegen):
     def codegen_additional_funcs(self):
         pass
 
-    def codegen_model_kernels(self):
-        self.prefix.writeline("namespace {")
-
+    def codegen_initialized_kernel_decls(self):
         # Tell compiler we need to link with the non-mangled symbols
         for kernel in self.initialized_kernels.values():
             assert hasattr(kernel, "get_signature"), (
@@ -705,6 +703,9 @@ class CppWrapperCpu(PythonWrapperCodegen):
             signature = kernel.get_signature()
             self.prefix.writeline(f'extern "C" {signature};')
 
+    def codegen_model_kernels(self):
+        self.prefix.writeline("namespace {")
+        self.codegen_initialized_kernel_decls()
         self.prefix.writeline(
             "class AOTInductorModelKernels : public AOTInductorModelKernelsBase {"
         )
@@ -1054,6 +1055,11 @@ class CppWrapperCpu(PythonWrapperCodegen):
             self.codegen_const_run_driver()
             aot_mode_decls.writeline("} // namespace torch::aot_inductor")
             aot_mode_decls.writeline("using namespace torch::aot_inductor;")
+        elif not V.graph.is_const_graph and self.initialized_kernels:
+            # JIT cpp_wrapper: emit extern "C" decls for kernels (CUTLASS,
+            # ROCm CK) whose precompiled .so files are linked into the
+            # wrapper via extra_flags.
+            self.codegen_initialized_kernel_decls()
 
         self.prefix = cache_decls = IndentedBuffer()
         for dtype in self.used_cached_dtypes:
@@ -1196,6 +1202,12 @@ class CppWrapperCpu(PythonWrapperCodegen):
             result.splice('"""\n)')
 
         kernel_code = "kernel_src" if config.cpp_wrapper_build_separate else "None"
+        # Link any precompiled kernel .so files (CUTLASS, ROCm CK) into the
+        # wrapper. The .so files are built without -Wl,-soname, so passing
+        # their absolute paths positionally to the linker encodes them as
+        # absolute DT_NEEDED entries that resolve at module load (same
+        # mechanism HalideCodeCache uses for its standalone runtime).
+        extra_flags_repr = repr(tuple(self.external_kernel_libs))
         # Cpp entry function for JIT with cpp wrapper
         result.splice(
             f"""
@@ -1205,6 +1217,7 @@ class CppWrapperCpu(PythonWrapperCodegen):
                 device_type="{self.device}",
                 num_outputs={len(V.graph.graph_outputs)},
                 kernel_code={kernel_code},
+                extra_flags={extra_flags_repr},
             )
             """
         )
