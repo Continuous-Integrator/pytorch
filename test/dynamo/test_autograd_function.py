@@ -2588,6 +2588,134 @@ class AutogradFunctionFunctorchTests(torch._dynamo.test_case.TestCase):
         result = torch.func.grad(loss_fn)(x)
         self.assertEqual(result, torch.tensor([2.0, 2.0]))
 
+    def test_nonstrict_trace_autograd_function(self):
+        """@nonstrict_trace on autograd.Function fixes backward metadata mismatch.
+
+        Without the decorator, Dynamo traces backward assuming the gradient has
+        the same strides as the forward output (contiguous). At runtime the
+        gradient is non-contiguous, so the wrong branch is baked in.
+
+        With @nonstrict_trace, the autograd.Function is opaque to Dynamo and
+        AOTAutograd traces backward with correct metadata. Also tests
+        save_for_backward and inductor backend.
+        """
+
+        @torch._dynamo.nonstrict_trace
+        class StrideBranchFunc(torch.autograd.Function):
+            @staticmethod
+            def forward(ctx, x):
+                ctx.save_for_backward(x)
+                return x.clone()
+
+            @staticmethod
+            def backward(ctx, grad_output):
+                (x,) = ctx.saved_tensors
+                if grad_output.is_contiguous():
+                    return grad_output * x
+                else:
+                    return grad_output.contiguous() * x * 0.5
+
+        def fn(x):
+            y = StrideBranchFunc.apply(x)
+            return y.t().sum()
+
+        for backend in ["aot_eager", "inductor"]:
+            torch._dynamo.reset()
+            x_ref = torch.randn(4, 4, requires_grad=True)
+            x_test = x_ref.clone().detach().requires_grad_(True)
+
+            fn(x_ref).backward()
+            torch.compile(fn, backend=backend)(x_test).backward()
+
+            self.assertEqual(x_ref.grad, x_test.grad)
+
+    def test_nonstrict_trace_autograd_function_dataclass_input(self):
+        """@nonstrict_trace supports pytree-registered dataclass inputs."""
+        from torch.utils._pytree import register_dataclass
+
+        @dataclass
+        class ScaleConfig:
+            scale: float
+            offset: float
+
+        register_dataclass(ScaleConfig)
+
+        @torch._dynamo.nonstrict_trace
+        class ConfiguredFunc(torch.autograd.Function):
+            @staticmethod
+            def forward(ctx, x, config):
+                ctx.save_for_backward(x)
+                ctx.scale = config.scale
+                return x * config.scale + config.offset
+
+            @staticmethod
+            def backward(ctx, grad_output):
+                (x,) = ctx.saved_tensors
+                return grad_output * ctx.scale, None
+
+        config = ScaleConfig(scale=2.0, offset=1.0)
+
+        def fn(x, config):
+            return ConfiguredFunc.apply(x, config).sum()
+
+        x_ref = torch.randn(4, 4, requires_grad=True)
+        x_test = x_ref.clone().detach().requires_grad_(True)
+
+        fn(x_ref, config).backward()
+        torch.compile(fn, backend="aot_eager")(x_test, config).backward()
+
+        self.assertEqual(x_ref.grad, x_test.grad)
+
+    def test_nonstrict_trace_autograd_function_selective(self):
+        """Only the decorated autograd.Function uses nonstrict; others use
+        default Dynamo tracing."""
+
+        @torch._dynamo.nonstrict_trace
+        class NonstrictFunc(torch.autograd.Function):
+            @staticmethod
+            def forward(ctx, x):
+                return x.clone()
+
+            @staticmethod
+            def backward(ctx, grad_output):
+                if grad_output.is_contiguous():
+                    return grad_output
+                else:
+                    return grad_output.contiguous() * 0.5
+
+        class DefaultFunc(torch.autograd.Function):
+            @staticmethod
+            def forward(ctx, x):
+                return x * 3.0
+
+            @staticmethod
+            def backward(ctx, grad_output):
+                return grad_output * 3.0
+
+        # NonstrictFunc with transpose to trigger non-contiguous grad
+        def fn_nonstrict(x):
+            y = NonstrictFunc.apply(x)
+            return y.t().sum()
+
+        x_ref = torch.randn(4, 4, requires_grad=True)
+        x_test = x_ref.clone().detach().requires_grad_(True)
+        fn_nonstrict(x_ref).backward()
+        torch.compile(fn_nonstrict, backend="aot_eager")(x_test).backward()
+        self.assertEqual(x_ref.grad, x_test.grad)
+
+        # DefaultFunc still uses default Dynamo tracing
+        def fn_default(x):
+            y = DefaultFunc.apply(x)
+            return y.t().sum()
+
+        x3 = torch.randn(4, 4, requires_grad=True)
+        x4 = x3.clone().detach().requires_grad_(True)
+        fn_default(x3).backward()
+        torch._dynamo.reset()
+        torch.compile(fn_default, backend="aot_eager")(x4).backward()
+        # DefaultFunc.backward has no branching, so both paths agree
+        self.assertEqual(x3.grad, x4.grad)
+
 
 if __name__ == "__main__":
     from torch._dynamo.test_case import run_tests
