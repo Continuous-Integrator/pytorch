@@ -42,7 +42,7 @@ THRESHOLD = 60 * 10  # 10 minutes
 # Must check for ROCm runner in another way. We look for /opt/rocm directory.
 if IS_ROCM and not IS_MEM_LEAK_CHECK:
     try:
-        # Same rocminfo-based GPU count logic used by the GHA ROCm health check.
+        # This is the same logic used in GHA health check, see .github/templates/common.yml.j2
         lines = (
             subprocess.check_output(["rocminfo"], encoding="ascii").strip().split("\n")
         )
