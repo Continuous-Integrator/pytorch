@@ -1,74 +1,18 @@
-name: windows-binary-test
+{%- set upload_artifact_s3_action = "seemethere/upload-artifact-s3@v5" -%}
+{%- set download_artifact_s3_action = "seemethere/download-artifact-s3@v4" -%}
+{%- set upload_artifact_action = "actions/upload-artifact@v4.4.0" -%}
+{%- set download_artifact_action = "actions/download-artifact@v4.1.7" -%}
 
-on:
-  workflow_call:
-    inputs:
-      build_name:
-        required: true
-        type: string
-      PYTORCH_ROOT:
-        required: false
-        type: string
-        default: ""
-      PACKAGE_TYPE:
-        required: true
-        type: string
-      DESIRED_CUDA:
-        required: true
-        type: string
-      GPU_ARCH_VERSION:
-        required: false
-        type: string
-      GPU_ARCH_TYPE:
-        required: true
-        type: string
-      DESIRED_PYTHON:
-        required: false
-        type: string
-      LIBTORCH_CONFIG:
-        required: false
-        type: string
-      LIBTORCH_VARIANT:
-        required: false
-        type: string
-      runner_prefix:
-        required: false
-        type: string
-        default: ""
-      runs_on:
-        required: false
-        type: string
-        default: windows.4xlarge
-      timeout-minutes:
-        required: false
-        type: number
-        default: 360
-    secrets:
-      github-token:
-        required: true
+{%- set timeout_minutes = 240 -%}
+{%- set timeout_minutes_windows_binary = 360 -%}
 
-permissions:
-  id-token: write
+{%- macro concurrency(build_environment) -%}
+concurrency:
+  group: !{{ build_environment }}-${{ github.event.pull_request.number || github.ref_name }}-${{ github.ref_type == 'branch' && github.sha }}-${{ github.event_name == 'workflow_dispatch' }}
+  cancel-in-progress: true
+{%- endmacro -%}
 
-jobs:
-  test:
-    runs-on: ${{ inputs.runner_prefix }}${{ inputs.runs_on }}
-    timeout-minutes: ${{ inputs.timeout-minutes }}
-    env:
-      # Fall back to runner workspace when the caller doesn't pass PYTORCH_ROOT
-      # (defaults for workflow_call inputs cannot reference github context).
-      PYTORCH_ROOT: ${{ inputs.PYTORCH_ROOT != '' && inputs.PYTORCH_ROOT || github.workspace }}
-      PACKAGE_TYPE: ${{ inputs.PACKAGE_TYPE }}
-      # TODO: This is a legacy variable that we eventually want to get rid of in
-      #       favor of GPU_ARCH_VERSION
-      DESIRED_CUDA: ${{ inputs.DESIRED_CUDA }}
-      GPU_ARCH_VERSION: ${{ inputs.GPU_ARCH_VERSION }}
-      GPU_ARCH_TYPE: ${{ inputs.GPU_ARCH_TYPE }}
-      SKIP_ALL_TESTS: 1
-      DESIRED_PYTHON: ${{ inputs.DESIRED_PYTHON }}
-      LIBTORCH_CONFIG: ${{ inputs.LIBTORCH_CONFIG }}
-      LIBTORCH_VARIANT: ${{ inputs.LIBTORCH_VARIANT }}
-    steps:
+{%- macro display_ec2_information() -%}
       - name: Display EC2 information
         shell: bash
         run: |
@@ -83,11 +27,15 @@ jobs:
           echo "instance-id: $(get_ec2_metadata instance-id)"
           echo "instance-type: $(get_ec2_metadata instance-type)"
           echo "system info $(uname -a)"
+{%- endmacro -%}
+
+{%- macro setup_ec2_windows() -%}
+      !{{ display_ec2_information() }}
       - name: "[FB EMPLOYEES] Enable SSH (Click me for login details)"
         uses: pytorch/test-infra/.github/actions/setup-ssh@main
         continue-on-error: true
         with:
-          github-secret: ${{ secrets.github-token }}
+          github-secret: ${{ secrets.GITHUB_TOKEN }}
       - name: Enable git long paths and symlinks on Windows and disable fsmonitor daemon
         shell: bash
         run: |
@@ -113,46 +61,69 @@ jobs:
           # Let's both exclude the path and disable Windows Defender completely just to be sure
           # that it doesn't interfere
           Set-MpPreference -DisableRealtimeMonitoring $True -ErrorAction Ignore
-      - name: Checkout PyTorch
+{%- endmacro -%}
+
+{%- macro apply_filter() -%}
+      - name: Check if the job is disabled
+        id: filter
+        # Binary workflows checkout to pytorch subdirectory instead
+        uses: ./pytorch/.github/actions/filter-test-configs
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          # NB: Use a mock test matrix with a default value here. After filtering, if the
+          # returned matrix is empty, it means that the job is disabled
+          test-matrix: |
+            { include: [
+              { config: "default" },
+            ]}
+{%- endmacro -%}
+
+{%- macro checkout(submodules="recursive", deep_clone=True, directory="", repository="pytorch/pytorch", branch="", checkout_pr_head=True) -%}
+      - name: Checkout !{{ 'PyTorch' if repository == "pytorch/pytorch" else repository }}
         uses: actions/checkout@v4
         with:
+      {%- if branch %}
+          ref: !{{ branch }}
+      {%- elif checkout_pr_head %}
           ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
-          submodules: recursive
+      {%- endif %}
+      {%- if deep_clone %}
+          # deep clone, to allow use of git merge-base
+          fetch-depth: 0
+      {%- endif %}
+          submodules: !{{ submodules }}
+      {%- if repository != "pytorch/pytorch" %}
+          repository: !{{ repository }}
+      {%- endif %}
+      {%- if directory %}
+          path: !{{ directory }}
+      {%- endif %}
           show-progress: false
-      - name: Clean PyTorch checkout
+      - name: Clean !{{ 'PyTorch' if repository == "pytorch/pytorch" else repository }} checkout
         run: |
           # Remove any artifacts from the previous checkouts
           git clean -fxd
-      # NOTE: These environment variables are put here so that they can be applied on every job equally
-      #       They are also here because setting them at a workflow level doesn't give us access to the
-      #       runner.temp variable, which we need.
-      - name: Populate binary env
-        shell: bash
-        run: |
-          echo "BINARY_ENV_FILE=${RUNNER_TEMP}/env" >> "${GITHUB_ENV}"
-          echo "PYTORCH_FINAL_PACKAGE_DIR=${RUNNER_TEMP}/artifacts" >> "${GITHUB_ENV}"
-          echo "WIN_PACKAGE_WORK_DIR=${RUNNER_TEMP}"
-      - uses: actions/download-artifact@v4.1.7
-        name: Download Build Artifacts
-        with:
-          name: ${{ inputs.build_name }}
-          path: "${{ env.PYTORCH_FINAL_PACKAGE_DIR }}"
-      - name: Populate binary env
-        shell: bash
-        run: |
-          "${PYTORCH_ROOT}/.ci/pytorch/binary_populate_env.sh"
-      - name: Test PyTorch binary
-        shell: bash
-        run: |
-          "${PYTORCH_ROOT}/.ci/pytorch/binary_windows_test.sh"
+      {%- if directory%}
+        working-directory: !{{ directory }}
+      {%- endif %}
+{%- endmacro -%}
+
+{%- macro wait_and_kill_ssh_windows(pytorch_directory="") -%}
       - name: Wait until all sessions have drained
         shell: powershell
+{%- if pytorch_directory %}
+        working-directory: !{{ pytorch_directory }}
+{%- endif %}
         if: always()
         timeout-minutes: 120
         run: |
           .github\scripts\wait_for_ssh_to_drain.ps1
       - name: Kill active ssh sessions if still around (Useful if workflow was cancelled)
         shell: powershell
+{%- if pytorch_directory %}
+        working-directory: !{{ pytorch_directory }}
+{%- endif %}
         if: always()
         run: |
           .github\scripts\kill_active_ssh_sessions.ps1
+{%- endmacro -%}

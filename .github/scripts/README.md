@@ -12,14 +12,31 @@ This directory contains workflows and scripts to support our CI infrastructure t
 - Scheduled CI (`periodic.yml`) is a subset of trunk CI that is run every few hours on main.
 - Binary CI is run to package binaries for distribution for all platforms.
 
-## Binary build workflows
+## Templates
 
-Binary build workflows live under `.github/workflows/generated-*.yml` and are
-hand-edited. The GPU/arch/Python matrix shared across them is defined in
-`.github/scripts/generate_binary_build_matrix.py` and consumed at runtime via
-`--runtime-matrix <os>` (emits `configs=<json>` to `$GITHUB_OUTPUT`). Adding a
-new CUDA/ROCm/Python version to that script propagates to the workflows on the
-next run with no YAML change.
+Templates written in [Jinja](https://jinja.palletsprojects.com/en/3.0.x/) are located in the `.github/templates` directory
+and used to generate workflow files for binary jobs found in the `.github/workflows/` directory. These are also a
+couple of utility templates used to discern common utilities that can be used amongst different templates.
+
+### (Re)Generating workflow files
+
+You will need `jinja2` in order to regenerate the workflow files which can be installed using:
+```bash
+pip install -r .github/requirements/regenerate-requirements.txt
+```
+
+Workflows can be generated / regenerated using the following command:
+```bash
+.github/regenerate.sh
+```
+
+### Adding a new generated binary workflow
+
+New generated binary workflows can be added in the `.github/scripts/generate_ci_workflows.py` script. You can reference
+examples from that script in order to add the workflow to the stream that is relevant to what you particularly
+care about.
+
+Different parameters can be used to achieve different goals, i.e. running jobs on a cron, running only on trunk, etc.
 
 #### ciflow (trunk)
 
@@ -39,3 +56,11 @@ Exceptions to AWS for self hosted:
 New runner types can be added by committing changes to `.github/scale-config.yml`. Example: https://github.com/pytorch/pytorch/pull/70474
 
 > NOTE: New runner types can only be used once the changes to `.github/scale-config.yml` have made their way into the default branch
+
+### Testing [pytorch/builder](https://github.com/pytorch/builder) changes
+
+In order to test changes to the builder scripts:
+
+1. Specify your builder PR's branch and repo as `builder_repo` and  `builder_branch` in [`.github/templates/common.yml.j2`](https://github.com/pytorch/pytorch/blob/32356aaee6a77e0ae424435a7e9da3d99e7a4ca5/.github/templates/common.yml.j2#LL10C26-L10C32).
+2. Regenerate workflow files with `.github/regenerate.sh` (see above).
+3. Submit fake PR to PyTorch. If changing binaries build, add an appropriate label like `ciflow/binaries` to trigger the builds.
