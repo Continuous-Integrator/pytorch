@@ -58,6 +58,14 @@ jobs:
       LIBTORCH_CONFIG: ${{ inputs.LIBTORCH_CONFIG }}
       LIBTORCH_VARIANT: ${{ inputs.LIBTORCH_VARIANT }}
       PYTORCH_EXTRA_INSTALL_REQUIREMENTS: ${{ inputs.PYTORCH_EXTRA_INSTALL_REQUIREMENTS }}
+      # arm64-specific paths consumed by bootstrap_*.bat. These were set at
+      # workflow-level env: in the legacy (non-reusable) workflow; a reusable
+      # workflow doesn't inherit caller env, so redeclare them here.
+      DOWNLOADS_DIR: c:\temp\downloads
+      DEPENDENCIES_DIR: c:\temp\dependencies
+      ENABLE_APL: 1
+      ENABLE_OPENBLAS: 0
+      MSVC_VERSION: 14.42
     steps:
       - name: Populate binary env
         shell: cmd
