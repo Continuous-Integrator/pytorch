@@ -235,6 +235,28 @@ def _wrap_compiler(compiler: str | list[str]) -> list[str]:
     return compiler
 
 
+def _windows_quote(arg: str) -> str:
+    """Quote a single argument per the MSVC ``CommandLineToArgvW`` rules."""
+    if arg and not any(c in arg for c in ' \t\n\v"'):
+        return arg
+    out = ['"']
+    backslashes = 0
+    for c in arg:
+        if c == '\\':
+            backslashes += 1
+            continue
+        if c == '"':
+            out.append('\\' * (2 * backslashes + 1))
+            out.append('"')
+        else:
+            out.append('\\' * backslashes)
+            out.append(c)
+        backslashes = 0
+    out.append('\\' * (2 * backslashes))
+    out.append('"')
+    return ''.join(out)
+
+
 def _shell_join(cmd: list[str]) -> str:
     """Quote and join ``cmd`` for the current platform's shell.
 
@@ -242,7 +264,7 @@ def _shell_join(cmd: list[str]) -> str:
     correctly on Windows for paths like ``C:\\Program Files\\...``.
     """
     if IS_WINDOWS:
-        return subprocess.list2cmdline(cmd)
+        return ' '.join(_windows_quote(a) for a in cmd)
     return shlex.join(cmd)
 
 
