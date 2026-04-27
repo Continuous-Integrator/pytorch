@@ -34,6 +34,7 @@ from ..exc import (
 )
 from .base import ValueMutationNew, VariableTracker
 from .constant import ConstantVariable
+from .hashable import HashableTracker
 
 
 if TYPE_CHECKING:
@@ -117,6 +118,10 @@ class ItertoolsVariable(VariableTracker):
                 )
 
             def retrieve_const_key(key: VariableTracker) -> Any:
+                from ..utils import specialize_symnode
+
+                # Unwrap LazyVariableTracker to get the underlying variable
+                key = specialize_symnode(key)
                 if isinstance(key, variables.SymNodeVariable):
                     return key.evaluate_expr()
                 elif key.is_python_constant():
@@ -198,10 +203,20 @@ class ItertoolsVariable(VariableTracker):
             return tx.inline_user_function_return(
                 VariableTracker.build(tx, polyfills.repeat), args, kwargs
             )
-        elif self.value is itertools.count:
-            return variables.CountIteratorVariable(
-                *args, mutation_type=ValueMutationNew()
-            )
+        elif self.value is itertools.count and not kwargs:
+            if len(args) == 0:
+                return variables.CountIteratorVariable(mutation_type=ValueMutationNew())
+            if len(args) == 1:
+                return variables.CountIteratorVariable(
+                    item=args[0], mutation_type=ValueMutationNew()
+                )
+            if len(args) == 2:
+                return variables.CountIteratorVariable(
+                    item=args[0],
+                    step=args[1],
+                    mutation_type=ValueMutationNew(),
+                )
+            return super().call_function(tx, args, kwargs)
         elif (
             self.value is itertools.permutations
             and (len(args) == 1 or (len(args) == 2 and args[1].is_python_constant()))
@@ -267,8 +282,12 @@ class IteratorVariable(VariableTracker):
         self, tx: "InstructionTranslator", name: str
     ) -> "ConstantVariable":
         if name == "__iter__" or name == "__next__":
-            return variables.CONSTANT_VARIABLE_TRUE
+            return variables.ConstantVariable.create(True)
         return super().call_obj_hasattr(tx, name)
+
+    def tp_iter_impl(self, tx: "InstructionTranslator") -> "VariableTracker":
+        """Iterators are their own iterator."""
+        return self
 
     def call_method(
         self,
@@ -277,49 +296,18 @@ class IteratorVariable(VariableTracker):
         args: list[VariableTracker],
         kwargs: dict[str, VariableTracker],
     ) -> VariableTracker:
-        if name == "__iter__":
-            return self
-        elif name == "__next__":
+        if name == "__next__":
             return self.next_variable(tx)
         return super().call_method(tx, name, args, kwargs)
-
-
-class ObjectIteratorVariable(IteratorVariable):
-    """
-    VariableTracker for iter(obj) that implements the iterator protocol (i.e.,
-    has a `__next__` method).
-
-    We use this class to track the state of the iterator and handle the case
-    when the iterator is exhausted:
-
-    Example usage:
-        > b = iter(obj)
-        > list(b)  # exhaust the iterator
-        > list(b)  # empty list
-    """
-
-    def __init__(self, obj: VariableTracker, **kwargs: Any) -> None:
-        super().__init__(**kwargs)
-        self.obj = obj
-        self.generator_exhausted = False
-
-    def next_variable(self, tx: "InstructionTranslator") -> VariableTracker:
-        if self.generator_exhausted:
-            raise_observed_exception(StopIteration, tx)
-
-        try:
-            return self.obj.next_variable(tx)
-        except ObservedUserStopIteration:
-            # Do not rely on the object to always return StopIteration once it
-            # is exhausted.
-            self.generator_exhausted = True
-            raise
 
 
 class RepeatIteratorVariable(IteratorVariable):
     def __init__(self, item: VariableTracker, **kwargs: Any) -> None:
         super().__init__(**kwargs)
         self.item = item
+
+    def python_type(self) -> type:
+        return itertools.repeat
 
     # Repeat needs no mutation, clone self
     def next_variable(self, tx: "InstructionTranslator") -> VariableTracker:
@@ -339,10 +327,21 @@ class RepeatIteratorVariable(IteratorVariable):
 
 
 class CountIteratorVariable(IteratorVariable):
+    # advance_count tracks how many next() calls were made during tracing,
+    # used by side_effects.py to replay them on the real iterator post-execution.
+    _nonvar_fields = {
+        "advance_count",
+        *IteratorVariable._nonvar_fields,
+    }
+
+    def python_type(self) -> type:
+        return itertools.count
+
     def __init__(
         self,
         item: int | VariableTracker = 0,
         step: int | VariableTracker = 1,
+        advance_count: int = 0,
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
@@ -352,12 +351,14 @@ class CountIteratorVariable(IteratorVariable):
             step = ConstantVariable.create(step)
         self.item = item
         self.step = step
+        self.advance_count = advance_count
 
     def next_variable(self, tx: "InstructionTranslator") -> VariableTracker:
         assert self.is_mutable()
         old_item = self.item
         tx.output.side_effects.mutation(self)
         self.item = self.item.call_method(tx, "__add__", [self.step], {})
+        self.advance_count += 1
         return old_item
 
     def reconstruct(self, codegen: "PyCodegen") -> None:
@@ -378,6 +379,9 @@ class ZipVariable(IteratorVariable):
     """
     Represents zip(*iterables)
     """
+
+    # PyZip_Type: https://github.com/python/cpython/blob/v3.13.0/Python/bltinmodule.c#L3011
+    _cpython_type = zip
 
     _nonvar_fields = {
         "index",
@@ -442,7 +446,7 @@ class ZipVariable(IteratorVariable):
 
         idx: int | None = None
         try:
-            for idx, it in enumerate(self.iterables):  # noqa:B007
+            for idx, it in enumerate(self.iterables):
                 args.append(get_item(it))
         except ObservedUserStopIteration:
             if self.strict:
@@ -500,6 +504,9 @@ class MapVariable(ZipVariable):
     Represents map(fn, *iterables)
     """
 
+    # PyMap_Type: https://github.com/python/cpython/blob/v3.13.0/Python/bltinmodule.c#L1484
+    _cpython_type = map
+
     def __init__(
         self,
         fn: VariableTracker,
@@ -546,6 +553,9 @@ class FilterVariable(IteratorVariable):
     """
     Represents filter(fn, iterable)
     """
+
+    # PyFilter_Type: https://github.com/python/cpython/blob/v3.13.0/Python/bltinmodule.c#L630
+    _cpython_type = filter
 
     _nonvar_fields = {
         "index",
@@ -620,3 +630,79 @@ class FilterVariable(IteratorVariable):
         codegen(self.fn)
         self.reconstruct_items(codegen)
         codegen.extend_output(create_call_function(2, False))
+
+
+class DictViewIterator(IteratorVariable):
+    """Base class for dict view iterators (keys, values, or items)."""
+
+    _nonvar_fields = {
+        "view_type",
+        *IteratorVariable._nonvar_fields,
+    }
+
+    view_type: str = "keys"
+
+    def __init__(
+        self,
+        items: dict[HashableTracker, VariableTracker],
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(**kwargs)
+        if self.view_type == "keys":
+            self._iter = iter(items)
+        elif self.view_type == "values":
+            self._iter = iter(items.values())  # type: ignore[bad-assignment]
+        else:
+            assert self.view_type == "items"
+            self._iter = iter(items.items())  # type: ignore[bad-assignment]
+
+    def next_variable(self, tx: "InstructionTranslator") -> VariableTracker:
+        try:
+            item = next(self._iter)
+
+            if self.view_type == "keys":
+                return item.vt
+            elif self.view_type == "values":
+                return item  # type: ignore[bad-return]
+            else:  # items
+                k, v = item  # type: ignore[not-iterable]
+                return VariableTracker.build(tx, (k.vt, v))
+        except (RuntimeError, StopIteration) as e:
+            raise_observed_exception(
+                type(e),
+                tx,
+                args=[VariableTracker.build(tx, a) for a in e.args],
+            )
+
+    def python_type(self) -> type:
+        if self.view_type == "keys":
+            return type(iter({}))
+        elif self.view_type == "values":
+            return type(iter({}.values()))
+        else:  # items
+            return type(iter({}.items()))
+
+
+class DictIterator(DictViewIterator):
+    _cpython_type = type(iter({}))
+    view_type = "keys"
+
+
+class DictKeysIterator(DictViewIterator):
+    _cpython_type = type(iter({}.keys()))
+    view_type = "keys"
+
+
+class DictValuesIterator(DictViewIterator):
+    _cpython_type = type(iter({}.values()))
+    view_type = "values"
+
+
+class DictItemsIterator(DictViewIterator):
+    _cpython_type = type(iter({}.items()))
+    view_type = "items"
+
+
+class SetIterator(DictViewIterator):
+    _cpython_type = type(iter(set()))
+    view_type = "keys"
