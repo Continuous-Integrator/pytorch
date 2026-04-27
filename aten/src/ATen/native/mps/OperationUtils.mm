@@ -4,6 +4,7 @@
 #include <c10/metal/common.h>
 #include <functional>
 #include <stdexcept>
+#include <string_view>
 #define TORCH_ASSERT_ONLY_METHOD_OPERATORS
 #include <ATen/TensorIterator.h>
 #include <ATen/mps/MPSAllocatorInterface.h>
@@ -1011,7 +1012,7 @@ void MetalShaderLibrary::exec_unary_kernel(TensorIteratorBase& iter,
   const auto alpha_type = scalar_arg_type.has_value() ? scalar_arg_type.value() : iter.common_dtype();
   // alpha kernels are registered under "_dense_" (unary_alpha_dense); only the
   // plain unary path has the new "_dense_scalar_" / "_dense_" (ILP) split.
-  const char* dense_suffix;
+  std::string_view dense_suffix;
   if (!is_contiguous) {
     dense_suffix = "strided";
   } else if (dense_ilp || alpha.has_value()) {
