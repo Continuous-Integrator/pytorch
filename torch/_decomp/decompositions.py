@@ -20,6 +20,7 @@ import torch.nn.functional as F
 from torch import sym_float, sym_int, Tensor
 from torch._decomp import register_decomposition
 from torch._higher_order_ops.out_dtype import out_dtype
+from torch._inductor.utils import device_supports_fp64
 from torch._prims_common import (
     IntLike,
     NumberType,
@@ -2358,7 +2359,7 @@ def _to_copy(
         x_tensor = torch.scalar_tensor(x)
 
     if device is not None and device != x_tensor.device:
-       # When both dtype and device change, decide where to do the dtype
+        # When both dtype and device change, decide where to do the dtype
         # conversion.  The general heuristic is to convert on the faster
         # device (i.e. avoid conversions on cpu when the source is a gpu).
         # However, we must convert on the *source* device when the target
@@ -2376,9 +2377,8 @@ def _to_copy(
                 # consumer GPUs).  Convert to the requested dtype on the
                 # source device to avoid creating an unsupported fp64
                 # intermediate buffer on the target device.
-                from torch._inductor.utils import device_supports_fp64
 
-                if not device_supports_fp64(device):
+                if not device_supports_fp64(device.type):
                     convert_before_transfer = True
 
             if convert_before_transfer:

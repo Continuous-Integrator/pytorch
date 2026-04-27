@@ -5067,9 +5067,7 @@ class CommonTemplate:
 
         x = torch.randn(4, 4, dtype=torch.float64, device="cpu")
 
-        with patch(
-            "torch._inductor.utils.device_supports_fp64", return_value=False
-        ):
+        with patch("torch._inductor.utils.device_supports_fp64", return_value=False):
             _, code = run_and_get_code(torch.compile(fn), x)
 
         code = "\n".join(code)
