@@ -38,23 +38,19 @@ def f_isEnabledFor(x):
 @instantiate_parametrized_tests
 class IgnoreLogsTests(torch._dynamo.test_case.TestCase):
     @parametrize(
-        "ignore_method, fn, expect_moo, expect_graph_break",
+        "ignore_method, fn, should_ignore_logger",
         [
-            # logger.info("moo") with constant args is auto-skipped
-            (None, f_info, False, False),
-            (logger_test.info, f_info, False, False),
-            # isEnabledFor still graph breaks, but info("moo") in the
-            # continuation is auto-skipped
-            (None, f_isEnabledFor, False, True),
-            (logger_test.isEnabledFor, f_isEnabledFor, False, True),
-            # Explicit ignore via config
-            (logger.info, f_info, False, False),
-            (logging.Logger.info, f_info, False, False),
-            (logger.isEnabledFor, f_isEnabledFor, False, False),
-            (logging.Logger.isEnabledFor, f_isEnabledFor, False, False),
+            (None, f_info, False),
+            (logger_test.info, f_info, False),
+            (None, f_isEnabledFor, False),
+            (logger_test.isEnabledFor, f_isEnabledFor, False),
+            (logger.info, f_info, True),
+            (logging.Logger.info, f_info, True),
+            (logger.isEnabledFor, f_isEnabledFor, True),
+            (logging.Logger.isEnabledFor, f_isEnabledFor, True),
         ],
     )
-    def test_ignore_logger(self, ignore_method, fn, expect_moo, expect_graph_break):
+    def test_ignore_logger(self, ignore_method, fn, should_ignore_logger):
         counters.clear()
         x = torch.randn(3, 3)
         orig_out = fn(x)
@@ -66,28 +62,12 @@ class IgnoreLogsTests(torch._dynamo.test_case.TestCase):
                 printed_output = [entry.split(":", 2)[2] for entry in captured.output]
 
         self.assertTrue(same(orig_out, opt_out))
-        if expect_moo:
-            self.assertIn("moo", printed_output)
-        else:
+        if should_ignore_logger:
             self.assertNotIn("moo", printed_output)
-        if expect_graph_break:
-            self.assertGreater(len(counters["graph_break"]), 0)
-        else:
             self.assertEqual(len(counters["graph_break"]), 0)
-
-    def test_logger_with_tensor_arg_graph_breaks(self):
-        counters.clear()
-
-        def f(x):
-            x = x + x
-            logger.info("tensor: %s", x)
-            x = x * x
-            return x
-
-        x = torch.randn(3, 3)
-        opt_f = torch.compile(backend="eager")(f)
-        opt_f(x)
-        self.assertGreater(len(counters["graph_break"]), 0)
+        else:
+            self.assertIn("moo", printed_output)
+            self.assertGreater(len(counters["graph_break"]), 0)
 
     def test_ignore_arbitrary_function_noop(self):
         counters.clear()
