@@ -1,5 +1,3 @@
-# @generated DO NOT EDIT MANUALLY
-#
 # Matrix-driven binary build workflow for linux x86_64 manywheel.
 # The list of python / arch combinations is produced at runtime by
 # .github/scripts/generate_binary_build_matrix.py --runtime-matrix linux
