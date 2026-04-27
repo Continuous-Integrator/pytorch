@@ -41,8 +41,6 @@ def _tensor_placeholder_shape(gm):
 
 
 # Applies per-dim IntSpec to tensors through ``mark_*`` on each call.
-
-
 def _apply_intspec_to_tensor(tensor, shape_spec):
     if isinstance(shape_spec, TensorSpec):
         items = enumerate(shape_spec)
