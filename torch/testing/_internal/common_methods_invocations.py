@@ -12645,11 +12645,6 @@ op_db: list[OpInfo] = [
                     supports_fwgrad_bwgrad=True,
                     rhs_make_tensor_kwargs=dict(exclude_zero=False),
                     skips=(
-                        # RuntimeError: "max_elementwise_cuda" not implemented for 'ComplexFloat'
-                        DecorateInfo(unittest.expectedFailure,
-                                     'TestBinaryUfuncs',
-                                     'test_type_promotion',
-                                     device_type='cuda'),
                         DecorateInfo(unittest.expectedFailure,
                                      'TestBinaryUfuncs',
                                      'test_type_promotion',
@@ -12668,11 +12663,6 @@ op_db: list[OpInfo] = [
                     supports_fwgrad_bwgrad=True,
                     rhs_make_tensor_kwargs=dict(exclude_zero=False),
                     skips=(
-                        # RuntimeError: "min_elementwise_cuda" not implemented for 'ComplexFloat'
-                        DecorateInfo(unittest.expectedFailure,
-                                     'TestBinaryUfuncs',
-                                     'test_type_promotion',
-                                     device_type='cuda'),
                         DecorateInfo(unittest.expectedFailure,
                                      'TestBinaryUfuncs',
                                      'test_type_promotion',
@@ -15190,8 +15180,6 @@ op_db: list[OpInfo] = [
         skips=(
             # Incorrectly attempts to use a scalar for the second argument
             DecorateInfo(unittest.expectedFailure, 'TestJit', 'test_jit_alias_remapping'),
-            # TODO: FIXME: RuntimeError: "max_elementwise_cuda" not implemented for 'ComplexFloat'
-            DecorateInfo(unittest.expectedFailure, 'TestBinaryUfuncs', 'test_type_promotion', device_type='cuda'),
             DecorateInfo(unittest.expectedFailure, 'TestBinaryUfuncs', 'test_type_promotion', device_type='xpu'),
         )),
     BinaryUfuncInfo(
@@ -15203,8 +15191,6 @@ op_db: list[OpInfo] = [
         ref=np.maximum,
         supports_rhs_python_scalar=False,
         skips=(
-            # TODO: FIXME: RuntimeError: "max_elementwise_cuda" not implemented for 'ComplexFloat'
-            DecorateInfo(unittest.expectedFailure, 'TestBinaryUfuncs', 'test_type_promotion', device_type='cuda'),
             DecorateInfo(unittest.expectedFailure, 'TestBinaryUfuncs', 'test_type_promotion', device_type='xpu'),
         )),
     BinaryUfuncInfo(
@@ -15221,11 +15207,6 @@ op_db: list[OpInfo] = [
         skips=(
             # Incorrectly attempts to use a scalar for the second argument
             DecorateInfo(unittest.expectedFailure, 'TestJit', 'test_jit_alias_remapping'),
-            # TODO: FIXME: RuntimeError: "min_elementwise_cuda" not implemented for 'ComplexFloat'
-            DecorateInfo(unittest.expectedFailure,
-                         'TestBinaryUfuncs',
-                         'test_type_promotion',
-                         device_type='cuda'),
             DecorateInfo(unittest.expectedFailure,
                          'TestBinaryUfuncs',
                          'test_type_promotion',
@@ -15240,11 +15221,6 @@ op_db: list[OpInfo] = [
         ref=np.minimum,
         supports_rhs_python_scalar=False,
         skips=(
-            # TODO: FIXME: RuntimeError: "min_elementwise_cuda" not implemented for 'ComplexFloat'
-            DecorateInfo(unittest.expectedFailure,
-                         'TestBinaryUfuncs',
-                         'test_type_promotion',
-                         device_type='cuda'),
             DecorateInfo(unittest.expectedFailure,
                          'TestBinaryUfuncs',
                          'test_type_promotion',
