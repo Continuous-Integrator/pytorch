@@ -2183,7 +2183,8 @@ class BuiltinVariable(BaseBuiltinVariable):
             )
         arg = args[0]
         if istype(arg, variables.FrozensetVariable):
-            return FrozensetVariable([x.vt for x in arg.set_items])
+            # CPython: frozenset(existing_frozenset) returns the same object.
+            return arg
         elif arg.has_force_unpack_var_sequence(tx):
             items = arg.force_unpack_var_sequence(tx)
             return FrozensetVariable(items)
