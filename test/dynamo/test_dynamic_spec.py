@@ -425,32 +425,30 @@ class TestTensorSpecConstruction(TestCase):
 
     def test_basic(self):
         ts = TensorSpec(3)
-        self.assertEqual(ts.dim, 3)
-        self.assertEqual(len(ts), 3)
+        self.assertEqual(ts._dim, 3)
         for spec in ts:
             self.assertIsNone(spec)
 
     def test_zero_dim(self):
         ts = TensorSpec(0)
-        self.assertEqual(ts.dim, 0)
-        self.assertEqual(len(ts), 0)
+        self.assertEqual(ts._dim, 0)
 
     def test_list_construction(self):
         static_spec = IntSpec.static(value=10)
         backed_spec = IntSpec.backed(min=1)
         ts = TensorSpec([static_spec, None, backed_spec])
-        self.assertEqual(ts.dim, 3)
-        self.assertIs(ts[0], static_spec)
-        self.assertIsNone(ts[1])
-        self.assertIs(ts[2], backed_spec)
+        self.assertEqual(
+            repr(ts),
+            f"TensorSpec([{repr(static_spec)}, None, {repr(backed_spec)}])",
+        )
 
     def test_dict_construction(self):
         backed_spec = IntSpec.backed("h")
-        ts = TensorSpec({0: backed_spec, 2: IntSpec.static()})
-        self.assertEqual(ts.dim, 3)  # max(0, 2) + 1
-        self.assertIs(ts[0], backed_spec)
-        self.assertIsNone(ts[1])
-        self.assertIsNotNone(ts[2])
+        static_spec = IntSpec.static()
+        ts = TensorSpec({0: backed_spec, 2: static_spec})
+        self.assertEqual(
+            repr(ts), f"TensorSpec([{repr(backed_spec)}, None, {repr(static_spec)}])"
+        )
 
     def test_unsupported_input_type_rejected(self):
         with self.assertRaisesRegex(TypeError, "expects int / list / tuple / dict"):
@@ -462,13 +460,6 @@ class TestTensorSpecConstruction(TestCase):
         ts[0] = spec
         self.assertIs(ts[0], spec)
         self.assertIsNone(ts[1])
-
-    def test_set_fluent(self):
-        ts = TensorSpec(3)
-        spec = IntSpec.static(value=10)
-        result = ts.set(0, spec)
-        self.assertIs(result, ts)
-        self.assertIs(ts[0], spec)
 
     def test_iter(self):
         ts = TensorSpec(2)
@@ -486,8 +477,8 @@ class TestTensorSpecConstruction(TestCase):
 
     def test_sparse_set(self):
         ts = TensorSpec(4)
-        ts.set(1, IntSpec.backed("h"))
-        ts.set(3, IntSpec.backed("w"))
+        ts.dim(1, IntSpec.backed("h"))
+        ts.dim(3, IntSpec.backed("w"))
         self.assertIsNone(ts[0])
         self.assertIsNotNone(ts[1])
         self.assertIsNone(ts[2])
@@ -497,53 +488,20 @@ class TestTensorSpecConstruction(TestCase):
 @skipIfTorchDynamo()
 class TestTensorSpecCompile(TestCase):
     """TensorSpec + compile integration via the test-local
-    :func:`_compile_with_dynamic_shapes` helper. Same scaffolding path as
-    :class:`TestIntSpecCompile` — the helper walks per-dim ``IntSpec`` from
+    `_compile_with_dynamic_shapes` helper. Same scaffolding path as
+    `TestIntSpecCompile` — the helper walks per-dim ``IntSpec`` from
     the TensorSpec and applies ``mark_*`` to the tensor.
     """
-
-    def test_tensorspec_backed_dim(self):
-        ts = TensorSpec(2).set(0, IntSpec.backed("batch"))
-        fn = _compile_with_dynamic_shapes(
-            lambda x: x.sum(0),
-            {"x": ts},
-            backend="eager",
-        )
-        for n in [4, 8, 16]:
-            x = torch.randn(n, 3)
-            self.assertEqual(fn(x), x.sum(0))
-
-    def test_tensorspec_mixed_dims(self):
-        ts = TensorSpec(2).set(0, IntSpec.backed("batch")).set(1, IntSpec.static())
-        fn = _compile_with_dynamic_shapes(
-            lambda x: x + 1,
-            {"x": ts},
-            backend="eager",
-        )
-        for n in [4, 8, 16]:
-            x = torch.randn(n, 3)
-            self.assertEqual(fn(x), x + 1)
-
-    def test_tensorspec_partial_spec(self):
-        ts = TensorSpec(2).set(0, IntSpec.backed("batch"))
-        fn = _compile_with_dynamic_shapes(
-            lambda x: x.sum(0),
-            {"x": ts},
-            backend="eager",
-        )
-        for n in [4, 8]:
-            x = torch.randn(n, 3)
-            self.assertEqual(fn(x), x.sum(0))
 
     def test_tensorspec_backed_graph_has_backed_symbol(self):
         """BACKED TensorSpec dim appears as a backed SymInt in the final graph.
 
-        Single compile; matches :meth:`TestIntSpecCompile.test_backed_graph_has_backed_symbol`
+        Single compile; matches `TestIntSpecCompile.test_backed_graph_has_backed_symbol`
         — pre-trace ``maybe_mark_dynamic`` fires from the helper's TensorSpec
         branch, so dim 0 is backed from call 1 and all four sizes cache-hit.
         """
         backend = EagerAndRecordGraphs()
-        ts = TensorSpec(2).set(0, IntSpec.backed("batch"))
+        ts = TensorSpec(2).dim(0, IntSpec.backed("batch"))
         fn = _compile_with_dynamic_shapes(
             lambda x: x.sum(0),
             {"x": ts},
@@ -555,6 +513,94 @@ class TestTensorSpecCompile(TestCase):
         shape = _tensor_placeholder_shape(backend.graphs[0])
         self.assertIsInstance(shape[0], torch.SymInt)
         self.assertEqual(len(free_unbacked_symbols(shape[0])), 0)
+
+    def test_tensorspec_list_init_recompile_progression(self):
+        """TensorSpec built from a list: dim 0 BACKED absorbs shape changes;
+        dim 1 STATIC forces recompile per distinct value.
+
+        Final graph has a backed SymInt at dim 0 and a concrete int at dim 1.
+        """
+        backend = EagerAndRecordGraphs()
+        ts = TensorSpec([IntSpec.backed("batch"), IntSpec.static()])
+        fn = _compile_with_dynamic_shapes(
+            lambda x: x + 1,
+            {"x": ts},
+            backend=backend,
+        )
+
+        fn(torch.randn(4, 3))
+        self.assertEqual(len(backend.graphs), 1)
+
+        # Vary dim 0 (BACKED absorbs it → no new compile).
+        fn(torch.randn(8, 3))
+        fn(torch.randn(16, 3))
+        self.assertEqual(len(backend.graphs), 1)
+
+        # Vary dim 1 (STATIC pins it → each distinct value recompiles).
+        fn(torch.randn(16, 5))
+        self.assertEqual(len(backend.graphs), 2)
+        fn(torch.randn(16, 7))
+        self.assertEqual(len(backend.graphs), 3)
+
+        shape = _tensor_placeholder_shape(backend.graphs[-1])
+        self.assertIsInstance(shape[0], torch.SymInt)
+        self.assertEqual(len(free_unbacked_symbols(shape[0])), 0)
+        self.assertIsInstance(shape[1], int)
+        self.assertEqual(shape[1], 7)
+
+    def test_tensorspec_dict_init_recompile_progression(self):
+        """Same recompile pattern via dict-form construction
+        ``TensorSpec({0: ..., 1: ...})`` is equivalent to the list form for
+        per-dim dispatch."""
+        backend = EagerAndRecordGraphs()
+        ts = TensorSpec({0: IntSpec.backed("batch"), 1: IntSpec.static()})
+        fn = _compile_with_dynamic_shapes(
+            lambda x: x + 1,
+            {"x": ts},
+            backend=backend,
+        )
+
+        fn(torch.randn(4, 3))
+        self.assertEqual(len(backend.graphs), 1)
+        fn(torch.randn(8, 3))
+        fn(torch.randn(16, 3))
+        self.assertEqual(len(backend.graphs), 1)
+        fn(torch.randn(16, 5))
+        self.assertEqual(len(backend.graphs), 2)
+        fn(torch.randn(16, 7))
+        self.assertEqual(len(backend.graphs), 3)
+
+    @torch._dynamo.config.patch(automatic_dynamic_shapes=True)
+    def test_tensorspec_none_entry_inherits_automatic_dynamic(self):
+        """A ``None`` entry doesn't mark the dim — it falls through to the
+        existing default policy: dynamo's automatic-dynamic
+        (``torch._dynamo.config.automatic_dynamic_shapes``, default True).
+        That means specialize on first call, promote to backed on first
+        variation.
+
+        The decorator pins the config to ``True`` so the test is robust to
+        any CI environment that might flip the default. This mainly test
+        config inheritance, not the default policy itself.
+        """
+        backend = EagerAndRecordGraphs()
+        ts = TensorSpec([IntSpec.backed("batch"), None])
+        fn = _compile_with_dynamic_shapes(
+            lambda x: x + 1,
+            {"x": ts},
+            backend=backend,
+        )
+
+        fn(torch.randn(4, 3))  # specialize dim 1=3; BACKED dim 0
+        self.assertEqual(len(backend.graphs), 1)
+
+        fn(torch.randn(8, 3))  # dim 0 absorbed; dim 1 same → cache hit
+        self.assertEqual(len(backend.graphs), 1)
+
+        fn(torch.randn(8, 5))  # dim 1 promotes to backed → recompile
+        self.assertEqual(len(backend.graphs), 2)
+
+        fn(torch.randn(16, 7))  # dim 0 + dim 1 both backed → cache hit
+        self.assertEqual(len(backend.graphs), 2)
 
 
 @skipIfTorchDynamo()
@@ -770,53 +816,6 @@ class TestIntSpecCompile(TestCase):
         # call 1 via the pre-trace mark, no branches, no 0/1 sizes → 1
         # compile. If ``dynamic=False`` had won, we'd see 5 (one per shape).
         self.assertEqual(cnt.frame_count, 1)
-
-    def test_list_form(self):
-        """List-form spec: dim 0 BACKED, dim 1 STATIC.
-
-        Varying dim 0 reuses the same compile (BACKED absorbs it).
-        Varying dim 1 forces a new compile per distinct value (STATIC pins it).
-        The final graph has a backed SymInt at dim 0 and a concrete int at dim 1.
-        """
-
-        backend = EagerAndRecordGraphs()
-        fn = _compile_with_dynamic_shapes(
-            lambda x: x + 1,
-            {"x": [IntSpec.backed("batch"), IntSpec.static()]},
-            backend=backend,
-        )
-
-        # Call 1 — initial compile.
-        fn(torch.randn(4, 3))
-        self.assertEqual(len(backend.graphs), 1)
-
-        # Vary dim 0 only (BACKED absorbs it → no new compile).
-        fn(torch.randn(8, 3))
-        fn(torch.randn(16, 3))
-        self.assertEqual(len(backend.graphs), 1)
-
-        # Vary dim 1 (STATIC pins it → each distinct value recompiles).
-        fn(torch.randn(16, 5))
-        self.assertEqual(len(backend.graphs), 2)
-        fn(torch.randn(16, 7))
-        self.assertEqual(len(backend.graphs), 3)
-
-        # The last captured graph: dim 0 backed SymInt, dim 1 concrete int=7.
-        shape = _tensor_placeholder_shape(backend.graphs[-1])
-        self.assertIsInstance(shape[0], torch.SymInt)
-        self.assertEqual(len(free_unbacked_symbols(shape[0])), 0)
-        self.assertIsInstance(shape[1], int)
-        self.assertEqual(shape[1], 7)
-
-    def test_none_entry_inherits_context(self):
-        """A None entry in a list-form spec should not mark the dim."""
-        fn = _compile_with_dynamic_shapes(
-            lambda x: x + 1,
-            {"x": [IntSpec.backed("batch"), None]},
-            backend="eager",
-        )
-        x = torch.randn(4, 3)
-        self.assertEqual(fn(x), x + 1)
 
 
 if __name__ == "__main__":
