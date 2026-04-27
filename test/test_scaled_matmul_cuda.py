@@ -2651,8 +2651,10 @@ class TestFP8Matmul(TestCase):
                 s, e = g * k_g, (g + 1) * k_g
                 sa, aq = to_mxfp(A_bf16[:, s:e].contiguous(), format="mxfp8")
                 sb, bq = to_mxfp(B_bf16[:, s:e].contiguous(), format="mxfp8")
-                a_fp8_list.append(aq); a_sb_list.append(to_blocked(sa))
-                b_fp8_list.append(bq); b_sb_list.append(to_blocked(sb))
+                a_fp8_list.append(aq)
+                a_sb_list.append(to_blocked(sa))
+                b_fp8_list.append(bq)
+                b_sb_list.append(to_blocked(sb))
             A = torch.cat(a_fp8_list, dim=1).contiguous()
             B_T = torch.cat(b_fp8_list, dim=1).contiguous()
             scale_a = torch.cat(a_sb_list)
@@ -2671,8 +2673,10 @@ class TestFP8Matmul(TestCase):
             for g in range(ngroups):
                 sa, aq = to_mxfp(A_bf16[g * m_per_group:(g + 1) * m_per_group], format="mxfp8")
                 sb, bq = to_mxfp(B_bf16[g], format="mxfp8")
-                a_fp8_list.append(aq); a_sb_list.append(to_blocked(sa))
-                b_fp8_list.append(bq); b_sb_list.append(to_blocked(sb))
+                a_fp8_list.append(aq)
+                a_sb_list.append(to_blocked(sa))
+                b_fp8_list.append(bq)
+                b_sb_list.append(to_blocked(sb))
             A = torch.cat(a_fp8_list, dim=0).contiguous()
             B_T = torch.stack(b_fp8_list, dim=0).contiguous()
             scale_a = torch.cat(a_sb_list).reshape(-1, k // block_size)
@@ -2691,8 +2695,10 @@ class TestFP8Matmul(TestCase):
             for g in range(ngroups):
                 sa, aq = to_mxfp(A_bf16[g], format="mxfp8")
                 sb, bq = to_mxfp(B_bf16[g * n_per_group:(g + 1) * n_per_group], format="mxfp8")
-                a_fp8_list.append(aq); a_sb_list.append(to_blocked(sa))
-                b_fp8_list.append(bq); b_sb_list.append(to_blocked(sb))
+                a_fp8_list.append(aq)
+                a_sb_list.append(to_blocked(sa))
+                b_fp8_list.append(bq)
+                b_sb_list.append(to_blocked(sb))
             A = torch.stack(a_fp8_list, dim=0).contiguous()
             B_T = torch.cat(b_fp8_list, dim=0).contiguous()
             scale_a = torch.stack(a_sb_list, dim=0)
@@ -2706,8 +2712,10 @@ class TestFP8Matmul(TestCase):
             for g in range(ngroups):
                 sa, aq = to_mxfp(A_bf16[g], format="mxfp8")
                 sb, bq = to_mxfp(B_bf16[g], format="mxfp8")
-                a_fp8_list.append(aq); a_sb_list.append(to_blocked(sa))
-                b_fp8_list.append(bq); b_sb_list.append(to_blocked(sb))
+                a_fp8_list.append(aq)
+                a_sb_list.append(to_blocked(sa))
+                b_fp8_list.append(bq)
+                b_sb_list.append(to_blocked(sb))
             A = torch.stack(a_fp8_list, dim=0).contiguous()
             B_T = torch.stack(b_fp8_list, dim=0).contiguous()
             scale_a = torch.stack(a_sb_list, dim=0)
@@ -2861,6 +2869,26 @@ class TestFP8Matmul(TestCase):
         a_recipe = ScalingType.BlockWise1x128 if a_block_outer == 1 else ScalingType.BlockWise128x128
         b_recipe = ScalingType.BlockWise1x128 if b_block_outer == 1 else ScalingType.BlockWise128x128
 
+        def stack_scales(scales):
+            """Stack per-group scales preserving column-major per-group layout.
+
+            cuBLAS VEC128/BLK128x128 require outer-dim-major (column-major)
+            scale layout. torch.stack() produces row-major copies, so we
+            transpose into row-major, stack, then transpose back.
+            """
+            # Each scale has stride (1, outer_size) — column-major.
+            # .t() → (cols, rows) stride (outer_size, 1) = row-major.
+            # Stack those row-major views, then transpose back.
+            return torch.stack(
+                [s.t().contiguous() for s in scales]
+            ).transpose(-2, -1)
+
+        def flatten_scale(scale):
+            """Flatten a column-major scale preserving its memory order."""
+            # scale is (rows, cols) stride (1, rows) — column-major.
+            # .t() → (cols, rows) stride (rows, 1) — already contiguous.
+            return scale.t().contiguous().flatten()
+
         # Build matrices and per-group scales, then assemble grouped scales
         per_group_a, per_group_b_t = [], []
         per_group_sa, per_group_sb = [], []
@@ -2874,8 +2902,8 @@ class TestFP8Matmul(TestCase):
                 per_group_b_t.append(B_T[g])
                 per_group_sa.append(make_scale(A[g], a_block_outer))
                 per_group_sb.append(make_scale(B_T[g], b_block_outer))
-            scale_a = torch.stack(per_group_sa)
-            scale_b = torch.stack(per_group_sb)
+            scale_a = stack_scales(per_group_sa)
+            scale_b = stack_scales(per_group_sb)
 
         elif op == "2d/2d":
             k_per_group = k // ngroups
@@ -2894,8 +2922,8 @@ class TestFP8Matmul(TestCase):
                 sb_g = make_scale(B_T[:, s:e], b_block_outer)
                 per_group_sa.append(sa_g)
                 per_group_sb.append(sb_g)
-                sa_flat.append(sa_g.contiguous().flatten())
-                sb_flat.append(sb_g.contiguous().flatten())
+                sa_flat.append(flatten_scale(sa_g))
+                sb_flat.append(flatten_scale(sb_g))
             scale_a = torch.cat(sa_flat)
             scale_b = torch.cat(sb_flat)
 
@@ -2916,9 +2944,9 @@ class TestFP8Matmul(TestCase):
                 sb_g = make_scale(B_T[g], b_block_outer)
                 per_group_sa.append(sa_g)
                 per_group_sb.append(sb_g)
-                sa_flat.append(sa_g.contiguous().flatten())
+                sa_flat.append(flatten_scale(sa_g))
             scale_a = torch.cat(sa_flat)
-            scale_b = torch.stack(per_group_sb)
+            scale_b = stack_scales(per_group_sb)
 
         elif op == "3d/2d":
             n_per_group = n // ngroups
@@ -2937,8 +2965,8 @@ class TestFP8Matmul(TestCase):
                 sb_g = make_scale(B_T[s:e, :], b_block_outer)
                 per_group_sa.append(sa_g)
                 per_group_sb.append(sb_g)
-                sb_flat.append(sb_g.contiguous().flatten())
-            scale_a = torch.stack(per_group_sa)
+                sb_flat.append(flatten_scale(sb_g))
+            scale_a = stack_scales(per_group_sa)
             scale_b = torch.cat(sb_flat)
 
         return (A, B_T, scale_a, scale_b, offs, a_recipe, b_recipe,
