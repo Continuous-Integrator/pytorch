@@ -75,7 +75,7 @@ jobs:
       fail-fast: false
       matrix:
         config: ${{ fromJSON(needs.generate-matrix.outputs.configs) }}
-    uses: ./.github/workflows/_binary-build-linux.yml
+    uses: ./.github/workflows/_binary-container-build-linux.yml
     with:
       PYTORCH_ROOT: /pytorch
       PACKAGE_TYPE: manywheel
@@ -102,7 +102,7 @@ jobs:
       fail-fast: false
       matrix:
         config: ${{ fromJSON(needs.generate-matrix.outputs.configs) }}
-    uses: ./.github/workflows/_binary-test-linux.yml
+    uses: ./.github/workflows/_binary-container-test-linux.yml
     with:
       PYTORCH_ROOT: /pytorch
       PACKAGE_TYPE: manywheel
