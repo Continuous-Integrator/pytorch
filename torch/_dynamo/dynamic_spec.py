@@ -312,7 +312,6 @@ class TensorSpec:
       from ``max(keys) + 1``. Empty dict rejected.
 
     Example::
-
         TensorSpec(3)  # rank 3, all None
         TensorSpec([IntSpec.backed("batch"), None])  # rank 2, dim 0 backed
         TensorSpec({0: IntSpec.backed("batch")})  # rank 1, dim 0 backed
@@ -342,11 +341,7 @@ class TensorSpec:
                 f"got {type(spec).__name__}"
             )
 
-    @property
-    def dim(self) -> int:
-        return self._dim
-
-    def set(self, index: int, spec: IntSpec) -> "TensorSpec":
+    def dim(self, index: int, spec: IntSpec) -> "TensorSpec":
         """Set the spec at ``index`` and return ``self`` for chaining."""
         self._specs[index] = spec
         return self
@@ -364,10 +359,8 @@ class TensorSpec:
         return iter(self._specs)
 
     def __repr__(self) -> str:
-        specified = [
-            f"{i}: {spec!r}" for i, spec in enumerate(self._specs) if spec is not None
-        ]
-        return f"TensorSpec(dim={self._dim}, {{{', '.join(specified)}}})"
+        entries = ", ".join(repr(spec) for spec in self._specs)
+        return f"TensorSpec([{entries}])"
 
     # No ``__eq__`` / ``__hash__``: matches :class:`IntSpec`'s design — specs
     # are immutable compile-time inputs compared via ``repr()`` when needed.
