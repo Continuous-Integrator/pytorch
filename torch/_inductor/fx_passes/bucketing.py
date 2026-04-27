@@ -16,6 +16,7 @@ from torch._inductor.comm_analysis import (
 )
 from torch._inductor.runtime.runtime_utils import dynamo_timed
 from torch._logging import trace_structured
+from torch.distributed.distributed_c10d import GroupName
 from torch.fx.experimental.proxy_tensor import make_fx
 from torch.fx.traceback import NodeSource, NodeSourceAction
 from torch.utils._ordered_set import OrderedSet
@@ -27,8 +28,8 @@ logger.setLevel(logging.INFO)
 overlap_log = torch._logging.getArtifactLogger(__name__, "overlap")
 
 
-def _resolve_group_name(group_name: Any) -> str:
-    """Resolve group_name to a string.
+def _resolve_group_name(group_name: Any) -> GroupName:
+    """Resolve group_name to a GroupName string.
 
     In make_fx-traced graphs (e.g. aot_fx_trace), collective ops receive
     their group_name argument as an FX Node reference (pointing to a
@@ -37,7 +38,7 @@ def _resolve_group_name(group_name: Any) -> str:
     node.meta["val"].
     """
     if isinstance(group_name, str):
-        return group_name
+        return GroupName(group_name)
     pg = group_name.meta["val"]
     return pg.group_name
 
