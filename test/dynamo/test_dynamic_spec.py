@@ -40,23 +40,14 @@ def _tensor_placeholder_shape(gm):
     raise AssertionError("no tensor placeholder found")
 
 
-# Applies per-dim IntSpec to tensors through ``mark_*`` on each call.
+# Applies per-dim IntSpec to a tensor through ``mark_*`` on each call.
+# ``shape_spec`` must be a ``TensorSpec`` (or ``None`` to skip).
 def _apply_intspec_to_tensor(tensor, shape_spec):
-    if isinstance(shape_spec, TensorSpec):
-        items = enumerate(shape_spec)
-    elif isinstance(shape_spec, dict):
-        items = shape_spec.items()
-    elif isinstance(shape_spec, (list, tuple)):
-        items = enumerate(shape_spec)
-    else:
+    if not isinstance(shape_spec, TensorSpec):
         return
-    for idx, spec in items:
+    for idx, spec in enumerate(shape_spec):
         if spec is None:
             continue
-        if not isinstance(spec, IntSpec):
-            raise TypeError(
-                f"Expected IntSpec or None in dynamic_shapes, got {type(spec).__name__}"
-            )
         if spec._type is IntSpecType.STATIC:
             mark_static(tensor, idx)
         elif spec._type is IntSpecType.BACKED:
@@ -626,7 +617,7 @@ class TestIntSpecCompile(TestCase):
         backend = EagerAndRecordGraphs()
         fn = _compile_with_dynamic_shapes(
             lambda x: x + 1,
-            {"x": {0: IntSpec.static()}},
+            {"x": TensorSpec({0: IntSpec.static()})},
             backend=backend,
         )
         fn(torch.randn(4, 3))
@@ -647,7 +638,7 @@ class TestIntSpecCompile(TestCase):
         backend = EagerAndRecordGraphs()
         fn = _compile_with_dynamic_shapes(
             lambda x: x.sum(0),
-            {"x": {0: IntSpec.backed("batch")}},
+            {"x": TensorSpec({0: IntSpec.backed("batch")})},
             backend=backend,
         )
         for n in [4, 8, 16, 32, 64]:
@@ -666,7 +657,7 @@ class TestIntSpecCompile(TestCase):
         backend = EagerAndRecordGraphs()
         fn = _compile_with_dynamic_shapes(
             lambda x: x.sum(0),
-            {"x": {0: IntSpec.unbacked("batch")}},
+            {"x": TensorSpec({0: IntSpec.unbacked("batch")})},
             backend=backend,
         )
         for n in [4, 8, 16, 32]:
@@ -697,7 +688,7 @@ class TestIntSpecCompile(TestCase):
 
         compiled = _compile_with_dynamic_shapes(
             fn,
-            {"x": {0: IntSpec.unbacked()}},
+            {"x": TensorSpec({0: IntSpec.unbacked()})},
             backend="eager",
             fullgraph=True,
         )
@@ -730,7 +721,7 @@ class TestIntSpecCompile(TestCase):
         cnt = torch._dynamo.testing.CompileCounter()
         fn = _compile_with_dynamic_shapes(
             lambda x: x.sum(0 if x.size()[0] > 8 else 1),
-            {"x": {0: IntSpec.backed("batch")}},
+            {"x": TensorSpec({0: IntSpec.backed("batch")})},
             backend=cnt,
         )
         for n in [4, 8, 16, 32, 64]:
@@ -754,7 +745,7 @@ class TestIntSpecCompile(TestCase):
         cnt = torch._dynamo.testing.CompileCounter()
         fn = _compile_with_dynamic_shapes(
             lambda x: x + 1,
-            {"x": {0: IntSpec.backed("batch")}},
+            {"x": TensorSpec({0: IntSpec.backed("batch")})},
             backend=cnt,
         )
         for n in [0, 1, 2, 4, 8]:
@@ -778,7 +769,7 @@ class TestIntSpecCompile(TestCase):
         cnt = torch._dynamo.testing.CompileCounter()
         fn = _compile_with_dynamic_shapes(
             lambda x: x + 1 if x.size()[0] == 3 else x - 1,
-            {"x": {0: IntSpec.backed("batch")}},
+            {"x": TensorSpec({0: IntSpec.backed("batch")})},
             backend=cnt,
         )
         for n in [3, 4, 5, 6]:
@@ -793,7 +784,7 @@ class TestIntSpecCompile(TestCase):
         cnt = torch._dynamo.testing.CompileCounter()
         fn = _compile_with_dynamic_shapes(
             lambda x: x + 1,
-            {"x": {0: IntSpec.static()}},
+            {"x": TensorSpec({0: IntSpec.static()})},
             backend=cnt,
             dynamic=True,
         )
@@ -814,7 +805,7 @@ class TestIntSpecCompile(TestCase):
         cnt = torch._dynamo.testing.CompileCounter()
         fn = _compile_with_dynamic_shapes(
             lambda x: x.sum(0),
-            {"x": {0: IntSpec.backed("batch")}},
+            {"x": TensorSpec({0: IntSpec.backed("batch")})},
             backend=cnt,
             dynamic=False,
         )
