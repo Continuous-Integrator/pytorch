@@ -4,7 +4,6 @@ import collections
 import contextlib
 import dataclasses
 import functools
-import heapq
 import inspect
 import itertools
 import logging
@@ -7686,6 +7685,7 @@ class Scheduler:
         change relative orders of two cudagraphable nodes, nor the
         relative order of two non_cudagraphable nodes.
         """
+        import heapq
 
         node_to_indegree: dict[BaseSchedulerNode, int] = dict()
         cudagraphable_nodes: list[tuple[int, BaseSchedulerNode]] = []
