@@ -322,8 +322,8 @@ jobs:
       DESIRED_CUDA: ${{ matrix.desired_cuda }}
       GPU_ARCH_VERSION: ${{ matrix.gpu_arch_version }}
       GPU_ARCH_TYPE: ${{ matrix.gpu_arch_type }}
-      DOCKER_IMAGE: !{{ first['container_image'] }}
-      DOCKER_IMAGE_TAG_PREFIX: !{{ first['container_image_tag_prefix'] }}
+      DOCKER_IMAGE: "!{{ first['container_image'] }}"
+      DOCKER_IMAGE_TAG_PREFIX: "!{{ first['container_image_tag_prefix'] }}"
       DESIRED_PYTHON: ${{ matrix.desired_python }}
       {%- if first['package_type'] == 'libtorch' %}
       LIBTORCH_CONFIG: ${{ matrix.libtorch_config }}

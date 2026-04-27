@@ -374,8 +374,8 @@ jobs:
       DESIRED_CUDA: ${{ matrix.desired_cuda }}
       GPU_ARCH_VERSION: ${{ matrix.gpu_arch_version }}
       GPU_ARCH_TYPE: ${{ matrix.gpu_arch_type }}
-      DOCKER_IMAGE: 
-      DOCKER_IMAGE_TAG_PREFIX: 
+      DOCKER_IMAGE: ""
+      DOCKER_IMAGE_TAG_PREFIX: ""
       DESIRED_PYTHON: ${{ matrix.desired_python }}
       LIBTORCH_CONFIG: ${{ matrix.libtorch_config }}
       LIBTORCH_VARIANT: ${{ matrix.libtorch_variant }}

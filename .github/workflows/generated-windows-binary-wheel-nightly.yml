@@ -874,8 +874,8 @@ jobs:
       DESIRED_CUDA: ${{ matrix.desired_cuda }}
       GPU_ARCH_VERSION: ${{ matrix.gpu_arch_version }}
       GPU_ARCH_TYPE: ${{ matrix.gpu_arch_type }}
-      DOCKER_IMAGE: manylinux2_28-builder
-      DOCKER_IMAGE_TAG_PREFIX: cpu
+      DOCKER_IMAGE: "manylinux2_28-builder"
+      DOCKER_IMAGE_TAG_PREFIX: "cpu"
       DESIRED_PYTHON: ${{ matrix.desired_python }}
       build_name: ${{ matrix.build_name }}
     secrets:
