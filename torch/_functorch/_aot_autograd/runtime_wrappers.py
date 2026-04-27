@@ -3205,8 +3205,21 @@ class _AOTDispatchAutogradFunctionFactory:
                 ):
                     impl_fn = functools.partial(config_ctx.run, impl_fn)
 
-                needs_grad = torch.is_grad_enabled() and any(
-                    t.requires_grad for t in all_args if isinstance(t, torch.Tensor)
+                # For create_graph=True (e.g. autograd.grad(..., create_graph=True)),
+                # grad is enabled during backward so outputs must have requires_grad=True.
+                # Checking all_args alone is insufficient: autograd.Function.forward runs
+                # in no-grad context, so saved tensors always have requires_grad=False.
+                # Fall back to metadata.input_info to detect the double-grad case.
+                needs_grad = torch.is_grad_enabled() and (
+                    any(
+                        t.requires_grad
+                        for t in all_args
+                        if isinstance(t, torch.Tensor)
+                    )
+                    or any(
+                        inp.requires_grad
+                        for inp in CompiledFunction.metadata.input_info
+                    )
                 )
                 if needs_grad:
                     # double backward
@@ -3239,6 +3252,12 @@ class _AOTDispatchAutogradFunctionFactory:
                     CompiledFunction._compiled_autograd_key
                 )
 
+                if not any(
+                    t.requires_grad
+                    for t in all_args
+                    if isinstance(t, torch.Tensor)
+                ):
+                    all_args = [torch.empty(0, requires_grad=True)] + all_args
                 return CompiledFunctionBackward.apply(*all_args)
 
             @staticmethod
