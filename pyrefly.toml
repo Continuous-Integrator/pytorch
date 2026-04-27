@@ -109,6 +109,7 @@ ignore-missing-imports = [
     "onnx.*",
     "onnxruntime.*",
     "onnxscript.*",
+    "origami.*",
     "redis.*",
     "tabulate.*",
 ]
