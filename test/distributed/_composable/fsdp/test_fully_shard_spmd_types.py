@@ -1,18 +1,15 @@
 # Owner(s): ["oncall: distributed"]
 
-import copy
 import unittest
-from contextlib import ExitStack
 
 import torch
-import torch.distributed as dist
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.distributed._composable import replicate
 from torch.distributed.fsdp import DataParallelMeshDims, fully_shard
 from torch.distributed.spmd_types import (
     assert_type as spmd_assert_type,
     get_local_type,
-    get_partition_spec,
     has_local_type,
     I,
     is_available as spmd_types_available,
@@ -24,28 +21,56 @@ from torch.distributed.spmd_types import (
     typecheck,
     V,
 )
-from spmd_types.types import PartitionSpec  # pyrefly: ignore
-from torch.distributed.tensor import (
-    DTensor,
-    init_device_mesh,
-    Shard,
-)
+from torch.distributed.tensor import DTensor, init_device_mesh, Shard
 from torch.testing._internal.common_distributed import skip_if_lt_x_gpu
-from torch.testing._internal.common_fsdp import FSDPTest, get_devtype, MLP
+from torch.testing._internal.common_fsdp import FSDPTest, get_devtype
 from torch.testing._internal.common_utils import run_tests
 
 
 device_type = torch.device(get_devtype())
 
 
-def _annotate_params_with_spmd_types(model, mesh):
-    """Annotate all model parameters with spmd_types I (Invariant) on all dims."""
-    for param in model.parameters():
-        local_type = {}
-        for name in mesh.mesh_dim_names:
-            axis = MeshAxis.of(mesh.get_group(name))
-            local_type[axis] = I
-        set_local_type(param, local_type)
+class TestMLP(nn.Module):
+    def __init__(self, dim, device=None):
+        super().__init__()
+        self.in_proj = nn.Linear(dim, dim * 4, bias=False, device=device)
+        self.out_proj = nn.Linear(dim * 4, dim, bias=False, device=device)
+
+    def forward(self, x):
+        z = self.in_proj(x)
+        z = F.relu(z)
+        z = self.out_proj(z)
+        z = F.relu(z)
+        return z
+
+
+def _tp_init(model, tp_pg):
+    """Shard weights for column/row parallel TP and patch forward."""
+    from spmd_types import all_reduce, convert
+
+    tp_rank = tp_pg.rank()
+    tp_size = tp_pg.size()
+
+    with torch.no_grad():
+        model.in_proj.weight = nn.Parameter(
+            model.in_proj.weight.chunk(tp_size, dim=0)[tp_rank].contiguous()
+        )
+        model.out_proj.weight = nn.Parameter(
+            model.out_proj.weight.chunk(tp_size, dim=1)[tp_rank].contiguous()
+        )
+
+    def _tp_forward(self, x):
+        x = convert(x, tp_pg, src=I, dst=R)
+        z = self.in_proj(x)
+        z = F.relu(z)
+        z = self.out_proj(z)
+        z = all_reduce(z, tp_pg, dst=I)
+        z = F.relu(z)
+        return z
+
+    import types
+
+    model.forward = types.MethodType(_tp_forward, model)
 
 
 @unittest.skipUnless(spmd_types_available(), "requires spmd_types")
@@ -60,80 +85,88 @@ class TestFullyShardSpmdTypes(FSDPTest):
 
         _reset()
 
-    def _run_train_parity(self, model, ref_model, dp_pg, mesh, num_iters=5, mlp_dim=16):
-        fsdp_axis = MeshAxis.of(mesh.get_group("fsdp"))
-
-        optim = torch.optim.Adam(model.parameters(), lr=1e-2, foreach=False)
-        ref_optim = torch.optim.Adam(ref_model.parameters(), lr=1e-2, foreach=False)
-
-        def check_spmd_types_hook(module, args):
-            for name, param in module.named_parameters(recurse=False):
-                self.assertNotIsInstance(
-                    param.data,
-                    DTensor,
-                    f"{name} should be a plain tensor during forward, not DTensor",
-                )
-                self.assertTrue(
-                    has_local_type(param),
-                    f"Missing spmd_types on {name} during forward",
-                )
-
-        for m in model.modules():
-            if isinstance(m, nn.Linear):
-                m.register_forward_pre_hook(check_spmd_types_hook)
-
-        tc_stack = ExitStack()
-
-        def enter_typecheck(module, args):
-            tc_stack.enter_context(typecheck(strict_mode="strict"))
-            spmd_assert_type(args[0], {fsdp_axis: S(0)})
-
-        def exit_typecheck(module, args, output):
-            tc_stack.close()
-
-        model.register_forward_pre_hook(enter_typecheck, prepend=False)
-        model.register_forward_hook(exit_typecheck)
-
-        torch.manual_seed(42 + dp_pg.rank() + 1)
-        with set_current_mesh(mesh):
-            for i in range(num_iters):
-                inp = torch.randn((2, mlp_dim), device=device_type)
-                ref_optim.zero_grad()
-                ref_loss = ref_model(inp).sum()
-                ref_loss.backward()
-                ref_optim.step()
-
-                optim.zero_grad()
-                output = model(inp)
-                local_type = get_local_type(output)
-                self.assertIn(fsdp_axis, local_type)
-                self.assertEqual(local_type[fsdp_axis], V)
-                spmd_assert_type(output, {fsdp_axis: S(0)})
+    def _check_dtensor_placements(self, model, expected_placements_by_fqn):
+        """Check that sharded params are DTensors with expected placements."""
+        for fqn, param in model.named_parameters():
+            self.assertIsInstance(
+                param, DTensor, f"{fqn} should be DTensor after fully_shard"
+            )
+            if fqn in expected_placements_by_fqn:
                 self.assertEqual(
-                    get_partition_spec(output), PartitionSpec(fsdp_axis, None)
+                    param.placements,
+                    expected_placements_by_fqn[fqn],
+                    f"{fqn} placement mismatch",
                 )
 
-                loss = output.sum()
-                loss.backward()
-                optim.step()
+    def _register_param_check_hooks(self, model, expected_types):
+        """Register pre-hooks on Linear modules to check spmd_types at compute time.
 
-                self.assertEqual(ref_loss, loss)
+        expected_types maps param FQN (e.g. "in_proj.weight") to the expected
+        local type dict and optional PartitionSpec. Each value is a tuple of
+        (local_type_dict, partition_spec_or_None).
+        """
+        from spmd_types.runtime import get_partition_spec
+
+        def make_hook(module_fqn):
+            def check_params_at_compute(module, args):
+                for name, param in module.named_parameters(recurse=False):
+                    fqn = f"{module_fqn}.{name}" if module_fqn else name
+                    self.assertNotIsInstance(
+                        param.data,
+                        DTensor,
+                        f"{fqn} should be plain tensor at compute time",
+                    )
+                    self.assertTrue(
+                        has_local_type(param),
+                        f"{fqn} should have spmd_types annotation at compute time",
+                    )
+                    if fqn in expected_types:
+                        expected_lt, expected_ps = expected_types[fqn]
+                        self.assertEqual(
+                            dict(get_local_type(param)),
+                            expected_lt,
+                            f"{fqn} local type mismatch",
+                        )
+                        actual_ps = get_partition_spec(param)
+                        self.assertEqual(
+                            actual_ps,
+                            expected_ps,
+                            f"{fqn} partition spec mismatch",
+                        )
+
+            return check_params_at_compute
+
+        for fqn, m in model.named_modules():
+            if isinstance(m, nn.Linear):
+                m.register_forward_pre_hook(make_hook(fqn))
+
+    def _run_fwd_bwd(self, model, ref_model, inp, fsdp_axis, input_type):
+        """Run forward + backward and check output numerics, output type, and grad annotations."""
+        ref_out = ref_model(inp)
+        ref_loss = ref_out.sum()
+        ref_loss.backward()
+
+        with typecheck(strict_mode="strict", local=False):
+            spmd_assert_type(inp, input_type)
+            out = model(inp)
+        self.assertEqual(get_local_type(out)[fsdp_axis], V)
+        loss = out.sum()
+        loss.backward()
+
+        self.assertEqual(ref_loss, loss)
 
         for (n1, p1), (n2, p2) in zip(
             ref_model.named_parameters(), model.named_parameters(), strict=True
         ):
-            # Sharded params are DTensors in Approach 1
-            if isinstance(p2, DTensor):
-                p2_full = p2.full_tensor()
-            else:
-                gathered = [torch.empty_like(p2) for _ in range(dp_pg.size())]
-                dist.all_gather(gathered, p2, group=dp_pg)
-                p2_full = torch.cat(gathered, dim=0)
-            self.assertEqual(p1, p2_full, msg=f"Param mismatch: {n1} vs {n2}")
+            self.assertIsNotNone(p2.grad, f"{n2} grad should not be None")
+            self.assertIsInstance(p2.grad, DTensor, f"{n2} grad should be DTensor")
+            self.assertEqual(
+                p1.grad, p2.grad.full_tensor(), msg=f"Grad mismatch: {n1} vs {n2}"
+            )
 
     @skip_if_lt_x_gpu(2)
-    def test_fsdp_1d_spmd_types_train_parity(self):
-        """Train parity and sharded param correctness with 1D FSDP."""
+    def test_fsdp_1d(self):
+        """FSDP alone: params initialized as Invariant on the FSDP mesh."""
         mlp_dim = 16
         mesh = init_device_mesh(
             device_type.type, (self.world_size,), mesh_dim_names=("fsdp",)
@@ -141,32 +174,41 @@ class TestFullyShardSpmdTypes(FSDPTest):
         fsdp_axis = MeshAxis.of(mesh.get_group("fsdp"))
 
         torch.manual_seed(42)
-        model = MLP(mlp_dim, device=device_type)
-        ref_model = copy.deepcopy(model)
+        model = TestMLP(mlp_dim, device=device_type)
+        ref_model = TestMLP(mlp_dim, device=device_type)
+        ref_model.load_state_dict(model.state_dict())
 
-        _annotate_params_with_spmd_types(model, mesh)
+        for param in model.parameters():
+            set_local_type(param, {fsdp_axis: I})
+
         fully_shard(
             model,
             mesh=mesh,
             dp_mesh_dims=DataParallelMeshDims(shard="fsdp"),
         )
-
-        # Sharded params should be DTensors (Approach 1)
-        for param in model.parameters():
-            self.assertIsInstance(param, DTensor)
-
-        replicate(
-            ref_model,
-            device_ids=[self.rank] if device_type.type != "cpu" else None,
+        self._check_dtensor_placements(
+            model,
+            {
+                "in_proj.weight": (Shard(0),),
+                "out_proj.weight": (Shard(0),),
+            },
         )
-        self._run_train_parity(
-            model, ref_model, dist.group.WORLD, mesh=mesh, mlp_dim=mlp_dim
-        )
+        replicate(ref_model, device_ids=[self.rank])
+        expected_types = {
+            "in_proj.weight": ({fsdp_axis: R}, None),
+            "out_proj.weight": ({fsdp_axis: R}, None),
+        }
+        self._register_param_check_hooks(model, expected_types)
 
-    def _make_fsdp_tp_model(self):
-        """Create an FSDP+TP model with spmd_types annotations."""
-        from spmd_types import all_reduce, convert
+        input_type = {fsdp_axis: S(0)}
+        torch.manual_seed(42 + self.rank + 1)
+        inp = torch.randn((2, mlp_dim), device=device_type)
+        with set_current_mesh(mesh):
+            self._run_fwd_bwd(model, ref_model, inp, fsdp_axis, input_type)
 
+    @skip_if_lt_x_gpu(4)
+    def test_fsdp_tp_joint_mesh(self):
+        """FSDP + TP: params initialized on the joint mesh with Invariant on FSDP, sharded on TP."""
         dp_size = 2
         tp_size = self.world_size // dp_size
         mesh = init_device_mesh(
@@ -177,33 +219,19 @@ class TestFullyShardSpmdTypes(FSDPTest):
         fsdp_axis = MeshAxis.of(mesh.get_group("fsdp"))
         tp_axis = MeshAxis.of(mesh.get_group("tp"))
         tp_pg = mesh.get_group("tp")
+        dp_pg = mesh.get_group("fsdp")
 
         tp_plan = {
             "in_proj.weight": S(0),
             "out_proj.weight": S(1),
         }
 
-        class SpmdTypesTPMLP(nn.Module):
-            def __init__(self, dim, tp_size, device=None):
-                super().__init__()
-                self.in_proj = nn.Linear(
-                    dim, dim * 4 // tp_size, bias=False, device=device
-                )
-                self.out_proj = nn.Linear(
-                    dim * 4 // tp_size, dim, bias=False, device=device
-                )
-
-            def forward(self, x):
-                x = convert(x, tp_pg, src=I, dst=R)
-                z = self.in_proj(x)
-                z = torch.nn.functional.relu(z)
-                z = self.out_proj(z)
-                z = all_reduce(z, tp_pg, dst=I)
-                z = torch.nn.functional.relu(z)
-                return z
-
         torch.manual_seed(42)
-        model = SpmdTypesTPMLP(16, tp_size, device=device_type)
+        ref_model = TestMLP(16, device=device_type)
+        model = TestMLP(16, device=device_type)
+        model.load_state_dict(ref_model.state_dict())
+        _tp_init(model, tp_pg)
+
         for fqn, param in model.named_parameters():
             set_local_type(param, {fsdp_axis: I, tp_axis: tp_plan[fqn]})
 
@@ -220,40 +248,35 @@ class TestFullyShardSpmdTypes(FSDPTest):
             shard_placement_fn=shard_fn,
             dp_mesh_dims=DataParallelMeshDims(shard="fsdp"),
         )
-        return model, mesh, tp_plan
 
-    @skip_if_lt_x_gpu(4)
-    def test_fsdp_tp_sharded_param_types(self):
-        """Verify sharded param types for FSDP+TP: params are DTensors."""
-        model, mesh, tp_plan = self._make_fsdp_tp_model()
+        self._check_dtensor_placements(
+            model,
+            {
+                "in_proj.weight": (Shard(1), Shard(0)),
+                "out_proj.weight": (Shard(0), Shard(1)),
+            },
+        )
 
-        # Sharded params should be DTensors
-        for name, param in model.named_parameters():
-            self.assertIsInstance(param, DTensor)
+        from spmd_types.types import PartitionSpec
 
-    @skip_if_lt_x_gpu(4)
-    def test_fsdp_tp_optimizer_state_dtensor(self):
-        """Optimizer state should be DTensors (from zeros_like on DTensor param)."""
-        model, mesh, tp_plan = self._make_fsdp_tp_model()
-        fsdp_axis = MeshAxis.of(mesh.get_group("fsdp"))
-        tp_axis = MeshAxis.of(mesh.get_group("tp"))
-        optim = torch.optim.Adam(model.parameters(), lr=1e-2, foreach=False)
+        replicate(ref_model, process_group=dp_pg)
+        expected_types = {
+            "in_proj.weight": (
+                {fsdp_axis: R, tp_axis: V},
+                PartitionSpec(tp_axis, None),
+            ),
+            "out_proj.weight": (
+                {fsdp_axis: R, tp_axis: V},
+                PartitionSpec(None, tp_axis),
+            ),
+        }
+        self._register_param_check_hooks(model, expected_types)
 
-        torch.manual_seed(42 + self.rank + 1)
+        input_type = {fsdp_axis: S(0), tp_axis: I}
+        torch.manual_seed(42 + dp_pg.rank() + 1)
         inp = torch.randn((2, 16), device=device_type)
-        spmd_assert_type(inp, {fsdp_axis: S(0), tp_axis: I})
-        with set_current_mesh(mesh), typecheck(strict_mode="permissive", local=False):
-            output = model(inp)
-            output.sum().backward()
-        optim.step()
-
-        for name, param in model.named_parameters():
-            state = optim.state[param]
-            for key in ("exp_avg", "exp_avg_sq"):
-                self.assertIn(key, state)
-                # Optimizer state should be DTensors (matching sharded param)
-                self.assertIsInstance(state[key], DTensor)
-                self.assertEqual(state[key].shape, param.shape)
+        with set_current_mesh(mesh):
+            self._run_fwd_bwd(model, ref_model, inp, fsdp_axis, input_type)
 
 
 if __name__ == "__main__":

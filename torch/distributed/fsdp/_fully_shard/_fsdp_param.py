@@ -367,12 +367,18 @@ class FSDPParam:
             axis_type = local_type.get(axis)
             if axis_type is None or axis_type is I or axis_type is R:
                 placements.append(Replicate())
+            elif isinstance(axis_type, S):
+                placements.append(Shard(axis_type.dim))
             elif axis_type is V:
-                from spmd_types.runtime import get_partition_spec
+                from spmd_types.runtime import (  # pyrefly: ignore[missing-import]
+                    get_partition_spec,
+                )
 
                 spec = get_partition_spec(param)
                 if spec is not None:
-                    from spmd_types.types import partition_spec_get_shard
+                    from spmd_types.types import (  # pyrefly: ignore[missing-import]
+                        partition_spec_get_shard,
+                    )
 
                     shard_info = partition_spec_get_shard(spec, axis)
                     if shard_info is not None:
@@ -389,10 +395,19 @@ class FSDPParam:
                     f"for parameter '{self._module_info.param_name}'"
                 )
 
+        global_shape = list(param.size())
+        global_stride = list(param.stride())
+        for mesh_dim_idx, placement in enumerate(placements):
+            if isinstance(placement, Shard):
+                mesh_dim_size = spmd_mesh.size(mesh_dim_idx)
+                global_shape[placement.dim] *= mesh_dim_size
+                global_stride[placement.dim] *= mesh_dim_size
         dtensor_spec = DTensorSpec(
             spmd_mesh,
             tuple(placements),
-            tensor_meta=TensorMeta(param.size(), param.stride(), param.dtype),
+            tensor_meta=TensorMeta(
+                torch.Size(global_shape), tuple(global_stride), param.dtype
+            ),
         )
         dtensor_param = nn.Parameter(
             _from_local_no_grad(param.data, dtensor_spec),
@@ -406,6 +421,7 @@ class FSDPParam:
             return
         spmd_mesh = self._spmd_types_mesh
         orig_type = self._spmd_types_orig_type
+        assert spmd_mesh.mesh_dim_names is not None  # noqa: S101
         unsharded_type = {}
         for name in spmd_mesh.mesh_dim_names:
             axis = MeshAxis.of(spmd_mesh.get_group(name))
