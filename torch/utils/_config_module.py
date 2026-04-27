@@ -178,15 +178,13 @@ def install_config_module(module: ModuleType) -> None:
 
     class ConfigModuleInstance(ConfigModule):
         # __annotations__ is written to by Sphinx autodoc
-        _bypass_keys = set(
-            {
-                "_is_dirty",
-                "_hash_digest",
-                "_get_dict_dirty_keys",
-                "_get_dict_cache",
-                "__annotations__",
-            }
-        )
+        _bypass_keys = {
+            "_is_dirty",
+            "_hash_digest",
+            "_get_dict_dirty_keys_var",
+            "_get_dict_cache_var",
+            "__annotations__",
+        }
 
     def visit(
         source: ModuleType | type,
@@ -252,8 +250,12 @@ def install_config_module(module: ModuleType) -> None:
     module.__class__ = ConfigModuleInstance
     module._is_dirty = True  # type: ignore[attr-defined]
     module._hash_digest = None  # type: ignore[attr-defined]
-    module._get_dict_dirty_keys = None  # type: ignore[attr-defined]
-    module._get_dict_cache = {}  # type: ignore[attr-defined]
+    module._get_dict_dirty_keys_var = ContextVar(  # pyrefly: ignore[missing-attribute]
+        f"{module.__name__}._get_dict_dirty_keys", default=None
+    )  # type: ignore[attr-defined]
+    module._get_dict_cache_var = ContextVar(  # pyrefly: ignore[missing-attribute]
+        f"{module.__name__}._get_dict_cache", default=None
+    )  # type: ignore[attr-defined]
 
 
 COMPILE_IGNORED_MARKER = "@compile_ignored"
@@ -295,6 +297,9 @@ def get_assignments_with_compile_ignored_comments(module: ModuleType) -> set[str
     if current_comment != ("", -1):
         raise AssertionError(f"unconsumed {COMPILE_IGNORED_MARKER}")
     return assignments
+
+
+_GetDictCacheKey = tuple[tuple[str, ...], tuple[str, ...], bool]
 
 
 @dataclass
@@ -384,11 +389,12 @@ class ConfigModule(ModuleType):
     _compile_ignored_keys: set[str]
     _is_dirty: bool
     _hash_digest: bytes | None
-    # Keys changed since _get_dict last ran. None means fully dirty (initial
-    # state or >_GET_DICT_DIRTY_KEYS_CAP keys changed); empty set means the
-    # last _get_dict result is up to date.
-    _get_dict_dirty_keys: set[str] | None
-    _get_dict_cache: dict[tuple, dict[str, Any]]
+    # Per-thread cache state, backed by ContextVar so each thread/context gets
+    # its own dirty set and cache (config values are per-thread via ContextVar).
+    # None means fully dirty (initial state or >_GET_DICT_DIRTY_KEYS_CAP keys
+    # changed); empty set means the last _get_dict result is up to date.
+    _get_dict_dirty_keys_var: ContextVar[set[str] | None]
+    _get_dict_cache_var: ContextVar[dict[_GetDictCacheKey, dict[str, Any]]]
 
     def __init__(self) -> None:
         raise NotImplementedError(
@@ -505,12 +511,12 @@ class ConfigModule(ModuleType):
     _GET_DICT_DIRTY_KEYS_CAP = 16
 
     def _mark_get_dict_dirty(self, name: str) -> None:
-        dirty = self._get_dict_dirty_keys
+        dirty = self._get_dict_dirty_keys_var.get()
         if dirty is None:
             return
         dirty.add(name)
         if len(dirty) > self._GET_DICT_DIRTY_KEYS_CAP:
-            self._get_dict_dirty_keys = None
+            self._get_dict_dirty_keys_var.set(None)
 
     def _is_default(self, name: str) -> bool:
         """
@@ -571,9 +577,13 @@ class ConfigModule(ModuleType):
         )
 
         # Try to take a shortcut and only update dirty keys on top of a cached base.
+        cache = self._get_dict_cache_var.get()
         if readonly_values:
-            dirty_keys = self._get_dict_dirty_keys
-            cached = self._get_dict_cache.get(cache_key)
+            if cache is None:
+                cache = {}
+                self._get_dict_cache_var.set(cache)
+            dirty_keys = self._get_dict_dirty_keys_var.get()
+            cached = cache.get(cache_key)
             if cached is not None and dirty_keys is not None:
                 # Shortcut: copy the cached base and update only dirty keys.
                 # The cache entry itself is never mutated.
@@ -581,8 +591,9 @@ class ConfigModule(ModuleType):
                 config = dict(cached)
             elif dirty_keys is None:
                 # Fully dirty — clear entire cache and recompute
-                self._get_dict_cache.clear()
-                self._get_dict_dirty_keys = set()
+                cache = {}
+                self._get_dict_cache_var.set(cache)
+                self._get_dict_dirty_keys_var.set(set())
 
         # Recompute everything otherwise.
         if keys_to_update is None:
@@ -623,8 +634,8 @@ class ConfigModule(ModuleType):
                 val = copy.deepcopy(val)
             config[key] = val
 
-        if readonly_values and cache_key not in self._get_dict_cache:
-            self._get_dict_cache[cache_key] = dict(config)
+        if readonly_values and cache_key not in cache:
+            cache[cache_key] = dict(config)
         return config
 
     def get_type(self, config_name: str) -> type:
@@ -893,11 +904,13 @@ class ConfigModule(ModuleType):
         def change() -> Callable[[], None]:
             prior = {k: config[k].user_override.get() for k in changes}
             for k, v in changes.items():
-                self._config[k].user_override.set(v)
+                config[k].user_override.set(v)
+                self._mark_get_dict_dirty(k)
 
             def revert() -> None:
                 for k, v in prior.items():
-                    self._config[k].user_override.set(v)
+                    config[k].user_override.set(v)
+                    self._mark_get_dict_dirty(k)
 
             return revert
 
