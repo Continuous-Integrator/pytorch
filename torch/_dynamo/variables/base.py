@@ -700,6 +700,8 @@ class VariableTracker(metaclass=VariableTrackerMeta):
             return self.nb_int_impl(tx)
         elif name == "__float__" and not args and not kwargs:
             return self.nb_float_impl(tx)
+        elif name == "__neg__" and not args and not kwargs:
+            return self.nb_negative_impl(tx)
         elif name in cmp_name_to_op_mapping and len(args) == 1 and not kwargs:
             other = args[0]
             if not isinstance(self, type(other)) and not (
@@ -1133,6 +1135,23 @@ class VariableTracker(metaclass=VariableTrackerMeta):
             context=f"{type(self).__name__} has nb_float slot but no nb_float_impl override",
             explanation=f"The type {self.python_type_name()} has an nb_float C slot but "
             "the corresponding VariableTracker doesn't implement nb_float_impl.",
+            hints=[*graph_break_hints.SUPPORTABLE],
+        )
+
+    def nb_negative_impl(
+        self,
+        tx: Any,
+    ) -> VariableTracker:
+        """Mirrors CPython's tp_as_number->nb_negative slot.
+
+        Called when type_implements_nb_negative returns True for this type.
+        Subclasses override to provide the actual negation.
+        """
+        unimplemented(
+            gb_type="nb_negative_impl not implemented",
+            context=f"{type(self).__name__} has nb_negative slot but no nb_negative_impl override",
+            explanation=f"The type {self.python_type_name()} has an nb_negative C slot but "
+            "the corresponding VariableTracker doesn't implement nb_negative_impl.",
             hints=[*graph_break_hints.SUPPORTABLE],
         )
 
