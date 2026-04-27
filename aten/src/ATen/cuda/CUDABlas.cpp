@@ -2533,23 +2533,17 @@ void scaled_grouped_gemm(
   int a_scale_mode = get_scale_mode(a_scaling_type, A_scale_dtype, use_fast_accum);
   int b_scale_mode = get_scale_mode(b_scaling_type, B_scale_dtype, use_fast_accum);
 
-  // Block scaling (MXFP8) requires host pointer mode — cuBLAS does not
-  // support POINTER_MODE_DEVICE combined with VEC32_UE8M0 for grouped GEMM.
-  const bool use_block_scaling =
-      a_scaling_type == ScalingType::BlockWise1x32 ||
-      b_scaling_type == ScalingType::BlockWise1x32;
-
   CuBlasLtMatmulDescriptor computeDesc(computeType, scaleType);
   computeDesc.setAttribute(CUBLASLT_MATMUL_DESC_TRANSA, _cublasOpFromChar(transa));
   computeDesc.setAttribute(CUBLASLT_MATMUL_DESC_TRANSB, _cublasOpFromChar(transb));
-  if (!use_block_scaling) {
-    const auto pointer_mode = CUBLASLT_POINTER_MODE_DEVICE;
-    const int64_t alphaBatchStride = 1;
-    const int64_t betaBatchStride = 1;
-    computeDesc.setAttribute(CUBLASLT_MATMUL_DESC_POINTER_MODE, pointer_mode);
-    computeDesc.setAttribute(CUBLASLT_MATMUL_DESC_ALPHA_BATCH_STRIDE, alphaBatchStride);
-    computeDesc.setAttribute(CUBLASLT_MATMUL_DESC_BETA_BATCH_STRIDE, betaBatchStride);
-  }
+
+  const auto pointer_mode = CUBLASLT_POINTER_MODE_DEVICE;
+  const int64_t alphaBatchStride = 1;
+  const int64_t betaBatchStride = 1;
+  computeDesc.setAttribute(CUBLASLT_MATMUL_DESC_POINTER_MODE, pointer_mode);
+  computeDesc.setAttribute(CUBLASLT_MATMUL_DESC_ALPHA_BATCH_STRIDE, alphaBatchStride);
+  computeDesc.setAttribute(CUBLASLT_MATMUL_DESC_BETA_BATCH_STRIDE, betaBatchStride);
+
   computeDesc.setAttribute(CUBLASLT_MATMUL_DESC_A_SCALE_POINTER, A_scale_ptr);
   computeDesc.setAttribute(CUBLASLT_MATMUL_DESC_B_SCALE_POINTER, B_scale_ptr);
   if (D_scale_ptr != nullptr) {
@@ -2558,14 +2552,8 @@ void scaled_grouped_gemm(
   computeDesc.setAttribute(CUBLASLT_MATMUL_DESC_A_SCALE_MODE, a_scale_mode);
   computeDesc.setAttribute(CUBLASLT_MATMUL_DESC_B_SCALE_MODE, b_scale_mode);
 
-  if (!use_block_scaling) {
-    const int8_t fastAccuMode = use_fast_accum ? 1 : 0;
-    computeDesc.setAttribute(CUBLASLT_MATMUL_DESC_FAST_ACCUM, fastAccuMode);
-  }
-
-  // Host alpha/beta for block scaling (host pointer mode), shared across all groups
-  float alpha_host = 1.0f;
-  float beta_host = 0.0f;
+  const int8_t fastAccuMode = use_fast_accum ? 1 : 0;
+  computeDesc.setAttribute(CUBLASLT_MATMUL_DESC_FAST_ACCUM, fastAccuMode);
 
   CuBlasLtGroupedMatrixLayout Adesc(ScalarTypeToCudaDataType(A_dtype), batchCount, mArrayDev, kArrayDev, ldaArrayDev, transa == 't');
   CuBlasLtGroupedMatrixLayout Bdesc(ScalarTypeToCudaDataType(B_dtype), batchCount, kArrayDev, nArrayDev, ldbArrayDev, transb == 't');
@@ -2602,14 +2590,12 @@ void scaled_grouped_gemm(
   cublasStatus_t cublasStatus = cublasLtMatmul(
     ltHandle,
     computeDesc.descriptor(),
-    use_block_scaling ? static_cast<const void*>(&alpha_host)
-                      : static_cast<const void*>(alphaArrayDev),
+    static_cast<const void*>(alphaArrayDev),
     A,
     Adesc.descriptor(),
     B,
     Bdesc.descriptor(),
-    use_block_scaling ? static_cast<const void*>(&beta_host)
-                      : static_cast<const void*>(betaArrayDev),
+    static_cast<const void*>(betaArrayDev),
     C,
     Cdesc.descriptor(),
     D,

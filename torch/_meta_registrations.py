@@ -8461,7 +8461,9 @@ def meta_grouped_mm(
     out_dtype: torch.dtype | None = None,
 ) -> Tensor:
     if os.environ.get("TORCH_GROUPED_MM_PREFER_CUBLASLT") == "1":
-        return _meta_grouped_mm_cublaslt(mat_a, mat_b, offs=offs, bias=bias, out_dtype=out_dtype)
+        return _meta_grouped_mm_cublaslt(
+            mat_a, mat_b, offs=offs, bias=bias, out_dtype=out_dtype
+        )
     return _meta_grouped_mm_common(
         mat_a,
         mat_b,
@@ -8528,7 +8530,7 @@ def _meta_grouped_mm_cublaslt(
     out_dtype = out_dtype or mat_a.dtype
     torch._check(
         out_dtype == mat_a.dtype or out_dtype == torch.float32,
-        lambda: f"If output dtype provided, it must be torch.float32 or match input dtype.",
+        lambda: "If output dtype provided, it must be torch.float32 or match input dtype.",
     )
     _cublaslt_grouped_mm_validate_inputs(mat_a, mat_b, offs, bias)
     return _create_grouped_mm_output_tensor(mat_a, mat_b, offs, out_dtype)
@@ -8567,7 +8569,9 @@ def _meta_scaled_grouped_mm_cublaslt(
     )
     out_dtype = out_dtype or torch.bfloat16
     torch._check(
-        out_dtype == torch.bfloat16 or out_dtype == torch.float16 or out_dtype == torch.float32,
+        out_dtype == torch.bfloat16
+        or out_dtype == torch.float16
+        or out_dtype == torch.float32,
         lambda: "If output dtype provided, it must be torch.bfloat16, torch.float16, or torch.float32.",
     )
     _cublaslt_grouped_mm_validate_inputs(mat_a, mat_b, offs, bias)
@@ -8591,9 +8595,15 @@ def meta_scaled_grouped_mm(
 
     if os.environ.get("TORCH_GROUPED_MM_PREFER_CUBLASLT") == "1":
         return _meta_scaled_grouped_mm_cublaslt(
-            mat_a, mat_b, scale_a, scale_b,
-            offs=offs, bias=bias, scale_result=scale_result,
-            out_dtype=out_dtype, use_fast_accum=use_fast_accum,
+            mat_a,
+            mat_b,
+            scale_a,
+            scale_b,
+            offs=offs,
+            bias=bias,
+            scale_result=scale_result,
+            out_dtype=out_dtype,
+            use_fast_accum=use_fast_accum,
         )
 
     return _meta_grouped_mm_common(
