@@ -59,16 +59,14 @@ def align_runtime_estimations_across_all_distributed_ranks(
 
     world_size = dist.get_world_size()
     pg = _get_default_group()
-    gathered_runtime_estimations: list[list[float]] = [
-        [] for _ in range(world_size)
-    ]
+    gathered_runtime_estimations: list[list[float]] = [[] for _ in range(world_size)]
     dist.all_gather_object(
         gathered_runtime_estimations,
         runtime_estimations,
         pg,
     )
 
-    lengths = {len(e) for e in gathered_runtime_estimations}
+    lengths = OrderedSet([len(e) for e in gathered_runtime_estimations])
     if len(lengths) != 1:
         log.warning(
             "Different ranks have different numbers of scheduler nodes (%s), "
