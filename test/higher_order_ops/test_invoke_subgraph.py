@@ -4694,7 +4694,6 @@ class TestInvokeSubgraphDTensor(TestCase):
         res.to_local().sum().backward()
         self.assertEqual(local_tensor.grad, local_tensor_clone.grad)
 
-    @unittest.expectedFailure
     def test_redistribute_in_nested_compile_region(self):
         mesh = DeviceMesh("cpu", torch.arange(2))
 
