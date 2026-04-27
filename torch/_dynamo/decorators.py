@@ -231,6 +231,8 @@ def nonstrict_trace(traceable_fn: Callable[_P, _R]) -> Callable[_P, _R]:
     - User-defined classes as inputs (must be registered with pytree)
     - ``nn.Module`` as input arguments (parameters and buffers are tracked for autograd)
     - Global/captured tensors treated as constants (assumed not updated during execution)
+    - ``torch.autograd.Function`` subclasses: Dynamo will not trace into forward/backward,
+      letting aot_autograd handle them natively with correct gradient metadata.
 
     Note:
         - With ``backend="eager"``, the original Python function runs directly.
@@ -282,7 +284,36 @@ def nonstrict_trace(traceable_fn: Callable[_P, _R]) -> Callable[_P, _R]:
         >>> out = opt_model(torch.randn(10, 10))
         >>> out.sum().backward()  # Gradients flow through traced_forward
 
+    Example with autograd.Function::
+
+        >>> @torch._dynamo.nonstrict_trace
+        ... class MyFunc(torch.autograd.Function):
+        ...     @staticmethod
+        ...     def forward(ctx, x):
+        ...         ctx.save_for_backward(x)
+        ...         return x.clone()
+        ...
+        ...     @staticmethod
+        ...     def backward(ctx, grad_output):
+        ...         (x,) = ctx.saved_tensors
+        ...         if grad_output.is_contiguous():
+        ...             return grad_output
+        ...         else:
+        ...             return grad_output.contiguous() * 0.5
+
     """
+    if isinstance(traceable_fn, type) and issubclass(
+        traceable_fn, torch.autograd.Function
+    ):
+        fn_id = id(traceable_fn)
+        trace_rules._nonstrict_trace_callable_ids.add(fn_id)
+
+        def deregister() -> None:
+            trace_rules._nonstrict_trace_callable_ids.remove(fn_id)
+
+        weakref.finalize(traceable_fn, deregister)
+        return traceable_fn  # type: ignore[return-value]
+
     assert callable(traceable_fn), "nonstrict_trace expects a callable"
 
     _check_mutually_exclusive_decorators(traceable_fn, "nonstrict_trace")

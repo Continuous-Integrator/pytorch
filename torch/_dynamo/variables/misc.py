@@ -875,6 +875,17 @@ class AutogradFunctionVariable(VariableTracker):
         VariableTracker.visit(visit, (args, kwargs))
 
         if requires_grad and torch.is_grad_enabled():
+            if trace_rules.is_nonstrict_trace_callable(self.fn_cls):
+                from .torch import AllowInGraphKind, TorchInGraphFunctionVariable
+
+                trampoline_autograd_apply = produce_trampoline_autograd_apply(
+                    self.fn_cls
+                )
+                return TorchInGraphFunctionVariable(
+                    trampoline_autograd_apply,
+                    kind=AllowInGraphKind.NONSTRICT_TRACE,
+                ).call_function(tx, args, kwargs)
+
             source = self.source
 
             from torch._functorch.autograd_function import (
