@@ -508,29 +508,39 @@ del arch_version
 
 
 def _emit_runtime_matrix(os_arg: str) -> None:
-    """Emit generate_wheels_matrix(os_arg) as JSON, both to stdout and
-    (when inside GitHub Actions) to $GITHUB_OUTPUT as `configs=<json>`.
+    """Emit generate_wheels_matrix(os_arg) as JSON to $GITHUB_OUTPUT so
+    generated-*-binary-manywheel-nightly.yml can drive its strategy.matrix
+    from this script at runtime (adding a new python/CUDA/ROCm version here
+    is picked up without regenerating any YAML).
 
-    Used by the generated-linux-*-binary-manywheel-nightly workflows to
-    feed a strategy.matrix at runtime, so adding a new CUDA/ROCm version
-    in this file is picked up on the next workflow run without any
-    regeneration of the YAML.
+    Outputs written (all JSON arrays):
+      configs               - full matrix (build + upload)
+      test-standard-configs - cpu + cuda[-aarch64] + cpu-aarch64 + cpu-s390x
+                              (tests driven through _binary-test-linux.yml)
+      test-rocm-configs     - rocm only (inline test with setup-rocm)
+      test-xpu-configs      - xpu only (inline test with setup-xpu)
+      libtorch-configs      - one entry per unique arch variant (py3.10)
     """
-    import sys
-
     configs = generate_wheels_matrix(os_arg)
-    payload = json.dumps(configs)
-    print(payload)
+
+    def _is_standard(c: dict[str, str]) -> bool:
+        t = c["gpu_arch_type"]
+        return t in ("cpu", "cuda", "cpu-aarch64", "cuda-aarch64", "cpu-s390x")
+
+    outputs = {
+        "configs": configs,
+        "test-standard-configs": [c for c in configs if _is_standard(c)],
+        "test-rocm-configs": [c for c in configs if c["gpu_arch_type"] == "rocm"],
+        "test-xpu-configs": [c for c in configs if c["gpu_arch_type"] == "xpu"],
+        "libtorch-configs": generate_libtorch_extraction_configs(os_arg, configs),
+    }
+
+    print(json.dumps(outputs["configs"]))
     gh_output = os.environ.get("GITHUB_OUTPUT")
     if gh_output:
         with open(gh_output, "a") as f:
-            f.write(f"configs={payload}\n")
-    # libtorch extraction matrix (one per unique arch variant, py3.10)
-    libtorch = generate_libtorch_extraction_configs(os_arg, configs)
-    lt_payload = json.dumps(libtorch)
-    if gh_output:
-        with open(gh_output, "a") as f:
-            f.write(f"libtorch-configs={lt_payload}\n")
+            for key, value in outputs.items():
+                f.write(f"{key}={json.dumps(value)}\n")
 
 
 if __name__ == "__main__":
