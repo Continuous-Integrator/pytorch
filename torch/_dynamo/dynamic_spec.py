@@ -100,7 +100,7 @@ class IntSpec:
         optimization_hint: int | None = None,
     ) -> None:
         if not isinstance(type, IntSpecType):
-            raise TypeError(f"IntSpec.type must be an IntSpecType, got {type!r}")
+            raise TypeError(f"IntSpec type must be an IntSpecType, got {type!r}")
         self._type = type
         self._name = name
         self._min = min
@@ -115,7 +115,7 @@ class IntSpec:
         # validation rules and integration-level dispatch (BACKED vs.
         # UNBACKED).
         if key == "_type" and hasattr(self, "_type"):
-            raise AttributeError("IntSpec.type is immutable; cannot reassign")
+            raise AttributeError("IntSpec type is immutable; cannot reassign")
         object.__setattr__(self, key, value)
 
     def __delattr__(self, key: str) -> None:
@@ -238,12 +238,6 @@ class IntSpec:
             max=max,
             optimization_hint=optimization_hint,
         )
-
-    # -- identity (type is read-only) --------------------------------------
-
-    @property
-    def type(self) -> IntSpecType:
-        return self._type
 
     # -- fluent setters ----------------------------------------------------
     #
