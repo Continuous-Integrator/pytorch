@@ -23120,8 +23120,14 @@ op_db: list[OpInfo] = [
         ),
     ),
 ]
-op_db += opinfo.definitions.op_db
 
+dsl_ops_by_dsl: dict[str, list[OpInfo]] = {}
+
+# populate the lists with available dsl names
+for dsl_name in torch.backends.python_native.available_dsls:
+    dsl_ops_by_dsl[dsl_name] = []
+
+op_db += opinfo.definitions.op_db
 
 # Separate registry for experimental Python Reference OpInfos.
 python_ref_db = [
@@ -26818,28 +26824,8 @@ python_ref_db = [
 ]
 python_ref_db += opinfo.definitions.python_ref_db
 
-# Common operator groupings
-ops_and_refs = op_db + python_ref_db
-
-# Extract DSL-specific OpInfos for filtering
-# Look for any OpInfo with dsl_name attribute (DSL variants)
-_dsl_ops = [op for op in op_db if hasattr(op, 'dsl_name') and op.dsl_name is not None]
-
-dsl_ops_by_dsl = {}
-
 # Read environment variable for DSL restriction
 OPINFO_RESTRICT_TO_DSL = os.environ.get('OPINFO_RESTRICT_TO_DSL')
-
-# Always use manual DSL grouping for consistent behavior
-# Group DSL ops by their actual dsl_name
-_manual_dsl_ops_by_dsl: dict[str, OpInfo] = {}
-for op in _dsl_ops:
-    dsl_name = getattr(op, 'dsl_name', 'unknown')
-    if dsl_name not in _manual_dsl_ops_by_dsl:
-        _manual_dsl_ops_by_dsl[dsl_name] = []
-    _manual_dsl_ops_by_dsl[dsl_name].append(op)
-
-dsl_ops_by_dsl = _manual_dsl_ops_by_dsl
 
 # If specified, restrict only to specified DSL OpInfo entries.
 if OPINFO_RESTRICT_TO_DSL:
@@ -26855,16 +26841,19 @@ if OPINFO_RESTRICT_TO_DSL:
 
     # Check if we have OpInfos for this DSL
     if OPINFO_RESTRICT_TO_DSL in dsl_ops_by_dsl:
-        # Exact match found - filter op_db to only include these DSL ops
-        filtered_ops = dsl_ops_by_dsl[OPINFO_RESTRICT_TO_DSL]
-        op_db = filtered_ops
-        ops_and_refs = filtered_ops + python_ref_db
-        print(f"Filtered to {len(filtered_ops)} OpInfo(s) for DSL '{OPINFO_RESTRICT_TO_DSL}'")
+        op_db = dsl_ops_by_dsl[OPINFO_RESTRICT_TO_DSL]
+        print(f"Filtered to {len(op_db)} OpInfo(s) for DSL '{OPINFO_RESTRICT_TO_DSL}'")
     else:
         # Valid DSL but no OpInfos available for it
         print(f"No OpInfo entries found for DSL '{OPINFO_RESTRICT_TO_DSL}' (valid DSL, but no tests defined)")
         op_db = []
-        ops_and_refs = python_ref_db
+else:
+    for ops in dsl_ops_by_dsl.values():
+        op_db += ops
+
+# Common operator groupings
+ops_and_refs = op_db + python_ref_db
+
 
 unary_ufuncs = [op for op in ops_and_refs if isinstance(op, UnaryUfuncInfo)]
 binary_ufuncs = [op for op in ops_and_refs if isinstance(op, BinaryUfuncInfo)]
