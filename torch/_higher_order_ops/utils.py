@@ -310,7 +310,7 @@ def _set_compilation_env():
     # The issue is tracked in https://github.com/pytorch/pytorch/issues/144360: when dynamo finds
     # the top-level frame produces no graph, the default behavior is to fallback to eager.
     # Then when it encounters an inner function, it will try to trace that function again, which is unnecessary.
-    # For while_loop, during inspecting the inner call, we trace into the python dispathcer
+    # For while_loop, during inspecting the inner call, we trace into the python dispatcher
     # logic, which is not tracable as of today. So the proper fix can be either 1. allow dispatch
     # logic to be dynamo tracable or 2. fixing https://github.com/pytorch/pytorch/issues/144360.
     # but it exposes some bugs in existing tests so we have to have a temporary flag to control
@@ -1037,6 +1037,21 @@ def _tensor_storage(t) -> StorageWeakRef:
     return StorageWeakRef(t._typed_storage())
 
 
+def _get_example_value(n):
+    if not isinstance(n, torch.fx.Node):
+        return n
+    if "val" in n.meta:
+        return n.meta["val"]
+    if "example_value" in n.meta:
+        return n.meta["example_value"]
+    return None
+
+
+def get_graph_output_example_values(gm: torch.fx.GraphModule) -> list[Any]:
+    output_node = gm.graph.find_nodes(op="output")[0]
+    return [_get_example_value(n) for n in pytree.tree_flatten(output_node.args[0])[0]]
+
+
 def check_input_alias_and_mutation_return_outputs(
     gm: torch.fx.GraphModule,
 ) -> tuple[
@@ -1046,24 +1061,12 @@ def check_input_alias_and_mutation_return_outputs(
     list[int],
     tuple[Any, ...] | list[Any],
 ]:
-    def _get_example_value(n):
-        if not isinstance(n, torch.fx.Node):
-            return n
-        if "val" in n.meta:
-            return n.meta["val"]
-        if "example_value" in n.meta:
-            return n.meta["example_value"]
-        return None
-
     fake_args = [
         _get_example_value(n)
         for n in gm.graph.find_nodes(op="placeholder")
         if isinstance(n, torch.fx.Node) and "val" in n.meta
     ]
-    outputs = [
-        _get_example_value(n)
-        for n in pytree.tree_flatten(gm.graph.find_nodes(op="output")[0].args[0])[0]
-    ]
+    outputs = get_graph_output_example_values(gm)
 
     # We need to analyze the original fake_args to detect
     # inp-inp alias.
