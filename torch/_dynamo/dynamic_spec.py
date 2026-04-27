@@ -72,18 +72,18 @@ class IntSpec:
 
     _name: str | None
     _type: IntSpecType
+    _value: int | None
     _min: int | None
     _max: int | None
-    _value: int | None
     _guarding_hint: int | None
     _optimization_hint: int | None
 
     __slots__ = (
         "_name",
         "_type",
+        "_value",
         "_min",
         "_max",
-        "_value",
         "_guarding_hint",
         "_optimization_hint",
     )
@@ -284,19 +284,15 @@ class IntSpec:
 
     def __repr__(self) -> str:
         parts: list[str] = []
-        if self._name is not None:
-            parts.append(f"name={self._name!r}")
-        parts.append(f"type={self._type.name}")
-        if self._value is not None:
-            parts.append(f"value={self._value}")
-        if self._min is not None:
-            parts.append(f"min={self._min}")
-        if self._max is not None:
-            parts.append(f"max={self._max}")
-        if self._guarding_hint is not None:
-            parts.append(f"guarding_hint={self._guarding_hint}")
-        if self._optimization_hint is not None:
-            parts.append(f"optimization_hint={self._optimization_hint}")
+        for slot in self.__slots__:
+            val = getattr(self, slot)
+            if slot == "_type":
+                parts.append(f"type={val.name}")
+            elif slot == "_name":
+                if val is not None:
+                    parts.append(f"name={val!r}")
+            elif val is not None:
+                parts.append(f"{slot[1:]}={val}")
         return f"IntSpec({', '.join(parts)})"
 
 
