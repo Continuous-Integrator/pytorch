@@ -891,14 +891,21 @@ class TestStatelessOptimizerReparam(TestCase):
             ):
                 pass
 
-    def test_reparametrize_optimizer_preserves_passthrough_state(self):
+    def test_reparametrize_optimizer_rejects_non_param_state(self):
         _, optimizer, parameters, optimizer_state_dict = self._make_reparam_inputs()
         optimizer_state_dict["state"]["global_step"] = 42
 
-        with stateless._reparametrize_optimizer(
-            optimizer, parameters, optimizer_state_dict
+        with self.assertRaisesRegex(
+            RuntimeError,
+            re.escape(
+                "_reparametrize_optimizer requires optimizer.state_dict()-style state "
+                "to contain only per-parameter entries keyed by packed parameter ids."
+            ),
         ):
-            self.assertEqual(optimizer.state["global_step"], 42)
+            with stateless._reparametrize_optimizer(
+                optimizer, parameters, optimizer_state_dict
+            ):
+                pass
 
     def test_reparametrize_optimizer_restores_after_exception(self):
         _, optimizer, parameters, optimizer_state_dict = self._make_reparam_inputs()

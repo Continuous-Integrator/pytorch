@@ -1,5 +1,6 @@
 # mypy: allow-untyped-defs
 import contextlib
+from collections import defaultdict
 from typing import Any
 from typing_extensions import deprecated
 
@@ -9,6 +10,16 @@ from torch.nn.utils._named_member_accessor import NamedMemberAccessor
 
 
 __all__ = ["functional_call"]
+
+
+def _contains_tensor(value: Any) -> bool:
+    if isinstance(value, Tensor):
+        return True
+    if isinstance(value, dict):
+        return any(_contains_tensor(inner) for inner in value.values())
+    if isinstance(value, (list, tuple)):
+        return any(_contains_tensor(inner) for inner in value)
+    return False
 
 
 def _untie_named_tensors_map(
@@ -206,7 +217,7 @@ def _prepare_optimizer_reparametrization(
     # [fake_p2].
     flat_parameters = list(parameters_and_buffers.values())
     flat_param_offset = 0
-    packed_param_ids: set[Any] = set()
+    packed_param_ids: set[int] = set()
     for idx, (group, saved_group) in enumerate(
         zip(optimizer.param_groups, param_groups, strict=True)
     ):
@@ -274,11 +285,12 @@ def _prepare_optimizer_reparametrization(
             "match optimizer.param_groups ordering."
         )
 
-    # Preserve any non-parameter-keyed optimizer state entries unchanged.
-    passthrough_state = {
-        key: value for key, value in state.items() if key not in packed_param_ids
-    }
-    return state, passthrough_state, group_rebind_infos
+    if any(key not in packed_param_ids for key in state):
+        raise RuntimeError(
+            "_reparametrize_optimizer requires optimizer.state_dict()-style state "
+            "to contain only per-parameter entries keyed by packed parameter ids."
+        )
+    return state, group_rebind_infos
 
 
 @contextlib.contextmanager
@@ -300,7 +312,7 @@ def _reparametrize_optimizer(
     explicit-state paths, where the provided optimizer state is treated as a
     mutable tracing input rather than an immutable snapshot.
     """
-    state, passthrough_state, group_rebind_infos = _prepare_optimizer_reparametrization(
+    state, group_rebind_infos = _prepare_optimizer_reparametrization(
         optimizer, parameters_and_buffers, optimizer_state_dict
     )
 
@@ -308,7 +320,7 @@ def _reparametrize_optimizer(
     original_group_params = [group["params"] for group in optimizer.param_groups]
 
     try:
-        rebind_state = passthrough_state.copy()
+        rebind_state: defaultdict[Tensor, Any] = defaultdict(dict)
 
         for group, saved_group, rebind_params, _ in group_rebind_infos:
             # Rebind the live optimizer group to the explicit tensors and saved
