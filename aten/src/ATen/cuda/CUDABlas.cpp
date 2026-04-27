@@ -1840,7 +1840,7 @@ bool gemm_and_bias(
 
         // In the very, very unlikely event of not being able to reuse
         // the selected algorithm, we need to re-query heuristic.
-        if (perform_algo_check() != CUBLAS_STATUS_SUCCESS) {
+        if (C10_UNLIKELY(perform_algo_check() != CUBLAS_STATUS_SUCCESS)) {
           cublasStatus = get_heuristic();
         }
       }
