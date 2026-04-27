@@ -73,6 +73,8 @@ def _register_fx_metadata(module_name: str, metadata: dict[str, Any]) -> None:
 
 @compatibility(is_backward_compatible=False)
 class NodeSourceAction(Enum):
+    """Enum representing the action taken to produce a node in provenance tracking."""
+
     CREATE = "create"
     REPLACE = "replace"
 
@@ -393,6 +395,38 @@ def annotate_fn(
         return wrapper  # type: ignore[return-value]
 
     return decorator
+
+
+@contextmanager
+def _set_autograd_backward(enable: bool = True) -> Iterator[None]:
+    global current_meta
+
+    had_autograd_backward = "autograd_backward" in current_meta
+    old_autograd_backward = current_meta.get("autograd_backward", False)
+
+    if enable:
+        _mark_autograd_backward()
+    try:
+        yield
+    finally:
+        if had_autograd_backward:
+            current_meta["autograd_backward"] = old_autograd_backward
+        else:
+            _reset_autograd_backward()
+
+
+@compatibility(is_backward_compatible=False)
+def _mark_autograd_backward() -> None:
+    global current_meta
+
+    current_meta["autograd_backward"] = True
+
+
+@compatibility(is_backward_compatible=False)
+def _reset_autograd_backward() -> None:
+    global current_meta
+
+    current_meta.pop("autograd_backward", None)
 
 
 @compatibility(is_backward_compatible=False)
