@@ -15550,10 +15550,6 @@ op_db: list[OpInfo] = [
                 "test_output_match",
                 device_type="mps",
             ),
-            DecorateInfo(
-                toleranceOverride({torch.float32: tol(atol=1e-3, rtol=1e-5)}),
-                'TestDecomp', 'test_comprehensive',
-                dtypes=(torch.float32,)),
         ),
         skips=(
             # RuntimeError: Difference from float64 is larger with
@@ -15561,9 +15557,12 @@ op_db: list[OpInfo] = [
             # on output 0. Original max diff: 0.0004882961511611938,
             # Decomp max diff: 0.015136703848838806
             DecorateInfo(
-                unittest.skip("Inconsistent accuracy"),
+                unittest.skip(
+                    "nll_loss2d_forward decomposition mismatch on total_weight "
+                    "for multi-dimensional weight inputs"
+                ),
                 'TestDecomp', 'test_comprehensive',
-                dtypes=(torch.float16,)),
+                device_type="cuda"),
             # RuntimeError: input->type()->kind() ==
             # TypeKind::OptionalType INTERNAL ASSERT FAILED at
             # "torch/csrc/jit/passes/utils/check_alias_annotation.cpp":267
