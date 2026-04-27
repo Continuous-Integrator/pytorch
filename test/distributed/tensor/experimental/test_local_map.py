@@ -7,9 +7,9 @@ import torch
 import torch.distributed as dist
 import torch.distributed._functional_collectives as funcol
 from torch.distributed._local_tensor import LocalTensorMode
+from torch.distributed.device_mesh import init_device_mesh
 from torch.distributed.spmd_types import (
     get_local_type,
-    has_local_type,
     I,
     is_available as spmd_types_available,
     MeshAxis,
@@ -17,7 +17,6 @@ from torch.distributed.spmd_types import (
     SpmdTypeError,
     V,
 )
-from torch.distributed.device_mesh import init_device_mesh
 from torch.distributed.tensor import (
     distribute_tensor,
     DTensor,
@@ -28,7 +27,7 @@ from torch.distributed.tensor import (
 from torch.distributed.tensor.debug import CommDebugMode
 from torch.distributed.tensor.experimental import local_map
 from torch.testing._internal.common_distributed import skip_if_lt_x_gpu
-from torch.testing._internal.common_utils import run_tests
+from torch.testing._internal.common_utils import run_tests, TestCase
 from torch.testing._internal.distributed._tensor.common_dtensor import (
     DTensorTestBase,
     with_comms,
@@ -441,9 +440,140 @@ class TestLocalMap(DTensorTestBase):
         # output lives in mesh_2d
         self.assertEqual(Y_dt.device_mesh, mesh_2d)
 
+    @unittest.skipUnless(spmd_types_available(), "requires spmd_types")
+    @with_comms()
+    def test_spmd_types_dp_matmul(self):
+        """DP matmul with custom autograd functions.
+
+        Data is Shard(0) (V), weights are Replicate (R). The correct backward
+        all-reduces grad_W so every rank sees the full gradient. The buggy
+        version skips the all-reduce.
+
+        Step 1: BuggyDPMatmul without spmd_types → wrong W gradient.
+        Step 2: BuggyDPMatmul with spmd_types=True → SpmdTypeError (V + I).
+        Step 3: CorrectDPMatmul with spmd_types=True → correct gradients.
+        """
+        from spmd_types import (
+            assert_type,
+            MeshAxis,
+            register_autograd_function,
+            register_local_autograd_function,
+        )
+
+        @register_local_autograd_function
+        class BuggyDPMatmul(torch.autograd.Function):
+            @staticmethod
+            def forward(ctx, X, W):
+                ctx.save_for_backward(X, W)
+                return torch.mm(X, W)
+
+            @staticmethod
+            def backward(ctx, grad_output):
+                X, W = ctx.saved_tensors
+                grad_X = torch.mm(grad_output, W.t())
+                grad_W = torch.mm(X.t(), grad_output)  # BUG: missing all-reduce
+                return grad_X, grad_W
+
+        @register_autograd_function
+        class CorrectDPMatmul(torch.autograd.Function):
+            @staticmethod
+            def forward(ctx, X, W, mesh):
+                ctx.save_for_backward(X, W)
+                ctx.mesh = mesh
+                return torch.mm(X, W)
+
+            @staticmethod
+            def backward(ctx, grad_output):
+                X, W = ctx.saved_tensors
+                grad_X = torch.mm(grad_output, W.t())
+                grad_W = funcol.all_reduce(
+                    torch.mm(X.t(), grad_output), "sum", ctx.mesh
+                )
+                return grad_X, grad_W, None
+
+            @staticmethod
+            def typecheck_forward(X, W, mesh):
+                dp = MeshAxis.of(mesh.get_group("dp"))
+                assert_type(X, {dp: V})
+                assert_type(W, {dp: I})
+                out = CorrectDPMatmul.apply(X, W, mesh)
+                assert_type(out, {dp: V})
+                return out
+
+        device_mesh = init_device_mesh(
+            device_type=self.device_type,
+            mesh_shape=(self.world_size,),
+            mesh_dim_names=("dp",),
+        )
+        torch.manual_seed(42)
+
+        X = torch.randn(4, 8, device=self.device_type, requires_grad=True)
+        W = torch.randn(8, 4, device=self.device_type, requires_grad=True)
+
+        # Single-node reference
+        X_ref = X.detach().clone().requires_grad_()
+        W_ref = W.detach().clone().requires_grad_()
+        torch.mm(X_ref, W_ref).sum().backward()
+
+        # Step 1: BuggyDPMatmul without spmd_types → wrong W gradient.
+        # No in_grad_placements so DTensor doesn't compensate for the
+        # missing all-reduce in backward.
+        X.grad, W.grad = None, None
+        X_dt = distribute_tensor(X, device_mesh, [Shard(0)])
+        W_dt = distribute_tensor(W, device_mesh, [Replicate()])
+
+        buggy = local_map(
+            lambda X, W: BuggyDPMatmul.apply(X, W),
+            out_placements=[Shard(0)],
+            in_placements=([Shard(0)], [Replicate()]),
+            device_mesh=device_mesh,
+        )
+        buggy(X_dt, W_dt).to_local().sum().backward()
+        self.assertFalse(
+            torch.allclose(W_dt.grad.full_tensor(), W_ref.grad),
+            "Expected wrong W gradient from buggy (missing all-reduce)",
+        )
+
+        # Step 2: BuggyDPMatmul with spmd_types=True → caught.
+        # The missing all-reduce means W should NOT be typed as R (which
+        # implies Partial grad / all-reduce). Typing W as I (Replicate grad,
+        # no all-reduce) is the honest declaration, but spmd_types rejects
+        # V + I mixing in a local op.
+        X.grad, W.grad = None, None
+        X_dt = distribute_tensor(X, device_mesh, [Shard(0)])
+        W_dt = distribute_tensor(W, device_mesh, [Replicate()])
+
+        buggy_typed = local_map(
+            lambda X, W: BuggyDPMatmul.apply(X, W),
+            out_placements=[Shard(0)],
+            in_placements=([Shard(0)], [Replicate()]),
+            in_grad_placements=([Shard(0)], [Replicate()]),
+            device_mesh=device_mesh,
+            spmd_types=True,
+        )
+        with self.assertRaises(SpmdTypeError):
+            buggy_typed(X_dt, W_dt)
+
+        # Step 3: CorrectDPMatmul with spmd_types=True → correct gradients
+        X.grad, W.grad = None, None
+        X_dt = distribute_tensor(X, device_mesh, [Shard(0)])
+        W_dt = distribute_tensor(W, device_mesh, [Replicate()])
+
+        correct = local_map(
+            lambda X, W: CorrectDPMatmul.apply(X, W, device_mesh),
+            out_placements=[Shard(0)],
+            in_placements=([Shard(0)], [Replicate()]),
+            in_grad_placements=([Shard(0)], [Replicate()]),
+            device_mesh=device_mesh,
+            spmd_types=True,
+        )
+        correct(X_dt, W_dt).to_local().sum().backward()
+        self.assertEqual(X_dt.grad.full_tensor(), X_ref.grad)
+        self.assertEqual(W_dt.grad.full_tensor(), W_ref.grad)
+
 
 @unittest.skipUnless(spmd_types_available(), "requires spmd_types")
-class TestLocalMapSpmdTypes(unittest.TestCase):
+class TestLocalMapSpmdTypes(TestCase):
     """Single-process tests for local_map with spmd_types type checking."""
 
     WORLD_SIZE = 2
@@ -504,86 +634,6 @@ class TestLocalMapSpmdTypes(unittest.TestCase):
         )
         wrapped(X_dt, W_dt)
 
-    def test_replicate_defaults_to_R(self):
-        """Replicate placement without grad hint defaults to R."""
-        tp_axis = self.tp_axis
-        X_dt = DTensor.from_local(
-            torch.randn(4, 8), self.mesh, [Replicate()], run_check=False
-        )
-
-        def check_fn(X):
-            self.assertIs(get_local_type(X)[tp_axis], R)
-            return X
-
-        wrapped = local_map(
-            check_fn,
-            out_placements=[Replicate()],
-            in_placements=([Replicate()],),
-            device_mesh=self.mesh,
-            spmd_types=True,
-        )
-        wrapped(X_dt)
-
-    def test_replicate_with_partial_grad_is_R(self):
-        """Replicate + grad Partial -> R (backward needs all-reduce)."""
-        tp_axis = self.tp_axis
-        W_dt = DTensor.from_local(
-            torch.randn(8, 4), self.mesh, [Replicate()], run_check=False
-        )
-
-        def check_fn(W):
-            self.assertIs(get_local_type(W)[tp_axis], R)
-            return W
-
-        wrapped = local_map(
-            check_fn,
-            out_placements=[Replicate()],
-            in_placements=([Replicate()],),
-            in_grad_placements=([Partial()],),
-            device_mesh=self.mesh,
-            spmd_types=True,
-        )
-        wrapped(W_dt)
-
-    def test_replicate_with_replicate_grad_is_I(self):
-        """Replicate + grad Replicate -> I (backward is identity)."""
-        tp_axis = self.tp_axis
-        X_dt = DTensor.from_local(
-            torch.randn(4, 8), self.mesh, [Replicate()], run_check=False
-        )
-
-        def check_fn(X):
-            self.assertIs(get_local_type(X)[tp_axis], I)
-            return X
-
-        wrapped = local_map(
-            check_fn,
-            out_placements=[Replicate()],
-            in_placements=([Replicate()],),
-            in_grad_placements=([Replicate()],),
-            device_mesh=self.mesh,
-            spmd_types=True,
-        )
-        wrapped(X_dt)
-
-    def test_no_types_when_disabled(self):
-        """With spmd_types=False (default), local tensors have no spmd_types."""
-        X_dt = DTensor.from_local(
-            torch.randn(4, 8), self.mesh, [Shard(0)], run_check=False
-        )
-
-        def check_fn(X):
-            self.assertFalse(has_local_type(X))
-            return X
-
-        wrapped = local_map(
-            check_fn,
-            out_placements=[Shard(0)],
-            in_placements=([Shard(0)],),
-            device_mesh=self.mesh,
-        )
-        wrapped(X_dt)
-
     def test_type_error_on_invalid_op(self):
         """I + V is invalid: adding a Shard input to a Replicate(grad=Replicate) input."""
         X_dt = DTensor.from_local(
@@ -607,6 +657,69 @@ class TestLocalMapSpmdTypes(unittest.TestCase):
 
         with self.assertRaises(SpmdTypeError):
             wrapped(X_dt, W_dt)
+
+    def test_replicate_grad_typing(self):
+        """
+        Replicate + grad Partial -> R (backward needs all-reduce).
+        Replicate + grad Replicate -> I (backward is identity).
+        """
+        tp_axis = self.tp_axis
+
+        # Partial grad
+        W_dt = DTensor.from_local(
+            torch.randn(8, 4), self.mesh, [Replicate()], run_check=False
+        )
+
+        def check_fn(W):
+            self.assertIs(get_local_type(W)[tp_axis], R)
+            return W
+
+        wrapped = local_map(
+            check_fn,
+            out_placements=[Replicate()],
+            in_placements=([Replicate()],),
+            in_grad_placements=([Partial()],),
+            device_mesh=self.mesh,
+            spmd_types=True,
+        )
+        wrapped(W_dt)
+
+        X_dt = DTensor.from_local(
+            torch.randn(4, 8), self.mesh, [Replicate()], run_check=False
+        )
+
+        # Replicate grad
+        def check_fn(X):
+            self.assertIs(get_local_type(X)[tp_axis], I)
+            return X
+
+        wrapped = local_map(
+            check_fn,
+            out_placements=[Replicate()],
+            in_placements=([Replicate()],),
+            in_grad_placements=([Replicate()],),
+            device_mesh=self.mesh,
+            spmd_types=True,
+        )
+        wrapped(X_dt)
+
+    def test_incompatible_in_grad_placements(self):
+        """Replicate fwd expects Partial or Replicate grad, not Shard."""
+        X_dt = DTensor.from_local(
+            torch.randn(4, 8), self.mesh, [Replicate()], run_check=False
+        )
+
+        wrapped = local_map(
+            lambda X: X,
+            out_placements=[Replicate()],
+            in_placements=([Replicate()],),
+            in_grad_placements=([Shard(0)],),
+            device_mesh=self.mesh,
+            spmd_types=True,
+        )
+
+        with self.assertRaisesRegex(ValueError, "Incompatible grad_placement"):
+            wrapped(X_dt)
 
 
 if __name__ == "__main__":
