@@ -4,6 +4,8 @@ from __future__ import annotations
 import logging
 from typing import Any, TYPE_CHECKING
 
+import torch
+
 from ..scheduler import (
     BaseSchedulerNode,
     BaseScheduling,
@@ -27,7 +29,6 @@ if TYPE_CHECKING:
 
     from sympy import Expr
 
-    import torch
     from torch.utils._ordered_set import OrderedSet
 
     from .common import BackendFeature
@@ -190,38 +191,49 @@ class CUDACombinedScheduling(BaseScheduling):
         Benchmark an NVGEMM module.
 
         NVGEMM modules have get_args() and call() functions similar to Triton,
-        but without the triton_ wrapper.
+        but without the triton_ wrapper. Mirrors the safety nets from
+        TritonScheduling.benchmark_codegened_module: clones args between calls
+        (defends against any future epilogue that writes back to a read buffer)
+        and broadly catches Exception so a single backend failure does not abort
+        autotuning of the whole graph.
         """
 
         from torch._dynamo.utils import preserve_rng_state
         from torch._inductor.runtime.benchmarking import benchmarker
-        from torch._inductor.utils import get_interface_for_device
+        from torch._inductor.utils import (
+            clone_preserve_strides,
+            get_interface_for_device,
+        )
         from torch._inductor.virtualized import V
 
         device_interface = get_interface_for_device(V.graph.device_type)
+
+        def clone_args(args: list[Any]) -> list[Any]:
+            return [
+                clone_preserve_strides(a) if torch.is_tensor(a) else a for a in args
+            ]
 
         with (
             preserve_rng_state(),
             device_interface.device(V.graph.get_current_device_or_throw()),
         ):
-            # Get args and call function from the module
             args = module.get_args()
             call = module.call
 
-            # Warmup call to trigger compilation
+            # Warmup call to trigger compilation. Use cloned args so the warmup
+            # can't perturb the args the benchmark loop reuses.
             try:
-                call(args)
-            except (RuntimeError, ValueError) as e:
+                call(clone_args(args))
+            except Exception as e:
                 log.debug(
                     "Exception (%s) in compiling NVGEMM fused kernel",
                     e,
                 )
                 return float("inf"), module.__file__ or ""
 
-            # Benchmark - reuse args (NVGEMM doesn't modify inputs in-place)
             device = V.graph.get_current_device_or_throw()
             ms = benchmarker.benchmark(
-                lambda: call(args),
+                lambda: call(clone_args(args)),
                 device=device,
             )
 
@@ -235,8 +247,7 @@ class CUDACombinedScheduling(BaseScheduling):
         if isinstance(template_node, NVUniversalGemmBuffer):
             return True
         if isinstance(template_node, MultiTemplateBuffer):
-            render_fn = template_node.make_kernel_render
-            return getattr(render_fn, "_is_nvgemm", False)
+            return template_node._render_kind == "nvgemm"
         return False
 
     def generate_kernel_code_from_nodes(
