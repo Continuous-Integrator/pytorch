@@ -123,28 +123,20 @@ class GraphPickler(pickle.Pickler):
         # pickle so that duplicates and views are properly handled.
         self._meta_tensor_describer = MetaTensorDescriber(copy_data=False)
 
+    _PASSTHROUGH_TYPES = frozenset({int, float, str, bytes, bool, type(None)})
+
     @override
     # pyrefly: ignore [bad-override]
     def reducer_override(
         self, obj: object
     ) -> tuple[Callable[..., Any], tuple[Any, ...]]:
-        # This function is supposed to return either NotImplemented (meaning to
-        # do the default pickle behavior) or a pair of (unpickle callable, data
-        # to pass to unpickle).
+        # We use reducer_override instead of teaching individual classes to
+        # pickle themselves (__reduce__) because (1) we may want per-use-case
+        # serialization that doesn't belong on a public interface, and (2) we
+        # need shared state (e.g. FakeTensorMode) across all reduced values.
+        if type(obj) in self._PASSTHROUGH_TYPES:
+            return NotImplemented
 
-        # We could instead teach individual classes how to pickle themselves but
-        # that has a few problems:
-        #
-        #   1. If we have some special needs (maybe for this use-case we don't
-        #      want to fully serialize every field) then we're adding private
-        #      details to a public interface.
-        #
-        #   2. If we need to have some common shared data (such as a
-        #      FakeTensorMode) which is passed to each value it's harder to
-        #      support.
-
-        # These are the types that need special handling. See the individual
-        # *PickleData classes for details on pickling that particular type.
         if isinstance(obj, FakeTensor):
             return _TensorPickleData.reduce_helper(self, obj)
         elif isinstance(obj, torch.fx.GraphModule):
