@@ -39,4 +39,3 @@ Exceptions to AWS for self hosted:
 New runner types can be added by committing changes to `.github/scale-config.yml`. Example: https://github.com/pytorch/pytorch/pull/70474
 
 > NOTE: New runner types can only be used once the changes to `.github/scale-config.yml` have made their way into the default branch
-

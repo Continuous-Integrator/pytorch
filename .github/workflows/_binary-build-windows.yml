@@ -1,0 +1,164 @@
+name: windows-binary-build
+
+on:
+  workflow_call:
+    inputs:
+      build_name:
+        required: true
+        type: string
+      PYTORCH_ROOT:
+        required: false
+        type: string
+        default: ""
+      PACKAGE_TYPE:
+        required: true
+        type: string
+      DESIRED_CUDA:
+        required: true
+        type: string
+      GPU_ARCH_VERSION:
+        required: false
+        type: string
+      GPU_ARCH_TYPE:
+        required: true
+        type: string
+      DESIRED_PYTHON:
+        required: false
+        type: string
+      LIBTORCH_CONFIG:
+        required: false
+        type: string
+      LIBTORCH_VARIANT:
+        required: false
+        type: string
+      PYTORCH_EXTRA_INSTALL_REQUIREMENTS:
+        required: false
+        type: string
+      runner_prefix:
+        required: false
+        type: string
+        default: ""
+      runs_on:
+        required: false
+        type: string
+        default: windows.12xlarge
+      timeout-minutes:
+        required: false
+        type: number
+        default: 360
+    secrets:
+      github-token:
+        required: true
+
+permissions:
+  id-token: write
+
+jobs:
+  build:
+    runs-on: ${{ inputs.runner_prefix }}${{ inputs.runs_on }}
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    env:
+      # Fall back to runner workspace when the caller doesn't pass PYTORCH_ROOT
+      # (defaults for workflow_call inputs cannot reference github context).
+      PYTORCH_ROOT: ${{ inputs.PYTORCH_ROOT != '' && inputs.PYTORCH_ROOT || github.workspace }}
+      PACKAGE_TYPE: ${{ inputs.PACKAGE_TYPE }}
+      # TODO: This is a legacy variable that we eventually want to get rid of in
+      #       favor of GPU_ARCH_VERSION
+      DESIRED_CUDA: ${{ inputs.DESIRED_CUDA }}
+      GPU_ARCH_VERSION: ${{ inputs.GPU_ARCH_VERSION }}
+      GPU_ARCH_TYPE: ${{ inputs.GPU_ARCH_TYPE }}
+      SKIP_ALL_TESTS: 1
+      DESIRED_PYTHON: ${{ inputs.DESIRED_PYTHON }}
+      LIBTORCH_CONFIG: ${{ inputs.LIBTORCH_CONFIG }}
+      LIBTORCH_VARIANT: ${{ inputs.LIBTORCH_VARIANT }}
+      PYTORCH_EXTRA_INSTALL_REQUIREMENTS: ${{ inputs.PYTORCH_EXTRA_INSTALL_REQUIREMENTS }}
+    steps:
+      # NOTE: These environment variables are put here so that they can be applied on every job equally
+      #       They are also here because setting them at a workflow level doesn't give us access to the
+      #       runner.temp variable, which we need.
+      - name: Populate binary env
+        shell: bash
+        run: |
+          echo "BINARY_ENV_FILE=${RUNNER_TEMP}/env" >> "${GITHUB_ENV}"
+          echo "PYTORCH_FINAL_PACKAGE_DIR=${RUNNER_TEMP}/artifacts" >> "${GITHUB_ENV}"
+          echo "WIN_PACKAGE_WORK_DIR=${RUNNER_TEMP}"
+      - name: Display EC2 information
+        shell: bash
+        run: |
+          set -euo pipefail
+          function get_ec2_metadata() {
+            # Pulled from instance metadata endpoint for EC2
+            # see https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/instancedata-data-retrieval.html
+            category=$1
+            curl -H "X-aws-ec2-metadata-token: $(curl -s -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 30")" -fsSL "http://169.254.169.254/latest/meta-data/${category}"
+          }
+          echo "ami-id: $(get_ec2_metadata ami-id)"
+          echo "instance-id: $(get_ec2_metadata instance-id)"
+          echo "instance-type: $(get_ec2_metadata instance-type)"
+          echo "system info $(uname -a)"
+      - name: "[FB EMPLOYEES] Enable SSH (Click me for login details)"
+        uses: pytorch/test-infra/.github/actions/setup-ssh@main
+        continue-on-error: true
+        with:
+          github-secret: ${{ secrets.github-token }}
+      - name: Enable git long paths and symlinks on Windows and disable fsmonitor daemon
+        shell: bash
+        run: |
+          git config --global core.longpaths true
+          git config --global core.symlinks true
+
+          # https://git-scm.com/docs/git-fsmonitor--daemon.  The daemon could lock
+          # the directory on Windows and prevent GHA from checking out as reported
+          # in https://github.com/actions/checkout/issues/1018
+          git config --global core.fsmonitor false
+      # Needed for binary builds, see: https://github.com/pytorch/pytorch/issues/73339#issuecomment-1058981560
+      - name: Enable long paths on Windows
+        shell: powershell
+        run: |
+          Set-ItemProperty -Path "HKLM:\\SYSTEM\CurrentControlSet\Control\FileSystem" -Name "LongPathsEnabled" -Value 1
+      # Since it's just a defensive command, the workflow should continue even the command fails. This step can be
+      # removed once Windows Defender is removed from the AMI
+      - name: Disables Windows Defender scheduled and real-time scanning for files in directories used by PyTorch
+        continue-on-error: true
+        shell: powershell
+        run: |
+          Add-MpPreference -ExclusionPath $(Get-Location).tostring(),$Env:TEMP -ErrorAction Ignore
+          # Let's both exclude the path and disable Windows Defender completely just to be sure
+          # that it doesn't interfere
+          Set-MpPreference -DisableRealtimeMonitoring $True -ErrorAction Ignore
+      - name: Checkout PyTorch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          submodules: recursive
+          show-progress: false
+      - name: Clean PyTorch checkout
+        run: |
+          # Remove any artifacts from the previous checkouts
+          git clean -fxd
+      - name: Populate binary env
+        shell: bash
+        run: |
+          "${PYTORCH_ROOT}/.ci/pytorch/binary_populate_env.sh"
+      - name: Build PyTorch binary
+        shell: bash
+        run: |
+          "${PYTORCH_ROOT}/.ci/pytorch/binary_windows_build.sh"
+      - uses: actions/upload-artifact@v4.4.0
+        if: always()
+        with:
+          name: ${{ inputs.build_name }}
+          retention-days: 14
+          if-no-files-found: error
+          path: "${{ env.PYTORCH_FINAL_PACKAGE_DIR }}"
+      - name: Wait until all sessions have drained
+        shell: powershell
+        if: always()
+        timeout-minutes: 120
+        run: |
+          .github\scripts\wait_for_ssh_to_drain.ps1
+      - name: Kill active ssh sessions if still around (Useful if workflow was cancelled)
+        shell: powershell
+        if: always()
+        run: |
+          .github\scripts\kill_active_ssh_sessions.ps1
