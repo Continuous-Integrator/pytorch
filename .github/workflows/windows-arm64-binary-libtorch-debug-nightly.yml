@@ -78,7 +78,9 @@ jobs:
       LIBTORCH_CONFIG: ${{ matrix.config.libtorch_config }}
       LIBTORCH_VARIANT: ${{ matrix.config.libtorch_variant }}
       # Dummy value so our batch scripts install pip correctly for libtorch builds.
-      DESIRED_PYTHON: "3.10"
+      # Dummy value so bootstrap_python.bat installs a python for pip
+      # (arm64 has no 3.10 installer — use 3.12, the bootstrap default).
+      DESIRED_PYTHON: "3.12"
       build_name: ${{ matrix.config.build_name }}
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
@@ -98,7 +100,9 @@ jobs:
       GPU_ARCH_TYPE: ${{ matrix.config.gpu_arch_type }}
       LIBTORCH_CONFIG: ${{ matrix.config.libtorch_config }}
       LIBTORCH_VARIANT: ${{ matrix.config.libtorch_variant }}
-      DESIRED_PYTHON: "3.10"
+      # Dummy value so bootstrap_python.bat installs a python for pip
+      # (arm64 has no 3.10 installer — use 3.12, the bootstrap default).
+      DESIRED_PYTHON: "3.12"
       build_name: ${{ matrix.config.build_name }}
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
