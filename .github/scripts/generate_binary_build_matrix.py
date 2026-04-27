@@ -507,11 +507,36 @@ for arch_version in CUDA_ARCHES:
 del arch_version
 
 
+_MACOS_SETUP_PYTHON_VERSION = {
+    "3.10": "3.10.4",
+    "3.11": "3.11.4",
+    "3.12": "3.12.4",
+    "3.13": "3.13.4",
+    "3.13t": "3.13.4",
+    "3.14": "3.14.0",
+    "3.14t": "3.14.0",
+}
+
+
+def _augment_for_os(configs: list[dict[str, str]], os_arg: str) -> None:
+    """Add OS-specific derived fields to each matrix entry in-place.
+
+    macOS needs actions/setup-python's concrete version and the freethreaded
+    flag; Windows needs a Python installer URL. Keeping these here avoids
+    per-workflow Jinja-style string surgery in the YAML.
+    """
+    if os_arg == "macos-arm64":
+        for c in configs:
+            pv = c["python_version"]
+            c["setup_python_version"] = _MACOS_SETUP_PYTHON_VERSION[pv]
+            c["freethreaded"] = pv.endswith("t")
+
+
 def _emit_runtime_matrix(os_arg: str) -> None:
     """Emit generate_wheels_matrix(os_arg) as JSON to $GITHUB_OUTPUT so
-    generated-*-binary-manywheel-nightly.yml can drive its strategy.matrix
-    from this script at runtime (adding a new python/CUDA/ROCm version here
-    is picked up without regenerating any YAML).
+    generated-*-binary-nightly.yml can drive strategy.matrix from this
+    script at runtime (adding a new python/CUDA/ROCm version here is
+    picked up without regenerating any YAML).
 
     Outputs written (all JSON arrays):
       configs               - full matrix (build + upload)
@@ -521,7 +546,25 @@ def _emit_runtime_matrix(os_arg: str) -> None:
       test-xpu-configs      - xpu only (inline test with setup-xpu)
       libtorch-configs      - one entry per unique arch variant (py3.10)
     """
-    configs = generate_wheels_matrix(os_arg)
+    # windows-arm64 ships a narrower set of Python versions than the rest.
+    python_versions = None
+    if os_arg == "windows-arm64":
+        python_versions = ["3.11", "3.12", "3.13"]
+    configs = generate_wheels_matrix(os_arg, python_versions=python_versions)
+    _augment_for_os(configs, os_arg)
+
+    # For Windows we also need a libtorch-debug matrix (shared-with-deps
+    # only). Emit it alongside the wheel matrices so the libtorch-debug
+    # workflow can consume it from the same generate-matrix job.
+    libtorch_debug_configs: list[dict[str, str]] = []
+    if os_arg in ("windows", "windows-arm64"):
+        arches = None if os_arg == "windows" else ["cpu"]
+        libtorch_debug_configs = generate_libtorch_matrix(
+            os_arg,
+            DEBUG,
+            arches=arches,
+            libtorch_variants=["shared-with-deps"],
+        )
 
     def _is_standard(c: dict[str, str]) -> bool:
         t = c["gpu_arch_type"]
@@ -533,6 +576,7 @@ def _emit_runtime_matrix(os_arg: str) -> None:
         "test-rocm-configs": [c for c in configs if c["gpu_arch_type"] == "rocm"],
         "test-xpu-configs": [c for c in configs if c["gpu_arch_type"] == "xpu"],
         "libtorch-configs": generate_libtorch_extraction_configs(os_arg, configs),
+        "libtorch-debug-configs": libtorch_debug_configs,
     }
 
     print(json.dumps(outputs["configs"]))
