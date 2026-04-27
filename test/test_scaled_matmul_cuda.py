@@ -2967,7 +2967,6 @@ class TestFP8Matmul(TestCase):
         torch.cuda.get_device_capability()[0] not in [10, 11],
         "cublaslt grouped gemm requires SM 10.x or 11.0"
     )
-    @unittest.skip("_scaled_grouped_mm_v2 lacks meta registration for torch.compile")
     @parametrize("op", ["2d/2d", "2d/3d", "3d/2d", "3d/3d"])
     @parametrize("mode", ["default", "reduce-overhead"])
     def test_scaled_grouped_gemm_cublaslt_nvfp4_compiled(self, op, mode):
