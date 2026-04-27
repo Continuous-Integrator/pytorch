@@ -366,24 +366,32 @@ class TestFullyShardHSDPMemory(FSDPTest):
         Under HSDP, reduce-scatter output buffers must not accumulate across
         layers within a single backward pass. The buggy path held
         O(n_layers) fp32 buffers; the fix limits the keep-alive to at most
-        2 simultaneously. Parametrized over ``reduce_dtype``:
+        2 simultaneously. Parametrized over ``reduce_dtype`` and
+        ``accumulate_grads``:
 
-        - ``fp32`` (reduce_dtype != orig_dtype): the bug's path — the
-          post-reduce cast orphans the fp32 reduce-scatter output, so the
-          ``comm_ctx.all_reduce_state`` keep-alive is load-bearing and its
-          cardinality is what the fix bounds.
-        - ``bf16`` (reduce_dtype == orig_dtype): no cast, param-grad views
-          already hold the reduce output alive, so the keep-alive is
-          refcount-redundant — but the unified code path still runs.
-          Guards against accidental regression of this sub-path (which the
-          original commit message inaccurately called "skipped entirely").
+        - ``reduce_dtype=fp32`` (reduce_dtype != orig_dtype): the bug's
+          path — the post-reduce cast orphans the fp32 reduce-scatter
+          output, so the ``comm_ctx.all_reduce_state`` keep-alive is
+          load-bearing and its cardinality is what the fix bounds.
+        - ``reduce_dtype=bf16`` (reduce_dtype == orig_dtype): no cast. On
+          a fresh backward the keep-alive is refcount-redundant with
+          param-grad views; under ``accumulate_grads=True`` it becomes
+          load-bearing because param grads reference the *previous*
+          step's sharded grad tensor (via ``+=``), not the current
+          ``reduce_output``. Covers both motivations listed in the
+          ``FSDPCommContext.all_reduce_state`` docstring.
         """
         self.run_subtests(
-            {"reduce_dtype": [torch.float32, torch.bfloat16]},
+            {
+                "reduce_dtype": [torch.float32, torch.bfloat16],
+                "accumulate_grads": [False, True],
+            },
             self._test_hsdp_backward_no_buffer_accumulation,
         )
 
-    def _test_hsdp_backward_no_buffer_accumulation(self, reduce_dtype: torch.dtype):
+    def _test_hsdp_backward_no_buffer_accumulation(
+        self, reduce_dtype: torch.dtype, accumulate_grads: bool
+    ):
         torch.manual_seed(42)
         # Warm up cuBLAS workspaces before measuring the baseline.
         lin = torch.nn.Linear(768, 768, device=device_type)
@@ -419,39 +427,57 @@ class TestFullyShardHSDPMemory(FSDPTest):
         fully_shard(model, mesh=mesh, mp_policy=mp)
 
         inp = torch.randint(0, 32, (1, 4), device=device_type.type)
+        if accumulate_grads:
+            # Prime ``param.grad`` so the measured backward takes the
+            # ``to_accumulate_grad`` (`+=`) path. In that path, param grads
+            # reference the prior sharded grad tensor, not the current
+            # ``reduce_output`` — so the keep-alive is load-bearing even
+            # when ``reduce_dtype == orig_dtype``.
+            model(inp).sum().backward()
+            torch.get_device_module(device_type).synchronize()
+            torch.get_device_module(device_type).reset_peak_memory_stats()
+            base_mem_mb = _get_peak_active_memory_mb()
         torch.get_device_module(device_type).reset_peak_memory_stats()
         model(inp).sum().backward()
         peak_delta_mb = _get_peak_active_memory_mb() - base_mem_mb
 
-        # Upper bound on peak HSDP backward memory, simultaneously alive at
-        # a mid-backward layer's post-reduce:
-        #   - 1x sharded bf16 params (resident)
-        #   - 1x sharded bf16 grads (fully accumulated at peak)
+        # Upper bound on peak HSDP backward memory delta vs. baseline.
+        # Terms simultaneously alive mid-backward:
         #   - 1x unsharded bf16 block params (prefetched all-gather)
-        #   - 2x reduce-scatter input in reduce_dtype (current + previous
-        #     held in reduce_scatter_states)
-        #   - 2x reduce-scatter output in reduce_dtype (current + previous
-        #     held by comm_ctx.all_reduce_state).
-        #     THIS is the term the fix bounds at 2; the bug made it
-        #     O(n_layers) in the cast case.
-        # For reduce_dtype == orig_dtype, the RS output term double-counts
-        # the grads term (param-grad views and the keep-alive reference
-        # the same storage), so the bound is looser there — still tight
-        # enough that an O(n_layers) regression would clearly breach it.
+        #   - 2x RS input in reduce_dtype (current + previous held in
+        #     reduce_scatter_states)
+        #   - 2x RS output in reduce_dtype (current + previous held by
+        #     comm_ctx.all_reduce_state). THIS is the term the fix bounds
+        #     at 2; the bug made it O(n_layers).
+        # For ``accumulate_grads=False``, the baseline is taken before the
+        # first backward, so sharded params + grads also land in peak_delta:
+        #   + 1x sharded bf16 params + 1x sharded bf16 grads.
+        # For ``accumulate_grads=True``, the baseline is taken after a priming
+        # backward so params+grads are in the baseline — excluded from the
+        # bound, which is what makes the accumulate sub-case tight enough to
+        # catch a same-dtype RS-output regression (param-grad views mask it
+        # in the fresh-backward sub-case).
         per_layer_rs_output_mb = block_numel * reduce_elem_bytes / dp_shard_size / 1e6
-        expected_peak_mb = (
-            2 * model_numel * 2 / dp_shard_size
-            + 1 * block_numel * 2
+        fragmentation_slack_mb = 30  # allocator fragmentation, cuBLAS workspace
+        per_backward_mb = (
+            1 * block_numel * 2
             + 2 * block_numel * reduce_elem_bytes
             + 2 * block_numel * reduce_elem_bytes / dp_shard_size
         ) / 1e6
+        resident_mb = (
+            0
+            if accumulate_grads
+            else 2 * model_numel * 2 / dp_shard_size / 1e6
+        )
+        expected_peak_mb = per_backward_mb + resident_mb + fragmentation_slack_mb
 
         self.assertLessEqual(
             peak_delta_mb,
             expected_peak_mb,
-            f"[reduce_dtype={reduce_dtype}] peak backward memory delta "
-            f"{peak_delta_mb} MB exceeds bound {expected_peak_mb:.1f} MB. "
-            f"Reduce-scatter output buffers may be accumulating across "
+            f"[reduce_dtype={reduce_dtype}, "
+            f"accumulate_grads={accumulate_grads}] peak backward memory "
+            f"delta {peak_delta_mb} MB exceeds bound {expected_peak_mb:.1f} "
+            f"MB. Reduce-scatter output buffers may be accumulating across "
             f"layers (each ~{per_layer_rs_output_mb:.1f} MB, "
             f"n_layers={n_layers}).",
         )

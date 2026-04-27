@@ -769,6 +769,8 @@ def foreach_reduce(
                 hook(fsdp_param.sharded_param)
             padded_sharded_numel = padded_unsharded_size.numel() // world_size
             flat_grad_offset += padded_sharded_numel
+        # Load-bearing for cross-stream free safety; see wait_event below.
+        # Any post-reduce op added after this line must be covered by a new event.
         post_reduce_event = post_reduce_stream.record_event()
     # HSDP: reduce_output was alloc'd on reduce_scatter_stream but post-
     # reduce ops (AR, cast, `+=` into accumulated grad) ran on
@@ -777,6 +779,11 @@ def foreach_reduce(
     # reduce_output's block while AR-stream's post-reduce ops are still
     # draining. Make reduce_scatter_stream wait on the post-reduce event
     # so future RS-stream allocs see AR-stream's work as complete.
+    #
+    # Trade-off: this introduces an AR->RS back-edge. If AR stalls (slow
+    # peer, network hiccup), the next layer's RS-stream alloc stalls too.
+    # Chosen over `reduce_output.record_stream(all_reduce_stream)` because
+    # the event-based sync is cheaper and keeps tensor lifetimes explicit.
     if post_reduce_stream is not reduce_scatter_stream:
         reduce_scatter_stream.wait_event(post_reduce_event)
     # The RS output is allocated in the RS stream and used in the default
