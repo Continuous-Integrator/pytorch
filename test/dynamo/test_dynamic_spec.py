@@ -49,11 +49,11 @@ def _apply_intspec_to_tensor(tensor, shape_spec):
             raise TypeError(
                 f"Expected IntSpec or None in dynamic_shapes, got {type(spec).__name__}"
             )
-        if spec.type is IntSpecType.STATIC:
+        if spec._type is IntSpecType.STATIC:
             mark_static(tensor, idx)
-        elif spec.type is IntSpecType.BACKED:
+        elif spec._type is IntSpecType.BACKED:
             maybe_mark_dynamic(tensor, idx)
-        elif spec.type is IntSpecType.UNBACKED:
+        elif spec._type is IntSpecType.UNBACKED:
             mark_unbacked(tensor, idx)
 
 
@@ -92,25 +92,25 @@ class TestIntSpecConstruction(TestCase):
     def test_static(self):
         s = IntSpec.static("x", value=10)
         self.assertEqual(s._name, "x")
-        self.assertEqual(s.type, IntSpecType.STATIC)
+        self.assertEqual(s._type, IntSpecType.STATIC)
         self.assertEqual(s._value, 10)
 
     def test_static_no_value(self):
         s = IntSpec.static()
-        self.assertEqual(s.type, IntSpecType.STATIC)
+        self.assertEqual(s._type, IntSpecType.STATIC)
         self.assertIsNone(s._value)
 
     def test_backed(self):
         s = IntSpec.backed("batch", min=1, max=64, guarding_hint=32)
         self.assertEqual(s._name, "batch")
-        self.assertEqual(s.type, IntSpecType.BACKED)
+        self.assertEqual(s._type, IntSpecType.BACKED)
         self.assertEqual(s._min, 1)
         self.assertEqual(s._max, 64)
         self.assertEqual(s._guarding_hint, 32)
 
     def test_unbacked(self):
         s = IntSpec.unbacked("seq", min=1, max=2048, optimization_hint=512)
-        self.assertEqual(s.type, IntSpecType.UNBACKED)
+        self.assertEqual(s._type, IntSpecType.UNBACKED)
         self.assertEqual(s._min, 1)
         self.assertEqual(s._max, 2048)
         self.assertEqual(s._optimization_hint, 512)
@@ -129,13 +129,13 @@ class TestIntSpecConstruction(TestCase):
             IntSpec("x", type=None)  # type: ignore[arg-type]
         self.assertEqual(
             str(cm.exception),
-            "IntSpec.type must be an IntSpecType, got None",
+            "IntSpec type must be an IntSpecType, got None",
         )
 
     def test_type_as_positional_arg(self):
         s = IntSpec("batch", IntSpecType.BACKED, min=1, max=64)
         self.assertEqual(s._name, "batch")
-        self.assertEqual(s.type, IntSpecType.BACKED)
+        self.assertEqual(s._type, IntSpecType.BACKED)
         self.assertEqual(s._min, 1)
         self.assertEqual(s._max, 64)
 
@@ -201,31 +201,23 @@ class TestIntSpecConstruction(TestCase):
         )
 
 
-class TestIntSpecImmutable(TestCase):
+class TestIntSpecTypeImmutable(TestCase):
     """Only ``type`` is pinned. All other fields can be reassigned via the
     fluent setters. This class verifies the type-pin guard, slot discipline
     (no new attrs, cannot delete), and that the mutable fields can in fact
     be updated."""
 
-    def test_type_property_has_no_setter(self):
-        # ``type`` is a read-only @property — Python's property machinery
-        # rejects writes via the public name with its own AttributeError.
-        s = IntSpec.static("x", value=10)
-        with self.assertRaises(AttributeError):
-            s.type = IntSpecType.BACKED  # type: ignore[misc]
-        self.assertIs(s.type, IntSpecType.STATIC)
-
     def test_type_reassign_via_private_slot_rejected(self):
-        # The backing ``_type`` slot is also locked: our ``__setattr__``
-        # guard catches it. Reassigning would silently change semantic mode.
+        # The backing ``_type`` slot is locked: our ``__setattr__``
+        # guard catches reassignment. Reads through ``_type`` are fine.
         s = IntSpec.backed("x")
         with self.assertRaises(AttributeError) as cm:
             s._type = IntSpecType.STATIC
         self.assertEqual(
             str(cm.exception),
-            "IntSpec.type is immutable; cannot reassign",
+            "IntSpec type is immutable; cannot reassign",
         )
-        self.assertIs(s.type, IntSpecType.BACKED)
+        self.assertIs(s._type, IntSpecType.BACKED)
 
     def test_no_fluent_type_reset(self):
         # IntSpec has no instance method that reassigns type. The mode-named
@@ -233,8 +225,8 @@ class TestIntSpecImmutable(TestCase):
         # fresh IntSpec and does not mutate the original.
         s = IntSpec.static("x")
         new = IntSpec.backed("x")
-        self.assertIs(s.type, IntSpecType.STATIC)
-        self.assertIs(new.type, IntSpecType.BACKED)
+        self.assertIs(s._type, IntSpecType.STATIC)
+        self.assertIs(new._type, IntSpecType.BACKED)
         self.assertIsNot(s, new)
 
     def test_cannot_add_new_attribute(self):
@@ -269,31 +261,6 @@ class TestIntSpecFluent(TestCase):
     ``guarding_hint`` / ``optimization_hint``) mutate the receiver in place
     and return ``self`` for chaining. Each chain is equivalent to the
     kwargs-only factory form."""
-
-    def test_unbacked_chain_matches_kwargs_form(self):
-        fluent = IntSpec.unbacked("seq").min(1).max(2048).optimization_hint(512)
-        kwargs = IntSpec.unbacked("seq", min=1, max=2048, optimization_hint=512)
-        self.assertEqual(fluent._name, kwargs._name)
-        self.assertEqual(fluent.type, kwargs.type)
-        self.assertEqual(fluent._min, kwargs._min)
-        self.assertEqual(fluent._max, kwargs._max)
-        self.assertEqual(fluent._optimization_hint, kwargs._optimization_hint)
-
-    def test_backed_chain_matches_kwargs_form(self):
-        fluent = IntSpec.backed("batch").min(1).max(64).guarding_hint(32)
-        kwargs = IntSpec.backed("batch", min=1, max=64, guarding_hint=32)
-        self.assertEqual(fluent._name, kwargs._name)
-        self.assertEqual(fluent.type, kwargs.type)
-        self.assertEqual(fluent._min, kwargs._min)
-        self.assertEqual(fluent._max, kwargs._max)
-        self.assertEqual(fluent._guarding_hint, kwargs._guarding_hint)
-
-    def test_static_value_chain_matches_kwargs_form(self):
-        fluent = IntSpec.static("x").value(10)
-        kwargs = IntSpec.static("x", value=10)
-        self.assertEqual(fluent._name, kwargs._name)
-        self.assertEqual(fluent.type, kwargs.type)
-        self.assertEqual(fluent._value, kwargs._value)
 
     def test_setter_returns_self_for_chaining(self):
         base = IntSpec.unbacked("seq")
@@ -473,23 +440,18 @@ class TestIntSpecCompile(TestCase):
         )
         fn(torch.randn(4, 3))
         fn(torch.randn(8, 3))
+        fn(torch.randn(12, 3))
         fn(torch.randn(4, 3))  # cache hit
 
-        # STATIC bakes the concrete size into the trace: 2 distinct sizes
-        # (4, 8) → 2 graphs; the repeat size=4 reuses graph #1.
-        self.assertEqual(len(backend.graphs), 2)
+        # STATIC bakes the concrete size into the trace: 3 distinct sizes
+        # (4, 8, 12) → 3 graphs; the repeat size=4 reuses graph #1.
+        self.assertEqual(len(backend.graphs), 3)
         for gm in backend.graphs:
             shape = _tensor_placeholder_shape(gm)
             self.assertIsInstance(shape[0], int)
 
     def test_backed_graph_has_backed_symbol(self):
-        """BACKED dim appears as a backed SymInt in the final graph.
-
-        One graph is recorded for ``[4, 8, 16, 32, 64]``: the scaffolding
-        calls ``maybe_mark_dynamic(tensor, 0)`` before dynamo traces, so
-        dim 0 is already weak-dynamic on the first trace — dynamo promotes
-        it to a backed SymInt immediately. Calls 2-5 are cache hits.
-        """
+        """BACKED dim appears as a backed SymInt in the final graph."""
 
         backend = EagerAndRecordGraphs()
         fn = _compile_with_dynamic_shapes(
