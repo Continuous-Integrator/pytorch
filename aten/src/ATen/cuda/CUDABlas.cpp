@@ -2533,31 +2533,17 @@ void scaled_grouped_gemm(
   int a_scale_mode = get_scale_mode(a_scaling_type, A_scale_dtype, use_fast_accum);
   int b_scale_mode = get_scale_mode(b_scaling_type, B_scale_dtype, use_fast_accum);
 
-  // Block scaling modes: BlockWise1x32 (MXFP8) requires host pointer mode.
-  // BlockWise1x16 (NVFP4) tries device pointer mode first, with host fallback.
-  const bool is_block_1x32 =
-      a_scaling_type == ScalingType::BlockWise1x32 ||
-      b_scaling_type == ScalingType::BlockWise1x32;
-  const bool is_block_1x16 =
-      a_scaling_type == ScalingType::BlockWise1x16 ||
-      b_scaling_type == ScalingType::BlockWise1x16;
-  const bool use_block_scaling = is_block_1x32 || is_block_1x16;
-
   CuBlasLtMatmulDescriptor computeDesc(computeType, scaleType);
   computeDesc.setAttribute(CUBLASLT_MATMUL_DESC_TRANSA, _cublasOpFromChar(transa));
   computeDesc.setAttribute(CUBLASLT_MATMUL_DESC_TRANSB, _cublasOpFromChar(transb));
 
-  // For non-block-scaling and NVFP4 (BlockWise1x16), use device pointer mode
-  // with per-batch alpha/beta arrays. MXFP8 (BlockWise1x32) uses host pointer mode.
-  const bool use_device_pointers = !is_block_1x32;
-  if (use_device_pointers) {
-    const auto pointer_mode = CUBLASLT_POINTER_MODE_DEVICE;
-    const int64_t alphaBatchStride = 1;
-    const int64_t betaBatchStride = 1;
-    computeDesc.setAttribute(CUBLASLT_MATMUL_DESC_POINTER_MODE, pointer_mode);
-    computeDesc.setAttribute(CUBLASLT_MATMUL_DESC_ALPHA_BATCH_STRIDE, alphaBatchStride);
-    computeDesc.setAttribute(CUBLASLT_MATMUL_DESC_BETA_BATCH_STRIDE, betaBatchStride);
-  }
+  const auto pointer_mode = CUBLASLT_POINTER_MODE_DEVICE;
+  const int64_t alphaBatchStride = 1;
+  const int64_t betaBatchStride = 1;
+  computeDesc.setAttribute(CUBLASLT_MATMUL_DESC_POINTER_MODE, pointer_mode);
+  computeDesc.setAttribute(CUBLASLT_MATMUL_DESC_ALPHA_BATCH_STRIDE, alphaBatchStride);
+  computeDesc.setAttribute(CUBLASLT_MATMUL_DESC_BETA_BATCH_STRIDE, betaBatchStride);
+
   computeDesc.setAttribute(CUBLASLT_MATMUL_DESC_A_SCALE_POINTER, A_scale_ptr);
   computeDesc.setAttribute(CUBLASLT_MATMUL_DESC_B_SCALE_POINTER, B_scale_ptr);
   if (D_scale_ptr != nullptr) {
@@ -2566,13 +2552,14 @@ void scaled_grouped_gemm(
   computeDesc.setAttribute(CUBLASLT_MATMUL_DESC_A_SCALE_MODE, a_scale_mode);
   computeDesc.setAttribute(CUBLASLT_MATMUL_DESC_B_SCALE_MODE, b_scale_mode);
 
-  if (!use_block_scaling) {
-    const int8_t fastAccuMode = use_fast_accum ? 1 : 0;
-    computeDesc.setAttribute(CUBLASLT_MATMUL_DESC_FAST_ACCUM, fastAccuMode);
+  const bool is_nvfp4 =
+      a_scaling_type == ScalingType::BlockWise1x16 ||
+      b_scaling_type == ScalingType::BlockWise1x16;
+  if (use_fast_accum && is_nvfp4) {
+    TORCH_WARN_ONCE("fast_accum is not supported for NVFP4 grouped GEMM and will be ignored");
   }
-
-  float alpha_host = 1.0f;
-  float beta_host = 0.0f;
+  const int8_t fastAccuMode = (use_fast_accum && !is_nvfp4) ? 1 : 0;
+  computeDesc.setAttribute(CUBLASLT_MATMUL_DESC_FAST_ACCUM, fastAccuMode);
 
   CuBlasLtGroupedMatrixLayout Adesc(ScalarTypeToCudaDataType(A_dtype), batchCount, mArrayDev, kArrayDev, ldaArrayDev, transa == 't');
   CuBlasLtGroupedMatrixLayout Bdesc(ScalarTypeToCudaDataType(B_dtype), batchCount, kArrayDev, nArrayDev, ldbArrayDev, transb == 't');
@@ -2603,60 +2590,6 @@ void scaled_grouped_gemm(
       &heuristicResult,
       &returnedResult));
 
-  // For NVFP4, if device pointer mode is unsupported, fall back to host mode
-  if (returnedResult == 0 && is_block_1x16 && use_device_pointers) {
-    CuBlasLtMatmulDescriptor fallbackDesc(computeType, scaleType);
-    fallbackDesc.setAttribute(CUBLASLT_MATMUL_DESC_TRANSA, _cublasOpFromChar(transa));
-    fallbackDesc.setAttribute(CUBLASLT_MATMUL_DESC_TRANSB, _cublasOpFromChar(transb));
-    fallbackDesc.setAttribute(CUBLASLT_MATMUL_DESC_A_SCALE_POINTER, A_scale_ptr);
-    fallbackDesc.setAttribute(CUBLASLT_MATMUL_DESC_B_SCALE_POINTER, B_scale_ptr);
-    if (D_scale_ptr != nullptr) {
-      fallbackDesc.setAttribute(CUBLASLT_MATMUL_DESC_D_SCALE_POINTER, D_scale_ptr);
-    }
-    fallbackDesc.setAttribute(CUBLASLT_MATMUL_DESC_A_SCALE_MODE, a_scale_mode);
-    fallbackDesc.setAttribute(CUBLASLT_MATMUL_DESC_B_SCALE_MODE, b_scale_mode);
-
-    TORCH_CUDABLAS_CHECK(cublasLtMatmulAlgoGetHeuristic(
-        ltHandle,
-        fallbackDesc.descriptor(),
-        Adesc.descriptor(),
-        Bdesc.descriptor(),
-        Cdesc.descriptor(),
-        Ddesc.descriptor(),
-        preference.descriptor(),
-        1,
-        &heuristicResult,
-        &returnedResult));
-    if (returnedResult == 0) {
-      TORCH_CUDABLAS_CHECK(CUBLAS_STATUS_NOT_SUPPORTED);
-    }
-
-    cublasStatus_t cublasStatus = cublasLtMatmul(
-      ltHandle,
-      fallbackDesc.descriptor(),
-      static_cast<const void*>(&alpha_host),
-      A,
-      Adesc.descriptor(),
-      B,
-      Bdesc.descriptor(),
-      static_cast<const void*>(&beta_host),
-      C,
-      Cdesc.descriptor(),
-      D,
-      Ddesc.descriptor(),
-      &heuristicResult.algo,
-      ltworkspace.ptr,
-      ltworkspace.size,
-      stream);
-
-    TORCH_CHECK(
-        cublasStatus == CUBLAS_STATUS_SUCCESS,
-        "CUDA error: ",
-        at::cuda::blas::_cublasGetErrorEnum(cublasStatus),
-        " when calling scaled grouped cublasLtMatmul (NVFP4 host fallback)");
-    return;
-  }
-
   if (returnedResult == 0) {
     TORCH_CUDABLAS_CHECK(CUBLAS_STATUS_NOT_SUPPORTED);
   }
@@ -2664,14 +2597,12 @@ void scaled_grouped_gemm(
   cublasStatus_t cublasStatus = cublasLtMatmul(
     ltHandle,
     computeDesc.descriptor(),
-    use_device_pointers ? static_cast<const void*>(alphaArrayDev)
-                        : static_cast<const void*>(&alpha_host),
+    static_cast<const void*>(alphaArrayDev),
     A,
     Adesc.descriptor(),
     B,
     Bdesc.descriptor(),
-    use_device_pointers ? static_cast<const void*>(betaArrayDev)
-                        : static_cast<const void*>(&beta_host),
+    static_cast<const void*>(betaArrayDev),
     C,
     Cdesc.descriptor(),
     D,

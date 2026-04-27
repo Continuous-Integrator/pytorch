@@ -337,22 +337,12 @@ cublasGroupedArgs::cublasGroupedArgs(
   //   5 x int64[batchCount]  (A, B, D, alpha, beta ptrs)
   //   2 x float              (alpha, beta scalars)
   // + optionally up to 2 x int64[batchCount] for per-group scale pointer arrays
-  //   (GroupWise scales: embedded in the main buffer)
-  //   (BlockWise1x32 scales: separate allocation required by cuBLAS)
-  auto is_blockwise = [](at::blas::ScalingType st) {
-    return st == at::blas::ScalingType::BlockWise1x32
-        || st == at::blas::ScalingType::BlockWise1x16;
-  };
-  const bool mata_blockwise = is_blockwise(scale_mata_scaling_type);
-  const bool matb_blockwise = is_blockwise(scale_matb_scaling_type);
-  const int embedded_ptr_arrays =
-      ((mata_needs_ptr && !mata_blockwise) ? 1 : 0) +
-      ((matb_needs_ptr && !matb_blockwise) ? 1 : 0);
+  const int scale_ptr_arrays = (mata_needs_ptr ? 1 : 0) + (matb_needs_ptr ? 1 : 0);
   const int64_t buf_bytes =
       static_cast<int64_t>(batchCount) * 6 * sizeof(int32_t) +
       static_cast<int64_t>(batchCount) * 5 * sizeof(int64_t) +
       2 * sizeof(float) +
-      static_cast<int64_t>(embedded_ptr_arrays) * batchCount * sizeof(int64_t);
+      static_cast<int64_t>(scale_ptr_arrays) * batchCount * sizeof(int64_t);
   buf = at::empty({buf_bytes}, mat1.options().dtype(at::kByte));
 
   // Typed pointer arithmetic (same pattern as GroupMM.cu).
@@ -373,34 +363,17 @@ cublasGroupedArgs::cublasGroupedArgs(
   float* alpha_scalar = reinterpret_cast<float*>(betaPtrArray + batchCount);
   float* beta_scalar  = alpha_scalar + 1;
 
-  // Per-group scale pointer arrays: embedded for GroupWise, separate for BlockWise1x32.
-  // Place after the two float scalars (alpha_scalar, beta_scalar are 8 bytes
-  // total, so the next int64_t is naturally aligned).
+  // Per-group scale pointer arrays, placed after the two float scalars.
+  // alpha_scalar + beta_scalar is 8 bytes total, so the next int64_t is aligned.
   int64_t* scaleAPtrArray = nullptr;
   int64_t* scaleBPtrArray = nullptr;
   int64_t* scale_ptr_base = reinterpret_cast<int64_t*>(beta_scalar + 1);
-  if (mata_needs_ptr && !mata_blockwise) {
+  if (mata_needs_ptr) {
     scaleAPtrArray = scale_ptr_base;
     scale_ptr_base += batchCount;
   }
-  if (matb_needs_ptr && !matb_blockwise) {
+  if (matb_needs_ptr) {
     scaleBPtrArray = scale_ptr_base;
-  }
-  // BlockWise1x32 scale pointer arrays need separate allocations
-  const int blockwise_ptr_arrays = (mata_blockwise ? 1 : 0) + (matb_blockwise ? 1 : 0);
-  if (blockwise_ptr_arrays > 0) {
-    scale_ptr_buf = at::empty(
-        {static_cast<int64_t>(blockwise_ptr_arrays) * batchCount * 8},
-        mat1.options().dtype(at::kByte));
-    char* sbase = static_cast<char*>(scale_ptr_buf.data_ptr());
-    int64_t soffset = 0;
-    if (mata_blockwise) {
-      scaleAPtrArray = reinterpret_cast<int64_t*>(sbase + soffset);
-      soffset += batchCount * 8;
-    }
-    if (matb_blockwise) {
-      scaleBPtrArray = reinterpret_cast<int64_t*>(sbase + soffset);
-    }
   }
 
   // Base addresses for scale data (cuBLAS-A = mat2 → scale_b, cuBLAS-B = mat1 → scale_a)
@@ -411,6 +384,10 @@ cublasGroupedArgs::cublasGroupedArgs(
   // For GroupWise (1D float): stride(0)*elem_size = 1*4 = sizeof(float).
   // For BlockWise1x32 3D/3D: stride(0)*elem_size = per_group_numel*1.
   // For BlockWise1x32 with jagged dims: 0 signals variable-size mode.
+  const bool mata_blockwise = scale_mata_scaling_type == at::blas::ScalingType::BlockWise1x32
+      || scale_mata_scaling_type == at::blas::ScalingType::BlockWise1x16;
+  const bool matb_blockwise = scale_matb_scaling_type == at::blas::ScalingType::BlockWise1x32
+      || scale_matb_scaling_type == at::blas::ScalingType::BlockWise1x16;
   const bool blockwise_variable_a = mata_blockwise && (a_is_2d || b_is_2d);
   const bool blockwise_variable_b = matb_blockwise && (a_is_2d || b_is_2d);
   const int64_t scale_a_stride_bytes = blockwise_variable_a ? 0 :

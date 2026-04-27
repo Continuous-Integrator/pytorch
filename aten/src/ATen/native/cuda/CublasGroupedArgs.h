@@ -30,8 +30,6 @@ struct cublasGroupedArgs {
 
   // All arrays live in a single device allocation
   Tensor buf;
-  // BlockWise1x32 scale pointer arrays need a separate allocation
-  Tensor scale_ptr_buf;
   int32_t* mArray;
   int32_t* nArray;
   int32_t* kArray;
