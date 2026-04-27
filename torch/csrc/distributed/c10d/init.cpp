@@ -3755,9 +3755,9 @@ Returns:
     Default settings return everything - i.e. contains comm dumps and collective traces.)")
       .def("get_xccl_version", [] { return ::c10d::getXcclVersion(); })
       .def(
-      "_reset_fr_recording_xccl",
-      []() { ::c10d::reset_xccl_trace(); },
-      "API to reset Flight recorder recording when it comes to fault tolerance.");
+          "_reset_fr_recording_xccl",
+          []() { ::c10d::reset_xccl_trace(); },
+          "API to reset Flight recorder recording when it comes to fault tolerance.");
 
 #endif
 
