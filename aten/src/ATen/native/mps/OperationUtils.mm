@@ -1008,7 +1008,21 @@ void MetalShaderLibrary::exec_unary_kernel(TensorIteratorBase& iter,
   // some 128-256K wins on the table. Revisit per-Apple-GPU if wider data exists.
   constexpr uint32_t ILP_DISPATCH_THRESHOLD = 1u << 18; // 262144 elements
   const bool is_contiguous = iter.is_contiguous();
-  const bool dense_ilp = is_contiguous && !alpha.has_value() && length >= ILP_DISPATCH_THRESHOLD;
+  // ILP is gated on floating-point output dtype. Integer outputs come only from
+  // cheap ops (neg/abs/sqr/bitwise_not) where the smaller threadgroup count
+  // from the wider per-thread tile regresses real-world sizes, and complex
+  // outputs lose because the wide per-thread state spills out of registers.
+  const bool ilp_eligible_dtype = c10::isFloatingType(outputTensor.scalar_type());
+  bool dense_ilp = is_contiguous && !alpha.has_value() && ilp_eligible_dtype && length >= ILP_DISPATCH_THRESHOLD;
+  // Bench-only override: force ILP or scalar dispatch.
+  if (is_contiguous && !alpha.has_value()) {
+    if (auto force = c10::utils::get_env("PYTORCH_UNARY_FORCE_FLAVOR")) {
+      if (force.value() == "ilp")
+        dense_ilp = true;
+      else if (force.value() == "scalar")
+        dense_ilp = false;
+    }
+  }
   const auto alpha_type = scalar_arg_type.has_value() ? scalar_arg_type.value() : iter.common_dtype();
   // alpha kernels are registered under "_dense_" (unary_alpha_dense); only the
   // plain unary path has the new "_dense_scalar_" / "_dense_" (ILP) split.
