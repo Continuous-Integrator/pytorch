@@ -72,6 +72,8 @@ jobs:
       GPU_ARCH_TYPE: ${{ matrix.config.gpu_arch_type }}
       LIBTORCH_CONFIG: ${{ matrix.config.libtorch_config }}
       LIBTORCH_VARIANT: ${{ matrix.config.libtorch_variant }}
+      # Dummy value so the batch scripts install pip correctly for libtorch builds.
+      DESIRED_PYTHON: "3.10"
       runner_prefix: ${{ needs.get-label-type.outputs.label-type }}
       runs_on: windows.12xlarge
       build_name: ${{ matrix.config.build_name }}
@@ -94,6 +96,7 @@ jobs:
       GPU_ARCH_TYPE: ${{ matrix.config.gpu_arch_type }}
       LIBTORCH_CONFIG: ${{ matrix.config.libtorch_config }}
       LIBTORCH_VARIANT: ${{ matrix.config.libtorch_variant }}
+      DESIRED_PYTHON: "3.10"
       runner_prefix: ${{ needs.get-label-type.outputs.label-type }}
       runs_on: ${{ matrix.config.gpu_arch_type == 'cuda' && 'windows.g4dn.xlarge' || 'windows.4xlarge' }}
       build_name: ${{ matrix.config.build_name }}
@@ -119,6 +122,7 @@ jobs:
       GPU_ARCH_TYPE: ${{ matrix.config.gpu_arch_type }}
       LIBTORCH_CONFIG: ${{ matrix.config.libtorch_config }}
       LIBTORCH_VARIANT: ${{ matrix.config.libtorch_variant }}
+      DESIRED_PYTHON: "3.10"
       build_name: ${{ matrix.config.build_name }}
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
