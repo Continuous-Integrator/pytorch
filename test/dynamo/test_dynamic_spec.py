@@ -435,28 +435,36 @@ class TestTensorSpecConstruction(TestCase):
 
     def test_basic(self):
         ts = TensorSpec(3)
-        self.assertEqual(ts.rank, 3)
+        self.assertEqual(ts.dim, 3)
         self.assertEqual(len(ts), 3)
         for spec in ts:
             self.assertIsNone(spec)
 
-    def test_zero_rank(self):
+    def test_zero_dim(self):
         ts = TensorSpec(0)
-        self.assertEqual(ts.rank, 0)
+        self.assertEqual(ts.dim, 0)
         self.assertEqual(len(ts), 0)
 
-    def test_negative_rank(self):
-        with self.assertRaisesRegex(ValueError, "non-negative"):
-            TensorSpec(-1)
-
-    def test_from_list(self):
+    def test_list_construction(self):
         static_spec = IntSpec.static(value=10)
         backed_spec = IntSpec.backed(min=1)
-        ts = TensorSpec.from_list([static_spec, None, backed_spec])
-        self.assertEqual(ts.rank, 3)
+        ts = TensorSpec([static_spec, None, backed_spec])
+        self.assertEqual(ts.dim, 3)
         self.assertIs(ts[0], static_spec)
         self.assertIsNone(ts[1])
         self.assertIs(ts[2], backed_spec)
+
+    def test_dict_construction(self):
+        backed_spec = IntSpec.backed("h")
+        ts = TensorSpec({0: backed_spec, 2: IntSpec.static()})
+        self.assertEqual(ts.dim, 3)  # max(0, 2) + 1
+        self.assertIs(ts[0], backed_spec)
+        self.assertIsNone(ts[1])
+        self.assertIsNotNone(ts[2])
+
+    def test_unsupported_input_type_rejected(self):
+        with self.assertRaisesRegex(TypeError, "expects int / list / tuple / dict"):
+            TensorSpec("not a spec")  # type: ignore[arg-type]
 
     def test_getitem_setitem(self):
         ts = TensorSpec(2)
