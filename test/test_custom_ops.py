@@ -2226,6 +2226,50 @@ Dynamic shape operator
         lib.impl(op_name, foo_impl2, "CPU", allow_override=True)
         self.assertEqual(op(torch.ones(3)), torch.ones(6))
 
+    def test_internal_impl(self):
+        from torch.library import _impls
+
+        lib = self.lib()
+        op_name = f"{self.test_ns}::foo"
+        torch.library.define(op_name, "(Tensor x) -> Tensor", lib=lib)
+        op = self.ns().foo.default
+
+        key = f"{self.test_ns}/foo/CPU"
+
+        def foo_internal(x):
+            return x * 1
+
+        def foo_external(x):
+            return torch.cat([x, x])
+
+        # internal_impl=True must not record the kernel in _impls, so
+        # out-of-tree authors don't collide with in-tree torch._native kernels.
+        lib.impl("foo", foo_internal, "CPU", internal_impl=True)
+        self.assertNotIn(key, _impls)
+        self.assertNotIn(key, lib._op_impls)
+        self.assertEqual(op(torch.ones(3)), torch.ones(3))
+
+        # Because the internal registration was not tracked, a subsequent
+        # out-of-tree registration for the same (ns, op, dispatch key) must
+        # succeed without requiring allow_override=True.
+        lib.impl("foo", foo_external, "CPU")
+        self.assertIn(key, _impls)
+        self.assertEqual(op(torch.ones(3)), torch.ones(6))
+
+        # An internal registration on top of an existing external registration
+        # must also be allowed and must leave the external tracking entry intact.
+        def foo_internal2(x):
+            return x * 3
+
+        lib.impl("foo", foo_internal2, "CPU", internal_impl=True)
+        self.assertIn(key, _impls)
+        self.assertEqual(op(torch.ones(3)), torch.ones(3) * 3)
+
+        # A second external registration should still be rejected, since the
+        # external registration remains tracked regardless of later internal ones.
+        with self.assertRaisesRegex(RuntimeError, "already a kernel registered"):
+            lib.impl("foo", foo_external, "CPU")
+
     def test_override_fake(self):
         lib = self.lib()
         op_name = f"{self.test_ns}::foo"
