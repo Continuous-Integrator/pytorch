@@ -3374,9 +3374,10 @@ class TestSyncDecisionCrossRanks(MultiProcessTestCase):
 class TestNodeGroupNameResolution(torch._dynamo.test_case.TestCase):
     """Unit tests for Node-typed group_name handling in bucketing.
 
-    In make_fx-traced graphs (e.g. aot_fx_trace), collective ops receive
+    In compile-on-one-rank graphs, collective ops receive
     their group_name as an FX Node reference rather than a string literal.
-    These tests verify the resolution and restoration helpers work correctly.
+    These tests verify the resolution and const-replacement helpers work
+    correctly.
     """
 
     def _make_graph_with_pg_node(self, group_name_str: str):
@@ -3402,12 +3403,12 @@ class TestNodeGroupNameResolution(torch._dynamo.test_case.TestCase):
         graph, pg_node, _ = self._make_graph_with_pg_node("pg0")
         self.assertEqual(_resolve_group_name(pg_node), "pg0")
 
-    def test_restore_node_group_names_position_based(self):
+    def test_replace_const_args_position_based(self):
         """
         When reduce_op has the same string value as group_name, only the
         schema-identified group_name position should be replaced.
         """
-        from torch._inductor.fx_passes.bucketing import _restore_node_group_names
+        from torch._inductor.fx_passes.bucketing import _replace_const_args
 
         graph, pg_node, input_node = self._make_graph_with_pg_node("test_pg")
         ar_node = graph.call_function(
@@ -3415,13 +3416,13 @@ class TestNodeGroupNameResolution(torch._dynamo.test_case.TestCase):
             args=(input_node, "test_pg", "test_pg"),
         )
 
-        _restore_node_group_names([ar_node], "test_pg", pg_node)
+        _replace_const_args(ar_node, {"test_pg": pg_node})
 
         self.assertEqual(ar_node.args[1], "test_pg")
         self.assertIs(ar_node.args[2], pg_node)
 
-    def test_restore_node_group_names_skips_non_c10d(self):
-        from torch._inductor.fx_passes.bucketing import _restore_node_group_names
+    def test_replace_const_args_skips_non_c10d(self):
+        from torch._inductor.fx_passes.bucketing import _replace_const_args
 
         graph, pg_node, input_node = self._make_graph_with_pg_node("test_pg")
         node = graph.call_function(
@@ -3429,7 +3430,7 @@ class TestNodeGroupNameResolution(torch._dynamo.test_case.TestCase):
             args=(input_node, "test_pg"),
         )
 
-        _restore_node_group_names([node], "test_pg", pg_node)
+        _replace_const_args(node, {"test_pg": pg_node})
 
         self.assertEqual(node.args[1], "test_pg")
 
