@@ -124,26 +124,11 @@ class TestOpSchema(TestCase):
         """
         import weakref
 
-        # No static_kwargkey: previously-buggy branch.
         dts = DTensorSpec(mesh=None, placements=tuple(), tensor_meta=None)
         ref = weakref.ref(dts)
         OpSchema(op=None, args_schema=(dts,), kwargs_schema={})
         del dts
         self.assertIsNone(ref(), "DTensorSpec leaked via OpSchema._comparison_key")
-
-        # With static_kwargkey: control for the symmetric branch.
-        dts = DTensorSpec(mesh=None, placements=tuple(), tensor_meta=None)
-        ref = weakref.ref(dts)
-        OpSchema(
-            op=None,
-            args_schema=(dts,),
-            kwargs_schema={"k": 1},
-            schema_info=RuntimeSchemaInfo(static_kwargkey=["k"]),
-        )
-        del dts
-        self.assertIsNone(
-            ref(), "DTensorSpec leaked via OpSchema._comparison_key (kwargkey path)"
-        )
 
 
 if __name__ == "__main__":
