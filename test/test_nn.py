@@ -7684,7 +7684,7 @@ tensor(..., device='meta', size=(1,), requires_grad=True)""")
         boundary_row = 2**32 // N
         for row in [boundary_row, boundary_row + 1]:
             ref = torch.layer_norm(x[row:row + 1], [N], gamma, beta)
-            torch.testing.assert_close(y[row], ref[0])
+            self.assertEqual(y[row], ref[0])
 
     def test_padding_list(self):
         # Padding can be a list, or tuple (regression test for gh-54452)
