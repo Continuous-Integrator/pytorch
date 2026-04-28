@@ -651,6 +651,12 @@ class NVUniversalGemmScheduling(BaseScheduling):
                         f"args.append(rand_strided({size}, {stride}, device='{device}', dtype={dtype}))"
                     )
 
+            if ctb.workspace_size > 0:
+                args_code.writeline(
+                    f"args.append(torch.empty({ctb.workspace_size}, "
+                    f"device='{out_device}', dtype=torch.int8))"
+                )
+
             args_code.writeline("return args")
 
         # Build call function
@@ -666,6 +672,9 @@ class NVUniversalGemmScheduling(BaseScheduling):
             # Add epilogue read args
             for j in range(len(epilogue_reads)):
                 param_list.append(f"args[{num_inputs + 1 + j}]")
+
+            if ctb.workspace_size > 0:
+                param_list.append(f"args[{num_inputs + 1 + len(epilogue_reads)}]")
 
             params_str = ", ".join(param_list)
             args_code.writeline("stream = torch.cuda.current_stream().cuda_stream")

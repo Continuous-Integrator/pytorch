@@ -879,6 +879,59 @@ class TestNVUniversalGemmEpilogueFusion(TestCase):
             "reduction after GEMM should NOT be fused into NVGEMM epilogue",
         )
 
+    def test_workspace_in_benchmark_helpers(self):
+        """Mock the chosen kernel's workspace_size and verify the generated
+        autotune benchmark module allocates the workspace and passes it
+        positionally. Without this, the rendered main signature
+        ``(..., *epilogue_reads, workspace, stream=None)`` is called with
+        too few positional args and silently misbinds stream."""
+        import cutlass_api
+
+        from torch._inductor.codegen.nv_universal_gemm.nv_universal_gemm_scheduling import (
+            NVUniversalGemmScheduling,
+        )
+
+        a = torch.randn(self.M, self.K, device="cuda", dtype=torch.bfloat16)
+        b = torch.randn(self.K, self.N, device="cuda", dtype=torch.bfloat16)
+        captured: list[str] = []
+        orig = NVUniversalGemmScheduling._add_benchmark_helpers
+
+        def capture(self, src_code, template, epilogue):
+            full = orig(self, src_code, template, epilogue)
+            captured.append(full)
+            return full
+
+        torch._dynamo.reset()
+        with (
+            patch.object(
+                cutlass_api.Kernel, "get_workspace_size", lambda self, args: 4096
+            ),
+            mock.patch.object(
+                NVUniversalGemmScheduling, "_add_benchmark_helpers", capture
+            ),
+            config.patch(
+                {
+                    "max_autotune": True,
+                    "max_autotune_gemm_backends": "NVGEMM",
+                    "nvgemm_max_profiling_configs": 2,
+                    "force_disable_caches": True,
+                }
+            ),
+            mock.patch.object(
+                Scheduler, "benchmark_fused_nodes", return_value=(1.0, "")
+            ),
+            mock.patch.object(
+                Scheduler, "benchmark_codegened_module", return_value=(0.5, "")
+            ),
+        ):
+            torch.compile(lambda x, y: torch.relu(x @ y))(a, b)
+
+        self.assertTrue(captured, "_add_benchmark_helpers was never invoked")
+        for src in captured:
+            self.assertIn("torch.empty(4096", src)
+            call_block = src[src.find("def call(args):") :]
+            self.assertIn("args[", call_block[: call_block.find("stream=stream)")])
+
 
 if __name__ == "__main__":
     run_tests()
