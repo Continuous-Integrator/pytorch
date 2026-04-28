@@ -4228,6 +4228,32 @@
       ]
     }
   ],
+  "GB6672": [
+    {
+      "Gb_type": "autograd.Function {fn_name}: unsupported input type",
+      "Context": "msg",
+      "Explanation": "torch.autograd.Function '{fn_name}' received an input that is not a tensor, primitive, or pytree-registered type. All inputs to autograd.Function.apply() must be pytree-compatible so that AOTAutograd can trace the forward and backward correctly.",
+      "Hints": [
+        "Register the input type with pytree using one of:\n",
+        "  * torch.utils._pytree.register_dataclass(MyClass)\n",
+        "  * torch.utils._pytree.register_pytree_node(MyClass, ...)\n",
+        "  * torch.utils._pytree.register_constant(MyClass)",
+        "Or restructure the autograd.Function to accept only ",
+        "tensors and primitives as arguments."
+      ]
+    }
+  ],
+  "GB4186": [
+    {
+      "Gb_type": "autograd.Function {fn_name}: unsupported output type",
+      "Context": "msg",
+      "Explanation": "torch.autograd.Function '{fn_name}' returned a value that is not a tensor, primitive, or pytree-compatible type. All outputs from autograd.Function.forward() must be pytree-compatible.",
+      "Hints": [
+        "Return only tensors, primitives, or pytree-registered ",
+        "types from forward()."
+      ]
+    }
+  ],
   "GB0318": [
     {
       "Gb_type": "torch.associative_scan: combine_fn improper number of leaves",

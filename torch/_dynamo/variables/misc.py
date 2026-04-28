@@ -47,7 +47,7 @@ from ..bytecode_transformation import (
     create_instruction,
 )
 from ..create_parameter_op import do_not_convert_to_tracable_parameter
-from ..exc import raise_observed_exception, raise_type_error, unimplemented
+from ..exc import raise_observed_exception, raise_type_error, unimplemented, Unsupported
 from ..guards import GuardBuilder, install_guard
 from ..mutation_guard import unpatched_nn_module_init
 from ..source import (
@@ -875,76 +875,54 @@ class AutogradFunctionVariable(VariableTracker):
         VariableTracker.visit(visit, (args, kwargs))
 
         if requires_grad and torch.is_grad_enabled():
-            source = self.source
+            from .torch import AllowInGraphKind, TorchInGraphFunctionVariable
 
-            from torch._functorch.autograd_function import (
-                autograd_function_forward_rewritten,
-            )
-            from torch.autograd.function import _is_setup_context_defined
-
-            forward_fn = self.fn_cls.forward
-
-            is_setup_ctx_defined = _is_setup_context_defined(self.fn_cls.setup_context)
-            if is_setup_ctx_defined:
-                # If setup_context is defined, we generate a new forward function which includes
-                # the original forward and setup_context function, and trace the new forward function.
-                forward_fn = autograd_function_forward_rewritten(
-                    self.fn_cls.forward, self.fn_cls.setup_context
-                )
-                # The forward points to a new function now, so we can't use the
-                # old source. Later on, we guard specifically on
-                # is_setup_ctx_defined
-                source = None
-
-            vjp_fn = self.fn_cls.vjp  # type: ignore[attr-defined]
-            if vjp_fn is not torch.autograd.Function.vjp:
-                unimplemented(
-                    gb_type="Unsupported custom vjp",
-                    context=f"call_apply {self} {args} {kwargs}",
-                    explanation="Dynamo does not support tracing "
-                    "`torch.autograd.Function` subclasses that define "
-                    "a custom `vjp` method.",
-                    hints=[
-                        "Remove the custom `vjp` method if possible.",
-                        "Use standard `backward` instead if applicable.",
-                        *graph_break_hints.SUPPORTABLE,
-                    ],
-                )
-
-            jvp_fn = self.fn_cls.jvp  # type: ignore[attr-defined]
-            if jvp_fn is not torch.autograd.Function.jvp:
-                unimplemented(
-                    gb_type="Unsupported custom jvp",
-                    context=f"call_apply {self} {args} {kwargs}",
-                    explanation="Dynamo does not support tracing "
-                    "`torch.autograd.Function` subclasses that define "
-                    "a custom `jvp` method.",
-                    hints=[
-                        "Remove the custom `jvp` method if possible.",
-                        *graph_break_hints.SUPPORTABLE,
-                    ],
-                )
-
-            from .higher_order_ops import AutogradFunctionApplyVariable
-
-            if source is None and not is_setup_ctx_defined:
-                source = AttrSource(
-                    tx.import_source(self.fn_cls.__module__), self.fn_cls.__name__
-                )
-            apply_source = source and AttrSource(source, member="apply")
-            val = AutogradFunctionApplyVariable(
-                forward_fn,
-                self.fn_cls.backward,
-                source,
-                source=apply_source,
-            ).call_function(tx, args, kwargs)
-            if self.source and is_setup_ctx_defined:
-                fwd_src = AttrSource(self.source, "forward")
-                install_guard(fwd_src.make_guard(GuardBuilder.CLOSURE_MATCH))
-                setup_ctx_src = AttrSource(self.source, "setup_context")
-                install_guard(setup_ctx_src.make_guard(GuardBuilder.CLOSURE_MATCH))
-
-            return val
+            trampoline_autograd_apply = produce_trampoline_autograd_apply(self.fn_cls)
+            fn_name = self.fn_cls.__name__
+            try:
+                return TorchInGraphFunctionVariable(
+                    trampoline_autograd_apply,
+                    kind=AllowInGraphKind.NONSTRICT_TRACE,
+                ).call_function(tx, args, kwargs)
+            except Unsupported as e:
+                msg = str(e)
+                if "Invalid input type" in msg:
+                    unimplemented(
+                        gb_type=f"autograd.Function {fn_name}: unsupported input type",
+                        context=msg,
+                        explanation=(
+                            f"torch.autograd.Function '{fn_name}' received an input "
+                            f"that is not a tensor, primitive, or pytree-registered type. "
+                            f"All inputs to autograd.Function.apply() must be pytree-compatible "
+                            f"so that AOTAutograd can trace the forward and backward correctly."
+                        ),
+                        hints=[
+                            "Register the input type with pytree using one of:\n"
+                            "  * torch.utils._pytree.register_dataclass(MyClass)\n"
+                            "  * torch.utils._pytree.register_pytree_node(MyClass, ...)\n"
+                            "  * torch.utils._pytree.register_constant(MyClass)",
+                            "Or restructure the autograd.Function to accept only "
+                            "tensors and primitives as arguments.",
+                        ],
+                        from_exc=e,
+                    )
+                elif "Unsupported output type" in msg:
+                    unimplemented(
+                        gb_type=f"autograd.Function {fn_name}: unsupported output type",
+                        context=msg,
+                        explanation=(
+                            f"torch.autograd.Function '{fn_name}' returned a value "
+                            f"that is not a tensor, primitive, or pytree-compatible type. "
+                            f"All outputs from autograd.Function.forward() must be "
+                            f"pytree-compatible."
+                        ),
+                        hints=[
+                            "Return only tensors, primitives, or pytree-registered "
+                            "types from forward().",
+                        ],
+                        from_exc=e,
+                    )
+                raise
 
         if self.source:
             source = AttrSource(self.source, "forward")
