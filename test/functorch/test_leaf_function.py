@@ -5,6 +5,7 @@
 import contextlib
 import copy
 import io
+import re
 from functools import partial
 from unittest.mock import patch
 
@@ -70,7 +71,7 @@ class f(torch.nn.Module):
         invoke_leaf_function = torch.ops.higher_order.invoke_leaf_function(_opaque_obj0, _opaque_obj1, _tree_spec_constant0, '', x_1, y_1, requires_grad_indices = '');  _opaque_obj0 = _opaque_obj1 = _tree_spec_constant0 = x_1 = y_1 = None
         getitem: "f32[3, 3]" = invoke_leaf_function[0];  invoke_leaf_function = None
         return (getitem,)
-""",  # noqa: B950
+""",
         )
 
         x2 = torch.randn(3, 3)
@@ -106,7 +107,7 @@ class f(torch.nn.Module):
         invoke_leaf_function = torch.ops.higher_order.invoke_leaf_function(_opaque_obj0, _opaque_obj1, _tree_spec_constant0, '', x_1, requires_grad_indices = '');  _opaque_obj0 = _opaque_obj1 = _tree_spec_constant0 = x_1 = None
         getitem: "f32[3, 3]" = invoke_leaf_function[0];  invoke_leaf_function = None
         return (getitem,)
-""",  # noqa: B950
+""",
         )
 
         # Closure change reflected at runtime
@@ -166,7 +167,7 @@ class f(torch.nn.Module):
         invoke_leaf_function = torch.ops.higher_order.invoke_leaf_function(_opaque_obj0, _opaque_obj1, _tree_spec_constant0, '', x_1, y_1, requires_grad_indices = '');  _opaque_obj0 = _opaque_obj1 = _tree_spec_constant0 = x_1 = y_1 = None
         getitem: "f32[3, 3]" = invoke_leaf_function[0];  invoke_leaf_function = None
         return (getitem,)
-""",  # noqa: B950
+""",
         )
 
         x2 = torch.randn(3, 3)
@@ -251,7 +252,7 @@ class f(torch.nn.Module):
         invoke_leaf_function = torch.ops.higher_order.invoke_leaf_function(_opaque_obj0, _opaque_obj1, _tree_spec_constant0, '', x_1, y_1, requires_grad_indices = '');  _opaque_obj0 = _opaque_obj1 = _tree_spec_constant0 = x_1 = y_1 = None
         getitem: "f32[3, 3]" = invoke_leaf_function[0];  invoke_leaf_function = None
         return (getitem,)
-""",  # noqa: B950
+""",
         )
 
         x2 = torch.randn(3, 3)
@@ -338,7 +339,7 @@ class GraphModule(torch.nn.Module):
         getitem: "f32[0]" = with_effects[0]
         getitem_1: "f32[3, 3]" = with_effects[1];  with_effects = None
         return (getitem, getitem_1)
-""",  # noqa: B950
+""",
         )
         self.assertExpectedInline(
             normalize_gm(bw_graph_cell[0].print_readable(print_output=False)),
@@ -353,7 +354,7 @@ class GraphModule(torch.nn.Module):
         getitem_3: "f32[3, 3]" = with_effects_1[1]
         getitem_4: "f32[3, 3]" = with_effects_1[2];  with_effects_1 = None
         return (getitem_3, getitem_4, getitem_2)
-""",  # noqa: B950
+""",
         )
 
     def test_aot_function_gradients(self):
@@ -719,7 +720,7 @@ class outer(torch.nn.Module):
             getitem: "f32[0]" = with_effects[0]
             getitem_1: "f32[3, 3]" = with_effects[1];  with_effects = None
             return (getitem, getitem_1)
-""",  # noqa: B950
+""",
         )
 
         x2 = torch.randn(3, 3)
@@ -773,7 +774,7 @@ class outer(torch.nn.Module):
         def forward(self, arg0_1: "f32[3, 3]"):
             add: "f32[3, 3]" = torch.ops.aten.add.Tensor(arg0_1, 1);  arg0_1 = None
             return (add,)
-""",  # noqa: B950
+""",
         )
 
         x2 = torch.randn(3, 3)
@@ -832,7 +833,7 @@ class outer(torch.nn.Module):
             getitem: "f32[0]" = with_effects[0]
             getitem_1: "f32[3, 3]" = with_effects[1];  with_effects = None
             return (getitem, getitem_1)
-""",  # noqa: B950
+""",
         )
 
 
@@ -946,10 +947,16 @@ class TestLeafFunctionDynamo(PytreeRegisteringTestCase):
                 args_clone2,
             )
 
+        def _normalize(gm):
+            s = normalize_gm(gm.print_readable(print_output=False))
+            # Normalize nn_module_index which varies depending on whether an
+            # accelerator is available (stream reserves index 0).
+            return re.sub(r"'', \d+, ", "'', 0, ", s)
+
         return (
-            normalize_gm(eager_backend.graphs[0].print_readable(print_output=False)),
-            normalize_gm(backend.fw_graphs[0].print_readable(print_output=False)),
-            normalize_gm(backend.bw_graphs[0].print_readable(print_output=False)),
+            _normalize(eager_backend.graphs[0]),
+            _normalize(backend.fw_graphs[0]),
+            _normalize(backend.bw_graphs[0]),
         )
 
     def test_leaf_function_simple(self):
@@ -996,7 +1003,7 @@ class GraphModule(torch.nn.Module):
         invoke_leaf_function = torch.ops.higher_order.invoke_leaf_function(real_fn, fake_fn, input_spec, '', 0, l_self_modules_linear_parameters_weight_, l_self_modules_linear_parameters_bias_, l_x_);  real_fn = fake_fn = input_spec = l_self_modules_linear_parameters_weight_ = l_self_modules_linear_parameters_bias_ = l_x_ = None
         getitem: "f32[3, 3]" = invoke_leaf_function[0];  invoke_leaf_function = None
         return (getitem,)
-""",  # noqa: B950
+""",
         )
         self.assertExpectedInline(
             fw_graph_str,
@@ -1011,7 +1018,7 @@ class GraphModule(torch.nn.Module):
         getitem: "f32[0]" = with_effects[0]
         getitem_1: "f32[3, 3]" = with_effects[1];  with_effects = None
         return (getitem, getitem_1)
-""",  # noqa: B950
+""",
         )
         self.assertExpectedInline(
             bw_graph_str,
@@ -1027,7 +1034,7 @@ class GraphModule(torch.nn.Module):
         getitem_5: "f32[3]" = with_effects_1[3]
         getitem_6: "f32[3, 3]" = with_effects_1[4];  with_effects_1 = None
         return (getitem_6, getitem_4, getitem_5, getitem_2)
-""",  # noqa: B950
+""",
         )
 
     def test_leaf_function_with_logging(self):
@@ -1241,7 +1248,7 @@ class GraphModule(torch.nn.Module):
         invoke_leaf_function = torch.ops.higher_order.invoke_leaf_function(real_fn, fake_fn, input_spec, '', 0, l_self_parameters_offset_, l_self_modules_linear_parameters_weight_, l_self_modules_linear_parameters_bias_, l_x_);  real_fn = fake_fn = input_spec = l_self_parameters_offset_ = l_self_modules_linear_parameters_weight_ = l_self_modules_linear_parameters_bias_ = l_x_ = None
         getitem: "f32[3, 3]" = invoke_leaf_function[0];  invoke_leaf_function = None
         return (getitem,)
-""",  # noqa: B950
+""",
         )
         self.assertExpectedInline(
             fw_graph_str,
@@ -1256,7 +1263,7 @@ class GraphModule(torch.nn.Module):
         getitem: "f32[0]" = with_effects[0]
         getitem_1: "f32[3, 3]" = with_effects[1];  with_effects = None
         return (getitem, getitem_1)
-""",  # noqa: B950
+""",
         )
         self.assertExpectedInline(
             bw_graph_str,
@@ -1273,7 +1280,7 @@ class GraphModule(torch.nn.Module):
         getitem_6: "f32[3]" = with_effects_1[4]
         getitem_7: "f32[3, 3]" = with_effects_1[5];  with_effects_1 = None
         return (getitem_7, getitem_4, getitem_5, getitem_6, getitem_2)
-""",  # noqa: B950
+""",
         )
 
     def test_leaf_function_pytree_inputs(self):
@@ -1370,7 +1377,7 @@ class GraphModule(torch.nn.Module):
         invoke_leaf_function = torch.ops.higher_order.invoke_leaf_function(real_fn, fake_fn, input_spec, '', 0, l_self_modules_inner_modules_linear_parameters_weight_, l_self_modules_inner_modules_linear_parameters_bias_, l_self_modules_linear_parameters_weight_, l_self_modules_linear_parameters_bias_, l_x_);  real_fn = fake_fn = input_spec = l_self_modules_inner_modules_linear_parameters_weight_ = l_self_modules_inner_modules_linear_parameters_bias_ = l_self_modules_linear_parameters_weight_ = l_self_modules_linear_parameters_bias_ = l_x_ = None
         getitem: "f32[3, 3]" = invoke_leaf_function[0];  invoke_leaf_function = None
         return (getitem,)
-""",  # noqa: B950
+""",
         )
         self.assertExpectedInline(
             fw_graph_str,
@@ -1385,7 +1392,7 @@ class GraphModule(torch.nn.Module):
         getitem: "f32[0]" = with_effects[0]
         getitem_1: "f32[3, 3]" = with_effects[1];  with_effects = None
         return (getitem, getitem_1)
-""",  # noqa: B950
+""",
         )
         self.assertExpectedInline(
             bw_graph_str,
@@ -1403,7 +1410,7 @@ class GraphModule(torch.nn.Module):
         getitem_7: "f32[3]" = with_effects_1[5]
         getitem_8: "f32[3, 3]" = with_effects_1[6];  with_effects_1 = None
         return (getitem_8, getitem_4, getitem_5, getitem_6, getitem_7, getitem_2)
-""",  # noqa: B950
+""",
         )
 
     def test_leaf_function_data_dependent_nonzero(self):
@@ -2095,7 +2102,7 @@ class GraphModule(torch.nn.Module):
 
         linear: "f32[3, 3]" = torch._C._nn.linear(l_x_, l_self_modules_linear_parameters_weight_, l_self_modules_linear_parameters_bias_);  l_x_ = l_self_modules_linear_parameters_weight_ = l_self_modules_linear_parameters_bias_ = None
         return (linear,)
-""",  # noqa: B950
+""",
         )
         self.assertExpectedInline(
             fw_graph,
@@ -2112,7 +2119,7 @@ class GraphModule(torch.nn.Module):
         t: "f32[3, 3]" = torch.ops.aten.t.default(primals_3)
         addmm: "f32[3, 3]" = torch.ops.aten.addmm.default(primals_4, primals_2, t);  primals_4 = t = None
         return (getitem, addmm, primals_2, primals_3)
-""",  # noqa: B950
+""",
         )
         self.assertExpectedInline(
             bw_graph,
@@ -2129,7 +2136,7 @@ class GraphModule(torch.nn.Module):
         view: "f32[3]" = torch.ops.aten.view.default(sum_1, [3]);  sum_1 = None
         t_4: "f32[3, 3]" = torch.ops.aten.t.default(t_3);  t_3 = None
         return (mm, t_4, view)
-""",  # noqa: B950
+""",
         )
 
     def test_leaf_function_output_structure_mismatch(self):
