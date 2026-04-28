@@ -905,11 +905,7 @@ def _detach_with_grad_dtype(arg):
     if not isinstance(arg, torch.Tensor):
         return arg
     detached = arg.detach()
-    if (
-        arg is not detached
-        and arg.is_leaf
-        and arg.grad_dtype != detached.grad_dtype
-    ):
+    if arg is not detached and arg.is_leaf and arg.grad_dtype != detached.grad_dtype:
         detached.grad_dtype = arg.grad_dtype
     return detached
 
