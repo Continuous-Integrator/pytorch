@@ -210,10 +210,27 @@ class TpHashTests(torch._dynamo.test_case.TestCase):
         result = torch.compile(fn, backend="eager", fullgraph=True)(torch.tensor(0))
         self.assertEqual(result, 42)
 
-    def test_hash_tensor_matches_eager(self):
-        """hash(tensor) matches eager when value escapes (installs ID_MATCH guard)."""
+    def test_hash_tensor_consistent(self):
+        """hash(tensor) is consistent across calls within a compiled function."""
         t = torch.tensor([1.0, 2.0])
-        self._assert_hash_equals(t)
+
+        def fn(x):
+            return hash(t), hash(t)
+
+        h1, h2 = torch.compile(fn, backend="eager", fullgraph=True)(torch.tensor(0))
+        self.assertEqual(h1, h2)
+
+    def test_hash_tensor_return_graph_breaks(self):
+        """Returning hash(tensor) graph-breaks — tensor hash is fake."""
+        from torch._dynamo.exc import Unsupported
+
+        t = torch.tensor([1.0, 2.0])
+
+        def fn(x):
+            return hash(t)
+
+        with self.assertRaisesRegex(Unsupported, "FakeIdVariable"):
+            torch.compile(fn, backend="eager", fullgraph=True)(torch.tensor(0))
 
     # --- SymNodeVariable ---
 

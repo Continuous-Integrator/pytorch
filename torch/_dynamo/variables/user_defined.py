@@ -248,6 +248,11 @@ class UserDefinedClassVariable(UserDefinedVariable):
             return GuardBuilder.CLASS_MATCH
         return None
 
+    def hash_impl(self, tx: "InstructionTranslator") -> tuple[int, bool]:
+        if self.source:
+            install_guard(self.source.make_guard(GuardBuilder.ID_MATCH))
+        return hash(self.value), False
+
     def as_python_constant(self) -> type[object]:
         return self.value
 

@@ -2114,10 +2114,10 @@ class TensorVariable(VariableTracker):
 
     def hash_impl(self, tx: "InstructionTranslator") -> tuple[int, bool]:
         # Tensor.__hash__ is `return id(self)`, so hash == id.
-        real_id = self.get_id(tx)
-        if real_id is not None:
-            return real_id, False
-        return id(self), True
+        # Always use the FakeTensor identity so aliased tensors
+        # (e.g. y = x.add_(1)) hash consistently.
+        fake = self.as_proxy().node.meta["example_value"]
+        return id(fake), True
 
     def is_python_equal(self, other: object) -> bool:
         if not isinstance(other, VariableTracker):
