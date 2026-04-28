@@ -291,15 +291,14 @@ class DistElementwiseOpsTest(DTensorOpTestBase):
 
     @with_comms
     @skip_unless_torch_gpu
-    def test_dropout_errors(self):
+    def test_dropout_partial_redistributes(self):
+        """Dropout on Partial input redistributes to Replicate first (no error)."""
         device_mesh = self.build_device_mesh()
-        with self.assertRaisesRegex(RuntimeError, "supported"):
-            self._run_sharded_elementwise_ops(
-                device_mesh=device_mesh,
-                placements=[Partial("sum")],
-                input_size=(8, 5),
-                op=torch.nn.functional.dropout,
-            )
+        input_tensor = torch.randn(8, 5, device=self.device_type)
+        dt = DTensor.from_local(input_tensor, device_mesh, [Partial("sum")])
+        result = torch.nn.functional.dropout(dt, training=True)
+        self.assertIsInstance(result, DTensor)
+        self.assertEqual(result.placements, (Replicate(),))
 
     @with_comms
     def test_mul_out(self):
@@ -1317,6 +1316,15 @@ class DistElementwiseOpsTest(DTensorOpTestBase):
         self.assertEqual(result.dtype, torch.float16)
         self.assertEqual(result.placements, (Shard(0),))
         self.assertEqual(result.full_tensor(), t.to(torch.float16))
+
+        # other is only used as a dtype/device template — its shape doesn't
+        # need to match self.
+        other_scalar = torch.tensor(0, dtype=torch.float16, device=self.device_type)
+        dother_scalar = distribute_tensor(other_scalar, device_mesh, [Replicate()])
+        result2 = torch.ops.aten.to.other(dt, dother_scalar)
+        self.assertEqual(result2.dtype, torch.float16)
+        self.assertEqual(result2.placements, (Shard(0),))
+        self.assertEqual(result2.full_tensor(), t.to(torch.float16))
 
     @with_comms
     def test_fill_tensor(self):

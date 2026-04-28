@@ -532,7 +532,8 @@ _extra_pointwise_ops: list[OpOverload] = [
     aten.special_polygamma.out,
     aten.threshold.out,
     aten.threshold_.default,
-    aten.to.other,
+    # aten.to.other is registered separately — its second tensor arg is a
+    # dtype/device template, not a pointwise operand.
     aten.true_divide.Scalar,
     aten.where.Scalar,
     aten.where.ScalarOther,
@@ -592,6 +593,26 @@ _extra_pointwise_ops: list[OpOverload] = [
     aten._fused_adamw.tensor_lr,
     aten._fused_adamw_.tensor_lr,
 ]
+
+
+@register_single_dim_strategy(
+    aten.to.other,
+    schema_info=RuntimeSchemaInfo(1),
+    allow_uneven_sharding=True,
+    allow_unbacked_sharding=True,
+)
+def to_other_strategy(
+    op: OpOverload,
+    args_schema: ArgsType,
+    kwargs_schema: KwargsType,
+) -> list[list[Placement | _ShardingPlaceholder]]:
+    self_meta = args_schema[0]
+    if not isinstance(self_meta, TensorMeta):
+        raise AssertionError(f"Expected TensorMeta, got {type(self_meta)}")
+    return [
+        [_ShardingPlaceholder(d), _ShardingPlaceholder(d), Replicate()]
+        for d in range(len(self_meta.shape))
+    ]
 
 
 def _get_pointwise_ops_from_tag() -> list[OpOverload]:
