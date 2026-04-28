@@ -166,7 +166,7 @@ class TestFullyShardSpmdTypes(FSDPTest):
 
     @skip_if_lt_x_gpu(2)
     def test_fsdp_1d(self):
-        """FSDP alone: params initialized as Invariant on the FSDP mesh."""
+        """FSDP alone: params initialized as Replicated on the FSDP mesh."""
         mlp_dim = 16
         mesh = init_device_mesh(
             device_type.type, (self.world_size,), mesh_dim_names=("fsdp",)
@@ -179,7 +179,7 @@ class TestFullyShardSpmdTypes(FSDPTest):
         ref_model.load_state_dict(model.state_dict())
 
         for param in model.parameters():
-            set_local_type(param, {fsdp_axis: I})
+            set_local_type(param, {fsdp_axis: R})
 
         fully_shard(
             model,
@@ -233,7 +233,7 @@ class TestFullyShardSpmdTypes(FSDPTest):
         _tp_init(model, tp_pg)
 
         for fqn, param in model.named_parameters():
-            set_local_type(param, {fsdp_axis: I, tp_axis: tp_plan[fqn]})
+            set_local_type(param, {fsdp_axis: R, tp_axis: tp_plan[fqn]})
 
         def shard_fn(param):
             lt = get_local_type(param)

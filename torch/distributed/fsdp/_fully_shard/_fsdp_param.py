@@ -359,7 +359,6 @@ class FSDPParam:
 
         local_type = get_local_type(param)
         self._spmd_types_orig_type = dict(local_type)
-        self._spmd_types_mesh = spmd_mesh
 
         placements: list[Placement] = []
         for name in spmd_mesh.mesh_dim_names:
@@ -395,22 +394,8 @@ class FSDPParam:
                     f"for parameter '{self._module_info.param_name}'"
                 )
 
-        global_shape = list(param.size())
-        global_stride = list(param.stride())
-        for mesh_dim_idx, placement in enumerate(placements):
-            if isinstance(placement, Shard):
-                mesh_dim_size = spmd_mesh.size(mesh_dim_idx)
-                global_shape[placement.dim] *= mesh_dim_size
-                global_stride[placement.dim] *= mesh_dim_size
-        dtensor_spec = DTensorSpec(
-            spmd_mesh,
-            tuple(placements),
-            tensor_meta=TensorMeta(
-                torch.Size(global_shape), tuple(global_stride), param.dtype
-            ),
-        )
         dtensor_param = nn.Parameter(
-            _from_local_no_grad(param.data, dtensor_spec),
+            DTensor.from_local(param.data, spmd_mesh, placements, run_check=False),
             requires_grad=param.requires_grad,
         )
         return dtensor_param
@@ -419,19 +404,9 @@ class FSDPParam:
         """Restore the saved spmd_types annotation onto a tensor."""
         if not self.is_spmd_types:
             return
-        spmd_mesh = self._spmd_types_mesh
         orig_type = self._spmd_types_orig_type
-        assert spmd_mesh.mesh_dim_names is not None  # noqa: S101
-        unsharded_type = {}
-        for name in spmd_mesh.mesh_dim_names:
-            axis = MeshAxis.of(spmd_mesh.get_group(name))
-            orig = orig_type.get(axis)
-            if orig is I:
-                unsharded_type[axis] = R
-            elif orig is not None:
-                unsharded_type[axis] = orig
-        if unsharded_type:
-            spmd_assert_type(tensor, unsharded_type)
+        if orig_type:
+            spmd_assert_type(tensor, orig_type)
 
     def _init_sharding_spec(
         self,
