@@ -4552,7 +4552,6 @@ class CommTest(test_c10d_common.AbstractCommTest, MultiProcessTestCase):
 
     @requires_nccl()
     @skip_if_lt_x_gpu(2)
-    @runOnRocmArch(MI300_ARCH)
     @parametrize(
         "custom_group_name",
         [True, False],
