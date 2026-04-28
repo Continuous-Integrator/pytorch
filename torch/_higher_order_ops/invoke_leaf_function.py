@@ -716,24 +716,30 @@ class InvokeLeafFunctionAutogradOp(torch.autograd.Function):
             hook_real_callable = _LeafCallable(wrapped_hook_real)
             hook_fake_callable = _LeafCallable(wrapped_hook_fake)
 
-            grad_tensors = [
-                arg
-                for arg in flat_args
+            grad_positions = [
+                i
+                for i, arg in enumerate(flat_args)
                 if isinstance(arg, torch.Tensor) and arg.requires_grad
             ]
+            grad_tensors = [flat_args[i] for i in grad_positions]
             if grad_tensors:
 
                 @torch._dynamo.disable
                 def _multi_grad_callback(
                     grads: Sequence[torch.Tensor],
                 ) -> None:
-                    _, hook_spec = pytree.tree_flatten((tuple(grads), {}))
+                    # Hook signature matches the leaf function's: substitute
+                    # grads at requires_grad positions, pass non-tensor args
+                    # and non-requires-grad tensors through unchanged.
+                    hook_args = list(flat_args)
+                    for pos, g in zip(grad_positions, grads):
+                        hook_args[pos] = g
                     invoke_leaf_function(
                         hook_real_callable,
                         hook_fake_callable,
-                        hook_spec,
+                        input_spec,
                         "",
-                        *grads,
+                        *hook_args,
                     )
 
                 torch.autograd.graph.register_multi_grad_hook(

@@ -2502,7 +2502,7 @@ class TestLeafFunctionRegisterHook(TestCase):
         self.assertEqual(hook_grads[0], torch.full((3,), 2.0))
 
     def test_hook_with_non_tensor_args(self):
-        hook_grads = []
+        hook_calls = []
 
         @leaf_function
         def my_fn(x, tag, scale):
@@ -2513,15 +2513,51 @@ class TestLeafFunctionRegisterHook(TestCase):
             return (torch.empty_like(x),)
 
         @my_fn.register_multi_grad_hook
-        def my_fn_hook(x_grad):
-            hook_grads.append(x_grad.clone())
+        def my_fn_hook(x_grad, tag, scale):
+            hook_calls.append((x_grad.clone(), tag, scale))
 
         x = torch.randn(3, requires_grad=True)
         out = my_fn(x, "hello", 5.0)[0]
         out.sum().backward()
 
-        self.assertEqual(len(hook_grads), 1)
-        self.assertEqual(hook_grads[0], torch.full((3,), 5.0))
+        self.assertEqual(len(hook_calls), 1)
+        x_grad, tag, scale = hook_calls[0]
+        self.assertEqual(x_grad, torch.full((3,), 5.0))
+        self.assertEqual(tag, "hello")
+        self.assertEqual(scale, 5.0)
+
+    def test_hook_passes_through_interleaved_args(self):
+        # Hook signature mirrors the leaf function's: requires_grad tensors are
+        # replaced by their gradients; non-tensor args and non-requires-grad
+        # tensors are passed through unchanged at their original positions.
+        hook_calls = []
+
+        @leaf_function
+        def my_fn(tag, x, frozen, y):
+            return (x * 2 + y * 3 + frozen,)
+
+        @my_fn.register_fake
+        def my_fn_fake(tag, x, frozen, y):
+            return (torch.empty_like(x),)
+
+        @my_fn.register_multi_grad_hook
+        def my_fn_hook(tag, x_grad, frozen, y_grad):
+            hook_calls.append(
+                (tag, x_grad.clone(), frozen.clone(), y_grad.clone())
+            )
+
+        x = torch.randn(3, requires_grad=True)
+        y = torch.randn(3, requires_grad=True)
+        frozen = torch.full((3,), 7.0, requires_grad=False)
+        out = my_fn("layer3", x, frozen, y)[0]
+        out.sum().backward()
+
+        self.assertEqual(len(hook_calls), 1)
+        tag, x_grad, frozen_passthrough, y_grad = hook_calls[0]
+        self.assertEqual(tag, "layer3")
+        self.assertEqual(x_grad, torch.full((3,), 2.0))
+        self.assertEqual(frozen_passthrough, frozen)
+        self.assertEqual(y_grad, torch.full((3,), 3.0))
 
     def test_hook_multiple_tensor_inputs(self):
         hook_calls = []
@@ -2559,8 +2595,8 @@ class TestLeafFunctionRegisterHook(TestCase):
             return (torch.empty_like(x),)
 
         @my_fn.register_multi_grad_hook
-        def my_fn_hook(x_grad):
-            hook_calls.append(x_grad.clone())
+        def my_fn_hook(x_grad, y):
+            hook_calls.append((x_grad.clone(), y.clone()))
 
         x = torch.randn(3, requires_grad=True)
         y = torch.randn(3, requires_grad=False)
@@ -2568,7 +2604,9 @@ class TestLeafFunctionRegisterHook(TestCase):
         out.sum().backward()
 
         self.assertEqual(len(hook_calls), 1)
-        self.assertEqual(hook_calls[0], torch.full((3,), 5.0))
+        x_grad, y_passthrough = hook_calls[0]
+        self.assertEqual(x_grad, torch.full((3,), 5.0))
+        self.assertEqual(y_passthrough, y)
 
     def test_hook_no_requires_grad_no_fire(self):
         hook_count = [0]
@@ -2603,8 +2641,8 @@ class TestLeafFunctionRegisterHook(TestCase):
             return None
 
         @log_fn.register_multi_grad_hook
-        def log_fn_hook(x_grad):
-            hook_grads.append(x_grad.clone())
+        def log_fn_hook(x_grad, tag):
+            hook_grads.append((x_grad.clone(), tag))
 
         x = torch.randn(4, requires_grad=True)
         y = x * 2
@@ -2613,6 +2651,7 @@ class TestLeafFunctionRegisterHook(TestCase):
 
         self.assertTrue(fwd_called[0])
         self.assertEqual(len(hook_grads), 1)
+        self.assertEqual(hook_grads[0][1], "test")
 
     def test_hook_gradient_values_correct(self):
         hook_grads = []
