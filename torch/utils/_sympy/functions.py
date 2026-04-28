@@ -38,12 +38,14 @@ _Ts = TypeVarTuple("_Ts")
 _MAX_ADD_TERMS_FOR_POLY_GCD = 20
 
 
+def _is_wide_add(expr: sympy.Basic) -> bool:
+    return isinstance(expr, sympy.Add) and len(expr.args) > _MAX_ADD_TERMS_FOR_POLY_GCD
+
+
 def safe_gcd(a: sympy.Basic, b: sympy.Basic) -> sympy.Basic:
     """Like sympy.gcd but avoids polynomial-GCD on wide Add expressions,
     falling back to simple_floordiv_gcd instead."""
-    a_wide = isinstance(a, sympy.Add) and len(a.args) > _MAX_ADD_TERMS_FOR_POLY_GCD
-    b_wide = isinstance(b, sympy.Add) and len(b.args) > _MAX_ADD_TERMS_FOR_POLY_GCD
-    if a_wide or b_wide:
+    if _is_wide_add(a) or _is_wide_add(b):
         return simple_floordiv_gcd(a, b)
     return sympy.gcd(a, b)
 
@@ -362,10 +364,7 @@ class ModularIndexing(sympy.Function):
         # Guard on width: the per-term gcd calls are cheap (via safe_gcd),
         # but the result feeds into downstream sympy.expand() which blows up
         # on wide Add expressions (e.g. in sizevars.simplify).
-        if (
-            isinstance(base, sympy.Add)
-            and len(base.args) <= _MAX_ADD_TERMS_FOR_POLY_GCD
-        ):
+        if isinstance(base, sympy.Add) and not _is_wide_add(base):
             new_terms: list[sympy.Integer] = []
             all_positive: bool = True
             for term in base.args:
