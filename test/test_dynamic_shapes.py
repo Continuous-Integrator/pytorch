@@ -5613,5 +5613,170 @@ class TestMaybeFastEvalComparison(TestCase):
         self.assertEqual(eager_result, compiled_result)
 
 
+class TestTransferSymbolsFromForeignShapeEnv(TestCase):
+    """Tests for ShapeEnv.transfer_symbols_from_foreign_shape_env."""
+
+    def _make_source(self, name="t"):
+        from torch._dynamo.source import ConstantSource
+
+        return ConstantSource(name)
+
+    def _create_backed_symbols(self, shape_env, tensor, source_name="foreign"):
+        """Create backed symbolic sizes/strides/offset using _create_symbolic_sizes_strides_storage_offset."""
+        src = self._make_source(source_name)
+        return shape_env._create_symbolic_sizes_strides_storage_offset(
+            tensor.size(),
+            tensor.stride(),
+            tensor.storage_offset(),
+            [True] * tensor.dim(),
+            src,
+            symbolic_context=StatelessSymbolicContext(
+                dynamic_sizes=[DimDynamic.DUCK] * tensor.dim(),
+                dynamic_strides=[DimDynamic.INFER_STRIDE] * tensor.dim(),
+            ),
+        )
+
+    def test_backed_symbols_transferred_as_duck(self):
+        """Backed (guarding-hinted) symbols should become DUCK dims in the new env."""
+        foreign_env = ShapeEnv()
+        x = torch.randn(4, 8)
+        sizes, strides, offset = self._create_backed_symbols(foreign_env, x)
+        # Sanity: foreign sizes are symbolic
+        self.assertTrue(is_symbolic(sizes[0]))
+        self.assertTrue(is_symbolic(sizes[1]))
+
+        local_env = ShapeEnv()
+        new_sizes, new_strides, new_offset = (
+            local_env.transfer_symbols_from_foreign_shape_env(
+                sizes,
+                strides,
+                offset,
+                source=self._make_source("local"),
+            )
+        )
+        # New symbols should exist in local_env, not foreign_env
+        for s in new_sizes:
+            self.assertTrue(is_symbolic(s))
+            self.assertIs(s.node.shape_env, local_env)
+        # Hints should match the original concrete values
+        self.assertEqual(guarding_hint_or_throw(new_sizes[0].node), 4)
+        self.assertEqual(guarding_hint_or_throw(new_sizes[1].node), 8)
+
+    def test_static_dims_stay_static(self):
+        """Non-symbolic (plain int) sizes should remain static ints."""
+        local_env = ShapeEnv()
+
+        sizes = (3, 5)
+        strides = (5, 1)
+        storage_offset = 0
+
+        new_sizes, new_strides, new_offset = (
+            local_env.transfer_symbols_from_foreign_shape_env(
+                sizes,
+                strides,
+                storage_offset,
+                source=self._make_source("local"),
+            )
+        )
+        # Static dims should stay as plain ints
+        for s in new_sizes:
+            self.assertFalse(is_symbolic(s))
+        self.assertEqual(new_sizes, (3, 5))
+
+    def test_unbacked_symbols_transferred(self):
+        """Unbacked symbols should become UNBACKED dims in the new env."""
+        foreign_env = ShapeEnv()
+        u0 = foreign_env.create_unbacked_symint()
+        u1 = foreign_env.create_unbacked_symint()
+
+        # Use plain int strides — unbacked symbols as strides would need
+        # valid positive hints, and INFER_STRIDE handles stride creation.
+        sizes = (u0, u1)
+        strides = (1, 1)
+        storage_offset = 0
+
+        local_env = ShapeEnv()
+        new_sizes, new_strides, new_offset = (
+            local_env.transfer_symbols_from_foreign_shape_env(
+                sizes,
+                strides,
+                storage_offset,
+                source=self._make_source("local"),
+            )
+        )
+        # New symbols should be unbacked in local_env
+        for s in new_sizes:
+            self.assertTrue(is_symbolic(s))
+            self.assertIs(s.node.shape_env, local_env)
+            self.assertFalse(local_env.has_guarding_hint(s.node.expr))
+
+    def test_unbacked_hint_overrides_transferred(self):
+        """Hint overrides on unbacked symbols in the foreign env should be
+        transferred to the new env."""
+        foreign_env = ShapeEnv()
+        u0 = foreign_env.create_unbacked_symint()
+        # Set a hint override on u0 in the foreign env
+        foreign_env.var_to_hint_override[u0.node.expr] = 42
+
+        sizes = (u0,)
+        strides = (1,)
+        storage_offset = 0
+
+        local_env = ShapeEnv()
+        new_sizes, new_strides, new_offset = (
+            local_env.transfer_symbols_from_foreign_shape_env(
+                sizes,
+                strides,
+                storage_offset,
+                source=self._make_source("local"),
+            )
+        )
+        # The hint override should be transferred to local_env
+        new_sym = new_sizes[0]
+        self.assertTrue(is_symbolic(new_sym))
+        self.assertIn(new_sym.node.expr, local_env.var_to_hint_override)
+        self.assertEqual(local_env.var_to_hint_override[new_sym.node.expr], 42)
+
+    def test_mixed_static_backed_unbacked(self):
+        """A mix of static, backed, and unbacked dims should all be handled correctly."""
+        foreign_env = ShapeEnv()
+        # Create a backed symbol
+        x = torch.randn(4)
+        backed_sizes, _, _ = self._create_backed_symbols(foreign_env, x)
+        backed_sym = backed_sizes[0]  # backed, hint=4
+
+        # Create an unbacked symbol
+        unbacked_sym = foreign_env.create_unbacked_symint()
+        foreign_env.var_to_hint_override[unbacked_sym.node.expr] = 99
+
+        sizes = (7, backed_sym, unbacked_sym)  # static, backed, unbacked
+        strides = (1, 1, 1)
+        storage_offset = 0
+
+        local_env = ShapeEnv()
+        new_sizes, new_strides, new_offset = (
+            local_env.transfer_symbols_from_foreign_shape_env(
+                sizes,
+                strides,
+                storage_offset,
+                source=self._make_source("local"),
+            )
+        )
+        # dim 0: static
+        self.assertFalse(is_symbolic(new_sizes[0]))
+        self.assertEqual(new_sizes[0], 7)
+
+        # dim 1: backed/duck
+        self.assertTrue(is_symbolic(new_sizes[1]))
+        self.assertIs(new_sizes[1].node.shape_env, local_env)
+        self.assertEqual(guarding_hint_or_throw(new_sizes[1].node), 4)
+
+        # dim 2: unbacked with hint override
+        self.assertTrue(is_symbolic(new_sizes[2]))
+        self.assertIs(new_sizes[2].node.shape_env, local_env)
+        self.assertFalse(local_env.has_guarding_hint(new_sizes[2].node.expr))
+        self.assertEqual(local_env.var_to_hint_override[new_sizes[2].node.expr], 99)
+
+
 if __name__ == "__main__":
     run_tests()

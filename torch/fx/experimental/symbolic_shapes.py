@@ -4697,42 +4697,52 @@ class ShapeEnv:
         strides: Sequence[IntLikeType],
         storage_offset: IntLikeType,
         source: Source,
-        *,
-        symbolic_context: SymbolicContext | None = None,
-        hint_overrides: dict[int, int] | None = None,
     ) -> tuple[
         tuple[IntLikeType, ...],
         tuple[IntLikeType, ...],
         IntLikeType,
     ]:
         """Transfer symbolic sizes/strides/offset from a foreign ShapeEnv
-        into this one.  Each dimension is classified as STATIC, DYNAMIC,
+        into this one.  Each dimension is classified as STATIC, DUCK,
         or UNBACKED based on whether the foreign symbol has a guarding hint,
-        and new symbols are created in this ShapeEnv accordingly."""
+        and new symbols are created in this ShapeEnv accordingly.
+        Hint overrides are read from the foreign ShapeEnv and transferred to the
+        new one."""
 
         def _classify(s: IntLikeType) -> DimDynamic:
             if not is_symbolic(s):
                 return DimDynamic.STATIC
             if not has_guarding_hint(s):
                 return DimDynamic.UNBACKED
-            return DimDynamic.DYNAMIC
+            return DimDynamic.DUCK
 
         def _hint(s: IntLikeType) -> int:
             """Extract concrete hint.  For unbacked symbols returns a dummy
             value — create_symbol with UNBACKED ignores it."""
             if is_symbolic(s):
                 if not has_guarding_hint(s):
-                    return 2  # dummy, ignored by UNBACKED path
+                    return -1  # dummy, ignored by UNBACKED path
                 return guarding_hint_or_throw(s.node)  # type: ignore[union-attr]
             return s  # type: ignore[return-value]
 
-        if symbolic_context is None:
-            dynamic_sizes = [_classify(sz) for sz in sizes]
-            dynamic_strides = [DimDynamic.INFER_STRIDE] * len(sizes)
-            symbolic_context = StatelessSymbolicContext(
-                dynamic_sizes=dynamic_sizes,
-                dynamic_strides=dynamic_strides,
-            )
+        dynamic_sizes = [_classify(sz) for sz in sizes]
+
+        # For unbacked dims, read the optimization hint from the foreign
+        # ShapeEnv and set it as a hint override so the new unbacked symbol
+        # gets a useful hint value.
+        hint_overrides: dict[int, int] = {}
+        for i, sz in enumerate(sizes):
+            if dynamic_sizes[i] is DimDynamic.UNBACKED:
+                foreign_env = sz.node.shape_env  # type: ignore[union-attr]
+                if foreign_env is not None:
+                    opt_hint = foreign_env.var_to_hint_override.get(sz.node.expr)  # type: ignore[union-attr]
+                    if opt_hint is not None:
+                        hint_overrides[i] = opt_hint
+        dynamic_strides = [DimDynamic.INFER_STRIDE] * len(sizes)
+        symbolic_context = StatelessSymbolicContext(
+            dynamic_sizes=dynamic_sizes,
+            dynamic_strides=dynamic_strides,
+        )
 
         ex_size = tuple(_hint(sz) for sz in sizes)
         ex_stride = tuple(_hint(sd) for sd in strides)
@@ -4745,7 +4755,7 @@ class ShapeEnv:
             [False] * len(sizes),  # unused when symbolic_context is provided
             source,
             symbolic_context=symbolic_context,
-            hint_overrides=hint_overrides,
+            hint_overrides=hint_overrides or None,
         )
 
     @record_shapeenv_event()
