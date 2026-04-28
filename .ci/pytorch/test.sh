@@ -2198,6 +2198,13 @@ elif [[ "${TEST_CONFIG}" == *operator_microbenchmark* ]]; then
   test_operator_microbenchmark
 elif [[ "${TEST_CONFIG}" == *attention_microbenchmark* ]]; then
   test_attention_microbenchmark
+elif [[ "${TEST_CONFIG}" == *repro_181685* ]]; then
+  for i in 1 2 3 4 5 6 7 8 9 10; do
+    echo "=== repro-181685 attempt ${i}/10 ==="
+    python test/run_test.py --inductor --include test_ops \
+      -k 'test_cow_input_nn_functional_linear_cross_entropy_cuda_float32' \
+      --verbose || true
+  done
 elif [[ "${TEST_CONFIG}" == *inductor_distributed* ]]; then
   setup_torch_trace
   test_inductor_distributed

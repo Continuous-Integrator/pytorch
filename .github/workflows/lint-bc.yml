@@ -2,12 +2,8 @@ name: BC Lint
 
 on:
   pull_request:
-    types:
-      - opened
-      - synchronize
-      - reopened
-    branches-ignore:
-      - nightly
+    paths:
+      - .github/workflows/lint-bc.yml
   push:
     tags:
       # TODO: Remove me later
