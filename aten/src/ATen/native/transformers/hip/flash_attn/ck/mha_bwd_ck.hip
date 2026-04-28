@@ -127,7 +127,7 @@ aiter::mha_bwd_args get_ck_fmha_bwd_args(const mask_info &mask,
     return aiter::mha_bwd_args{
         // aiter args
         static_cast<int>(mask.type),
-        true,   // use_asm_v3
+        hdim <= 192,   // use_asm_v3: ASM v3 only supports head dim <= 192
         true,   // v3_atomic_fp32
         1,      // v3_bf16_cvt
         false,  // v3_api_check
@@ -248,7 +248,7 @@ mha_bwd_ck(const at::Tensor &dout,                   // batch_size x seqlen_q x 
     if (is_causal) { window_size_right = 0; }
 
     bool is_dropout = p_dropout > 0.0;
-    auto stream = at::cuda::getCurrentHIPStream().stream();
+    auto stream = at::cuda::getCurrentCUDAStream().stream();
 
     auto q_dtype = q.dtype();
     TORCH_CHECK(q_dtype == at::kHalf || q_dtype == at::kBFloat16,
@@ -352,7 +352,7 @@ mha_bwd_ck(const at::Tensor &dout,                   // batch_size x seqlen_q x 
     }
 
     // Cast to char to avoid compiler warning about narrowing
-    at::hip::HIPGuardMasqueradingAsCUDA device_guard{(char)q.get_device()};
+    at::cuda::CUDAGuard device_guard{(char)q.get_device()};
 
     auto opts = q.options();
     auto softmax_d = at::empty({batch_size, num_heads, seqlen_q}, opts.dtype(at::kFloat));
@@ -375,11 +375,16 @@ mha_bwd_ck(const at::Tensor &dout,                   // batch_size x seqlen_q x 
         dv_expanded = dv;
     }
 
-    uint64_t drop_seed = 1, drop_offset = 0;
-    drop_seed = *philox_seed.data_ptr<int64_t>();
-    drop_offset = *philox_offset.data_ptr<int64_t>();
-    auto drop_seed_offset = std::make_pair(&drop_seed, &drop_offset);
+    auto gen = at::get_generator_or_default<at::CUDAGeneratorImpl>(
+            std::nullopt, at::cuda::detail::getDefaultCUDAGenerator());
 
+    uint64_t* drop_seed, drop_offset;
+    int64_t counter_offset = batch_size * num_heads * ck_tile::get_warp_size();
+    std::pair<uint64_t*, uint64_t*> drop_seed_offset = {nullptr,nullptr};
+    if(is_dropout) {
+        drop_seed_offset.first = philox_seed.data_ptr<uint64_t>();
+        drop_seed_offset.second = philox_offset.data_ptr<uint64_t>();
+    }
 
     if (seqlen_q > 0) {
         ck_tile::stream_config stream_config{stream};

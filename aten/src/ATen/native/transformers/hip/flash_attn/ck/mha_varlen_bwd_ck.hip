@@ -258,7 +258,7 @@ mha_varlen_bwd_ck(const at::Tensor &dout,                   // total_q x num_hea
     if (is_causal) { window_size_right = 0; }
 
     bool is_dropout = p_dropout > 0.0;
-    auto stream = at::hip::getCurrentHIPStreamMasqueradingAsCUDA().stream();
+    auto stream = at::cuda::getCurrentCUDAStream().stream();
 
     auto q_dtype = q.dtype();
     TORCH_CHECK(q_dtype == at::kHalf || q_dtype == at::kBFloat16,
@@ -369,7 +369,7 @@ mha_varlen_bwd_ck(const at::Tensor &dout,                   // total_q x num_hea
     }
 
     // Cast to char to avoid compiler warning about narrowing
-    at::hip::HIPGuardMasqueradingAsCUDA device_guard{(char)q.get_device()};
+    at::cuda::CUDAGuard device_guard{(char)q.get_device()};
 
     auto opts = q.options();
     auto softmax_d = at::empty({batch_size, num_heads, max_seqlen_q}, opts.dtype(at::kFloat));
@@ -401,8 +401,10 @@ mha_varlen_bwd_ck(const at::Tensor &dout,                   // total_q x num_hea
 
     uint64_t drop_seed = 1, drop_offset = 0;
 
-    drop_seed = *philox_seed.data_ptr<uint64_t>();
-    drop_offset = *philox_offset.data_ptr<uint64_t>();
+    if (is_dropout) {
+        drop_seed = *reinterpret_cast<uint64_t*>(philox_seed.data_ptr());
+        drop_offset = *reinterpret_cast<uint64_t*>(philox_offset.data_ptr());
+    }
     auto drop_seed_offset = std::make_pair(&drop_seed, &drop_offset);
 
     if (max_seqlen_q > 0) {

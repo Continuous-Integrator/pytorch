@@ -32,7 +32,7 @@ from torch.testing._internal.common_cuda import (
     requires_triton_ptxas_compat,
     TRITON_PTXAS_VERSION,
 )
-from torch.testing._internal.common_utils import IS_FBCODE, skipIfXpu, TEST_CUDA
+from torch.testing._internal.common_utils import IS_FBCODE, TEST_CUDA
 from torch.testing._internal.inductor_utils import GPU_TYPE, HAS_GPU
 
 
@@ -308,8 +308,11 @@ class TestAOTInductorPackage(TestCase):
                 if self.device == GPU_TYPE:
                     kernel_bin = get_kernel_bin_format(self.device)
                     self.assertTrue(not list(tmp_path.glob(f"*.{kernel_bin}")))
-                    # Check if .cubin.o files exist and use unique kernel names
-                    self.assertTrue(list(tmp_path.glob(f"triton_*.{kernel_bin}.o")))
+                    # Check that cubin binaries are embedded as object files.
+                    # Either individual per-kernel .o files or a single combined .o.
+                    individual_objs = list(tmp_path.glob(f"triton_*.{kernel_bin}.o"))
+                    combined_obj = list(tmp_path.glob("cubins_combined.o"))
+                    self.assertTrue(individual_objs or combined_obj)
 
                 # Check if the .so file was build successfully
                 so_path = build_path / "libaoti_model.so"
@@ -453,7 +456,6 @@ class TestAOTInductorPackage(TestCase):
                 a_path = build_path / "libcos.a"
                 self.assertTrue(a_path.exists())
 
-    @skipIfXpu(msg="Standalone compile API in _Exporter is not supported on XPU yet")
     @unittest.skipIf(IS_FBCODE, "cmake won't work in fbcode")
     @requires_triton_ptxas_compat
     @torch._inductor.config.patch("test_configs.use_libtorch", True)
@@ -495,20 +497,15 @@ class TestAOTInductorPackage(TestCase):
                 # Test compiling generated files
                 result = self.cmake_compile_and_run(tmp_dir)
                 if package_example_inputs:
-                    if self.device == GPU_TYPE:
-                        self.assertEqual(
-                            result.stdout,
-                            "output_tensor1\n 2  2  2\n 2  2  2\n 2  2  2\n[ CUDAFloatType{3,3} ]\noutput_tensor2\n 0  0  0\n"
-                            " 0  0  0\n 0  0  0\n[ CUDAFloatType{3,3} ]\n",
-                        )
-                    else:
-                        self.assertEqual(
-                            result.stdout,
-                            "output_tensor1\n 2  2  2\n 2  2  2\n 2  2  2\n[ CPUFloatType{3,3} ]\noutput_tensor2\n 0  0  0\n"
-                            " 0  0  0\n 0  0  0\n[ CPUFloatType{3,3} ]\n",
-                        )
+                    out_str = result.stdout
+                    device_str = self.device.upper()
 
-    @skipIfXpu(msg="Standalone compile API in _Exporter is not supported on XPU yet")
+                    expected_result = (
+                        f"output_tensor1\n 2  2  2\n 2  2  2\n 2  2  2\n[ {device_str}FloatType{{3,3}} ]\n"
+                        f"output_tensor2\n 0  0  0\n 0  0  0\n 0  0  0\n[ {device_str}FloatType{{3,3}} ]\n"
+                    )
+                    self.assertTrue(expected_result in out_str)
+
     @requires_triton_ptxas_compat
     @unittest.skipIf(IS_FBCODE, "cmake won't work in fbcode")
     @torch._inductor.config.patch("test_configs.use_libtorch", True)

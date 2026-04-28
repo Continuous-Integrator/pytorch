@@ -20,7 +20,10 @@
   _(ComplexHalf, 8)                    \
   _(ComplexFloat, 9)                   \
   _(Bool, 11)                          \
-  _(BFloat16, 15)
+  _(BFloat16, 15)                      \
+  _(UInt16, 27)                        \
+  _(UInt32, 28)                        \
+  _(UInt64, 29)
 
 namespace c10 {
 namespace metal {
@@ -34,6 +37,20 @@ using array = ::metal::array<T, N>;
 template <typename T, unsigned N>
 using array = std::array<T, N>;
 #endif
+
+// Integer ceiling division: ceil(a / b). Usable from both host code and
+// Metal shaders (where the overload is selected by ADL via `using namespace
+// c10::metal;` in shader sources).
+template <typename T>
+inline T ceil_div(T a, T b) {
+  return (a + b - 1) / b;
+}
+
+// Round `a` up to the next multiple of `b`: ceil(a / b) * b.
+template <typename T>
+inline T round_up(T a, T b) {
+  return ceil_div(a, b) * b;
+}
 
 enum class ScalarType {
 #define _DEFINE_ENUM_VAL_(_v, _n) _v = _n,
