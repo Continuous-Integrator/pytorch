@@ -340,7 +340,7 @@ def vt_sequence_getitem(
 
     if type_implements_sq_item(obj_type):
         # Negative index wrapping (abstract.c L2175-2183)
-        if index.is_python_constant():
+        if isinstance(index, ConstantVariable):
             index_val = index.as_python_constant()
             if isinstance(index_val, int) and index_val < 0:
                 if type_implements_sq_length(obj_type):
