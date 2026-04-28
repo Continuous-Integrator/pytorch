@@ -1921,18 +1921,8 @@ class TensorVariable(VariableTracker):
             #     a = glb_list[0] * 3
             #     b = glb_dict['tensor'] + 1
             #     return (a + b).sum()
-            # Get the original tensor's node and save its current users.
-            # When inside a subgraph (e.g., checkpoint), the tensor's proxy
-            # may be in a parent graph. Lifting it ensures we get the
-            # corresponding placeholder in the current subgraph so that
-            # node reordering and user replacement operate within the
-            # same graph. When not in a subgraph, this is a no-op.
-            tensor_proxy = self.as_proxy()
-            current_tracer = tx.output.current_tracer
-            local_proxy = current_tracer.maybe_lift_tracked_freevar_to_input(
-                tensor_proxy
-            )
-            tensor_node = local_proxy.node
+            # Get the original tensor's node and save its current users
+            tensor_node = self.as_proxy().node
 
             users_to_replace = list(tensor_node.users.keys())
 
@@ -1974,16 +1964,9 @@ class TensorVariable(VariableTracker):
             for user in users_to_replace:
                 user.replace_input_with(tensor_node, tensor_prime_node)
 
+            # Update tensor to point to the tensor_prime
             assert isinstance(result, TensorVariable)
-            if local_proxy is not tensor_proxy:
-                # Inside a subgraph, don't update self.proxy — that would
-                # leave a stale subgraph proxy after the subgraph exits.
-                # Instead, update the tracer's lifted_freevars mapping so
-                # future references to this tensor within the subgraph
-                # resolve to the hooked version.
-                current_tracer.lifted_freevars[tensor_proxy] = result.as_proxy()
-            else:
-                self.proxy = result.as_proxy()
+            self.proxy = result.as_proxy()
             # TensorVariable doesn't actually store the grad_fn
             # so this is fine.
             self.synchronize_attributes(tx)
