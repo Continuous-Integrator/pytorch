@@ -2198,15 +2198,22 @@ elif [[ "${TEST_CONFIG}" == *operator_microbenchmark* ]]; then
   test_operator_microbenchmark
 elif [[ "${TEST_CONFIG}" == *attention_microbenchmark* ]]; then
   test_attention_microbenchmark
-elif [[ "${TEST_CONFIG}" == *repro_181685* ]]; then
-  # Replicate the original failing job: full inductor shard 1/2 of test_ops.
-  # The bug only triggers after ~75 prior tests pollute the CUDA context.
-  for i in 1 2 3; do
-    echo "=== repro-181685 attempt ${i}/3 ==="
-    python test/run_test.py --inductor \
-      --include test_modules test_ops test_ops_gradients test_torch \
-      --shard 1 2 --verbose || true
-  done
+elif [[ "${TEST_CONFIG}" == *repro_181685_q* ]]; then
+  # Bisection: split the prior test list (extracted from the original
+  # failing CI run) into 4 chronological quarters. Run each quarter +
+  # the failing test on a parallel runner to identify which subset of
+  # prior tests is necessary to reproduce the bug.
+  case "${TEST_CONFIG}" in
+    *repro_181685_q1*) Q_FILE=.ci/repro_181685/quarter_1.txt ;;
+    *repro_181685_q2*) Q_FILE=.ci/repro_181685/quarter_2.txt ;;
+    *repro_181685_q3*) Q_FILE=.ci/repro_181685/quarter_3.txt ;;
+    *repro_181685_q4*) Q_FILE=.ci/repro_181685/quarter_4.txt ;;
+    *) echo "unknown TEST_CONFIG: ${TEST_CONFIG}" >&2; exit 1 ;;
+  esac
+  echo "Quarter file: ${Q_FILE} ($(wc -l < "${Q_FILE}") prior tests)"
+  K_EXPR=$(python3 -c 'import sys; print(" or ".join(open(sys.argv[1]).read().split()))' "${Q_FILE}")
+  K_EXPR="${K_EXPR} or test_cow_input_nn_functional_linear_cross_entropy_cuda_float32"
+  python test/run_test.py --inductor --include test_ops -k "${K_EXPR}" --verbose || true
 elif [[ "${TEST_CONFIG}" == *inductor_distributed* ]]; then
   setup_torch_trace
   test_inductor_distributed
