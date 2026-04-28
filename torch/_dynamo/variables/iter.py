@@ -504,23 +504,24 @@ class MapVariable(IteratorVariable):
                 if not self.strict:
                     raise
 
-                # In strict mode, if any iterable is exhausted, all must be exhausted.
-                for j in range(i + 1, tuplesize):
-                    it_j = self.iterable.items[j]
-                    if is_iterator_exhausted(tx, it_j):
-                        continue
-                    break
-                else:
-                    # all iterables exhausted, raise StopIteration
-                    raise
+                handle_observed_exception(tx)  # StopIteration
 
-                # remove StopIteration and Raise ValueError
-                handle_observed_exception(tx)
-                raise_observed_exception(
-                    ValueError,
-                    tx,
-                    args=["map() argument lengths differ in strict mode"],
-                )
+                if i:
+                    raise_value_error(
+                        tx,
+                        f"map() argument {i + 1} shorter than argument {i}",
+                    )
+
+                # In strict mode, if any iterable is exhausted, all must be exhausted.
+                for j in range(1, tuplesize):
+                    it_j = self.iterable.items[j]
+                    if not is_iterator_exhausted(tx, it_j):
+                        raise_value_error(
+                            tx,
+                            f"map() argument {j + 1} is longer than argument {j}"
+                        )
+
+                raise_observed_exception(StopIteration, tx)
 
         # type: ignore[attr-defined]
         return self.fn.call_function(tx, items, {})
