@@ -62,6 +62,7 @@ from .variables import (
     DictBuiltinVariable,
     FunctionalCallVariable,
     FunctorchHigherOrderVariable,
+    GetAttrBuiltinVariable,
     InspectSignatureVariable,
     IterBuiltinVariable,
     ListBuiltinVariable,
@@ -173,10 +174,6 @@ manual_torch_name_rule_map: dict[
     "torch.distributed.get_world_size": TorchInGraphFunctionVariable,
     "torch.distributed.tensor._api.DTensor#from_local": TorchInGraphFunctionVariable,
     "torch.distributed.device_mesh.DeviceMesh#__init__": SkipFunctionVariable,
-    # _create_sub_mesh constructs an opaque DeviceMesh which always graph
-    # breaks.  Skip it as a top-level frame so the STORE_ATTR after the
-    # constructor runs at runtime instead of in a resume frame.
-    "torch/distributed/device_mesh.py#_create_sub_mesh": SkipFunctionVariable,
     "torch.distributed.distributed_c10d._get_group_size_by_name": TorchInGraphFunctionVariable,
     "torch.distributed.distributed_c10d._resolve_group_name_by_ranks_and_tag": TorchInGraphFunctionVariable,
     "torch.distributed.distributed_c10d._get_group_tag": TorchInGraphFunctionVariable,
@@ -196,6 +193,7 @@ manual_torch_name_rule_map: dict[
     "torch._C._group_tensors_by_device_and_dtype": TorchInGraphFunctionVariable,
     "torch.to_dlpack": SkipFunctionVariable,
     "torch._check": TorchInGraphFunctionVariable,
+    "torch._dynamo.decorators.override_optimization_hint": TorchInGraphFunctionVariable,
     # We graph break on RNG state setters or getters like
     # `torch.get_rng_state`, `torch.set_rng_state`, and
     # `torch.Generator.manual_seed`. These functions are not aten
@@ -345,6 +343,13 @@ manual_torch_name_rule_map: dict[
     "torch._C._functorch.unwrap_if_dead": TorchInGraphFunctionVariable,
     "torch._functorch.predispatch._vmap_increment_nesting": TorchInGraphFunctionVariable,
     "torch._functorch.predispatch._vmap_decrement_nesting": TorchInGraphFunctionVariable,
+    "torch._functorch.predispatch._jvp_increment_nesting": TorchInGraphFunctionVariable,
+    "torch._functorch.predispatch._jvp_decrement_nesting": TorchInGraphFunctionVariable,
+    "torch._functorch.predispatch._unwrap_for_grad": TorchInGraphFunctionVariable,
+    "torch._functorch.predispatch._make_dual": TorchInGraphFunctionVariable,
+    "torch._functorch.predispatch._unpack_dual": TorchInGraphFunctionVariable,
+    "torch._functorch.predispatch._enter_dual_level": TorchInGraphFunctionVariable,
+    "torch._functorch.predispatch._exit_dual_level": TorchInGraphFunctionVariable,
     # everything else
     "torch._functorch.pyfunctorch.coerce_cinterpreter": TorchInGraphFunctionVariable,
     "torch._higher_order_ops.triton_kernel_wrap.do_prune_configs": UserFunctionVariable,
@@ -358,7 +363,6 @@ manual_torch_name_rule_map: dict[
     "torch._dynamo.nonstrict_trace": UserFunctionVariable,
     "torch._dynamo.bytecode_debugger.breakpoint": UserFunctionVariable,
     "torch._dynamo.patch_dynamo_config": UserFunctionVariable,
-    "torch._dynamo.disable_nested_graph_breaks": UserFunctionVariable,
     "torch._dynamo.error_on_graph_break": UserFunctionVariable,
     "torch._dynamo.override_cudagraphs": UserFunctionVariable,
     "torch.fx.experimental.symbolic_shapes.guard_size_oblivious": TorchInGraphFunctionVariable,
@@ -2420,6 +2424,13 @@ torch_non_c_binding_in_graph_functions = dict.fromkeys(
         "torch._functorch.predispatch._vmap_decrement_nesting",
         "torch._functorch.predispatch._add_batch_dim",
         "torch._functorch.predispatch._remove_batch_dim",
+        "torch._functorch.predispatch._jvp_increment_nesting",
+        "torch._functorch.predispatch._jvp_decrement_nesting",
+        "torch._functorch.predispatch._unwrap_for_grad",
+        "torch._functorch.predispatch._make_dual",
+        "torch._functorch.predispatch._unpack_dual",
+        "torch._functorch.predispatch._enter_dual_level",
+        "torch._functorch.predispatch._exit_dual_level",
         "torch._guards.compile_context",
         "torch._guards.detect_fake_mode",
         "torch._guards.tracing",
@@ -3344,6 +3355,7 @@ def is_numpy_type_info(obj: Any) -> bool:
 BUILTIN_SKIPLIST = (
     abc,
     copy,
+    importlib,
     random,
     linecache,
 )
@@ -4005,6 +4017,7 @@ Main entry point for looking up the trace rule (the Dynamo variable) for a given
 
 BUILTIN_CALLABLES = {
     dict: DictBuiltinVariable,
+    getattr: GetAttrBuiltinVariable,
     iter: IterBuiltinVariable,
     list: ListBuiltinVariable,
 }

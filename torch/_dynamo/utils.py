@@ -3095,7 +3095,6 @@ def iter_contains(
     check_tensor_identity: bool = False,
 ) -> Any:
     from .variables import ConstantVariable
-    from .variables.constant import CONSTANT_VARIABLE_FALSE, CONSTANT_VARIABLE_TRUE
 
     if search.is_python_constant():
         found_const = any(
@@ -3116,7 +3115,7 @@ def iter_contains(
         if must_check_tensor_id:
             if x.is_tensor():
                 if search is _get_fake_tensor(x):  # Object equivalence
-                    return CONSTANT_VARIABLE_TRUE
+                    return ConstantVariable.create(True)
         else:
             from torch._dynamo.variables.builder import SourcelessBuilder
 
@@ -3130,7 +3129,7 @@ def iter_contains(
                     tx, [check, found], {}
                 )
     if found is None:
-        found = CONSTANT_VARIABLE_FALSE
+        found = ConstantVariable.create(False)
     return found
 
 
@@ -3186,7 +3185,7 @@ def dict_keys_repr(const_keys: Any, *, local: Any) -> str:
 GLOBAL_KEY_PREFIX = "__dict_key"
 
 
-from torch._subclasses import UnsupportedFakeTensorException  # noqa: F401
+from torch._subclasses import UnsupportedFakeTensorException
 
 
 def get_safe_global_name(tx: InstructionTranslatorBase, root: str, obj: Any) -> str:
@@ -5347,11 +5346,30 @@ def get_traced_code() -> list[CodeType] | None:
     return TracingContext.get_traced_code()
 
 
+def is_pybind11_enum_member(value: Any) -> bool:
+    """Check if value is a pybind11 enum member (singleton with stable hash).
+
+    Pybind11 enums have __members__ on their type and each member is a singleton.
+    Unlike Python's enum.Enum, pybind11 injects __hash__ and __eq__ directly
+    into the type's __dict__, which trips raise_on_overridden_hash. But these
+    are safe: members are singletons with hash == value, same as Python enums.
+    """
+    t = type(value)
+    members = getattr(t, "__members__", None)
+    if members is None:
+        return False
+    name = getattr(value, "name", None)
+    return name is not None and members.get(name) is value
+
+
 def raise_on_overridden_hash(obj: Any, vt: VariableTracker) -> None:
     from . import graph_break_hints
     from .exc import unimplemented
 
     is_overridden = type(obj).__dict__.get("__hash__", False)
+
+    if is_overridden and is_pybind11_enum_member(obj):
+        return
 
     if is_overridden:
         unimplemented(
