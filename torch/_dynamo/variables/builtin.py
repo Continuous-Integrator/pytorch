@@ -115,6 +115,7 @@ from .object_protocol import (
 )
 from .sets import FrozensetVariable, OrderedSetClassVariable, SetVariable
 from .tensor import (
+    DataPtrVariable,
     FakeItemVariable,
     supported_comparison_ops,
     SymNodeVariable,
@@ -846,6 +847,20 @@ class BuiltinVariable(BaseBuiltinVariable):
                     ]
                 )
 
+                if op in (operator.eq, operator.ne):
+
+                    def compare_by_method(
+                        tx: "InstructionTranslator",
+                        a: VariableTracker,
+                        b: VariableTracker,
+                    ) -> VariableTracker:
+                        method_name = "__eq__" if op is operator.eq else "__ne__"
+                        return a.call_method(tx, method_name, [b], {})
+
+                    result.append(
+                        ((DataPtrVariable, VariableTracker), compare_by_method)
+                    )
+
                 def handler(
                     tx: "InstructionTranslator", a: VariableTracker, b: VariableTracker
                 ) -> VariableTracker:
@@ -1060,14 +1075,33 @@ class BuiltinVariable(BaseBuiltinVariable):
         ],
         VariableTracker | None,
     ]:
-        from .lazy import LazyVariableTracker
+        from .lazy import LazyConstantVariable, LazyVariableTracker
 
         obj = BuiltinVariable(fn)
         handlers: list[_HandlerCallback] = []
 
-        if any(issubclass(t, LazyVariableTracker) for t in arg_types):
+        # Check for non-LazyConstantVariable lazy types that need realization.
+        # LazyConstantVariable is mapped to ConstantVariable in call_function's
+        # get_handler_type_for_dispatch, so it won't appear in arg_types here.
+        # But regular LazyVariableTracker still needs to be realized before handling.
+        if any(
+            issubclass(t, LazyVariableTracker)
+            and not issubclass(t, LazyConstantVariable)
+            for t in arg_types
+        ):
+            # Realize lazy args except LazyConstantVariable.
+            # Only realize top-level args, not nested VariableTracker fields.
+            def realize_arg(arg: VariableTracker) -> VariableTracker:
+                if isinstance(arg, LazyVariableTracker) and not isinstance(
+                    arg, LazyConstantVariable
+                ):
+                    return arg.realize()
+                return arg
+
             return lambda tx, args, kwargs: obj.call_function(
-                tx, [v.realize() for v in args], kwargs
+                tx,
+                [realize_arg(a) for a in args],
+                kwargs,
             )
 
         if inspect.isclass(fn) and (
@@ -1420,11 +1454,15 @@ class BuiltinVariable(BaseBuiltinVariable):
 
                 return wrap_fx_proxy_cls(variables.NumpyNdarrayVariable, tx, proxy)
 
-            if fn is operator.eq and len(args) == 2 and args[0].is_tensor():
-                # Dynamo expects `__eq__` str while operator.eq gives just `eq`
-                # TODO - supporting all comparison operators could also work but
-                # it fails lots of tests because graph str changes.
-                return args[0].call_method(tx, "__eq__", list(args[1:]), kwargs)
+            if (
+                fn in (operator.eq, operator.ne)
+                and len(args) == 2
+                and args[0].is_tensor()
+            ):
+                # Dynamo expects `__eq__` / `__ne__` strings while operator.{eq,ne}
+                # provides call_function dispatch first.
+                method_name = "__eq__" if fn is operator.eq else "__ne__"
+                return args[0].call_method(tx, method_name, list(args[1:]), kwargs)
             proxy = tx.output.create_proxy(
                 "call_function",
                 fn,
@@ -1491,17 +1529,20 @@ class BuiltinVariable(BaseBuiltinVariable):
         args: Sequence[VariableTracker],
         kwargs: dict[str, VariableTracker],
     ) -> VariableTracker:
+        # Get handler types for dispatch. This may install guards for lazy variables.
+        handler_types = [x.get_handler_type_for_dispatch() for x in args]
+
         key: tuple[object, ...]
         if kwargs:
             kwargs = {k: v.realize() for k, v in kwargs.items()}
-            key = (self.fn, *(type(x) for x in args), True)
+            key = (self.fn, *handler_types, True)
         else:
-            key = (self.fn, *(type(x) for x in args))
+            key = (self.fn, *handler_types)
 
         handler = self.call_function_handler_cache.get(key)
         if not handler:
             self.call_function_handler_cache[key] = handler = self._make_handler(  # type: ignore[assignment]
-                self.fn, [type(x) for x in args], bool(kwargs)
+                self.fn, handler_types, bool(kwargs)
             )
         assert handler is not None
         return handler(tx, args, kwargs)  # type: ignore[return-value]

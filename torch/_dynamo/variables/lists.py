@@ -49,7 +49,7 @@ from .base import AsPythonConstantNotImplementedError, ValueMutationNew, Variabl
 from .constant import ConstantVariable
 from .functions import UserFunctionVariable
 from .iter import IteratorVariable
-from .object_protocol import unpack_iterator
+from .object_protocol import unpack_and_apply_fn, unpack_iterator
 
 
 if TYPE_CHECKING:
@@ -805,9 +805,27 @@ class CommonListMethodsVariable(BaseListVariable):
                     f"{len(args)} args and {len(kwargs)} kwargs",
                 )
 
-            items = unpack_iterator(tx, args[0])
-            tx.output.side_effects.mutation(self)
-            self.items.extend(items)
+            # CPython has a series of checks to optimize list.extend for different data types
+            # ref: https://github.com/python/cpython/blob/0fd4fd4496c557b68477a99c1c231a5870c91daf/Objects/listobject.c#L1389-L1444
+            from .dicts import ConstDictVariable
+            from .sets import SetVariable
+
+            sz = len(self.items)
+            if isinstance(args[0], (ListVariable, TupleVariable)):
+                self.items.extend(args[0].items)
+            elif isinstance(args[0], (ConstDictVariable, SetVariable)):
+                items = [item.vt for item in args[0].items]
+                self.items.extend(items)
+            elif isinstance(args[0], ConstantVariable):
+                items = unpack_iterator(tx, args[0])
+                self.items.extend(items)
+            else:
+                unpack_and_apply_fn(
+                    tx, args[0], lambda item: self.call_method(tx, "append", [item], {})
+                )
+
+            if len(self.items) > sz:
+                tx.output.side_effects.mutation(self)
             return ConstantVariable.create(None)
         elif name == "insert" and self.is_mutable():
             if kwargs or len(args) != 2:
@@ -1014,8 +1032,6 @@ class ListVariable(CommonListMethodsVariable):
         args: list[VariableTracker],
         kwargs: dict[str, VariableTracker],
     ) -> VariableTracker:
-        from .tensor import SymNodeVariable
-
         if name == "__setitem__" and self.is_mutable():
             if kwargs or len(args) != 2:
                 raise_args_mismatch(
@@ -1053,10 +1069,9 @@ class ListVariable(CommonListMethodsVariable):
                         args=list(exc.args),
                     )
             else:
-                if isinstance(key, SymNodeVariable):
-                    key = key.evaluate_expr()
-                else:
-                    key = key.as_python_constant()
+                # Use guard_if_dyn to handle SymNodeVariable and LazyVariableTracker
+                # that may realize to SymNodeVariable
+                key = guard_if_dyn(key)
 
                 try:
                     # pyrefly: ignore[unsupported-operation]
