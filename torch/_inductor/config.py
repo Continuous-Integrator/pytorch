@@ -519,6 +519,15 @@ inductor_default_autotune_rep = int(
     os.getenv("TORCHINDUCTOR_DEFAULT_AUTOTUNE_REP", 100)
 )
 
+# When enabled, the autotuner captures each candidate kernel in a CUDA graph
+# and benchmarks graph replay instead of eager kernel launches. This eliminates
+# host-side dispatch overhead from timing measurements, giving results that are
+# representative of CUDA graph replay execution. Useful when the compiled output
+# will run under external CUDA graph capture.
+autotune_cudagraph_benchmarking: bool = (
+    os.environ.get("TORCHINDUCTOR_AUTOTUNE_CUDAGRAPH_BENCHMARKING") == "1"
+)
+
 
 # Modifies the number of autotuning choices displayed, set to None for all
 def _autotune_num_choices_displayed_default() -> int | None:
@@ -627,6 +636,14 @@ def _nvgemm_max_profiling_configs_default() -> int | None:
 
 
 nvgemm_max_profiling_configs: int | None = _nvgemm_max_profiling_configs_default()
+
+# When enabled, adds supplement kernel configs that nvMatmulHeuristics
+# doesn't explore (certain tile/cluster combos that empirically beat
+# cuBLAS on decode shapes). These are added on top of the heuristic
+# picks, increasing the total number of configs benchmarked.
+nvgemm_supplement_configs: bool = (
+    os.environ.get("TORCHINDUCTOR_NVGEMM_SUPPLEMENT_CONFIGS", "0") == "1"
+)
 
 
 # As above, specify candidate backends for conv autotune.
@@ -1534,6 +1551,16 @@ enable_caching_generated_triton_templates: bool = True
 autotune_lookup_table: dict[str, dict[str, Any]] = {}
 
 file_lock_timeout: int = int(os.environ.get("TORCHINDUCTOR_FILE_LOCK_TIMEOUT", "600"))
+
+# Per-future timeout (seconds) for AsyncCompile._wait_futures. 0 (the
+# default) means no timeout; a positive value raises a RuntimeError naming
+# the kernel when a compile worker does not finish in time. CI sets this
+# via TORCHINDUCTOR_COMPILE_WORKER_WAIT_TIMEOUT (300s) so a stuck compile
+# doesn't burn the whole shard budget, while non-CI users with legitimately
+# long compiles are not affected.
+compile_worker_wait_timeout: int = int(
+    os.environ.get("TORCHINDUCTOR_COMPILE_WORKER_WAIT_TIMEOUT", "0")
+)
 
 enable_autograd_for_aot: bool = False
 
