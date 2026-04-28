@@ -148,6 +148,8 @@ html_theme_options = {
         "version_match": switcher_version,
     },
     "show_toc_level": 2,
+    "navigation_depth": 2,
+    "collapse_navigation": True,
     "navigation_with_keys": False,
     "external_links": [
         {
