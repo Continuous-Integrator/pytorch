@@ -1,7 +1,7 @@
 # Owner(s): ["module: inductor"]
+# flake8: noqa: B950
 
 import functools
-import gc
 import json
 import os
 import random
@@ -2110,27 +2110,13 @@ def forward(self, arg0_1, arg1_1, arg2_1, arg3_1, arg4_1):
     @dtypesIfXPU(*device_configs["xpu"].dtypes_fast)
     def test_captured_scalar_grad(self, device, dtype):
         """Test learnable scalar parameter with shape (1,) using literal index."""
-        self._run_test_captured_scalar_grad(device, dtype)
+        scale = torch.ones((1,), device=device, dtype=dtype, requires_grad=True)
 
-    def _run_test_captured_scalar_grad(self, device, dtype):
-        def run():
-            scale = torch.ones((1,), device=device, dtype=dtype, requires_grad=True)
+        def score_mod_scale(qk, b, h, q, kv):
+            return qk + scale[0]
 
-            def score_mod_scale(qk, b, h, q, kv):
-                return qk + scale[0]
-
-            self.run_test(score_mod_scale, dtype, device=device)
-            self.run_test_with_paged_attention(score_mod_scale, dtype, device=device)
-
-        run()
-        torch._dynamo.reset()
-        gc.collect()
-        torch._C._cuda_clearCublasWorkspaces()
-        torch.cuda.empty_cache()
-        torch._dynamo.reset()
-        gc.collect()
-        torch._C._cuda_clearCublasWorkspaces()
-        torch.cuda.empty_cache()
+        self.run_test(score_mod_scale, dtype, device=device)
+        self.run_test_with_paged_attention(score_mod_scale, dtype, device=device)
 
     @supported_platform
     @dtypes(*device_configs["cpu"].dtypes_fast)
@@ -4880,7 +4866,7 @@ class GraphModule(torch.nn.Module):
         def forward(self, child: "i32[]", child_1: "i32[]", child_2: "i32[]", child_3: "i32[]"):
             ge: "b8[]" = child_2 >= child_3;  child_2 = child_3 = None
             return ge
-""",
+""",  # noqa: B950
         )
         # Save the AOT graphs
         aot_graphs = []
@@ -4928,7 +4914,9 @@ class GraphModule(torch.nn.Module):
         def forward(self, arg0_1: "i32[]", arg1_1: "i32[]", arg2_1: "i32[]", arg3_1: "i32[]"):
             full_default: "b8[]" = torch.ops.aten.full.default([], True, dtype = torch.bool, layout = torch.strided, device = device(type='GPU_TYPE', index=0), pin_memory = False)
             return full_default
-""".replace("GPU_TYPE", torch.device(device).type),
+""".replace(  # noqa: B950
+                "GPU_TYPE", torch.device(device).type
+            ),
         )
 
     @supported_platform

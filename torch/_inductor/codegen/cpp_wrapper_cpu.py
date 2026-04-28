@@ -14,7 +14,7 @@ import sympy
 
 import torch
 import torch._higher_order_ops.torchbind
-import torch._inductor.async_compile
+import torch._inductor.async_compile  # noqa: F401 required to warm up AsyncCompile pools
 import torch._ops
 from torch._inductor.runtime.runtime_utils import dynamo_timed
 from torch.fx.experimental.symbolic_shapes import ConvertIntKey, DivideByKey, SymTypes
@@ -123,16 +123,15 @@ class CppWrapperCpu(PythonWrapperCodegen):
         # e.g. const double** is possible, but not const double* const*.  This means
         # that an array containing pointers must _already_ be properly const-qualified
         # by the c_type, and not add additional const-ness.
-        array_expr = f"std::array<{c_type}, {len(elements)}>{{{', '.join(elements)}}}"
-        if force_mutable or c_type.endswith("*"):
-            return f"{array_expr}.data()"
-
-        # MSVC does not support implicitly converting a const iterator to a const
-        # pointer, so use data() and cast to keep const qualification.
-        if cpp_builder.is_msvc_cl():
-            return f"static_cast<const {c_type}*>({array_expr}.data())"
-
-        return f"{array_expr}.cbegin()"
+        # MSVC does not support implicitly converting a const iterator to a const pointer.
+        ptr_call = (
+            "data()"
+            if force_mutable or c_type.endswith("*") or cpp_builder.is_msvc_cl()
+            else "cbegin()"
+        )
+        return (
+            f"std::array<{c_type}, {len(elements)}>{{{', '.join(elements)}}}.{ptr_call}"
+        )
 
     def _generate_kernel_call_helper(
         self,
@@ -2735,7 +2734,7 @@ if (!custom_op_wrapper) {
             dispatch_lines.writeline("AOTI_TORCH_ERROR_CODE_CHECK(")
             with dispatch_lines.indent():
                 dispatch_lines.writeline(
-                    f'aoti_torch_call_dispatcher("{op_overload._schema.name}", "{op_overload._schema.overload_name}", dispatch_vars.data())'
+                    f'aoti_torch_call_dispatcher("{op_overload._schema.name}", "{op_overload._schema.overload_name}", dispatch_vars.data())'  # noqa: B950
                 )
             dispatch_lines.writeline(");")
 
@@ -2808,7 +2807,7 @@ if (!custom_op_wrapper) {
             for idx, output_arg in enumerate(output_args):
                 if output_arg is None:
                     continue
-                lines += f"{output_arg} = reinterpret_cast<AtenTensorHandle>(PyCapsule_GetPointer(PyList_GET_ITEM(py_{buf_name}.get(), {idx}), NULL));\n"
+                lines += f"{output_arg} = reinterpret_cast<AtenTensorHandle>(PyCapsule_GetPointer(PyList_GET_ITEM(py_{buf_name}.get(), {idx}), NULL));\n"  # noqa: B950
 
         if raw_outputs:
             declarations_before_scope = [

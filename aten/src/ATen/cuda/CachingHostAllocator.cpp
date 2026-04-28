@@ -266,7 +266,8 @@ struct CUDACachingHostAllocatorImpl
   }
 
   bool stream_is_capturing(CUDAStream s) const override {
-    return s.is_capturing();
+    return c10::cuda::isStreamCapturingMayInitCtx(
+        static_cast<cudaStream_t>(s));
   }
 };
 

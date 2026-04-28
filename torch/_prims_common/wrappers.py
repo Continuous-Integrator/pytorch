@@ -20,7 +20,6 @@ from torch._prims_common import (
     TensorLikeType,
 )
 from torch.utils import _pytree as pytree
-from torch.utils._inspect import _fast_bind
 from torch.utils._pytree import tree_flatten, tree_unflatten
 
 
@@ -130,7 +129,7 @@ class elementwise_type_promotion_wrapper:
         @torch._disable_dynamo
         @wraps(fn)
         def _fn(*args, **kwargs):
-            bound = _fast_bind(sig, *args, **kwargs)
+            bound = sig.bind(*args, **kwargs)
             type_promoting_args = tuple(
                 bound.arguments[x]
                 for x in self.type_promoting_arg_names  # type: ignore[union-attr]
