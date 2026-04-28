@@ -399,8 +399,7 @@ class DeferredTritonCallWrapper:
             size_expr = f"{kernel_name}_result.{scratch_name}"
             var = f"{scratch_name}_ptr"
             prefix.splice(
-                maybe_hipify_code_wrapper(
-                    f"""\
+                f"""\
                 {device_ptr_type} {var} = 0;
                 RAIIAtenTensorHandle {var}_tensor;
                 if ({size_expr} > 0) {{
@@ -414,7 +413,6 @@ class DeferredTritonCallWrapper:
                     {var} = reinterpret_cast<{device_ptr_type}>({var}_tensor.data_ptr());
                 }}
             """
-                )
             )
             call_args_str += f", &{var}"
         return call_args_str
@@ -484,6 +482,12 @@ class DeferredTritonCallWrapper:
         Generate C++ code that embeds Triton source and compiles it at runtime.
         """
         prefix = wrapper.prefix
+        if not wrapper._lazy_compile_helper_emitted:
+            prefix.splice(
+                "#include <torch/csrc/inductor/cpp_wrapper/lazy_triton_compile.h>"
+            )
+            wrapper._lazy_compile_helper_emitted = True
+
         kernel_name = self.kernel_name
         # Track kernel names for parallel initialization
         wrapper._lazy_kernel_names.append(kernel_name)
@@ -812,6 +816,7 @@ class CppWrapperGpu(CppWrapperCpu):
         self._kernel_name_to_body: dict[str, str] = {}
         self._triton_call_wrappers: dict[str, DeferredTritonCallWrapper] = {}
         self.autotune_input_prefix = "_REAL_AUTOTUNE_INPUT"
+        self._lazy_compile_helper_emitted = False
         self._lazy_kernel_names: list[str] = []
 
     @staticmethod
@@ -1293,8 +1298,9 @@ static struct TritonKernelCompileInit {{
             call_args_str = ", ".join(casted)
             self.writeline(f"kernels.{kernel_name}({call_args_str}, {stream});")
 
+    @staticmethod
     def prepare_triton_wrapper_args(
-        self, call_args: list[Any], arg_types: list[Any]
+        call_args: list[Any], arg_types: list[Any]
     ) -> tuple[list[Any], list[Any]]:
         assert len(call_args) == len(arg_types), (call_args, arg_types)
         new_args = []
@@ -1308,10 +1314,7 @@ static struct TritonKernelCompileInit {{
             elif isinstance(arg, bool):
                 new_args.append(str(arg).lower())
             elif isinstance(arg, (int, float, SymbolicCallArg)):
-                if isinstance(arg, float):
-                    new_args.append(self.generate_float_value(arg))
-                else:
-                    new_args.append(str(arg))
+                new_args.append(str(arg))
             else:
                 new_args.append(cexpr(V.graph.sizevars.simplify(arg)))
             new_args_types.append(arg_type)

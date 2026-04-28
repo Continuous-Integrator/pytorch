@@ -111,6 +111,7 @@ def tensorify_python_scalars(
     Returns:
         None
     """
+    import sympy
 
     knob = True
     if (env := os.getenv("TENSORIFY_PYTHON_SCALARS")) is not None:
@@ -120,23 +121,6 @@ def tensorify_python_scalars(
         knob = justknobs_check("pytorch/compiler:tensorify_python_scalars")
     if not knob:
         return None
-
-    # This pass uses MetaProxy which relies on __torch_function__.
-    # DisableTorchFunctionSubclass may be active here (see #177088),
-    # so re-enable dispatch for MetaProxy ops.
-    with torch._C._EnableTorchFunction():
-        return _tensorify_impl(gm, shape_env, fake_mode)
-
-
-def _tensorify_impl(
-    gm: GraphModule,
-    shape_env: ShapeEnv,
-    fake_mode: fake_tensor.FakeTensorMode,
-) -> None:
-    """Helper fn in tensorify_python_scalars so the caller can wrap
-    with _EnableTorchFunction (#180906).
-    """
-    import sympy
 
     graph = gm.graph
     tracer = fx.proxy.GraphAppendingTracer(graph)
@@ -272,7 +256,7 @@ def _tensorify_impl(
 
             # Specialize all dimensions that contain symfloats. Here's
             # an example test that requires this:
-            # PYTORCH_OPINFO_SAMPLE_INPUT_INDEX=4 python test/inductor/test_torchinductor_opinfo.py TestInductorOpInfoCUDA.test_comprehensive_nn_functional_interpolate_bicubic_cuda_float32
+            # PYTORCH_OPINFO_SAMPLE_INPUT_INDEX=4 python test/inductor/test_torchinductor_opinfo.py TestInductorOpInfoCUDA.test_comprehensive_nn_functional_interpolate_bicubic_cuda_float32 # noqa: B950
 
             val = node.meta.get("val")
             if isinstance(val, FakeTensor):

@@ -50,7 +50,6 @@ from torch._inductor.utils import (
     output_node,
     set_tracing_context_output_strides,
 )
-from torch._opaque_base import OpaqueBase
 from torch.fx._graph_pickler import _node_metadata_key_filter_safe, _ops_filter_safe
 from torch.utils._ordered_set import OrderedSet
 from torch.utils._python_dispatch import is_in_torch_dispatch_mode
@@ -235,16 +234,18 @@ def cudagraph_post_compile(
             compiled_graph, example_inputs, boxed_forward_device_index
         )
 
+        from .compile_fx import cudagraphify
+
         current_callable = compiled_graph.current_callable
         assert current_callable is not None
         # Filter to only tensor constants (exclude opaque value type classes)
         tensor_constants = {
             k: v for k, v in constants.items() if isinstance(v, torch.Tensor)
         }
-
-        device_index = next(iter(compiled_graph.device_idxs))
-        cudagraphify_kwargs = dict(
-            device_index=device_index,
+        compiled_graph.current_callable = cudagraphify(
+            current_callable,
+            static_input_idxs=static_input_idxs or (),
+            device_index=next(iter(compiled_graph.device_idxs)),
             stack_traces=stack_traces,
             is_backward=is_backward,
             is_inference=is_inference,
@@ -252,23 +253,6 @@ def cudagraph_post_compile(
             placeholders=placeholders,
             mutated_input_idxs=tuple(compiled_graph.mutated_input_idxs),
         )
-
-        policy = config.cudagraph_policy
-        if policy is not None:
-            compiled_graph.current_callable = policy.cudagraphify(
-                current_callable,
-                example_inputs,
-                static_input_idxs or (),
-                **cudagraphify_kwargs,
-            )
-        else:
-            from .compile_fx import cudagraphify
-
-            compiled_graph.current_callable = cudagraphify(
-                current_callable,
-                static_input_idxs=static_input_idxs or (),
-                **cudagraphify_kwargs,
-            )
 
     else:
         BoxedBool.disable(cudagraphs)
@@ -322,6 +306,8 @@ def cudagraph_partition_post_compile(
         maybe_handle_backward_generation(compiled_graph, boxed_forward_device_index)
         return
 
+    from .compile_fx import cudagraphify
+
     assert compiled_graph.current_callable is not None
     assert compiled_graph.recursively_apply_fns is not None
     is_inference = compiled_graph.fx_kwargs["is_inference"]
@@ -349,8 +335,6 @@ def cudagraph_partition_post_compile(
     prepare_cudagraph_post_compile(
         compiled_graph, example_inputs, boxed_forward_device_index
     )
-
-    from .compile_fx import cudagraphify
 
     # cudagraphify each partition function, assuming every graph partition function
     # is cudagraphable. Non-cudagraphable ops (e.g., cpu ops) are inlined into
@@ -632,15 +616,7 @@ class CompiledFxGraph(OutputCode):
                     (not complex_memory_overlap_inputs, "complex memory overlap"),
                     (
                         all(
-                            isinstance(
-                                t,
-                                (
-                                    torch.Tensor,
-                                    torch.SymInt,
-                                    torch.Generator,
-                                    OpaqueBase,
-                                ),
-                            )
+                            isinstance(t, (torch.Tensor, torch.SymInt, torch.Generator))
                             for t in example_inputs
                         ),
                         "non-Tensor inputs",
@@ -764,17 +740,6 @@ class CompiledFxGraph(OutputCode):
         assert graph_kwargs["is_backward"] is not None
         is_backward = graph_kwargs["is_backward"]
         cudagraphs: BoxedBool = graph_kwargs["cudagraphs"]
-
-        # When a CUDAGraphPolicy is set and it says not to wrap this
-        # inner CompiledFxGraph (e.g. because wrapping happens at the
-        # outer level via policy.wrap_output), disable cudagraphs for
-        # this graph so the rest of post_compile (input realignment,
-        # _wrap_compiled_regions) still runs normally.
-        policy = config.cudagraph_policy
-        if policy is not None and not policy.should_wrap(self):
-            counters["inductor"]["cudagraph_skips"] += 1
-            BoxedBool.disable(cudagraphs)
-
         if cudagraphs:
             # It's possible that cudagraphs is enabled, but was disabled
             # during a previous compilation we're loading from the cache.
@@ -800,12 +765,9 @@ class CompiledFxGraph(OutputCode):
                         "boxed_forward_device_index", None
                     )
 
-                if config.graph_partition and policy is None:
-                    # With graph_partition=True, we skip some cudagraph checks
-                    # if it's supported with partition, so we use
-                    # cudagraph_partition_post_compile.  When a CUDAGraphPolicy
-                    # is active, we use cudagraph_post_compile instead so the
-                    # policy controls wrapping via policy.cudagraphify().
+                if config.graph_partition:
+                    # with graph_partition=True, we skip some cudagraph checks if it's supported
+                    # with partition. So we have to use cudagraph_partition_post_compile.
                     cudagraph_partition_post_compile(
                         example_inputs,
                         self,

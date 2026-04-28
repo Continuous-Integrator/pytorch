@@ -1067,7 +1067,7 @@ def wait_for_process(p, timeout=None):
         else:
             p.kill()
         raise
-    except:
+    except:  # noqa: B001,E722, copied from python core library
         p.kill()
         raise
     finally:
@@ -1613,7 +1613,6 @@ TEST_WITH_UBSAN: bool = TestEnvironment.def_flag(
 TEST_WITH_ROCM: bool = TestEnvironment.def_flag(
     "TEST_WITH_ROCM",
     env_var="PYTORCH_TEST_WITH_ROCM",
-    implied_by_fn=lambda: torch.version.hip is not None,
 )
 TEST_WITH_MTIA: bool = TestEnvironment.def_flag(
     "TEST_WITH_MTIA",
@@ -1793,64 +1792,6 @@ def xfailIfWindows(func):
 
 def xfailIfROCm(func):
     return unittest.expectedFailure(func) if torch.version.hip is not None else func
-
-
-def _is_cpu_device_type(dev) -> bool:
-    if isinstance(dev, torch.device):
-        return dev.type == "cpu"
-    if isinstance(dev, str):
-        return dev == "cpu" or dev.startswith("cpu:")
-    return False
-
-
-def _device_spec_from_test_call(args: tuple, kwargs: dict):
-    if "device" in kwargs:
-        return kwargs["device"]
-    if "devices" in kwargs:
-        return kwargs["devices"]
-    return None
-
-
-def xfailIfNoAcceleratorTriton(test_func):
-    """Run test normally if triton is present or if running on CPU (which falls back to openmp).
-    Otherwise mark as xfail — any accelerator (CUDA, XPU, ROCm, etc.) requires triton.
-    Can be applied to a test method or an entire test class."""
-    import inspect
-    import functools
-    from torch.utils._triton import has_triton
-
-    if inspect.isclass(test_func):
-        for attr_name in list(vars(test_func)):
-            if attr_name.startswith("test"):
-                method = getattr(test_func, attr_name)
-                if callable(method):
-                    setattr(test_func, attr_name, xfailIfNoAcceleratorTriton(method))
-        return test_func
-
-    @functools.wraps(test_func)
-    def wrapper(*args, **kwargs):
-        if has_triton():
-            return test_func(*args, **kwargs)
-
-        spec = _device_spec_from_test_call(args, kwargs)
-        if spec is None and args:
-            spec = getattr(args[0], "device_type", None)
-        if spec is not None and _is_cpu_device_type(spec):
-            try:
-                return test_func(*args, **kwargs)
-            except ImportError as e:
-                # This except block required only for TestUtilsCPU::test_get_device_tflops_cpu
-                # test_get_device_tflops imports triton directly in its body — even for CPU
-                if "triton" in str(e).lower():
-                    import pytest
-                    pytest.xfail(f"Triton not available (device={spec!r}): {e}")
-                raise
-
-        import pytest
-        device_info = f" (device={spec!r})" if spec is not None else ""
-        pytest.xfail(f"Triton not available{device_info}")
-
-    return wrapper
 
 
 def skipIfFreeThreaded(msg="Test doesn't work with free-threaded python"):
@@ -2229,31 +2170,12 @@ def skipIfXpu(func=None, *, msg="test doesn't currently work on the XPU stack"):
     return dec_fn
 
 def skipIfMPS(fn):
-    sig = inspect.signature(fn)
-    has_device_arg = "device" in sig.parameters
-
-    if not has_device_arg:
-        warnings.warn(
-            f"skipIfMPS applied to {fn.__qualname__} which has no 'device' parameter. "
-            "Consider using device-generic tests with instantiate_device_type_tests instead.",
-            stacklevel=2,
-        )
-
     @wraps(fn)
     def wrapper(*args, **kwargs):
-        if has_device_arg:
-            # For device-generic tests, only skip when actually running on MPS
-            slf = args[0] if args else None
-            if slf is not None:
-                device_type = getattr(slf, "device_type", None) or getattr(
-                    slf, "device", None
-                )
-                if isinstance(device_type, str) and device_type == "mps":
-                    raise unittest.SkipTest("test doesn't currently work with MPS")
-        elif TEST_MPS:
+        if TEST_MPS:
             raise unittest.SkipTest("test doesn't currently work with MPS")
-        return fn(*args, **kwargs)
-
+        else:
+            fn(*args, **kwargs)
     return wrapper
 
 
@@ -2300,7 +2222,7 @@ def skipIfWindows(func=None, *, msg="test doesn't currently work on the Windows 
 
         @wraps(fn)
         def wrapper(*args, **kwargs):
-            if IS_WINDOWS:
+            if IS_WINDOWS:  # noqa: F821
                 raise unittest.SkipTest(reason)
             else:
                 return fn(*args, **kwargs)
@@ -2315,7 +2237,7 @@ def skipIfWindowsXPU(func=None, *, msg="test doesn't currently work on the Windo
 
         @wraps(fn)
         def wrapper(*args, **kwargs):
-            if IS_WINDOWS and torch.xpu.is_available():
+            if IS_WINDOWS and torch.xpu.is_available():  # noqa: F821
                 raise unittest.SkipTest(reason)
             else:
                 return fn(*args, **kwargs)
@@ -2367,10 +2289,6 @@ def setBlasBackendsToDefaultFinally(fn):
             fn(*args, **kwargs)
         finally:
             torch.backends.cuda.preferred_blas_library(_preferred_backend)
-            if torch.backends.cuda.is_built():
-                torch._C._cuda_resetCublasWorkspaceSize()
-                torch._C._cuda_resetCublasLtWorkspaceSize()
-                torch._C._cuda_clearCublasWorkspaces()
     return _fn
 
 
@@ -2800,11 +2718,6 @@ class CudaMemoryLeakCheck:
         # Don't check for leaks if an exception was thrown
         if exc_type is not None:
             return
-
-        self.testcase.before_cuda_memory_leak_check()
-        gc.collect()
-        torch._C._cuda_clearCublasWorkspaces()
-        torch.cuda.empty_cache()
 
         # Compares caching allocator before/after statistics
         # An increase in allocated memory is a discrepancy indicating a possible
@@ -3410,9 +3323,6 @@ class TestCase(expecttest.TestCase):
         name = self.id() if name is None else name
         return CudaMemoryLeakCheck(self, name)
 
-    def before_cuda_memory_leak_check(self):
-        torch._dynamo.reset()
-
     def enforceNonDefaultStream(self):
         return CudaNonDefaultStream()
 
@@ -3615,7 +3525,7 @@ class TestCase(expecttest.TestCase):
                     def wrapper(*args, **kwargs):
                         try:
                             f(*args, **kwargs)
-                        except BaseException as e:
+                        except BaseException as e:  # noqa: B036
                             self.skipTest(e)
                         raise RuntimeError(f"Unexpected success, please remove `{file_name}`")
                     return wrapper
@@ -3637,7 +3547,7 @@ class TestCase(expecttest.TestCase):
                     def wrapper(*args, **kwargs):
                         try:
                             f(*args, **kwargs)
-                        except BaseException as e:
+                        except BaseException as e:  # noqa: B036
                             self.skipTest(e)
                         method = getattr(self, self._testMethodName)
                         if getattr(method, "__unittest_expecting_failure__", False):
@@ -6031,9 +5941,6 @@ def munge_exc(e, *, suppress_suffix=True, suppress_prefix=True, file=None, skip=
     if suppress_prefix:
         s = re.sub(r"Cannot export model.+\n\n", "", s)
     s = re.sub(r" +$", "", s, flags=re.MULTILINE)
-    # Normalize caret-only lines by stripping leading whitespace, since
-    # col_offset in bytecode positions can vary across Python point releases
-    s = re.sub(r"^[ ]+(\^+)$", r"\1", s, flags=re.MULTILINE)
     return s
 
 
@@ -6213,48 +6120,3 @@ def get_gcc_major_version():
         return int(out.split(".")[0])
     except Exception:
         return None
-
-
-def run_concurrently(worker_func, num_threads=None, args=(), kwargs=None):
-    # Adapted from CPython test suite. Runs worker_func in multiple threads
-    # concurrently to help expose thread-safety issues. Works best in
-    # combination with ThreadSanitizer (TSan).
-    from collections.abc import Iterable
-
-    if kwargs is None:
-        kwargs = {}
-    if num_threads is None:
-        num_threads = len(worker_func)
-    if not isinstance(worker_func, Iterable):
-        worker_func = [worker_func] * num_threads
-
-    barrier = threading.Barrier(num_threads)
-
-    results = [None] * num_threads
-    exc_value = None
-
-    def wrapper_func(idx, func, *args, **kwargs):
-        # Wait for all threads to reach this point before proceeding.
-        try:
-            barrier.wait()
-            res = func(*args, **kwargs)
-            results[idx] = res
-        except Exception as e:
-            nonlocal exc_value
-            exc_value = e
-
-    workers = [
-        threading.Thread(target=wrapper_func, args=(i, func, *args),
-                         kwargs=kwargs, daemon=True)
-        for i, func in enumerate(worker_func)
-    ]
-    for w in workers:
-        w.start()
-    for w in workers:
-        w.join()
-
-    # If a worker thread raises an exception, re-raise it.
-    if exc_value is not None:
-        raise exc_value
-
-    return results
