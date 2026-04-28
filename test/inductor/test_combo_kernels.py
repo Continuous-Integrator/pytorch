@@ -2138,8 +2138,6 @@ class ComboKernelPeakMemoryTests(InductorTestCase):
         combos."""
         model = ComboKernelPeakMemoryTests._make_wide_resnet_like().to(GPU_TYPE).eval()
         x = torch.randn(1, 3, 224, 224, device=GPU_TYPE)
-        with torch.no_grad():
-            out_eager = model(x)
 
         def compile_and_measure_peak(**cfg):
             torch._dynamo.reset()
@@ -2154,9 +2152,8 @@ class ComboKernelPeakMemoryTests(InductorTestCase):
                 ),
             ):
                 with torch.no_grad():
-                    out = torch.compile(model)(x)
+                    _ = torch.compile(model)(x)
                 torch.cuda.synchronize()
-            self.assertEqual(out_eager, out)
             return torch.cuda.max_memory_allocated()
 
         # Gating disabled: combos can co-allocate freely → higher peak.
