@@ -458,9 +458,13 @@ async def serve(
     socket_path: str | None,
     tcp_port: int | None,
 ):
+    buf_limit = 16 * 1024 * 1024
     if tcp_port is not None:
         server = await asyncio.start_server(
-            coord.handle_connection, host="127.0.0.1", port=tcp_port
+            coord.handle_connection,
+            host="127.0.0.1",
+            port=tcp_port,
+            limit=buf_limit,
         )
         bound = server.sockets[0].getsockname()
         print(f"ADDR tcp:{bound[0]}:{bound[1]}", flush=True)
@@ -469,7 +473,7 @@ async def serve(
         if os.path.exists(socket_path):
             os.unlink(socket_path)
         server = await asyncio.start_unix_server(
-            coord.handle_connection, path=socket_path
+            coord.handle_connection, path=socket_path, limit=buf_limit
         )
         print(f"ADDR uds:{socket_path}", flush=True)
 

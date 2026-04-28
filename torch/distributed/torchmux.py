@@ -82,6 +82,7 @@ class _MuxDevice(metaclass=_DeviceMeta):
 _MAX_TRACE_EVENTS = 1_000_000
 _trace_events = []
 _compute_start = None
+_trace_path = None
 
 
 def _us():
@@ -107,12 +108,23 @@ def _end_compute():
         _compute_start = None
 
 
+def _flush_trace():
+    if _trace_path and _trace_events:
+        try:
+            with open(_trace_path, "w") as f:
+                json.dump(_trace_events, f)
+        except Exception:
+            pass
+
+
 # ---- GPU state checkpoint/restore via CUDA driver ----
 
 _client = None
 _rank = None
 _ws = None
 _checkpointed = False
+_coll_store = None
+_coll_seq = 0
 
 
 def _snapshot_gpu():
@@ -215,6 +227,8 @@ class _MuxPG(dist.ProcessGroup):
         self._rank = rank
         self._ws = world_size
         self._group_ranks = group_ranks or list(range(world_size))
+        self._pg_tag = "_".join(str(r) for r in sorted(self._group_ranks))
+        self._seq = 0
 
     @property
     def _my_global(self):
@@ -226,11 +240,49 @@ class _MuxPG(dist.ProcessGroup):
         return tuple(r for r in self._group_ranks if r != me)
 
     def _do_prepare(self, send, recv):
-        result = _client.prepare(send, recv)
-        if result is None:
+        import json
+
+        from torch.distributed._coord_client import (
+            _deserialize_tensor,
+            _serialize_tensor,
+        )
+
+        seq = self._seq
+        self._seq += 1
+        tag = self._pg_tag
+        me = self._my_global
+
+        for dsts, tensor in send.items():
+            if tensor is not None:
+                hdr, body = _serialize_tensor(tensor)
+                meta = json.dumps(hdr).encode()
+            else:
+                meta = b"null"
+                body = b""
+            for dst in dsts:
+                key = f"g{tag}s{seq}_{me}_{dst}"
+                _coll_store.set(key + "h", meta)
+                _coll_store.set(key + "d", body)
+
+        if _ws > _ngpus:
             _snapshot_gpu()
-            result = _client.release_gpu()
+            _client.release_baton()
+
+        result = {}
+        for src in recv:
+            key = f"g{tag}s{seq}_{src}_{me}"
+            hdr_bytes = _coll_store.get(key + "h")
+            if hdr_bytes == b"null":
+                result[src] = None
+            else:
+                data = _coll_store.get(key + "d")
+                hdr = json.loads(hdr_bytes.decode())
+                result[src] = _deserialize_tensor(hdr, data)
+
+        if _ws > _ngpus:
+            _client.acquire_baton()
             _restore_gpu()
+
         return result
 
     def _do_collective(self, name, fn):
@@ -239,6 +291,7 @@ class _MuxPG(dist.ProcessGroup):
         with torch.profiler.record_function(f"torchmux::collective::{name}"):
             result = fn()
         _trace("collective", name, t0, _us() - t0)
+        _flush_trace()
         _begin_compute()
         return result
 
@@ -483,11 +536,9 @@ def _create_mux_pg(store, rank, world_size, timeout):
 
     store.set(f"torchmux_grank_{rank}", str(_rank).encode())
 
-    _snapshot_gpu()
-    _client.release_baton()
+    # Callers (_mux_init, _mux_new_group) already handle snapshot/restore
+    # and baton release/acquire. Just do the barrier here.
     _store_based_barrier(rank, store, "", world_size, timeout)
-    _client.acquire_baton()
-    _restore_gpu()
 
     if len(group_ranks) != world_size:
         group_ranks = []
@@ -511,8 +562,9 @@ def _worker(
     script,
     script_args,
     run_as_module,
+    coll_store_port=0,
 ):
-    global _ngpus, _rank, _ws, _client
+    global _ngpus, _rank, _ws, _client, _coll_store
 
     _ngpus = ngpus
     _rank = rank
@@ -533,6 +585,14 @@ def _worker(
             ),
         }
     )
+
+    if coll_store_port:
+        _coll_store = dist.TCPStore(
+            "localhost",
+            coll_store_port,
+            world_size,
+            is_master=(rank == 0),
+        )
 
     torch.device = _MuxDevice
     _orig_cuda_set_device = torch.cuda.set_device
@@ -570,6 +630,13 @@ def _worker(
 
     def _mux_destroy():
         _end_compute()
+
+        try:
+            with open(trace_path, "w") as f:
+                json.dump(_trace_events, f)
+        except Exception:
+            pass
+
         t0 = _us()
         _snapshot_gpu()
         _client.release_baton()
@@ -616,6 +683,10 @@ def _worker(
     torch.backends.cuda.enable_cudnn_sdp(False)
     torch.backends.cuda.enable_math_sdp(True)
 
+    global _trace_path
+    trace_path = os.path.join(trace_dir_path, f"trace_rank{rank}.json")
+    _trace_path = trace_path
+
     _begin_compute()
     try:
         filtered_args = [a for a in script_args if a != "--"]
@@ -627,14 +698,13 @@ def _worker(
     finally:
         _end_compute()
 
-        trace_path = os.path.join(trace_dir_path, f"trace_rank{rank}.json")
-        with open(trace_path, "w") as f:
-            json.dump(_trace_events, f)
-
         try:
-            _client.done()
+            with open(trace_path, "w") as f:
+                json.dump(_trace_events, f)
         except Exception:
             pass
+
+        os._exit(0)
 
 
 # ---- Entry point ----
@@ -738,6 +808,10 @@ def main():
         s.bind(("", 0))
         port = s.getsockname()[1]
 
+    with socket.socket() as s:
+        s.bind(("", 0))
+        coll_store_port = s.getsockname()[1]
+
     shm = "/dev/shm" if os.path.isdir("/dev/shm") else None
     if shm is None:
         log.warning(
@@ -798,6 +872,7 @@ def main():
                 args.training_script,
                 args.training_script_args,
                 args.module,
+                coll_store_port,
             ),
             nprocs=nproc,
             join=True,

@@ -46,12 +46,14 @@ class NoPeers(CoordClientError):
 
 
 def _serialize_tensor(tensor) -> tuple[dict, bytes]:
+    import ctypes
+
     import torch
 
     cpu_contig = tensor.detach().contiguous().cpu()
     nbytes = cpu_contig.numel() * cpu_contig.element_size()
-    storage = cpu_contig.untyped_storage()
-    payload = bytes(storage[:nbytes])
+    ptr = cpu_contig.untyped_storage().data_ptr()
+    payload = bytes((ctypes.c_char * nbytes).from_address(ptr))
     header = {
         "shape": list(cpu_contig.shape),
         "dtype": str(cpu_contig.dtype).removeprefix("torch."),
@@ -65,11 +67,10 @@ def _deserialize_tensor(header: dict, payload: bytes):
 
     dtype = getattr(torch, header["dtype"])
     shape = tuple(header["shape"])
-    buf = bytearray(payload)
     numel = 1
     for d in shape:
         numel *= d
-    flat = torch.frombuffer(buf, dtype=dtype, count=numel).clone()
+    flat = torch.frombuffer(bytearray(payload), dtype=dtype, count=numel).clone()
     return flat.reshape(shape)
 
 
@@ -84,13 +85,16 @@ class _Engine:
         self._lock = asyncio.Lock()
 
     async def connect(self) -> None:
+        buf_limit = 16 * 1024 * 1024
         if self.addr.startswith("uds:"):
             path = self.addr[4:]
-            self.reader, self.writer = await asyncio.open_unix_connection(path)
+            self.reader, self.writer = await asyncio.open_unix_connection(
+                path, limit=buf_limit
+            )
         elif self.addr.startswith("tcp:"):
             host, _, port = self.addr[4:].rpartition(":")
             self.reader, self.writer = await asyncio.open_connection(
-                host, int(port)
+                host, int(port), limit=buf_limit
             )
         else:
             raise ValueError(f"unrecognized addr {self.addr!r}")
