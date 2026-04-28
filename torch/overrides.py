@@ -878,6 +878,9 @@ def get_testing_overrides() -> dict[Callable, Callable]:
         torch.nn.functional.cross_entropy: (
             lambda input, target, weight=None, size_average=None, ignore_index=-100, reduce=None, reduction="mean", label_smoothing=0.0: -1
         ),
+        torch.nn.functional.linear_cross_entropy: (
+            lambda input, linear_weight, target, weight=None, reduction="mean", ignore_index=None, label_smoothing=0.0: -1
+        ),
         torch.nn.functional.ctc_loss: (
             lambda log_probs, targets, input_lengths, target_lengths, blank=0, reduction="mean", zero_infinity=False: -1
         ),
@@ -2184,6 +2187,7 @@ def redispatch_function(func, types, args, kwargs):
                 # Skip dispatch for this func, but inner ops still dispatch
                 return torch.overrides.redispatch_function(func, types, args, kwargs)
 
+
         x = LoggingTensor(torch.tensor([1.0]))
         y = LoggingTensor(torch.tensor([2.0]))
         # Prints: "Calling add" once for the outer call
@@ -2197,6 +2201,8 @@ def redispatch_function(func, types, args, kwargs):
             def __torch_function__(self, func, types, args, kwargs=None):
                 print(f"Calling {func.__name__}")
                 with self:  # Re-enable mode for inner calls
-                    return torch.overrides.redispatch_function(func, types, args, kwargs)
+                    return torch.overrides.redispatch_function(
+                        func, types, args, kwargs
+                    )
     """
     return torch._C._skip_one_hop_torch_function(func, types, args, kwargs)
