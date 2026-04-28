@@ -24,7 +24,11 @@ from torch import device, Tensor
 from torch._decomp import get_decompositions
 from torch._dynamo.utils import defake, dynamo_timed
 from torch._library.fake_class_registry import FakeScriptObject
-from torch._library.opaque_object import is_opaque_type, is_opaque_value_type
+from torch._library.opaque_object import (
+    is_opaque_reference_type,
+    is_opaque_type,
+    is_opaque_value_type,
+)
 from torch._library.utils import get_layout_constraint_tag
 from torch._logging import LazyString, trace_structured
 from torch._prims_common import (
@@ -325,7 +329,15 @@ def mark_nodes_dislike_padding(
                     prior.meta["dislike_padding"] = True
         # We only want to mark output nodes. So, move it after the above prior nodes process.
         if not config.pad_outputs and cur in extended_user_visible_nodes:
-            cur.meta["dislike_padding"] = True
+            # Reductions (ops_like_padding) produce new output buffers with
+            # fresh strides, so their output stride constraint is already
+            # enforced by allow_padding=False in as_exact_strides. Setting
+            # dislike_padding here would suppress input padding during
+            # freeze, causing a stride mismatch when an earlier lowering
+            # step (e.g. is_contiguous_storage_and_layout) already mutated
+            # the input layout to padded strides.
+            if op not in ops_like_padding:
+                cur.meta["dislike_padding"] = True
 
 
 def is_mkldnn_conv(node: Node) -> bool:
@@ -391,6 +403,7 @@ class GraphLowering(torch.fx.Interpreter):
         self.const_kernel_code = const_kernel_code
         self.const_module = const_module
         self.inputs_to_check = inputs_to_check
+        self._defers_input_alignment = False
 
         self.extra_traceback = False  # we do our own error wrapping
         if shape_env is None:
@@ -422,6 +435,10 @@ class GraphLowering(torch.fx.Interpreter):
             OrderedSet
         )
         self.additional_star_deps: dict[str, OrderedSet[str]] = defaultdict(OrderedSet)
+        # Maps control_deps FX node to operation names created when lowering it,
+        # for void ops (e.g. record_event) that return None and therefore cannot
+        # be referenced by name in subsequent control_deps ordering constraints.
+        self._void_ctrl_dep_op_names: dict[torch.fx.Node, list[str]] = {}
 
         # Inplace padding may require Inductor to allocate slightly larger
         # tensor for padding.
@@ -659,6 +676,12 @@ class GraphLowering(torch.fx.Interpreter):
         """
         if (dep, count_bytes) not in self.dep_size_hint_cache:
             res = 0
+            # Non-tensor graph inputs (TorchBindObject, OpaqueObjectState)
+            # have no meaningful size — skip the size computation entirely.
+            inp = self.graph_inputs.get(dep.name)
+            if isinstance(inp, ir.NonTensorObj):
+                self.dep_size_hint_cache[(dep, count_bytes)] = 0
+                return 0
             try:
                 if (
                     not dep.has_unbacked_symbols()
@@ -1244,6 +1267,11 @@ class GraphLowering(torch.fx.Interpreter):
             self.graph_inputs[target] = gen  # type: ignore[assignment]
             self.graph_input_names.append(target)
             return gen
+        elif is_opaque_reference_type(type(example)):
+            opaque_obj = ir.OpaqueObjectState(name=target, value=example)
+            self.graph_inputs[target] = opaque_obj  # type: ignore[assignment]
+            self.graph_input_names.append(target)
+            return opaque_obj
 
         assert isinstance(example, torch.Tensor), example
         # todo(chilli): We can remove the last check once we turn buffers into
@@ -1317,7 +1345,12 @@ class GraphLowering(torch.fx.Interpreter):
             )
             base_name = target.name().split(".")[0]
             if base_name in FALLBACK_ALLOW_LIST:
-                make_fallback(target, warn=False, get_decomp_fn=self.get_decomp_fn)
+                make_fallback(
+                    target,
+                    warn=False,
+                    get_decomp_fn=self.get_decomp_fn,
+                    override_decomp=True,
+                )
             elif config.implicit_fallbacks:
                 error = (
                     MissingOperatorWithDecomp
@@ -1508,7 +1541,7 @@ class GraphLowering(torch.fx.Interpreter):
                     value=value.item(), dtype=value.dtype, device=value.device
                 )
             if self.can_inline_constant(value):
-                log.debug("Inlining constant: %s ", str(target))
+                log.debug("Inlining constant: %s ", target)
                 # tensor lowering has constant inlining logic
                 from .lowering import tensor
 
@@ -1522,11 +1555,11 @@ class GraphLowering(torch.fx.Interpreter):
     def call_method(self, target: Any, args: Any, kwargs: Any) -> NoReturn:
         raise AssertionError
 
-    # pyrefly: ignore [bad-override]
+    @typing_extensions.override
     def output(
         self,
-        target: str,  # type: ignore[override]
-        args: tuple[object],  # type: ignore[override]
+        target: torch.fx.node.Target,
+        args: tuple[torch.fx.node.Argument, ...],
         kwargs: dict[str, object],
     ) -> None:
         result = super().output(target, args, kwargs)  # type: ignore[arg-type]
@@ -1554,6 +1587,7 @@ class GraphLowering(torch.fx.Interpreter):
                     TorchBindObject,
                     ir.OpaqueMultiOutput,
                     ir.OpaqueValueTypeConstant,
+                    ir.OpaqueObjectState,
                 ),
             )
             for x in result
@@ -1592,13 +1626,19 @@ class GraphLowering(torch.fx.Interpreter):
         self.graph_outputs = result_correct_strides
         value: ir.IRNode
         for name, value in self.graph_inputs.items():
-            if isinstance(value, TorchBindObject):
+            if isinstance(
+                value,
+                (
+                    TorchBindObject,
+                    sympy.Basic,
+                    torch._inductor.ir.GeneratorState,
+                    torch._inductor.ir.OpaqueObjectState,
+                ),
+            ):
                 continue
-            assert isinstance(
-                value, (TensorBox, sympy.Expr, torch._inductor.ir.GeneratorState)
-            ), f"Unsupported inductor graph input type: {type(value)}"
-            if not isinstance(value, TensorBox):
-                continue
+            assert isinstance(value, TensorBox), (
+                f"Unsupported inductor graph input type: {type(value)}"
+            )
             value.realize()
             assert isinstance(value, TensorBox)
             value = value.data
@@ -1790,6 +1830,7 @@ class GraphLowering(torch.fx.Interpreter):
             self._realize_inputs_at_stream_boundaries(n)
         with (
             ir.IRNode.current_origins(origins),
+            ir.IRNode.current_stream_idx(self._get_node_stream(n)),
             self.set_current_node(n),
             V.set_current_node(n),
         ):
@@ -2160,6 +2201,8 @@ class GraphLowering(torch.fx.Interpreter):
     def create_deferred_runtime_asserts(
         self, n: torch.fx.Node, new_unbacked_defs: OrderedSet[sympy.Symbol]
     ) -> None:
+        if config.do_not_emit_runtime_assertions:
+            return
         # [NOTE] Codegen runtime asserts in Inductor
         #
         # We need to generate runtime asserts directly in Inductor instead
