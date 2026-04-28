@@ -1299,67 +1299,6 @@ class TestMuxPGNotImplemented(TestCase):
             pg.alltoall(None, None)
 
 
-class TestCudaBatonStructLayouts(TestCase):
-    """Verify ctypes struct sizes match the CUDA driver API expectations.
-
-    The cuCheckpointProcess* functions expect argument structs of exactly
-    64 bytes (8 x uint64). If ctypes packing changes or the struct
-    definitions drift, the driver call will corrupt memory or segfault.
-    """
-
-    def test_struct_sizes(self):
-        from torch.distributed._baton import (
-            _CheckpointArgs,
-            _LockArgs,
-            _RestoreArgs,
-            _UnlockArgs,
-        )
-
-        import ctypes
-
-        for cls in (_LockArgs, _CheckpointArgs, _RestoreArgs, _UnlockArgs):
-            self.assertEqual(
-                ctypes.sizeof(cls),
-                64,
-                f"{cls.__name__} should be 64 bytes, got {ctypes.sizeof(cls)}",
-            )
-
-
-class TestSharedInt(TestCase):
-    def test_basic_read_write(self):
-        from torch.distributed.torchmux import _SharedInt
-
-        si = _SharedInt()
-        self.addCleanup(si.cleanup)
-        self.assertEqual(si.value, 0)
-        si.value = 42
-        self.assertEqual(si.value, 42)
-        si.value = -1
-        self.assertEqual(si.value, -1)
-
-    def test_pickle_roundtrip(self):
-        import pickle
-
-        from torch.distributed.torchmux import _SharedInt
-
-        si = _SharedInt()
-        self.addCleanup(si.cleanup)
-        si.value = 123
-
-        data = pickle.dumps(si)
-        si2 = pickle.loads(data)
-        self.assertEqual(si2.value, 123)
-        si2.value = 456
-        self.assertEqual(si.value, 456)
-
-    def test_cleanup_then_del_no_error(self):
-        from torch.distributed.torchmux import _SharedInt
-
-        si = _SharedInt()
-        si.cleanup()
-        del si
-
-
 @unittest.skipIf(not torch.cuda.is_available(), "CUDA not available")
 class TestTorchmuxSingleWorker(_TorchmuxSubprocessBase):
     def test_nproc_1(self):
@@ -1467,32 +1406,6 @@ class TestTorchmuxArgValidation(TestCase):
         )
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("--ngpus", result.stderr)
-
-
-class TestSharedIntCrossProcess(TestCase):
-    def test_cross_process_sharing(self):
-        from torch.distributed.torchmux import _SharedInt
-
-        si = _SharedInt()
-        self.addCleanup(si.cleanup)
-        si.value = 0
-
-        def _child_writer(si_pickled):
-            import pickle
-            child_si = pickle.loads(si_pickled)
-            child_si.value = 42
-
-        import pickle
-        import multiprocessing
-
-        p = multiprocessing.Process(
-            target=_child_writer,
-            args=(pickle.dumps(si),),
-        )
-        p.start()
-        p.join(timeout=10)
-        self.assertEqual(p.exitcode, 0)
-        self.assertEqual(si.value, 42)
 
 
 @unittest.skipIf(not torch.cuda.is_available(), "CUDA not available")

@@ -26,7 +26,6 @@ import signal
 import sys
 
 from torch.distributed._coord_protocol import (
-    ERR_MISMATCH,
     ERR_NO_PEERS,
     ERR_PEER_GONE,
     OP_ACQUIRE_BATON,
@@ -236,32 +235,6 @@ class Coordinator:
             await write_message(writer, {"ok": True, "block": True, "error": None})
 
         await self._sweep_eligible_after_send(rank)
-
-    def _check_mismatch(self, rank, send_entries, recv_spec):
-        for entry in send_entries:
-            for dst in entry["dsts"]:
-                pd = self.pending.get(dst)
-                if pd is not None and rank not in pd.recv:
-                    return (
-                        f"rank {rank} sent to {dst}; "
-                        f"{dst} does not recv from {rank}"
-                    )
-        for src in recv_spec:
-            ps = self.pending.get(src)
-            if ps is None:
-                continue
-            targets = set()
-            for entry in ps.send:
-                targets.update(entry["dsts"])
-            if rank in targets:
-                continue
-            if self.mailboxes.get((src, rank)):
-                continue
-            return (
-                f"rank {rank} recv from {src}; "
-                f"{src} does not send to {rank}"
-            )
-        return None
 
     def _build_recv_response(self, recv_spec, received):
         entries = []

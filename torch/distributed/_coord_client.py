@@ -16,7 +16,6 @@ import threading
 from typing import Any
 
 from torch.distributed._coord_protocol import (
-    ERR_MISMATCH,
     ERR_NO_PEERS,
     ERR_PEER_GONE,
     OP_ACQUIRE_BATON,
@@ -40,10 +39,6 @@ class PeerGone(CoordClientError):
 
 
 class NoPeers(CoordClientError):
-    pass
-
-
-class CollectiveMismatch(CoordClientError):
     pass
 
 
@@ -128,8 +123,6 @@ class _Engine:
                     raise NoPeers(err)
                 if err == ERR_PEER_GONE:
                     raise PeerGone(err)
-                if err == ERR_MISMATCH:
-                    raise CollectiveMismatch(detail or err)
                 raise CoordClientError(err)
             return resp_hdr, resp_payload
 

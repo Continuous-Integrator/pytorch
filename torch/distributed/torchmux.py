@@ -41,7 +41,6 @@ import os
 import runpy
 import shutil
 import socket
-import struct
 import subprocess
 import sys
 import tempfile
@@ -76,53 +75,6 @@ class _MuxDevice(metaclass=_DeviceMeta):
         if d.type == "cuda" and d.index is not None:
             return _OrigDevice("cuda", d.index % _ngpus)
         return d
-
-
-# ---- Shared int via POSIX shared memory (kept for backward compat) ----
-
-
-class _SharedInt:
-    def __init__(self):
-        from multiprocessing.shared_memory import SharedMemory
-
-        self._shm = SharedMemory(create=True, size=4)
-        struct.pack_into("i", self._shm.buf, 0, 0)
-        self._owner = True
-
-    @property
-    def value(self):
-        return struct.unpack_from("i", self._shm.buf, 0)[0]
-
-    @value.setter
-    def value(self, v):
-        struct.pack_into("i", self._shm.buf, 0, v)
-
-    def cleanup(self):
-        shm = getattr(self, "_shm", None)
-        if shm is None:
-            return
-        try:
-            shm.close()
-        except Exception:
-            pass
-        if self._owner:
-            try:
-                shm.unlink()
-            except Exception:
-                pass
-        self._shm = None
-
-    def __del__(self):
-        self.cleanup()
-
-    def __getstate__(self):
-        return self._shm.name
-
-    def __setstate__(self, name):
-        from multiprocessing.shared_memory import SharedMemory
-
-        self._shm = SharedMemory(name=name, create=False)
-        self._owner = False
 
 
 # ---- Per-process trace recording ----
