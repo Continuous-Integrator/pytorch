@@ -1,7 +1,7 @@
 # ProcessGroupMPS: Supported Operations
 
 RDMA-only c10d backend for Apple Silicon Macs connected via Thunderbolt 5.
-Collectives are layered on top of [JACCL](../../../../../third_party/jaccl/),
+Collectives are layered on top of [JACCL](../../../../third_party/jaccl/),
 MLX's standalone RDMA-over-Thunderbolt library (vendored in
 `third_party/jaccl/`). Construction requires `ibv_alloc_pd` to succeed on every
 rank; otherwise the constructor throws and users should select the `gloo`
