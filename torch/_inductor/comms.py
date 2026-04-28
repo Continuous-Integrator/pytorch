@@ -10,7 +10,7 @@ import operator
 import sys
 from collections import defaultdict
 from dataclasses import dataclass
-from typing import Any, Optional, TYPE_CHECKING, Union
+from typing import Any, TYPE_CHECKING
 
 import torch
 from torch._logging import trace_structured
@@ -52,39 +52,37 @@ if TYPE_CHECKING:
 def align_runtime_estimations_across_all_distributed_ranks(
     snodes: list[BaseSchedulerNode],
 ):
-    from torch._inductor.scheduler import _get_mm_like_fn
-
-    runtime_estimations = {}
-    runtime_estimations_for_mms = {}
-
-    for snode in snodes:
-        runtime_estimations[snode] = snode.get_estimated_runtime()
-        if _get_mm_like_fn(snode) is not None:
-            runtime_estimations_for_mms[snode] = runtime_estimations[snode]
+    runtime_estimations = [snode.get_estimated_runtime() for snode in snodes]
 
     import torch.distributed as dist
     from torch.distributed.distributed_c10d import _get_default_group
 
     world_size = dist.get_world_size()
     pg = _get_default_group()
-    gathered_runtime_estimations_for_mms: list[list[float]] = [
-        [] for _ in range(world_size)
-    ]
+    gathered_runtime_estimations: list[list[float]] = [[] for _ in range(world_size)]
     dist.all_gather_object(
-        gathered_runtime_estimations_for_mms,
-        list(runtime_estimations_for_mms.values()),
+        gathered_runtime_estimations,
+        runtime_estimations,
         pg,
     )
-    median_runtime_estimations_for_mms = torch.median(
-        torch.tensor(gathered_runtime_estimations_for_mms), dim=0
-    ).values.tolist()
-    for idx, snode in enumerate(runtime_estimations_for_mms.keys()):
-        runtime_estimations_for_mms[snode] = median_runtime_estimations_for_mms[idx]
 
-    for snode in snodes:
-        if snode in runtime_estimations_for_mms:
-            runtime_estimations[snode] = runtime_estimations_for_mms[snode]
-        snode.override_estimated_runtime = runtime_estimations[snode]
+    lengths = OrderedSet([len(e) for e in gathered_runtime_estimations])
+    if len(lengths) != 1:
+        log.warning(
+            "Different ranks have different numbers of scheduler nodes (%s), "
+            "skipping runtime estimation alignment",
+            [len(e) for e in gathered_runtime_estimations],
+        )
+        for idx, snode in enumerate(snodes):
+            snode.override_estimated_runtime = runtime_estimations[idx]
+        return
+
+    median_runtime_estimations = torch.median(
+        torch.tensor(gathered_runtime_estimations), dim=0
+    ).values.tolist()
+
+    for idx, snode in enumerate(snodes):
+        snode.override_estimated_runtime = median_runtime_estimations[idx]
 
 
 def sink_waits(snodes: list[BaseSchedulerNode]) -> list[BaseSchedulerNode]:
@@ -183,7 +181,7 @@ class ReorderInfo:
         return self.initial_exposed - self.final_exposed
 
 
-def is_gemm_like(node: Optional[Union[IRNode, Operation]]) -> bool:
+def is_gemm_like(node: IRNode | Operation | None) -> bool:
     if node is None:
         return False
 
@@ -266,8 +264,8 @@ def _initialize_memory_tracking(snodes, graph_inputs, graph_outputs):
 def _initialize_double_linked_list(
     snodes: list[BaseSchedulerNode],
 ) -> tuple[
-    dict[BaseSchedulerNode, Optional[BaseSchedulerNode]],
-    dict[BaseSchedulerNode, Optional[BaseSchedulerNode]],
+    dict[BaseSchedulerNode, BaseSchedulerNode | None],
+    dict[BaseSchedulerNode, BaseSchedulerNode | None],
     BaseSchedulerNode,
 ]:
     """Create double-linked list structure from snodes"""
@@ -348,9 +346,9 @@ def contains_async_collective(snode):
 
 
 def _group_nodes_from_linked_list(
-    head: Optional[BaseSchedulerNode],
-    tail: Optional[BaseSchedulerNode],
-    next_dict: dict[BaseSchedulerNode, Optional[BaseSchedulerNode]],
+    head: BaseSchedulerNode | None,
+    tail: BaseSchedulerNode | None,
+    next_dict: dict[BaseSchedulerNode, BaseSchedulerNode | None],
 ) -> list[BaseSchedulerNode]:
     """
     Traverse doubly-linked list from head to tail and return nodes as a list.
@@ -391,7 +389,7 @@ def _is_corresponding_collective_wait(
 
 def _coll_exposed_communication_time(
     collective_snode: BaseSchedulerNode,
-    next_dict: dict[BaseSchedulerNode, Optional[BaseSchedulerNode]],
+    next_dict: dict[BaseSchedulerNode, BaseSchedulerNode | None],
     runtimes: dict[BaseSchedulerNode, float],
     node_output_sets: dict[BaseSchedulerNode, frozenset[str]],
     node_dep_sets: dict[BaseSchedulerNode, frozenset[str]],
@@ -452,7 +450,7 @@ def _coll_exposed_communication_time(
 def _wait_exposed_communication_time(
     wait_snode: BaseSchedulerNode,
     head: BaseSchedulerNode,
-    prev_dict: dict[BaseSchedulerNode, Optional[BaseSchedulerNode]],
+    prev_dict: dict[BaseSchedulerNode, BaseSchedulerNode | None],
     runtimes: dict[BaseSchedulerNode, float],
     node_output_sets: dict[BaseSchedulerNode, frozenset[str]],
     node_dep_sets: dict[BaseSchedulerNode, frozenset[str]],
@@ -513,8 +511,8 @@ def _perform_double_linked_list_swap(
     candidate: BaseSchedulerNode,
     group_head: BaseSchedulerNode,
     group_tail: BaseSchedulerNode,
-    prev_dict: dict[BaseSchedulerNode, Optional[BaseSchedulerNode]],
-    next_dict: dict[BaseSchedulerNode, Optional[BaseSchedulerNode]],
+    prev_dict: dict[BaseSchedulerNode, BaseSchedulerNode | None],
+    next_dict: dict[BaseSchedulerNode, BaseSchedulerNode | None],
     head: BaseSchedulerNode,
 ) -> BaseSchedulerNode:
     """
@@ -707,7 +705,7 @@ def _find_buffers_with_changed_last_use(
     gns: list[BaseSchedulerNode],
     buf_to_snode_last_use: dict,
     candidate_buffer_map: dict[BaseSchedulerNode, OrderedSet],
-) -> dict[BaseSchedulerNode, list[Union[FreeableInputBuffer, Any]]]:
+) -> dict[BaseSchedulerNode, list[FreeableInputBuffer | Any]]:
     """
     Find buffers whose last use will change after swapping candidate with group.
 
@@ -725,7 +723,7 @@ def _find_buffers_with_changed_last_use(
         Dict mapping group nodes to buffers that will change their last-use node
     """
     group_n_to_bufs_after_swap_dealloc_by_candidate: dict[
-        BaseSchedulerNode, list[Union[FreeableInputBuffer, Any]]
+        BaseSchedulerNode, list[FreeableInputBuffer | Any]
     ] = defaultdict(list)
 
     # Optimization: only check buffers where candidate is a successor
@@ -743,7 +741,7 @@ def _find_buffers_with_changed_last_use(
 
 def _is_node_groupable_for_reorder(
     candidate: BaseSchedulerNode,
-) -> tuple[bool, Optional[str]]:
+) -> tuple[bool, str | None]:
     """
     Check if a candidate node can be grouped with collective during reordering.
 
@@ -774,7 +772,7 @@ def _is_node_groupable_for_reorder(
 def _format_and_log_reordering_stats(
     stats: dict[BaseSchedulerNode, ReorderInfo],
     head: BaseSchedulerNode,
-    next_dict: dict[BaseSchedulerNode, Optional[BaseSchedulerNode]],
+    next_dict: dict[BaseSchedulerNode, BaseSchedulerNode | None],
     original_snodes_num: int,
     peak_memory: int,
     name_to_freeable_input_buf: dict,
@@ -925,12 +923,12 @@ def _reorder_communication_preserving_peak_memory_internal(
 
     _prev, _next, _head = _initialize_double_linked_list(snodes)
 
-    debug_num_collectives_to_reorder: Optional[int] = (
+    debug_num_collectives_to_reorder: int | None = (
         config_comms.reorder_iterative_debug_limit_to_reorder
     )
 
     num_processed_collectives: int = 0
-    curr: Optional[BaseSchedulerNode] = _head
+    curr: BaseSchedulerNode | None = _head
     debug_iterative_memory_recompute = (
         config_comms.reorder_iterative_debug_memory_recompute
     )
@@ -1416,7 +1414,7 @@ class SinkWaitInfo:
 
 def _is_node_groupable_for_sink_waits(
     candidate: BaseSchedulerNode,
-) -> tuple[bool, Optional[str]]:
+) -> tuple[bool, str | None]:
     """
     Check if a candidate node can be grouped during sink_waits pass.
 
@@ -1584,8 +1582,8 @@ def _perform_double_linked_list_swap_sink_waits(
     candidate: BaseSchedulerNode,
     group_head: BaseSchedulerNode,
     group_tail: BaseSchedulerNode,
-    prev_dict: dict[BaseSchedulerNode, Optional[BaseSchedulerNode]],
-    next_dict: dict[BaseSchedulerNode, Optional[BaseSchedulerNode]],
+    prev_dict: dict[BaseSchedulerNode, BaseSchedulerNode | None],
+    next_dict: dict[BaseSchedulerNode, BaseSchedulerNode | None],
     head: BaseSchedulerNode,
 ) -> BaseSchedulerNode:
     """
@@ -1632,7 +1630,7 @@ def _perform_double_linked_list_swap_sink_waits(
 def _format_and_log_sink_waits_stats(
     stats: dict[BaseSchedulerNode, SinkWaitInfo],
     head: BaseSchedulerNode,
-    next_dict: dict[BaseSchedulerNode, Optional[BaseSchedulerNode]],
+    next_dict: dict[BaseSchedulerNode, BaseSchedulerNode | None],
     original_snodes_num: int,
     peak_memory: int,
     name_to_freeable_input_buf: dict,
@@ -1724,7 +1722,7 @@ def _find_buffers_with_changed_last_use_sink_waits(
     gns: list[BaseSchedulerNode],
     buf_to_snode_last_use: dict,
     candidate_buffer_map: dict[BaseSchedulerNode, OrderedSet],
-) -> dict[BaseSchedulerNode, list[Union[FreeableInputBuffer, Any]]]:
+) -> dict[BaseSchedulerNode, list[FreeableInputBuffer | Any]]:
     """
     Find buffers whose last use will change after swapping in sink_waits pass.
 
@@ -1742,7 +1740,7 @@ def _find_buffers_with_changed_last_use_sink_waits(
         Dict mapping group nodes to buffers that will change their last-use node
     """
     group_n_to_bufs_after_swap_dealloc_instead_of_candidate: dict[
-        BaseSchedulerNode, list[Union[FreeableInputBuffer, Any]]
+        BaseSchedulerNode, list[FreeableInputBuffer | Any]
     ] = defaultdict(list)
 
     # Optimization: only check buffers where candidate is a successor
@@ -1751,7 +1749,7 @@ def _find_buffers_with_changed_last_use_sink_waits(
 
     for buf in candidate_bufs:
         snode_last_use = buf_to_snode_last_use[buf]
-        if snode_last_use != candidate:  # noqa: E711
+        if snode_last_use != candidate:
             continue
 
         # candidate is last use of buf
@@ -1811,13 +1809,13 @@ def _sink_waits_iterative_internal(
         for snode in snodes
     }
 
-    curr: Optional[BaseSchedulerNode] = snodes[-1]
+    curr: BaseSchedulerNode | None = snodes[-1]
 
     processed_waits = OrderedSet()  # type: ignore[var-annotated]
     debug_iterative_memory_recompute = (
         config_comms.reorder_iterative_debug_memory_recompute
     )
-    debug_num_sink_waits_to_reorder: Optional[int] = (
+    debug_num_sink_waits_to_reorder: int | None = (
         config_comms.sink_waits_iterative_debug_limit_to_sink
     )
 
@@ -2186,7 +2184,7 @@ def visualize_overlap(order):
     cur_comm_node = None
 
     def step_log(step, msg):
-        overlap_log.debug(f"{step:>6}: {msg}")  # noqa: G004
+        overlap_log.debug(f"{step:>6}: {msg}")
 
     for step, snode in enumerate(order):
         if cur_comm_node is None:
@@ -2205,15 +2203,13 @@ def visualize_overlap(order):
             if contains_collective(snode):
                 total_est_runtime += estimate_op_runtime(snode)
                 cur_comm_node = snode.node
-                step_log(step, f"{node_summary(snode)}")  # noqa: G004
+                step_log(step, f"{node_summary(snode)}")
             elif is_wait(snode.node):  # end of this comm op
                 step_log(step, f"{node_summary(snode)}")
                 cur_comm_node = None
             else:  # overlapped compute op
                 step_log(step, f"| {node_summary(snode)}")
-    overlap_log.debug(
-        f"Est. runtime (ms): {total_est_runtime / 1000 / 1000}"  # noqa: G004
-    )
+    overlap_log.debug(f"Est. runtime (ms): {total_est_runtime / 1000 / 1000}")
 
 
 def reorder_compute_and_comm_for_overlap(
