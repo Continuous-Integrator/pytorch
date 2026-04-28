@@ -728,6 +728,209 @@ class TestStatelessFunctionalAPI(TestCase):
         self.assertTrue(not hasattr(mod, 'extra'))
 
 
+    @parametrize("functional_call", [
+        subtest(torch.func.functional_call, "torch_func"),
+        subtest(stateless.functional_call, "stateless")
+    ])
+    def test_functional_call_with_kwargs(self, functional_call):
+        class Foo(torch.nn.Module):
+            def __init__(self, x):
+                super().__init__()
+                self.x = x
+
+            def forward(self, inp, *, other_inp):
+                return inp * self.x + other_inp
+
+        a = {'x': torch.zeros(2, 3)}
+        mod = Foo(torch.randn(2, 3))
+        inp, other_inp = torch.randn(2, 3), torch.randn(2, 3)
+        with self.assertRaisesRegex(TypeError, "missing 1 required keyword-only argument: 'other_inp'"):
+            functional_call(mod, a, inp)
+        res = functional_call(mod, a, inp, {'other_inp': other_inp})
+        self.assertEqual(res, other_inp)
+        res_1 = functional_call(mod, a, (), {'inp': inp, 'other_inp': other_inp})
+        self.assertEqual(res, res_1)
+        res_2 = functional_call(mod, a, kwargs={'inp': inp, 'other_inp': other_inp})
+        self.assertEqual(res, res_2)
+
+    def test_functional_call_tuple_dicts(self):
+        mod = MockModule()
+        x = torch.rand((1, 1))
+        parameters = {k: torch.ones_like(v) for k, v in mod.named_parameters()}
+        buffers = {k: torch.zeros_like(v) for k, v in mod.named_buffers()}
+
+        # two dictionaries
+        res = torch.func.functional_call(mod, (parameters, buffers), x)
+        self.assertEqual(res, x + 1)
+
+        # no dictionaries
+        res = torch.func.functional_call(mod, (), x)
+        self.assertEqual(res, mod(x))
+
+        # three dictionaries
+        a = ({'l1.weight': torch.ones(1, 1)}, {'l1.bias': torch.ones(1)}, {'buffer': torch.zeros(1)})
+        res = torch.func.functional_call(mod, a, x)
+        self.assertEqual(res, x + 1)
+
+    def test_functional_call_multiple_dicts_error(self):
+        mod = MockModule()
+        x = torch.rand((1, 1))
+        parameters = {'l1.weight': torch.zeros((1, 1)), 'l1.bias': torch.zeros((1, 1))}
+        repeated_parameters = {'l1.weight': torch.ones((1, 1))}
+        with self.assertRaisesRegex(
+            ValueError,
+            re.escape("['l1.weight'] appeared in multiple dictionaries"),
+        ):
+            torch.func.functional_call(mod, (parameters, repeated_parameters), x)
+
+    @parametrize("functional_call", [
+        subtest(torch.func.functional_call, "torch_func"),
+        subtest(stateless.functional_call, "stateless")
+    ])
+    def test_functional_call_member_reference(self, functional_call):
+        class Module(torch.nn.Module):
+            def __init__(self) -> None:
+                super().__init__()
+                self.l1 = torch.nn.Linear(1, 1)
+                self.buffer = torch.nn.Buffer(torch.ones(1))
+
+            def forward(self, x):
+                parameters = tuple(self.parameters())
+                buffers = tuple(self.buffers())
+                return self.l1(x) + self.buffer, parameters, buffers
+
+        module = Module()
+        weight = torch.tensor([[2.0]])
+        bias = torch.tensor([5.0])
+        buffer = torch.tensor([3.0])
+        extra = torch.tensor([1.0])
+        extra_p = torch.nn.Parameter(extra)
+
+        # All weights
+        parameters = {'l1.weight': weight,
+                      'l1.bias': bias,
+                      'buffer': buffer}
+        x = torch.randn(1, 1)
+        out, parameters, buffers = functional_call(module, parameters, x)
+        self.assertEqual(out, x * weight + bias + buffer)
+        self.assertEqual(parameters, (weight, bias))
+        self.assertEqual(buffers, (buffer,))
+        self.assertTrue(all(t1 is t2 for t1, t2 in zip(parameters, (weight, bias))))
+        self.assertTrue(all(t1 is t2 for t1, t2 in zip(buffers, (buffer,))))
+
+        # Some weights
+        parameters = {'l1.weight': weight}
+        x = torch.randn(1, 1)
+        out, parameters, buffers = functional_call(module, parameters, x)
+        self.assertEqual(out, x * weight + module.l1.bias + module.buffer)
+        self.assertEqual(parameters, (weight, module.l1.bias))
+        self.assertEqual(buffers, (module.buffer,))
+        self.assertTrue(all(t1 is t2 for t1, t2 in zip(parameters, (weight, module.l1.bias))))
+        self.assertTrue(all(t1 is t2 for t1, t2 in zip(buffers, (module.buffer,))))
+
+        # All weights with extra keys
+        parameters = {'l1.weight': weight,
+                      'l1.bias': bias,
+                      'buffer': buffer,
+                      'l1.extra': extra}
+        x = torch.randn(1, 1)
+        out, parameters, buffers = functional_call(module, parameters, x)
+        self.assertEqual(out, x * weight + bias + buffer)
+        self.assertEqual(parameters, (weight, bias))
+        self.assertEqual(buffers, (buffer,))
+        self.assertTrue(all(t1 is t2 for t1, t2 in zip(parameters, (weight, bias))))
+        self.assertTrue(all(t1 is t2 for t1, t2 in zip(buffers, (buffer,))))
+
+        # All weights with extra keys with parameters
+        parameters = {'l1.weight': weight,
+                      'l1.bias': bias,
+                      'buffer': buffer,
+                      'l1.extra': extra_p}
+        x = torch.randn(1, 1)
+        out, parameters, buffers = functional_call(module, parameters, x)
+        self.assertEqual(out, x * weight + bias + buffer)
+        self.assertEqual(parameters, (weight, bias, extra_p))
+        self.assertEqual(buffers, (buffer,))
+        self.assertTrue(all(t1 is t2 for t1, t2 in zip(parameters, (weight, bias, extra_p))))
+        self.assertTrue(all(t1 is t2 for t1, t2 in zip(buffers, (buffer,))))
+
+        # Some weights with extra keys
+        parameters = {'l1.weight': weight,
+                      'l1.extra': extra}
+        x = torch.randn(1, 1)
+        out, parameters, buffers = functional_call(module, parameters, x)
+        self.assertEqual(out, x * weight + module.l1.bias + module.buffer)
+        self.assertEqual(parameters, (weight, module.l1.bias))
+        self.assertEqual(buffers, (module.buffer))
+        self.assertTrue(all(t1 is t2 for t1, t2 in zip(parameters, (weight, module.l1.bias))))
+        self.assertTrue(all(t1 is t2 for t1, t2 in zip(buffers, (module.buffer,))))
+
+        # Some weights with extra keys with parameters
+        parameters = {'l1.weight': weight,
+                      'l1.extra': extra_p}
+        x = torch.randn(1, 1)
+        out, parameters, buffers = functional_call(module, parameters, x)
+        self.assertEqual(out, x * weight + module.l1.bias + module.buffer)
+        self.assertEqual(parameters, (weight, module.l1.bias, extra_p))
+        self.assertEqual(buffers, (module.buffer))
+        self.assertTrue(all(t1 is t2 for t1, t2 in zip(parameters, (weight, module.l1.bias, extra_p))))
+        self.assertTrue(all(t1 is t2 for t1, t2 in zip(buffers, (module.buffer,))))
+
+        # Set None
+        parameters = {'l1.weight': weight,
+                      'l1.bias': None}
+        x = torch.randn(1, 1)
+        out, parameters, buffers = functional_call(module, parameters, x)
+        self.assertEqual(out, x * weight + module.buffer)
+        self.assertEqual(parameters, (weight,))
+        self.assertEqual(buffers, (module.buffer))
+        self.assertTrue(all(t1 is t2 for t1, t2 in zip(parameters, (weight,))))
+        self.assertTrue(all(t1 is t2 for t1, t2 in zip(buffers, (module.buffer,))))
+
+
+class TestStatelessDeprecation(TestCase):
+    def test_private_stateless_warns(self):
+        script = """
+import torch
+import warnings
+
+with warnings.catch_warnings(record=True) as w:
+    from torch.nn.utils import _stateless
+
+exit(len(w))
+"""
+        try:
+            subprocess.check_output(
+                [sys.executable, '-W', 'always', '-c', script],
+                stderr=subprocess.STDOUT,
+                # On Windows, opening the subprocess with the default CWD makes `import torch`
+                # fail, so just set CWD to this script's directory
+                cwd=os.path.dirname(os.path.realpath(__file__)),)
+        except subprocess.CalledProcessError as e:
+            self.assertEqual(e.returncode, 1)
+        else:
+            self.assertTrue(False, "No warning was raised.")
+
+    def test_stateless_functional_call_warns(self):
+        m = torch.nn.Linear(1, 1)
+        params = dict(m.named_parameters())
+        x = torch.randn(3, 1)
+        with self.assertWarnsRegex(FutureWarning, "Please use `torch.func.functional_call`"):
+            stateless.functional_call(m, params, x)
+
+class TestPythonOptimizeMode(TestCase):
+    def test_runs_with_optimize_flag(self):
+        script = "import torch; import torch._functorch.deprecated"
+        try:
+            subprocess.check_output(
+                [sys.executable, "-OO", "-c", script],
+                stderr=subprocess.STDOUT,
+                # On Windows, opening the subprocess with the default CWD makes `import torch`
+                # fail, so just set CWD to this script's directory
+                cwd=os.path.dirname(os.path.realpath(__file__)),)
+        except subprocess.CalledProcessError as e:
+            self.assertFalse(e.returncode, "Import failed while running python in optimized mode")
+
 class TestStatelessOptimizerReparam(TestCase):
     class _TestException(Exception):
         pass
@@ -997,209 +1200,6 @@ def forward(self, state, x):
     _record_function_exit = torch.ops.profiler._record_function_exit._RecordFunction(_record_function_enter_new);  _record_function_enter_new = _record_function_exit = None
     return pytree.tree_unflatten([addmm_1], self._out_spec)""",
         )
-
-    @parametrize("functional_call", [
-        subtest(torch.func.functional_call, "torch_func"),
-        subtest(stateless.functional_call, "stateless")
-    ])
-    def test_functional_call_with_kwargs(self, functional_call):
-        class Foo(torch.nn.Module):
-            def __init__(self, x):
-                super().__init__()
-                self.x = x
-
-            def forward(self, inp, *, other_inp):
-                return inp * self.x + other_inp
-
-        a = {'x': torch.zeros(2, 3)}
-        mod = Foo(torch.randn(2, 3))
-        inp, other_inp = torch.randn(2, 3), torch.randn(2, 3)
-        with self.assertRaisesRegex(TypeError, "missing 1 required keyword-only argument: 'other_inp'"):
-            functional_call(mod, a, inp)
-        res = functional_call(mod, a, inp, {'other_inp': other_inp})
-        self.assertEqual(res, other_inp)
-        res_1 = functional_call(mod, a, (), {'inp': inp, 'other_inp': other_inp})
-        self.assertEqual(res, res_1)
-        res_2 = functional_call(mod, a, kwargs={'inp': inp, 'other_inp': other_inp})
-        self.assertEqual(res, res_2)
-
-    def test_functional_call_tuple_dicts(self):
-        mod = MockModule()
-        x = torch.rand((1, 1))
-        parameters = {k: torch.ones_like(v) for k, v in mod.named_parameters()}
-        buffers = {k: torch.zeros_like(v) for k, v in mod.named_buffers()}
-
-        # two dictionaries
-        res = torch.func.functional_call(mod, (parameters, buffers), x)
-        self.assertEqual(res, x + 1)
-
-        # no dictionaries
-        res = torch.func.functional_call(mod, (), x)
-        self.assertEqual(res, mod(x))
-
-        # three dictionaries
-        a = ({'l1.weight': torch.ones(1, 1)}, {'l1.bias': torch.ones(1)}, {'buffer': torch.zeros(1)})
-        res = torch.func.functional_call(mod, a, x)
-        self.assertEqual(res, x + 1)
-
-    def test_functional_call_multiple_dicts_error(self):
-        mod = MockModule()
-        x = torch.rand((1, 1))
-        parameters = {'l1.weight': torch.zeros((1, 1)), 'l1.bias': torch.zeros((1, 1))}
-        repeated_parameters = {'l1.weight': torch.ones((1, 1))}
-        with self.assertRaisesRegex(
-            ValueError,
-            re.escape("['l1.weight'] appeared in multiple dictionaries"),
-        ):
-            torch.func.functional_call(mod, (parameters, repeated_parameters), x)
-
-    @parametrize("functional_call", [
-        subtest(torch.func.functional_call, "torch_func"),
-        subtest(stateless.functional_call, "stateless")
-    ])
-    def test_functional_call_member_reference(self, functional_call):
-        class Module(torch.nn.Module):
-            def __init__(self) -> None:
-                super().__init__()
-                self.l1 = torch.nn.Linear(1, 1)
-                self.buffer = torch.nn.Buffer(torch.ones(1))
-
-            def forward(self, x):
-                parameters = tuple(self.parameters())
-                buffers = tuple(self.buffers())
-                return self.l1(x) + self.buffer, parameters, buffers
-
-        module = Module()
-        weight = torch.tensor([[2.0]])
-        bias = torch.tensor([5.0])
-        buffer = torch.tensor([3.0])
-        extra = torch.tensor([1.0])
-        extra_p = torch.nn.Parameter(extra)
-
-        # All weights
-        parameters = {'l1.weight': weight,
-                      'l1.bias': bias,
-                      'buffer': buffer}
-        x = torch.randn(1, 1)
-        out, parameters, buffers = functional_call(module, parameters, x)
-        self.assertEqual(out, x * weight + bias + buffer)
-        self.assertEqual(parameters, (weight, bias))
-        self.assertEqual(buffers, (buffer,))
-        self.assertTrue(all(t1 is t2 for t1, t2 in zip(parameters, (weight, bias))))
-        self.assertTrue(all(t1 is t2 for t1, t2 in zip(buffers, (buffer,))))
-
-        # Some weights
-        parameters = {'l1.weight': weight}
-        x = torch.randn(1, 1)
-        out, parameters, buffers = functional_call(module, parameters, x)
-        self.assertEqual(out, x * weight + module.l1.bias + module.buffer)
-        self.assertEqual(parameters, (weight, module.l1.bias))
-        self.assertEqual(buffers, (module.buffer,))
-        self.assertTrue(all(t1 is t2 for t1, t2 in zip(parameters, (weight, module.l1.bias))))
-        self.assertTrue(all(t1 is t2 for t1, t2 in zip(buffers, (module.buffer,))))
-
-        # All weights with extra keys
-        parameters = {'l1.weight': weight,
-                      'l1.bias': bias,
-                      'buffer': buffer,
-                      'l1.extra': extra}
-        x = torch.randn(1, 1)
-        out, parameters, buffers = functional_call(module, parameters, x)
-        self.assertEqual(out, x * weight + bias + buffer)
-        self.assertEqual(parameters, (weight, bias))
-        self.assertEqual(buffers, (buffer,))
-        self.assertTrue(all(t1 is t2 for t1, t2 in zip(parameters, (weight, bias))))
-        self.assertTrue(all(t1 is t2 for t1, t2 in zip(buffers, (buffer,))))
-
-        # All weights with extra keys with parameters
-        parameters = {'l1.weight': weight,
-                      'l1.bias': bias,
-                      'buffer': buffer,
-                      'l1.extra': extra_p}
-        x = torch.randn(1, 1)
-        out, parameters, buffers = functional_call(module, parameters, x)
-        self.assertEqual(out, x * weight + bias + buffer)
-        self.assertEqual(parameters, (weight, bias, extra_p))
-        self.assertEqual(buffers, (buffer,))
-        self.assertTrue(all(t1 is t2 for t1, t2 in zip(parameters, (weight, bias, extra_p))))
-        self.assertTrue(all(t1 is t2 for t1, t2 in zip(buffers, (buffer,))))
-
-        # Some weights with extra keys
-        parameters = {'l1.weight': weight,
-                      'l1.extra': extra}
-        x = torch.randn(1, 1)
-        out, parameters, buffers = functional_call(module, parameters, x)
-        self.assertEqual(out, x * weight + module.l1.bias + module.buffer)
-        self.assertEqual(parameters, (weight, module.l1.bias))
-        self.assertEqual(buffers, (module.buffer))
-        self.assertTrue(all(t1 is t2 for t1, t2 in zip(parameters, (weight, module.l1.bias))))
-        self.assertTrue(all(t1 is t2 for t1, t2 in zip(buffers, (module.buffer,))))
-
-        # Some weights with extra keys with parameters
-        parameters = {'l1.weight': weight,
-                      'l1.extra': extra_p}
-        x = torch.randn(1, 1)
-        out, parameters, buffers = functional_call(module, parameters, x)
-        self.assertEqual(out, x * weight + module.l1.bias + module.buffer)
-        self.assertEqual(parameters, (weight, module.l1.bias, extra_p))
-        self.assertEqual(buffers, (module.buffer))
-        self.assertTrue(all(t1 is t2 for t1, t2 in zip(parameters, (weight, module.l1.bias, extra_p))))
-        self.assertTrue(all(t1 is t2 for t1, t2 in zip(buffers, (module.buffer,))))
-
-        # Set None
-        parameters = {'l1.weight': weight,
-                      'l1.bias': None}
-        x = torch.randn(1, 1)
-        out, parameters, buffers = functional_call(module, parameters, x)
-        self.assertEqual(out, x * weight + module.buffer)
-        self.assertEqual(parameters, (weight,))
-        self.assertEqual(buffers, (module.buffer))
-        self.assertTrue(all(t1 is t2 for t1, t2 in zip(parameters, (weight,))))
-        self.assertTrue(all(t1 is t2 for t1, t2 in zip(buffers, (module.buffer,))))
-
-
-class TestStatelessDeprecation(TestCase):
-    def test_private_stateless_warns(self):
-        script = """
-import torch
-import warnings
-
-with warnings.catch_warnings(record=True) as w:
-    from torch.nn.utils import _stateless
-
-exit(len(w))
-"""
-        try:
-            subprocess.check_output(
-                [sys.executable, '-W', 'always', '-c', script],
-                stderr=subprocess.STDOUT,
-                # On Windows, opening the subprocess with the default CWD makes `import torch`
-                # fail, so just set CWD to this script's directory
-                cwd=os.path.dirname(os.path.realpath(__file__)),)
-        except subprocess.CalledProcessError as e:
-            self.assertEqual(e.returncode, 1)
-        else:
-            self.assertTrue(False, "No warning was raised.")
-
-    def test_stateless_functional_call_warns(self):
-        m = torch.nn.Linear(1, 1)
-        params = dict(m.named_parameters())
-        x = torch.randn(3, 1)
-        with self.assertWarnsRegex(FutureWarning, "Please use `torch.func.functional_call`"):
-            stateless.functional_call(m, params, x)
-
-class TestPythonOptimizeMode(TestCase):
-    def test_runs_with_optimize_flag(self):
-        script = "import torch; import torch._functorch.deprecated"
-        try:
-            subprocess.check_output(
-                [sys.executable, "-OO", "-c", script],
-                stderr=subprocess.STDOUT,
-                # On Windows, opening the subprocess with the default CWD makes `import torch`
-                # fail, so just set CWD to this script's directory
-                cwd=os.path.dirname(os.path.realpath(__file__)),)
-        except subprocess.CalledProcessError as e:
-            self.assertFalse(e.returncode, "Import failed while running python in optimized mode")
 
 
 instantiate_parametrized_tests(
