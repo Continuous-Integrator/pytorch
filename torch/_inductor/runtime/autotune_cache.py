@@ -600,14 +600,35 @@ def _load_cached_autotuning(
         # pyrefly: ignore [missing-attribute]
         and cfg.num_stages == best_config.get("num_stages")
     ]
-    if len(matching_configs) != 1:
-        return None
+    if len(matching_configs) == 1:
+        matched_config = matching_configs[0]
+        # pyrefly: ignore [missing-attribute]
+        matched_config.extra_options = extra_options
+        return matched_config
 
-    matched_config = matching_configs[0]
-    # Restore extra_options (may be None if not used by backend)
+    # The best config may have been added dynamically (e.g. by
+    # _dynamic_scale_rblock) and is not in the original config list.
+    # Since configs_hash already validated that the candidate set hasn't
+    # changed, reconstruct the Config from cached data.
+    best_config.pop("found_by_coordesc", None)
+    num_warps = best_config.pop("num_warps")
+    num_stages = best_config.pop("num_stages")
+    config_args: dict[str, Any] = {
+        "num_warps": num_warps,
+        "num_stages": num_stages,
+    }
+    if HAS_WARP_SPEC:
+        config_args.update(
+            {
+                "num_consumer_groups": best_config.pop("num_consumer_groups", 0),
+                "num_buffers_warp_spec": best_config.pop("num_buffers_warp_spec", 0),
+            }
+        )
+    # pyrefly: ignore [bad-argument-count, unexpected-keyword]
+    triton_config = Config(best_config, **config_args)
     # pyrefly: ignore [missing-attribute]
-    matched_config.extra_options = extra_options
-    return matched_config
+    triton_config.extra_options = extra_options
+    return triton_config
 
 
 class _LocalAutotuneCacheBackend(RemoteCacheBackend[bytes]):
