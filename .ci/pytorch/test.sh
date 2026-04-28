@@ -2211,9 +2211,16 @@ elif [[ "${TEST_CONFIG}" == *operator_microbenchmark* ]]; then
 elif [[ "${TEST_CONFIG}" == *attention_microbenchmark* ]]; then
   test_attention_microbenchmark
 elif [[ "${TEST_CONFIG}" == *repro_181683* ]]; then
+  # Pre-seed the disabled-tests cache as empty so test_vmap_grad_sum_cpu
+  # (disabled via #181683) actually runs. fetch_and_cache reuses any existing
+  # file < 3h old, so the download is skipped and our empty dict wins.
+  mkdir -p test
+  echo '{}' > test/.pytorch-disabled-tests.json
   for i in 1 2 3 4 5; do
     echo "=== repro-181683 attempt ${i}/5 ==="
     NUM_TEST_SHARDS=3 test_dynamo_wrapped_shard 3 || true
+    # Re-write in case anything modified it.
+    echo '{}' > test/.pytorch-disabled-tests.json
   done
 elif [[ "${TEST_CONFIG}" == *inductor_distributed* ]]; then
   setup_torch_trace
