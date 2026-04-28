@@ -4914,6 +4914,18 @@ class AOTInductorTestsTemplate:
         m = M()
         self.check_model(m, example_args, dynamic_shapes=dynamic_shapes)
 
+    def test_grid_sampler_3d(self):
+        class M(torch.nn.Module):
+            def forward(self, input, grid):
+                return torch.grid_sampler_3d(input, grid, 0, 0, True)
+
+        # input: (N, C, D_in, H_in, W_in), grid: (N, D_out, H_out, W_out, 3)
+        example_args = (
+            torch.randn(1, 1, 4, 4, 4, device=self.device),
+            torch.randn(1, 2, 2, 2, 3, device=self.device),
+        )
+        self.check_model(M(), example_args)
+
     def test_proxy_executor_permute(self):
         class M(torch.nn.Module):
             def __init__(self) -> None:
@@ -6688,6 +6700,55 @@ class AOTInductorTestsTemplate:
 
         atol, rtol = 3e-4, 3e-4
         self.assertEqual(expected, output, atol=atol, rtol=rtol)
+
+    @parametrize(
+        "package_format",
+        ["in_so", "binary_blob"],
+    )
+    def test_package_constants_serialization(self, package_format):
+        # Exercises the packaged constant serialization path with a mix of
+        # dtypes, odd shapes, and an empty buffer so alignment padding and
+        # the numel==0 branch are actually stressed. Covers both packaging
+        # formats since they share the same serialization code.
+        class Model(torch.nn.Module):
+            def __init__(self, device):
+                super().__init__()
+                # Odd dims produce fp32 sizes that aren't multiples of
+                # ALIGN_BYTES=64 (e.g. 7*13*4=364 bytes).
+                self.fc1 = torch.nn.Linear(7, 13, device=device)
+                self.fc2 = torch.nn.Linear(13, 17, device=device)
+                self.fc3 = torch.nn.Linear(17, 23, device=device)
+                # bf16 scale: 23 * 2 = 46 bytes.
+                self.register_buffer(
+                    "bf16_scale",
+                    torch.randn(23, dtype=torch.bfloat16, device=device),
+                )
+                # int8 offset: 23 bytes.
+                self.register_buffer(
+                    "i8_offset",
+                    torch.arange(-11, 12, dtype=torch.int8, device=device),
+                )
+                # numel==0 buffer exercises the size-zero skip path.
+                self.register_buffer(
+                    "empty", torch.empty(0, dtype=torch.float32, device=device)
+                )
+
+            def forward(self, x):
+                x = self.fc1(x)
+                x = self.fc2(x)
+                x = self.fc3(x)
+                x = x * self.bf16_scale.to(x.dtype)
+                x = x + self.i8_offset.to(x.dtype)
+                return x + self.empty.sum()
+
+        example_inputs = (torch.randn(4, 7, device=self.device),)
+        patches = {"always_keep_tensor_constants": True}
+        if package_format == "in_so":
+            patches["aot_inductor.package_constants_in_so"] = True
+        else:
+            patches["aot_inductor.package_constants_on_disk_format"] = "binary_blob"
+        with config.patch(patches):
+            self.check_model(Model(self.device), example_inputs, atol=3e-4, rtol=3e-4)
 
     def test_weight_on_disk_legacy(self):
         class Model(torch.nn.Module):
