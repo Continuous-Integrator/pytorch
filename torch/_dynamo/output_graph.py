@@ -670,34 +670,66 @@ class OutputGraph(OutputGraphCommon):
         # aren't explicit graph inputs.  Used by shape guard
         self.tracked_fakes: list[TrackedFake] = []
 
-        shape_env = ShapeEnv(
-            # Reference Cycle!
-            # Share a reference to the list of TrackedFake.
-            #
-            # ShapeEnv needs this in order to be able to reproduce the call
-            # to produce_guards at an arbitrary time point. That is because
-            # TrackedFake instances may have its metadata changed throughout
-            # the program execution.
-            tracked_fakes=self.tracked_fakes,
-            # We want to allow capture scalar outputs and allow_dynamic_output_shape_ops when fullgraph=True
-            allow_scalar_outputs=one_graph or config.capture_scalar_outputs,
-            allow_dynamic_output_shape_ops=one_graph
-            or config.capture_dynamic_output_shape_ops,
-            prefer_deferred_runtime_asserts_over_guards=config.prefer_deferred_runtime_asserts_over_guards,
-            co_fields=self.co_fields,
+        # Under non-strict tracing (e.g. make_fx wrapping a torch.compile),
+        # an outer TracingContext is already active with a FakeTensorMode
+        # whose ShapeEnv may carry unbacked symbols from outer inputs.
+        # Allocating a fresh inner ShapeEnv would leave those symbols
+        # foreign — wrap_to_fake_tensor_and_record would then call
+        # _maybe_specialize_sym_int_with_hint on the foreign unbacked
+        # SymInt and raise GuardOnDataDependentSymNode.  Reuse the outer
+        # mode/env so meta_utils.sym_sizes_strides_storage_offset can take
+        # its "shape envs match" fast-path and pass the SymInt through.
+        outer_tc = (
+            torch._guards.TracingContext.try_get()
+            if torch.compiler._is_non_strict_tracing()
+            else None
+        )
+        outer_fake_mode = outer_tc.fake_mode if outer_tc is not None else None
+        reuse_outer_fake_mode = (
+            outer_fake_mode is not None and outer_fake_mode.shape_env is not None
         )
 
-        # In export mode, we force the shape_env to strictly disallow any constraining
-        # of the user marked dynamic dims
-        import torch._functorch.config as _config
-
-        with _config.patch(fake_tensor_allow_unsafe_data_ptr_access=False):
-            fake_mode = torch._subclasses.FakeTensorMode(
-                shape_env=shape_env,
-                # TODO (tmanlaibaatar) Remove this once we always lift params and buffers
-                allow_non_fake_inputs=bool(self.export),
-                export=self.export,
+        if reuse_outer_fake_mode:
+            assert outer_fake_mode is not None  # for type checkers
+            shape_env = outer_fake_mode.shape_env
+            assert shape_env is not None
+            # Use dynamo's own tracked_fakes list for guard production so
+            # outer (make_fx) TrackedFakes (whose sources reference the
+            # outer frame) don't leak into this graph's guards.  Save and
+            # restore the outer list inside this OutputGraph's lifetime.
+            self._outer_shape_env_tracked_fakes = shape_env.tracked_fakes
+            shape_env.tracked_fakes = self.tracked_fakes
+            fake_mode = outer_fake_mode
+        else:
+            self._outer_shape_env_tracked_fakes = None
+            shape_env = ShapeEnv(
+                # Reference Cycle!
+                # Share a reference to the list of TrackedFake.
+                #
+                # ShapeEnv needs this in order to be able to reproduce the call
+                # to produce_guards at an arbitrary time point. That is because
+                # TrackedFake instances may have its metadata changed throughout
+                # the program execution.
+                tracked_fakes=self.tracked_fakes,
+                # We want to allow capture scalar outputs and allow_dynamic_output_shape_ops when fullgraph=True
+                allow_scalar_outputs=one_graph or config.capture_scalar_outputs,
+                allow_dynamic_output_shape_ops=one_graph
+                or config.capture_dynamic_output_shape_ops,
+                prefer_deferred_runtime_asserts_over_guards=config.prefer_deferred_runtime_asserts_over_guards,
+                co_fields=self.co_fields,
             )
+
+            # In export mode, we force the shape_env to strictly disallow any constraining
+            # of the user marked dynamic dims
+            import torch._functorch.config as _config
+
+            with _config.patch(fake_tensor_allow_unsafe_data_ptr_access=False):
+                fake_mode = torch._subclasses.FakeTensorMode(
+                    shape_env=shape_env,
+                    # TODO (tmanlaibaatar) Remove this once we always lift params and buffers
+                    allow_non_fake_inputs=bool(self.export),
+                    export=self.export,
+                )
         self.tracing_context: TracingContext = TracingContext(fake_mode)
         self.tracing_context.traced_code.append(f_code)
         self.tracing_context.cudagraph_annotation = self.cudagraph_annotation
@@ -3284,6 +3316,27 @@ class OutputGraph(OutputGraphCommon):
         name = unique_id(prefix)
         self.install_global_unsafe(name, value)
         return name
+
+    def restore_outer_shape_env_state(self) -> None:
+        """Restore the outer ShapeEnv.tracked_fakes list that was swapped out
+        in __init__ for non-strict tracing.  Idempotent.  Must be called only
+        after this OutputGraph's guards have been produced, since guard
+        production reads shape_env.tracked_fakes.
+        """
+        outer = self._outer_shape_env_tracked_fakes
+        if outer is None:
+            return
+        # Mark restored first so this is safe to call repeatedly even if the
+        # shape_env lookup below raises.
+        self._outer_shape_env_tracked_fakes = None
+        fake_mode = self.tracing_context.fake_mode
+        shape_env = fake_mode.shape_env if fake_mode is not None else None
+        if shape_env is None:
+            return
+        # Only restore if the slot still holds our inner list; if some other
+        # code has already swapped it out, leave that alone.
+        if shape_env.tracked_fakes is self.tracked_fakes:
+            shape_env.tracked_fakes = outer
 
     def cleanup(self) -> None:
         # There is a reference cycle between tracer and OutputGraph, causing

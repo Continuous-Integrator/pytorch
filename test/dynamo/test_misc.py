@@ -7923,6 +7923,74 @@ not ___dict_contains('cccccccc', G['sys'].modules)""",
         gm = torch.fx.symbolic_trace(optimized)
         self.assertTrue(same(gm(input), real))
 
+    def test_nested_compile_preserves_outer_unbacked_symbol(self):
+        # Regression: when make_fx wraps a torch.compile call under
+        # _non_strict_tracing_context, the inner Dynamo OutputGraph used
+        # to allocate a fresh ShapeEnv. Wrapping an outer FakeTensor
+        # whose shape carried an unbacked symbol then hit
+        # _maybe_specialize_sym_int_with_hint, which raised
+        # GuardOnDataDependentSymNode because the foreign unbacked symbol
+        # has no hint.  Reusing the outer FakeTensorMode lets the symbol
+        # flow through unchanged.
+        from torch._dynamo.decorators import mark_unbacked
+        from torch._dynamo.source import LocalSource
+        from torch._guards import tracing, TracingContext
+        from torch._subclasses import FakeTensorMode
+        from torch.fx.experimental.proxy_tensor import make_fx
+        from torch.fx.experimental.symbolic_shapes import (
+            DimDynamic,
+            ShapeEnv,
+            StatelessSymbolicContext,
+            TrackedFake,
+        )
+
+        compiled_f = torch.compile(lambda t: t.sum(dim=1), fullgraph=True)
+
+        def fn(t):
+            return compiled_f(t)
+
+        x = torch.zeros(4, 8, dtype=torch.int64)
+        mark_unbacked(x, 1)
+
+        fake_mode = FakeTensorMode(
+            allow_non_fake_inputs=True,
+            shape_env=ShapeEnv(tracked_fakes=[]),
+        )
+        source = LocalSource("x", is_input=True)
+        ctx = StatelessSymbolicContext(
+            dynamic_sizes=[DimDynamic.STATIC, DimDynamic.UNBACKED],
+            constraint_sizes=[None, None],
+            specialize_on=[[], []],
+        )
+        fake_x = fake_mode.from_tensor(x, source=source, symbolic_context=ctx)
+        fake_mode.shape_env.tracked_fakes.append(TrackedFake(fake_x, source, ctx))
+        torch.fx.experimental.symbolic_shapes.compute_unbacked_bindings(
+            fake_mode.shape_env, (fake_x,)
+        )
+
+        with (
+            fake_mode,
+            tracing(TracingContext(fake_mode)),
+            torch._dynamo.config.patch(error_on_nested_fx_trace=False),
+            torch.compiler._non_strict_tracing_context(),
+        ):
+            gm = make_fx(fn)(fake_x)
+
+        placeholders = [n for n in gm.graph.nodes if n.op == "placeholder"]
+        self.assertEqual(len(placeholders), 1)
+        size = placeholders[0].meta["val"].size()
+        self.assertEqual(int(size[0]), 4)
+        # Outer unbacked symbol must survive into the inner graph rather
+        # than being specialized to a hint or thrown away.
+        self.assertIsInstance(size[1], torch.SymInt)
+        self.assertIs(size[1].node.shape_env, fake_mode.shape_env)
+        self.assertTrue(size[1].node.expr.is_symbol)
+
+        # The outer ShapeEnv.tracked_fakes list must be restored after
+        # the trace finishes (build_guards swaps the inner-list back).
+        self.assertEqual(len(fake_mode.shape_env.tracked_fakes), 1)
+        self.assertIs(fake_mode.shape_env.tracked_fakes[0].fake, fake_x)
+
     def test_not_dynamic_scope(self):
         def f(y):
             x = 1

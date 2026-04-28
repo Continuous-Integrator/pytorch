@@ -2343,6 +2343,11 @@ class VariableBuilder:
         return LazyConstantVariable.create(value, source=self.source)
 
     def assert_not_wrapped_by_this_graph(self, value: torch.Tensor) -> None:
+        # Under non-strict tracing the OutputGraph reuses the outer
+        # FakeTensorMode, so any pre-fake input legitimately shares
+        # tx.fake_mode and is not a sign of double-wrapping.
+        if torch.compiler._is_non_strict_tracing():
+            return
         if is_fake(value) and maybe_get_fake_mode(value) is self.tx.fake_mode:
             raise InternalTorchDynamoError(
                 "Cannot wrap a Tensor that has already been",
