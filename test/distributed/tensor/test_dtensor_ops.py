@@ -260,6 +260,7 @@ dtensor_multi_threaded_fails = {
     xfail("nn.functional.max_unpool3d", "grad"),
     xfail("nn.functional.threshold"),
     skip("nn.functional.multi_head_attention_forward"),
+    xfail("multinomial"),
 }
 
 # Ops that fail to compile with DTensor + torch.compile(fullgraph=True).
@@ -394,9 +395,9 @@ dtensor_fails_no_strategy = {
     xfail("log_normal"),
     xfail("logspace", "tensor_overload"),
     xfail("masked_scatter"),
-    xfail("multinomial"),
     xfail("nanquantile"),
     xfail("nn.functional.bilinear"),
+    xfail("nn.functional.linear_cross_entropy"),
     xfail("nn.functional.multi_margin_loss"),
     xfail("nn.functional.multilabel_margin_loss"),
     xfail("nn.functional.pad", "reflect"),
@@ -1017,6 +1018,10 @@ class TestSingleDimStrategies(DTensorOpTestBase):
             # Stochastic: each shard gets independent RNG, so
             # op(full) != cat(op(shard0), op(shard1)).
             skip("exponential"),
+            skip("geometric"),
+            skip("log_normal"),
+            skip("normal", "in_place"),
+            skip("uniform"),
         },
     )
     def test_single_dim_strategy(self, dtype, op):
