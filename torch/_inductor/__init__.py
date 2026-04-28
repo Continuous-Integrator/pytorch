@@ -410,7 +410,6 @@ def standalone_compile(
     dynamic_shapes: DynamicShapesType = "from_graph",
     options: dict[str, Any] | None = None,
     aot: bool = False,  # AOT mode, which uses BundledAOTAutogradCache
-    donate_graph_module: bool = False,
 ) -> CompiledArtifact:
     """
     Precompilation API for inductor.
@@ -434,9 +433,6 @@ def standalone_compile(
             If "from_example_inputs", we will specialize the graph on the
             example_inputs.
         options: Inductor compilation options
-        donate_graph_module: If True, standalone_compile takes ownership of
-            the graph module and may mutate it, avoiding an internal deepcopy.
-            Defaults to False for backwards compatibility.
 
     Returns:
         CompiledArtifact that can be saved to disk or invoked directly.
@@ -445,12 +441,7 @@ def standalone_compile(
 
     options = options if options else {}
     return standalone_compile(
-        gm,
-        example_inputs,
-        dynamic_shapes=dynamic_shapes,
-        options=options,
-        aot=aot,
-        donate_graph_module=donate_graph_module,
+        gm, example_inputs, dynamic_shapes=dynamic_shapes, options=options, aot=aot
     )
 
 

@@ -447,7 +447,6 @@ def standalone_compile(
     dynamic_shapes: DynamicShapesType,
     options: Any,
     aot: bool = False,  # AOT mode, which uses BundledAOTAutogradCache
-    donate_graph_module: bool = False,
 ) -> CompiledArtifact:
     """
     Implementation of torch.inductor.standalone_compile
@@ -456,9 +455,9 @@ def standalone_compile(
 
     ignore_shape_env = _resolve_ignore_shape_env(dynamic_shapes)
     with _standalone_context(gm, dynamic_shapes, aot):
-        # compile_fx takes ownership of gm and may mutate it on cache miss.
-        if not donate_graph_module:
-            gm = copy.deepcopy(gm)
+        # compile_fx can mutate gm
+        # TODO: this is only needed if we dont hit the cache!!
+        gm = copy.deepcopy(gm)
         compiled_fn = compile_fx(
             gm, example_inputs, ignore_shape_env=ignore_shape_env, **options
         )
