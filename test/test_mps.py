@@ -4026,6 +4026,45 @@ class TestMPS(TestCaseMPS):
         # Regression test for https://github.com/pytorch/pytorch/issues/107867
         self.assertEqual(torch.tensor([[1]], device='mps').item(), 1.0)
 
+    def test_copy_to_mps_non_blocking(self):
+        # Regression test for https://github.com/pytorch/pytorch/issues/139550
+        for dtype in [torch.uint8, torch.int64, torch.float32]:
+            for _ in range(20):
+                a = torch.arange(256, dtype=dtype)
+                a = a.to("mps", non_blocking=True)
+                torch.mps.synchronize()
+                self.assertEqual(a.cpu(), torch.arange(256, dtype=dtype))
+
+    def test_blocking_storage_copy_with_pyobj(self):
+        # Hangs if the blocking CPU->MPS copy path captures a Python-wrapped src storage
+        for _ in range(50):
+            src_cpu = torch.empty(1_000_000, dtype=torch.uint8).untyped_storage()
+            dst_mps = torch.empty(1_000_000, dtype=torch.uint8, device="mps").untyped_storage()
+            dst_mps.copy_(src_cpu, non_blocking=False)
+
+    def test_synchronize_releases_gil_with_async_copy(self):
+        # Hangs if torch.mps.synchronize() holds the GIL across waitUntilCompleted
+        for _ in range(100):
+            src_cpu = torch.empty(1_000_000, dtype=torch.uint8).untyped_storage()
+            dst_mps = torch.empty(1_000_000, dtype=torch.uint8, device="mps").untyped_storage()
+            dst_mps.copy_(src_cpu, non_blocking=True)
+            torch.mps.synchronize()
+
+            x_mps = torch.randn(1000, device="mps")
+            dst_cpu = torch.empty(1000, dtype=torch.float32).untyped_storage()
+            dst_cpu.copy_(x_mps.untyped_storage(), non_blocking=True)
+            torch.mps.synchronize()
+
+    def test_event_synchronize_releases_gil_with_async_copy(self):
+        # Hangs if torch.mps.Event.synchronize() holds the GIL across waitUntilCompleted
+        for _ in range(100):
+            src_cpu = torch.empty(1_000_000, dtype=torch.uint8).untyped_storage()
+            dst_mps = torch.empty(1_000_000, dtype=torch.uint8, device="mps").untyped_storage()
+            dst_mps.copy_(src_cpu, non_blocking=True)
+            event = torch.mps.Event()
+            event.record()
+            event.synchronize()
+
     # See https://github.com/pytorch/pytorch/pull/84742
     # and https://github.com/pytorch/pytorch/pull/78319
     @parametrize("binop", ['add', 'sub', 'mul', 'div'])
@@ -6140,6 +6179,34 @@ class TestMPS(TestCaseMPS):
                 torch.tensor((10, 20, 30, 40, 50), device=device),
                 atol=0, rtol=0
             )
+
+    @parametrize("dtype", [torch.float32, torch.bfloat16, torch.float16, torch.int32, torch.int64])
+    @parametrize("descending", [False, True])
+    @parametrize("dup", [False, True])
+    def test_sort_single_block(self, dtype, descending, dup):
+        # Shapes that hit the Metal single-block path: n_rows >= 2, last-dim,
+        # sort_size within one threadgroup (<=4096, or <=1024 for 8-byte types).
+        # dup=True uses a small value range so many elements collide; this exercises
+        # the tie-break path in the bitonic sort (equal values must still produce
+        # valid index permutations).
+        max_ss = 1024 if dtype == torch.int64 else 4096
+        lo, hi = (0, 5) if dup else (-1000, 1000)
+
+        def make(shape):
+            if dtype.is_floating_point:
+                return torch.randint(lo, hi, shape).to(dtype)
+            return torch.randint(lo, hi, shape, dtype=dtype)
+
+        for cpu in [make((4, 4)), make((8, max_ss)), make((16, 32, 64)),
+                    make((8, 2048))[:, ::2], make((1024, 8)).t()]:
+            mps = cpu.to("mps")
+            cv, _ = torch.sort(cpu, dim=-1, descending=descending)
+            mv, mi = torch.sort(mps, dim=-1, descending=descending)
+            self.assertEqual(cv, mv.cpu())
+            self.assertEqual(torch.gather(mps, -1, mi).cpu(), mv.cpu())
+            # duplicate keys must not duplicate indices
+            sorted_mi, _ = torch.sort(mi, dim=-1)
+            self.assertEqual(sorted_mi.cpu(), torch.arange(mi.size(-1)).expand_as(mi))
 
     def test_linalg_cholesky(self):
         from torch.testing._internal.common_utils import random_hermitian_pd_matrix
