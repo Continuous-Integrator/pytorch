@@ -4691,88 +4691,62 @@ class ShapeEnv:
             size.append(sym)
         return size
 
-    def create_symbolic_sizes_strides_storage_offset(
+    def transfer_symbols_from_foreign_shape_env(
         self,
-        ex: torch.Tensor,
+        sizes: Sequence[IntLikeType],
+        strides: Sequence[IntLikeType],
+        storage_offset: IntLikeType,
         source: Source,
         *,
         symbolic_context: SymbolicContext | None = None,
+        hint_overrides: dict[int, int] | None = None,
     ) -> tuple[
         tuple[IntLikeType, ...],
         tuple[IntLikeType, ...],
         IntLikeType,
     ]:
-        """
-        Returns a list of symbolic sizes and strides for the given tensor.
-        We try our best to express stride in terms of the sizes, so as to not
-        introduce new symbolic variables.
-        """
+        """Transfer symbolic sizes/strides/offset from a foreign ShapeEnv
+        into this one.  Each dimension is classified as STATIC, DYNAMIC,
+        or UNBACKED based on whether the foreign symbol has a guarding hint,
+        and new symbols are created in this ShapeEnv accordingly."""
 
-        ex_size = tuple(
-            self._maybe_specialize_sym_int_with_hint(sz) for sz in ex.size()
-        )
-        ex_stride = tuple(
-            self._maybe_specialize_sym_int_with_hint(sd) for sd in ex.stride()
-        )
-        ex_storage_offset = self._maybe_specialize_sym_int_with_hint(
-            ex.storage_offset()
-        )
+        def _classify(s: IntLikeType) -> DimDynamic:
+            if not is_symbolic(s):
+                return DimDynamic.STATIC
+            if not has_guarding_hint(s):
+                return DimDynamic.UNBACKED
+            return DimDynamic.DYNAMIC
+
+        def _hint(s: IntLikeType) -> int:
+            """Extract concrete hint.  For unbacked symbols returns a dummy
+            value — create_symbol with UNBACKED ignores it."""
+            if is_symbolic(s):
+                if not has_guarding_hint(s):
+                    return 2  # dummy, ignored by UNBACKED path
+                return guarding_hint_or_throw(s.node)  # type: ignore[union-attr]
+            return s  # type: ignore[return-value]
+
+        if symbolic_context is None:
+            dynamic_sizes = [_classify(sz) for sz in sizes]
+            dynamic_strides = [DimDynamic.INFER_STRIDE] * len(sizes)
+            symbolic_context = StatelessSymbolicContext(
+                dynamic_sizes=dynamic_sizes,
+                dynamic_strides=dynamic_strides,
+            )
+
+        ex_size = tuple(_hint(sz) for sz in sizes)
+        ex_stride = tuple(_hint(sd) for sd in strides)
+        ex_storage_offset = _hint(storage_offset)
 
         return self._create_symbolic_sizes_strides_storage_offset(
             ex_size,
             ex_stride,
             ex_storage_offset,
-            [_is_dim_dynamic(ex, i) for i in range(ex.dim())],
+            [False] * len(sizes),  # unused when symbolic_context is provided
             source,
             symbolic_context=symbolic_context,
+            hint_overrides=hint_overrides,
         )
-
-    # Dynamo may want to wrap FakeTensors with SymInt sizes up e.g. make_fx(opt_f(), tracing_mode="symbolic").
-    # We create symbols in shape_env using the backed hints behind SymInt.
-
-    # Case 1: when SymInt is backed, dynamo can proceed with FakeTensors that have concrete shape.
-    # produce_guards will trigger specializations on the outer stuff
-
-    # Case 2: when the SymInt is unbacked, we will throw a data dependent error in guarding_hint_or_throw().
-    #
-    # It's probably good for now but it's important to note that this approach has implications for
-    # the original shape_env when checking guards in different order.
-
-    # Example:
-    # ---------
-    # Consider a function "opt_f" as shown below:
-
-    # @torch.compile()
-    # def opt_f(x: bool, y: Tensor):
-    #   if x == True:
-    #     return y + torch.randn([4])
-    #   else:
-    #     return y
-    # Depending on the sequence of calls, we might install two different sets of guards:
-
-    # 1. opt_f(False, y):
-    #    - "x == False" (always works for any size y)
-
-    # 2. opt_f(True, y):
-    #    - Triggers recompilation and results in guards like:
-    #      - "x == True and y.size(0) == 4"
-    #      - (or "y.size(0) == 4 and x == True")
-
-    # The order of checking the guards matters. In this specific example:
-    # If True branch guard check precedes False branch and for True branch, y.size(0) check precedes x == True,
-    # we may have an unnecessary shape specialization for y.
-    def _maybe_specialize_sym_int_with_hint(
-        self, maybe_sym: IntLikeType
-    ) -> IntLikeType:
-        if not isinstance(maybe_sym, (int, torch.SymInt)):
-            raise AssertionError(f"Expected int or SymInt, got {type(maybe_sym)}")
-        if is_symbolic(maybe_sym):
-            if maybe_sym.node.shape_env is self:
-                raise AssertionError(
-                    "expect the symbol is created from an shape env other than current one."
-                )
-            return guarding_hint_or_throw(maybe_sym.node)
-        return maybe_sym
 
     @record_shapeenv_event()
     def _create_symbolic_sizes_strides_storage_offset(

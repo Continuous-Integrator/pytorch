@@ -1120,25 +1120,14 @@ class MetaConverter(Generic[_TensorT]):
                 ):
                     return (t.size, t.stride, t.storage_offset)
                 else:
-                    # TODO: deduplicate this
-                    t_size = tuple(
-                        shape_env._maybe_specialize_sym_int_with_hint(sz)
-                        for sz in t.size
-                    )
-                    t_stride = tuple(
-                        shape_env._maybe_specialize_sym_int_with_hint(sd)
-                        for sd in t.stride
-                    )
-                    t_storage_offset = shape_env._maybe_specialize_sym_int_with_hint(
-                        t.storage_offset
-                    )
-                    return shape_env._create_symbolic_sizes_strides_storage_offset(
-                        t_size,
-                        t_stride,
-                        t_storage_offset,
-                        [d in t.dynamo_dynamic_indices for d in range(t.ndim)],
+                    # Different shape env than the one the tensor was created with.
+                    # Transfer symbols into this ShapeEnv, classifying each dim
+                    # as STATIC, DYNAMIC, or UNBACKED automatically.
+                    return shape_env.transfer_symbols_from_foreign_shape_env(
+                        t.size,
+                        t.stride,
+                        t.storage_offset,
                         src,
-                        symbolic_context=symbolic_context,
                         hint_overrides=t.dynamo_hint_overrides,
                     )
             else:
