@@ -272,18 +272,6 @@ bool TensorImpl::compute_non_overlapping_and_dense() const {
       sizes_and_strides_.strides_arrayref());
 }
 
-void TensorImpl::incref_pyobject() const noexcept {
-  pyobj_slot_.incref();
-}
-
-void TensorImpl::decref_pyobject() const noexcept {
-  pyobj_slot_.decref();
-}
-
-bool TensorImpl::try_incref_pyobject() const noexcept {
-  return pyobj_slot_.try_incref();
-}
-
 void TensorImpl::release_resources() {
   autograd_meta_.reset();
   if (storage_) {
@@ -326,11 +314,11 @@ c10::SymBool TensorImpl::sym_is_contiguous_custom(
     // TO reduce BC breaking and reduce having to introduce
     // sym_is_contiguous. call is_contiguous when tensor does not
     if (C10_UNLIKELY(has_symbolic_sizes_strides_)) {
-      return (*c10::impl::getGlobalPyInterpreter())
-          ->sym_is_contiguous(this, memory_format);
+      return pyobj_slot_.load_pyobj_interpreter()->sym_is_contiguous(
+          this, memory_format);
     } else {
-      return (*c10::impl::getGlobalPyInterpreter())
-          ->is_contiguous(this, memory_format);
+      return pyobj_slot_.load_pyobj_interpreter()->is_contiguous(
+          this, memory_format);
     }
   }
 
@@ -339,16 +327,16 @@ c10::SymBool TensorImpl::sym_is_contiguous_custom(
 
 bool TensorImpl::is_strides_like_custom(at::MemoryFormat memory_format) const {
   if (C10_UNLIKELY(matches_python_custom(SizesStridesPolicy::CustomStrides))) {
-    return (*c10::impl::getGlobalPyInterpreter())
-        ->is_strides_like(this, memory_format);
+    return pyobj_slot_.load_pyobj_interpreter()->is_strides_like(
+        this, memory_format);
   }
   return is_strides_like_default(memory_format);
 }
 
 c10::SymBool TensorImpl::sym_is_non_overlapping_and_dense_custom() const {
   if (C10_UNLIKELY(matches_python_custom(SizesStridesPolicy::CustomStrides))) {
-    return (*c10::impl::getGlobalPyInterpreter())
-        ->is_non_overlapping_and_dense(this);
+    return pyobj_slot_.load_pyobj_interpreter()->is_non_overlapping_and_dense(
+        this);
   }
   return sym_is_non_overlapping_and_dense_default();
 }
@@ -357,35 +345,35 @@ IntArrayRef TensorImpl::sizes_custom() const {
   if (C10_UNLIKELY(
           matches_python_custom(SizesStridesPolicy::CustomSizes) ||
           has_symbolic_sizes_strides_)) {
-    return (*c10::impl::getGlobalPyInterpreter())->sizes(this);
+    return pyobj_slot_.load_pyobj_interpreter()->sizes(this);
   }
   return sizes_default();
 }
 
 c10::SymIntArrayRef TensorImpl::sym_sizes_custom() const {
   if (C10_UNLIKELY(matches_python_custom(SizesStridesPolicy::CustomSizes))) {
-    return (*c10::impl::getGlobalPyInterpreter())->sym_sizes(this);
+    return pyobj_slot_.load_pyobj_interpreter()->sym_sizes(this);
   }
   return sym_sizes_default();
 }
 
 c10::SymInt TensorImpl::sym_numel_custom() const {
   if (C10_UNLIKELY(matches_python_custom(SizesStridesPolicy::CustomSizes))) {
-    return (*c10::impl::getGlobalPyInterpreter())->sym_numel(this);
+    return pyobj_slot_.load_pyobj_interpreter()->sym_numel(this);
   }
   return sym_numel_default();
 }
 
 c10::SymIntArrayRef TensorImpl::sym_strides_custom() const {
   if (C10_UNLIKELY(matches_python_custom(SizesStridesPolicy::CustomStrides))) {
-    return (*c10::impl::getGlobalPyInterpreter())->sym_strides(this);
+    return pyobj_slot_.load_pyobj_interpreter()->sym_strides(this);
   }
   return sym_strides_default();
 }
 
 c10::Device TensorImpl::device_custom() const {
   if (C10_UNLIKELY(python_custom_device_)) {
-    return (*c10::impl::getGlobalPyInterpreter())->device(this);
+    return pyobj_slot_.load_pyobj_interpreter()->device(this);
   }
   return device_default();
 }
@@ -394,28 +382,28 @@ IntArrayRef TensorImpl::strides_custom() const {
   if (C10_UNLIKELY(
           matches_python_custom(SizesStridesPolicy::CustomStrides) ||
           has_symbolic_sizes_strides_)) {
-    return (*c10::impl::getGlobalPyInterpreter())->strides(this);
+    return pyobj_slot_.load_pyobj_interpreter()->strides(this);
   }
   return strides_default();
 }
 
 int64_t TensorImpl::dim_custom() const {
   if (C10_UNLIKELY(matches_python_custom(SizesStridesPolicy::CustomSizes))) {
-    return (*c10::impl::getGlobalPyInterpreter())->dim(this);
+    return pyobj_slot_.load_pyobj_interpreter()->dim(this);
   }
   return dim_default();
 }
 
 int64_t TensorImpl::numel_custom() const {
   if (C10_UNLIKELY(matches_python_custom(SizesStridesPolicy::CustomSizes))) {
-    return (*c10::impl::getGlobalPyInterpreter())->numel(this);
+    return pyobj_slot_.load_pyobj_interpreter()->numel(this);
   }
   return numel_default();
 }
 
 c10::Layout TensorImpl::layout_custom() const {
   if (C10_UNLIKELY(python_custom_layout_)) {
-    return (*c10::impl::getGlobalPyInterpreter())->layout(this);
+    return pyobj_slot_.load_pyobj_interpreter()->layout(this);
   }
   // TODO: fix this
   TORCH_CHECK(
@@ -426,7 +414,7 @@ c10::Layout TensorImpl::layout_custom() const {
 int64_t TensorImpl::storage_offset_custom() const {
   if (C10_UNLIKELY(matches_python_custom(SizesStridesPolicy::CustomSizes))) {
     // TODO: fix this
-    return (*c10::impl::getGlobalPyInterpreter())
+    return pyobj_slot_.load_pyobj_interpreter()
         ->sym_storage_offset(this)
         .guard_int(__FILE__, __LINE__);
   }
@@ -435,7 +423,7 @@ int64_t TensorImpl::storage_offset_custom() const {
 
 c10::SymInt TensorImpl::sym_storage_offset_custom() const {
   if (C10_UNLIKELY(matches_python_custom(SizesStridesPolicy::CustomSizes))) {
-    return (*c10::impl::getGlobalPyInterpreter())->sym_storage_offset(this);
+    return pyobj_slot_.load_pyobj_interpreter()->sym_storage_offset(this);
   }
   return sym_storage_offset_default();
 }
@@ -518,7 +506,7 @@ c10::intrusive_ptr<TensorImpl> TensorImpl::shallow_copy_and_detach_core(
   } else if (
       key_set_.has(DispatchKey::Python) &&
       !c10::impl::tls_is_dispatch_key_excluded(DispatchKey::Python)) {
-    r = (*c10::impl::getGlobalPyInterpreter())->detach(this);
+    r = (pyobj_slot_.load_pyobj_interpreter())->detach(this);
   }
   if (r) {
     if (!r->is_inference()) {
@@ -998,6 +986,30 @@ void TensorImpl::empty_tensor_restride_symint(MemoryFormat memory_format) {
     default:
       break;
   }
+}
+
+void TensorImpl::incref_pyobject() const noexcept {
+  // Because intrusive_ptr incref uses relaxed memory order, we need to
+  // do an acquire fence to ensure that the kHasPyObject bit was
+  // observed before the load of the PyObject* below.
+  // NB: This is a no-op on x86/x86-64
+  std::atomic_thread_fence(std::memory_order_acquire);
+
+  PyObject* obj = pyobj_slot_.load_pyobj();
+  (*pyobj_slot_.pyobj_interpreter())->incref(obj);
+}
+
+void TensorImpl::decref_pyobject() const noexcept {
+  PyObject* obj = pyobj_slot_.load_pyobj();
+  (*pyobj_slot_.pyobj_interpreter())->decref(obj);
+}
+
+bool TensorImpl::try_incref_pyobject() const noexcept {
+  c10::impl::PyInterpreter* interp = pyobj_slot_.pyobj_interpreter();
+  if (C10_UNLIKELY(!interp)) {
+    return false;
+  }
+  return (*interp)->try_incref(pyobj_slot_);
 }
 
 namespace impl {

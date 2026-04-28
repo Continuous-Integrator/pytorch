@@ -418,9 +418,9 @@ class Op:
     ):
         self.profiling_name = event["profiling_name"]
         comm_lib_backend, name = self.profiling_name.split(":")
-        if comm_lib_backend not in ["nccl", "ncclx", "gloo", "xccl"]:
+        if comm_lib_backend not in ["nccl", "xccl"]:
             raise AssertionError(
-                f"name formatting error? {comm_lib_backend} not in supported backends"
+                f"name formatting error? {comm_lib_backend} != 'nccl' or 'xccl'"
             )
         parts = name.split(" ")
         type = parts[0]

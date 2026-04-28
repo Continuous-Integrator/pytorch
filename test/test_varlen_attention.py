@@ -68,9 +68,7 @@ def _varlen_backends(*, include_fa4_paged_kv: bool) -> list[str]:
 
 
 VarlenShape = namedtuple(
-    "VarlenShape",
-    ["batch_size", "max_seq_len", "embed_dim", "num_heads", "num_kv_heads"],
-    defaults=[None],
+    "VarlenShape", ["batch_size", "max_seq_len", "embed_dim", "num_heads"]
 )
 
 
@@ -88,48 +86,31 @@ class OpLoggingMode(TorchDispatchMode):
 
 class AttentionBlock(nn.Module):
     def __init__(
-        self,
-        embed_dim: int,
-        num_heads: int,
-        device: torch.device,
-        dtype: torch.dtype,
-        num_kv_heads: int | None = None,
+        self, embed_dim: int, num_heads: int, device: torch.device, dtype: torch.dtype
     ):
         super().__init__()
         self.embed_dim = embed_dim
         self.num_heads = num_heads
-        self.num_kv_heads = num_kv_heads if num_kv_heads is not None else num_heads
         self.head_dim = embed_dim // num_heads
 
-        self.q_proj = nn.Linear(
-            embed_dim,
-            num_heads * self.head_dim,
-            bias=False,
-            device=device,
-            dtype=dtype,
-        )
-        self.kv_proj = nn.Linear(
-            embed_dim,
-            2 * self.num_kv_heads * self.head_dim,
-            bias=False,
-            device=device,
-            dtype=dtype,
+        self.qkv_proj = nn.Linear(
+            embed_dim, 3 * embed_dim, bias=False, device=device, dtype=dtype
         )
         self.out_proj = nn.Linear(
             embed_dim, embed_dim, bias=False, device=device, dtype=dtype
         )
 
-    @property
-    def enable_gqa(self):
-        return self.num_kv_heads != self.num_heads
-
     def get_varlen_qkv(
         self,
         x_packed: torch.Tensor,
     ):
-        q = self.q_proj(x_packed).view(-1, self.num_heads, self.head_dim)
-        kv = self.kv_proj(x_packed).view(-1, 2, self.num_kv_heads, self.head_dim)
-        k, v = kv[:, 0], kv[:, 1]
+        qkv = self.qkv_proj(x_packed)
+        q, k, v = qkv.chunk(3, dim=-1)
+
+        q = q.view(-1, self.num_heads, self.head_dim)
+        k = k.view(-1, self.num_heads, self.head_dim)
+        v = v.view(-1, self.num_heads, self.head_dim)
+
         return q, k, v
 
     def forward_varlen(
@@ -152,7 +133,6 @@ class AttentionBlock(nn.Module):
             max_len,
             scale=scale,
             window_size=window_size,
-            enable_gqa=self.enable_gqa,
         )
         attn_out = attn_out.view(-1, self.embed_dim)
 
@@ -167,11 +147,8 @@ class AttentionBlock(nn.Module):
     ):
         batch_size, seq_len, _ = x_padded.shape
 
-        q = self.q_proj(x_padded)
-        kv = self.kv_proj(x_padded)
-        k, v = kv.view(batch_size, seq_len, 2, self.num_kv_heads, self.head_dim).unbind(
-            dim=2
-        )
+        qkv = self.qkv_proj(x_padded)
+        q, k, v = qkv.chunk(3, dim=-1)
 
         padding_mask = (
             torch.arange(seq_len, device=x_padded.device)[None, :]
@@ -202,33 +179,13 @@ class AttentionBlock(nn.Module):
             attn_mask = attn_mask & window_mask[None, None, :, :]
 
         q = q.view(batch_size, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
-        k = k.view(batch_size, seq_len, self.num_kv_heads, self.head_dim).transpose(
-            1, 2
-        )
-        v = v.view(batch_size, seq_len, self.num_kv_heads, self.head_dim).transpose(
-            1, 2
-        )
+        k = k.view(batch_size, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
+        v = v.view(batch_size, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
 
-        # Don't pass is_causal since we already incorporated it into attn_mask.
-        if self.enable_gqa:
-            # Force math backend for GQA
-            with torch.nn.attention.sdpa_kernel(torch.nn.attention.SDPBackend.MATH):
-                attn_out = F.scaled_dot_product_attention(
-                    q,
-                    k,
-                    v,
-                    attn_mask=attn_mask,
-                    scale=scale,
-                    enable_gqa=True,
-                )
-        else:
-            attn_out = F.scaled_dot_product_attention(
-                q,
-                k,
-                v,
-                attn_mask=attn_mask,
-                scale=scale,
-            )
+        # Don't pass is_causal since we already incorporated it into attn_mask
+        attn_out = F.scaled_dot_product_attention(
+            q, k, v, attn_mask=attn_mask, scale=scale
+        )
 
         attn_out = (
             attn_out.transpose(1, 2)
@@ -480,7 +437,7 @@ class TestVarlenAttention(NNTestCase):
         )
 
         compiled_forward = torch.compile(
-            attention_block.forward_varlen, backend="eager"
+            attention_block.forward_varlen, backend="eager", fullgraph=True
         )
         with OpLoggingMode() as mode:
             output = compiled_forward(x_packed, cu_seq, shape.max_seq_len)
@@ -511,7 +468,7 @@ class TestVarlenAttention(NNTestCase):
             varlen_attn_out(out_buf, q, k, v, cu_seq, cu_seq, max_len, max_len)
             return out_buf
 
-        compiled_out = torch.compile(run_varlen_out, backend="eager")
+        compiled_out = torch.compile(run_varlen_out, backend="eager", fullgraph=True)
         with OpLoggingMode() as out_mode:
             compiled_out(q, k, v, cu_seq, shape.max_seq_len)
 
@@ -547,23 +504,16 @@ class TestVarlenAttention(NNTestCase):
         "backend",
         _varlen_backends(include_fa4_paged_kv=False),
     )
-    @parametrize("enable_gqa", [False, True])
     def test_varlen_vs_sdpa(
-        self, device, dtype, scale, window_size, backend, enable_gqa, sdpa_backend=None
+        self, device, dtype, scale, window_size, backend, sdpa_backend=None
     ):
         if TEST_WITH_ROCM:
             torch.backends.cuda.preferred_rocm_fa_library(sdpa_backend)
 
         torch.manual_seed(42)
 
-        num_heads = 16
-        num_kv_heads = 4 if enable_gqa else num_heads
         shape = VarlenShape(
-            batch_size=4,
-            max_seq_len=1024,
-            embed_dim=1024,
-            num_heads=num_heads,
-            num_kv_heads=num_kv_heads,
+            batch_size=4, max_seq_len=1024, embed_dim=1024, num_heads=16
         )
 
         batch_data = create_variable_length_batch(shape, device, dtype)
@@ -575,25 +525,14 @@ class TestVarlenAttention(NNTestCase):
         x_padded_ref = batch_data["x_padded_ref"]
 
         golden_attention_block = AttentionBlock(
-            shape.embed_dim,
-            shape.num_heads,
-            device,
-            torch.float32,
-            num_kv_heads=num_kv_heads,
+            shape.embed_dim, shape.num_heads, device, torch.float32
         )
         attention_block = AttentionBlock(
-            shape.embed_dim,
-            shape.num_heads,
-            device,
-            dtype,
-            num_kv_heads=num_kv_heads,
+            shape.embed_dim, shape.num_heads, device, dtype
         )
         with torch.no_grad():
-            attention_block.q_proj.weight.copy_(
-                golden_attention_block.q_proj.weight.to(dtype)
-            )
-            attention_block.kv_proj.weight.copy_(
-                golden_attention_block.kv_proj.weight.to(dtype)
+            attention_block.qkv_proj.weight.copy_(
+                golden_attention_block.qkv_proj.weight.to(dtype)
             )
             attention_block.out_proj.weight.copy_(
                 golden_attention_block.out_proj.weight.to(dtype)
@@ -723,9 +662,10 @@ class TestVarlenAttention(NNTestCase):
         self, device, dtype, num_splits, window_size, backend, sdpa_backend=None
     ):
         if TEST_WITH_ROCM:
-            if num_splits is not None:
-                self.skipTest("num_splits is not supported on ROCm")
             torch.backends.cuda.preferred_rocm_fa_library(sdpa_backend)
+
+        split_kwargs = {"num_splits": num_splits} if backend != "fa2" else {}
+
         torch.manual_seed(42)
 
         num_heads, head_dim = 2, 128
@@ -776,7 +716,7 @@ class TestVarlenAttention(NNTestCase):
                 target_seq_len,
                 target_seq_len,
                 window_size=window_size,
-                num_splits=num_splits,
+                **split_kwargs,
             )
 
             batched_output = varlen_attn(
@@ -788,7 +728,7 @@ class TestVarlenAttention(NNTestCase):
                 extra_seq_len,
                 extra_seq_len,
                 window_size=window_size,
-                num_splits=num_splits,
+                **split_kwargs,
             )
 
             solo_out_buf = torch.empty_like(target_q)
@@ -802,7 +742,7 @@ class TestVarlenAttention(NNTestCase):
                 target_seq_len,
                 target_seq_len,
                 window_size=window_size,
-                num_splits=num_splits,
+                **split_kwargs,
             )
 
             batched_out_buf = torch.empty_like(all_q)
@@ -816,7 +756,7 @@ class TestVarlenAttention(NNTestCase):
                 extra_seq_len,
                 extra_seq_len,
                 window_size=window_size,
-                num_splits=num_splits,
+                **split_kwargs,
             )
             if num_splits == 1:
                 self.assertEqual(solo_output, batched_output[:target_seq_len])
@@ -1109,81 +1049,6 @@ class TestVarlenAttention(NNTestCase):
                     block_table=block_table,
                 )
             self.assertEqual(out_buf, output_reference)
-
-        # With num_splits=1, paged and contiguous must be bit-identical
-        if backend == "fa2":
-            with _use_backend(backend), torch.no_grad():
-                ref_num_splits = varlen_attn(
-                    q_packed,
-                    k_real_packed,
-                    v_real_packed,
-                    cu_seq_q,
-                    cu_seq_k_real,
-                    max_q,
-                    max_k_real,
-                    num_splits=1,
-                )
-                paged_num_splits = varlen_attn(
-                    q_packed,
-                    k_pages,
-                    v_pages,
-                    cu_seq_q,
-                    cu_seq_k_paged,
-                    max_q,
-                    cache_size,
-                    seqused_k=seqused_k,
-                    block_table=block_table,
-                    num_splits=1,
-                )
-            self.assertTrue(torch.equal(paged_num_splits, ref_num_splits))
-
-    @unittest.skipIf(
-        not PLATFORM_SUPPORTS_FLASH_ATTENTION, "Flash Attention not supported"
-    )
-    @parametrize("dtype", [torch.bfloat16, torch.float16])
-    @parametrize(
-        "backend",
-        ["fa2"] + (["fa3"] if IS_SM90 else []) + (["fa4"] if SM100OrLater else []),
-    )
-    def test_enable_gqa(self, device, dtype, backend):
-        torch.manual_seed(42)
-
-        head_dim = 64
-        seq_len = 512
-        num_heads_q, num_heads_k = 16, 4
-        total_tokens = 2 * seq_len
-
-        q = torch.randn(total_tokens, num_heads_q, head_dim, device=device, dtype=dtype)
-        k = torch.randn(total_tokens, num_heads_k, head_dim, device=device, dtype=dtype)
-        v = torch.randn(total_tokens, num_heads_k, head_dim, device=device, dtype=dtype)
-        cu_seq = torch.tensor(
-            [0, seq_len, total_tokens], device=device, dtype=torch.int32
-        )
-
-        with self.assertRaisesRegex(ValueError, "enable_gqa=True"):
-            varlen_attn(q, k, v, cu_seq, cu_seq, seq_len, seq_len)
-
-        with self.assertRaisesRegex(ValueError, "enable_gqa=True"):
-            varlen_attn_out(
-                torch.empty_like(q), q, k, v, cu_seq, cu_seq, seq_len, seq_len
-            )
-
-        k_bad = torch.randn(total_tokens, 3, head_dim, device=device, dtype=dtype)
-        v_bad = torch.randn(total_tokens, 3, head_dim, device=device, dtype=dtype)
-        with self.assertRaisesRegex(ValueError, "multiple of kv heads"):
-            varlen_attn(
-                q, k_bad, v_bad, cu_seq, cu_seq, seq_len, seq_len, enable_gqa=True
-            )
-
-        with _use_backend(backend), torch.no_grad():
-            out = varlen_attn(
-                q, k, v, cu_seq, cu_seq, seq_len, seq_len, enable_gqa=True
-            )
-            out_buf = torch.empty_like(q)
-            varlen_attn_out(
-                out_buf, q, k, v, cu_seq, cu_seq, seq_len, seq_len, enable_gqa=True
-            )
-            self.assertEqual(out_buf, out)
 
 
 device_types = ("cuda",)

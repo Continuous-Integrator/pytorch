@@ -386,7 +386,7 @@ struct Vectorized<c10::qint32> : public Vectorizedqi {
 
  public:
   using Vectorizedqi::Vectorizedqi;
-  Vectorized() = default;
+  Vectorized() {}
 
   Vectorized(__m512i vals_) {
     vals = vals_;
@@ -602,7 +602,7 @@ struct Vectorized<c10::qint8> : public Vectorizedqi {
  public:
   using Vectorizedqi::Vectorizedqi;
 
-  Vectorized() = default;
+  Vectorized() {}
   Vectorized(__m512i vals_) {
     vals = vals_;
   }
@@ -838,7 +838,7 @@ struct Vectorized<c10::quint8> : public Vectorizedqi {
 
  public:
   using Vectorizedqi::Vectorizedqi;
-  Vectorized() = default;
+  Vectorized() {}
 
   Vectorized(__m512i vals_) {
     vals = vals_;
@@ -1133,7 +1133,7 @@ struct VectorizedQuantizedConverter {
   }
 
  protected:
-  VectorizedQuantizedConverter() = default;
+  VectorizedQuantizedConverter() {}
 };
 
 template <>
