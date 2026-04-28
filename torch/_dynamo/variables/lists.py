@@ -49,7 +49,7 @@ from .base import AsPythonConstantNotImplementedError, ValueMutationNew, Variabl
 from .constant import ConstantVariable
 from .functions import UserFunctionVariable
 from .iter import IteratorVariable
-from .object_protocol import type_implements_nb_index
+from .object_protocol import type_implements_nb_index, validate_sequence_index
 
 
 if TYPE_CHECKING:
@@ -111,7 +111,6 @@ class BaseListVariable(VariableTracker):
     def getitem_const(
         self, tx: "InstructionTranslator", arg: VariableTracker
     ) -> VariableTracker:
-        from .object_protocol import validate_sequence_index
         from .tensor import SymNodeVariable
 
         arg = validate_sequence_index(tx, arg, self.python_type_name())
@@ -584,7 +583,7 @@ class RangeVariable(BaseListVariable):
     def getitem_const(
         self, tx: "InstructionTranslator", arg: VariableTracker
     ) -> VariableTracker:
-        # range_subscript: https://github.com/python/cpython/blob/main/Objects/rangeobject.c
+        # range_subscript: https://github.com/python/cpython/blob/62a6e898e01/Objects/rangeobject.c#L729-L748
         from .object_protocol import validate_sequence_index
 
         arg = validate_sequence_index(tx, arg, "range")

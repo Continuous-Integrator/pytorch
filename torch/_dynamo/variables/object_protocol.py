@@ -195,10 +195,7 @@ def validate_sequence_index(
 ) -> VariableTracker:
     """_PyIndex_Check → nb_index path used by list/tuple/range/str/bytes subscript.
 
-    CPython's list_subscript, tuple_subscript, range_subscript, unicode_subscript,
-    and bytes_subscript all perform this check internally before accessing the
-    underlying data.  Centralizing it here ensures that any caller of
-    getitem_const gets the same validation, not just mp_subscript_impl.
+    ref: https://github.com/python/cpython/blob/v3.13.3/Include/internal/pycore_abstract.h (_PyIndex_Check)
     """
     key_type = maybe_get_python_type(key)
     if key_type not in (int, bool, slice):
@@ -313,12 +310,9 @@ def vt_getitem(
         if type_implements_nb_index(key_type):
             key = key.nb_index_impl(tx)
             return vt_sequence_getitem(tx, obj, key)
-        raise_observed_exception(
-            TypeError,
+        raise_type_error(
             tx,
-            args=[
-                f"{obj_type.__name__} indices must be integers, not {key_type.__name__}"
-            ],
+            f"{obj_type.__name__} indices must be integers, not {key_type.__name__}",
         )
     # Branch 3: PyType_Check → __class_getitem__ (abstract.c L183-203)
     # In 3.10+ type.__getitem__ sets mp_subscript so this is normally caught
@@ -326,11 +320,7 @@ def vt_getitem(
     if issubclass(obj_type, type):
         return obj.mp_subscript_impl(tx, key)
     # CPython: abstract.c L205
-    raise_observed_exception(
-        TypeError,
-        tx,
-        args=[f"'{obj_type.__name__}' object is not subscriptable"],
-    )
+    raise_type_error(tx, f"'{obj_type.__name__}' object is not subscriptable")
 
 
 def vt_sequence_getitem(
