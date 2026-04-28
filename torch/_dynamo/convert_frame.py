@@ -971,15 +971,18 @@ class DynamoOutput:
     ) -> CheckFunctionManager:
         output_graph = self.tracer_output.output_graph
         assert output_graph is not None
-        return CheckFunctionManager(
-            code,
-            output_graph,
-            cache_entry,
-            hooks.guard_fail_fn if hooks else None,
-            hooks.guard_filter_fn if hooks else None,
-            save_guards=save,
-            strict_error=strict_error,
-        )
+        try:
+            return CheckFunctionManager(
+                code,
+                output_graph,
+                cache_entry,
+                hooks.guard_fail_fn if hooks else None,
+                hooks.guard_filter_fn if hooks else None,
+                save_guards=save,
+                strict_error=strict_error,
+            )
+        finally:
+            output_graph.restore_outer_shape_env_state()
 
     def graph_capture_output(
         self,
@@ -2154,6 +2157,16 @@ def _compile(
                 and not tracer_output.output_graph.export
             ):
                 tracer_output.output_graph.tracing_context.guards_context.dynamo_guards.clear()
+
+            # Backstop: if compilation failed before build_guards ran, the
+            # outer shape_env may still be holding our inner tracked_fakes
+            # list.  build_guards normally restores via try/finally; this
+            # covers paths that never reach it.  Idempotent if already done.
+            if (
+                tracer_output is not None
+                and tracer_output.output_graph_for_cleanup is not None
+            ):
+                tracer_output.output_graph_for_cleanup.restore_outer_shape_env_state()
 
             clear_compile_context_weakrefs(tracer_output, compiler_fn)
 

@@ -2343,6 +2343,12 @@ class VariableBuilder:
         return LazyConstantVariable.create(value, source=self.source)
 
     def assert_not_wrapped_by_this_graph(self, value: torch.Tensor) -> None:
+        # When this OutputGraph adopted the outer FakeTensorMode (see
+        # OutputGraph.reused_outer_fake_mode), all pre-fake inputs
+        # legitimately share tx.fake_mode and are not a sign of
+        # double-wrapping by this Dynamo instance.
+        if self.tx.output.reused_outer_fake_mode:
+            return
         if is_fake(value) and maybe_get_fake_mode(value) is self.tx.fake_mode:
             raise InternalTorchDynamoError(
                 "Cannot wrap a Tensor that has already been",
