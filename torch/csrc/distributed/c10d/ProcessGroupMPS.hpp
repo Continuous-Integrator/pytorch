@@ -5,6 +5,7 @@
 #include <condition_variable>
 #include <deque>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <thread>
 #include <vector>
@@ -14,17 +15,18 @@
 #include <torch/csrc/distributed/c10d/Types.hpp>
 #include <torch/csrc/distributed/c10d/Utils.hpp>
 
-namespace c10d::jaccl {
-class JACCLTransport;
-} // namespace c10d::jaccl
+namespace jaccl {
+class Group;
+} // namespace jaccl
 
 namespace c10d {
 
 constexpr const char* MPS_BACKEND_NAME = "mps";
 
-// RDMA-only MPS backend. Construction requires an Apple Thunderbolt RDMA
-// device that accepts ibv_alloc_pd on every rank - otherwise this throws
-// and the user is expected to fall back to the gloo backend.
+// RDMA-only MPS backend, layered on top of MLX's JACCL library. Construction
+// requires an Apple Thunderbolt RDMA device that accepts ibv_alloc_pd on every
+// rank — otherwise this throws and the user is expected to fall back to the
+// gloo backend.
 class TORCH_API ProcessGroupMPS : public Backend {
  public:
   class WorkMPS : public Work {
@@ -110,7 +112,7 @@ class TORCH_API ProcessGroupMPS : public Backend {
 
   c10::intrusive_ptr<Store> store_;
   c10::intrusive_ptr<Options> options_;
-  std::unique_ptr<jaccl::JACCLTransport> jacclTransport_;
+  std::shared_ptr<::jaccl::Group> jacclGroup_;
 
   std::thread workerThread_;
   bool stop_{false};

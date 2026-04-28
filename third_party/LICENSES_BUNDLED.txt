@@ -1,5 +1,10 @@
-The PyTorch repository and source distributions bundle several libraries that are 
+The PyTorch repository and source distributions bundle several libraries that are
 compatibly licensed.  We list these here.
+
+Name: jaccl
+License: MIT
+Files: ./jaccl
+  For details, see: ./jaccl/LICENSE
 
 Name: miniz-3.0.2
 License: MIT

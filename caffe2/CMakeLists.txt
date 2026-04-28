@@ -736,7 +736,6 @@ if(USE_MPS)
   endif()
   if(USE_C10D_MPS)
     list(APPEND Caffe2_CPU_SRCS ${TORCH_SRC_DIR}/csrc/distributed/c10d/ProcessGroupMPS.mm)
-    list(APPEND Caffe2_CPU_SRCS ${TORCH_SRC_DIR}/csrc/distributed/c10d/JACCLTransport.mm)
   endif()
 endif()
 

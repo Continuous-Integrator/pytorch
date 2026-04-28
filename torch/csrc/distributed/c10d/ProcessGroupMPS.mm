@@ -1,15 +1,26 @@
 #ifdef USE_C10D_MPS
 
 #include <torch/csrc/distributed/c10d/ProcessGroupMPS.hpp>
-#include <torch/csrc/distributed/c10d/JACCLTransport.h>
 
 #include <ATen/mps/MPSStream.h>
 #include <ATen/native/mps/OperationUtils.h>
 #include <c10/util/irange.h>
 
+#include <jaccl/group.h>
+#include <jaccl/jaccl.h>
+#include <jaccl/rdma.h>
+
+#include <cstdlib>
+#include <sstream>
+#include <string>
+#include <vector>
+
 namespace c10d {
 
 namespace {
+
+constexpr const char* kMpsCoordKey = "mps_pg/jaccl_coord";
+constexpr const char* kMpsDevicePrefix = "mps_pg/jaccl_device/";
 
 void* mpsHostPtr(const at::Tensor& tensor) {
   if (!tensor.device().is_mps() || !tensor.is_contiguous()) {
@@ -27,42 +38,122 @@ void* mpsHostPtr(const at::Tensor& tensor) {
       tensor.storage_offset() * tensor.itemsize();
 }
 
+// Pick the first RDMA device for which ibv_alloc_pd succeeds. Honours
+// JACCL_DEVICE to pin a specific device name. Returns empty string when no
+// usable device exists on this host.
 std::string probeRDMADevice() {
-#if HAVE_JACCL
-  if (!jaccl::isAvailable()) {
+  auto& verbs = ::jaccl::ibv();
+  if (!verbs.is_available()) {
     return {};
   }
-  try {
-    int numDevices = 0;
-    auto devices = jaccl::ibv().getDeviceList(&numDevices);
-    const char* deviceOverride = std::getenv("JACCL_DEVICE");
-    std::string chosen;
-    for (int i = 0; i < numDevices; i++) {
-      std::string name = jaccl::ibv().getDeviceName(devices[i]);
-      if (deviceOverride && name != deviceOverride) {
-        continue;
-      }
-      auto ctx = jaccl::ibv().openDevice(devices[i]);
-      if (!ctx) {
-        continue;
-      }
-      auto pd = jaccl::ibv().allocPd(ctx);
-      if (pd) {
-        jaccl::ibv().deallocPd(pd);
-        jaccl::ibv().closeDevice(ctx);
-        chosen = name;
-        break;
-      }
-      jaccl::ibv().closeDevice(ctx);
+  int numDevices = 0;
+  auto devices = verbs.get_device_list(&numDevices);
+  if (devices == nullptr) {
+    return {};
+  }
+  const char* deviceOverride = std::getenv("JACCL_DEVICE");
+  std::string chosen;
+  for (int i = 0; i < numDevices; i++) {
+    std::string name = verbs.get_device_name(devices[i]);
+    if (deviceOverride && name != deviceOverride) {
+      continue;
     }
-    jaccl::ibv().freeDeviceList(devices);
-    return chosen;
-  } catch (...) {
-    return {};
+    auto ctx = verbs.open_device(devices[i]);
+    if (!ctx) {
+      continue;
+    }
+    auto pd = verbs.alloc_pd(ctx);
+    if (pd) {
+      verbs.dealloc_pd(pd);
+      verbs.close_device(ctx);
+      chosen = name;
+      break;
+    }
+    verbs.close_device(ctx);
   }
-#else
-  return {};
-#endif
+  verbs.free_device_list(devices);
+  return chosen;
+}
+
+int dtypeToJACCL(at::ScalarType dtype) {
+  switch (dtype) {
+    case at::kBool:
+      return ::jaccl::Dtype::Bool;
+    case at::kByte:
+      return ::jaccl::Dtype::UInt8;
+    case at::kChar:
+      return ::jaccl::Dtype::Int8;
+    case at::kShort:
+      return ::jaccl::Dtype::Int16;
+    case at::kInt:
+      return ::jaccl::Dtype::Int32;
+    case at::kLong:
+      return ::jaccl::Dtype::Int64;
+    case at::kHalf:
+      return ::jaccl::Dtype::Float16;
+    case at::kBFloat16:
+      return ::jaccl::Dtype::BFloat16;
+    case at::kFloat:
+      return ::jaccl::Dtype::Float32;
+    case at::kDouble:
+      return ::jaccl::Dtype::Float64;
+    case at::kComplexFloat:
+      return ::jaccl::Dtype::Complex64;
+    default:
+      TORCH_CHECK(
+          false,
+          "ProcessGroupMPS: JACCL does not support dtype ",
+          toString(dtype));
+  }
+}
+
+void jacclAllReduce(
+    ::jaccl::Group& group,
+    void* data,
+    size_t numBytes,
+    at::ScalarType dtype,
+    ReduceOp::RedOpType op) {
+  int jd = dtypeToJACCL(dtype);
+  switch (op) {
+    case ReduceOp::SUM:
+      group.all_sum(data, data, numBytes, jd);
+      return;
+    case ReduceOp::MIN:
+      group.all_min(data, data, numBytes, jd);
+      return;
+    case ReduceOp::MAX:
+      group.all_max(data, data, numBytes, jd);
+      return;
+    default:
+      TORCH_CHECK(
+          false,
+          "ProcessGroupMPS: JACCL supports SUM/MIN/MAX only; got ReduceOp=",
+          static_cast<int>(op));
+  }
+}
+
+void jacclBroadcast(
+    ::jaccl::Group& group,
+    void* data,
+    size_t numBytes,
+    int rootRank) {
+  if (group.rank() == rootRank) {
+    for (int dst = 0; dst < group.size(); dst++) {
+      if (dst != rootRank) {
+        group.send(data, numBytes, dst);
+      }
+    }
+  } else {
+    group.recv(data, numBytes, rootRank);
+  }
+}
+
+// MLX JACCL has no dedicated barrier op; a 1-byte all_sum synchronises all
+// peers with the same memory fences as a real collective.
+void jacclBarrier(::jaccl::Group& group) {
+  uint8_t in = 0;
+  uint8_t out = 0;
+  group.all_sum(&in, &out, sizeof(in), ::jaccl::Dtype::UInt8);
 }
 
 } // namespace
@@ -126,47 +217,53 @@ ProcessGroupMPS::ProcessGroupMPS(
     : Backend(rank, size),
       store_(store),
       options_(std::move(options)) {
-#if !HAVE_JACCL
-  TORCH_CHECK(
-      false,
-      "ProcessGroupMPS requires Apple Thunderbolt RDMA (librdma/infiniband verbs) "
-      "but this build does not include JACCL support. Use the 'gloo' backend for "
-      "CPU-based distributed training.");
-#else
-  std::string firstDevice = probeRDMADevice();
-
-  std::vector<uint8_t> flag(1, firstDevice.empty() ? 0 : 1);
-  store_->set("mps_pg/rdma_avail/" + std::to_string(rank), flag);
+  // Each rank probes its local RDMA device and advertises it via the
+  // TCPStore; all ranks then assemble the full device connectivity matrix
+  // that jaccl::Config requires. We assume one physical device per rank,
+  // used for every peer connection — that matches the current single-cable
+  // Thunderbolt-5 setup.
+  std::string localDevice = probeRDMADevice();
+  store_->set(
+      kMpsDevicePrefix + std::to_string(rank),
+      std::vector<uint8_t>(localDevice.begin(), localDevice.end()));
 
   std::vector<std::string> keys;
   keys.reserve(size);
   for (int r = 0; r < size; r++) {
-    keys.push_back("mps_pg/rdma_avail/" + std::to_string(r));
+    keys.push_back(kMpsDevicePrefix + std::to_string(r));
   }
   store_->wait(keys);
 
+  std::vector<std::string> peerDevices(size);
   int missingRank = -1;
   for (int r = 0; r < size; r++) {
-    auto data = store_->get("mps_pg/rdma_avail/" + std::to_string(r));
-    if (data.empty() || data[0] == 0) {
+    auto data = store_->get(kMpsDevicePrefix + std::to_string(r));
+    peerDevices[r].assign(data.begin(), data.end());
+    if (peerDevices[r].empty() && missingRank < 0) {
       missingRank = r;
-      break;
+    }
+  }
+  TORCH_CHECK(
+      missingRank < 0,
+      "ProcessGroupMPS requires Apple Thunderbolt RDMA on every rank, but "
+      "rank ",
+      missingRank,
+      " could not find a usable RDMA device (ibv_alloc_pd failed on every "
+      "rdma_en* device). Check your Thunderbolt 5 cable and network setup, "
+      "or use the 'gloo' backend for CPU-based distributed training.");
+
+  std::vector<std::vector<std::vector<std::string>>> deviceMatrix(size);
+  for (int src = 0; src < size; src++) {
+    deviceMatrix[src].resize(size);
+    for (int dst = 0; dst < size; dst++) {
+      if (src != dst) {
+        deviceMatrix[src][dst].push_back(peerDevices[src]);
+      }
     }
   }
 
-  TORCH_CHECK(
-      missingRank < 0,
-      "ProcessGroupMPS requires Apple Thunderbolt RDMA on every rank, but rank ",
-      missingRank,
-      " could not allocate a protection domain (ibv_alloc_pd failed on every "
-      "rdma_en* device). Check your Thunderbolt 5 cable and network setup, or "
-      "use the 'gloo' backend for CPU-based distributed training.");
-
-  std::vector<std::string> deviceNames(size);
-  for (int i = 0; i < size; i++) {
-    deviceNames[i] = (i == rank) ? "" : firstDevice;
-  }
-
+  // Rank 0 publishes the JACCL side-channel address on a port adjacent to
+  // MASTER_PORT so it cannot collide with the TCPStore.
   std::string coordAddr;
   if (rank == 0) {
     const char* masterAddr = std::getenv("MASTER_ADDR");
@@ -175,20 +272,26 @@ ProcessGroupMPS::ProcessGroupMPS(
     std::string host = masterAddr ? masterAddr : "127.0.0.1";
     coordAddr = host + ":" + std::to_string(basePort + 1);
     store_->set(
-        "mps_pg/jaccl_coord",
+        kMpsCoordKey,
         std::vector<uint8_t>(coordAddr.begin(), coordAddr.end()));
   } else {
-    auto data = store_->get("mps_pg/jaccl_coord");
+    auto data = store_->get(kMpsCoordKey);
     coordAddr = std::string(data.begin(), data.end());
   }
 
-  jacclTransport_ = std::make_unique<jaccl::JACCLTransport>(
-      rank, size, coordAddr.c_str(), deviceNames);
+  ::jaccl::Config cfg;
+  cfg.set_rank(rank).set_coordinator(coordAddr).set_devices(
+      std::move(deviceMatrix));
+  jacclGroup_ = ::jaccl::init(cfg, /*strict=*/true);
+  TORCH_CHECK(
+      jacclGroup_,
+      "ProcessGroupMPS: jaccl::init returned null for a configuration that "
+      "should have been a valid mesh.");
+
   TORCH_WARN(
-      "ProcessGroupMPS: using JACCL RDMA transport on ", firstDevice);
+      "ProcessGroupMPS: using JACCL RDMA transport on ", localDevice);
 
   workerThread_ = std::thread(&ProcessGroupMPS::runLoop, this);
-#endif
 }
 
 ProcessGroupMPS::~ProcessGroupMPS() {
@@ -258,18 +361,18 @@ c10::intrusive_ptr<Work> ProcessGroupMPS::allreduce(
       if (void* hostPtr = mpsHostPtr(tensor)) {
         at::mps::getDefaultMPSStream()->synchronize(
             at::mps::SyncType::COMMIT_AND_WAIT);
-        jacclTransport_->allReduce(
+        jacclAllReduce(
+            *jacclGroup_,
             hostPtr,
             static_cast<size_t>(tensor.nbytes()),
-            tensor.element_size(),
             tensor.scalar_type(),
             reduceOp);
       } else {
         auto cpuTensor = syncAndCopyToCPU(tensor);
-        jacclTransport_->allReduce(
+        jacclAllReduce(
+            *jacclGroup_,
             cpuTensor.data_ptr(),
             static_cast<size_t>(cpuTensor.nbytes()),
-            cpuTensor.element_size(),
             cpuTensor.scalar_type(),
             reduceOp);
         copyToMPS(cpuTensor, tensor);
@@ -303,11 +406,15 @@ c10::intrusive_ptr<Work> ProcessGroupMPS::broadcast(
       if (void* hostPtr = mpsHostPtr(tensor)) {
         at::mps::getDefaultMPSStream()->synchronize(
             at::mps::SyncType::COMMIT_AND_WAIT);
-        jacclTransport_->broadcast(
-            hostPtr, static_cast<size_t>(tensor.nbytes()), rootRank);
+        jacclBroadcast(
+            *jacclGroup_,
+            hostPtr,
+            static_cast<size_t>(tensor.nbytes()),
+            rootRank);
       } else {
         auto cpuTensor = syncAndCopyToCPU(tensor);
-        jacclTransport_->broadcast(
+        jacclBroadcast(
+            *jacclGroup_,
             cpuTensor.data_ptr(),
             static_cast<size_t>(cpuTensor.nbytes()),
             rootRank);
@@ -329,7 +436,7 @@ c10::intrusive_ptr<Work> ProcessGroupMPS::barrier(
 
   auto fn = [this, work]() {
     try {
-      jacclTransport_->barrier();
+      jacclBarrier(*jacclGroup_);
       work->finishWork();
     } catch (...) {
       work->finishWorkError(std::current_exception());
@@ -356,11 +463,11 @@ c10::intrusive_ptr<Work> ProcessGroupMPS::send(
       if (void* hostPtr = mpsHostPtr(tensor)) {
         at::mps::getDefaultMPSStream()->synchronize(
             at::mps::SyncType::COMMIT_AND_WAIT);
-        jacclTransport_->send(
+        jacclGroup_->send(
             hostPtr, static_cast<size_t>(tensor.nbytes()), dstRank);
       } else {
         auto cpuTensor = syncAndCopyToCPU(tensor);
-        jacclTransport_->send(
+        jacclGroup_->send(
             cpuTensor.data_ptr(),
             static_cast<size_t>(cpuTensor.nbytes()),
             dstRank);
@@ -392,11 +499,11 @@ c10::intrusive_ptr<Work> ProcessGroupMPS::recv(
       if (void* hostPtr = mpsHostPtr(tensor)) {
         at::mps::getDefaultMPSStream()->synchronize(
             at::mps::SyncType::COMMIT_AND_WAIT);
-        jacclTransport_->recv(
+        jacclGroup_->recv(
             hostPtr, static_cast<size_t>(tensor.nbytes()), srcRank);
       } else {
         auto cpuTensor = syncAndCopyToCPU(tensor);
-        jacclTransport_->recv(
+        jacclGroup_->recv(
             cpuTensor.data_ptr(),
             static_cast<size_t>(cpuTensor.nbytes()),
             srcRank);
