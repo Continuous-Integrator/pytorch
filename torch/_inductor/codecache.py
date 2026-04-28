@@ -2612,10 +2612,11 @@ end
                         min_optimize=not config.aot_inductor.package_cpp_only,
                         **compile_command,
                     )
-                    wrapper_build_options.precompiled_header_include = header_file
-                    wrapper_build_options.precompiled_header_object = (
-                        f"{wrapper_build_options.precompiled_header}.obj"
-                    )
+                    if _IS_WINDOWS:
+                        wrapper_build_options.precompiled_header_include = header_file
+                        wrapper_build_options.precompiled_header_object = (
+                            f"{wrapper_build_options.precompiled_header}.obj"
+                        )
                     if cpp_prefix := _get_cpp_prefix_header(device_type):
                         kernel_build_options.precompiled_header = _precompile_header(
                             cpp_prefix,
@@ -2623,10 +2624,11 @@ end
                             min_optimize=not config.aot_inductor.package_cpp_only,
                             **compile_command,
                         )
-                        kernel_build_options.precompiled_header_include = cpp_prefix
-                        kernel_build_options.precompiled_header_object = (
-                            f"{kernel_build_options.precompiled_header}.obj"
-                        )
+                        if _IS_WINDOWS:
+                            kernel_build_options.precompiled_header_include = cpp_prefix
+                            kernel_build_options.precompiled_header_object = (
+                                f"{kernel_build_options.precompiled_header}.obj"
+                            )
 
             wrapper_builder = CppBuilder(
                 name=str(wrapper_path_operator.stem),
@@ -3141,7 +3143,8 @@ def _precompile_header(
         preprocessor_hash = _get_file_checksum(preprocessor.get_target_file_path())
 
     header_build_option = CppTorchDeviceOptions(**compile_command, precompiling=True)
-    header_build_option.precompiled_header_include = header
+    if _IS_WINDOWS:
+        header_build_option.precompiled_header_include = header
     header_hash, header_full_path = write(
         content=f"#include <{header}>\n",
         extension="h",
@@ -3157,9 +3160,10 @@ def _precompile_header(
         sources=header_full_path,
         BuildOption=header_build_option,
     )
-    header_build_option.precompiled_header_object = (
-        cpp_builder.get_precompiled_header_object_file_path()
-    )
+    if _IS_WINDOWS:
+        header_build_option.precompiled_header_object = (
+            cpp_builder.get_precompiled_header_object_file_path()
+        )
     # _worker_compile_cpp will automatically ignore any compilation whose result already
     # exists, so this is always safe.
     os.makedirs(_HEADER_LOCK_DIR, exist_ok=True)
@@ -3313,10 +3317,11 @@ class CppCodeCache:
                         min_optimize=min_optimize,
                         **compile_command,
                     )
-                    main_build_option.precompiled_header_include = header
-                    main_build_option.precompiled_header_object = (
-                        f"{main_build_option.precompiled_header}.obj"
-                    )
+                    if _IS_WINDOWS:
+                        main_build_option.precompiled_header_include = header
+                        main_build_option.precompiled_header_object = (
+                            f"{main_build_option.precompiled_header}.obj"
+                        )
 
                 # Currently, the optimized_code field is only used for cpp kernel code,
                 # so go ahead and precompile the relevant header here.  Revisit this
@@ -3328,10 +3333,11 @@ class CppCodeCache:
                         optimized_cmd_line,
                         **compile_command,
                     )
-                    optimized_build_option.precompiled_header_include = header
-                    optimized_build_option.precompiled_header_object = (
-                        f"{optimized_build_option.precompiled_header}.obj"
-                    )
+                    if _IS_WINDOWS:
+                        optimized_build_option.precompiled_header_include = header
+                        optimized_build_option.precompiled_header_object = (
+                            f"{optimized_build_option.precompiled_header}.obj"
+                        )
 
             main_name, output_dir = get_name_and_dir_from_output_file_path(main_path)
             main_builder = CppBuilder(
