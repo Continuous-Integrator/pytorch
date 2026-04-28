@@ -7587,7 +7587,7 @@ tensor(..., device='meta', size=(1,), requires_grad=True)""")
     def test_linear_cross_entropy_loss_with_acc_dtype(self):
         all_acc_policies = [''.join(p) for p in itertools.product('AT', repeat=6)]
         for acc_policy in all_acc_policies:
-            self._test_linear_cross_entropy_loss(device='cuda', dtype=torch.float16, acc_policy=acc_policy,
+            self._test_linear_cross_entropy_loss(device='cuda', dtype=torch.bfloat16, acc_policy=acc_policy,
                                                  acc_dtype=torch.float32)
 
     @unittest.skipIf(not torch.cuda.is_available(), "CUDA not available")

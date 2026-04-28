@@ -3654,7 +3654,7 @@ def binary_cross_entropy_with_logits(
     )
 
 
-@dataclasses.dataclass(frozen=True)
+@dataclasses.dataclass(slots=True, frozen=True)
 class LinearCrossEntropyOptions:
     """Options for controlling chunking strategy in linear cross
     entropy operation.
@@ -3942,11 +3942,12 @@ def linear_cross_entropy(
 
         if weight is None:
             weight = torch.ones(
-                (num_classes,),
+                (),
                 device=input.device,
                 dtype=input.dtype,
                 requires_grad=False,
-            )
+            ).expand(num_classes)
+
         options = options.adjust(num_batches, in_features, num_classes, input.dtype)
 
         # global import results a likely circular import

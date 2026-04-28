@@ -151,12 +151,15 @@ def linear_cross_entropy_batch_chunking_cls(
     )
 
     # Allocate junk buffers used in grad_input and grad_linear_weight computations:
-    GX_factor = dtypes["G"].itemsize // dtypes["GX"].itemsize
-    GL_factor = dtypes["G"].itemsize // dtypes["GL"].itemsize
     tmp_size = (
         max(
-            batch_chunk_size // GX_factor if compute_input_grad else 0,
-            num_classes // GL_factor if compute_linear_weight_grad else 0,
+            (batch_chunk_size * dtypes["GX"].itemsize) // dtypes["G"].itemsize
+            if compute_input_grad
+            else 0,
+            (num_classes * dtypes["GL"].itemsize) // dtypes["G"].itemsize
+            if compute_linear_weight_grad
+            else 0,
+            1 if (compute_input_grad or compute_linear_weight_grad) else 0,
         )
         * in_features
     )
@@ -195,9 +198,9 @@ def linear_cross_entropy_batch_chunking_cls(
         # Compute output.
 
         if use_acc_dtype:
-            torch.mm(x, linear_weight.T, out_dtype=X_.dtype, out=X_)
+            torch.mm(x, linear_weight.T, out_dtype=X.dtype, out=X_)
         else:
-            torch.mm(x, linear_weight.T, out=X_)  # projection
+            torch.mm(x, linear_weight.T, out=X_)
 
         Xmax = X_.max(dim=1, keepdim=True)[0]
         X_.sub_(Xmax)
@@ -221,10 +224,10 @@ def linear_cross_entropy_batch_chunking_cls(
                 grad_x = grad_input.narrow(0, bchunk_start, bchunk_size)
                 if use_acc_dtype:
                     GX_ = ensure_size(GX, 0, bchunk_size)
-                    if X_.dtype != GX.dtype:
-                        GX_[:] = torch.mm(X_, linear_weight_)
-                    else:
+                    if X.dtype == GX.dtype:
                         torch.mm(X_, linear_weight_, GX_.dtype, out=GX_)
+                    else:
+                        GX_[:] = torch.mm(X_, linear_weight_)
                     if grad_x.dtype == dtype:
                         # addcmul+sub_ and sub_+addcmul lead to different results!
                         # TODO: use the order with better accuracy
@@ -255,26 +258,27 @@ def linear_cross_entropy_batch_chunking_cls(
 
             if compute_linear_weight_grad:
                 # avoids zero_ call and a new allocation from x_ * neg_weight_t_
-                if X.dtype != GL.dtype:
-                    if X_.dtype == x.dtype:
-                        GL[:] = torch.mm(X_.T, x)
-                    else:
-                        GL[:] = torch.mm(X_.T, x_)
-                else:
-                    if X_.dtype == x.dtype:
+                if X.dtype == GL.dtype:
+                    if X.dtype == dtype:
                         torch.mm(X_.T, x, out=GL)
                     else:
                         torch.mm(X_.T, x_, out=GL)
-                if dtype != acc_dtype:
+                else:
+                    if X.dtype == dtype:
+                        GL[:] = torch.mm(X_.T, x)
+                    else:
+                        GL[:] = torch.mm(X_.T, x_)
+                if dtype == acc_dtype:
+                    GL.index_add_(0, t, x_ * neg_weight_t_.unsqueeze(1), alpha=-1)
+                else:
                     # x_ is a copy of input slice, so we can
                     # change it inplace to reduce memory usage
                     x_.mul_(neg_weight_t_.unsqueeze(1))
-                    if GL.dtype == x.dtype:
+                    if GL.dtype == dtype:
                         GL.index_add_(0, t, x, alpha=-1)
                     else:
                         GL.index_add_(0, t, x_, alpha=-1)
-                else:
-                    GL.index_add_(0, t, x_ * neg_weight_t_.unsqueeze(1), alpha=-1)
+
                 grad_linear_weight.sub_(GL)
 
     return output.to(dtype), grad_input.to(dtype), grad_linear_weight.to(dtype)
