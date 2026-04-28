@@ -210,9 +210,9 @@ class AutoHeuristicTest(TestCase):
         self.assertEqual(counters["inductor"]["pad_mm_bench"], 0)
 
     @inductor_config.patch(deterministic=True)
-    @inductor_config.patch("autoheuristic_use.pad_mm", None)
     def test_use_autoheuristic_pad_mm_enabled_in_deterministic_mode(self):
-        """pad_mm defaults to None; with deterministic=True, use_autoheuristic should return True."""
+        inductor_config.autoheuristic_use.pad_mm = None
+        """pad_mm set to None; with deterministic=True, use_autoheuristic should return True."""
         self.assertTrue(inductor_config.use_autoheuristic("pad_mm"))
 
     def test_autoheuristic_init_device_capa(self):
