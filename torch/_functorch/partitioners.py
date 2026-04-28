@@ -233,20 +233,6 @@ def _get_ho_op_original_input(getitem_node: fx.Node) -> fx.Node | None:
     return None
 
 
-_FUNCTIONAL_SCATTER_OP_NAMES = frozenset(
-    {
-        "select_scatter",
-        "slice_scatter",
-        "scatter",
-        "scatter_add",
-        "scatter_reduce",
-        "as_strided_scatter",
-        "diagonal_scatter",
-        "masked_scatter",
-        "index_put",
-    }
-)
-
 
 def _is_copy_node_bw_only(node: fx.Node) -> fx.Node | None:
     """Check if node is a view/reshape of a higher-order op output that aliases an input.
@@ -384,22 +370,6 @@ def _extract_graph_with_inputs_outputs(
                     and not isinstance(env[x.args[0]], InvalidNodeBase)
                 ):
                     replacement = env[x.args[0]]
-                # For functional scatter ops (select_scatter, slice_scatter,
-                # etc.) where the base tensor is valid but the update value
-                # depends on backward, use the base tensor. This happens when
-                # a tensor hook registered inside checkpoint mutates an input
-                # in both forward and backward.
-                if (
-                    replacement is None
-                    and isinstance(x.target, torch._ops.OpOverload)
-                    and x.target.name().split("::")[1].split(".")[0]
-                    in _FUNCTIONAL_SCATTER_OP_NAMES
-                    and len(x.args) >= 1
-                    and isinstance(x.args[0], fx.Node)
-                    and x.args[0] in env
-                    and not isinstance(env[x.args[0]], InvalidNodeBase)
-                ):
-                    replacement = env[x.args[0]]
                 # For view/reshape outputs that trace back to a getitem of a
                 # higher-order op that mutates an input, find that input.
                 # This handles custom_function_view outputs from triton kernels.
@@ -408,6 +378,26 @@ def _extract_graph_with_inputs_outputs(
                 if replacement is not None:
                     output_values.append(replacement)
                     continue
+                # Check if this is a functional scatter op whose base
+                # tensor (first arg) is valid — this pattern occurs when
+                # a buffer is mutated in both forward and backward (e.g.
+                # via register_hook) inside activation checkpointing.
+                if (
+                    isinstance(x.target, torch._ops.OpOverload)
+                    and len(x.args) >= 1
+                    and isinstance(x.args[0], fx.Node)
+                    and x.args[0] in env
+                    and not isinstance(env[x.args[0]], InvalidNodeBase)
+                ):
+                    raise RuntimeError(
+                        f"Node {x} depends on backward but is a forward "
+                        f"output. This can happen when a global buffer is "
+                        f"mutated in both the forward and backward (e.g. "
+                        f"via register_hook) inside activation "
+                        f"checkpointing. Move the buffer mutation outside "
+                        f"of checkpoint, or avoid mutating the same buffer "
+                        f"in both forward and backward."
+                    )
                 raise AssertionError(f"Node {x} was invalid, but is output")
             output_values.append(env[x])
         else:

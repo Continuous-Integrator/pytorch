@@ -7732,9 +7732,61 @@ def forward(self, primals_1, tangents_1):
         m = MyModule()
         x = torch.randn(2, 64, device="cuda", requires_grad=True)
         opt_m = torch.compile(m, backend="aot_eager", fullgraph=True)
-        out = opt_m(x)
-        out.sum().backward()
-        self.assertEqual(out.shape, torch.Size([2, 64]))
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "mutated in both the forward and backward",
+        ):
+            opt_m(x)
+
+    @unittest.skipIf(not torch.cuda.is_available(), "CUDA is unavailable")
+    def test_register_hook_in_checkpoint_inside_autograd_function(self):
+        stats_buffer = torch.zeros(10, device="cuda")
+
+        def log_stats(x):
+            stats_buffer[0] = x.abs().mean()
+
+        def finalize_fn(og, output):
+            log_stats(output)
+            output.register_hook(lambda grad: log_stats(grad) or grad)
+            return torch.sigmoid(og) * output
+
+        class RecomputeGate(torch.autograd.Function):
+            @staticmethod
+            def forward(ctx, o_proj_output, gate_output, og, pre_gate_output):
+                ctx.save_for_backward(og, pre_gate_output)
+                return o_proj_output.clone()
+
+            @staticmethod
+            def backward(ctx, grad):
+                og, pre_gate_output = ctx.saved_tensors
+                with torch.no_grad():
+                    torch.utils.checkpoint.checkpoint(
+                        finalize_fn, og, pre_gate_output, use_reentrant=False
+                    )
+                return grad, None, None, None
+
+        class MyModule(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.linear = torch.nn.Linear(64, 64, device="cuda")
+
+            def forward(self, x):
+                x = self.linear(x)
+                og = x.clone()
+                gate_output = torch.utils.checkpoint.checkpoint(
+                    finalize_fn, og, x, use_reentrant=False
+                )
+                o_proj_output = x @ self.linear.weight.t()
+                return RecomputeGate.apply(o_proj_output, gate_output, og, x)
+
+        m = MyModule()
+        x = torch.randn(2, 64, device="cuda")
+        opt_m = torch.compile(m, backend="aot_eager")
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "mutated in both the forward and backward",
+        ):
+            opt_m(x)
 
 
 class TestAOTDispatch(AOTTestCase):
