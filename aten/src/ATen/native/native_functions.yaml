@@ -2938,7 +2938,6 @@
   dispatch:
     CPU: grid_sampler_2d_backward_cpu
     CUDA: grid_sampler_2d_backward_cuda
-    MPS: grid_sampler_2d_backward_mps
   autogen: grid_sampler_2d_backward.out
 
 # See NOTE [ grid_sample CPU fallback ]
@@ -2948,8 +2947,6 @@
   autogen: _grid_sampler_2d_cpu_fallback.out
 
 - func: _grid_sampler_2d_cpu_fallback_backward(Tensor grad_output, Tensor input, Tensor grid, int interpolation_mode, int padding_mode, bool align_corners) -> (Tensor, Tensor)
-  dispatch:
-    CompositeExplicitAutograd: _grid_sampler_2d_cpu_fallback_backward
 
 - func: grid_sampler_3d(Tensor input, Tensor grid, int interpolation_mode, int padding_mode, bool align_corners) -> Tensor
   dispatch:
@@ -2965,7 +2962,6 @@
   dispatch:
     CPU: grid_sampler_3d_backward_cpu
     CUDA: grid_sampler_3d_backward_cuda
-    MPS: grid_sampler_3d_backward_mps
   autogen: grid_sampler_3d_backward.out
 
 - func: hann_window(int window_length, *, ScalarType? dtype=None, Layout? layout=None, Device? device=None, bool? pin_memory=None) -> Tensor
@@ -3295,42 +3291,6 @@
 
 - func: is_inference(Tensor self) -> bool
   variants: function, method
-  device_check: NoCheck
-  device_guard: False
-  manual_cpp_binding: True
-
-- func: numel(Tensor self) -> int
-  variants: method
-  device_check: NoCheck
-  device_guard: False
-  manual_cpp_binding: True
-
-- func: dim(Tensor self) -> int
-  variants: method
-  device_check: NoCheck
-  device_guard: False
-  manual_cpp_binding: True
-
-- func: get_device(Tensor self) -> int
-  variants: method
-  device_check: NoCheck
-  device_guard: False
-  manual_cpp_binding: True
-
-- func: storage_offset(Tensor self) -> int
-  variants: method
-  device_check: NoCheck
-  device_guard: False
-  manual_cpp_binding: True
-
-- func: is_contiguous(Tensor self) -> bool
-  variants: method
-  device_check: NoCheck
-  device_guard: False
-  manual_cpp_binding: True
-
-- func: is_contiguous.memory_format(Tensor self, MemoryFormat memory_format) -> bool
-  variants: method
   device_check: NoCheck
   device_guard: False
   manual_cpp_binding: True
@@ -4066,7 +4026,8 @@
   structured: True
   device_check: NoCheck   # TensorIterator
   dispatch:
-    CPU, CUDA, MPS: mean_out
+    CPU, CUDA: mean_out
+    MPS: mean_out_mps
     QuantizedCPU: mean_out_quantized_cpu
   tags: reduction
 
@@ -4458,7 +4419,7 @@
 
 - func: mvlgamma.out(Tensor self, int p, *, Tensor(a!) out) -> Tensor(a!)
   dispatch:
-    CPU, CUDA, MPS: mvlgamma_out
+    CPU, CUDA: mvlgamma_out
   tags: pointwise
 
 - func: mvlgamma(Tensor self, int p) -> Tensor
@@ -6019,7 +5980,8 @@
   structured: True
   device_check: NoCheck   # TensorIterator
   dispatch:
-    CPU, CUDA, MPS: sum_out
+    CPU, CUDA: sum_out
+    MPS: sum_out_mps
   tags: reduction
 
 - func: sum.DimnameList_out(Tensor self, Dimname[1] dim, bool keepdim=False, *, ScalarType? dtype=None, Tensor(a!) out) -> Tensor(a!)
@@ -6034,12 +5996,14 @@
 - func: nansum(Tensor self, int[1]? dim=None, bool keepdim=False, *, ScalarType? dtype=None) -> Tensor
   variants: function, method
   dispatch:
-    CPU, CUDA, MPS: nansum
+    CPU, CUDA: nansum
+    MPS: nansum_mps
   tags: reduction
 
 - func: nansum.out(Tensor self, int[1]? dim=None, bool keepdim=False, *, ScalarType? dtype=None, Tensor(a!) out) -> Tensor(a!)
   dispatch:
-    CPU, CUDA, MPS: nansum_out
+    CPU, CUDA: nansum_out
+    MPS: nansum_out_mps
   tags: reduction
 
 - func: hash_tensor(Tensor self, int[1] dim=[], *, bool keepdim=False, int mode=0) -> Tensor
@@ -9626,14 +9590,12 @@
   dispatch:
     CPU: nonzero_static_out_cpu
     CUDA: nonzero_static_out_cuda
-    MPS: nonzero_static_out_mps
 
 - func: nonzero_static(Tensor self, *, SymInt size, int fill_value=-1) -> Tensor
   variants: method, function
   dispatch:
     CPU: nonzero_static_cpu
     CUDA: nonzero_static_cuda
-    MPS: nonzero_static_mps
 
 - func: nonzero_numpy(Tensor self) -> Tensor[]
   variants: method, function
@@ -15274,7 +15236,7 @@
   variants: function
   tags: nondeterministic_seeded
 
-- func: _scaled_dot_product_attention_math_for_mps(Tensor query, Tensor key, Tensor value, Tensor? attn_mask=None, float dropout_p=0.0, bool is_causal=False, Tensor? dropout_mask=None, *, float? scale=None, bool enable_gqa=False) -> (Tensor, Tensor)
+- func: _scaled_dot_product_attention_math_for_mps(Tensor query, Tensor key, Tensor value, Tensor? attn_mask=None, float dropout_p=0.0, bool is_causal=False, Tensor? dropout_mask=None, *, float? scale=None) -> (Tensor, Tensor)
   dispatch:
     MPS: _scaled_dot_product_attention_math_mps
   tags: nondeterministic_seeded
