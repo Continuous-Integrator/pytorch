@@ -105,7 +105,6 @@ from .eval_frame import (
     Constraint,
     dynamo_tls,
     innermost_backend,
-    innermost_fn,
     skip_code,
     TorchPatcher,
 )
@@ -1843,7 +1842,7 @@ def _compile(
         recompile_reason: str | None = None
         if is_recompilation(cache_size) and frame:
             reasons = get_and_maybe_log_recompilation_reasons(
-                cache_entry, frame, innermost_fn(compiler_fn)
+                cache_entry, frame, innermost_backend(compiler_fn)
             )
             recompile_reason = (
                 "Unable to find recompilation reasons" if not reasons else reasons[0]

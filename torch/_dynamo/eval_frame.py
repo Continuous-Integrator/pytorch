@@ -282,7 +282,7 @@ def _callback_from_stance(callback: DynamoCallback) -> DynamoCallback:
                     cache_entries[0],
                     frame,
                     # pyrefly: ignore [bad-argument-type]
-                    innermost_fn(callback),
+                    innermost_backend(callback),
                     skip_logging=True,
                 )
                 if reasons:

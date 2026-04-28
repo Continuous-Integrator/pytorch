@@ -7292,25 +7292,6 @@ not ___dict_contains('cccccccc', G['sys'].modules)""",
         self.assertEqual(exp_out, opt_out)
         self.assertEqual(cnt.frame_count, exp_frame_count)
 
-    def test_backend_match_recompile_reason(self):
-        def foo(x):
-            return x.sin() + x.cos()
-
-        x = torch.randn([3, 4])
-
-        torch.compile(foo, backend="eager", dynamic=True)(x)
-
-        with self.assertRaises(torch._dynamo.exc.RecompileError) as ctx:
-            with torch._dynamo.config.patch(error_on_recompile=True):
-                torch.compile(foo, backend="eager", dynamic=False)(x)
-
-        msg = str(ctx.exception)
-        self.assertIn("BACKEND_MATCH failure", msg)
-        self.assertIn("Cached backend:", msg)
-        self.assertIn("New backend:", msg)
-        self.assertIn("_TorchCompileWrapper", msg)
-        self.assertIn("dynamic=True", msg)
-
     def test_backend_match_guard(self):
         x = torch.randn([3, 4])
 
