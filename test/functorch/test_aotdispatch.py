@@ -7705,6 +7705,32 @@ def forward(self, primals_1, tangents_1):
             [0, 1, 2],
         )
 
+    @unittest.skipIf(not torch.cuda.is_available(), "CUDA is unavailable")
+    def test_register_hook_in_checkpoint_cross_graph(self):
+        def body(y):
+            y.register_hook(lambda grad: grad * 0.5)
+            return y.clone()
+
+        class MyModule(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.w = torch.nn.Parameter(torch.randn(4, 4, device="cuda"))
+
+            def forward(self, x):
+                intermediate = x @ self.w
+                z = torch.utils.checkpoint.checkpoint(
+                    body, intermediate, use_reentrant=False
+                )
+                return z + intermediate
+
+        m = MyModule()
+        x = torch.randn(2, 4, device="cuda", requires_grad=True)
+        opt_m = torch.compile(m, backend="aot_eager", fullgraph=True)
+        out = opt_m(x)
+        out.sum().backward()
+        self.assertEqual(out.shape, torch.Size([2, 4]))
+        self.assertIsNotNone(x.grad)
+
 
 class TestAOTDispatch(AOTTestCase):
     # Tests to add cases for (non-exhaustive list, mostly for my notes):
