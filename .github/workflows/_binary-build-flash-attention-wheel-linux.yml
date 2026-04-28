@@ -88,10 +88,13 @@ jobs:
           github-secret: ${{ secrets.GITHUB_TOKEN }}
           fail-silently: false
 
-      - name: Setup Linux
-        uses: pytorch/pytorch/.github/actions/setup-linux@main
+      - name: Checkout PyTorch
+        uses: pytorch/pytorch/.github/actions/checkout-pytorch@main
         with:
           submodules: true
+
+      - name: Setup Linux
+        uses: ./.github/actions/setup-linux
 
       - name: Pull Docker image
         uses: pytorch/test-infra/.github/actions/pull-docker-image@main

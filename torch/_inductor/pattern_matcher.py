@@ -157,9 +157,11 @@ def _transfer_meta(
 ) -> None:
     from torch.fx.traceback import NodeSource, NodeSourceAction
 
-    # Transfer metadata after pattern matching occurs.
-    # Copies _COPY_META_FIELDS, stack_trace, and (if missing) val/tensor_meta.
+    # transfer metadata after pattern matching occurs.
+    # skip "val" and "tensor_meta" because this info is too specific; it's unlikely
+    # to remain accurate after pattern matching has occurred.
     if config.trace.provenance_tracking_level == 1:
+        # We handle "from_node" field of the node meta specially to record that the new node comes from the old_node.
         new_from_node = new_meta.get("from_node", []).copy()
         new_from_node.append(NodeSource(old_node, pass_name, NodeSourceAction.REPLACE))
         new_meta.update(
@@ -176,13 +178,6 @@ def _transfer_meta(
         )
     if "stack_trace" in old_node.meta:
         new_meta["stack_trace"] = old_node.meta["stack_trace"]
-    # Copy val/tensor_meta only when the new node doesn't already have them
-    # (e.g. from tracing the replacement graph). Don't overwrite if present
-    # since the replacement's own val is more accurate.
-    if "val" not in new_meta and "val" in old_node.meta:
-        new_meta["val"] = old_node.meta["val"]
-    if "tensor_meta" not in new_meta and "tensor_meta" in old_node.meta:
-        new_meta["tensor_meta"] = old_node.meta["tensor_meta"]
 
 
 class Match:
@@ -1159,7 +1154,7 @@ class LoweringPatternEntry(PatternEntry):
         handler = functools.wraps(self.handler)(functools.partial(self.handler, match))
         with graph.inserting_before(node):
             replacement = graph.call_function(handler, tuple(match.args), match.kwargs)
-            _transfer_meta(replacement.meta, node)
+            replacement.meta.update(node.meta)
             node.replace_all_uses_with(replacement)
         assert match.nodes[-1] is node
         match.erase_nodes()
@@ -1193,7 +1188,6 @@ class ReplacementPatternEntry(PatternEntry):
         graph: torch.fx.Graph,
         replacement_graph: torch.fx.Graph | torch.fx.GraphModule,
         args: Sequence[torch.fx.Node],
-        pass_name: str | None = None,
     ) -> None:
         """
         Inserts the replacement graph into the toplevel graph at the match
@@ -1218,14 +1212,18 @@ class ReplacementPatternEntry(PatternEntry):
                     _transfer_meta(
                         new_meta=result.meta,
                         old_node=node,
-                        pass_name=pass_name or "",
+                        pass_name="Interpreter_Replacer",
                     )
                     # This function copy-pastes the replacement graph into
                     # the graph. If the replacement graph had any eager_input_vals,
-                    # we propagate those over (val/tensor_meta are handled by
-                    # _transfer_meta above).
+                    # or val/tensor_meta, we propagate those over.
                     if "eager_input_vals" in node.meta:
                         result.meta["eager_input_vals"] = node.meta["eager_input_vals"]
+                    if "val" in node.meta and "val" not in result.meta:
+                        result.meta["val"] = node.meta["val"]
+                        if isinstance(node.meta["val"], torch.Tensor):
+                            assert "tensor_meta" in node.meta
+                            result.meta["tensor_meta"] = node.meta["tensor_meta"]
                     return result
                 if node.op == "get_attr":
                     # If the replacement graph contains a HOP, the subgraphs of the HOP are "get_attr" nodes.
@@ -1331,7 +1329,8 @@ class ReplacementPatternEntry(PatternEntry):
                         graph.erase_node(old)
                     return
                 if isinstance(new, torch.fx.Node):
-                    _transfer_meta(new.meta, old, pass_name=pass_name or "")
+                    if "val" not in new.meta:
+                        new.meta.update(old.meta)
 
                     # Preserve the recompute tags in the replacement graph. We
                     # look at the recompute tags of the original output node to
@@ -1418,7 +1417,6 @@ class ReplacementPatternEntry(PatternEntry):
             graph,
             match.replacement_graph,
             self.normalize_args(*match.args, **match.kwargs),
-            pass_name=self.pattern_name or "replace_with_graph",
         )
 
 
@@ -2079,14 +2077,13 @@ class PatternMatcherPass:
         return self.patterns[item]
 
     def apply(self, gm: torch.fx.GraphModule | torch.fx.Graph) -> int:
-        """Apply all registered patterns to the graph, returning the number of matches."""
         if not self.patterns:
             return 0
         if isinstance(gm, torch.fx.GraphModule):
             graph = gm.graph
         elif isinstance(gm, torch.fx.Graph):
             graph = gm
-            gm = graph.owning_module  # type: ignore[assignment]
+            gm = graph.owning_module
         else:
             raise RuntimeError(
                 f"The input to PatternMatcherPass must be a GraphModule or a Graph, but got {type(gm)}"
@@ -2130,18 +2127,6 @@ class PatternMatcherPass:
                         is_match(m)
                         and len(
                             OrderedSet(map(get_mutation_region_id_partial, m.nodes))
-                        )
-                        != 1
-                    ):
-                        continue
-                    # pattern match crosses stream boundary - discard
-                    if (
-                        is_match(m)
-                        and len(
-                            OrderedSet(
-                                n.meta.get("custom", {}).get("stream", 0)
-                                for n in m.nodes
-                            )
                         )
                         != 1
                     ):
@@ -2491,7 +2476,5 @@ def extract_target(node: torch.fx.Node) -> torch.fx.node.Target:
     """
     if node.op == "call_module":
         assert isinstance(node.target, str)
-        if node.graph.owning_module is None:
-            raise AssertionError("node.graph.owning_module must not be None")
         return _get_attr(node.graph.owning_module, node.target).__class__
     return node.target

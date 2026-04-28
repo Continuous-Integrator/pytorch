@@ -285,7 +285,7 @@ static PyObject* THPEngine_run_backward(
       grads.push_back(grad_var);
     } else {
       TORCH_CHECK(
-          Py_IsNone(grad),
+          grad == Py_None,
           "element ",
           i,
           " of gradients tuple is not a Tensor or None");

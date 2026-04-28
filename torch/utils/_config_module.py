@@ -21,10 +21,6 @@ from torch._utils_internal import justknobs_check
 # Types saved/loaded in configs
 CONFIG_TYPES = (int, float, bool, type(None), str, list, set, tuple, dict)
 
-# Immutable scalar types that don't need deepcopy when returned from configs.
-# Everything else is defensively copied to prevent accidental mutation.
-_IMMUTABLE_CONFIG_TYPES = (int, float, bool, type(None), str, tuple)
-
 
 # Duplicated, because mypy needs these types statically
 T = TypeVar("T", bound=int | float | bool | str | list | set | tuple | dict | None)
@@ -437,9 +433,10 @@ class ConfigModule(ModuleType):
                 # JK only supports bools and ints
                 return justknobs_check(name=config.justknob, default=config.default)
 
-            # Reference types can still be modified, so copy them to
-            # user_overrides to prevent accidental mutation of defaults.
-            if not isinstance(config.default, _IMMUTABLE_CONFIG_TYPES):
+            # Note that reference types can still be modified, so we
+            # copy them to user_overrides in case the user overrides
+            # them
+            if isinstance(config.default, (list, set, dict)):
                 config.user_override.set(copy.deepcopy(config.default))
                 return config.user_override.get()
             return config.default
@@ -505,7 +502,7 @@ class ConfigModule(ModuleType):
 
         unset = config_val.user_override.get() is _UNSET_SENTINEL
         # Handle reference types specially to avoid spammy warnings
-        if not isinstance(config_val.default, _IMMUTABLE_CONFIG_TYPES):
+        if isinstance(config_val.default, (list, set, dict)):
             unset = unset or config_val.user_override.get() == config_val.default
         return unset and not_set_env_default and not_set_env_force
 
@@ -532,9 +529,7 @@ class ConfigModule(ModuleType):
                 it skips it.
         """
         config: dict[str, Any] = {}
-        for key, entry in self._config.items():
-            if entry.alias is not None:
-                continue
+        for key in self._config:
             if ignored_keys and key in ignored_keys:
                 continue
             if ignored_prefixes:
@@ -542,23 +537,14 @@ class ConfigModule(ModuleType):
                     continue
             if skip_default and self._is_default(key):
                 continue
+            if self._config[key].alias is not None:
+                continue
 
-            # Read value directly, bypassing __getattr__ overhead
-            # (deprecation warnings, alias resolution).
-            user_override = entry.user_override.get()
-            if entry.env_value_force is not _UNSET_SENTINEL:
-                val = entry.env_value_force
-            elif user_override is not _UNSET_SENTINEL:
-                val = user_override
-            elif entry.env_value_default is not _UNSET_SENTINEL:
-                val = entry.env_value_default
-            elif entry.justknob is not None:
-                val = justknobs_check(name=entry.justknob, default=entry.default)
-            else:
-                val = entry.default
-            if not isinstance(val, _IMMUTABLE_CONFIG_TYPES):
-                val = copy.deepcopy(val)
-            config[key] = val
+            curr_entry = self._config[key]
+            has_been_warned = curr_entry._deprecation_warned
+            curr_entry._deprecation_warned = True
+            config[key] = copy.deepcopy(getattr(self, key))
+            curr_entry._deprecation_warned = has_been_warned
 
         return config
 
@@ -760,40 +746,28 @@ class ConfigModule(ModuleType):
                 )
         if not isinstance(changes, dict):
             raise AssertionError(f"expected `dict` got {type(changes)}")
+        prior: dict[str, Any] = {}
         config = self
 
         class ConfigPatch(ContextDecorator):
             def __init__(self) -> None:
                 self.changes = changes
-                self._prior: ContextVar[tuple[dict[str, Any], ...]] = ContextVar(
-                    f"{config.__name__}.ConfigPatch[{id(self)}]",
-                    default=(),
-                )
 
             def __enter__(self) -> None:
-                prior: dict[str, Any] = {}
+                if prior:
+                    raise AssertionError(
+                        "prior should be empty when entering ConfigPatch"
+                    )
                 for key in self.changes:
                     # KeyError on invalid entry
                     prior[key] = config.__getattr__(key)
-                prior_stack = self._prior.get()
-                self._prior.set((*prior_stack, prior))
-                try:
-                    for k, v in self.changes.items():
-                        config.__setattr__(k, v)
-                except Exception:
-                    self._prior.set(prior_stack)
-                    raise
+                for k, v in self.changes.items():
+                    config.__setattr__(k, v)
 
             def __exit__(self, exc_type, exc_val, exc_tb):  # type: ignore[no-untyped-def]
-                prior_stack = self._prior.get()
-                if not prior_stack:
-                    raise AssertionError(
-                        "prior should not be empty when exiting ConfigPatch"
-                    )
-                prior = prior_stack[-1]
-                self._prior.set(prior_stack[:-1])
                 for k, v in prior.items():
                     config.__setattr__(k, v)
+                prior.clear()
 
         return ConfigPatch()
 

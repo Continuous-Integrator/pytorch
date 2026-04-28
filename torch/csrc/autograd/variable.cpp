@@ -118,8 +118,9 @@ ViewInfo ViewInfo::chain(
             "Attempted to chain views when the parent view has no view_func() and "
             "does not support as_strided(). This is not supported.";
         view_func = std::make_unique<ErroringViewFunc>(error_msg);
-        rev_view_func = [=](const at::Tensor& root_view) -> at::Tensor {
+        rev_view_func = [=](const at::Tensor& root_view) {
           TORCH_CHECK(false, error_msg);
+          return root_view;
         };
       }
     }
@@ -197,9 +198,10 @@ static void update_tensor_hooks_on_new_gradfn(
   TORCH_INTERNAL_ASSERT(meta);
   TORCH_INTERNAL_ASSERT(new_fn);
   meta->cpp_hooks_list_ = nullptr;
-  if (self.unsafeGetTensorImpl()->pyobj_slot()->load_pyobj()) {
-    (*c10::impl::getGlobalPyInterpreter())
-        ->reset_backward_hooks(self.unsafeGetTensorImpl());
+  const c10::impl::PyInterpreter* interp =
+      self.unsafeGetTensorImpl()->pyobj_slot()->pyobj_interpreter();
+  if (interp) {
+    (*interp)->reset_backward_hooks(self.unsafeGetTensorImpl());
   }
   if (self.retains_grad()) {
     TORCH_INTERNAL_ASSERT(old_fn);
@@ -786,7 +788,7 @@ void handle_view_on_rebase(
             "Output ",
             diff_view_meta->output_nr_,
             " of ",
-            grad_fn->forward_op_name(),
+            grad_fn->name(),
             " is a view of a view which was created in");
       } else {
         prefix = "A view was created in";
@@ -813,7 +815,7 @@ void handle_view_on_rebase(
           "Output ",
           diff_view_meta->output_nr_,
           " of ",
-          grad_fn->forward_op_name(),
+          grad_fn->name(),
           " is a view and ",
           modified_obj,
           " modified inplace.");
