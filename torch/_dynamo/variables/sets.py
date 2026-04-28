@@ -705,7 +705,9 @@ class OrderedSetVariable(SetVariable):
         codegen.append_output(create_instruction("BUILD_LIST", arg=len(self.set_items)))
         codegen.extend_output(create_call_function(1, False))
 
-    def nb_or_impl(self, tx: "InstructionTranslator", other: VariableTracker, reverse: bool = False) -> VariableTracker:
+    def nb_or_impl(
+        self, tx: "InstructionTranslator", other: VariableTracker, reverse: bool = False
+    ) -> VariableTracker:
         # OrderedSet does not inherit from Python set, so SetVariable.nb_or_impl
         # won't work due to the PyAnySet_Check
         return super().call_method(tx, "union", [other], {})
