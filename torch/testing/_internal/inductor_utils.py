@@ -391,7 +391,7 @@ class MockGraphHandler:
         self.constants = {}
         self.scheduler = None
 
-    def get_dtype(self, buffer_name: str) -> torch.dtype:  # noqa: ARG002
+    def get_dtype(self, buffer_name: str) -> torch.dtype:
         """Return default dtype for any buffer (for testing)."""
         return torch.float32
 

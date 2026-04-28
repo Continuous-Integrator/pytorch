@@ -35,7 +35,7 @@ if TYPE_CHECKING:
 import sympy
 
 import torch
-import torch._inductor.async_compile  # noqa: F401 required to warm up AsyncCompile pools
+import torch._inductor.async_compile
 import torch.utils._pytree as pytree
 from torch._dynamo.utils import counters, dynamo_timed
 from torch._inductor.autotune_process import use_pipelined_autotuning
@@ -1238,11 +1238,11 @@ class BaseSchedulerNode:
             except ValueError as e:
                 # We don't know how to estimate runtime for this collective,
                 # falling back to 0
-                log.info(e)  # noqa: G200
+                log.info(e)
                 return 0
             except TypeError as e:
                 # this happens when the collective is not of type ir._CollectiveKernel
-                log.info(e)  # noqa: G200
+                log.info(e)
                 return 0
 
         elif is_wait(self.node):
@@ -2198,6 +2198,8 @@ class FusedSchedulerNode(BaseSchedulerNode):
 
 
 class FusedMixOrderReductions(FusedSchedulerNode):
+    """Fused node for two reductions with different iteration orders (inner + outer)."""
+
     def __init__(self, node1: BaseSchedulerNode, node2: BaseSchedulerNode) -> None:
         if not MixOrderReduction.is_contiguous_node(node1):
             assert MixOrderReduction.is_contiguous_node(node2)
@@ -2261,6 +2263,19 @@ class FusedMixOrderReductions(FusedSchedulerNode):
         )
 
     def can_fuse_with(self, other: BaseSchedulerNode):
+        # Limit tl.load() count in the fused RSPLIT loop to avoid register
+        # spills. See https://github.com/pytorch/pytorch/issues/179423
+        max_reads = config.triton.mix_order_reduction_max_reads
+        if max_reads > 0:
+            all_reads: OrderedSet[str] = OrderedSet()
+            for sn in itertools.chain(self.get_nodes(), other.get_nodes()):
+                for dep in sn.read_writes.reads:
+                    if isinstance(dep, MemoryDep):
+                        all_reads.add(dep.name)
+            if len(all_reads) > max_reads:
+                # pyrefly: ignore [bad-assignment]
+                metrics.rejected_mix_order_reduction_fusion += 1
+                return False
         if not isinstance(other, FusedMixOrderReductions):
             return self.sub_node_can_fuse(
                 self.node1, other, (self.node2,)
@@ -2310,16 +2325,18 @@ class FusedExternTritonKernelSchedulerNode(FusedSchedulerNode):
         node1: ExternKernelSchedulerNode,
         node2: SchedulerNode,
     ) -> FusedSchedulerNode:
+        assert isinstance(node1.node, ir.UserDefinedTritonKernel)
         scheduler = node1.scheduler
-        # this unmet dependency is the buffer which is mutated
-        # after fusion, we don't need this buffer anymore,
-        # because the kernel directly writes to the output buffer of the epilogue
-        assert len(node1.unmet_dependencies) == 1
-        original_mutated_buffer = scheduler.name_to_buf[
-            next(iter(node1.unmet_dependencies)).name
-        ]
-        original_mutated_buffer.users.remove(NodeUser(node1))
-        return FusedExternTritonKernelSchedulerNode(scheduler, node1, node2)
+
+        assert len(node1.node.mutation_outputs) == 1
+        # pyrefly: ignore[bad-assignment]
+        mutated_name: str = node1.node.mutation_outputs[0].name
+        # Node1's mutated tensor becomes an intermediary tensor.
+        # Thus, remove node1 from the respective allocated buffer's users
+        # for `Scheduler.dead_node_elimination` to remove.
+        real_name = scheduler.mutation_real_name.get(mutated_name, mutated_name)
+        scheduler.name_to_buf[real_name].users.remove(NodeUser(node1))
+        return cls(scheduler, node1, node2)
 
     def codegen(self, wrapper: PythonWrapperCodegen) -> None:
         assert isinstance(self.fused_epilogue.node, ir.ComputedBuffer)
@@ -2649,7 +2666,7 @@ class ForeachKernelSchedulerNode(FusedSchedulerNode):
         """
         sorted_nodes = scheduler._topological_sort_nodes()
         grouped_nodes = []
-        max_num_nodes = 8
+        max_num_nodes = config.combo_kernel_max_num_nodes
 
         excluded_buffer_names: OrderedSet[str] = OrderedSet(
             [
@@ -4470,7 +4487,7 @@ class Scheduler:
                             future.result()
                     except Exception as e:
                         if fusion_log.isEnabledFor(logging.DEBUG):
-                            fusion_log.debug(  # noqa: G200
+                            fusion_log.debug(
                                 "Exception in compiling %s: %s",
                                 "prologue" if not epilogue_fusion else "epilogue",
                                 e,
@@ -4605,7 +4622,7 @@ class Scheduler:
                     # triton  will unpredictably error with valid prologue fusions
                     except Exception as e:
                         if fusion_log.isEnabledFor(logging.DEBUG):
-                            fusion_log.debug(  # noqa: G200
+                            fusion_log.debug(
                                 "Exception in compiling %s: %s",
                                 "prologue" if not epilogue_fusion else "epilogue",
                                 e,
@@ -5202,11 +5219,11 @@ class Scheduler:
                     # All fusion outputs are in ancestors of node1 and node2, thus
                     # cannot introduce new path:
                     #
-                    # 1. if output is neither descendent of node1 or node2, the
+                    # 1. if output is neither descendant of node1 or node2, the
                     #        output cannot introduce a path
-                    # 2. due to [can_fuse]: if WLOG output is descendent of node1, it cannot be
+                    # 2. due to [can_fuse]: if WLOG output is descendant of node1, it cannot be
                     #        on path(node1->node2), hence it cannot be ancestor of node2
-                    # 3. due to [acyclic]: if WLOG output is descendent of node1, it cannot be
+                    # 3. due to [acyclic]: if WLOG output is descendant of node1, it cannot be
                     #        ancestor of node1
                     return False
                 else:
