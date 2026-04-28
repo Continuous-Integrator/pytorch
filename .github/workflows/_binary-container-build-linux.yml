@@ -73,7 +73,7 @@ jobs:
     runs-on: ${{ inputs.runner_prefix }}${{ inputs.runs_on }}
     timeout-minutes: ${{ inputs.timeout-minutes }}
     container:
-      image: ${{ inputs.DOCKER_IMAGE }}:${{ inputs.DOCKER_IMAGE_TAG_PREFIX }}
+      image: pytorch/${{ inputs.DOCKER_IMAGE }}:${{ inputs.DOCKER_IMAGE_TAG_PREFIX }}
     env:
       PYTORCH_ROOT: ${{ github.workspace }}
       PACKAGE_TYPE: ${{ inputs.PACKAGE_TYPE }}
@@ -113,7 +113,7 @@ jobs:
             echo "DESIRED_CUDA=${DESIRED_CUDA}"
             echo "GPU_ARCH_VERSION=${GPU_ARCH_VERSION}"
             echo "GPU_ARCH_TYPE=${GPU_ARCH_TYPE}"
-            echo "DOCKER_IMAGE=${{ inputs.DOCKER_IMAGE }}:${{ inputs.DOCKER_IMAGE_TAG_PREFIX }}"
+            echo "DOCKER_IMAGE=pytorch/${{ inputs.DOCKER_IMAGE }}:${{ inputs.DOCKER_IMAGE_TAG_PREFIX }}"
             echo "SKIP_ALL_TESTS=${SKIP_ALL_TESTS}"
             echo "DESIRED_PYTHON=${DESIRED_PYTHON}"
             echo "PYTORCH_EXTRA_INSTALL_REQUIREMENTS=${PYTORCH_EXTRA_INSTALL_REQUIREMENTS}"

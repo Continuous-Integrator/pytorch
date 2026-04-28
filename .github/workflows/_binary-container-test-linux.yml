@@ -72,7 +72,7 @@ jobs:
     runs-on: ${{ inputs.runner_prefix }}${{ inputs.runs_on }}
     timeout-minutes: ${{ inputs.timeout-minutes }}
     container:
-      image: ${{ inputs.DOCKER_IMAGE }}:${{ inputs.DOCKER_IMAGE_TAG_PREFIX }}
+      image: pytorch/${{ inputs.DOCKER_IMAGE }}:${{ inputs.DOCKER_IMAGE_TAG_PREFIX }}
       options: ${{ inputs.GPU_ARCH_TYPE == 'cuda' && '--gpus all -e NVIDIA_DRIVER_CAPABILITIES=compute,utility,video' || ' ' }}
     env:
       PYTORCH_ROOT: ${{ github.workspace }}
@@ -114,7 +114,7 @@ jobs:
             echo "DESIRED_CUDA=${DESIRED_CUDA}"
             echo "GPU_ARCH_VERSION=${GPU_ARCH_VERSION}"
             echo "GPU_ARCH_TYPE=${GPU_ARCH_TYPE}"
-            echo "DOCKER_IMAGE=${{ inputs.DOCKER_IMAGE }}:${{ inputs.DOCKER_IMAGE_TAG_PREFIX }}"
+            echo "DOCKER_IMAGE=pytorch/${{ inputs.DOCKER_IMAGE }}:${{ inputs.DOCKER_IMAGE_TAG_PREFIX }}"
             echo "SKIP_ALL_TESTS=${SKIP_ALL_TESTS}"
             echo "LIBTORCH_CONFIG=${LIBTORCH_CONFIG}"
             echo "LIBTORCH_VARIANT=${LIBTORCH_VARIANT}"
