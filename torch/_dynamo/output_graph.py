@@ -679,17 +679,20 @@ class OutputGraph(OutputGraphCommon):
         # SymInt and raise GuardOnDataDependentSymNode.  Reuse the outer
         # mode/env so meta_utils.sym_sizes_strides_storage_offset can take
         # its "shape envs match" fast-path and pass the SymInt through.
-        outer_tc = (
-            torch._guards.TracingContext.try_get()
-            if torch.compiler._is_non_strict_tracing()
-            else None
-        )
+        outer_tc = torch._guards.TracingContext.try_get()
         outer_fake_mode = outer_tc.fake_mode if outer_tc is not None else None
-        reuse_outer_fake_mode = (
-            outer_fake_mode is not None and outer_fake_mode.shape_env is not None
+        # Self-documenting flag rather than re-querying the global
+        # _is_non_strict_tracing() at every check site: callers (e.g. the
+        # input-wrapping path in builder.py) need to know specifically that
+        # *this* OutputGraph adopted an outer FakeTensorMode, not just that
+        # we happen to be inside a non-strict tracing region.
+        self.reused_outer_fake_mode: bool = (
+            torch.compiler._is_non_strict_tracing()
+            and outer_fake_mode is not None
+            and outer_fake_mode.shape_env is not None
         )
 
-        if reuse_outer_fake_mode:
+        if self.reused_outer_fake_mode:
             assert outer_fake_mode is not None  # for type checkers
             shape_env = outer_fake_mode.shape_env
             assert shape_env is not None
@@ -3333,10 +3336,15 @@ class OutputGraph(OutputGraphCommon):
         shape_env = fake_mode.shape_env if fake_mode is not None else None
         if shape_env is None:
             return
-        # Only restore if the slot still holds our inner list; if some other
-        # code has already swapped it out, leave that alone.
-        if shape_env.tracked_fakes is self.tracked_fakes:
-            shape_env.tracked_fakes = outer
+        # Surface unexpected interleavings loudly rather than silently
+        # leaking our inner list: the only legitimate state at this point
+        # is shape_env.tracked_fakes still pointing at the list we
+        # installed in __init__.
+        assert shape_env.tracked_fakes is self.tracked_fakes, (
+            "shape_env.tracked_fakes was swapped out from under this "
+            "OutputGraph while it was active"
+        )
+        shape_env.tracked_fakes = outer
 
     def cleanup(self) -> None:
         # There is a reference cycle between tracer and OutputGraph, causing
