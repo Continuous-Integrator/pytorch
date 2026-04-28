@@ -950,17 +950,9 @@ def _make_fx_check_cpp_fake(func, args, kwargs, assert_close,
     def run(f, *args, **kwargs):
         return wrapper_set_seed(f, *args, **kwargs)
 
-    try:
-        with cpp_fake_tensor_mode():
-            fake_args = tree_map(_to_cpp_fake_symbolic, new_args)
-            with enable_python_dispatcher():
-                traced_f = make_fx(f, tracing_mode="real",
-                                   decomposition_table=decomp_table)(*fake_args)
-    except Exception as e:
-        # Re-raise as a clean Python exception to ensure C++ RAII guards
-        # (tls_on_entry, dispatch key exclude sets) fully unwind before
-        # the test framework's exception chaining can keep them alive.
-        raise RuntimeError(str(e)) from None
+    with cpp_fake_tensor_mode():
+        traced_f = make_fx(f, tracing_mode="real",
+                           decomposition_table=decomp_table)(*new_args)
 
     msg = (
         "op(*args, **kwargs) and make_fx(op)(*args, **kwargs) under "
