@@ -2146,7 +2146,6 @@ class TestMetaKernelRegistrations(TestCase):
                 [2, 2, 2], [2, 2, 2], [0, 0, 0], True, True, 0,
             )
 
-
 instantiate_device_type_tests(TestMeta, globals())
 
 
