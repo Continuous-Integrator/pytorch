@@ -6,7 +6,7 @@ Out-of-tree (OOT) accelerator backends need to maintain compatibility with PyTor
 
 This chapter guides third-party accelerator vendors through the process of integrating their repositories with PyTorch's CI ecosystem, ensuring continuous compatibility validation.
 
-## Why CI/CD Integration Matters
+## Why CI Integration Matters
 
 Integrating with PyTorch's CI ecosystem provides several key benefits:
 
