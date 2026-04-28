@@ -8363,9 +8363,15 @@ def control_deps_op_lowering(additional_deps, subgraph_fn, *args):
 
     dep_names = []
     for dep, orig_node in zip(additional_deps, original_dep_nodes, strict=True):
-        if isinstance(dep, IRNode):
-            dep.realize()
-            dep_names.append(dep.get_name())
+        dep_ir_nodes = [
+            dep_leaf
+            for dep_leaf in pytree.tree_leaves(dep)
+            if isinstance(dep_leaf, IRNode)
+        ]
+        if dep_ir_nodes:
+            for dep_ir_node in dep_ir_nodes:
+                dep_ir_node.realize()
+                dep_names.append(dep_ir_node.get_name())
         elif isinstance(orig_node, torch.fx.Node):
             # Void op (e.g. record_event returns None): look up the buffer
             # names stored when it was previously lowered.
