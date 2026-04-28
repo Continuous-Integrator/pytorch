@@ -656,7 +656,7 @@ static PyObject* set_verbose_logger(PyObject* dummy, PyObject* args) {
     throw_python_error();
   }
 
-  if (Py_IsNone(logger)) {
+  if (logger == Py_None) {
     python_verbose_logger = nullptr;
   } else {
     python_verbose_logger = logger;
@@ -1261,7 +1261,7 @@ static PyObject* set_autograd_compiler(PyObject* dummy, PyObject* args) {
   PyObject* prior_compiler = the_autograd_compiler;
   PyObject* prior_dynamic = default_dyn_type_int == 0 ? Py_False : Py_True;
   default_dyn_type_int = b;
-  if (Py_IsNone(obj)) { // disable
+  if (obj == Py_None) { // disable
     the_autograd_compiler = nullptr; // decref not needed due to `prior`
     Engine::set_compiled_autograd(nullptr);
   } else { // enable

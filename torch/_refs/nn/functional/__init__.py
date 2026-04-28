@@ -560,7 +560,7 @@ def _check_reduction_value(reduction: str):
         raise ValueError(f"{reduction} is not a valid value for reduction")
 
 
-# This helper function maps deprecated arguments, "size_average" and "reduce"
+# This helper function maps depreciated arguments, "size_average" and "reduce"
 # to their corresponding "reduction" string argument
 def _get_string_reduction_arg(*, size_average: bool | None, reduce: bool | None) -> str:
     if size_average is None:
@@ -1123,10 +1123,6 @@ def poisson_nll_loss(
 
 
 @register_decomposition(aten.prelu)
-@elementwise_type_promotion_wrapper(
-    type_promoting_args=("a", "weight"),
-    type_promotion_kind=utils.ELEMENTWISE_TYPE_PROMOTION_KIND.DEFAULT,
-)
 def prelu(a: TensorLikeType, weight: TensorLikeType) -> TensorLikeType:
     """
     Reference implementation of torch.nn.functional.prelu
@@ -1138,6 +1134,10 @@ def prelu(a: TensorLikeType, weight: TensorLikeType) -> TensorLikeType:
     torch._check(
         isinstance(weight, TensorLike),
         lambda: f"prelu: Expected `weight` to be tensor, but got: {type(weight)}",
+    )
+    torch._check(
+        a.dtype == weight.dtype,
+        lambda: f"prelu: Type promoting not supported. Got {a.dtype} and {weight.dtype}",
     )
 
     if weight.numel() != 1:
