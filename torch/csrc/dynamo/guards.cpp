@@ -3251,15 +3251,17 @@ class GuardManager {
       return true;
     }
     for (auto& recorded_tensor : it->second) {
-      PyObject* tensor_ptr =
-          PyWeakref_GET_OBJECT(recorded_tensor.tensor_weakref.ptr());
-      if (tensor_ptr == Py_None) {
+      PyObject* tensor_ptr = nullptr;
+      if (PyWeakref_GetRef(recorded_tensor.tensor_weakref.ptr(), &tensor_ptr) ==
+          0) {
         _disable_dict_tag_matching = true;
         return false;
       }
-      if (!THPVariable_Check(tensor_ptr) ||
-          !recorded_tensor.check.check(
-              get_local_state(_root), THPVariable_Unpack(tensor_ptr))) {
+      bool ok = THPVariable_Check(tensor_ptr) &&
+          recorded_tensor.check.check(
+              get_local_state(_root), THPVariable_Unpack(tensor_ptr));
+      Py_DECREF(tensor_ptr);
+      if (!ok) {
         return false;
       }
     }
@@ -3270,12 +3272,14 @@ class GuardManager {
     std::shared_ptr<RelationalGuard> no_tensor_aliasing_guard =
         get_no_tensor_aliasing_guard(_root);
     for (auto& tensor_weakref : _tensor_pointers[value]) {
-      PyObject* tensor_ptr = PyWeakref_GET_OBJECT(tensor_weakref.ptr());
-      if (tensor_ptr == Py_None) {
+      PyObject* tensor_ptr = nullptr;
+      if (PyWeakref_GetRef(tensor_weakref.ptr(), &tensor_ptr) == 0) {
         _disable_dict_tag_matching = true;
         return false;
       }
-      if (!no_tensor_aliasing_guard->check_nopybind(tensor_ptr)) {
+      bool ok = no_tensor_aliasing_guard->check_nopybind(tensor_ptr);
+      Py_DECREF(tensor_ptr);
+      if (!ok) {
         return false;
       }
     }
@@ -4076,7 +4080,7 @@ class RootGuardManager : public GuardManager {
 
   void record_tensor_metadata(PyObject* tensor_pointer) {
     _recorded_tensor_metadata.push_back(RecordedTensorMetadata{
-        py::weakref(py::handle(tensor_pointer)),
+        py::reinterpret_borrow<py::object>(tensor_pointer),
         make_tensor_check(_local_state, THPVariable_Unpack(tensor_pointer)),
     });
   }
