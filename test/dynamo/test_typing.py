@@ -134,6 +134,44 @@ class TypingTests(TestCase):
         opt_y = opt_f(x)
         self.assertEqual(y, opt_y)
 
+    def test_invalid_subscript(self):
+        class C:
+            pass
+
+        @torch.compile(backend="eager", fullgraph=True)
+        def f(x, y):
+            return x.sin(), y[int]
+
+        x = torch.randn(3, 3)
+        for y in (C, C(), int, None):
+            with self.assertRaisesRegex(
+                torch._dynamo.exc.Unsupported, "is not subscriptable"
+            ):
+                f(x, y)
+
+    def test_generic_multi_typevar(self):
+        U = typing.TypeVar("U")
+        V = typing.TypeVar("V", default=int)
+
+        class C(typing.Generic[T, U, V]):
+            pass
+
+        def f(x):
+            return x.sin(), C[int, int]
+
+        x = torch.randn(3, 3)
+        y = f(x)
+        opt_f = torch.compile(f, backend="eager", fullgraph=True)
+        opt_y = opt_f(x)
+        self.assertEqual(y[0], opt_y[0])
+
+        def f(x):
+            return x.sin(), C[int]
+
+        opt_f = torch.compile(f, backend="eager", fullgraph=True)
+        with self.assertRaisesRegex(torch._dynamo.exc.Unsupported, "Too few arguments"):
+            opt_f(x)
+
 
 if __name__ == "__main__":
     run_tests()

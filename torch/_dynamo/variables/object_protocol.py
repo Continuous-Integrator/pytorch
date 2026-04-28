@@ -16,20 +16,23 @@ from torch._C._dynamo import (
     PyMappingSlots,
     PyNumberSlots,
     PySequenceSlots,
+    PyTypeSlots,
 )
 
-from .. import graph_break_hints
+from .. import graph_break_hints, polyfills
 from ..exc import (
     handle_observed_exception,
     ObservedTypeError,
     raise_observed_exception,
     raise_type_error,
     unimplemented,
+    Unsupported,
 )
 from ..source import GetItemSource
 from ..utils import istype
 from .base import NO_SUCH_SUBOBJ, VariableTracker
 from .constant import ConstantVariable
+from .functions import UserFunctionVariable
 
 
 if TYPE_CHECKING:
@@ -105,6 +108,12 @@ def type_implements_sq_length(obj_type: type) -> bool:
     return has_slot(seq_slots, PySequenceSlots.SQ_LENGTH)
 
 
+def type_implements_sq_item(obj_type: type) -> bool:
+    """Check whether obj_type implements __getitem__ as sequence protocol"""
+    seq_slots, _, _, _ = _get_cached_slots(obj_type)
+    return has_slot(seq_slots, PySequenceSlots.SQ_ITEM)
+
+
 def type_implements_mp_length(obj_type: type) -> bool:
     """Check whether obj_type implements __len__ as mapping protocol"""
     _, map_slots, _, _ = _get_cached_slots(obj_type)
@@ -135,9 +144,34 @@ def type_implements_nb_float(obj_type: type) -> bool:
     return has_slot(number_slots, PyNumberSlots.NB_FLOAT)
 
 
+def type_implements_tp_iter(obj_type: type) -> bool:
+    _, _, _, type_slot = _get_cached_slots(obj_type)
+    return has_slot(type_slot, PyTypeSlots.TP_ITER)
+
+
+def type_implements_tp_iternext(obj_type: type) -> bool:
+    _, _, _, type_slot = _get_cached_slots(obj_type)
+    return has_slot(type_slot, PyTypeSlots.TP_ITERNEXT)
+
+
 def type_implements_mp_subscript(obj_type: type) -> bool:
     _, map_slots, _, _ = _get_cached_slots(obj_type)
     return has_slot(map_slots, PyMappingSlots.MP_SUBSCRIPT)
+
+
+def pyiter_check(obj_type: type) -> bool:
+    # ref: https://github.com/python/cpython/blob/3.13/Objects/abstract.c#L2891-L2897
+    # CPython checks if tp_iternext != _PyObject_NextNotImplemented
+    # Dynamo only sets the bit if __next__ is actually defined
+    return type_implements_tp_iternext(obj_type)
+
+
+def pysequence_check(obj_type: type) -> bool:
+    """Implements PySequence_Check semantics for VariableTracker objects."""
+    # ref: https://github.com/python/cpython/blob/v3.13.0/Objects/abstract.c#L1714-L1721
+    if issubclass(obj_type, dict):
+        return False
+    return type_implements_sq_item(obj_type)
 
 
 def maybe_get_python_type(obj: VariableTracker) -> type:
@@ -194,7 +228,10 @@ def generic_bool(tx: "InstructionTranslator", obj: VariableTracker) -> VariableT
     from .constant import ConstantVariable
 
     if obj.is_python_constant():
-        return ConstantVariable.create(bool(obj.as_python_constant()))
+        try:
+            return ConstantVariable.create(bool(obj.as_python_constant()))
+        except Exception as e:
+            raise_observed_exception(type(e), tx, args=[str(e)])
 
     obj_type = maybe_get_python_type(obj)
 
@@ -209,7 +246,12 @@ def generic_bool(tx: "InstructionTranslator", obj: VariableTracker) -> VariableT
 
         if isinstance(length, SymNodeVariable):
             return SymNodeVariable.create(tx, length.as_proxy() > 0)
-        return ConstantVariable.create(length.as_python_constant() > 0)
+        length_val = length.as_python_constant()
+        if length_val < 0:
+            raise_observed_exception(
+                ValueError, tx, args=["__len__() should return >= 0"]
+            )
+        return ConstantVariable.create(length_val > 0)
     except ObservedTypeError:
         handle_observed_exception(tx)
 
@@ -236,7 +278,7 @@ def vt_getitem(
     matching CPython's dispatch order.
     TODO(follow-up): Branch 2 (sq_item) for C extension types that only have
     tp_as_sequence (e.g. deque — Modules/_collectionsmodule.c:1888).
-    Branch 3 currently delegates to Cpython
+    Branch 3 delegates to cpython for builtin types (i.e. type[int] or list[int] - see BaseBuiltinVariable.call_method)
 
     Types that work via constant fold fallback (no dedicated mp_subscript_impl):
     TODO(follow-up): str (unicode_subscript, Objects/unicodeobject.c:13809)
@@ -246,12 +288,23 @@ def vt_getitem(
     if type_implements_mp_subscript(obj_type):
         return obj.mp_subscript_impl(tx, key)
     if issubclass(obj_type, type):
-        # TODO this should trace __class_getitem__.  Currently fails because some parts are builtin (thin dispatch to
-        # _generic_call_getitem and __typing_prepare_subst__)
-        key_py = key.as_python_constant()
-        source = obj.source and GetItemSource(obj.source, key_py)
-        ret = VariableTracker.build(tx, obj.as_python_constant()[key_py], source=source)
-        return ret
+        cls = obj.as_python_constant()
+        if cls is type:
+            key_py = key.as_python_constant()
+            result = cls[key_py]
+            source = obj.source and GetItemSource(obj.source, key_py)
+            return VariableTracker.build(tx, result, source)
+        try:
+            return obj.call_method(
+                tx,
+                "__class_getitem__",
+                [
+                    key,
+                ],
+                {},
+            )
+        except Unsupported:
+            raise_type_error(tx, f"type '{obj.debug_repr()}' is not subscriptable")
     raise_type_error(tx, f"{obj_type} object is not subscriptable")
 
 
@@ -332,3 +385,56 @@ def generic_float(tx: "InstructionTranslator", obj: VariableTracker) -> Variable
         f"float() argument must be a string or a real number, "
         f"not '{obj.python_type_name()}'",
     )
+
+
+def generic_iternext(
+    tx: "InstructionTranslator", obj: VariableTracker
+) -> "VariableTracker":
+    """
+    Implements PyIter_Next / tp_iternext semantics for VariableTracker objects.
+
+    Calls obj.tp_iternext_impl(tx) if the object is an iterator, otherwise raises
+    TypeError. StopIteration propagation is left to the caller (mirrors
+    CPython's iternext contract where NULL return signals exhaustion).
+    """
+    # ref: https://github.com/python/cpython/blob/v3.13.0/Objects/abstract.c#L2865
+
+    T = maybe_get_python_type(obj)
+    if not type_implements_tp_iternext(T):
+        raise_type_error(tx, f"expected an iterator, got '{obj.python_type_name()}'")
+
+    return obj.tp_iternext_impl(tx)
+
+
+def generic_getiter(
+    tx: "InstructionTranslator", obj: VariableTracker
+) -> "VariableTracker":
+    """
+    Implements PyObject_GetIter semantics for VariableTracker objects.
+    Routes to obj.tp_iter_impl(tx), the tp_iter slot on the object's type.
+    """
+
+    # ref: https://github.com/python/cpython/blob/v3.13.0/Objects/abstract.c#L2847-L2870
+    # The algorithm for PyObject_GetIter works as follows: Steps:
+    # 1. If the object has tp_iter slot, call it and return the result. The
+    #    return object must be an iterator (it must have a tp_iternext slot)
+    # 2. If the object implements the sequence protocol - implements __getitem__
+    #    then create a sequence iterator for the object and return it
+    # 3. Otherwise, raise a TypeError
+
+    T = maybe_get_python_type(obj)
+    if type_implements_tp_iter(T):
+        res = obj.tp_iter_impl(tx)
+        res_T = maybe_get_python_type(res)
+        if not pyiter_check(res_T):
+            raise_type_error(
+                tx,
+                f"{obj.python_type_name()}.__iter__() returned non-iterator {res.python_type_name()}",
+            )
+        return res
+    elif pysequence_check(T):
+        return UserFunctionVariable(polyfills.builtins.sequence_iterator).call_function(
+            tx, [obj], {}
+        )
+    else:
+        raise_type_error(tx, f"'{obj.python_type_name()}' object is not iterable")

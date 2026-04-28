@@ -1563,6 +1563,11 @@ class PythonModuleVariable(VariableTracker):
 
 
 class UnionVariable(VariableTracker):
+    """Represents instances of types.UnionType
+
+    https://github.com/python/cpython/blob/v3.13.3/Objects/unionobject.c#L365-L384
+    """
+
     def __init__(self, value: types.UnionType, **kwargs: Any):
         super().__init__(**kwargs)
         self.value = value
@@ -1576,7 +1581,7 @@ class UnionVariable(VariableTracker):
         name: str,
         args: list[VariableTracker],
         kwargs: dict[str, VariableTracker],
-    ):
+    ) -> VariableTracker:
         if name == "__eq__":
             other = args[0]
             if isinstance(other, UnionVariable):
