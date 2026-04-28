@@ -5,7 +5,6 @@
 #include <c10/core/impl/LocalDispatchKeySet.h>
 #include <c10/core/impl/TorchDispatchModeTLS.h>
 #include <c10/util/irange.h>
-#include <torch/csrc/utils/python_arg_parser.h>
 #include <torch/library.h>
 
 #include <string>
@@ -176,21 +175,26 @@ static std::optional<c10::Device> rewrite_device_args_to_meta(
   return original_device;
 }
 
-static void wrap(
-  const at::Tensor& t,
-  c10::Device fake_device,
-  const std::shared_ptr<c10::FakeTensorMode>& mode) {
-    if (is_our_fake(t)) {
-      // check t's fake device = common device?
-      // not calling converter.from_meta_and_device
-      // (at least for now) because
-      // that makes another FakeTensor
-      // and we wanna change this in place
-      transmute_to_fake(t, fake_device, mode);
-    }
-    // else if converter is not None:
-      // do things
+static bool is_our_fake(const at::Tensor& t, const std::shared_ptr<c10::FakeTensorMode>& mode) {
+  return t.defined() && t.is_fake() &&
+          t.unsafeGetTensorImpl()->fake_tensor_mode() == mode;
 }
+
+// static void wrap(
+//   const at::Tensor& t,
+//   c10::Device fake_device,
+//   const std::shared_ptr<c10::FakeTensorMode>& mode) {
+//     if (is_our_fake(t)) {
+//       // check t's fake device = common device?
+//       // not calling converter.from_meta_and_device
+//       // (at least for now) because
+//       // that makes another FakeTensor
+//       // and we wanna change this in place
+//       transmute_to_fake(t, fake_device, mode);
+//     }
+//     // else if converter is not None:
+//       // do things
+// }
 
 static void transmute_to_fake(
     const at::Tensor& t,
@@ -249,40 +253,30 @@ static void validate_and_convert_non_fake_tensors(
     size_t num_arguments,
     const std::shared_ptr<c10::FakeTensorMode>& mode) {
 
-  auto validate = [&](const at::Tensor& t) {
-    if (t.defined() && !is_our_fake(t)) {
+  auto validate = [&](const at::Tensor& t) -> std::optional<at::Tensor> {
+    if (t.defined() && !is_our_fake(t, mode)) {
       // TODO: check if hasattr(func, "tags") and torch.Tag.inplace_view in func.tags
       // TODO: allow non fake inputs
       // TODO: if not allow non fake inputs checks
 
-      // real_tensor_to_fake(t, mode) --> change to call converter
-      return converter.from_real_tensor(t);
-    } else if (is_our_fake(t)) {
+      // TODO: change to call converter
+      // return converter.from_real_tensor(t);
+      return real_tensor_to_fake(t, mode);
+    } else if (is_our_fake(t, mode)) {
       return std::nullopt; // already fake, leave as is
     }
+    return std::nullopt;
   };
   for_each_tensor(
       stack, arguments_begin, num_arguments,
       [&](const at::Tensor& t) -> std::optional<at::Tensor> {
-        return validate(t, mode);
-        return std::nullopt;
+        return validate(t);
       });
 }
 
 static bool is_lift_func(const c10::OperatorHandle& op) {
-  static auto lift_fresh = c10::Dispatcher::singleton()
-      .findSchemaOrThrow("aten::lift_fresh", "default");
-  static auto lift_fresh_copy = c10::Dispatcher::singleton()
-      .findSchemaOrThrow("aten::lift_fresh_copy", "default");
-  return op == lift_fresh || op == lift_fresh_copy;
-}
-
-// flat_arg_fake_tensors = [t for t in flat_args if self.is_our_fake(t)]
-// implement is_our_fake
-
-static bool is_our_fake(const at::Tensor& t, const std::shared_ptr<c10::FakeTensorMode>& mode) {
-  return t.defined() && t.is_fake() &&
-          t.unsafeGetTensorImpl()->fake_tensor_mode() == mode;
+  const auto& name = op.operator_name();
+  return (name.name == "aten::lift_fresh" || name.name == "aten::lift_fresh_copy");
 }
 
 static void maybe_run_unsafe_fallback(
@@ -340,7 +334,7 @@ void fakeFallback(
 
   // sym int check
   TORCH_CHECK(
-    has_symbolic_sizes(stack, arguments_begin, num_arguments),
+    !has_symbolic_sizes(stack, arguments_begin, num_arguments),
     "SymInts are not fully yet supported in C++ FakeTensor (op: ",
     op.operator_name(),
     ")"
@@ -356,23 +350,18 @@ void fakeFallback(
       });
 
   // Skip constant prop for _to_copy when the input is already on meta device
-  // idk if the singleton thing is right
   // TODO: implement avoiding_device_init (requires avoid_device_init on C++ FakeTensorMode)
-  static auto to_copy = c10::Dispatcher::singleton()
-      .findSchemaOrThrow("aten::_to_copy", "default");
   auto arguments = torch::jit::last(*stack, num_arguments);
 
   bool device_conversion_skip_const_prop =
-      op == to_copy && (num_arguments > 0 && arguments[0].isTensor()) &&
+      op.operator_name().name == "aten::_to_copy" &&
+      (num_arguments > 0 && arguments[0].isTensor()) &&
       arguments[0].toTensor().device().is_meta(); // or avoiding_device_init
 
-  const auto& op_name = op.operator_name();
-  auto pos = op_name.name.rfind("::");
-  auto base_name = (pos != std::string::npos)
-      ? op_name.name.substr(pos + 2) : op_name.name;
-
+  // TODO: constant propagation requires torch::should_allow_numbers_as_tensors
+  // which lives in the Python layer and is unavailable here.
   if ((is_lift_func(op) && flat_arg_fake_tensors.empty()) ||
-      (torch::should_allow_numbers_as_tensors(base_name) &&
+      (false /* TODO: should_allow_numbers_as_tensors */ &&
        !has_symbolic_sizes(stack, arguments_begin, num_arguments) &&
        flat_arg_fake_tensors.empty() &&
        !device_conversion_skip_const_prop)) {
@@ -430,7 +419,7 @@ void fakeFallback(
       !cpp_meta_supports_symint(op) && mode) {
     // 1. Try Python decomposition table
     if (mode->decomp_fn_ && mode->decomp_fn_(&op, stack)) {
-      stamp_outputs_as_fake();
+      wrap_meta_outputs_with_default_device_logic();
       return;
     }
 
@@ -448,7 +437,7 @@ void fakeFallback(
       ks = ks.remove(c10::DispatchKey::Python);
       ks = ks.remove(c10::DispatchKey::PythonTLSSnapshot);
       op.redispatchBoxed(ks, stack);
-      stamp_outputs_as_fake();
+      wrap_meta_outputs_with_default_device_logic();
       return;
     }
   }

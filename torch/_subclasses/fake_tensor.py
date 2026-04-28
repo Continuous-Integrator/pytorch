@@ -2853,7 +2853,7 @@ class FakeTensorMode(TorchDispatchMode):
             #     # Decomposes CompositeImplicitAutograd ops
             #     r = func.decompose(*args, **kwargs)
             #     if r is not NotImplemented:
-                    return maybe_propagate_real_tensors(r)
+            #         return maybe_propagate_real_tensors(r)
 
         # prims already wrap FakeTensor inputs to FakeTensor outputs
         # and do device logic, we dont need do anything but run them
@@ -2931,33 +2931,32 @@ class FakeTensorMode(TorchDispatchMode):
             raise AssertionError("user defined logic not implemented")
 
         # structured kernels
-        if func in structured_kernel_registry:
-            # with FakeTensor. We should remove this once we have a
-            # better way to handle structured kernels
-            # from torch._library.simple_registry import structured_kernel_registry
+        # if func in structured_kernel_registry:
+        #     # with FakeTensor. We should remove this once we have a
+        #     # better way to handle structured kernels
+        #     # from torch._library.simple_registry import structured_kernel_registry
 
-            # with self:
-            #     return maybe_propagate
-            raise AssertionError("structured_kernel_registry logic not implemented")
+        #     # with self:
+        #     #     return maybe_propagate
+        #     raise AssertionError("structured_kernel_registry logic not implemented")
 
         # special handling for funcs registered through `register_op_impl`,
         # e.g., manipulating args on constructor calls to construct meta tensors
         # and then afterwards wrapping them to a FakeTensor
         for run_impl_check, op_impl in op_implementations_checks:
-            # if run_impl_check(func):
-            #     op_impl_out = op_impl(self, func, *args, **kwargs)
-            #     if op_impl_out is not NotImplemented:
-            #         return maybe_propagate_real_tensors(op_impl_out)
-            raise AssertionError("no special handling, op_implementations_checks logic not implemented")
+            if run_impl_check(func):
+                op_impl_out = op_impl(self, func, *args, **kwargs)
+                if op_impl_out is not NotImplemented:
+                    return maybe_propagate_real_tensors(op_impl_out)
 
         # If we have a meta kernel, run it
         if has_meta(func):
-            with self:
+            with in_kernel_invocation_manager(self):
                 return maybe_propagate_real_tensors(func(*args, **kwargs))
 
         # If we have a fallback kernel, run it
         if has_fallback(func):
-            with self:
+            with in_kernel_invocation_manager(self):
                 return maybe_propagate_real_tensors(
                     run_fallback_kernel(self, func, flat_args, args_spec)
                 )
