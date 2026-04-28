@@ -423,7 +423,14 @@ class Library:
         self._op_impls.add(key)
 
     def impl(
-        self, op_name, fn, dispatch_key="", *, with_keyset=False, allow_override=False
+        self,
+        op_name,
+        fn,
+        dispatch_key="",
+        *,
+        with_keyset=False,
+        allow_override=False,
+        internal_impl=False,
     ):
         r"""Registers the function implementation for an operator defined in the library.
 
@@ -440,6 +447,13 @@ class Library:
                          default off, and will error you're trying to register a
                          kernel to a dispatch key with a kernel already
                          registered.
+            internal_impl: Flag marking this registration as an in-tree
+                         (``torch._native``) kernel. Internal kernels are not
+                         tracked in the global ``_impls`` set, so they do not
+                         collide with out-of-tree registrations for the same
+                         (namespace, op, dispatch key), and out-of-tree kernels
+                         are free to register on top of them without
+                         ``allow_override=True``.
 
         Example::
             >>> # xdoctest: +SKIP("Requires Python <= 3.11")
@@ -469,7 +483,7 @@ class Library:
             )
 
         key = self.ns + "/" + name.split("::")[-1] + "/" + dispatch_key
-        if (not allow_override) and key in _impls:
+        if (not allow_override) and (not internal_impl) and key in _impls:
             # TODO: in future, add more info about where the existing function is registered (this info is
             # today already returned by the C++ warning when impl is called but we error out before that)
             raise RuntimeError(
@@ -507,8 +521,9 @@ class Library:
             with_keyset,
         )
 
-        _impls.add(key)
-        self._op_impls.add(key)
+        if not internal_impl:
+            _impls.add(key)
+            self._op_impls.add(key)
 
     def fallback(self, fn, dispatch_key="", *, with_keyset=False):
         r"""Registers the function implementation as the fallback for the given key.
