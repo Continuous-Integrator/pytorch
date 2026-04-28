@@ -3694,7 +3694,7 @@ class TritonKernel(SIMDKernel[TritonCSEVariable]):
             PartialAccumulate(name, reduction_type, val)
         )
 
-    def load(self, name: str, index: sympy.Expr):
+    def load(self, name: str, index: sympy.Expr, mode=None):
         """
         Load from the memory location 'name', offset by some indexing expression 'index'.
         """
@@ -3712,7 +3712,7 @@ class TritonKernel(SIMDKernel[TritonCSEVariable]):
                 self,
                 dtype,
                 for_store=False,
-                force=False,
+                force=mode == "tma",
             ),
         )
 

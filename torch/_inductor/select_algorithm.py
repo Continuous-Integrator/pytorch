@@ -502,6 +502,7 @@ class TritonTemplateKernel(TritonKernel):
         num_buffers_warp_spec=0,
         use_jit=False,
         tma_store=False,
+        tma_load=False,
         transpose_discontiguous_tensor_descriptors_override=None,
         prefix_args=0,
         suffix_args=0,
@@ -513,12 +514,13 @@ class TritonTemplateKernel(TritonKernel):
         triton_meta: dict[str, object] | None = None,
         always_freeze_layout: bool = False,
     ) -> None:
+        tma_2d = tma_store or tma_load
         if tma_store:
             pass
         numel = sympy_product(output_node.get_size())
-        if tma_store:
+        if tma_2d:
             assert len(output_node.get_size()) == 2, (
-                "TMA store only supported for 2D with templates"
+                "TMA load/store only supported for 2D with templates"
             )
             tiling = {
                 "x": output_node.get_size()[0],
@@ -535,7 +537,7 @@ class TritonTemplateKernel(TritonKernel):
             features=SIMDKernelFeatures([], numel),
             hint_override=hint_override,
         )
-        if tma_store:
+        if tma_2d:
             # By default `construct_range_trees` will return the range_trees in the order
             # ["z", "y", "x", "r0_", "r1_"] (see simd.py:all_prefixes)
             # and this order defines what the kernel block shape will be. So if the template
@@ -565,6 +567,7 @@ class TritonTemplateKernel(TritonKernel):
         self.kernel_name = kernel_name
         self.use_jit = use_jit
         self.tma_store = tma_store
+        self.tma_load = tma_load
         self.transpose_discontiguous_tensor_descriptors_override = (
             transpose_discontiguous_tensor_descriptors_override
         )
@@ -1391,7 +1394,7 @@ class TritonTemplateKernel(TritonKernel):
                 assert not mask, "Mask is not supported with blocking indexing"
                 intermediate_lines: list[str] = []
                 epilogue_index_symbols: list[sympy.Symbol] = []
-                if self.tma_store:
+                if self.tma_store or self.tma_load:
                     val_shape_copy = list(val_shape)
                     for i, range_tree in enumerate(self.range_trees[:-1]):
                         name = range_tree.name
@@ -1467,7 +1470,7 @@ class TritonTemplateKernel(TritonKernel):
                     self.template_mask = final_mask_var
                 index_symbols = epilogue_index_symbols
                 contiguous_index = sympy_dot(output_layout.stride, index_symbols)
-                if not self.tma_store:
+                if not (self.tma_store or self.tma_load):
                     # Convert to just use xindex.
                     contiguous_index = self.rename_indexing(contiguous_index)
                     intermediate_lines.append(f"xindex = {texpr(contiguous_index)}")
@@ -1526,7 +1529,6 @@ class TritonTemplateKernel(TritonKernel):
         return self._register_hook(
             subgraph_name, self._make_codegen_hook(subgraph_name, indent_width)
         )
-
 
     def _register_hook(
         self,
@@ -1786,17 +1788,27 @@ class TritonTemplateKernel(TritonKernel):
             for i in range(num_store_subgraphs):
                 subgraph_name = self._get_store_output_subgraph_name(i)
                 with self.set_subgraph_body(subgraph_name):
-                    if self.tma_store and self._epilogue_nodes_by_subgraph[i]:
-                        # When TMA store is active, inject mode="tma" on
-                        # epilogue stores so they use TMA descriptors.
-                        # The template's own store to the intermediate buffer
-                        # is suppressed by DeferredLine (removed buffer).
+                    has_epilogue = bool(self._epilogue_nodes_by_subgraph[i])
+                    use_tma_store = self.tma_store and has_epilogue
+                    use_tma_load = self.tma_load and has_epilogue
+                    if use_tma_store or use_tma_load:
                         orig_store = self.store
+                        orig_load = self.load
 
-                        def _tma_epilogue_store(name, index, value, mode=None):
-                            orig_store(name, index, value, mode="tma")
+                        if use_tma_store:
 
-                        self.store = _tma_epilogue_store  # type: ignore[method-assign]
+                            def _tma_epilogue_store(name, index, value, mode=None):
+                                orig_store(name, index, value, mode="tma")
+
+                            self.store = _tma_epilogue_store  # type: ignore[method-assign]
+
+                        if use_tma_load:
+
+                            def _tma_epilogue_load(name, index, mode=None):
+                                return orig_load(name, index, mode="tma")
+
+                            self.load = _tma_epilogue_load  # type: ignore[method-assign]
+
                         try:
                             for node in self._epilogue_nodes_by_subgraph[i]:
                                 node.codegen(
@@ -1804,11 +1816,10 @@ class TritonTemplateKernel(TritonKernel):
                                 )
                         finally:
                             self.store = orig_store  # type: ignore[method-assign]
+                            self.load = orig_load  # type: ignore[method-assign]
                     else:
                         for node in self._epilogue_nodes_by_subgraph[i]:
-                            node.codegen(
-                                self.split_and_set_ranges(node.get_ranges())
-                            )
+                            node.codegen(self.split_and_set_ranges(node.get_ranges()))
                     self.cse.invalidate(OrderedSet())
 
             self.codegen_prologues_in_subgraphs(
@@ -2561,6 +2572,7 @@ class TritonTemplate(KernelTemplate):
         generate_with_caching,
         hint_override: int | None = None,
         tma_store: bool = False,
+        tma_load: bool = False,
         transpose_discontiguous_tensor_descriptors_override: bool | None = None,
         triton_meta: dict[str, Any] | None = None,
     ) -> GenerateAndLoadResult | None:
@@ -2646,6 +2658,7 @@ class TritonTemplate(KernelTemplate):
                 use_jit=False,
                 hint_override=hint_override,
                 tma_store=tma_store,
+                tma_load=tma_load,
                 transpose_discontiguous_tensor_descriptors_override=transpose_discontiguous_tensor_descriptors_override,
                 triton_meta=triton_meta,
                 **kernel_options,
@@ -2768,6 +2781,7 @@ class TritonTemplate(KernelTemplate):
         generate_with_caching=False,
         hint_override: int | None = None,
         tma_store: bool = False,
+        tma_load: bool = False,
         transpose_discontiguous_tensor_descriptors_override: bool | None = None,
         triton_meta: dict[str, Any] | None = None,
         **kwargs,
@@ -2893,6 +2907,7 @@ class TritonTemplate(KernelTemplate):
                 use_jit=False,
                 hint_override=hint_override,
                 tma_store=tma_store,
+                tma_load=tma_load,
                 transpose_discontiguous_tensor_descriptors_override=transpose_discontiguous_tensor_descriptors_override,
                 triton_meta=triton_meta,
                 **options,

@@ -367,11 +367,9 @@ class TestBlackwellTMAStoreFusion(TestCase):
 
         torch.testing.assert_close(actual, expected, atol=1e-1, rtol=1e-1)
 
-<<<<<<< HEAD
-        FileCheck().check("triton_tem_fused_mm").check("tma_descriptor").check(".store").run(code[0])
-=======
-        FileCheck().check("triton_tem_fused_mm").check(".store").run(code[0])
->>>>>>> d3724278abe (TMA store within pointwise epilogue fusion, Inductor codegen)
+        FileCheck().check("triton_tem_fused_mm").check("tma_descriptor").check(
+            ".store"
+        ).run(code[0])
 
     @unittest.skipIf(
         not has_datacenter_blackwell_tma_device(),
@@ -415,7 +413,118 @@ class TestBlackwellTMAStoreFusion(TestCase):
 
         torch.testing.assert_close(actual, expected, atol=1e-1, rtol=1e-1)
 
-        FileCheck().check("triton_tem_fused").check("tma_descriptor").check(".store").run(code[0])
+        FileCheck().check("triton_tem_fused").check("tma_descriptor").check(
+            ".store"
+        ).run(code[0])
+
+
+@instantiate_parametrized_tests
+class TestBlackwellTMALoadFusion(TestCase):
+    """Tests for TMA load with fused pointwise epilogues on Blackwell."""
+
+    @staticmethod
+    def _make_tma_load_test_config(epilogue_subtile: int) -> BlackwellGPUGemmConfig:
+        return BlackwellGPUGemmConfig(
+            128,
+            128,
+            64,
+            3,
+            4,
+            epilogue_subtile=epilogue_subtile,
+            warp_specialize=False,
+            flatten=False,
+        )
+
+    @unittest.skipIf(
+        not has_datacenter_blackwell_tma_device(),
+        "Need Blackwell with device-side TMA support in Triton",
+    )
+    @parametrize("shape", ((512, 256, 256), (4096, 256, 256)))
+    @parametrize("epilogue_subtile", (1, 2))
+    def test_blackwell_mm_sigmoid_epilogue_tma_load(
+        self,
+        shape: tuple[int, int, int],
+        epilogue_subtile: int,
+    ):
+        """Verify fused mm + sigmoid epilogue with TMA load (1 epilogue load)."""
+
+        def fn(x, W):
+            mm = torch.mm(x, W.T)
+            return x * (2.0 * torch.sigmoid(mm))
+
+        M, N, K = shape
+        x = torch.randn(M, K, dtype=torch.bfloat16, device=GPU_TYPE)
+        W = torch.randn(N, K, dtype=torch.bfloat16, device=GPU_TYPE)
+
+        test_config = self._make_tma_load_test_config(epilogue_subtile=epilogue_subtile)
+        heuristic = CUDABlackwellPersistentTMATemplateConfigHeuristic()
+        orig_configs = heuristic.mm_configs
+        heuristic.mm_configs = [test_config]
+        try:
+            with config.patch(
+                {
+                    "max_autotune": True,
+                    "triton.enable_persistent_tma_matmul": True,
+                    "triton.enable_template_tma_load": True,
+                    "test_configs.autotune_choice_name_regex": "blackwell_ws_persistent_device_tma",
+                }
+            ):
+                actual, code = run_and_get_code(torch.compile(fn), x, W)
+                expected = fn(x, W)
+        finally:
+            heuristic.mm_configs = orig_configs
+
+        torch.testing.assert_close(actual, expected, atol=1e-1, rtol=1e-1)
+
+        FileCheck().check("triton_tem_fused_mm").check("tma_descriptor").check(
+            ".load("
+        ).run(code[0])
+
+    @unittest.skipIf(
+        not has_datacenter_blackwell_tma_device(),
+        "Need Blackwell with device-side TMA support in Triton",
+    )
+    @parametrize("shape", ((512, 256, 256), (4096, 256, 256)))
+    @parametrize("epilogue_subtile", (1, 2))
+    def test_blackwell_mm_scale_bias_epilogue_tma_load(
+        self,
+        shape: tuple[int, int, int],
+        epilogue_subtile: int,
+    ):
+        """Verify fused mm * scale + bias epilogue with TMA load (2 epilogue loads)."""
+
+        def fn(x, W, scale, bias):
+            return torch.mm(x, W.T) * scale + bias
+
+        M, N, K = shape
+        x = torch.randn(M, K, dtype=torch.bfloat16, device=GPU_TYPE)
+        W = torch.randn(N, K, dtype=torch.bfloat16, device=GPU_TYPE)
+        scale = torch.randn(M, N, dtype=torch.bfloat16, device=GPU_TYPE)
+        bias = torch.randn(M, N, dtype=torch.bfloat16, device=GPU_TYPE)
+
+        test_config = self._make_tma_load_test_config(epilogue_subtile=epilogue_subtile)
+        heuristic = CUDABlackwellPersistentTMATemplateConfigHeuristic()
+        orig_configs = heuristic.mm_configs
+        heuristic.mm_configs = [test_config]
+        try:
+            with config.patch(
+                {
+                    "max_autotune": True,
+                    "triton.enable_persistent_tma_matmul": True,
+                    "triton.enable_template_tma_load": True,
+                    "test_configs.autotune_choice_name_regex": "blackwell_ws_persistent_device_tma",
+                }
+            ):
+                actual, code = run_and_get_code(torch.compile(fn), x, W, scale, bias)
+                expected = fn(x, W, scale, bias)
+        finally:
+            heuristic.mm_configs = orig_configs
+
+        torch.testing.assert_close(actual, expected, atol=1e-1, rtol=1e-1)
+
+        FileCheck().check("triton_tem_fused").check("tma_descriptor").check(
+            ".load("
+        ).run(code[0])
 
 
 @instantiate_parametrized_tests
