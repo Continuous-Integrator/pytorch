@@ -809,10 +809,13 @@ class CommonListMethodsVariable(BaseListVariable):
             # ref: https://github.com/python/cpython/blob/0fd4fd4496c557b68477a99c1c231a5870c91daf/Objects/listobject.c#L1389-L1444
             from .dicts import ConstDictVariable
             from .sets import SetVariable
+            from .user_defined import UserDefinedObjectVariable
 
             sz = len(self.items)
             if isinstance(args[0], (ListVariable, TupleVariable)):
                 self.items.extend(args[0].items)
+            elif isinstance(args[0], UserDefinedObjectVariable):
+                self.items.extend(unpack_iterator(tx, args[0]))
             elif isinstance(args[0], (ConstDictVariable, SetVariable)):
                 items = [item.vt for item in args[0].items]
                 self.items.extend(items)
