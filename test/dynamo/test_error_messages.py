@@ -1,6 +1,7 @@
 # Owner(s): ["module: dynamo"]
 
 import dis
+import linecache
 import logging
 import re
 import sys
@@ -89,6 +90,31 @@ def _assert_failure_stack_source_attribution() -> str:
         "                with GenericCtxMgr():\n"
         f"{caret}"
     )
+
+
+@lru_cache(None)
+def _compile_wrapper_raise_source() -> str:
+    source = "def f():\n    raise RuntimeError(\n        None\n    )\n"
+    filename = "<compile_wrapper_raise_source>"
+    linecache.cache[filename] = (
+        len(source),
+        None,
+        source.splitlines(True),
+        filename,
+    )
+    namespace = {}
+    exec(compile(source, filename, "exec"), namespace)
+    try:
+        namespace["f"]()
+    except RuntimeError as e:
+        msg = "".join(traceback.format_exception(type(e), e, e.__traceback__))
+    if "        None\n    )\n" in msg:
+        return (
+            "    raise e.with_traceback(\n"
+            "        None\n"
+            "    ) from e.__cause__  # User compiler error\n"
+        )
+    return "    raise e.with_traceback(\n"
 
 
 def _load_global_has_positions() -> bool:
@@ -365,7 +391,7 @@ Unsupported context manager
   Hint: If the context manager seems like it should be supported (e.g. torch.set_grad_enabled), then it may be the case that it was created outside the compiled region, which Dynamo does not support. Supported context managers can cross graph break boundaries only if they are local non-closure variables, or are intermediate values.
   Hint: File an issue to PyTorch. Simple context managers can potentially be supported, but note that context managers can't be supported in general
 
-  Developer debug context: Attempted SETUP_WITH/BEFORE_WITH/LOAD_SPECIAL on LazyVariableTracker(realized: ConstantVariable(int: 3))
+  Developer debug context: Attempted SETUP_WITH/BEFORE_WITH/LOAD_SPECIAL on LazyVariableTracker(unrealized: <class 'int'>)
 
  For more details about this graph break, please visit: https://meta-pytorch.github.io/compile-graph-break-site/gb/gb0142.html
 
@@ -1165,14 +1191,15 @@ User code traceback:
         msg = re.sub(r"line (\d+)", "line N", msg)
         # remove carets
         msg = re.sub(r"\n\s*~*\^+\n", "\n", msg)
-        self.assertExpectedInline(
-            msg,
+        expected = (
             """\
 Traceback (most recent call last):
   File "test_error_messages.py", line N, in test_no_internal_compiler_stacktrace
     torch.compile(fn, backend="eager", fullgraph=True)()
   File "eval_frame.py", line N, in compile_wrapper
-    raise e.with_traceback(None) from e.__cause__  # User compiler error
+"""
+            + _compile_wrapper_raise_source()
+            + """\
 torch._dynamo.exc.Unsupported: Call to `torch._dynamo.graph_break()`
   Explanation: User-inserted graph break. Message: None
   Hint: Remove the `torch._dynamo.graph_break()` call.
@@ -1189,7 +1216,11 @@ from user code:
 
 Set TORCHDYNAMO_VERBOSE=1 for the internal stack trace (please do this especially if you're reporting a bug to PyTorch). For even more developer context, set TORCH_LOGS="+dynamo"
 
-""",
+"""
+        )
+        self.assertExpectedInline(
+            msg,
+            expected,
         )
 
     @torch._dynamo.config.patch(verbose=True)
