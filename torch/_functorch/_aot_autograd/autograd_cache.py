@@ -771,23 +771,23 @@ def _check_triton_cache_version() -> None:
         raise BypassAOTAutogradCache("AOTAutogradCache requires triton 3.2.0")
 
 
-def _get_debug_lines_for_cache_key(
-    pickler: AOTAutogradCachePickler,
-    details: AOTAutogradCacheDetails,
-    key: str,
-) -> list[str]:
-    # debug_lines re-hashes every attribute individually and is expensive. Only
-    # compute when debug logging is enabled.
-    if not log.isEnabledFor(logging.DEBUG):
-        return []
+# def _get_debug_lines_for_cache_key(
+#     pickler: AOTAutogradCachePickler,
+#     details: AOTAutogradCacheDetails,
+#     key: str,
+# ) -> list[str]:
+#     # debug_lines re-hashes every attribute individually and is expensive. Only
+#     # compute when debug logging is enabled.
+#     if not log.isEnabledFor(logging.DEBUG):
+#         return []
 
-    debug_lines = pickler.debug_lines(details)
-    log.debug(
-        "Autograd graph cache hash details for key %s:\n%s",
-        key,
-        LazyString(lambda: "\n".join(debug_lines)),
-    )
-    return debug_lines
+#     debug_lines = pickler.debug_lines(details)
+#     log.debug(
+#         "Autograd graph cache hash details for key %s:\n%s",
+#         key,
+#         LazyString(lambda: "\n".join(debug_lines)),
+#     )
+#     return debug_lines
 
 
 def autograd_cache_key(
@@ -812,7 +812,12 @@ def autograd_cache_key(
             pickler = AOTAutogradCachePickler(gm)
             # The prefix distinguishes among the other kinds of objects we cache
             key = AOTAUTOGRAD_CACHE_PREFIX + pickler.get_hash(details)
-            debug_lines = _get_debug_lines_for_cache_key(pickler, details, key)
+            debug_lines = pickler.debug_lines(details)
+            log.debug(
+                "Autograd graph cache hash details for key %s:\n%s",
+                key,
+                LazyString(lambda: "\n".join(debug_lines)),
+            )
             return key, debug_lines
         except Exception:
             # If enable_aot_compile is set, we're in AOT precompile mode where we always
