@@ -148,9 +148,6 @@ html_theme_options = {
         "version_match": switcher_version,
     },
     "show_toc_level": 2,
-    # Limit sidebar toctree depth to avoid embedding ~300 KB of navigation
-    # markup into every page (2,400+ entries), which inflates each version
-    # from ~200 MB to ~1 GB in the docs deploy repo.
     "navigation_with_keys": False,
     "external_links": [
         {
