@@ -1,9 +1,6 @@
 name: pull
 
 on:
-  pull_request:
-    paths:
-      - .github/workflows/pull.yml
   push:
     branches:
       - main

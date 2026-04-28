@@ -2199,11 +2199,13 @@ elif [[ "${TEST_CONFIG}" == *operator_microbenchmark* ]]; then
 elif [[ "${TEST_CONFIG}" == *attention_microbenchmark* ]]; then
   test_attention_microbenchmark
 elif [[ "${TEST_CONFIG}" == *repro_181685* ]]; then
-  for i in 1 2 3 4 5 6 7 8 9 10; do
-    echo "=== repro-181685 attempt ${i}/10 ==="
-    python test/run_test.py --inductor --include test_ops \
-      -k 'test_cow_input_nn_functional_linear_cross_entropy_cuda_float32' \
-      --verbose || true
+  # Replicate the original failing job: full inductor shard 1/2 of test_ops.
+  # The bug only triggers after ~75 prior tests pollute the CUDA context.
+  for i in 1 2 3; do
+    echo "=== repro-181685 attempt ${i}/3 ==="
+    python test/run_test.py --inductor \
+      --include test_modules test_ops test_ops_gradients test_torch \
+      --shard 1 2 --verbose || true
   done
 elif [[ "${TEST_CONFIG}" == *inductor_distributed* ]]; then
   setup_torch_trace

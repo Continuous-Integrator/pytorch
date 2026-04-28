@@ -1,9 +1,6 @@
 name: BC Lint
 
 on:
-  pull_request:
-    paths:
-      - .github/workflows/lint-bc.yml
   push:
     tags:
       # TODO: Remove me later
