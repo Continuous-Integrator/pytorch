@@ -37,6 +37,7 @@ from torch.testing._internal.common_methods_invocations import op_db, skip, xfai
 from torch.testing._internal.custom_op_db import custom_op_db
 from torch.testing._internal.hop_db import hop_db
 import torch.testing._internal.optests as optests
+from torch._dispatch.python import enable_python_dispatcher
 from torch.fx.experimental.proxy_tensor import (
     make_fx,
     DecompositionInterpreter,
@@ -911,6 +912,30 @@ def _test_make_fx_helper_cpp_fake(self, device, dtype, op, inplace=False,
             self.skipTest("Dynamic output shape operation in trace")
 
 
+_fake_counter = 0
+
+
+def _to_cpp_fake(x):
+    if isinstance(x, torch.Tensor):
+        return torch._C._make_fake_tensor(x)
+    return x
+
+
+def _to_cpp_fake_symbolic(x):
+    if not isinstance(x, torch.Tensor):
+        return x
+    global _fake_counter
+    _fake_counter += 1
+    from torch._dynamo.source import ConstantSource
+    from torch.fx.experimental.symbolic_shapes import DimDynamic, StatelessSymbolicContext
+
+    source = ConstantSource(f"arg_{_fake_counter}")
+    ctx = StatelessSymbolicContext(
+        dynamic_sizes=[DimDynamic.DYNAMIC] * x.dim(),
+    )
+    return torch._C._make_fake_tensor(x, source=source, symbolic_context=ctx)
+
+
 def _make_fx_check_cpp_fake(func, args, kwargs, assert_close,
                             randomize_data=False, decomp_table=None):
     """Like optests.make_fx_check but traces under cpp_fake_tensor_mode()."""
@@ -925,9 +950,17 @@ def _make_fx_check_cpp_fake(func, args, kwargs, assert_close,
     def run(f, *args, **kwargs):
         return wrapper_set_seed(f, *args, **kwargs)
 
-    with cpp_fake_tensor_mode():
-        traced_f = make_fx(f, tracing_mode="real",
-                           decomposition_table=decomp_table)(*new_args)
+    try:
+        with cpp_fake_tensor_mode():
+            fake_args = tree_map(_to_cpp_fake_symbolic, new_args)
+            with enable_python_dispatcher():
+                traced_f = make_fx(f, tracing_mode="real",
+                                   decomposition_table=decomp_table)(*fake_args)
+    except Exception as e:
+        # Re-raise as a clean Python exception to ensure C++ RAII guards
+        # (tls_on_entry, dispatch key exclude sets) fully unwind before
+        # the test framework's exception chaining can keep them alive.
+        raise RuntimeError(str(e)) from None
 
     msg = (
         "op(*args, **kwargs) and make_fx(op)(*args, **kwargs) under "
