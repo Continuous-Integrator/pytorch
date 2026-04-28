@@ -909,22 +909,22 @@ def meta_segment_reduce(
             "segment_reduce(): indices based reduction is not supported yet."
         )
 
-    def segment_reduce_output(segment_count):
-        output_shape = list(data.shape)
-        output_shape[axis] = segment_count
+    def segment_reduce_lengths_tensor(lengths_shape):
         return torch.empty(
-            output_shape,
+            lengths_shape + data.shape[axis + 1 :],
             dtype=data.dtype,
             device="meta",
             memory_format=torch.contiguous_format,
         )
 
     if lengths is not None:
-        return segment_reduce_output(lengths.shape[axis])
+        return segment_reduce_lengths_tensor(lengths.shape)
     # FIXME should probably check that lengths and offset aren't both set, but
     # the ATen implementation neglects this too
     if offsets is not None:
-        return segment_reduce_output(offsets.shape[axis] - 1)
+        # lengths == torch.diff(offsets)
+        lengths_shape = offsets.shape[:-1] + (offsets.shape[-1] - 1,)
+        return segment_reduce_lengths_tensor(lengths_shape)
     raise RuntimeError("segment_reduce(): Either lengths or offsets must be defined.")
 
 
@@ -1002,7 +1002,7 @@ def make_dep_token(
     pin_memory=None,
     memory_format=None,
 ):
-    return torch.empty((), device="meta")
+    return torch.empty(0, device="meta")
 
 
 @register_meta(aten.sym_constrain_range.default)
@@ -1208,8 +1208,9 @@ def meta_linalg_eig(input: Tensor):
     )
     values = input.new_empty(input.shape[:-1], dtype=complex_dtype)
     vectors = input.new_empty(input.shape, dtype=complex_dtype)
+    is_cuda = device_hint(input) == "cuda"
     vectors.as_strided_(
-        input.shape, make_contiguous_strides_for(input.shape, row_major=False)
+        input.shape, make_contiguous_strides_for(input.shape, row_major=is_cuda)
     )
     return values, vectors
 
@@ -3244,7 +3245,7 @@ def meta_avg_pool3d(
     )
 
     torch._check(
-        divisor_override is None or divisor_override != 0,
+        not divisor_override or divisor_override != 0,
         lambda: "divisor must be not zero",
     )
 
@@ -3331,7 +3332,7 @@ def meta_avg_pool3d_backward(
     )
 
     torch._check(
-        divisor_override is None or divisor_override != 0,
+        not divisor_override or divisor_override != 0,
         lambda: "divisor must be not zero",
     )
 
@@ -3824,14 +3825,7 @@ def meta_addbmm(self, batch1, batch2, *, beta=1, alpha=1):
 
 @register_meta([aten.randint_like.Tensor])
 def meta_randint_like(self, high, **kwargs):
-    return aten.empty_like.default(
-        self,
-        dtype=kwargs.get("dtype"),
-        layout=kwargs.get("layout"),
-        device=kwargs.get("device"),
-        pin_memory=kwargs.get("pin_memory"),
-        memory_format=kwargs.get("memory_format"),
-    )
+    return self.new_empty(self.size())
 
 
 @register_meta([aten._fused_adam_.default, aten._fused_adamw_.default])
