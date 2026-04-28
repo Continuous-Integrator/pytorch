@@ -23,10 +23,10 @@ class LlamaMLP(torch.nn.Module):
 
 @unittest.skipIf(not torch.xpu.is_available(), "XPU not available")
 class TestPatternMatch(TestCase):
-    def test_pattern_fires(self):
+    def _test_pattern_fires(self, dtype):
         """Verify the pattern matcher replaces silu(mm)*mm with fused op."""
-        model = LlamaMLP(512, 1384).half().to("xpu")
-        x = torch.randn(32, 512, device="xpu", dtype=torch.float16)
+        model = LlamaMLP(512, 1384).to(dtype).to("xpu")
+        x = torch.randn(32, 512, device="xpu", dtype=dtype)
 
         out, codes = run_and_get_code(torch.compile(model, backend="inductor"), x)
 
@@ -35,17 +35,24 @@ class TestPatternMatch(TestCase):
         self.assertIn(
             "fused_gate_up_silu",
             code,
-            "fused_gate_up_silu not found in generated inductor code",
+            f"fused_gate_up_silu not found in generated inductor code for {dtype}",
         )
 
         # Verify correctness
         ref = model(x)
-        self.assertTrue(torch.allclose(ref, out, rtol=2e-3, atol=0.5))
+        rtol, atol = (2e-3, 0.5) if dtype == torch.float16 else (1.6e-2, 0.5)
+        self.assertTrue(torch.allclose(ref, out, rtol=rtol, atol=atol))
 
-    def test_fallback_on_cpu(self):
+    def test_pattern_fires_fp16(self):
+        self._test_pattern_fires(torch.float16)
+
+    def test_pattern_fires_bf16(self):
+        self._test_pattern_fires(torch.bfloat16)
+
+    def _test_fallback_on_cpu(self, dtype):
         """Pattern should NOT fire on CPU — output must still be correct."""
-        model = LlamaMLP(512, 1384).half()
-        x = torch.randn(32, 512, dtype=torch.float16)
+        model = LlamaMLP(512, 1384).to(dtype)
+        x = torch.randn(32, 512, dtype=dtype)
 
         out, codes = run_and_get_code(torch.compile(model, backend="inductor"), x)
 
@@ -53,7 +60,14 @@ class TestPatternMatch(TestCase):
         self.assertNotIn("fused_gate_up_silu", code)
 
         ref = model(x)
-        self.assertTrue(torch.allclose(ref, out, rtol=2e-3, atol=0.5))
+        rtol, atol = (2e-3, 0.5) if dtype == torch.float16 else (1.6e-2, 0.5)
+        self.assertTrue(torch.allclose(ref, out, rtol=rtol, atol=atol))
+
+    def test_fallback_on_cpu_fp16(self):
+        self._test_fallback_on_cpu(torch.float16)
+
+    def test_fallback_on_cpu_bf16(self):
+        self._test_fallback_on_cpu(torch.bfloat16)
 
     def test_fallback_on_fp32(self):
         """Pattern should NOT fire on fp32 — output must still be correct."""
