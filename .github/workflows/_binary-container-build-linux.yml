@@ -89,7 +89,6 @@ jobs:
       BUILD_ENVIRONMENT: ${{ inputs.build_environment }}
       GITHUB_TOKEN: ${{ secrets.github-token }}
       PR_NUMBER: ${{ github.event.pull_request.number }}
-      PYTORCH_FINAL_PACKAGE_DIR: ${{ runner.temp }}/artifacts
       SHA1: ${{ github.event.pull_request.head.sha || github.sha }}
     steps:
       - name: Configure git safe directory
@@ -107,6 +106,7 @@ jobs:
         shell: bash
         run: |
           mkdir -p "$(dirname "$BINARY_ENV_FILE")"
+          PYTORCH_FINAL_PACKAGE_DIR="${RUNNER_TEMP}/artifacts"
           {
             echo "PYTORCH_ROOT=${PYTORCH_ROOT}"
             echo "PACKAGE_TYPE=${PACKAGE_TYPE}"

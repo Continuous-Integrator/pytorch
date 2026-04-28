@@ -70,7 +70,6 @@ jobs:
       AWS_DEFAULT_REGION: us-east-1
       BINARY_ENV_FILE: /tmp/env
       BUILD_ENVIRONMENT: linux-binary-manywheel
-      PYTORCH_FINAL_PACKAGE_DIR: ${{ runner.temp }}/artifacts
       SHA1: ${{ github.event.pull_request.head.sha || github.sha }}
       PR_NUMBER: ${{ github.event.pull_request.number }}
       GPU_FLAG: "--device=/dev/mem --device=/dev/kfd --device=/dev/dri --group-add video --group-add daemon"
@@ -98,6 +97,7 @@ jobs:
         shell: bash
         run: |
           mkdir -p "$(dirname "$BINARY_ENV_FILE")"
+          PYTORCH_FINAL_PACKAGE_DIR="${RUNNER_TEMP}/artifacts"
           {
             echo "PYTORCH_ROOT=${PYTORCH_ROOT}"
             echo "PACKAGE_TYPE=${PACKAGE_TYPE}"
