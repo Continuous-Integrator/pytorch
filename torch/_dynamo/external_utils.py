@@ -187,7 +187,6 @@ class _RegisterHookTrampoline:
     """
 
     __name__ = "_RegisterHookTrampoline"
-    name = "_RegisterHookTrampoline"
 
     def __call__(
         self,

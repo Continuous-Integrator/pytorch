@@ -7714,9 +7714,7 @@ def forward(self, primals_1, tangents_1):
 
         def fn(x):
             y = x * 2
-            z = torch.utils.checkpoint.checkpoint(
-                body, y, use_reentrant=False
-            )
+            z = torch.utils.checkpoint.checkpoint(body, y, use_reentrant=False)
             return z + y
 
         x = torch.randn(4, device="cuda", requires_grad=True)

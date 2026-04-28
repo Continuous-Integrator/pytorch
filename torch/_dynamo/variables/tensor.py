@@ -57,10 +57,7 @@ from ..exc import (
     UserError,
     UserErrorType,
 )
-from ..external_utils import (
-    _RegisterHookTrampoline,
-    call_hook_from_backward_state,
-)
+from ..external_utils import _RegisterHookTrampoline, call_hook_from_backward_state
 from ..guards import GuardBuilder, install_guard
 from ..source import AttrSource
 from ..utils import (
@@ -1864,7 +1861,7 @@ class TensorVariable(VariableTracker):
             # tracing, matching eager semantics. When inside a subgraph
             # (e.g. checkpoint), the node is created in the parent
             # graph so the hook is not confined to the HOP scope.
-            from .higher_order_ops import make_attr, speculate_subgraph
+            from .higher_order_ops import speculate_subgraph
 
             tensor_proxy = self.as_proxy()
             target_tracer = tensor_proxy.tracer
@@ -1875,22 +1872,18 @@ class TensorVariable(VariableTracker):
                 [self],
                 {},
                 "register_hook",
-                source_target=_RegisterHookTrampoline,
+                source_target=None,
                 enable_grad=None,
                 set_subgraph_inputs="flatten_manual",
                 restore_side_effects=True,
             )
 
-            hook_nn_modules = (
-                tx.output.tracing_context.module_context.copy_graphstate()
-            )
+            hook_nn_modules = tx.output.tracing_context.module_context.copy_graphstate()
             hook_name = tx.output.install_subgraph(
                 "hook_body",
                 torch.fx.GraphModule(hook_nn_modules.nn_modules, hook_graph),
             )
-            hook_node = target_tracer.create_proxy(
-                "get_attr", hook_name, (), {}
-            )
+            hook_node = target_tracer.create_proxy("get_attr", hook_name, (), {})
 
             p_args = (tensor_proxy, hook_node, *list(hook_freevars.keys()))
             hooked_proxy = target_tracer.create_proxy(
@@ -1899,9 +1892,9 @@ class TensorVariable(VariableTracker):
                 tuple(p_args),
                 {},
             )
-            hooked_proxy.node.meta["example_value"] = (
-                tensor_proxy.node.meta["example_value"]
-            )
+            hooked_proxy.node.meta["example_value"] = tensor_proxy.node.meta[
+                "example_value"
+            ]
             self.proxy = hooked_proxy
             self.synchronize_attributes(tx)
             return variables.RemovableHandleVariable(
