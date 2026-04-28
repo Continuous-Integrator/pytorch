@@ -91,11 +91,11 @@ def main() -> int:
     log(rank, f"allreduce MAX result={t.tolist()}")
     assert torch.allclose(t, torch.full_like(t, float(world))), "allreduce MAX mismatch"
 
-    # 5. barrier (now backed by jaccl::Group::barrier()).
+    # 5. barrier.
     dist.barrier()
     log(rank, "barrier OK")
 
-    # 6. Larger payload, bf16 (~16 MB) — exercises the ring path inside JACCL.
+    # 6. Larger payload, bf16 (~16 MB).
     n = 4 * 1024 * 1024
     t = torch.full((n,), float(rank + 1), device=dev, dtype=torch.bfloat16)
     dist.all_reduce(t, op=dist.ReduceOp.SUM)

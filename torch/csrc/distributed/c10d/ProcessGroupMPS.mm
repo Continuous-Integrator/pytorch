@@ -212,8 +212,8 @@ ProcessGroupMPS::ProcessGroupMPS(
   // Each rank probes its local RDMA device and advertises it via the
   // TCPStore; all ranks then assemble the full device connectivity matrix
   // that jaccl::Config requires. We assume one physical device per rank,
-  // used for every peer connection — that matches the current single-cable
-  // Thunderbolt-5 setup.
+  // used for every peer connection — that matches the single-cable
+  // Thunderbolt-5 topology this backend targets.
   std::string localDevice = probeRDMADevice();
   store_->set(
       kMpsDevicePrefix + std::to_string(rank),
