@@ -234,6 +234,7 @@ class StructuredTraceTest(TestCase):
         trace_log.removeHandler(self.raw_handler)
         self.raw_file.close()
         trace_log.setLevel(self.old_level)
+        super().tearDown()
 
     def assertExpectedInline(self, actual, expected):
         super().assertExpectedInline(
@@ -345,6 +346,7 @@ class StructuredTraceTest(TestCase):
 {"inductor_output_code": {"filename": "FILENAME", "file_path": "FILENAME"}, "frame_id": 0, "frame_compile_id": 0, "attempt": 0, "has_payload": "HASH"}
 {"artifact": {"name": "triton_kernel_info", "encoding": "json"}, "frame_id": 0, "frame_compile_id": 0, "attempt": 0, "has_payload": "HASH"}
 {"artifact": {"name": "fx_graph_cache_miss", "encoding": "json"}, "frame_id": 0, "frame_compile_id": 0, "attempt": 0, "has_payload": "HASH"}
+{"artifact": {"name": "runtime_wrapper_orchestration", "encoding": "string"}, "frame_id": 0, "frame_compile_id": 0, "attempt": 0, "has_payload": "HASH"}
 {"dynamo_cpp_guards_str": {}, "frame_id": 0, "frame_compile_id": 0, "attempt": 0, "has_payload": "HASH"}
 {"compilation_metrics": "METRICS", "frame_id": 0, "frame_compile_id": 0, "attempt": 0}
 {"compilation_metrics_runtime": "METRICS", "frame_id": 0, "frame_compile_id": 0}
