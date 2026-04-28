@@ -5777,6 +5777,185 @@ class TestTransferSymbolsFromForeignShapeEnv(TestCase):
         self.assertFalse(local_env.has_guarding_hint(new_sizes[2].node.expr))
         self.assertEqual(local_env.var_to_hint_override[new_sizes[2].node.expr], 99)
 
+    @unittest.skipIf(not torch.cuda.is_available(), "requires CUDA")
+    def test_flex_attention_foreign_fake_e2e(self):
+        """E2E test: trace flex_attention with BlockMask containing unbacked dims
+        through a fresh FakeTensorMode, exercising the foreign ShapeEnv transfer path."""
+        from contextlib import contextmanager
+
+        import torch.utils._pytree as pytree
+        from torch._dynamo.decorators import mark_unbacked
+        from torch._guards import tracing, TracingContext
+        from torch._subclasses import FakeTensorMode
+        from torch.fx.experimental.proxy_tensor import make_fx
+        from torch.fx.experimental.symbolic_shapes import (
+            RelaxedUnspecConstraint,
+            TrackedFake,
+        )
+        from torch.fx.traceback import preserve_node_meta
+        from torch.nn.attention.flex_attention import (
+            _MaskModWrapper,
+            AuxRequest,
+            BlockMask,
+            flex_attention,
+        )
+
+        if BlockMask not in pytree.SUPPORTED_NODES:
+            pytree.register_pytree_node(
+                BlockMask,
+                BlockMask._flatten,
+                BlockMask._unflatten,
+                flatten_with_keys_fn=BlockMask._flatten_with_keys,
+                serialized_type_name="torch.nn.attention.flex_attention.BlockMask",
+            )
+        if _MaskModWrapper not in pytree.SUPPORTED_NODES:
+            pytree.register_constant(_MaskModWrapper)
+
+        @contextmanager
+        def skip_nested_compile():
+            prev = torch._dynamo.config.error_on_nested_fx_trace
+            torch._dynamo.config.error_on_nested_fx_trace = False
+            try:
+                yield
+            finally:
+                torch._dynamo.config.error_on_nested_fx_trace = prev
+
+        def copy_marks(src, dst):
+            for key in (
+                "_dynamo_unbacked_indices",
+                "_dynamo_strict_unbacked_indices",
+                "_dynamo_unbacked_bounds",
+                "_dynamo_shape_ids",
+                "_dynamo_hint_overrides",
+                "_specialize_on",
+            ):
+                if hasattr(src, key):
+                    setattr(dst, key, getattr(src, key))
+            return dst
+
+        def _symbolic_context(t):
+            marked = getattr(t, "_dynamo_unbacked_indices", set())
+            strict = getattr(t, "_dynamo_strict_unbacked_indices", set())
+            if not marked and not strict:
+                return None
+            dynamic_sizes = [DimDynamic.STATIC] * t.dim()
+            constraint_sizes = [None] * t.dim()
+            for i in range(t.dim()):
+                if i in marked:
+                    dynamic_sizes[i] = DimDynamic.UNBACKED
+                elif i in strict:
+                    dynamic_sizes[i] = DimDynamic.UNBACKED
+                    constraint_sizes[i] = RelaxedUnspecConstraint(warn_only=False)
+            return StatelessSymbolicContext(
+                dynamic_sizes=dynamic_sizes,
+                constraint_sizes=constraint_sizes,
+                specialize_on=[[] for _ in range(t.dim())],
+                shape_ids=getattr(t, "_dynamo_shape_ids", None),
+                unbacked_bounds=getattr(t, "_dynamo_unbacked_bounds", None),
+            )
+
+        def fakeify(fake_mode, x, name):
+            if not isinstance(x, torch.Tensor):
+                return x
+            from torch._dynamo.source import LocalSource
+
+            source = LocalSource(name, is_input=True)
+            ctx = _symbolic_context(x)
+            if ctx is not None:
+                fake = fake_mode.from_tensor(x, source=source, symbolic_context=ctx)
+                fake_mode.shape_env.tracked_fakes.append(TrackedFake(fake, source, ctx))
+                return fake
+            return fake_mode.from_tensor(x, static_shapes=True)
+
+        ntoks, block_size = 8192, 128
+        nblocks = (ntoks + block_size - 1) // block_size
+        width = 2
+
+        kv_indices = (
+            torch.arange(width, dtype=torch.int32).expand(nblocks, width).clone()
+        )
+        full_kv_indices = kv_indices.clone()
+        q_indices = kv_indices.clone()
+        full_q_indices = kv_indices.clone()
+        kv_num_blocks = torch.full((nblocks,), width, dtype=torch.int32)
+        full_kv_num_blocks = kv_num_blocks.clone()
+        q_num_blocks = kv_num_blocks.clone()
+        full_q_num_blocks = kv_num_blocks.clone()
+
+        mark_unbacked(kv_indices, 1)
+        mark_unbacked(full_kv_indices, 1)
+        mark_unbacked(q_indices, 1)
+        mark_unbacked(full_q_indices, 1)
+
+        attn_regions = torch.arange(ntoks, dtype=torch.int32, device="cuda")
+        document_ids = torch.zeros(ntoks, dtype=torch.int32, device="cuda")
+
+        def mask_mod(b, h, q_idx, kv_idx):
+            return (
+                (q_idx >= kv_idx)
+                & (attn_regions[q_idx] == attn_regions[kv_idx])
+                & (document_ids[q_idx] == document_ids[kv_idx])
+            )
+
+        block_mask = BlockMask(
+            kv_num_blocks=kv_num_blocks.to("cuda"),
+            kv_indices=copy_marks(kv_indices, kv_indices.to("cuda")),
+            full_kv_num_blocks=full_kv_num_blocks.to("cuda"),
+            full_kv_indices=copy_marks(full_kv_indices, full_kv_indices.to("cuda")),
+            q_num_blocks=q_num_blocks.to("cuda"),
+            q_indices=copy_marks(q_indices, q_indices.to("cuda")),
+            full_q_num_blocks=full_q_num_blocks.to("cuda"),
+            full_q_indices=copy_marks(full_q_indices, full_q_indices.to("cuda")),
+            BLOCK_SIZE=(block_size, block_size),
+            mask_mod=mask_mod,
+            seq_lengths=(ntoks, ntoks),
+        )
+
+        q = torch.randn(1, 4, ntoks, 128, device="cuda")
+        k = torch.randn(1, 4, ntoks, 128, device="cuda")
+        v = torch.randn(1, 4, ntoks, 128, device="cuda")
+        cflex = torch.compile(flex_attention, dynamic=False, fullgraph=True)
+
+        flat_args, spec = pytree.tree_flatten([q, k, v, block_mask])
+        fake_mode = FakeTensorMode(
+            allow_non_fake_inputs=True,
+            shape_env=ShapeEnv(tracked_fakes=[]),
+        )
+        fake_args = tuple(
+            fakeify(fake_mode, x, f"inp_{i}") for i, x in enumerate(flat_args)
+        )
+        torch.fx.experimental.symbolic_shapes.compute_unbacked_bindings(
+            fake_mode.shape_env,
+            fake_args,
+        )
+
+        def wrapped(*flat):
+            q1, k1, v1, mask1 = pytree.tree_unflatten(list(flat), spec)
+            out, aux = cflex(
+                q1,
+                k1,
+                v1,
+                block_mask=mask1,
+                return_aux=AuxRequest(max_scores=True),
+            )
+            return out.sum().detach(), aux.max_scores.max().detach()
+
+        # This should not raise — the fix ensures unbacked symbols from
+        # the outer FakeTensorMode are correctly transferred into the
+        # inner ShapeEnv created by torch.compile.
+        with (
+            fake_mode,
+            tracing(TracingContext(fake_mode)),
+            preserve_node_meta(),
+            skip_nested_compile(),
+            torch.compiler._non_strict_tracing_context(),
+        ):
+            make_fx(
+                wrapped,
+                record_stack_traces=True,
+                record_module_stack=False,
+            )(*fake_args)
+
 
 if __name__ == "__main__":
     run_tests()
