@@ -765,25 +765,12 @@ class TestStatelessOptimizerReparam(TestCase):
         return module, optimizer, parameters, optimizer_state_dict
 
     def _assert_optimizer_restored(
-        self,
-        optimizer,
-        state_before,
-        state_dict_before,
-        params_before,
-        group_metadata_before,
+        self, optimizer, state_before, state_dict_before, params_before
     ):
-        self.assertTrue(optimizer.state is state_before)
+        self.assertIs(optimizer.state, state_before)
         self.assertEqual(optimizer.state_dict(), state_dict_before)
-        for group, params, metadata in zip(
-            optimizer.param_groups, params_before, group_metadata_before, strict=True
-        ):
-            self.assertTrue(group["params"] is params)
-            self.assertEqual(
-                {key: value for key, value in group.items() if key != "params"},
-                metadata,
-            )
-            for current_param, original_param in zip(group["params"], params, strict=True):
-                self.assertTrue(current_param is original_param)
+        for group, params in zip(optimizer.param_groups, params_before, strict=True):
+            self.assertIs(group["params"], params)
 
     def test_reparametrize_optimizer_rejects_uninitialized_state(self):
         module = OptimizerModule()
@@ -912,10 +899,6 @@ class TestStatelessOptimizerReparam(TestCase):
         state_before = optimizer.state
         state_dict_before = deepcopy(optimizer.state_dict())
         params_before = [group["params"] for group in optimizer.param_groups]
-        group_metadata_before = [
-            {key: value for key, value in group.items() if key != "params"}
-            for group in optimizer.param_groups
-        ]
         try:
             with stateless._reparametrize_optimizer(
                 optimizer, parameters, optimizer_state_dict
@@ -931,11 +914,7 @@ class TestStatelessOptimizerReparam(TestCase):
                 raise self._TestException
         except self._TestException:
             self._assert_optimizer_restored(
-                optimizer,
-                state_before,
-                state_dict_before,
-                params_before,
-                group_metadata_before,
+                optimizer, state_before, state_dict_before, params_before
             )
 
     def test_reparametrize_optimizer_reflects_state_mutations(self):
@@ -943,10 +922,6 @@ class TestStatelessOptimizerReparam(TestCase):
         state_before = optimizer.state
         state_dict_before = deepcopy(optimizer.state_dict())
         params_before = [group["params"] for group in optimizer.param_groups]
-        group_metadata_before = [
-            {key: value for key, value in group.items() if key != "params"}
-            for group in optimizer.param_groups
-        ]
 
         with stateless._reparametrize_optimizer(
             optimizer, parameters, optimizer_state_dict
@@ -957,11 +932,7 @@ class TestStatelessOptimizerReparam(TestCase):
             optimizer.param_groups[0]["lr"] = 5.0
 
         self._assert_optimizer_restored(
-            optimizer,
-            state_before,
-            state_dict_before,
-            params_before,
-            group_metadata_before,
+            optimizer, state_before, state_dict_before, params_before
         )
         first_param_id = optimizer_state_dict["param_groups"][0]["params"][0]
         self.assertEqual(
