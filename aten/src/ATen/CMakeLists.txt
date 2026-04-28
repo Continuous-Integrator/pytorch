@@ -970,7 +970,7 @@ foreach(HEADER ${generated_headers} ${cuda_generated_headers})
 endforeach()
 
 if(USE_XPU)
-  foreach(HEADER ${generated_headers} ${xpu_generated_headers})
+  foreach(HEADER ${xpu_generated_headers})
     install(FILES ${HEADER} DESTINATION ${AT_INSTALL_INCLUDE_DIR}/ATen)
   endforeach()
 endif()
