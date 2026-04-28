@@ -209,6 +209,32 @@ class AutoHeuristicTest(TestCase):
         # because AutoHeuristics makes the decision without benchmarking
         self.assertEqual(counters["inductor"]["pad_mm_bench"], 0)
 
+    @inductor_config.patch(deterministic=True)
+    @inductor_config.patch("autoheuristic_use.pad_mm", None)
+    def test_use_autoheuristic_pad_mm_enabled_in_deterministic_mode(self):
+        """pad_mm defaults to None; with deterministic=True, use_autoheuristic should return True."""
+        self.assertTrue(inductor_config.use_autoheuristic("pad_mm"))
+
+    def test_autoheuristic_init_no_cuda(self):
+        """AutoHeuristic.__init__ must not crash when CUDA is unavailable."""
+
+        def fallback():
+            return "fallback"
+
+        context = AHContext()
+        context.add_feature("x", 1)
+
+        with (
+            patch("torch.cuda.is_available", return_value=False),
+            patch(
+                "torch._inductor.autoheuristic.autoheuristic.get_gpu_shared_memory",
+                return_value=0,
+            ),
+        ):
+            ah = AutoHeuristic(fallback, ["a", "b"], None, context, "test_no_cuda")
+
+        self.assertEqual(ah.metadata.device_capa, (0, 0))
+
 
 if __name__ == "__main__":
     if HAS_GPU:
