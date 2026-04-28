@@ -23193,15 +23193,6 @@ dsl_ops_by_dsl.setdefault('triton', []).append(
         # (CompositeCompliantTensor, COW wrapper) or FakeTensor.
         supports_cow_input_no_materialize_forward=False,
         decorators=[
-            DecorateInfo(
-                toleranceOverride({
-                    torch.float32: tol(atol=1e-5, rtol=1e-5),
-                    torch.float64: tol(atol=1e-8, rtol=1e-8),
-                    torch.float16: tol(atol=1e-3, rtol=1e-3),
-                    torch.bfloat16: tol(atol=1e-2, rtol=1e-2),
-                }),
-                device_type="cuda",
-            ),
             DecorateInfo(onlyCUDA),
         ],
         skips=(
