@@ -591,13 +591,15 @@ class AsyncCompile:
         main_func_name = f"{kernel_name}_{main_suffix}"
         return wrapper_cls(getattr(mod, main_func_name), kernel_path=path)
 
-    def cutedsl(self, kernel_name: str, source_code: str):
+    def cutedsl(self, kernel_name: str, source_code: str, precompile_metadata=None):
         """
         Compile CuteDSL (CUTLASS Python DSL) kernels.
 
         Args:
             kernel_name: Name of the kernel to be defined
             source_code: Source code of the CuteDSL kernel, as a string
+            precompile_metadata: Optional dict with shapes/dtypes for triggering
+                real CuTe DSL compilation in the subprocess worker.
 
         Note:
             CuteDSL currently requires source files to do its compilation, there we
@@ -623,6 +625,7 @@ class AsyncCompile:
                 source_code,
                 MAIN_SUFFIX,
                 extra_env,
+                precompile_metadata,
             )
 
             def get_result() -> CuteDSLKernelWrapper:
@@ -689,13 +692,17 @@ class AsyncCompile:
             future = self.submit(task)
             return LambdaFuture(lambda: future.result())
 
-    def nv_universal_gemm(self, kernel_name: str, source_code: str):
+    def nv_universal_gemm(
+        self, kernel_name: str, source_code: str, precompile_metadata=None
+    ):
         """
         Compile NVIDIA Universal GEMM kernels.
 
         Args:
             kernel_name: Name of the kernel to be defined
             source_code: Source code of the kernel, as a string
+            precompile_metadata: Optional dict with shapes/dtypes for triggering
+                real CuTe DSL compilation in the subprocess worker.
 
         Note:
             NVIDIA Universal GEMM kernels are Python code that calls the cutlass_api library.
@@ -723,6 +730,7 @@ class AsyncCompile:
                 source_code,
                 MAIN_SUFFIX,
                 extra_env,
+                precompile_metadata,
             )
 
             def get_result() -> NVUniversalGemmKernelWrapper:

@@ -119,13 +119,17 @@ def _worker_compile_pycodecache_kernel(
     source_code: str,
     main_suffix: str,
     extra_env: dict[str, str],
+    precompile_metadata: dict[str, Any] | None = None,
 ) -> tuple[str, str, int]:
     """
-    Subprocess worker for PyCodeCache-based kernel compilation (CuteDSL, NV Universal GEMM).
+    Subprocess worker for PyCodeCache-based kernel compilation.
 
-    Writes source to PyCodeCache and loads the module, triggering compilation
-    (e.g. MLIR via @cute.kernel/@cute.jit). Returns (key, path, elapsed_us)
-    so the parent can reload the module cheaply from warmed caches.
+    Writes source to PyCodeCache, loads the module, validates the entry point,
+    and optionally triggers real GPU compilation (MLIR -> PTX -> CUBIN) via a
+    _precompile entry point. Compiled artifacts are persisted to disk cache so
+    the parent process can load them without recompilation.
+
+    Used by both CuteDSL and NV Universal GEMM backends.
     """
     os.environ.update(extra_env)
 
@@ -143,6 +147,22 @@ def _worker_compile_pycodecache_kernel(
             f"Could not find kernel function '{main_func_name}'. "
             f"Available callables: {available}"
         )
+
+    if precompile_metadata is not None:
+        precompile_fn_name = f"{kernel_name}_precompile"
+        precompile_fn = getattr(mod, precompile_fn_name, None)
+        if precompile_fn is not None:
+            precompile_fn(**precompile_metadata)
+        else:
+            import logging
+
+            logging.getLogger(__name__).warning(
+                "Precompile metadata was provided but module has no %s "
+                "— the scheduling layer expected this template to support "
+                "subprocess precompilation. Kernel will compile lazily on "
+                "first call instead.",
+                precompile_fn_name,
+            )
 
     elapsed_ns = time.time_ns() - start_ns
     linecache.clearcache()
