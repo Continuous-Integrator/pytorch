@@ -57,22 +57,6 @@ from torch.testing._internal.inductor_utils import HAS_GPU
 from torch.testing._internal.triton_utils import requires_cuda_and_triton
 
 
-try:
-    from importlib.metadata import version as pkg_version
-
-    _transformers_version = tuple(
-        int(x) for x in pkg_version("transformers").split(".")[:2]
-    )
-except Exception:
-    _transformers_version = (0, 0)
-
-# https://github.com/huggingface/transformers/issues/44188
-# expectedFailure only applies to transformers >= 5.2 which introduced the bug
-_expectedFailureIf_transformers_ge_5_2 = (
-    unittest.expectedFailure if _transformers_version >= (5, 2) else lambda fn: fn
-)
-
-
 log = logging.getLogger(__name__)
 
 
@@ -373,7 +357,8 @@ def run_hf_bert_ddp(self, model, inputs, backend):
 
 
 class TestFakeDistributedSingleProc(torch._dynamo.test_case.TestCase):
-    @_expectedFailureIf_transformers_ge_5_2
+    @unittest.expectedFailure
+    # https://github.com/huggingface/transformers/issues/44188
     @unittest.skipIf(not HAS_GPU, "Inductor+gpu needs triton and recent GPU arch")
     @patch.object(config, "optimize_ddp", True)
     @patch.object(torch._inductor.config, "fallback_random", True)
@@ -386,7 +371,8 @@ class TestFakeDistributedSingleProc(torch._dynamo.test_case.TestCase):
         model = FakeDDP(model)
         run_hf_bert_ddp(self, model, inputs, "inductor")
 
-    @_expectedFailureIf_transformers_ge_5_2
+    @unittest.expectedFailure
+    # https://github.com/huggingface/transformers/issues/44188
     @patch.object(config, "optimize_ddp", True)
     def test_hf_bert_ddp_aot_eager(self):
         model, inputs = get_hf_bert(0)
@@ -891,7 +877,8 @@ class TestMultiProc(DynamoDistributedMultiProcTestCase):
             model = DDP(model, static_graph=static_graph)
             run_hf_bert_ddp(self, model, inputs, "inductor")
 
-    @_expectedFailureIf_transformers_ge_5_2
+    @unittest.expectedFailure
+    # https://github.com/huggingface/transformers/issues/44188
     @skip_if_lt_x_gpu(2)
     @import_transformers_or_skip()
     @unittest.skipIf(not HAS_GPU, "Inductor+gpu needs triton and recent GPU arch")
@@ -900,7 +887,8 @@ class TestMultiProc(DynamoDistributedMultiProcTestCase):
     def test_hf_bert_ddp_inductor(self):
         self._test_hf_bert_ddp_inductor(static_graph=False)
 
-    @_expectedFailureIf_transformers_ge_5_2
+    @unittest.expectedFailure
+    # https://github.com/huggingface/transformers/issues/44188
     @skip_if_lt_x_gpu(2)
     @import_transformers_or_skip()
     @unittest.skipIf(not HAS_GPU, "Inductor+gpu needs triton and recent GPU arch")
@@ -915,14 +903,16 @@ class TestMultiProc(DynamoDistributedMultiProcTestCase):
             model = DDP(model, static_graph=static_graph)
             run_hf_bert_ddp(self, model, inputs, "aot_eager")
 
-    @_expectedFailureIf_transformers_ge_5_2
+    @unittest.expectedFailure
+    # https://github.com/huggingface/transformers/issues/44188
     @skip_if_lt_x_gpu(2)
     @import_transformers_or_skip()
     @config.patch(optimize_ddp=True, enable_compiler_collectives=True)
     def test_hf_bert_ddp_aot_eager(self):
         self._test_hf_bert_aot_eager(static_graph=False)
 
-    @_expectedFailureIf_transformers_ge_5_2
+    @unittest.expectedFailure
+    # https://github.com/huggingface/transformers/issues/44188
     @skip_if_lt_x_gpu(2)
     @import_transformers_or_skip()
     @config.patch(optimize_ddp=True, enable_compiler_collectives=True)
@@ -1125,7 +1115,8 @@ class TestMultiProc(DynamoDistributedMultiProcTestCase):
                 find_first_node(cnt.graphs[0], tag_activation_checkpoint) is not None
             )
 
-    @_expectedFailureIf_transformers_ge_5_2
+    @unittest.expectedFailure
+    # https://github.com/huggingface/transformers/issues/44188
     @import_transformers_or_skip()
     @unittest.skipIf(not HAS_GPU, "Inductor+gpu needs triton and recent GPU arch")
     # TODO(whc) Investigate why cudagraphs breaks inductor+fsdp for hf_bert
@@ -1171,7 +1162,8 @@ class TestMultiProc(DynamoDistributedMultiProcTestCase):
                 )
                 self.assertTrue(same(correct_results, opt_results))
 
-    @_expectedFailureIf_transformers_ge_5_2
+    @unittest.expectedFailure
+    # https://github.com/huggingface/transformers/issues/44188
     @import_transformers_or_skip()
     @unittest.skipIf(not HAS_GPU, "Inductor+gpu needs triton and recent GPU arch")
     # TODO(whc) Investigate why cudagraphs breaks inductor+fsdp for hf_bert
@@ -1807,84 +1799,6 @@ class TestSingleProc(DynamoDistributedSingleProcTestCase):
         break_reasons = explain_out.break_reasons
         self.assertEqual(len(break_reasons), 3)
         self.assertTrue(all("DDPOptimizer" in r.reason for r in break_reasons))
-
-    @patch.object(config, "optimize_ddp", True)
-    def test_inductor_config_override_with_ddp(self):
-        """
-        Verifies that TORCH_COMPILE_OVERRIDE_INDUCTOR_CONFIGS works end-to-end
-        when DDPOptimizer is active: config_patches should be forwarded through
-        DDPOptimizer to compile_fx for each subgraph.
-
-        Uses reduce-overhead mode (which enables cudagraphs=True). The model
-        has a graph break producing 2 Dynamo frames. The override targets only
-        the second frame, so frame 0 keeps cudagraphs=True while frame 1 gets
-        cudagraphs=False.
-        """
-        from torch._dynamo.graph_id_filter import _create_inductor_config_router
-        from torch._inductor import compile_fx as compile_fx_mod
-
-        N = 5000
-
-        class GraphBreakModel(nn.Module):
-            def __init__(self):
-                super().__init__()
-                self.linear0 = nn.Linear(N, N)
-                self.linear1 = nn.Linear(N, N)
-
-            def forward(self, x):
-                x = self.linear0(x)
-                torch._dynamo.graph_break()
-                x = self.linear1(x)
-                return x
-
-        m = GraphBreakModel().to(self.device)
-        m.apply(init_weights)
-        inputs = torch.rand(20, N).to(self.device)
-        correct_outputs = m(inputs)
-        ddp_m = DDP(m, device_ids=self.device_ids, bucket_cap_mb=25)
-
-        cudagraphs_by_frame: dict[int, bool] = {}
-        original_compile_fx = compile_fx_mod.compile_fx
-
-        def tracking_compile_fx(model_, inputs_, **kwargs):
-            compile_id = torch._guards.CompileContext.current_compile_id()
-            fid = compile_id.frame_id
-            if fid not in cudagraphs_by_frame:
-                patches = kwargs.get("config_patches", {})
-                cudagraphs_by_frame[fid] = patches.get("triton.cudagraphs")
-            return original_compile_fx(model_, inputs_, **kwargs)
-
-        # First compile: discover frame_ids without any override
-        with patch.object(compile_fx_mod, "compile_fx", tracking_compile_fx):
-            opt_fn = torch.compile(ddp_m, mode="reduce-overhead")
-            opt_outputs = opt_fn(inputs)
-
-        self.assertTrue(same(correct_outputs, opt_outputs))
-        frame_ids = sorted(cudagraphs_by_frame.keys())
-        self.assertEqual(len(frame_ids), 2)
-        # Both frames should have cudagraphs=True from reduce-overhead
-        for fid in frame_ids:
-            self.assertTrue(cudagraphs_by_frame[fid])
-
-        # Second compile: override only the second frame
-        torch._dynamo.reset()
-        _create_inductor_config_router.cache_clear()
-        cudagraphs_by_frame.clear()
-
-        override = f">{frame_ids[0]}:triton.cudagraphs=False"
-        with (
-            torch._dynamo.config.patch(debug_inductor_config_override=override),
-            patch.object(compile_fx_mod, "compile_fx", tracking_compile_fx),
-        ):
-            opt_fn = torch.compile(ddp_m, mode="reduce-overhead")
-            opt_outputs = opt_fn(inputs)
-
-        self.assertTrue(same(correct_outputs, opt_outputs))
-        self.assertEqual(len(cudagraphs_by_frame), 2)
-        # First frame: no override, reduce-overhead keeps cudagraphs=True
-        self.assertTrue(cudagraphs_by_frame[frame_ids[0]])
-        # Second frame: override sets cudagraphs=False
-        self.assertFalse(cudagraphs_by_frame[frame_ids[1]])
 
     @patch.object(config, "optimize_ddp", True)
     def test_graph_split_ctx_manager(self):
@@ -2526,7 +2440,7 @@ class TestSingleProc(DynamoDistributedSingleProcTestCase):
             fsdp_model(inp)
         # Check for no recompiles (if there were incorrect de-dup guards, then
         # the frame count would be equal to the number of forward calls)
-        self.assertEqual(cnt.frame_count, 3)
+        self.assertEqual(cnt.frame_count, 1)
 
     def test_fsdp_staticmethod(self):
         """
@@ -2572,7 +2486,9 @@ class TestSingleProc(DynamoDistributedSingleProcTestCase):
             test_outs.append(fsdp_model(x))
             # Check for no recompiles, which could happen if incorrectly
             # passing args to the staticmethod (e.g. doubly passing `self`)
-            self.assertEqual(cnt.frame_count, 2)
+            # 3 is expected here for 1 forward.
+            # Graph 1 should be add and imul
+            self.assertEqual(cnt.frame_count, 1)
         for test_out in test_outs:
             self.assertEqual(test_out, ref_out)
 

@@ -570,7 +570,7 @@ inline_inbuilt_nn_modules = Config(  # type: ignore[var-annotated]
 
 # Resume tracing in nested frames if a nested graph break occurs
 # Old behavior is to bubble up the graph break to the top level frame.
-nested_graph_breaks: bool = False
+nested_graph_breaks = False
 
 # If True, error if Dynamo attempts to trace more code while running compiled code in fullgraph=True.
 # If Dynamo determines that it should skip tracing the code (either at the C/C++ or Python level),
@@ -884,8 +884,7 @@ wrap_top_frame = False
 # and AOTAutograd runtime wrapper.
 record_runtime_overhead = True
 
-# Flag to enable the use of torch.compile().aot_compile() API. Should be always True.
-enable_aot_compile = True
+enable_aot_compile = False
 
 # HACK: this is for testing custom ops profiling only
 _custom_ops_profile: Any | None = None
@@ -900,10 +899,6 @@ enable_invoke_subgraph_regional_compile: bool = False
 # flat graph.
 inline_invoke_subgraph: bool = False
 
-# Inline invoke_subgraph HOPs that are referenced by exactly one call site.
-# Single-use subgraphs add overhead without deduplication benefit.
-inline_single_use_invoke_subgraph: bool = True
-
 # Clear WeakIdRef entries from TracingContext.tensor_to_context and
 # MetaTensorDescriber.lookup_tensor at the end of compile. These weakrefs
 # can block torch.utils.swap_tensors from working after compile.
@@ -914,7 +909,7 @@ inline_single_use_invoke_subgraph: bool = True
 invalidate_compile_context_weakrefs: bool | None = None
 
 if TYPE_CHECKING:
-    from torch.utils._config_typing import *  # noqa: F403
+    from torch.utils._config_typing import *  # noqa: F401, F403
 
     def _make_closure_patcher(**changes: Any) -> Any: ...
 

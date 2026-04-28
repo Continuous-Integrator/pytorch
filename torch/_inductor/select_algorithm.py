@@ -27,7 +27,7 @@ from unittest.mock import patch
 import sympy
 
 import torch
-import torch._inductor.async_compile
+import torch._inductor.async_compile  # noqa: F401 required to warm up AsyncCompile pools
 from torch._dynamo.device_interface import get_interface_for_device
 from torch._dynamo.testing import rand_strided
 from torch._dynamo.utils import (
@@ -512,7 +512,6 @@ class TritonTemplateKernel(TritonKernel):
         hint_override: int | None = None,
         triton_meta: dict[str, object] | None = None,
         always_freeze_layout: bool = False,
-        index_dtype_override: str | None = None,
     ) -> None:
         if tma_store:
             pass
@@ -583,7 +582,6 @@ class TritonTemplateKernel(TritonKernel):
         self.epilogue_fn = epilogue_fn
         self.render_hooks = {}  # type: ignore[var-annotated]
         self.triton_meta: dict[str, object] | None = triton_meta
-        self._index_dtype_override = index_dtype_override
         # For Templated Attention this can be a list of ir.Subgraph
         self.subgraphs: list[ir.ComputedBuffer] | None = subgraphs
 
@@ -647,12 +645,6 @@ class TritonTemplateKernel(TritonKernel):
 
         # Tracking for intermediate variables
         self.tmp_var_ctr = itertools.count()
-
-    @property
-    def index_dtype(self) -> str:
-        if self._index_dtype_override is not None:
-            return self._index_dtype_override
-        return super().index_dtype
 
     def _gen_tmp_var(self) -> str:
         return f"_tmp_var{next(self.tmp_var_ctr)}"
@@ -1631,7 +1623,6 @@ class TritonTemplateKernel(TritonKernel):
         override_mask=None,
         block_ptr=False,
         tma_compatibility_checker: TMACompatibilityChecker | None = None,
-        mask_constant_index=False,
     ):
         """
         Override the default indexing to use our custom mask and force
@@ -1646,7 +1637,6 @@ class TritonTemplateKernel(TritonKernel):
             override_mask=self.template_mask,
             block_ptr=block_ptr,
             tma_compatibility_checker=tma_compatibility_checker,
-            mask_constant_index=mask_constant_index,
         )
 
     def codegen_range_tree(self):
@@ -1727,19 +1717,19 @@ class TritonTemplateKernel(TritonKernel):
         Scheduler falls back to aten if layout constraint violated. If no aten,
         freeze right away.
         """
+        # For ReinterpretView, the view's strides are already determined by its layout.
+        # We skip constraint tracking because node.get_name() returns the underlying
+        # buffer name, not the view's identity, so constraints would be incorrectly
+        # associated with the underlying buffer rather than the view.
+        if isinstance(node, ir.ReinterpretView):
+            return list(node.get_stride())
 
         # realizing for safety
         ir.ExternKernel.realize_input(node)
         layout = node.data.layout
         node_name = node.get_name()
 
-        # For ReinterpretView, the view's strides are already determined by its layout.
-        # We skip constraint tracking because node.get_name() returns the underlying
-        # buffer name, not the view's identity, so constraints would be incorrectly
-        # associated with the underlying buffer rather than the view.
-        if isinstance(layout, ir.FlexibleLayout) and not isinstance(
-            node, ir.ReinterpretView
-        ):
+        if isinstance(layout, ir.FlexibleLayout):
             if not use_aten_gemm_kernels() or self.always_freeze_layout:
                 # No ExternKernel fallback available, or always_freeze_layout is set
                 # (e.g., for FlexAttention templates), freeze immediately
@@ -2526,7 +2516,7 @@ class TritonTemplate(KernelTemplate):
                 choices.append(choice)
             return None
         except NotImplementedError as e:
-            log.info(
+            log.info(  # noqa: G200
                 "Cannot Append Choice: %s. KernelTemplate type is %s",
                 e,
                 type(self),
@@ -2621,7 +2611,6 @@ class TritonTemplate(KernelTemplate):
             "subgraphs": subgraphs,
             "prologue_loads_all_inputs": self.prologue_loads_all_inputs,
             "always_freeze_layout": self.always_freeze_layout,
-            "index_dtype_override": index_dtype,
         }
 
         if HAS_WARP_SPEC:
@@ -4471,7 +4460,7 @@ class AlgorithmSelectorCache(PersistentCache):
                             "select_algorithm_num_precompilation_exceptions"
                         ] += 1
                         exceptions.append((futures[future], e))
-                        log.exception(
+                        log.exception(  # noqa: G202
                             "Exception %s for benchmark choice %s",
                             e,
                             futures[future],
@@ -4901,7 +4890,7 @@ class AlgorithmSelectorCache(PersistentCache):
                     from triton.runtime.autotuner import OutOfResources
 
                     if isinstance(e, OutOfResources):
-                        log.warning(e)
+                        log.warning(e)  # noqa: G200
                         timing = float("inf")
                     else:
                         raise e
