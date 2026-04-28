@@ -1962,7 +1962,7 @@ class TestMetaKernelRegistrations(TestCase):
         from torch._decomp.decompositions import rrelu_with_noise_backward
 
         x = torch.randn(5, requires_grad=True)
-        lower, upper = 0.125, 0.125 + torch.finfo(torch.float32).eps
+        lower, upper = 0.125, 0.125 + 1e-7
         noise = torch.rand(5)
         grad = torch.ones(5)
         cpp_result = torch.ops.aten.rrelu_with_noise_backward(
@@ -1974,17 +1974,14 @@ class TestMetaKernelRegistrations(TestCase):
         self.assertEqual(cpp_result, decomp_result)
 
     @skipIfTorchDynamo("tests raw meta kernel, not dynamo")
-    def test_linalg_eig_strides_cpu(self):
-        from torch._subclasses.fake_tensor import FakeTensorMode
-
-        matrix = torch.randn(3, 3)
-        _, eigvecs = torch.linalg.eig(matrix)
-        with FakeTensorMode():
-            matrix_fake = torch.randn(3, 3, device="cpu")
-            _, eigvecs_fake = torch.linalg.eig(matrix_fake)
-        self.assertEqual(eigvecs.stride(), eigvecs_fake.stride())
-        self.assertEqual(eigvecs.shape, eigvecs_fake.shape)
-        self.assertEqual(eigvecs.dtype, eigvecs_fake.dtype)
+    def test_linalg_eig_strides(self):
+        A_cpu = torch.randn(3, 3)
+        A_meta = torch.randn(3, 3, device="meta")
+        _, eigvecs_cpu = torch.linalg.eig(A_cpu)
+        _, eigvecs_meta = torch.linalg.eig(A_meta)
+        self.assertEqual(eigvecs_cpu.stride(), eigvecs_meta.stride())
+        self.assertEqual(eigvecs_cpu.shape, eigvecs_meta.shape)
+        self.assertEqual(eigvecs_cpu.dtype, eigvecs_meta.dtype)
 
     @skipIfTorchDynamo("tests raw meta kernel, not dynamo")
     def test_randint_like_tensor_dtype_kwarg(self):
@@ -2009,6 +2006,27 @@ class TestMetaKernelRegistrations(TestCase):
         y_meta = torch.ops.aten.randint_like.Tensor(x_meta, high_meta)
         self.assertEqual(y_cpu.dtype, y_meta.dtype)
         self.assertEqual(y_cpu.shape, y_meta.shape)
+
+    @skipIfTorchDynamo("tests raw meta kernel, not dynamo")
+    def test_prelu_decomp_dtype_mismatch_error(self):
+        from torch._refs.nn.functional import prelu as prelu_decomp
+
+        x = torch.randn(3, 4, dtype=torch.float32)
+        weight = torch.randn(4, dtype=torch.float16)
+        with self.assertRaises(RuntimeError):
+            torch.nn.functional.prelu(x, weight)
+        with self.assertRaises(RuntimeError):
+            prelu_decomp(x, weight)
+
+    @skipIfTorchDynamo("tests raw meta kernel, not dynamo")
+    def test_prelu_decomp_value_match(self):
+        from torch._refs.nn.functional import prelu as prelu_decomp
+
+        x = torch.randn(3, 4, dtype=torch.float32)
+        weight = torch.randn(4, dtype=torch.float32)
+        cpu_result = torch.nn.functional.prelu(x, weight)
+        decomp_result = prelu_decomp(x, weight)
+        self.assertEqual(cpu_result, decomp_result)
 
     @skipIfTorchDynamo("tests raw meta kernel, not dynamo")
     def test_pad_sequence_decomp_left(self):
@@ -2039,6 +2057,7 @@ class TestMetaKernelRegistrations(TestCase):
         )
         expected = torch.tensor([[1, 0], [2, 4], [3, 5]])
         self.assertEqual(result, expected)
+
 
 instantiate_device_type_tests(TestMeta, globals())
 

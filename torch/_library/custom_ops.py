@@ -681,12 +681,11 @@ class CustomOpDef:
 
             def adinplaceorview_impl(keyset, *args, **kwargs):
                 # Handle the mutated idx the user gave us explicitly
-                all_args, all_kwargs = utils.fill_defaults(schema, args, kwargs)
 
                 for idx in mutated_idxs:
-                    increment_version(all_args[idx])
+                    increment_version(args[idx])
                 for key in mutated_keys:
-                    increment_version(all_kwargs[key])
+                    increment_version(kwargs[key])
                 # Handle view + mutation that are in the schema
                 return original_kernel.call_boxed(keyset, *args, **kwargs)
 
