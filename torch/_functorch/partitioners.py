@@ -233,6 +233,21 @@ def _get_ho_op_original_input(getitem_node: fx.Node) -> fx.Node | None:
     return None
 
 
+_FUNCTIONAL_SCATTER_OP_NAMES = frozenset(
+    {
+        "select_scatter",
+        "slice_scatter",
+        "scatter",
+        "scatter_add",
+        "scatter_reduce",
+        "as_strided_scatter",
+        "diagonal_scatter",
+        "masked_scatter",
+        "index_put",
+    }
+)
+
+
 def _is_copy_node_bw_only(node: fx.Node) -> fx.Node | None:
     """Check if node is a view/reshape of a higher-order op output that aliases an input.
 
@@ -363,6 +378,22 @@ def _extract_graph_with_inputs_outputs(
                 if (
                     x.target is torch.ops.aten.copy_.default
                     and _must_be_in_backward(x)
+                    and len(x.args) >= 1
+                    and isinstance(x.args[0], fx.Node)
+                    and x.args[0] in env
+                    and not isinstance(env[x.args[0]], InvalidNodeBase)
+                ):
+                    replacement = env[x.args[0]]
+                # For functional scatter ops (select_scatter, slice_scatter,
+                # etc.) where the base tensor is valid but the update value
+                # depends on backward, use the base tensor. This happens when
+                # a tensor hook registered inside checkpoint mutates an input
+                # in both forward and backward.
+                if (
+                    replacement is None
+                    and isinstance(x.target, torch._ops.OpOverload)
+                    and x.target.name().split("::")[1].split(".")[0]
+                    in _FUNCTIONAL_SCATTER_OP_NAMES
                     and len(x.args) >= 1
                     and isinstance(x.args[0], fx.Node)
                     and x.args[0] in env
