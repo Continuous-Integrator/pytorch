@@ -57,7 +57,6 @@ from torch._inductor.codegen.common import DataTypePropagation, OptimizationCont
 from torch._inductor.test_case import TestCase as InductorTestCase
 from torch._inductor.utils import (
     add_scheduler_init_hook,
-    get_code,
     run_and_get_code,
     run_and_get_cpp_code,
     run_and_get_kernels,
@@ -5068,10 +5067,11 @@ class CommonTemplate:
 
         x = torch.randn(4, 4, dtype=torch.float64, device="cpu")
         with patch("torch._inductor.utils.device_supports_fp64", return_value=False):
-            code = "\n".join(get_code(torch.compile(fn), x))
+            _, code = run_and_get_code(torch.compile(fn), x)
 
         # The Triton kernel should not have any fp64 pointer arguments.
         # Without the fix, the kernel signature would contain '*fp64'.
+        code = "\n".join(code)
         self.assertNotIn("'*fp64'", code)
 
     @requires_gpu()
