@@ -8,7 +8,7 @@ JACCL is designed to stand alone — the public API is just `#include <jaccl/jac
 
 ## Current snapshot
 
-- **Upstream commit:** `211e57be534362205303def8ff0726a248f339ea`
+- **Upstream commit:** `e8ebdebeeb655feaa85a51f6b24ece5b6d5518d1`
 - **Upstream path:** `mlx/distributed/jaccl/lib/jaccl/`
 - **License:** MIT (see `LICENSE`, copied from upstream `mlx/LICENSE`)
 

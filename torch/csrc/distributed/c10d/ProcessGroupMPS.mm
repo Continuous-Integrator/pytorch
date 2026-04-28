@@ -148,14 +148,6 @@ void jacclBroadcast(
   }
 }
 
-// MLX JACCL has no dedicated barrier op; a 1-byte all_sum synchronises all
-// peers with the same memory fences as a real collective.
-void jacclBarrier(::jaccl::Group& group) {
-  uint8_t in = 0;
-  uint8_t out = 0;
-  group.all_sum(&in, &out, sizeof(in), ::jaccl::Dtype::UInt8);
-}
-
 } // namespace
 
 ProcessGroupMPS::WorkMPS::WorkMPS(
@@ -436,7 +428,7 @@ c10::intrusive_ptr<Work> ProcessGroupMPS::barrier(
 
   auto fn = [this, work]() {
     try {
-      jacclBarrier(*jacclGroup_);
+      jacclGroup_->barrier();
       work->finishWork();
     } catch (...) {
       work->finishWorkError(std::current_exception());
