@@ -1,7 +1,5 @@
-# mypy: ignore-errors
-
 import traceback
-from typing import Any, NamedTuple, Optional
+from typing import Any, NamedTuple
 
 import torch
 import torch.fx
@@ -18,15 +16,14 @@ __all__ = ["TensorMetadata", "ShapeProp"]
 
 @compatibility(is_backward_compatible=True)
 class TensorMetadata(NamedTuple):
-    # TensorMetadata is a structure containing pertinent information
-    # about a tensor within a PyTorch program.
+    """A structure containing pertinent information about a tensor within a PyTorch program."""
 
     # General Tensor metadata
     shape: torch.Size
     dtype: torch.dtype
     requires_grad: bool
     stride: tuple[int, ...]
-    memory_format: Optional[torch.memory_format]
+    memory_format: torch.memory_format | None
 
     # Quantization metadata
     is_quantized: bool
