@@ -27,7 +27,7 @@ DEBUG_LOG = os.environ.get("TRIAGE_HOOK_DEBUG_LOG", "/tmp/triage_hooks.log")
 SCRIPT_DIR = Path(__file__).parent
 LABELS_FILE = SCRIPT_DIR.parent / "labels.json"
 DISTRIBUTED_LABELS_FILE = (
-    SCRIPT_DIR.parent / "distributed-triage" / "distributed-labels.json"
+    SCRIPT_DIR.parent.parent / "distributed-triage" / "distributed-labels.json"
 )
 
 FORBIDDEN_PATTERNS = [

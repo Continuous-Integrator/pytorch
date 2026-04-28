@@ -49,7 +49,7 @@ jobs:
 
           # Load primary distributed module labels from the skill's label manifest.
           # module: performance is a secondary tag, not a primary module classifier.
-          LABELS_FILE=".claude/skills/triaging-issues/distributed-triage/distributed-labels.json"
+          LABELS_FILE=".claude/skills/distributed-triage/distributed-labels.json"
           mapfile -t MODULE_LABELS < <(
             jq -r '.labels[].name
                    | select(startswith("module: "))
@@ -60,10 +60,10 @@ jobs:
 
           # Find open issues with oncall:distributed but without ptd-bot-triaged
           ISSUES=$(gh issue list \
-            --repo pytorch/pytorch \
+            --repo ${{ github.repository }} \
             --label "oncall: distributed" \
             --state open \
-            --limit 500 \
+            --limit 1000 \
             --json number,labels \
             --jq '.[]')
 
@@ -73,34 +73,36 @@ jobs:
             [ -z "$issue" ] && continue
             ISSUE_NUM=$(echo "$issue" | jq -r '.number')
             LABELS=$(echo "$issue" | jq -r '[.labels[].name] | join(",")')
+            LABEL_NAMES=$(echo "$issue" | jq -r '.labels[].name')
 
-            # Skip if already processed by distributed bot
-            if echo "$LABELS" | grep -q "ptd-bot-triaged"; then
+            # Skip if already processed by distributed bot OR finalized by PT-level bot
+            if echo "$LABEL_NAMES" | grep -qxF "ptd-bot-triaged" \
+               || echo "$LABEL_NAMES" | grep -qxF "triaged"; then
               continue
             fi
 
-            # Check if any distributed module label is present
-            HAS_MODULE=false
+            # Auto-mark issues already classified by a human (has a module: label)
+            REASON=""
             for mod in "${MODULE_LABELS[@]}"; do
-              if echo "$LABELS" | grep -qF "$mod"; then
-                HAS_MODULE=true
+              if echo "$LABEL_NAMES" | grep -qxF "$mod"; then
+                REASON="already has ${mod}"
                 break
               fi
             done
 
-            if [ "$HAS_MODULE" = true ]; then
+            if [ -n "$REASON" ]; then
               PHASE1_COUNT=$((PHASE1_COUNT + 1))
               if [ "$DRY_RUN" = "true" ]; then
-                echo "[DRY RUN] Would add 'ptd-bot-triaged' to #${ISSUE_NUM} (already has module label)"
+                echo "[DRY RUN] Would add 'ptd-bot-triaged' to #${ISSUE_NUM} (${REASON})"
               else
-                echo "Adding 'ptd-bot-triaged' to #${ISSUE_NUM} (already has module label in: ${LABELS})"
-                gh issue edit "$ISSUE_NUM" --repo pytorch/pytorch --add-label "ptd-bot-triaged"
+                echo "Adding 'ptd-bot-triaged' to #${ISSUE_NUM} (${REASON}; full labels: ${LABELS})"
+                gh issue edit "$ISSUE_NUM" --repo ${{ github.repository }} --add-label "ptd-bot-triaged"
 
                 # Fetch title and append to daily manifest
-                TITLE=$(gh issue view "$ISSUE_NUM" --repo pytorch/pytorch --json title --jq '.title')
+                TITLE=$(gh issue view "$ISSUE_NUM" --repo ${{ github.repository }} --json title --jq '.title')
                 TODAY=$(date -u +%Y-%m-%d)
-                MANIFEST_KEY="distributed-triage-logs/manifest-${TODAY}.jsonl"
-                ENTRY=$(jq -n \
+                MANIFEST_KEY="review-logs/distributed-triage/manifest-${TODAY}.jsonl"
+                ENTRY=$(jq -c -n \
                   --arg issue "$ISSUE_NUM" \
                   --arg title "$TITLE" \
                   --arg labels "$LABELS" \
@@ -125,15 +127,21 @@ jobs:
         run: |
           echo "=== Phase 2: Collecting issues needing LLM triage ==="
 
-          # Find open issues with oncall:distributed but without ptd-bot-triaged
-          # These are issues Phase 1 didn't handle (no module label yet)
+          # Find open issues with oncall:distributed that haven't been triaged yet.
+          # Exclude issues already marked ptd-bot-triaged (distributed bot done)
+          # or triaged (PT-level bot finalized — hands off).
+          # Use exact label-name match (any(.name == ...)) rather than jq's
+          # contains(), which does substring matching and would falsely match
+          # bot-triaged against a "triaged" filter.
           ISSUES=$(gh issue list \
-            --repo pytorch/pytorch \
+            --repo ${{ github.repository }} \
             --label "oncall: distributed" \
             --state open \
-            --limit 500 \
+            --limit 1000 \
             --json number,labels \
-            --jq '[.[] | select(.labels | map(.name) | contains(["ptd-bot-triaged"]) | not) | .number] | sort | .[:'"${BATCH_SIZE}"']')
+            --jq '[.[] | select(.labels | any(.name == "ptd-bot-triaged") | not)
+                      | select(.labels | any(.name == "triaged") | not)
+                      | .number] | sort | .[:'"${BATCH_SIZE}"']')
 
           echo "Issues needing LLM triage: $ISSUES"
           echo "issues=$ISSUES" >> "$GITHUB_OUTPUT"
@@ -154,7 +162,7 @@ jobs:
             echo "--- Triggering triage for issue #${ISSUE_NUM} ---"
 
             gh workflow run claude-distributed-triage.yml \
-              --repo pytorch/pytorch \
+              --repo ${{ github.repository }} \
               -f issue_number="$ISSUE_NUM"
 
             echo "Triggered triage for #${ISSUE_NUM}"
