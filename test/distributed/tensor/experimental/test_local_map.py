@@ -6,9 +6,9 @@ import unittest
 import torch
 import torch.distributed as dist
 import torch.distributed._functional_collectives as funcol
+import torch.distributed.spmd_types as spmd
 from torch.distributed._local_tensor import LocalTensorMode
 from torch.distributed.device_mesh import init_device_mesh
-import torch.distributed.spmd_types as spmd
 from torch.distributed.tensor import (
     distribute_tensor,
     DTensor,

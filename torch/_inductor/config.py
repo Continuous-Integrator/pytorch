@@ -519,6 +519,15 @@ inductor_default_autotune_rep = int(
     os.getenv("TORCHINDUCTOR_DEFAULT_AUTOTUNE_REP", 100)
 )
 
+# When enabled, the autotuner captures each candidate kernel in a CUDA graph
+# and benchmarks graph replay instead of eager kernel launches. This eliminates
+# host-side dispatch overhead from timing measurements, giving results that are
+# representative of CUDA graph replay execution. Useful when the compiled output
+# will run under external CUDA graph capture.
+autotune_cudagraph_benchmarking: bool = (
+    os.environ.get("TORCHINDUCTOR_AUTOTUNE_CUDAGRAPH_BENCHMARKING") == "1"
+)
+
 
 # Modifies the number of autotuning choices displayed, set to None for all
 def _autotune_num_choices_displayed_default() -> int | None:
@@ -627,6 +636,14 @@ def _nvgemm_max_profiling_configs_default() -> int | None:
 
 
 nvgemm_max_profiling_configs: int | None = _nvgemm_max_profiling_configs_default()
+
+# When enabled, adds supplement kernel configs that nvMatmulHeuristics
+# doesn't explore (certain tile/cluster combos that empirically beat
+# cuBLAS on decode shapes). These are added on top of the heuristic
+# picks, increasing the total number of configs benchmarked.
+nvgemm_supplement_configs: bool = (
+    os.environ.get("TORCHINDUCTOR_NVGEMM_SUPPLEMENT_CONFIGS", "0") == "1"
+)
 
 
 # As above, specify candidate backends for conv autotune.
@@ -1239,6 +1256,29 @@ class aten_distributed_optimizations:
     # overhead exceeds the benefit. Set to 0 to disable.
     low_contention_min_bytes_per_rank: int = 16 * 1024 * 1024
 
+    # Pre-bucket FSDP collectives before overlap scheduling.
+    # Merges per-parameter FSDP collectives into buckets sized to
+    # saturate the process group's network bandwidth.
+    pre_bucketing_fsdp_collectives: bool = True
+
+    # Override bucket cap in MB for pre-bucketing. When None, auto-computes
+    # from the NCCL analytical model using the configs below.
+    pre_bucketing_fsdp_collectives_bucket_cap_mb: float | None = None
+
+    # Floor for auto-computed bucket cap in MB.
+    pre_bucketing_fsdp_collectives_min_bucket_cap_mb: float = 10.0
+
+    # Ceiling for auto-computed bucket cap in MB.
+    pre_bucketing_fsdp_collectives_max_bucket_cap_mb: float = 500.0
+
+    # Verbose logging: per-collective sizes and bucket composition
+    # via logger and trace_structured.
+    pre_bucketing_fsdp_collectives_verbose: bool = False
+
+    # Multiplier on the empirical saturation model's output.
+    # With the empirical profiles this should be 1.0; kept for manual tuning.
+    pre_bucketing_fsdp_collectives_saturation_calibration_multiplier: float = 1.0
+
 
 def parallel_compile_enabled_internally() -> bool:
     """
@@ -1511,6 +1551,16 @@ enable_caching_generated_triton_templates: bool = True
 autotune_lookup_table: dict[str, dict[str, Any]] = {}
 
 file_lock_timeout: int = int(os.environ.get("TORCHINDUCTOR_FILE_LOCK_TIMEOUT", "600"))
+
+# Per-future timeout (seconds) for AsyncCompile._wait_futures. 0 (the
+# default) means no timeout; a positive value raises a RuntimeError naming
+# the kernel when a compile worker does not finish in time. CI sets this
+# via TORCHINDUCTOR_COMPILE_WORKER_WAIT_TIMEOUT (300s) so a stuck compile
+# doesn't burn the whole shard budget, while non-CI users with legitimately
+# long compiles are not affected.
+compile_worker_wait_timeout: int = int(
+    os.environ.get("TORCHINDUCTOR_COMPILE_WORKER_WAIT_TIMEOUT", "0")
+)
 
 enable_autograd_for_aot: bool = False
 
@@ -2005,7 +2055,8 @@ class triton:
 
     # Don't allow multi-stages by default to avoid out of shared memory
     mix_order_reduction_allow_multi_stages = (
-        os.environ.get("TORCHINDUCTOR_MIX_ORDER_REDUCTION_ALLOW_MULTI_STAGES") == "1"
+        os.environ.get("TORCHINDUCTOR_MIX_ORDER_REDUCTION_ALLOW_MULTI_STAGES", "1")
+        == "1"
     )
 
     # Map for storing the amount of kernel runs with dumped input tensors
@@ -2037,6 +2088,8 @@ class triton:
     proton_per_cta_occupancy: bool = (
         os.environ.get("TORCHINDUCTOR_TRITON_PROTON_PER_CTA_OCCUPANCY", "1") == "1"
     )
+
+    dynamic_disable_pipelining = True
 
 
 class aot_inductor:
