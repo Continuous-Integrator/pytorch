@@ -2,7 +2,6 @@
 
 import torch
 from torch.testing import make_tensor
-from torch.testing._internal.common_cuda import xfailCUDAIfSM89OrLaterOnWindows
 from torch.testing._internal.common_device_type import (
     deviceCountAtLeast,
     dtypes,
@@ -11,10 +10,8 @@ from torch.testing._internal.common_device_type import (
     onlyCPU,
     onlyCUDA,
     onlyNativeDeviceTypes,
-    onlyOn,
     skipCUDAIfNotRocm,
     skipMeta,
-    skipXPUIf,
 )
 from torch.testing._internal.common_dtype import (
     all_mps_types_and,
@@ -104,26 +101,26 @@ class TestTorchDlPack(TestCase):
             # DLPack protocol that establishes correct stream order
             # does not behave as expected on Jetson
             stream.synchronize()
-        stream = torch.Stream()
-        with stream:
+        stream = torch.cuda.Stream()
+        with torch.cuda.stream(stream):
             z = from_dlpack(x)
         stream.synchronize()
         return z
 
     @skipMeta
-    @onlyOn(["xpu", "cuda"])
+    @onlyCUDA
     @dtypes(*all_types_and_complex_and(torch.half, torch.bfloat16, torch.bool))
     def test_dlpack_conversion_with_streams(self, device, dtype):
         # Create a stream where the tensor will reside
-        stream = torch.Stream()
-        with stream:
+        stream = torch.cuda.Stream()
+        with torch.cuda.stream(stream):
             # Do an operation in the actual stream
             x = make_tensor((5,), dtype=dtype, device=device) + 1
         z = self._dlpack_conversion_with_streams(stream, x)
         self.assertEqual(z, x)
 
     @skipMeta
-    @onlyOn(["xpu", "cuda"])
+    @onlyCUDA
     @dtypes(
         torch.float8_e5m2,
         torch.float8_e5m2fnuz,
@@ -133,8 +130,8 @@ class TestTorchDlPack(TestCase):
         torch.float4_e2m1fn_x2,
     )
     def test_dlpack_conversion_with_streams_narrow_precision(self, device, dtype):
-        stream = torch.Stream()
-        with stream:
+        stream = torch.cuda.Stream()
+        with torch.cuda.stream(stream):
             x = make_tensor((5,), dtype=torch.uint8, device=device) + 1
             x = x.view(dtype)
         z = self._dlpack_conversion_with_streams(stream, x)
@@ -364,7 +361,7 @@ class TestTorchDlPack(TestCase):
             x.__dlpack__(stream=0)
 
     @skipMeta
-    @onlyOn(["xpu", "cuda"])
+    @onlyCUDA
     @deviceCountAtLeast(2)
     def test_dlpack_tensor_on_different_device(self, devices):
         dev0, dev1 = devices[:2]
@@ -375,7 +372,7 @@ class TestTorchDlPack(TestCase):
         with self.assertRaisesRegex(
             BufferError, r"Can't export tensors on a different CUDA device"
         ):
-            with torch.accelerator.device_index(torch.device(dev1).index):
+            with torch.cuda.device(dev1):
                 x.__dlpack__()
 
     # TODO: add interchange tests once NumPy 1.22 (dlpack support) is required
@@ -524,8 +521,7 @@ class TestTorchDlPack(TestCase):
         self._test_from_dlpack(device, out_device="cpu", copy=True)
 
     @skipMeta
-    @onlyOn(["xpu", "cuda"])
-    @skipXPUIf(True, "https://github.com/intel/torch-xpu-ops/issues/3077")
+    @onlyCUDA
     def test_no_copy(self, device):
         # No copy, since tensor lives in the same device.
         self._test_from_dlpack(device)
@@ -578,10 +574,8 @@ class TestTorchDlPack(TestCase):
         ):
             from_dlpack(inp)
 
-    @xfailCUDAIfSM89OrLaterOnWindows
     @skipMeta
     @onlyNativeDeviceTypes
-    @skipXPUIf(True, "https://github.com/intel/torch-xpu-ops/issues/3074")
     def test_dlpack_exchange_api(self, device):
         """Comprehensive test of all DLPack Exchange API functions using inline C++"""
         # Check that the C API capsule exists and get it
@@ -808,13 +802,10 @@ class TestTorchDlPack(TestCase):
             functions=["test_dlpack_exchange_api"],
             verbose=False,
             with_cuda=device.startswith("cuda"),
-            with_sycl=device.startswith("xpu"),
         )
 
         # Run the comprehensive C++ test
-        module.test_dlpack_exchange_api(
-            tensor, api_capsule, device.startswith(("cuda", "xpu"))
-        )
+        module.test_dlpack_exchange_api(tensor, api_capsule, device.startswith("cuda"))
 
     @skipMeta
     @onlyCUDA
@@ -867,7 +858,7 @@ class TestTorchDlPack(TestCase):
         self.assertEqual(np_array2[0], 999)
 
     @skipMeta
-    @onlyOn(["xpu", "cuda"])
+    @onlyCUDA
     @deviceCountAtLeast(2)
     def test_numpy_cross_device_multi_gpu(self, devices):
         """Test cross-device transfer to specific CUDA devices (cuda:0, cuda:1, etc)."""
@@ -892,9 +883,7 @@ class TestTorchDlPack(TestCase):
         self.assertNotEqual(t0.device, t1.device)
 
 
-instantiate_device_type_tests(
-    TestTorchDlPack, globals(), allow_mps=True, allow_xpu=True
-)
+instantiate_device_type_tests(TestTorchDlPack, globals(), allow_mps=True)
 
 if __name__ == "__main__":
     run_tests()

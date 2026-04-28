@@ -8,7 +8,6 @@
 #include <c10/util/ArrayRef.h>
 #include <c10/util/Logging.h>
 #include <c10/util/OptionalArrayRef.h>
-#include <c10/util/irange.h>
 #include <torch/csrc/inductor/aoti_torch/c/shim.h>
 #include <optional>
 
@@ -163,7 +162,7 @@ inline std::vector<T> pointer_to_list(U* ptr, int64_t len) {
   // site
   std::vector<T> result;
   result.reserve(len);
-  for (const auto i : c10::irange(len)) {
+  for (int64_t i = 0; i < len; i++) {
     result.emplace_back(T(ptr[i]));
   }
   return result;
@@ -176,7 +175,7 @@ inline std::vector<T> pointer_to_list(U** ptr, int64_t len) {
   // site
   std::vector<T> result;
   result.reserve(len);
-  for (const auto i : c10::irange(len)) {
+  for (int64_t i = 0; i < len; i++) {
     result.emplace_back(pointer_to_optional(ptr[i]));
   }
   return result;
@@ -188,7 +187,7 @@ inline std::vector<at::Tensor> pointer_to_list(
     int64_t len) {
   std::vector<at::Tensor> result;
   result.reserve(len);
-  for (const auto i : c10::irange(len)) {
+  for (int64_t i = 0; i < len; i++) {
     result.emplace_back(*tensor_handle_to_tensor_pointer(ptr[i]));
   }
   return result;
@@ -200,7 +199,7 @@ inline std::vector<std::optional<at::Tensor>> pointer_to_list(
     int64_t len) {
   std::vector<std::optional<at::Tensor>> result;
   result.reserve(len);
-  for (const auto i : c10::irange(len)) {
+  for (int64_t i = 0; i < len; i++) {
     result.emplace_back(pointer_to_optional<at::Tensor>(ptr[i]));
   }
   return result;
@@ -227,7 +226,7 @@ template <typename T>
 static c10::List<T> convert_to_c10_List(const T* scalars, const int64_t len) {
   c10::List<T> scalars_list;
   scalars_list.reserve(len);
-  for (const auto i : c10::irange(len)) {
+  for (int64_t i = 0; i < len; i++) {
     scalars_list.emplace_back(scalars[i]);
   }
   return scalars_list;

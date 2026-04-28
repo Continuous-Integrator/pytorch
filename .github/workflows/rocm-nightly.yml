@@ -2,6 +2,8 @@ name: rocm-nightly
 
 on:
   push:
+    branches:
+      - nightly
     tags:
       - ciflow/rocm-nightly/*
   workflow_dispatch:

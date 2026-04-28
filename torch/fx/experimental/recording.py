@@ -1,24 +1,14 @@
-from __future__ import annotations
-
+# mypy: allow-untyped-defs
 import functools
 import inspect
 import itertools
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, ParamSpec, TYPE_CHECKING, TypeVar
-
-
-_P = ParamSpec("_P")
-_R = TypeVar("_R")
+from typing import Any
 
 import torch
 import torch.utils._pytree as pytree
-
-
-if TYPE_CHECKING:
-    from collections.abc import Callable
-
-    from torch.fx.experimental.symbolic_shapes import ShapeEnv, TrackedFake
 
 
 log = logging.getLogger(__name__)
@@ -91,21 +81,21 @@ __all__ = [
 @dataclass
 class ShapeEnvEvent:
     # ShapeEnv method.
-    f: Callable[..., Any]
+    f: Callable
 
     # Arguments and keyword arguments called with.
-    args: list[object] | None = None
+    args: list[Any] | None = None
     kwargs: dict[str, Any] | None = None
 
     # List of tracked_fakes at the time the method was called.
-    tracked_fakes: list[TrackedFake] | None = None
+    tracked_fakes: list[Any] | None = None
 
     # Name of the captured event.
     # Used for special handling of particular methods.
     name: str | None = None
 
     # Replay itself, but using shape_env as self.
-    def run(self, shape_env: ShapeEnv | None = None) -> Any:
+    def run(self, shape_env=None) -> Any:
         from torch.fx.experimental.symbolic_shapes import (
             is_symbolic,
             ShapeEnv,
@@ -157,7 +147,7 @@ class ShapeEnvEvent:
             return name_to_node[x.name]
 
         # Replaces the value of an specific argument by the result of fn.
-        def replacearg(index: int, key: str, fn: Callable[..., Any]) -> None:
+        def replacearg(index: int, key: str, fn: Callable):
             if index < len(args):
                 args[index] = fn(args[index])
             if key in kwargs:
@@ -206,9 +196,7 @@ NEST = 0
 #   2. SymInt, SymFloat, or SymBool arguments
 # If we find more than one object of any of the above types, we
 # also check that the ShapeEnv instance is the same for all of them.
-def _extract_shape_env_and_assert_equal(
-    args: tuple[object, ...] | list[object], kwargs: dict[str, object]
-) -> ShapeEnv | None:
+def _extract_shape_env_and_assert_equal(args, kwargs):
     from torch.fx.experimental.symbolic_shapes import is_symbolic, ShapeEnv, SymTypes
 
     def assert_equal(old: ShapeEnv | None, new: ShapeEnv) -> ShapeEnv:
@@ -253,8 +241,8 @@ def _extract_shape_env_and_assert_equal(
 #   - ShapeEnv.guard_or_defer_runtime_assert
 def record_shapeenv_event(
     *, save_tracked_fakes: bool = False, name: str | None = None
-) -> Callable[[Callable[_P, _R]], Callable[_P, _R]]:
-    def decorator(fn: Callable[_P, _R]) -> Callable[_P, _R]:
+) -> Callable:
+    def decorator(fn: Callable) -> Callable:
         if not callable(fn):
             raise AssertionError(f"Expected callable, got {type(fn)}")
         args = inspect.getfullargspec(fn).args
@@ -268,7 +256,7 @@ def record_shapeenv_event(
             name = fn.__name__
 
         @functools.wraps(fn)
-        def wrapper(*args: _P.args, **kwargs: _P.kwargs) -> _R:
+        def wrapper(*args, **kwargs):
             from torch.fx.experimental.symbolic_shapes import ShapeEnv
 
             if not isinstance(args[0], ShapeEnv):
@@ -281,7 +269,7 @@ def record_shapeenv_event(
             )
             NEST += 1
 
-            def retlog(r: _R) -> _R:
+            def retlog(r):
                 trace_shape_events_log.debug("%s-> %s", " " * (NEST - 1), r)
                 return r
 
@@ -337,7 +325,7 @@ def record_shapeenv_event(
                 if not shape_env.should_record_events or shape_env.is_recording:
                     # If ShapeEnv is disabled or already recording an event, re-raise the exception without logging.
                     raise
-                log.error(
+                log.error(  # noqa: G201
                     "failed while running %s(*%s, **%s)",
                     name,
                     args[1:],
@@ -358,7 +346,7 @@ def record_shapeenv_event(
 # It assumes the first event is the constructor call.
 #
 # fn: transforms an old FX node into one corresponding to the newly created ShapeEnv.
-def replay_shape_env_events(events: list[ShapeEnvEvent]) -> ShapeEnv:
+def replay_shape_env_events(events):
     from torch.fx.experimental.symbolic_shapes import ShapeEnv
 
     constructor_event = events[0]
@@ -406,7 +394,7 @@ class FakeTensorMeta:
         return len(self.tensor_size)
 
     @staticmethod
-    def from_fake(fake: torch.Tensor) -> FakeTensorMeta:
+    def from_fake(fake) -> "FakeTensorMeta":
         return FakeTensorMeta(
             fake.size(), fake.stride(), fake.storage_offset(), fake.is_nested
         )
@@ -458,12 +446,7 @@ class FakeTensorMeta:
 
 # Checks whether the state of two ShapeEnv are equal w.r.t. the guards
 # returned by ShapeEnv.produce_guards.
-def shape_env_check_state_equal(
-    env1: ShapeEnv,
-    env2: ShapeEnv,
-    non_state_variable_names: tuple[str, ...],
-    map_value: Callable[[str, object], object],
-) -> None:
+def shape_env_check_state_equal(env1, env2, non_state_variable_names, map_value):
     # Collect and remove variables that don't necessarily represent the state
     # of a ShapeEnv. Note: we copy the dictionary so that we don't modify the
     # instance itself.
@@ -493,7 +476,7 @@ def shape_env_check_state_equal(
     # Here, we allow the value of each field to be mapped, so that we appropriately
     # compare the two values.
     def compare_vars(
-        map_value: Callable[[str, object], object],
+        map_value: Callable[[str, Any], Any],
     ) -> list[tuple[str, str, str]]:
         env1_set, env2_set = set(env1_vars), set(env2_vars)
 
