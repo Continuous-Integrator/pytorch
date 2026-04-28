@@ -23,6 +23,7 @@
 #include <torch/csrc/jit/runtime/operator.h>
 #include <torch/csrc/utils/pybind.h>
 #include <torch/csrc/utils/python_arg_parser.h>
+#include <torch/csrc/utils/six.h>
 #ifdef USE_DISTRIBUTED
 #include <torch/csrc/distributed/rpc/py_rref.h>
 #include <torch/csrc/distributed/rpc/rref_impl.h>
@@ -428,14 +429,6 @@ inline InferredType tryToInferType(py::handle input) {
     return InferredType(IntType::get());
   }
 
-  // Check for types registered in _tryToInferTypeImpl (e.g. ProcessGroup)
-  // before falling through to the expensive inspect.isclass / JIT compilation
-  // path below.
-  auto ty = detail::_tryToInferTypeImpl(input);
-  if (ty.has_value()) {
-    return ty.value();
-  }
-
   auto enum_type = py::module::import("enum").attr("Enum");
   py::bool_ isEnumValue = py::isinstance(input, enum_type);
   if (py::cast<bool>(isEnumValue)) {
@@ -525,6 +518,11 @@ inline InferredType tryToInferType(py::handle input) {
     return InferredType("Cannot infer concrete type of torch.nn.Module");
   }
 
+  auto ty = detail::_tryToInferTypeImpl(input);
+  if (ty.has_value()) {
+    return ty.value();
+  }
+
   // Try container types
   return tryToInferContainerType(input, false);
 }
@@ -556,7 +554,7 @@ inline InferredType tryToInferPrimitiveType(py::handle input) {
 inline InferredType tryToInferContainerType(
     py::handle input,
     bool primitiveTypeOnly = false) {
-  if (PyTuple_Check(input.ptr())) {
+  if (six::isTuple(input)) {
     py::tuple tuple = py::cast<py::tuple>(input);
     std::vector<TypePtr> element_types;
     element_types.reserve(tuple.size());

@@ -475,7 +475,6 @@ class TraceRuleTests(torch._dynamo.test_case.TestCase):
             "handle_nested_tensor",  # No global state
             "handle_current_stream",  # Safely implemented
             "handle_synchronize",  # Device type from function identity or arg
-            "handle_functorch_autograd_grad",  # Only inspects placeholder metadata
         )
         for fn in handlers:
             if isinstance(fn, staticmethod) or inspect.ismethod(fn):
@@ -496,7 +495,7 @@ class TraceRuleTests(torch._dynamo.test_case.TestCase):
             )
 
     def test_almost_impossible_missing_name(self):
-        class weird:
+        class weird:  # noqa: UP004
             def __getattribute__(self, name):
                 if name == "__name__":
                     raise AttributeError("test")
