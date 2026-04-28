@@ -22,6 +22,7 @@ import torch._dynamo.testing
 from torch._dynamo.variables.base import VariableTracker
 from torch._dynamo.variables.constant import ConstantVariable
 from torch._dynamo.variables.lists import BaseListVariable, DequeVariable, RangeVariable
+from torch._library.opaque_object import MemberType, OpaqueBase, register_opaque_type
 from torch.testing._internal.inductor_utils import HAS_CUDA_AND_TRITON, HAS_GPU
 
 
@@ -618,12 +619,6 @@ class GetItemTests(torch._dynamo.test_case.TestCase):
     # --- TorchScriptObjectVariable ---
 
     def test_opaque_object_getitem(self):
-        from torch._library.opaque_object import (
-            MemberType,
-            OpaqueBase,
-            register_opaque_type,
-        )
-
         class OpaqueScaler(OpaqueBase):
             def __init__(self, scale):
                 self.scale = scale

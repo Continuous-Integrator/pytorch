@@ -188,7 +188,7 @@ def maybe_get_python_type(obj: VariableTracker) -> type:
         )
 
 
-def _pyindex_check(
+def validate_sequence_index(
     tx: "InstructionTranslator",
     key: VariableTracker,
     container_name: str,
@@ -201,12 +201,15 @@ def _pyindex_check(
     getitem_const gets the same validation, not just mp_subscript_impl.
     """
     key_type = maybe_get_python_type(key)
-    if not type_implements_nb_index(key_type):
-        raise_type_error(
-            tx,
-            f"{container_name} indices must be integers or slices, not {key.python_type_name()}"
-
-        )
+    if key_type not in (int, bool, slice):
+        if not type_implements_nb_index(key_type):
+            raise_observed_exception(
+                TypeError,
+                tx,
+                args=[
+                    f"{container_name} indices must be integers or slices, not {key.python_type_name()}"
+                ],
+            )
         key = key.nb_index_impl(tx)
     return key
 
