@@ -2,7 +2,9 @@
 
 """Tests for @leaf_function with make_fx, aot_function, and torch.compile."""
 
+import contextlib
 import copy
+import io
 from functools import partial
 from unittest.mock import patch
 
@@ -2529,9 +2531,6 @@ class TestLeafFunctionRegisterHook(TestCase):
         # Recommended pattern for threading non-tensor context into the hook:
         # capture it via closure at hook-registration time. Verify the captured
         # tag actually reaches printed output (mirrors the docstring example).
-        import contextlib
-        import io
-
         tag = "intermediate"
 
         @leaf_function
