@@ -12,16 +12,6 @@ from torch.nn.utils._named_member_accessor import NamedMemberAccessor
 __all__ = ["functional_call"]
 
 
-def _contains_tensor(value: Any) -> bool:
-    if isinstance(value, Tensor):
-        return True
-    if isinstance(value, dict):
-        return any(_contains_tensor(inner) for inner in value.values())
-    if isinstance(value, (list, tuple)):
-        return any(_contains_tensor(inner) for inner in value)
-    return False
-
-
 def _untie_named_tensors_map(
     module: "torch.nn.Module",
     parameters_and_buffers: dict[str, Tensor],
