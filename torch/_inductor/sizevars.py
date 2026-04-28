@@ -17,7 +17,6 @@ from torch.fx.experimental._size_hinting import (
 from torch.fx.experimental.symbolic_shapes import (
     free_symbols,
     free_unbacked_symbols,
-    hint_disproves_expr,
     IterateExprs,
     ShapeEnv,
     SymNode,
@@ -66,7 +65,7 @@ _GEMM_TEMPLATE_SYMBOL_NAMES = OrderedSet(
 # sympy (e.g. gcd, Mod) dominate compile time on wide concat/sum expressions
 # (see https://github.com/sympy/sympy/issues/28200). Chosen empirically from
 # AOT-partitioned bwd graphs with ~60-variable shape expressions.
-_MAX_FREE_SYMBOLS_FOR_STATIC_REASONING = 20
+_MAX_SYMBOLS_FOR_EXPENSIVE_SYMPY_OPS = 20
 
 
 def statically_known_true(
@@ -82,8 +81,12 @@ def statically_known_true(
     # False, it cannot be universally True, so bail out without running the
     # much more expensive `_maybe_evaluate_static`. (A True hint doesn't let
     # us conclude universal truth, so we still fall through in that case.)
-    if hint_disproves_expr(shape_env, expr, target=True):
-        return False
+    try:
+        hinted = expr.xreplace(shape_env.backed_var_to_val)
+        if hinted is sympy.S.false:
+            return False
+    except Exception:
+        pass
 
     try:
         simplified = shape_env._maybe_evaluate_static(
@@ -235,24 +238,14 @@ class SizeVarAllocator:
             if not statically_known(base >= 0):
                 return base
 
-            # Loop cost is O(symbols * match_cost), and each iteration calls
-            # sympy.gcd whose polynomial-gcd path explodes on many-variable
-            # expressions (e.g. 60-way concat sums in aot-partitioned bwd
-            # graphs). Skip the whole optimization past a threshold.
-            if len(base.free_symbols) > _MAX_FREE_SYMBOLS_FOR_STATIC_REASONING:
-                return base
+            from torch.utils._sympy.functions import safe_gcd
 
             for v in base.free_symbols:
                 if v in var_ranges:
                     rest = sympy.Wild("_rest", exclude=[v])
                     m = base.match(v + rest)
                     if m and v not in m[rest].free_symbols:
-                        # v can be removed if it doesn't affect the FloorDiv.
-                        # rest is always a multiple of gcd(rest, divisor), so
-                        # rest % divisor is also a multiple of that gcd. The
-                        # worst case is rest % divisor == divisor - gcd, so
-                        # adding v is safe when v < gcd.
-                        gcd = sympy.gcd(m[rest], divisor)
+                        gcd = safe_gcd(m[rest], divisor)
                         if statically_known(v < gcd):
                             base = m[rest]
             return base
@@ -488,7 +481,7 @@ class SizeVarAllocator:
             return True
 
         # Rule 7 — full sympy fallback (expensive on many-variable exprs).
-        if len(free_symbols(numerator)) > _MAX_FREE_SYMBOLS_FOR_STATIC_REASONING:
+        if len(free_symbols(numerator)) > _MAX_SYMBOLS_FOR_EXPENSIVE_SYMPY_OPS:
             return False
         expr = sympy.Eq(Mod(numerator, denominator), 0)
         return self.statically_known_true(expr)
@@ -499,6 +492,9 @@ class SizeVarAllocator:
         """
         Return a bool indicating if it is sound to optimize for the numerator being a multiple of the denominator.
         """
+        # Use cheap structural equality, not statically_known_equals —
+        # the latter constructs sympy.Eq(wide, wide) which has measurable
+        # overhead (~30s on 64-variable expressions).
         if numerator is denominator or numerator == denominator:
             return True
 
@@ -506,7 +502,7 @@ class SizeVarAllocator:
             return self._is_multiple_of(numerator, int(denominator))
 
         # Symbolic denominator: only the sympy fallback can prove this.
-        if len(free_symbols(numerator)) > _MAX_FREE_SYMBOLS_FOR_STATIC_REASONING:
+        if len(free_symbols(numerator)) > _MAX_SYMBOLS_FOR_EXPENSIVE_SYMPY_OPS:
             return False
         expr = sympy.Eq(Mod(numerator, denominator), 0)
         return self.statically_known_true(expr)  # type: ignore[arg-type]
