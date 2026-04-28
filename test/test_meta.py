@@ -2120,7 +2120,6 @@ class TestMetaKernelRegistrations(TestCase):
         )
         self.assertEqual(result.shape, (10, 3))
 
-
 instantiate_device_type_tests(TestMeta, globals())
 
 
