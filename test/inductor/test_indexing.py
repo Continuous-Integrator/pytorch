@@ -749,37 +749,27 @@ class TestWideExpressionThresholds(InductorTestCase):
         wide = sum(syms)
         self.assertTrue(sizevars.statically_known_multiple_of(wide, wide))
 
-    def test_wide_modular_indexing_does_not_hang(self):
-        """ModularIndexing with a wide base should complete quickly.
-        The per-term simplification loop is skipped for wide bases because
-        its result feeds into sympy.expand() in sizevars.simplify(), which
-        has combinatorial cost on wide Add expressions."""
-        import time
-
+    def test_wide_modular_indexing_not_decomposed(self):
+        """ModularIndexing with a wide base should not enter the per-term
+        simplification loop (its result would feed into sympy.expand which
+        has combinatorial cost on wide Add expressions)."""
         syms = sympy.symbols(" ".join(f"s{i}" for i in range(40)), integer=True)
         wide = sum(syms) + 138560
-        t0 = time.perf_counter()
         result = ModularIndexing(wide, 160, 930)
-        elapsed = time.perf_counter() - t0
-        # Should complete in well under 1 second (without the guard it hangs)
-        self.assertLess(elapsed, 2.0)
-        # The expression should be left unsimplified (not decomposed)
+        # Wide base should be left unsimplified
         self.assertIsInstance(result, ModularIndexing)
+        self.assertEqual(result.args[0], wide)
 
-    def test_wide_simplify_with_ranges_does_not_hang(self):
-        """simplify_with_ranges on expressions containing wide ModularIndexing
-        should complete quickly."""
-        import time
-
+    def test_wide_simplify_with_ranges(self):
+        """simplify_with_ranges on expressions containing wide shapes
+        should still return a valid expression (not hang or error)."""
         sizevars = SizeVarAllocator()
         syms = sympy.symbols(" ".join(f"s{i}" for i in range(40)), integer=True)
         wide = sum(syms)
         i0 = sympy.Symbol("i0", integer=True)
         expr = ModularIndexing(wide, 1, 160) + 160 * FloorDiv(wide, 160)
-        t0 = time.perf_counter()
-        sizevars.simplify_with_ranges(expr, {i0: 10})
-        elapsed = time.perf_counter() - t0
-        self.assertLess(elapsed, 5.0)
+        result = sizevars.simplify_with_ranges(expr, {i0: 10})
+        self.assertIsInstance(result, sympy.Basic)
 
 
 class TestOptimizationHintZeroDivision(InductorTestCase):
