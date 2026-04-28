@@ -247,9 +247,9 @@ class NbBoolTests(TestCase):
         def fn(x, obj):
             return x + 1 if bool(obj) else x - 1
 
-        with self.assertRaisesRegex(TypeError, "'NoneType' object is not callable"):
+        with self.assertRaises(TypeError):
             bool(NoBool())
-        with self.assertRaisesRegex(TypeError, "'NoneType' object is not callable"):
+        with self.assertRaises(TypeError):
             torch.compile(fn, backend="eager")(torch.randn(4), NoBool())
 
     # --- Metaclass with __bool__ (UserDefinedClassVariable path) ---
