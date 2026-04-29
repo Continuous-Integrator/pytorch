@@ -4819,14 +4819,20 @@ class ShapeEnv:
         # unbacked symbols, then derive strides by substitution.
 
         # 1. Create new size symbols, deduplicating shared unbacked symbols.
+        # Try xreplace to substitute known mappings; if foreign symbols remain,
+        # create a fresh unbacked symbol.
+        # NOTE: if all dims are derived expressions from a base symbol that
+        # doesn't appear as a dim itself (e.g., size=[u0//2, u0//4]), the
+        # relationship between dims is lost — each gets an independent symbol.
+        # This is acceptable as this case is rare in practice.
         old_to_new: dict[sympy.Expr, sympy.Expr] = {}
         new_size_exprs: list[sympy.Expr] = []
         for i, old_sz in enumerate(sizes):
             if is_symbolic(old_sz):
                 old_expr = old_sz.node.expr  # type: ignore[union-attr]
-                if old_expr in old_to_new:
-                    new_size_exprs.append(old_to_new[old_expr])
-                else:
+                new_expr = old_expr.xreplace(old_to_new)
+                if new_expr.free_symbols - set(old_to_new.values()):
+                    # Still has unmapped foreign symbols — create fresh symbol
                     sym = self.create_symbol(
                         ex_size[i],  # type: ignore[arg-type]  # None for UNBACKED, ignored
                         TensorPropertySource(source, TensorProperty.SIZE, i),
@@ -4838,10 +4844,11 @@ class ShapeEnv:
                     )
                     old_to_new[old_expr] = sym
                     new_size_exprs.append(sym)
+                else:
+                    new_size_exprs.append(new_expr)
             else:
                 new_size_exprs.append(sympy.Integer(old_sz))
 
-        # 3. Derive new strides by substituting old symbols.
         # 3. Derive new strides by substituting old symbols.
         # If after substitution a stride still has foreign symbols (e.g. from
         # as_strided), create a fresh unbacked symbol for it.

@@ -5775,6 +5775,36 @@ class TestTransferSymbolsFromForeignShapeEnv(TestCase):
         # Stride should be a different symbol than size
         self.assertNotEqual(new_sizes[0].node.expr, new_strides[0].node.expr)
 
+    def test_derived_unbacked_expression_preserved(self):
+        """If a size is a derived expression (e.g., u0 // 2) from a base symbol
+        that appears in another dim, it should be expressed in terms of the
+        new symbol rather than creating an independent fresh symbol."""
+        foreign_env = ShapeEnv()
+        u0 = foreign_env.create_unbacked_symint()
+        # Create a derived expression: u0 // 2
+        u0_half = u0 // 2
+
+        sizes = (u0, u0_half)
+        strides = (1, 1)
+        storage_offset = 0
+
+        local_env = ShapeEnv()
+        new_sizes, new_strides, new_offset = (
+            local_env.transfer_symbols_from_foreign_shape_env(
+                sizes,
+                strides,
+                storage_offset,
+                source=self._make_source("local"),
+            )
+        )
+        # dim 0 should be a fresh unbacked symbol
+        self.assertTrue(is_symbolic(new_sizes[0]))
+        new_u0 = new_sizes[0].node.expr
+        # dim 1 should be derived from new_u0 (e.g., floor(new_u0/2))
+        self.assertTrue(is_symbolic(new_sizes[1]))
+        # The derived expression should reference the new base symbol
+        self.assertIn(new_u0, new_sizes[1].node.expr.free_symbols)
+
     def test_unbacked_hint_overrides_transferred(self):
         """Hint overrides on unbacked symbols in the foreign env should be
         transferred to the new env."""
