@@ -1078,29 +1078,47 @@ class BuiltinVariable(BaseBuiltinVariable):
         obj = BuiltinVariable(fn)
         handlers: list[_HandlerCallback] = []
 
-        # Check for non-LazyConstantVariable lazy types that need realization.
-        # LazyConstantVariable is mapped to ConstantVariable in call_function's
-        # get_handler_type_for_dispatch, so it won't appear in arg_types here.
-        # But regular LazyVariableTracker still needs to be realized before handling.
-        if any(
-            issubclass(t, LazyVariableTracker)
-            and not issubclass(t, LazyConstantVariable)
-            for t in arg_types
-        ):
-            # Realize lazy args except LazyConstantVariable.
-            # Only realize top-level args, not nested VariableTracker fields.
-            def realize_arg(arg: VariableTracker) -> VariableTracker:
-                if isinstance(arg, LazyVariableTracker) and not isinstance(
-                    arg, LazyConstantVariable
-                ):
-                    return arg.realize()
-                return arg
+        lazy_types = [t for t in arg_types if issubclass(t, LazyVariableTracker)]
+        if lazy_types:
+            if not all(issubclass(t, LazyConstantVariable) for t in lazy_types):
+                # Realize non-constant lazy args and re-dispatch.  Any
+                # LazyConstantVariable args are kept and handled on the
+                # second dispatch through the branch below.
+                return lambda tx, args, kwargs: obj.call_function(
+                    tx,
+                    [
+                        a.realize()
+                        if isinstance(a, LazyVariableTracker)
+                        and not isinstance(a, LazyConstantVariable)
+                        else a
+                        for a in args
+                    ],
+                    kwargs,
+                )
 
-            return lambda tx, args, kwargs: obj.call_function(
-                tx,
-                [realize_arg(a) for a in args],
-                kwargs,
+            # Only LazyConstantVariable lazy types.  Remap to
+            # ConstantVariable for inner handler creation and install type
+            # guards when the handler is called.
+            inner_handler = BuiltinVariable._make_handler(
+                fn,
+                [
+                    ConstantVariable if issubclass(t, LazyConstantVariable) else t
+                    for t in arg_types
+                ],
+                has_kwargs,
             )
+
+            def lazy_constant_handler(
+                tx: "InstructionTranslator",
+                args: list[VariableTracker],
+                kwargs: dict[str, VariableTracker],
+            ) -> VariableTracker | None:
+                for a in args:
+                    if isinstance(a, LazyConstantVariable):
+                        a.get_handler_type_for_dispatch()
+                return inner_handler(tx, args, kwargs)
+
+            return lazy_constant_handler
 
         if inspect.isclass(fn) and (
             issubclass(fn, BaseException)
@@ -1527,20 +1545,17 @@ class BuiltinVariable(BaseBuiltinVariable):
         args: Sequence[VariableTracker],
         kwargs: dict[str, VariableTracker],
     ) -> VariableTracker:
-        # Get handler types for dispatch. This may install guards for lazy variables.
-        handler_types = [x.get_handler_type_for_dispatch() for x in args]
-
         key: tuple[object, ...]
         if kwargs:
             kwargs = {k: v.realize() for k, v in kwargs.items()}
-            key = (self.fn, *handler_types, True)
+            key = (self.fn, *(type(x) for x in args), True)
         else:
-            key = (self.fn, *handler_types)
+            key = (self.fn, *(type(x) for x in args))
 
         handler = self.call_function_handler_cache.get(key)
         if not handler:
             self.call_function_handler_cache[key] = handler = self._make_handler(  # type: ignore[assignment]
-                self.fn, handler_types, bool(kwargs)
+                self.fn, [type(x) for x in args], bool(kwargs)
             )
         assert handler is not None
         return handler(tx, args, kwargs)  # type: ignore[return-value]
