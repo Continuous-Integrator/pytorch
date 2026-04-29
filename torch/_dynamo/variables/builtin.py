@@ -1256,7 +1256,9 @@ class BuiltinVariable(BaseBuiltinVariable):
                         return obj.call_function(
                             tx,
                             [
-                                v.realize() if isinstance(v, LazyVariableTracker) else v
+                                v.realize()
+                                if isinstance(v, LazyVariableTracker)
+                                else v
                                 for v in args
                             ],
                             kwargs,
@@ -1264,8 +1266,10 @@ class BuiltinVariable(BaseBuiltinVariable):
 
                 return handle_lazy_constant
 
-            # Remap lazy constant types → ConstantVariable for inner handler
-            # creation and install type guards when the handler is called.
+            # Fallback: install type guards and resolve dispatch type.  If
+            # ConstantVariable (common case), delegate to a handler built for
+            # ConstantVariable.  Otherwise (e.g. specialize_int=False turned
+            # the int into SymNodeVariable), realize and re-dispatch.
             inner_handler = BuiltinVariable._make_handler(
                 fn,
                 [
@@ -1286,7 +1290,17 @@ class BuiltinVariable(BaseBuiltinVariable):
             ) -> VariableTracker | None:
                 for a in args:
                     if isinstance(a, LazyConstantVariable):
-                        a.get_handler_type_for_dispatch()
+                        if a.get_handler_type_for_dispatch() is not ConstantVariable:
+                            return obj.call_function(
+                                tx,
+                                [
+                                    v.realize()
+                                    if isinstance(v, LazyConstantVariable)
+                                    else v
+                                    for v in args
+                                ],
+                                kwargs,
+                            )
                 return inner_handler(tx, args, kwargs)
 
             return lazy_constant_handler
