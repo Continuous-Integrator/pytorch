@@ -1477,30 +1477,47 @@ class DTensorMeshTest(DTensorTestBase):
             self.device_type, torch.arange(self.world_size - 1, -1, -1)
         )
 
-        pa = torch.nn.Parameter(
-            DTensor.from_local(
-                torch.tensor([3.0], device=self.device_type),
-                mesh_a,
-                [Replicate()],
-            )
-        )
-        pb = torch.nn.Parameter(
-            DTensor.from_local(
-                torch.tensor([4.0], device=self.device_type),
-                mesh_b,
-                [Replicate()],
-            )
-        )
-        # Manufacture .grad by hand so we don't need a full training loop.
-        pa.grad = pa.detach().clone()
-        pb.grad = pb.detach().clone()
+        for placements_a, placements_b in [
+            ([Replicate()], [Replicate()]),
+            ([Shard(0)], [Shard(0)]),
+        ]:
+            with self.subTest(placements_a=placements_a, placements_b=placements_b):
+                local_a = torch.full(
+                    (self.world_size,), 3.0, device=self.device_type
+                )
+                local_b = torch.full(
+                    (self.world_size,), 4.0, device=self.device_type
+                )
+                pa = torch.nn.Parameter(
+                    DTensor.from_local(local_a, mesh_a, placements_a)
+                )
+                pb = torch.nn.Parameter(
+                    DTensor.from_local(local_b, mesh_b, placements_b)
+                )
+                # Manufacture .grad by hand so we don't need a full training loop.
+                pa.grad = pa.detach().clone()
+                pb.grad = pb.detach().clone()
 
-        # Should not raise despite the two grads coming from different meshes.
-        total_norm = torch.nn.utils.clip_grad_norm_([pa, pb], max_norm=1.0)
-        expected = torch.linalg.vector_norm(
-            torch.tensor([3.0, 4.0], device=self.device_type)
-        )
-        self.assertEqual(total_norm, expected)
+                # Capture the globally-assembled gradients before clip_grad_norm_
+                # mutates them in place. full_tensor() can alias the local
+                # storage (e.g. for Replicate), so clone to keep an independent
+                # snapshot.
+                full_a = pa.grad.full_tensor().clone()
+                full_b = pb.grad.full_tensor().clone()
+
+                # Should not raise despite the two grads coming from different meshes.
+                total_norm = torch.nn.utils.clip_grad_norm_(
+                    [pa, pb], max_norm=1.0
+                )
+                expected = torch.linalg.vector_norm(
+                    torch.stack(
+                        [
+                            torch.linalg.vector_norm(full_a),
+                            torch.linalg.vector_norm(full_b),
+                        ]
+                    )
+                )
+                self.assertEqual(total_norm, expected)
 
 
 DTensorMeshTestWithLocalTensor = create_local_tensor_test_class(
