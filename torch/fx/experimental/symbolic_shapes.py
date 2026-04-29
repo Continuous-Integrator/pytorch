@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import sympy
 from sympy import S
-
 from torch._prims_common import BoolLike, FloatLike, IntLike
 
 
@@ -47,7 +46,6 @@ from typing import (
     TypeGuard,
     TypeVar,
 )
-from typing_extensions import deprecated, ParamSpec
 
 import torch
 import torch.fx
@@ -102,6 +100,7 @@ from torch.utils._sympy.value_ranges import (
     ValueRanges,
 )
 from torch.utils._traceback import CapturedTraceback, format_frame
+from typing_extensions import deprecated, ParamSpec
 
 
 if TYPE_CHECKING:
@@ -4649,6 +4648,10 @@ class ShapeEnv:
         symbolic_context: SymbolicContext,
         hint_overrides: dict[int, int] | None = None,
     ) -> list[sympy.Expr]:
+        if not all(not is_symbolic(val) for val in tensor_size):
+            raise AssertionError(
+                f"Expect size to be a plain tuple of ints but got {tensor_size}"
+            )
         from torch._dynamo.source import TensorProperty, TensorPropertySource
 
         if not hint_overrides:
@@ -4656,10 +4659,6 @@ class ShapeEnv:
 
         _assert_symbol_context(symbolic_context)
         dynamic_dims = symbolic_context.dynamic_sizes  # type: ignore[attr-defined]
-        if not all(not is_symbolic(val) for val in tensor_size):
-            raise AssertionError(
-                f"Expect size to be a plain tuple of ints but got {tensor_size}"
-            )
 
         constraint_dims = symbolic_context.constraint_sizes  # type: ignore[attr-defined]
         size = []
@@ -4707,11 +4706,17 @@ class ShapeEnv:
         IntLikeType,
     ]:
         """Transfer symbolic sizes/strides/offset from a foreign ShapeEnv
-        into this one.  Each dimension is classified as STATIC, DUCK,
-        or UNBACKED based on whether the foreign symbol has a guarding hint,
-        and new symbols are created in this ShapeEnv accordingly.
-        Hint overrides are read from the foreign ShapeEnv and transferred to the
-        new one."""
+        into this one.
+
+        If symbolic_context is None, each dimension is auto-classified as
+        STATIC, DUCK, or UNBACKED based on whether the foreign symbol has
+        a guarding hint.  If symbolic_context is provided (e.g. from
+        _automatic_dynamic), its classification is used instead.
+
+        For unbacked dims, strides are derived by substituting old foreign
+        symbols with the newly created symbols, preserving stride-size
+        relationships.  Hint overrides are read from the foreign ShapeEnv
+        and transferred to the new one."""
 
         def _classify(s: IntLikeType) -> DimDynamic:
             if not is_symbolic(s):
@@ -4743,14 +4748,6 @@ class ShapeEnv:
             )
         else:
             dynamic_sizes = symbolic_context.dynamic_sizes  # type: ignore[attr-defined]
-            # Fix up strides: unbacked dims need UNBACKED strides too
-            dynamic_strides = symbolic_context.dynamic_strides  # type: ignore[attr-defined]
-            for i, ds in enumerate(dynamic_sizes):
-                if (
-                    ds is DimDynamic.UNBACKED
-                    and dynamic_strides[i] == DimDynamic.INFER_STRIDE
-                ):
-                    dynamic_strides[i] = DimDynamic.UNBACKED
 
         # For unbacked dims, read the optimization hint from the foreign
         # ShapeEnv and set it as a hint override so the new unbacked symbol
@@ -4766,7 +4763,6 @@ class ShapeEnv:
                         hint_overrides[i] = opt_hint
 
         import sympy
-
         from torch._dynamo.source import TensorProperty, TensorPropertySource
 
         ex_size = tuple(_hint(sz) for sz in sizes)
