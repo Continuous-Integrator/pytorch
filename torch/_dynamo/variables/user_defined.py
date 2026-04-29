@@ -611,6 +611,22 @@ class UserDefinedClassVariable(UserDefinedVariable):
     def mp_length(self, tx: "InstructionTranslator") -> VariableTracker:
         return self.len_impl(tx)
 
+    def tp_iter_impl(self, tx: "InstructionTranslator") -> VariableTracker:
+        m = self._maybe_get_baseclass_method("__iter__")
+        if m:
+            source = self.source and AttrSource(self.source, "__iter__")
+            return variables.UserMethodVariable(
+                m, self, source_fn=source
+            ).call_function(tx, [], {})
+        try:
+            items = self.unpack_var_sequence(tx)
+            return variables.ListIteratorVariable(
+                items, mutation_type=ValueMutationNew()
+            )
+        except NotImplementedError:
+            pass
+        return super().tp_iter_impl(tx)
+
     def _call_cross_entropy_loss(
         self,
         tx: "InstructionTranslator",
@@ -1444,20 +1460,19 @@ class UserDefinedObjectVariable(UserDefinedVariable):
     ) -> "VariableTracker | None":
         # Mirrors slot_nb_bool:
         # https://github.com/python/cpython/blob/c09ccd9c429/Objects/typeobject.c#L9408-L9458
-        if self._maybe_get_baseclass_method("__bool__"):
-            result = self.call_method(tx, "__bool__", [], {})
-            if result.is_python_constant():
-                result_value = result.as_python_constant()
-                if not isinstance(result_value, bool):
-                    raise_observed_exception(
-                        TypeError,
-                        tx,
-                        args=[
-                            f"__bool__ should return bool, returned {type(result_value).__name__}"
-                        ],
-                    )
-            return result
-        return None
+        type_attr = self.lookup_class_mro_attr("__bool__")
+        if type_attr is NO_SUCH_SUBOBJ:
+            return None
+        if type_attr is None:
+            raise_type_error(tx, "'NoneType' object is not callable")
+
+        result = self.call_method(tx, "__bool__", [], {})
+        if result.python_type() is not bool:
+            raise_type_error(
+                tx,
+                f"__bool__ should return bool, returned {result.python_type().__name__}",
+            )
+        return result
 
     def nb_index_impl(
         self,
@@ -1564,6 +1579,34 @@ class UserDefinedObjectVariable(UserDefinedVariable):
             args,
             kwargs,
         )
+
+    def tp_iternext_impl(self, tx: "InstructionTranslator") -> VariableTracker:
+        method = self._maybe_get_baseclass_method("__next__")
+        if (
+            self._base_vt is not None
+            and self._base_methods is not None
+            and method in self._base_methods
+        ):
+            return self._base_vt.tp_iternext_impl(tx)
+
+        if isinstance(method, types.FunctionType):
+            method_var = self.resolve_type_attr(tx, "__next__", method, self.source)
+            return method_var.call_function(tx, [], {})
+        return super().tp_iternext_impl(tx)
+
+    def tp_iter_impl(self, tx: "InstructionTranslator") -> VariableTracker:
+        method = self._maybe_get_baseclass_method("__iter__")
+        if (
+            self._base_vt is not None
+            and self._base_methods is not None
+            and method in self._base_methods
+        ):
+            return self._base_vt.tp_iter_impl(tx)
+
+        if isinstance(method, types.FunctionType):
+            method_var = self.resolve_type_attr(tx, "__iter__", method, self.source)
+            return method_var.call_function(tx, [], {})
+        return super().tp_iter_impl(tx)
 
     @staticmethod
     @functools.cache
@@ -1881,15 +1924,12 @@ class UserDefinedObjectVariable(UserDefinedVariable):
 
         while True:
             try:
-                r = iter_.next_variable(tx)
+                r = iter_.tp_iternext_impl(tx)
                 result.append(r)
             except ObservedUserStopIteration:
                 handle_observed_exception(tx)
                 break
         return result
-
-    def next_variable(self, tx: "InstructionTranslator") -> VariableTracker:
-        return self.call_method(tx, "__next__", [], {})
 
     def is_supported_random(self) -> bool:
         try:
