@@ -449,6 +449,24 @@ class VariableTracker(metaclass=VariableTrackerMeta):
         # fall through to length check, then truthy default.
         return None
 
+    def try_peek_constant(self) -> tuple[bool, bool, Any]:
+        """Try to peek at the constant value without triggering realization.
+
+        Returns a tuple of (can_peek, is_unrealized, value):
+        - can_peek: True if this variable can be peeked as a constant
+        - is_unrealized: True if this is an unrealized lazy constant (guards not yet installed)
+        - value: The constant value (only valid if can_peek is True)
+
+        Default implementation for non-lazy variables: returns (is_python_constant, False, value).
+        LazyConstantVariable and ComputedLazyConstantVariable override this to peek without
+        realizing. Container types (TupleVariable, ListVariable) override this to recursively
+        peek at their contents.
+        """
+        try:
+            return (True, False, self.as_python_constant())
+        except NotImplementedError:
+            return (False, False, None)
+
     def is_constant_match(self, *values: Any) -> bool:
         """
         Check if this variable is a python constant matching one of the given values.
@@ -680,6 +698,8 @@ class VariableTracker(metaclass=VariableTrackerMeta):
             return generic_len(tx, self)
         elif name == "__iter__" and not args and not kwargs:
             return self.tp_iter_impl(tx)
+        elif name == "__next__" and not args and not kwargs:
+            return self.tp_iternext_impl(tx)
         elif (
             name == "__getattr__"
             and len(args) == 1
@@ -947,13 +967,24 @@ class VariableTracker(metaclass=VariableTrackerMeta):
         """Used by LazyVariableTracker to indicate an unrealized node"""
         return True
 
-    def next_variable(self, tx: Any) -> VariableTracker:
+    def tp_iternext_impl(self, tx: Any) -> VariableTracker:
+        """
+        Implements tp_iternext slot semantics.
+        Subclasses override this to support next(). Reaching this base is a
+        bug — it means tp_iternext is missing for that VariableTracker subclass.
+        """
         unimplemented(
-            gb_type="Unsupported next() call",
-            context=f"next({self})",
-            explanation=f"Dynamo does not know how to trace calling `next()` on variable `{self}`.",
-            hints=[*graph_break_hints.USER_ERROR],
+            gb_type="Missing tp_iternext",
+            context=f"next({self.python_type_name()})",
+            explanation=(
+                f"Dynamo does not support next() on {self.python_type_name()}."
+                " Add tp_iternext_impl to this VariableTracker subclass."
+            ),
+            hints=[*graph_break_hints.SUPPORTABLE],
         )
+
+    def next_variable(self, tx: Any) -> VariableTracker:
+        return self.tp_iternext_impl(tx)
 
     def is_strict_mode(self, tx: Any) -> bool:
         return bool(tx.strict_checks_fn and tx.strict_checks_fn(self))
