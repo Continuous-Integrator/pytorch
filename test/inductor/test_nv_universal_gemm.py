@@ -1,13 +1,9 @@
 # Owner(s): ["module: inductor"]
 
 
-import logging
 import unittest
 from unittest import mock
 from unittest.mock import MagicMock, patch
-
-
-log = logging.getLogger(__name__)
 
 import torch
 from torch._inductor import config
