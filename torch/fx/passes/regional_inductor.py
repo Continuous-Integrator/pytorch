@@ -39,6 +39,36 @@ def _disable_remat_for_regional_subcompile() -> Iterator[None]:
         yield
 
 
+def _normalize_node_names(submod: torch.fx.GraphModule) -> None:
+    """Normalize all node names in a subgraph to canonical forms.
+
+    Structurally identical subgraphs extracted from different layers carry
+    different node names (e.g. ``_fused_rms_norm_1`` vs ``_fused_rms_norm_7``,
+    ``getitem_2`` vs ``getitem_17``) because ``Graph.node_copy`` preserves
+    names from the parent graph.  These names leak into the AOTAutograd cache
+    key via ``gm.__reduce__()`` → generated ``_code``, causing every subgraph
+    to hash differently even when the graph structure is identical.
+
+    This function renames every node to a deterministic canonical name so that
+    structurally identical subgraphs produce the same cache key.
+    """
+    submod.graph._graph_namespace._used_names = set()
+    placeholder_idx = 0
+    node_idx = 0
+    for n in submod.graph.nodes:
+        if n.op == "placeholder":
+            new_name = f"p_{placeholder_idx}"
+            n.target = new_name
+            n._rename(new_name)
+            placeholder_idx += 1
+        elif n.op == "output":
+            n._rename("output")
+        else:
+            n._rename(f"n_{node_idx}")
+            node_idx += 1
+    submod.recompile()
+
+
 def _compile_submod(gm: torch.fx.GraphModule, prefix: str) -> torch.fx.GraphModule:
     from torch._inductor.standalone_compile import AOTCompiledArtifact
 
@@ -77,6 +107,10 @@ def _compile_submod(gm: torch.fx.GraphModule, prefix: str) -> torch.fx.GraphModu
                 node.target,
                 inductor_options,
             )
+
+            # Normalize node names so structurally identical subgraphs
+            # (e.g. RMSNorm from different layers) produce the same cache key.
+            _normalize_node_names(submod)
 
             # Apply config patches before compilation
             import torch._inductor.config as inductor_config
