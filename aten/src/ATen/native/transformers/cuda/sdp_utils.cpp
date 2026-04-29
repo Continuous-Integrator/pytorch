@@ -483,7 +483,31 @@ bool check_all_tensors_on_device(sdp_params const& params, bool debug) {
   return true;
 }
 
+bool check_cudnn_dropout(sdp_params const& params, bool debug) {
+  if (params.dropout * 16.0 != std::floor(params.dropout * 16.0)) {
+    if (debug) {
+      TORCH_WARN("cuDNN dropout probability resolution is limited to 1/16."
+                 "Use a dropout probability that is a multiple of 1/16 to "
+                 "select the cuDNN backend");
+    }
+    return false;
+  }
+  return true;
+}
+
 bool check_cudnn_tensor_shapes(sdp_params const& params, bool debug) {
+  constexpr int64_t max_cudnn_dim_size = 65535;
+  const auto b = params.query.sym_size(0);
+  const auto h = params.query.sym_size(1);
+  if (b > max_cudnn_dim_size || h > max_cudnn_dim_size) {
+    if (debug) {
+      TORCH_WARN(
+          "cuDNN SDPA does not support batch size or num_heads greater than ",
+          max_cudnn_dim_size,
+          ". Got batch size: ", b, ", num_heads: ", h);
+    }
+    return false;
+  }
   const auto s_q = params.query.sym_size(2);
   const auto s_k = params.key.sym_size(2);
   const auto d_qk = params.query.sym_size(3);
@@ -758,7 +782,8 @@ bool can_use_cudnn_attention(const sdp_params& params, bool debug) {
           check_cudnn_deterministic,
           check_dtypes_low_precision,
           check_attn_mask_shape,
-          check_cudnn_hardware_support
+          check_cudnn_hardware_support,
+          check_cudnn_dropout
           );
   for (auto& constraint : general_constraints) {
     if (!constraint(params, debug)) {
@@ -924,8 +949,8 @@ bool can_use_mem_efficient_attention(sdp_params const& params, bool debug) {
   if (dprop->major >= 8) {
     return check_tensor_dtype(params, greater_than_or_equal_sm80_mem_efficient_dtypes, debug);
   }
-#endif
   return check_tensor_dtype(params, less_than_sm80_mem_efficient_dtypes, debug);
+#endif
 }
 
 SDPBackend select_sdp_backend(sdp_params const& kernel_params) {
@@ -1002,7 +1027,7 @@ bool check_for_seq_len_1_nested_tensor(sdp_params const& params, bool debug) {
   const auto nt_q_tensor_impl =
       at::native::get_nested_tensor_impl(params.query);
   const at::Tensor& sizes = nt_q_tensor_impl->get_nested_sizes();
-  auto* sizes_ptr = sizes.data_ptr<int64_t>();
+  const auto* sizes_ptr = sizes.const_data_ptr<int64_t>();
   const int64_t n_tensors = params.query.size(0);
   const int64_t size_tensor_stride = sizes.stride(0);
 

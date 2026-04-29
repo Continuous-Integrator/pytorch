@@ -9,7 +9,6 @@
 #include <cstring>
 
 PyObject* THPDtype_New(at::ScalarType scalar_type, const std::string& name) {
-  HANDLE_TH_ERRORS
   AT_ASSERT(name.length() < DTYPE_NAME_LEN);
   auto type = &THPDtypeType;
   auto self = THPObjectPtr{type->tp_alloc(type, 0)};
@@ -19,7 +18,6 @@ PyObject* THPDtype_New(at::ScalarType scalar_type, const std::string& name) {
   self_->scalar_type = scalar_type;
   std::strncpy(self_->name, name.c_str(), DTYPE_NAME_LEN);
   return self.release();
-  END_HANDLE_TH_ERRORS
 }
 
 static PyObject* THPDtype_is_floating_point(THPDtype* self, PyObject* noargs) {
@@ -61,7 +59,9 @@ static PyObject* THPDtype_is_signed(THPDtype* self, PyObject* noargs) {
 
 static PyObject* THPDtype_abbr(THPDtype* self, PyObject* noargs) {
   HANDLE_TH_ERRORS
-  return THPUtils_packString(c10::getScalarTypeAbbr(self->scalar_type));
+  auto abbr = c10::getScalarTypeAbbr(self->scalar_type);
+  return PyUnicode_FromStringAndSize(
+      abbr.data(), static_cast<Py_ssize_t>(abbr.size()));
   END_HANDLE_TH_ERRORS
 }
 

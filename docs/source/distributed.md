@@ -663,6 +663,10 @@ with torch.profiler():
 
 Please refer to the [profiler documentation](https://pytorch.org/docs/main/profiler.html) for a full overview of profiler features.
 
+```{eval-rst}
+.. autofunction:: torch.distributed.distributed_c10d.record_comm
+```
+
 ## Optimization with Symmetric Memory
 
 ### Copy Engine Collectives
@@ -768,7 +772,22 @@ multiple processes per node for distributed training.
 
 ```{eval-rst}
 .. automodule:: torch.distributed.launch
+```
 
+```{eval-rst}
+.. currentmodule:: torch.distributed.launch
+```
+
+```{eval-rst}
+.. autofunction:: launch
+```
+
+```{eval-rst}
+.. autofunction:: main
+```
+
+```{eval-rst}
+.. autofunction:: parse_args
 ```
 
 ## Spawn utility
@@ -1388,6 +1407,8 @@ If you are running single node training, it may be convenient to interactively b
 
 ```{eval-rst}
 .. py:module:: torch.distributed.launcher.api
+
+.. autofunction:: torch.distributed.launcher.api.launch_agent
 ```
 
 ```{eval-rst}
