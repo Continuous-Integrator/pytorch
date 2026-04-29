@@ -19,7 +19,7 @@ from gitutils import patterns_to_regex
 
 
 def is_wildcard_only(patterns: list[str]) -> bool:
-    return all(p in ("*", "**") for p in patterns)
+    return len(patterns) > 0 and all(p in ("*", "**") for p in patterns)
 
 
 KNOWN_BOTS = frozenset(

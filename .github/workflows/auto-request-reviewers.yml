@@ -7,7 +7,7 @@ name: Auto Request Reviewers
 
 on:
   pull_request_target:
-    types: [opened, synchronize]
+    types: [opened, ready_for_review]
   workflow_dispatch:
     inputs:
       pr:
@@ -21,7 +21,11 @@ concurrency:
 
 jobs:
   request-reviewers:
-    if: github.repository == 'pytorch/pytorch'
+    if: |
+      github.repository == 'pytorch/pytorch' && (
+        github.event_name == 'workflow_dispatch' ||
+        (!github.event.pull_request.draft && github.event.pull_request.base.ref == 'main')
+      )
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
