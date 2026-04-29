@@ -33,18 +33,32 @@ __all__ = ["regional_inductor"]
 # ``_inplace_c10d_rewrites``.
 
 
-def _resolve_process_group_name(gm: torch.fx.GraphModule, arg: torch.fx.Node) -> str:
-    """Get the ``group_name`` string for a c10d ProcessGroup ``get_attr`` arg,
-    unboxing the torchbind ScriptObject if needed.
+def _resolve_process_group_arg(
+    gm: torch.fx.GraphModule, arg: torch.fx.Node
+) -> str | torch.fx.Node:
+    """Resolve the ``group`` arg for a functional collective call by simulating
+    what would happen inside the functional collective wrapper if Dynamo had
+    traced it.
+
+    Delegates to ``torch.distributed._functional_collectives._group_or_group_name``
+    so this pass produces the same shape Dynamo's
+    ``CollectiveFunctionRewriteVariable`` -> ``all_reduce_inplace`` -> ``all_reduce``
+    chain would have produced, including any flag-driven behavior
+    (``compile_on_one_rank``, etc.). In the string-returning case we use the
+    string directly; in the PG-returning case we hand back the original
+    ``get_attr`` Node so the PG flows as a live graph value (the caller owns
+    any further unboxing / substitution before execution).
     """
     import torch.distributed as dist
+    from torch.distributed._functional_collectives import _group_or_group_name
 
     if arg.op != "get_attr":
         raise AssertionError(f"expected get_attr, got op={arg.op!r}")
     pg = getattr(gm, arg.target)  # type: ignore[arg-type]
     if isinstance(pg, torch.ScriptObject):
         pg = dist.ProcessGroup.unbox(pg)
-    return pg.group_name
+    resolved = _group_or_group_name(pg)
+    return arg if isinstance(resolved, dist.ProcessGroup) else resolved
 
 
 def _resolve_reduce_op_str(gm: torch.fx.GraphModule, arg: torch.fx.Node) -> str:
@@ -70,12 +84,16 @@ def _emit_collective_chain(
     output_t: torch.fx.Node | Any,
     functional_target: Any,
     extra_args: tuple[Any, ...],
-    group_name: str,
+    group_arg: str | torch.fx.Node,
     custom: Any,
 ) -> torch.fx.Node:
-    """Insert ``_c10d_functional.<op>(input, *extra_args, group_name)`` ->
+    """Insert ``_c10d_functional.<op>(input, *extra_args, group_arg)`` ->
     ``wait_tensor`` -> ``aten.copy_(output, wait)`` immediately before
     ``before`` and return the ``wait_tensor`` node.
+
+    ``group_arg`` is either a ``group_name`` string (deepcopy-safe form,
+    Dynamo's default) or a ``get_attr`` Node referencing the PG (mirrors
+    Dynamo under ``compile_on_one_rank``).
 
     Propagates ``output_t.meta["val"]`` onto every new node — every functional
     collective we rewrite to produces a tensor with the same shape/dtype as
@@ -87,7 +105,7 @@ def _emit_collective_chain(
     val = output_t.meta.get("val") if isinstance(output_t, torch.fx.Node) else None
     with gm.graph.inserting_before(before):
         ar = gm.graph.call_function(
-            functional_target, (input_t, *extra_args, group_name)
+            functional_target, (input_t, *extra_args, group_arg)
         )
         wait = gm.graph.call_function(func_ops.wait_tensor.default, (ar,))
         copy_ = gm.graph.call_function(torch.ops.aten.copy_.default, (output_t, wait))
@@ -176,12 +194,12 @@ def _rewrite_allreduce_(gm: torch.fx.GraphModule, node: torch.fx.Node) -> None:
         # downstream uses of ``getitem_<i>`` are redirected to ``wait_i``
     """
     tensors = node.args[0]
-    group_name = _resolve_process_group_name(gm, node.args[1])  # type: ignore[arg-type]
+    group_arg = _resolve_process_group_arg(gm, node.args[1])  # type: ignore[arg-type]
     op_str = _resolve_reduce_op_str(gm, node.args[2])  # type: ignore[arg-type]
     custom = node.meta.get("custom")
     target = torch.ops._c10d_functional.all_reduce.default
     waits = [
-        _emit_collective_chain(gm, node, t, t, target, (op_str,), group_name, custom)
+        _emit_collective_chain(gm, node, t, t, target, (op_str,), group_arg, custom)
         for t in tensors  # type: ignore[union-attr]
     ]
     _redirect_inplace_collective_uses(gm, node, waits)
@@ -194,7 +212,7 @@ def _inplace_c10d_rewrites() -> dict[Any, _InplaceCollectiveRewrite]:
     """Map inplace ``c10d.{op}_`` op targets to per-op rewrite functions.
 
     To support a new collective: write ``_rewrite_<op>_`` (typically a few
-    lines using ``_resolve_process_group_name`` / ``_resolve_reduce_op_str`` /
+    lines using ``_resolve_process_group_arg`` / ``_resolve_reduce_op_str`` /
     ``_emit_collective_chain`` / ``_redirect_inplace_collective_uses``), then
     register it here.
     """
@@ -531,6 +549,15 @@ def regional_inductor(
         # ``dist.all_reduce``) carry non-deepcopiable ProcessGroup torchbind
         # args; rewrite them to ``_c10d_functional`` form first so that
         # ``standalone_compile`` (which deepcopies the submodule) succeeds.
+        #
+        # Note: ``compile_on_one_rank=True`` produces the PG-passthrough form
+        # (``_c10d_functional.<op>(t, ..., <pg>)``), which Inductor's
+        # collective lowerings cannot currently realize (they expect a
+        # ``group_name`` string). The combination will fail downstream in
+        # Inductor with ``NotImplementedError: realize NYI on TorchBindObject``;
+        # this is a pre-existing Inductor limitation, not specific to this
+        # pass. Use ``compile_on_one_rank=False`` (the default) until
+        # Inductor's lowering gains support for the PG-passthrough form.
         gm = _functionalize_inplace_collectives(gm)
         gm = _create_inductor_marked_regions(gm)
         gm = _compile_inductor_marked_regions(gm)

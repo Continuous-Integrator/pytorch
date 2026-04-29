@@ -1,6 +1,6 @@
 ---
 name: extend-functionalize-collectives
-description: Add support for a new inplace c10d collective (e.g. broadcast_, _allgather_base_, _reduce_scatter_base_, allgather_, reduce_scatter_, alltoall_, alltoall_base_, reduce_, send, recv_) to the FX-level functionalize-collectives pass in torch/fx/passes/regional_inductor.py. Use when the user wants to extend regional_inductor to handle distributed ops beyond all_reduce, when make_fx-traced graphs containing dist.* APIs hit "Tried to deepcopy object __torch__.torch.classes.c10d.ProcessGroup" errors for ops other than allreduce_, or when the user mentions extending _functionalize_inplace_collectives, _inplace_c10d_rewrites, _emit_collective_chain, _resolve_process_group_name, _resolve_reduce_op_str, _redirect_inplace_collective_uses, or _rewrite_*_ helpers.
+description: Add support for a new inplace c10d collective (e.g. broadcast_, _allgather_base_, _reduce_scatter_base_, allgather_, reduce_scatter_, alltoall_, alltoall_base_, reduce_, send, recv_) to the FX-level functionalize-collectives pass in torch/fx/passes/regional_inductor.py. Use when the user wants to extend regional_inductor to handle distributed ops beyond all_reduce, when make_fx-traced graphs containing dist.* APIs hit "Tried to deepcopy object __torch__.torch.classes.c10d.ProcessGroup" errors for ops other than allreduce_, or when the user mentions extending _functionalize_inplace_collectives, _inplace_c10d_rewrites, _emit_collective_chain, _resolve_process_group_arg, _resolve_reduce_op_str, _redirect_inplace_collective_uses, or _rewrite_*_ helpers.
 ---
 
 # Extend functionalize-collectives pass
@@ -25,7 +25,7 @@ consumers like `standalone_compile` can deepcopy the GraphModule.
   an op other than `allreduce_`.
 - The user mentions any of the helpers: `_functionalize_inplace_collectives`,
   `_inplace_c10d_rewrites`, `_emit_collective_chain`,
-  `_resolve_process_group_name`, `_resolve_reduce_op_str`,
+  `_resolve_process_group_arg`, `_resolve_reduce_op_str`,
   `_redirect_inplace_collective_uses`, or wants to add a new
   `_rewrite_<op>_`.
 
@@ -40,7 +40,7 @@ _functionalize_inplace_collectives(gm) -> gm        # outer driver
     ├── _inplace_c10d_rewrites()                    # dispatch dict
     │
     ├── _rewrite_<op>_(gm, node)                    # per-op rewrite
-    │     ├── _resolve_process_group_name(gm, arg)  # PG  -> str
+    │     ├── _resolve_process_group_arg(gm, arg)  # PG  -> str
     │     ├── _resolve_reduce_op_str(gm, arg)       # ReduceOp -> "sum"/...
     │     ├── _emit_collective_chain(...)           # functional + wait + copy_
     │     └── _redirect_inplace_collective_uses(    # any (..., Work) schema
@@ -54,7 +54,7 @@ _functionalize_inplace_collectives(gm) -> gm        # outer driver
 
 Three things are shared across all rewrites:
 
-1. **Arg resolution.** `_resolve_process_group_name(gm, arg)` returns
+1. **Arg resolution.** `_resolve_process_group_arg(gm, arg)` returns
    `pg.group_name` (unboxes the torchbind ScriptObject if needed).
    `_resolve_reduce_op_str(gm, arg)` converts a `ReduceOp` ScriptObject (or
    enum) to `"sum"`/`"avg"`/etc.
@@ -127,7 +127,7 @@ def _rewrite_broadcast_(gm: torch.fx.GraphModule, node: torch.fx.Node) -> None:
     -> (Tensor[], Work)
     """
     tensors = node.args[0]
-    group_name = _resolve_process_group_name(gm, node.args[1])
+    group_name = _resolve_process_group_arg(gm, node.args[1])
     root_rank = node.args[2]
     custom = node.meta.get("custom")
     target = torch.ops._c10d_functional.broadcast.default
@@ -150,7 +150,7 @@ def _rewrite__allgather_base_(gm: torch.fx.GraphModule, node: torch.fx.Node) -> 
 
     output_t, input_t = node.args[0], node.args[1]
     pg_arg = node.args[2]
-    group_name = _resolve_process_group_name(gm, pg_arg)
+    group_name = _resolve_process_group_arg(gm, pg_arg)
     # Need pg.size() too — re-resolve to grab the unboxed Python wrapper.
     pg = getattr(gm, pg_arg.target) if isinstance(pg_arg, torch.fx.Node) else pg_arg
     if isinstance(pg, torch.ScriptObject):
@@ -242,7 +242,7 @@ lintrunner -a torch/fx/passes/regional_inductor.py test/distributed/test_regiona
 ## Common pitfalls
 
 - **Reading `pg.group_name` on the raw ScriptObject fails.** The torchbind
-  `ProcessGroup` exposes only `__init__`. Use `_resolve_process_group_name`
+  `ProcessGroup` exposes only `__init__`. Use `_resolve_process_group_arg`
   (or `dist.ProcessGroup.unbox(pg)` if you need other PG state like
   `pg.size()`).
 - **Treating `dist.ReduceOp.SUM` and the torchbind `ReduceOp` as
