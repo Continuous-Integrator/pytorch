@@ -20,8 +20,8 @@ from torch.testing._internal.common_device_type import (
     instantiate_device_type_tests,
 )
 from torch.testing._internal.common_quantization import (
-    skipIfNoONEDNN,
     _static_reference_quantized_linear_module,
+    skipIfNoONEDNN,
 )
 from torch.testing._internal.common_quantized import (
     _calculate_dynamic_per_channel_qparams,
@@ -3190,7 +3190,7 @@ class TestSelectAlgorithm(BaseTestSelectAlgorithm):
             self.assertEqual(result.shape, (batch_size, out_features))
             self.assertEqual(result, expected, atol=atol, rtol=rtol)
 
-        if not torch.version.hip:  # autotuning is not guaranteed to run on ROCm
+        if not torch.version.hip:
             self.assertEqual(counters["inductor"]["select_algorithm_autotune"], 1)
 
 
@@ -3264,7 +3264,166 @@ class TestSelectAlgorithm(BaseTestSelectAlgorithm):
             self.assertEqual(result.shape, (batch_size, out_features))
             self.assertEqual(result, expected, atol=atol, rtol=rtol)
 
-        if not torch.version.hip:  # autotuning is not guaranteed to run on ROCm
+        if not torch.version.hip:
+            self.assertEqual(counters["inductor"]["select_algorithm_autotune"], 1)
+
+    @skipIfNoONEDNN
+    @unittest.skipIf(not TEST_MKL, "Test requires MKL")
+    @unittest.skipIf(not torch._C._has_mkldnn, "MKLDNN is not enabled")
+    @unittest.skipIf(IS_WINDOWS, "Not supported on Windows")
+    @inductor_config.patch({"freezing": True})
+    @patches
+    @torch.no_grad
+    def test_qlinear_unary_with_dynamic_x_scale(self):
+        """
+        Test that qlinear_pointwise (unary) can enter GEMM template when x_scale
+        is dynamically computed (ReinterpretView) at runtime.
+        This simulates TorchAO's Int8DynamicActivationInt8WeightConfig where
+        x_scale is computed via choose_qparams or similar dynamic operations.
+        """
+        torch._dynamo.reset()
+
+        class DynamicQLinearUnaryModule(torch.nn.Module):
+            def __init__(self, N, K):
+                super().__init__()
+                qw = torch.randint(-128, 127, (N, K), dtype=torch.int8)
+                self.qw_packed = torch.ops.onednn.qlinear_prepack(qw, None)
+                self.w_scales = torch.full((N,), 0.05)
+                self.w_zps = torch.zeros(N, dtype=torch.int32)
+                self.bias = torch.randn(N, dtype=torch.float32)
+                self.output_scale = 1.0
+                self.output_zp = 0
+
+            def forward(self, x):
+                # Dynamically compute x_scale from input (simulates choose_qparams)
+                x_max = torch.max(torch.abs(x.to(torch.float32)))
+                x_scale = x_max / 127.0
+                # Reshape to create a ReinterpretView
+                x_scale = x_scale.reshape(1, 1).squeeze()
+
+                x_zp = torch.zeros([], dtype=torch.int32)
+
+                # Quantize input
+                x_clamped = torch.clamp(
+                    torch.round(x.to(torch.float32) / x_scale), -128, 127
+                )
+                qx = x_clamped.to(torch.int8)
+
+                return torch.ops.onednn.qlinear_pointwise.tensor(
+                    qx,
+                    x_scale,
+                    x_zp,
+                    self.qw_packed,
+                    self.w_scales,
+                    self.w_zps,
+                    self.bias,
+                    self.output_scale,
+                    self.output_zp,
+                    torch.float32,
+                    "none",
+                    [],
+                    "",
+                )
+
+        batch_size, in_features, out_features = 32, 64, 32
+        x = torch.randn(batch_size, in_features, dtype=torch.float32)
+        mod = DynamicQLinearUnaryModule(out_features, in_features).eval()
+
+        # Test eager mode and compiled mode with numerical correctness check
+        with verify(torch.float32) as (atol, rtol):
+            expected = mod(x)
+            counters.clear()
+            compiled_mod = torch.compile(mod)
+            result = compiled_mod(x)
+
+            self.assertIsNotNone(result)
+            self.assertEqual(result.shape, (batch_size, out_features))
+            self.assertEqual(result, expected, atol=atol, rtol=rtol)
+
+        # Should enter GEMM template with dynamically computed x_scale
+        if not torch.version.hip:
+            self.assertEqual(counters["inductor"]["select_algorithm_autotune"], 1)
+
+    @skipIfNoONEDNN
+    @unittest.skipIf(not TEST_MKL, "Test requires MKL")
+    @unittest.skipIf(not torch._C._has_mkldnn, "MKLDNN is not enabled")
+    @unittest.skipIf(IS_WINDOWS, "Not supported on Windows")
+    @inductor_config.patch({"freezing": True})
+    @patches
+    @torch.no_grad
+    def test_qlinear_binary_with_dynamic_x_scale(self):
+        """
+        Test that qlinear_pointwise.binary can enter GEMM template when x_scale
+        is dynamically computed (ReinterpretView) at runtime.
+        This simulates TorchAO's Int8DynamicActivationInt8WeightConfig for binary ops.
+        """
+        torch._dynamo.reset()
+
+        class DynamicQLinearBinaryModule(torch.nn.Module):
+            def __init__(self, N, K):
+                super().__init__()
+                qw = torch.randint(-128, 127, (N, K), dtype=torch.int8)
+                self.qw_packed = torch.ops.onednn.qlinear_prepack(qw, None)
+                self.w_scales = torch.full((N,), 0.05)
+                self.w_zps = torch.zeros(N, dtype=torch.int32)
+                self.bias = torch.randn(N, dtype=torch.float32)
+                self.output_scale = 1.0
+                self.output_zp = 0
+
+            def forward(self, x, other):
+                # Dynamically compute x_scale from input (simulates choose_qparams)
+                x_max = torch.max(torch.abs(x.to(torch.float32)))
+                x_scale = x_max / 127.0
+                # Reshape to create a ReinterpretView
+                x_scale = x_scale.reshape(1, 1).squeeze()
+
+                x_zp = torch.zeros([], dtype=torch.int32)
+
+                # Quantize input
+                x_clamped = torch.clamp(
+                    torch.round(x.to(torch.float32) / x_scale), -128, 127
+                )
+                qx = x_clamped.to(torch.int8)
+
+                return torch.ops.onednn.qlinear_pointwise.binary_tensor(
+                    qx,
+                    x_scale,
+                    x_zp,
+                    self.qw_packed,
+                    self.w_scales,
+                    self.w_zps,
+                    other,
+                    self.bias,
+                    self.output_scale,
+                    self.output_zp,
+                    torch.float32,
+                    1.0,
+                    0,
+                    "add",
+                    1.0,
+                    "none",
+                    [],
+                    "",
+                )
+
+        batch_size, in_features, out_features = 32, 64, 32
+        x = torch.randn(batch_size, in_features, dtype=torch.float32)
+        other = torch.randn(batch_size, out_features, dtype=torch.float32)
+        mod = DynamicQLinearBinaryModule(out_features, in_features).eval()
+
+        # Test eager mode and compiled mode with numerical correctness check
+        with verify(torch.float32) as (atol, rtol):
+            expected = mod(x, other)
+            counters.clear()
+            compiled_mod = torch.compile(mod)
+            result = compiled_mod(x, other)
+
+            self.assertIsNotNone(result)
+            self.assertEqual(result.shape, (batch_size, out_features))
+            self.assertEqual(result, expected, atol=atol, rtol=rtol)
+
+        # Should enter GEMM template with dynamically computed x_scale
+        if not torch.version.hip:
             self.assertEqual(counters["inductor"]["select_algorithm_autotune"], 1)
 
 

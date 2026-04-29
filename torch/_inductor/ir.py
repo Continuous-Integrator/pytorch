@@ -3111,6 +3111,7 @@ class ExpandView(BaseView):
     def get_stride(self) -> Sequence[Expr]:
         # ExpandView uses reindexing; return contiguous strides for the expanded size
         from torch._inductor.ir import FlexibleLayout
+
         return FlexibleLayout.contiguous_strides(self.size)
 
     def make_reindexer(
@@ -3171,6 +3172,7 @@ class PermuteView(BaseView):
     def get_stride(self) -> Sequence[Expr]:
         # PermuteView uses reindexing; return contiguous strides for the permuted size
         from torch._inductor.ir import FlexibleLayout
+
         return FlexibleLayout.contiguous_strides(self.get_size())
 
     def make_reindexer(
@@ -3193,6 +3195,7 @@ class SqueezeView(BaseView):
     def get_stride(self) -> Sequence[Expr]:
         # SqueezeView uses reindexing; return contiguous strides for the squeezed size
         from torch._inductor.ir import FlexibleLayout
+
         return FlexibleLayout.contiguous_strides(self.get_size())
 
     @classmethod
@@ -3302,6 +3305,7 @@ class GenericView(BaseView):
         # GenericView uses reindexing rather than strides
         # Return contiguous strides based on the view's size
         from torch._inductor.ir import FlexibleLayout
+
         return FlexibleLayout.contiguous_strides(self.size)
 
 
