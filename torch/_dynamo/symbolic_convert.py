@@ -181,6 +181,7 @@ from .variables.misc import (
     UnknownVariable,
 )
 from .variables.nn_module import NNModuleVariable, UnspecializedNNModuleVariable
+from .variables.object_protocol import generic_getiter
 from .variables.sets import SetVariable
 from .variables.streams import SymbolicStreamState
 from .variables.tensor import supported_comparison_ops, SymNodeVariable, TensorVariable
@@ -3779,7 +3780,8 @@ class InstructionTranslatorBase(
         prefix = inst.argval & 0xFF  # low byte
         suffix = inst.argval >> 8  # high byte
         seq = self.pop()
-        if vals := unpack_iterable(self, seq):
+        if iterator := generic_getiter(self, seq):  # type: ignore[bad-argument-type]
+            vals = unpack_iterable(self, iterator)
             assert len(vals) >= prefix + suffix
             vals_prefix = vals[:prefix]
             vals_list = vals[prefix : len(vals) - suffix]
