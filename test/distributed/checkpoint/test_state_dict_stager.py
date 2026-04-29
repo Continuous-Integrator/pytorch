@@ -27,9 +27,8 @@ from torch.testing._internal.common_distributed import (
     requires_accelerator_dist_backend,
     skip_if_lt_x_gpu,
 )
-from torch.testing._internal.common_utils import run_tests, TestCase
+from torch.testing._internal.common_utils import ACCELERATOR_TYPE, run_tests, TestCase
 from torch.testing._internal.distributed._tensor.common_dtensor import (
-    ACCELERATOR_TYPE,
     DTensorTestBase,
     with_comms,
 )

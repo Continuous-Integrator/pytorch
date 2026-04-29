@@ -7,9 +7,8 @@ from torch.distributed.fsdp._shard_utils import (
     _create_chunk_sharded_tensor,
 )
 from torch.testing._internal.common_fsdp import FSDPTest
-from torch.testing._internal.common_utils import run_tests
+from torch.testing._internal.common_utils import ACCELERATOR_TYPE, run_tests
 from torch.testing._internal.distributed._tensor.common_dtensor import (
-    ACCELERATOR_TYPE,
     DTensorTestBase,
     skip_if_lt_x_gpu,
     with_comms,

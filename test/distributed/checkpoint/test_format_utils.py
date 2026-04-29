@@ -14,9 +14,8 @@ from torch.distributed.checkpoint.format_utils import (
 from torch.distributed.device_mesh import init_device_mesh
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 from torch.testing._internal.common_distributed import skip_if_lt_x_gpu
-from torch.testing._internal.common_utils import run_tests
+from torch.testing._internal.common_utils import ACCELERATOR_TYPE, run_tests
 from torch.testing._internal.distributed._tensor.common_dtensor import (
-    ACCELERATOR_TYPE,
     DTensorTestBase,
     with_comms,
 )

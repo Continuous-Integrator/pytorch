@@ -23,9 +23,8 @@ from torch.testing._internal.common_distributed import (
     requires_accelerator_dist_backend,
     skip_if_lt_x_gpu,
 )
-from torch.testing._internal.common_utils import run_tests, TestCase
+from torch.testing._internal.common_utils import ACCELERATOR_TYPE, run_tests, TestCase
 from torch.testing._internal.distributed._shard.sharded_tensor import (
-    ACCELERATOR_TYPE,
     ShardedTensorTestBase,
     with_comms,
 )
