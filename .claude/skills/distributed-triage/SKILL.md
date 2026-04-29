@@ -75,7 +75,9 @@ Read the issue title, description, and comments. Determine whether the issue is 
 
 ### 2) Route to Distributed Sub-Oncall
 
-Apply exactly ONE sub-oncall label based on the routing rules in [distributed-rubric.md](distributed-rubric.md):
+Each issue carries **exactly ONE** sub-oncall label. If the issue already has one of the three sub-oncall labels (`oncall: distributed parallelisms`, `oncall: distributed infra`, or `oncall: distributed checkpointing`), keep it as-is — do NOT add a second sub-oncall, even if your own classification would have picked a different one. Use the existing sub-oncall to decide the next step (continue to Step 3 if it's `oncall: distributed parallelisms`; otherwise add `ptd-bot-triaged` and STOP per the rules below).
+
+If no sub-oncall is present, apply exactly one based on the routing rules in [distributed-rubric.md](distributed-rubric.md):
 
 | Sub-Oncall Label | When to Apply |
 |-----------------|---------------|
