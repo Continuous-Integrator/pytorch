@@ -13186,6 +13186,16 @@ class TestConsistency(TestCaseMPS):
             # Broadcast
             self.assertEqual(op(x, y[0]), op(x.to("mps"), y.to("mps")[0]).cpu())
 
+    def test_mm_stride_zero(self):
+        # Regression test for https://github.com/pytorch/pytorch/issues/180201
+        # MPSGraph matrixMultiplication produces incorrect results with stride-0
+        # inputs on macOS < 26.4 (only every 16th row is correct).
+        expanded = torch.ones(1, 1, device="mps").expand(64, 1)
+        w = torch.randn(1, 16, device="mps")
+        result = expanded.mm(w)
+        expected = torch.ones(64, 1, device="mps").mm(w)
+        self.assertEqual(result, expected)
+
 
 class TestErrorInputs(TestCase):
     _ignore_not_implemented_error = True
@@ -13580,6 +13590,40 @@ class TestMetalLibrary(TestCaseMPS):
         for i in [0, 5, 6, 7, 63, 64]:
             self.assertEqual(out[i], 0)
 
+    def test_load_precompiled_metallib(self):
+        # Load a checked-in precompiled metallib containing square and inc_inplace kernels
+        metallib_path = os.path.join(os.path.dirname(__file__), "metal", "test_kernels.metallib")
+        with open(metallib_path, "rb") as f:
+            lib = torch.mps.load_metallib(f.read())
+
+        # Verify kernel discovery
+        kernel_names = set(dir(lib))
+        self.assertIn("square", kernel_names)
+        self.assertIn("inc_inplace", kernel_names)
+
+        # Test square kernel: [1, 2, 3, 4] -> [1, 4, 9, 16]
+        x = torch.tensor([1.0, 2.0, 3.0, 4.0], device="mps")
+        lib.square(x)
+        self.assertEqual(x, torch.tensor([1.0, 4.0, 9.0, 16.0], device="mps"))
+
+        # Test inc_inplace kernel: [1, 4, 9, 16] -> [2, 5, 10, 17]
+        lib.inc_inplace(x)
+        self.assertEqual(x, torch.tensor([2.0, 5.0, 10.0, 17.0], device="mps"))
+
+    def test_load_precompiled_metallib_from_path(self):
+        # Load metallib directly from file path (uses newLibraryWithURL:)
+        metallib_path = os.path.join(os.path.dirname(__file__), "metal", "test_kernels.metallib")
+        lib = torch.mps.load_metallib(metallib_path)
+
+        # Verify kernel discovery
+        kernel_names = set(dir(lib))
+        self.assertIn("square", kernel_names)
+        self.assertIn("inc_inplace", kernel_names)
+
+        # Test square kernel
+        x = torch.tensor([1.0, 2.0, 3.0, 4.0], device="mps")
+        lib.square(x)
+        self.assertEqual(x, torch.tensor([1.0, 4.0, 9.0, 16.0], device="mps"))
 
 
 # TODO: Actually instantiate that test for the "mps" device to better reflect what it is doing.
