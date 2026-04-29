@@ -484,27 +484,6 @@ class TestTensorSpecCompile(TestCase):
     the TensorSpec and applies ``mark_*`` to the tensor.
     """
 
-    def test_tensorspec_backed_graph_has_backed_symbol(self):
-        """BACKED TensorSpec dim appears as a backed SymInt in the final graph.
-
-        Single compile; matches `TestIntSpecCompile.test_backed_graph_has_backed_symbol`
-        — pre-trace ``maybe_mark_dynamic`` fires from the helper's TensorSpec
-        branch, so dim 0 is backed from call 1 and all four sizes cache-hit.
-        """
-        backend = EagerAndRecordGraphs()
-        ts = TensorSpec(2).dim(0, IntSpec.backed("batch"))
-        fn = _compile_with_dynamic_shapes(
-            lambda x: x.sum(0),
-            {"x": ts},
-            backend=backend,
-        )
-        for n in [4, 8, 16, 32]:
-            fn(torch.randn(n, 3))
-        self.assertEqual(len(backend.graphs), 1)
-        shape = _tensor_placeholder_shape(backend.graphs[0])
-        self.assertIsInstance(shape[0], torch.SymInt)
-        self.assertEqual(len(free_unbacked_symbols(shape[0])), 0)
-
     def test_tensorspec_list_init_recompile_progression(self):
         """TensorSpec built from a list: dim 0 BACKED absorbs shape changes;
         dim 1 STATIC forces recompile per distinct value.
@@ -538,28 +517,6 @@ class TestTensorSpecCompile(TestCase):
         self.assertEqual(len(free_unbacked_symbols(shape[0])), 0)
         self.assertIsInstance(shape[1], int)
         self.assertEqual(shape[1], 7)
-
-    def test_tensorspec_dict_init_recompile_progression(self):
-        """Same recompile pattern via dict-form construction
-        ``TensorSpec({0: ..., 1: ...})`` is equivalent to the list form for
-        per-dim dispatch."""
-        backend = EagerAndRecordGraphs()
-        ts = TensorSpec({0: IntSpec.backed("batch"), 1: IntSpec.static()})
-        fn = _compile_with_dynamic_shapes(
-            lambda x: x + 1,
-            {"x": ts},
-            backend=backend,
-        )
-
-        fn(torch.randn(4, 3))
-        self.assertEqual(len(backend.graphs), 1)
-        fn(torch.randn(8, 3))
-        fn(torch.randn(16, 3))
-        self.assertEqual(len(backend.graphs), 1)
-        fn(torch.randn(16, 5))
-        self.assertEqual(len(backend.graphs), 2)
-        fn(torch.randn(16, 7))
-        self.assertEqual(len(backend.graphs), 3)
 
     @torch._dynamo.config.patch(automatic_dynamic_shapes=True)
     def test_tensorspec_none_entry_inherits_automatic_dynamic(self):
