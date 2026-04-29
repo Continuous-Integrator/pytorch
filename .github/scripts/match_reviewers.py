@@ -4,14 +4,19 @@
 Reuses patterns_to_regex from gitutils.py to ensure matching semantics are
 identical to trymerge.
 
-Usage:
-    python match_reviewers.py --merge-rules PATH --changed-files f1 f2 ... --pr-author LOGIN
+Inputs (via env vars when run from CI):
+    CHANGED_FILES: JSON array of file paths
+    PR_AUTHOR:     PR author login
+
+Output:
+    Writes `result=<json>` to $GITHUB_OUTPUT if set, else stdout.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -70,13 +75,6 @@ def match_reviewers(
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--merge-rules", required=True, type=Path)
-    parser.add_argument("--changed-files", nargs="*", default=[])
-    parser.add_argument(
-        "--changed-files-stdin",
-        action="store_true",
-        help="Read changed files as JSON array from stdin",
-    )
-    parser.add_argument("--pr-author", required=True)
     args = parser.parse_args()
 
     import yaml
@@ -84,15 +82,18 @@ def main() -> None:
     with open(args.merge_rules) as f:
         rules = yaml.safe_load(f)
 
-    if args.changed_files_stdin:
-        changed_files = json.load(sys.stdin)
+    changed_files = json.loads(os.environ["CHANGED_FILES"])
+    pr_author = os.environ["PR_AUTHOR"]
+
+    reviewers, teams = match_reviewers(rules, changed_files, pr_author)
+    result_json = json.dumps({"reviewers": reviewers, "teams": teams})
+
+    github_output = os.environ.get("GITHUB_OUTPUT")
+    if github_output:
+        with open(github_output, "a") as f:
+            f.write(f"result={result_json}\n")
     else:
-        changed_files = args.changed_files
-
-    reviewers, teams = match_reviewers(rules, changed_files, args.pr_author)
-
-    result = {"reviewers": reviewers, "teams": teams}
-    json.dump(result, sys.stdout)
+        sys.stdout.write(result_json)
 
 
 if __name__ == "__main__":

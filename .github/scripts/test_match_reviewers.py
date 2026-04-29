@@ -53,7 +53,8 @@ class TestIsWildcardOnly(TestCase):
         self.assertFalse(is_wildcard_only(["torch/onnx/**"]))
 
     def test_empty(self) -> None:
-        self.assertTrue(is_wildcard_only([]))
+        # Empty pattern list matches nothing — not a superuser/wildcard rule.
+        self.assertFalse(is_wildcard_only([]))
 
 
 class TestIsBot(TestCase):
