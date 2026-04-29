@@ -1,6 +1,7 @@
 import contextlib
 import functools
 import logging
+import operator
 from collections.abc import Callable, Iterator, Mapping
 from typing import Any, ParamSpec, TypeVar
 
@@ -15,6 +16,220 @@ from torch.fx._compatibility import compatibility
 logger = logging.getLogger(__name__)
 
 __all__ = ["regional_inductor"]
+
+
+# --- functionalize-collectives pass --------------------------------------
+# Shared scaffolding for rewriting raw ``c10d.{op}_`` inplace ops produced by
+# ``make_fx`` into ``_c10d_functional.{op}`` + ``wait_tensor`` + ``aten.copy_``
+# form. The structure separates concerns:
+#   * Arg resolution (PG, ReduceOp) lives in ``_resolve_*``.
+#   * The functional + wait + copy_ chain construction lives in
+#     ``_emit_collective_chain`` (used by every per-op rewrite).
+#   * Use redirection lives in ``_redirect_*_work_uses`` keyed by output schema.
+#   * Per-op rewrites (``_rewrite_<op>_``) glue these together.
+#   * The driver ``_functionalize_inplace_collectives`` walks the graph,
+#     dispatches by target, and runs final cleanup.
+# Adding a new op = one ``_rewrite_<op>_`` + one entry in
+# ``_inplace_c10d_rewrites``.
+
+
+def _resolve_torchbind_arg(gm: torch.fx.GraphModule, arg: Any) -> Any:
+    """Resolve a ``get_attr`` FX node to its live attribute (typically a
+    torchbind ScriptObject like ProcessGroup or ReduceOp); pass other arg
+    forms through unchanged.
+    """
+    if isinstance(arg, torch.fx.Node) and arg.op == "get_attr":
+        return getattr(gm, arg.target)  # type: ignore[arg-type]
+    return arg
+
+
+def _resolve_process_group_name(gm: torch.fx.GraphModule, arg: Any) -> str:
+    """Get the ``group_name`` string for a c10d ProcessGroup arg, unboxing
+    the torchbind ScriptObject if needed.
+    """
+    import torch.distributed as dist
+
+    pg = _resolve_torchbind_arg(gm, arg)
+    if isinstance(pg, torch.ScriptObject):
+        pg = dist.ProcessGroup.unbox(pg)
+    return pg.group_name
+
+
+def _resolve_reduce_op_str(gm: torch.fx.GraphModule, arg: Any) -> str:
+    """Get the lower-case op string ("sum"/"avg"/...) for a c10d ReduceOp arg,
+    converting from the torchbind ScriptObject form if needed.
+    """
+    import torch.distributed as dist
+    from torch.distributed._functional_collectives import REDUCE_OP_TO_STR
+
+    reduce_op = _resolve_torchbind_arg(gm, arg)
+    if isinstance(reduce_op, torch.ScriptObject):
+        reduce_op = dist.ReduceOp.RedOpType(reduce_op.op())  # type: ignore[attr-defined]
+    return REDUCE_OP_TO_STR[reduce_op]
+
+
+def _emit_collective_chain(
+    gm: torch.fx.GraphModule,
+    before: torch.fx.Node,
+    input_t: torch.fx.Node | Any,
+    output_t: torch.fx.Node | Any,
+    functional_target: Any,
+    extra_args: tuple[Any, ...],
+    group_name: str,
+    custom: Any,
+) -> torch.fx.Node:
+    """Insert ``_c10d_functional.<op>(input, *extra_args, group_name)`` ->
+    ``wait_tensor`` -> ``aten.copy_(output, wait)`` immediately before
+    ``before`` and return the ``wait_tensor`` node.
+
+    Propagates ``output_t.meta["val"]`` onto every new node — every functional
+    collective we rewrite to produces a tensor with the same shape/dtype as
+    ``output_t``, and ``aten.copy_`` returns ``output_t``. Also carries the
+    rewritten node's ``custom`` annotation forward so region scooping continues
+    to work.
+    """
+    func_ops = torch.ops._c10d_functional
+    val = output_t.meta.get("val") if isinstance(output_t, torch.fx.Node) else None
+    with gm.graph.inserting_before(before):
+        ar = gm.graph.call_function(
+            functional_target, (input_t, *extra_args, group_name)
+        )
+        wait = gm.graph.call_function(func_ops.wait_tensor.default, (ar,))
+        copy_ = gm.graph.call_function(torch.ops.aten.copy_.default, (output_t, wait))
+        if val is not None:
+            ar.meta["val"] = wait.meta["val"] = copy_.meta["val"] = val
+        if custom is not None:
+            ar.meta["custom"] = wait.meta["custom"] = copy_.meta["custom"] = custom
+    return wait
+
+
+def _redirect_tensors_work_uses(
+    gm: torch.fx.GraphModule,
+    node: torch.fx.Node,
+    wait_nodes: list[torch.fx.Node],
+) -> None:
+    """Re-route uses for output schema ``(Tensor[] tensors, Work)`` —
+    e.g. ``allreduce_``, ``broadcast_``, ``reduce_scatter_``, ``alltoall_``.
+
+    ``make_fx`` lowers each tensor consumer into ``getitem(node, 0)[i]`` and
+    the work handle into ``getitem(node, 1)``. Replace the tensor uses with
+    ``wait_nodes[i]`` and erase both getitem chains.
+    """
+    for use in list(node.users):
+        if use.op != "call_function" or use.target is not operator.getitem:
+            continue
+        if use.args[1] == 0:
+            for sub_use in list(use.users):
+                if sub_use.op == "call_function" and sub_use.target is operator.getitem:
+                    sub_use.replace_all_uses_with(wait_nodes[sub_use.args[1]])  # type: ignore[index]
+                    gm.graph.erase_node(sub_use)
+            gm.graph.erase_node(use)
+        elif use.args[1] == 1 and not use.users:
+            gm.graph.erase_node(use)
+
+
+def _redirect_tensor_work_uses(
+    gm: torch.fx.GraphModule,
+    node: torch.fx.Node,
+    wait_node: torch.fx.Node,
+) -> None:
+    """Re-route uses for output schema ``(Tensor, Work)`` —
+    e.g. ``_allgather_base_``, ``_reduce_scatter_base_``.
+
+    Tensor consumer is ``getitem(node, 0)``; work handle is
+    ``getitem(node, 1)``. Replace the tensor with ``wait_node`` and erase both
+    getitems.
+    """
+    for use in list(node.users):
+        if use.op != "call_function" or use.target is not operator.getitem:
+            continue
+        if use.args[1] == 0:
+            use.replace_all_uses_with(wait_node)
+            gm.graph.erase_node(use)
+        elif use.args[1] == 1 and not use.users:
+            gm.graph.erase_node(use)
+
+
+def _rewrite_allreduce_(gm: torch.fx.GraphModule, node: torch.fx.Node) -> None:
+    """Schema: ``c10d::allreduce_(Tensor[] tensors, ProcessGroup pg,
+    ReduceOp op, Tensor? sparse_indices, bool async_op, int timeout=-1)
+    -> (Tensor[], Work)``.
+    """
+    tensors = node.args[0]
+    group_name = _resolve_process_group_name(gm, node.args[1])
+    op_str = _resolve_reduce_op_str(gm, node.args[2])
+    custom = node.meta.get("custom")
+    target = torch.ops._c10d_functional.all_reduce.default
+    waits = [
+        _emit_collective_chain(gm, node, t, t, target, (op_str,), group_name, custom)
+        for t in tensors  # type: ignore[union-attr]
+    ]
+    _redirect_tensors_work_uses(gm, node, waits)
+
+
+_InplaceCollectiveRewrite = Callable[[torch.fx.GraphModule, torch.fx.Node], None]
+
+
+def _inplace_c10d_rewrites() -> dict[Any, _InplaceCollectiveRewrite]:
+    """Map inplace ``c10d.{op}_`` op targets to per-op rewrite functions.
+
+    To support a new collective: write ``_rewrite_<op>_`` (typically a few
+    lines using ``_resolve_process_group_name`` / ``_resolve_reduce_op_str`` /
+    ``_emit_collective_chain`` and a ``_redirect_*_work_uses`` matching the
+    output schema), then register it here.
+    """
+    if not torch.distributed.is_available():
+        return {}
+    return {
+        torch.ops.c10d.allreduce_.default: _rewrite_allreduce_,
+    }
+
+
+def _functionalize_inplace_collectives(gm: torch.fx.GraphModule) -> None:
+    """Rewrite raw ``torch.ops.c10d.{op}_`` inplace calls in ``gm`` into
+    ``_c10d_functional.{op}`` + ``wait_tensor`` + ``aten.copy_`` form, mirroring
+    how Dynamo rewrites ``torch.distributed.*`` APIs at trace time.
+
+    ``make_fx`` traces ``dist.*`` collectives as opaque ``c10d.{op}_`` calls
+    that carry a ProcessGroup torchbind argument. Downstream consumers like
+    ``regional_inductor`` -> ``standalone_compile`` deepcopy the graph and fail
+    on the non-deepcopiable ProcessGroup. After this pass the graph carries
+    only ``_c10d_functional`` ops with string group names, matching the output
+    of Dynamo capture.
+    """
+    rewrites = _inplace_c10d_rewrites()
+    if not rewrites:
+        return
+
+    found = False
+    for node in list(gm.graph.nodes):
+        if node.op != "call_function":
+            continue
+        rewrite = rewrites.get(node.target)
+        if rewrite is None:
+            continue
+        rewrite(gm, node)
+        # ``eliminate_dead_code`` keeps inplace c10d ops alive (they are
+        # impure), so erase the rewritten node explicitly.
+        gm.graph.erase_node(node)
+        found = True
+
+    if not found:
+        return
+
+    # Strip orphan ``get_attr`` nodes (typically torchbind ProcessGroup /
+    # ReduceOp attrs) and their backing module attributes so the graph is
+    # deepcopy-safe for downstream consumers like ``standalone_compile``.
+    gm.graph.eliminate_dead_code()
+    kept = {n.target for n in gm.graph.find_nodes(op="get_attr")}
+    for attr in list(gm.__dict__):
+        if (
+            attr.startswith("_torchbind_obj")
+            and attr not in kept
+            and isinstance(getattr(gm, attr, None), torch.ScriptObject)
+        ):
+            delattr(gm, attr)
+    gm.recompile()
 
 
 # standalone_inductor returns a callable class object - this does not sit well
@@ -290,6 +505,11 @@ def regional_inductor(
     # metadata and cause issues
 
     with torch.fx.traceback.preserve_node_meta(enable=False):
+        # Inplace c10d collectives (e.g. produced by ``make_fx`` over
+        # ``dist.all_reduce``) carry non-deepcopiable ProcessGroup torchbind
+        # args; rewrite them to ``_c10d_functional`` form first so that
+        # ``standalone_compile`` (which deepcopies the submodule) succeeds.
+        _functionalize_inplace_collectives(gm)
         gm = _create_inductor_marked_regions(gm)
         gm = _compile_inductor_marked_regions(gm)
         if torch._functorch.config.force_autograd_cache:
