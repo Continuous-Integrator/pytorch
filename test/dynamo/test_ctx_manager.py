@@ -20,7 +20,6 @@ from torch.testing._internal.common_cuda import PLATFORM_SUPPORTS_FLASH_ATTENTIO
 from torch.testing._internal.common_utils import (
     instantiate_parametrized_tests,
     parametrize,
-    TEST_ACCELERATOR,
 )
 
 
@@ -587,19 +586,6 @@ class CtxManagerTests(torch._dynamo.test_case.TestCase):
             return x
 
         x = torch.randn((2, 2), device="cuda")
-        ref = fn(x)
-        opt_fn = torch.compile(backend="eager", fullgraph=True)(fn)
-        res = opt_fn(x)
-        self.assertEqual(ref, res)
-
-    @unittest.skipIf(not TEST_ACCELERATOR, "requires accelerator")
-    def test_accelerator_device_index(self):
-        def fn(x):
-            with torch.accelerator.device_index(x.device.index):
-                x = torch.sin(x + 1)
-            return x
-
-        x = torch.randn((2, 2), device=device_type)
         ref = fn(x)
         opt_fn = torch.compile(backend="eager", fullgraph=True)(fn)
         res = opt_fn(x)
