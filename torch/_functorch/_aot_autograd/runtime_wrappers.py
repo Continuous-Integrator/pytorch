@@ -1016,7 +1016,7 @@ class AOTDispatchSubclassWrapper(CompilerWrapper):
         *,
         runtime_metadata: ViewAndMutationMeta,
     ) -> Callable[..., Any]:
-        if self.maybe_subclass_meta is None:
+        if self.maybe_subclass_meta is None and not runtime_metadata.act_input_indices:
             return compiled_fn
 
         from .subclass_codegen import codegen_subclass_wrapper
@@ -1027,6 +1027,7 @@ class AOTDispatchSubclassWrapper(CompilerWrapper):
             out_metas=runtime_metadata.subclass_fw_graph_out_meta,
             num_fw_outs_saved_for_bw=self.num_fw_outs_saved_for_bw,
             frozen_inp_indices=self._get_frozen_inp_indices(),
+            act_input_indices=runtime_metadata.act_input_indices,
         )
         inner_fn._boxed_call = True  # type: ignore[attr-defined]
         return inner_fn
@@ -3164,36 +3165,38 @@ class DebugAssertWrapper(CompilerWrapper):
         *,
         runtime_metadata: ViewAndMutationMeta,
     ) -> Callable[..., Any]:
-        @wraps(compiled_fn)
-        def debug_compiled_function(args: list[Any]) -> Any:
-            # TODO: T253242027 Check aliasing relationships
-            # TODO: Check strides for metadata mutation
-            # (NB: ideally, this logic is factored out of this function and
-            # you move these debug checks there)
+        lines = ["def inner_fn(args):"]
+        globals_dict: dict[str, object] = {"compiled_fn": compiled_fn}
+        for i, can_require_grad in enumerate(self.flat_requires_grad):
+            if can_require_grad is None:
+                lines.append(
+                    f"    if isinstance(args[{i}], Tensor):"
+                    f" raise AssertionError("
+                    f"'expected non-Tensor for arg {i}, got Tensor')"
+                )
+            elif not can_require_grad:
+                msg_name = f"_msg_{i}"
+                globals_dict[msg_name] = format_guard_bug_msg(
+                    aot_config,
+                    f"{describe_input(i, aot_config)} would not require grad",
+                )
+                lines.append(
+                    f"    if args[{i}].requires_grad: raise AssertionError({msg_name})"
+                )
+        lines.append("    return compiled_fn(args)")
 
-            # Check requires grad.  Bad case is when we compiled with
-            # requires_grad = False, but input requires_grad = True
-            # (vice versa is OK; we compute a gradient and then throw
-            # it away when it hits the input.)
-            for i, a in enumerate(args):
-                can_require_grad = self.flat_requires_grad[i]
-                if can_require_grad is None:
-                    if isinstance(a, Tensor):
-                        raise AssertionError(
-                            f"expected non-Tensor for arg {i}, got Tensor"
-                        )
-                elif not can_require_grad:
-                    if a.requires_grad:
-                        raise AssertionError(
-                            format_guard_bug_msg(
-                                aot_config,
-                                f"{describe_input(i, aot_config)} would not require grad",
-                            )
-                        )
+        source = "\n".join(lines)
+        globals_dict["Tensor"] = Tensor
 
-            return compiled_fn(args)
+        from .subclass_codegen import _compile_and_exec_source
 
-        return debug_compiled_function
+        return _compile_and_exec_source(
+            source,
+            globals_dict,
+            "inner_fn",
+            "debug_assert_wrapper",
+            wrapped_fn=compiled_fn,
+        )
 
 
 def pre_compile(
