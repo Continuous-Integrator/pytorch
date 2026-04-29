@@ -1575,11 +1575,11 @@ class UserDefinedObjectVariable(UserDefinedVariable):
             and self._base_methods is not None
             and method in self._base_methods
         ):
-            return self._base_vt.tp_iternext_impl(tx)
+            return self._base_vt.sq_contains(tx, item)
 
         if isinstance(method, types.FunctionType):
             method_var = self.resolve_type_attr(tx, "__contains__", method, self.source)
-            return method_var.call_function(tx, [], {})
+            return method_var.call_function(tx, [item], {})
         return super().sq_contains(tx, item)
 
     def tp_iternext_impl(self, tx: "InstructionTranslator") -> VariableTracker:

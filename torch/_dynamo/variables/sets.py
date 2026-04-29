@@ -43,6 +43,11 @@ if TYPE_CHECKING:
 # see steps outlined for ConstDictVariable
 
 
+def pyset_check(obj: VariableTracker) -> bool:
+    # ref: https://github.com/python/cpython/blob/v3.13.0/Include/setobject.h#L36-L38
+    return issubclass(obj.python_type(), set)
+
+
 class SetVariable(VariableTracker):
     """Represents a Python set during symbolic execution."""
 
@@ -197,6 +202,25 @@ class SetVariable(VariableTracker):
         except Exception as exc:
             raise_observed_exception(type(exc), tx, args=list(exc.args))
         return VariableTracker.build(tx, res)
+
+    def sq_contains(
+        self, tx: "InstructionTranslator", item: VariableTracker
+    ) -> VariableTracker:
+        # ref: https://github.com/python/cpython/blob/v3.13.0/Objects/setobject.c#L2131-L2149
+        if not is_hashable(item):
+            # Mirror CPython's set_contains: if hashing fails with TypeError due to
+            # an unhashable set, coerce the key to frozenset and retry.
+            # ref: https://github.com/python/cpython/blob/v3.13.0/Objects/setobject.c
+            if not pyset_check(item):
+                raise_unhashable(item, tx)
+            # CPython NOTE:
+            # Note that 'key' could be a set() or frozenset() object.  Unlike most
+            # container types, set allows membership testing with a set key, even
+            # though it is not hashable.
+            item = FrozensetVariable(item.items)  # type: ignore[missing-attribute]
+        self.install_set_contains_guard(tx, [item])
+        contains = item in self
+        return VariableTracker.build(tx, contains)
 
     def call_method(
         self,

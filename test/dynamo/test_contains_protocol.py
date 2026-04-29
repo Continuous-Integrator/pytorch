@@ -17,7 +17,6 @@ Tests cover:
 
 import operator
 import types
-import unittest
 
 import torch
 import torch._dynamo.test_case
@@ -328,18 +327,10 @@ class SetContainsTest(_ContainsBase, torch._dynamo.test_case.TestCase):
     thetype = set
     has_getitem = False
 
-    @unittest.expectedFailure
-    def test_has_getitem_method(self):
-        return super().test_has_getitem_method()
-
 
 class FrozensetContainsTest(_ContainsBase, torch._dynamo.test_case.TestCase):
     thetype = frozenset
     has_getitem = False
-
-    @unittest.expectedFailure
-    def test_has_getitem_method(self):
-        return super().test_has_getitem_method()
 
 
 class WithContainsTest(_ContainsBase, torch._dynamo.test_case.TestCase):
@@ -645,6 +636,52 @@ class RangeContainsMiscTest(torch._dynamo.test_case.TestCase):
         seq = range(10)
         self.assertTrue(operator.contains(seq, 5))
         self.assertFalse(operator.contains(seq, 15))
+
+
+class SetInSetTest(torch._dynamo.test_case.TestCase):
+    """
+    CPython's set.__contains__ converts an unhashable set key to frozenset and
+    retries, so `{1, 2} in {frozenset({1, 2})}` returns True even though set is
+    not hashable.  Ref: Objects/setobject.c::set_contains.
+    """
+
+    def setUp(self):
+        self.old = torch._dynamo.config.enable_trace_unittest
+        torch._dynamo.config.enable_trace_unittest = True
+        super().setUp()
+
+    def tearDown(self):
+        torch._dynamo.config.enable_trace_unittest = self.old
+        return super().tearDown()
+
+    @make_dynamo_test
+    def test_set_in_frozenset_set_found(self):
+        s1 = {1, 2}
+        s2 = {frozenset({1, 2}), frozenset({3, 4})}
+        self.assertTrue(s1 in s2)
+
+    @make_dynamo_test
+    def test_set_in_frozenset_set_not_found(self):
+        s1 = {5, 6}
+        s2 = {frozenset({1, 2}), frozenset({3, 4})}
+        self.assertFalse(s1 in s2)
+
+    @make_dynamo_test
+    def test_empty_set_in_frozenset_set(self):
+        s2 = {frozenset(), frozenset({1})}
+        self.assertTrue(set() in s2)
+
+    @make_dynamo_test
+    def test_set_not_in_operator(self):
+        s1 = {1, 2}
+        s2 = {frozenset({1, 2})}
+        self.assertFalse(s1 not in s2)
+
+    @make_dynamo_test
+    def test_set_missing_not_in_operator(self):
+        s1 = {9}
+        s2 = {frozenset({1, 2})}
+        self.assertTrue(s1 not in s2)
 
 
 if __name__ == "__main__":
