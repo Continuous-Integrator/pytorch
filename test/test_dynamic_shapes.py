@@ -5746,6 +5746,30 @@ class TestTransferSymbolsFromForeignShapeEnv(TestCase):
             "Stride should preserve relationship with size via substitution",
         )
 
+    def test_foreign_stride_symbol_not_in_sizes(self):
+        """If a stride references a foreign unbacked symbol not in any size dim
+        (e.g. from as_strided), a fresh unbacked symbol should be created."""
+        foreign_env = ShapeEnv()
+        u_size = foreign_env.create_unbacked_symint()
+        u_stride = foreign_env.create_unbacked_symint()  # independent from sizes
+
+        sizes = (u_size,)
+        strides = (u_stride,)  # stride symbol not in sizes
+        storage_offset = 0
+
+        local_env = ShapeEnv()
+        new_sizes, new_strides, new_offset = local_env.transfer_symbols_from_foreign_shape_env(
+            sizes, strides, storage_offset, source=self._make_source("local"),
+        )
+        # Size should be unbacked in local_env
+        self.assertTrue(is_symbolic(new_sizes[0]))
+        self.assertIs(new_sizes[0].node.shape_env, local_env)
+        # Stride should also be unbacked in local_env (fresh symbol, not foreign)
+        self.assertTrue(is_symbolic(new_strides[0]))
+        self.assertIs(new_strides[0].node.shape_env, local_env)
+        # Stride should be a different symbol than size
+        self.assertNotEqual(new_sizes[0].node.expr, new_strides[0].node.expr)
+
     def test_unbacked_hint_overrides_transferred(self):
         """Hint overrides on unbacked symbols in the foreign env should be
         transferred to the new env."""

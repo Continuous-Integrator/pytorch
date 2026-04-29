@@ -4726,12 +4726,11 @@ class ShapeEnv:
                 return DimDynamic.UNBACKED
             return DimDynamic.DUCK
 
-        def _hint(s: IntLikeType) -> int:
-            """Extract concrete hint.  For unbacked symbols returns -1
-            — create_symbol with UNBACKED ignores it."""
+        def _hint(s: IntLikeType) -> int | None:
+            """Extract concrete hint.  For unbacked symbols returns None."""
             if is_symbolic(s):
                 if not has_guarding_hint(s):
-                    return -1
+                    return None
                 return guarding_hint_or_throw(s.node)  # type: ignore[union-attr]
             return s  # type: ignore[return-value]
 
@@ -4808,23 +4807,32 @@ class ShapeEnv:
                 new_size_exprs.append(sympy.Integer(old_sz))
 
         # 3. Derive new strides by substituting old symbols.
+        # 3. Derive new strides by substituting old symbols.
+        # If after substitution a stride still has foreign symbols (e.g. from
+        # as_strided), create a fresh unbacked symbol for it.
         new_stride_exprs: list[sympy.Expr] = []
         for sd in strides:
             if is_symbolic(sd):
-                new_stride_exprs.append(sd.node.expr.xreplace(old_to_new))  # type: ignore[union-attr]
+                new_expr = sd.node.expr.xreplace(old_to_new)  # type: ignore[union-attr]
+                if new_expr.free_symbols - set(old_to_new.values()):
+                    # Stride references a foreign symbol not in any size dim.
+                    new_expr = self.create_unbacked_symint().node.expr
+                new_stride_exprs.append(new_expr)
             else:
                 new_stride_exprs.append(sympy.Integer(sd))
 
         # 4. Storage offset.
         if is_symbolic(storage_offset):
             new_offset_expr = storage_offset.node.expr.xreplace(old_to_new)  # type: ignore[union-attr]
+            if new_offset_expr.free_symbols - set(old_to_new.values()):
+                new_offset_expr = self.create_unbacked_symint().node.expr
         else:
             new_offset_expr = sympy.Integer(storage_offset)
 
-        # 5. Wrap into SymInt nodes.  Use None hint for unbacked (== -1).
+        # 5. Wrap into SymInt nodes.  Unbacked dims have hint=None.
         sym_sizes = []
         for i, sym in enumerate(new_size_exprs):
-            hint = None if ex_size[i] == -1 else ex_size[i]
+            hint = ex_size[i]
             sym_sizes.append(
                 self.create_symintnode(
                     sym,
@@ -4841,7 +4849,7 @@ class ShapeEnv:
 
         sym_strides = []
         for i, stride_expr in enumerate(new_stride_exprs):
-            hint_stride = None if ex_stride[i] == -1 else ex_stride[i]
+            hint_stride = ex_stride[i]
             sym_strides.append(
                 self.create_symintnode(
                     stride_expr,
@@ -4852,7 +4860,7 @@ class ShapeEnv:
 
         sym_offset = self.create_symintnode(
             new_offset_expr,
-            hint=None if ex_storage_offset == -1 else ex_storage_offset,
+            hint=ex_storage_offset,
             source=TensorPropertySource(source, TensorProperty.STORAGE_OFFSET),
         )
 
@@ -5472,7 +5480,7 @@ class ShapeEnv:
 
         if not isinstance(source, Source):
             raise AssertionError(f"{type(source)} {source}")
-        if positive and val < 0:
+        if positive and dynamic_dim is not DimDynamic.UNBACKED and val < 0:
             raise AssertionError(f"positive set for negative value: {val}")
         # It's always sound to allocate a symbol as DYNAMIC.  If the user
         # constrained the symbol, force the symbolic_context to DYNAMIC, because our
