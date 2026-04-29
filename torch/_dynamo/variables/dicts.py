@@ -19,7 +19,6 @@ in sets.py.
 
 import collections
 import functools
-import operator
 import types
 from collections.abc import Callable, Iterator, Sequence
 from typing import Any, Literal, TYPE_CHECKING, Union
