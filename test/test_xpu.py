@@ -324,6 +324,45 @@ print(f"{r1}, {r2}")
         x = torch.xpu.device_count()
         self.assertEqual(f"{x}, 1", r)
 
+    @unittest.skipIf(not TEST_MULTIXPU, "requires multiple devices")
+    def test_cached_zes_device_infos(self):
+        try:
+            import pyzes  # noqa: F401
+        except ImportError:
+            self.skipTest("pyzes is required for this test")
+
+        test_script = """\
+import torch
+import os
+from torch.xpu import _cached_zes_device_infos, _parse_visible_devices, _enum_zes_device_infos
+
+def device_key(info):
+    return (info.device_handle.value, info.subdevice_id)
+
+# Enumerate both devices and snapshot their keys
+os.environ['ZE_AFFINITY_MASK'] = '0, 1'
+_enum_zes_device_infos(_parse_visible_devices())
+orig_keys = [device_key(info) for info in _cached_zes_device_infos]
+
+# Restrict to device 1 only; cached entry should match orig device 1
+os.environ['ZE_AFFINITY_MASK'] = '1'
+_enum_zes_device_infos(_parse_visible_devices())
+match1 = orig_keys[1] == device_key(_cached_zes_device_infos[0])
+
+# Restrict to device 0 only; cached entry should match orig device 0
+os.environ['ZE_AFFINITY_MASK'] = '0'
+_enum_zes_device_infos(_parse_visible_devices())
+match0 = orig_keys[0] == device_key(_cached_zes_device_infos[0])
+print(match1, match0)
+"""
+        r = (
+            subprocess.check_output([sys.executable, "-c", test_script])
+            .decode("ascii")
+            .strip()
+            .splitlines()[-1]
+        )
+        self.assertEqual("True True", r)
+
     @unittest.skipIf(
         IS_WINDOWS, "Only for lazy initialization on Linux, not applicable on Windows."
     )
@@ -628,7 +667,7 @@ print(torch.xpu.is_initialized())
     def test_out_of_memory(self):
         if self.expandable_segments:
             self.skipTest("Skipping OOM test for expandable segments allocator.")
-        tensor = torch.zeros(1024, device="xpu")  # noqa: F841
+        tensor = torch.zeros(1024, device="xpu")
 
         with self.assertRaisesRegex(RuntimeError, "Tried to allocate 800000000.00 GiB"):
             torch.empty(1024 * 1024 * 1024 * 800000000, dtype=torch.int8, device="xpu")
@@ -1372,6 +1411,10 @@ if __name__ == "__main__":
             z = torch.from_dlpack(torch.to_dlpack(x))
             z[0] = z[0] + 1.0
             self.assertEqual(z, x)
+            cpu = make_tensor((5,), dtype=torch.float32, device="cpu")
+            z = torch.from_dlpack(cpu, device="xpu")
+            self.assertTrue(z.is_xpu)
+            self.assertEqual(z.cpu(), cpu)
 
     def test_graph_is_current_stream_capturing(self):
         self.assertFalse(torch.xpu.is_current_stream_capturing())
@@ -2084,7 +2127,7 @@ if __name__ == "__main__":
         g = torch.xpu.XPUGraph()
         with self.assertRaisesRegex(
             RuntimeError,
-            "XPUGeneratorImpl::set_current_seed can be called during stream capture only if new seed is the same as the original seed.",  # noqa: B950
+            "XPUGeneratorImpl::set_current_seed can be called during stream capture only if new seed is the same as the original seed.",
         ):
             with torch.xpu.graph(g):
                 torch.xpu.manual_seed(1)
@@ -2440,14 +2483,14 @@ if __name__ == "__main__":
             try:
                 with torch.xpu.stream(stream):
                     mem = torch.xpu.caching_allocator_alloc(1024)
-            except BaseException:  # noqa: B036
+            except BaseException:
                 if mem is None:
                     return
             try:
                 torch.xpu.caching_allocator_delete(mem)
                 mem = None
                 return None
-            except BaseException:  # noqa: B036
+            except BaseException:
                 pass
 
         def throws_on_xpu_event():
