@@ -90,7 +90,11 @@ def get_kernel_by_name(kernel_name: str) -> Any:
             if _kernel_by_name_cache is None:
                 _kernel_by_name_cache = _build_kernel_cache()
 
-    return _kernel_by_name_cache.get(kernel_name)
+    # Snapshot to local: same race-safety pattern as get_compatible_kernels —
+    # a concurrent clear_cache() rebinding the global to None can't turn this
+    # post-init read into AttributeError.
+    cache = _kernel_by_name_cache
+    return cache.get(kernel_name)
 
 
 def ensure_cache_initialized() -> None:

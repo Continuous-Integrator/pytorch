@@ -112,11 +112,22 @@ class NVUniversalGemmScheduling(BaseScheduling):
         if isinstance(ir_node, NVUniversalGemmBuffer):
             return ir_node
         elif isinstance(ir_node, MultiTemplateBuffer):
-            if require_epilogue_fusion:
-                # Find the best EFC kernel for epilogue fusion. Use <= so a
-                # choice whose autotune timing was inf (benchmark failed) can
-                # still be selected when it's the only EFC option — the strict
-                # `<` against an inf seed previously made such cases unselectable.
+            # If a caller was explicitly bound via swap_as_nvgemm_caller or
+            # finalize_as_nvgemm_caller, honor that — the autotune fusion
+            # benchmark loop in Scheduler.speedup_by_fusion swaps in each EFC
+            # choice one at a time and expects each to drive a distinct
+            # codegen, not a re-selection from choice_timings().
+            if isinstance(ir_node._render_caller, NVUniversalGemmCaller) and (
+                not require_epilogue_fusion
+                or ir_node._render_caller.supports_epilogue_fusion
+            ):
+                selected_choice = ir_node._render_caller
+            elif require_epilogue_fusion:
+                # Find the best EFC kernel for epilogue fusion. Use
+                # `best is None or timing < best` so a choice whose autotune
+                # timing was inf (benchmark failed) can still be selected when
+                # it's the only EFC option — strict `<` against an inf seed
+                # previously made such cases unselectable.
                 choice_timings = ir_node.choice_timings()
                 best_efc_choice = None
                 best_efc_time = float("inf")
@@ -362,6 +373,23 @@ class NVUniversalGemmScheduling(BaseScheduling):
         all_epilogue_nodes = list(existing_epilogue_nodes) + list(
             node_to_fuse.get_nodes()
         )
+
+        # Multi-store epilogues (more than one ComputedBuffer) are not yet
+        # supported: CutlassEVTCodegen would emit `return tmp_X, ..., D` and
+        # cutlass_api's EpilogueArguments AST tracer would require kwargs
+        # for every output. _render_epilogue_kwargs currently skips intermediate
+        # stores (so those kwargs are missing) — running fusion would raise at
+        # EpilogueArguments construction time. Inductor's pointwise pre-fusion
+        # normally collapses chains into one ComputedBuffer, so this path is
+        # latent today, but we reject it explicitly to avoid silent miscompiles
+        # if upstream fusion behavior changes.
+        if len(all_epilogue_nodes) > 1:
+            log.debug(
+                "NVGEMM epilogue fusion: multi-stage chains (%d nodes) not yet supported",
+                len(all_epilogue_nodes),
+            )
+            return False
+
         trial_removed_buffers = V.graph.removed_buffers | OrderedSet(
             [ir_node.get_name()]
         )

@@ -4741,6 +4741,18 @@ class Scheduler:
                     if config.multi_kernel_hints:
                         hint_override_best_fusion_choice[None] = ms_fused_choice
                         if isinstance(ms_fused_choice, NVUniversalGemmCaller):
+                            # Preserve per-hint Triton compiles (which already
+                            # ran above). Without this, finalize_as_nvgemm_caller
+                            # only sets the no-hint render and the hint dict's
+                            # work is discarded, silently disabling
+                            # multi-kernel specialization for this op.
+                            for h, c in hint_override_best_fusion_choice.items():
+                                if h is None:
+                                    continue
+                                # pyrefly: ignore [missing-attribute]
+                                render = c.get_make_kernel_render()
+                                # pyrefly: ignore [missing-attribute]
+                                multi_node._make_kernel_renders[h] = render
                             # pyrefly: ignore [missing-attribute]
                             multi_node.finalize_as_nvgemm_caller(ms_fused_choice)
                         else:
