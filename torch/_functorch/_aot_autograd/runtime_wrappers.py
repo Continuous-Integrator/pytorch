@@ -865,7 +865,7 @@ def _codegen_epilogue(
         rw_lines.append("    ret_outs = fw_outs")
 
     if runtime_metadata.dynamic_outputs:
-        rw_globals["_mark_dynamic_"] = maybe_mark_dynamic_helper
+        rw_globals["_mark_dynamic_"] = mark_dynamo_propagated_dynamic_indices
         for i, o in enumerate(runtime_metadata.output_info):
             if o.dynamic_dims is not None:
                 dims_name = f"_dyn_dims_{i}"
