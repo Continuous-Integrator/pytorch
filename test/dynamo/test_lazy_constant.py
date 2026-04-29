@@ -1769,13 +1769,18 @@ class LazyConstantVariableTests(TestCase):
         self.assertTrue(same(compiled2, tensor_input.mean()))
         self.assertGreater(counter.frame_count, 1)  # Recompilation happened
 
-    def test_dict_aliasing_keys_getitem_installs_guard(self):
-        """Verify that __getitem__ installs proper guards to catch aliasing."""
+    def test_dict_aliasing_keys_getitem_no_recompile(self):
+        """Verify that writing and reading the same key doesn't over-guard.
+
+        When d[key] = val is followed by d[key], the key is used symmetrically
+        for both write and read.  Only a TYPE_MATCH guard is needed — the
+        behavior is correct regardless of the key value.
+        """
         tensor_input = torch.tensor([1.0, 2.0, 3.0])
 
         def fn(t, d, key):
             d[key] = t.sum()
-            return d[key]  # getitem installs EQUALS_MATCH guard
+            return d[key]
 
         counter = CompileCounter()
         opt_fn = torch.compile(fn, backend=counter)
@@ -1784,9 +1789,10 @@ class LazyConstantVariableTests(TestCase):
         opt_fn(tensor_input, {}, "a")
         self.assertEqual(counter.frame_count, 1)
 
-        # Different key value - should recompile due to EQUALS_MATCH guard on key
+        # Different key value - should NOT recompile since key is used
+        # symmetrically (write then read with same source)
         opt_fn(tensor_input, {}, "b")
-        self.assertEqual(counter.frame_count, 2)
+        self.assertEqual(counter.frame_count, 1)
 
     def test_dict_contains_with_lazy_key(self):
         """Test that 'key in dict' operations work correctly with lazy keys."""
