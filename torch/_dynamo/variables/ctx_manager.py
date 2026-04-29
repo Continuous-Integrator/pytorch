@@ -858,6 +858,10 @@ _device_context_manager_map: dict[type, type[GenericDeviceVariable]] = {
 def register_device_context_manager(
     device_context: type, variable_cls: type[GenericDeviceVariable]
 ) -> None:
+    """Register a Dynamo variable class for a device context manager type.
+
+    Raises ``ValueError`` if ``device_context`` is already registered.
+    """
     if device_context in _device_context_manager_map:
         raise ValueError(
             f"Device context {device_context} already has a registered context manager"
@@ -868,6 +872,7 @@ def register_device_context_manager(
 def get_device_context_manager(
     device_context: type,
 ) -> type[GenericDeviceVariable] | None:
+    """Return the Dynamo variable class for ``device_context``, or ``None`` if not registered."""
     return _device_context_manager_map.get(device_context)
 
 
