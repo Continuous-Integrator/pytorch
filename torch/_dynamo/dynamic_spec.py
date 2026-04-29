@@ -329,26 +329,26 @@ class TensorSpec:
 
     def __init__(
         self,
-        spec: int
+        arg: int
         | list[IntSpec | None]
         | tuple[IntSpec | None, ...]
         | dict[int, IntSpec | None],
     ) -> None:
-        if isinstance(spec, int):
-            self._dim = spec
-            self._specs: list[IntSpec | None] = [None] * spec
-        elif isinstance(spec, (list, tuple)):
-            self._dim = len(spec)
-            self._specs = list(spec)
-        elif isinstance(spec, dict):
-            self._dim = max(spec.keys()) + 1
+        if isinstance(arg, int):
+            self._dim = arg
+            self._specs: list[IntSpec | None] = [None] * arg
+        elif isinstance(arg, (list, tuple)):
+            self._dim = len(arg)
+            self._specs = list(arg)
+        elif isinstance(arg, dict):
+            self._dim = max(arg.keys()) + 1
             self._specs = [None] * self._dim
-            for k, v in spec.items():
+            for k, v in arg.items():
                 self._specs[k] = v
         else:
             raise TypeError(
                 f"TensorSpec expects int / list / tuple / dict, "
-                f"got {type(spec).__name__}"
+                f"got {type(arg).__name__}"
             )
 
     def dim(self, index: int, spec: IntSpec) -> "TensorSpec":
