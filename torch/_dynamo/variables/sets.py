@@ -520,19 +520,6 @@ class SetVariable(VariableTracker):
                 tx,
                 cmp_name_to_op_mapping[name](self.set_items, args[0].set_items),  # type: ignore[attr-defined]
             )
-        elif name == "__contains__":
-            if not len(args):
-                raise_args_mismatch(
-                    tx,
-                    name,
-                    "more than 1 args and 0 kwargs",
-                    f"{len(args)} args and {len(kwargs)} kwargs",
-                )
-            if not (args and is_hashable(args[0])):
-                raise_unhashable(args[0], tx)
-            self.install_set_contains_guard(tx, args)
-            contains = args[0] in self
-            return VariableTracker.build(tx, contains)
         elif name == "__len__":
             if args or kwargs:
                 raise_args_mismatch(

@@ -19,6 +19,7 @@ in sets.py.
 
 import collections
 import functools
+import operator
 import types
 from collections.abc import Callable, Iterator, Sequence
 from typing import Any, Literal, TYPE_CHECKING, Union
@@ -456,6 +457,7 @@ class ConstDictVariable(VariableTracker):
     def sq_contains(
         self, tx: "InstructionTranslator", item: VariableTracker
     ) -> VariableTracker:
+        # ref: https://github.com/python/cpython/blob/v3.13.0/Objects/dictobject.c#L4657-L4668
         if not is_hashable(item):
             raise_unhashable(item, tx)
         self.install_dict_contains_guard(tx, [item])
@@ -925,6 +927,7 @@ class MappingProxyVariable(VariableTracker):
     def sq_contains(
         self, tx: "InstructionTranslator", item: VariableTracker
     ) -> VariableTracker:
+        # https://github.com/python/cpython/blob/3.13/Objects/descrobject.c#L1087-L1095
         return self.dv_dict.sq_contains(tx, item)
 
     def mp_length(self, tx: "InstructionTranslator") -> VariableTracker:
@@ -1048,6 +1051,7 @@ class DictKeysVariable(DictViewVariable):
     def sq_contains(
         self, tx: "InstructionTranslator", item: VariableTracker
     ) -> VariableTracker:
+        # ref: https://github.com/python/cpython/blob/v3.13.0/Objects/dictobject.c#L5998-L6005
         return self.dv_dict.sq_contains(tx, item)
 
     def call_method(
@@ -1095,13 +1099,6 @@ class DictValuesVariable(DictViewVariable):
 
     # DictValuesVariable is an iterable but cannot be compared.
     kv = "values"
-
-    # oddly enough, dict_values do not implements sq_contains. Do not attempt to
-    # implement it as it will not be called by Dynamo
-    def sq_contains(
-        self, tx: "InstructionTranslator", item: VariableTracker
-    ) -> VariableTracker:
-        raise RuntimeError("dict_values does not implements sq_contains")
 
     @property
     def view_items_vt(self) -> list[VariableTracker]:
@@ -1165,12 +1162,20 @@ class DictItemsVariable(DictViewVariable):
     def sq_contains(
         self, tx: "InstructionTranslator", item: VariableTracker
     ) -> VariableTracker:
+        # ref: https://github.com/python/cpython/blob/v3.13.0/Objects/dictobject.c#L6433-L6451
         from ..utils import iter_contains
-
-        # TODO(guilhermeleobas): We can optimize this!
 
         if not is_hashable(item):
             raise_unhashable(item, tx)
+
+        # Fast path: if item is a known (key, value) pair, use O(1) dict lookup.
+        if isinstance(item, variables.TupleVariable) and len(item.items) == 2:
+            key, val = item.items
+            if key not in self.dv_dict:
+                return VariableTracker.build(tx, False)
+            stored = self.dv_dict.items[HashableTracker(key)]
+            return VariableTracker.build(tx, val.is_python_equal(stored))
+
         return iter_contains(self.view_items_vt, item, tx)
 
     def tp_iter_impl(self, tx: "InstructionTranslator") -> VariableTracker:

@@ -150,6 +150,9 @@ class BaseListVariable(VariableTracker):
     def sq_contains(
         self, tx: "InstructionTranslator", item: VariableTracker
     ) -> VariableTracker:
+        # ref: https://github.com/python/cpython/blob/v3.13.0/Objects/listobject.c#L635-L652
+        # TODO(dynamo-team): Replace iter_contains by a proper impl. once we
+        # implement PyObject_RichCompare
         return iter_contains(self.unpack_var_sequence(tx), item, tx)
 
     def call_tree_map_branch(
@@ -714,6 +717,7 @@ class RangeVariable(BaseListVariable):
     def sq_contains(
         self, tx: "InstructionTranslator", item: VariableTracker
     ) -> VariableTracker:
+        # ref: https://github.com/python/cpython/blob/v3.13.0/Objects/rangeobject.c#L482-L490
         return VariableTracker.build(tx, self.range_count(item))
 
     def tp_iter_impl(self, tx: "InstructionTranslator") -> VariableTracker:
