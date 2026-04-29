@@ -140,6 +140,7 @@ from .utils import (
     istype,
     LazyString,
     proxy_args_kwargs,
+    unpack_iterable,
 )
 from .variables.base import SourceLocation, typestr, ValueMutationNew, VariableTracker
 from .variables.builder import FrameStateSizeEntry, VariableBuilder, wrap_fx_proxy
@@ -2867,8 +2868,8 @@ class InstructionTranslatorBase(
         if not isinstance(
             argsvars,
             BaseListVariable,
-        ) and argsvars.has_force_unpack_var_sequence(self):
-            argsvars = TupleVariable(argsvars.force_unpack_var_sequence(self))
+        ):
+            argsvars = TupleVariable(unpack_iterable(self, argsvars))
 
         # Unpack for cases like fn(**obj) where obj is a map
         if isinstance(kwargsvars, UserDefinedObjectVariable):
@@ -3607,7 +3608,7 @@ class InstructionTranslatorBase(
         items = []
         for seq in seqs:
             try:
-                items.extend(seq.force_unpack_var_sequence(self))
+                items.extend(unpack_iterable(self, seq))
             except NotImplementedError:
                 unimplemented(
                     gb_type="Failed to unpack object for BUILD_LIST_UNPACK",
@@ -3657,7 +3658,7 @@ class InstructionTranslatorBase(
         assert isinstance(keys, TupleVariable)
         assert keys.is_python_constant()
 
-        keys = keys.force_unpack_var_sequence(self)
+        keys = unpack_iterable(self, keys)
         assert len(keys) == len(values)
 
         self.push(
@@ -3760,16 +3761,8 @@ class InstructionTranslatorBase(
             # x, y = a.shape
             proxy = getattr(seq.obj.as_proxy(), seq.name)
             val = [wrap_fx_proxy(self, proxy[i]) for i in range(inst.argval)]
-        elif seq.has_force_unpack_var_sequence(self):
-            val = seq.force_unpack_var_sequence(self)
         else:
-            unimplemented(
-                gb_type="Failed to unpack object for UNPACK_SEQUENCE",
-                context=str(seq),
-                explanation=f"{seq} cannot be unpacked into a list for the UNPACK_SEQUENCE bytecode "
-                "(i.e. `a, b, c = d`).",
-                hints=[*graph_break_hints.USER_ERROR],
-            )
+            val = unpack_iterable(self, seq)
         if len(val) != inst.argval:
             unimplemented(
                 gb_type="Length mismatch when unpacking object for UNPACK_SEQUENCE",
@@ -3786,8 +3779,7 @@ class InstructionTranslatorBase(
         prefix = inst.argval & 0xFF  # low byte
         suffix = inst.argval >> 8  # high byte
         seq = self.pop()
-        if seq.has_force_unpack_var_sequence(self):
-            vals = list(seq.force_unpack_var_sequence(self))
+        if vals := unpack_iterable(self, seq):
             assert len(vals) >= prefix + suffix
             vals_prefix = vals[:prefix]
             vals_list = vals[prefix : len(vals) - suffix]
@@ -4377,7 +4369,8 @@ class InstructionTranslatorBase(
             self.UNARY_POSITIVE(inst)
         elif inst.argval == 6:
             # INTRINSIC_LIST_TO_TUPLE
-            self.push(TupleVariable(self.pop().force_unpack_var_sequence(self)))
+            items = unpack_iterable(self, self.pop())
+            self.push(TupleVariable(items))
         elif inst.argval == 7:
             # INTRINSIC_TYPEVAR
             v = self.pop().as_python_constant()
@@ -5156,7 +5149,7 @@ class InstructionTranslator(InstructionTranslatorBase):
             and isinstance(tos, LocalGeneratorObjectVariable)
         ):
             self.stack[-1] = ListIteratorVariable(
-                tos.force_unpack_var_sequence(self),
+                unpack_iterable(self, tos),
                 mutation_type=ValueMutationNew(),
             )
 

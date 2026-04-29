@@ -78,6 +78,7 @@ from ..utils import (
     specialize_symnode,
     str_methods,
     tensortype_to_dtype,
+    unpack_iterable,
 )
 from .base import AsPythonConstantNotImplementedError, ValueMutationNew, VariableTracker
 from .constant import ConstantVariable, FakeIdVariable
@@ -104,7 +105,6 @@ from .object_protocol import (
     generic_getiter,
     generic_int,
     generic_len,
-    unpack_iterator,
     vt_getitem,
     vt_identity_compare,
 )
@@ -1547,14 +1547,9 @@ class BuiltinVariable(BaseBuiltinVariable):
                     self, args[0], args[1:]
                 )
 
-            if (
-                self.fn is tuple
-                and len(args) == 2
-                and args[1].has_force_unpack_var_sequence(tx)
-                and not kwargs
-            ):
+            if self.fn is tuple and len(args) == 2 and not kwargs:
                 if isinstance(args[0], BuiltinVariable) and args[0].fn is tuple:
-                    init_args = args[1].force_unpack_var_sequence(tx)
+                    init_args = unpack_iterable(tx, args[1])
                     return variables.TupleVariable(
                         init_args, mutation_type=ValueMutationNew()
                     )
@@ -1766,8 +1761,8 @@ class BuiltinVariable(BaseBuiltinVariable):
     def _call_min_max(
         self, tx: "InstructionTranslator", *args: VariableTracker
     ) -> VariableTracker | None:
-        if len(args) == 1 and args[0].has_force_unpack_var_sequence(tx):
-            items = args[0].force_unpack_var_sequence(tx)
+        if len(args) == 1:
+            items = unpack_iterable(tx, args[0])
             return self._call_min_max_seq(tx, items)
         elif len(args) == 2:
             return self._call_min_max_binary(tx, args[0], args[1])
@@ -1973,74 +1968,6 @@ class BuiltinVariable(BaseBuiltinVariable):
             ),
         )
 
-    # NOTE must handle IteratorVariable separately!
-    def _call_iter_tuple_list(
-        self,
-        tx: "InstructionTranslator",
-        obj: VariableTracker | None = None,
-        *args: VariableTracker,
-        **kwargs: VariableTracker,
-    ) -> VariableTracker | None:
-        assert not isinstance(obj, variables.IteratorVariable)
-
-        if self._dynamic_args(*args, **kwargs):
-            return self._dyn_proxy(tx, *args, **kwargs)
-
-        cls = variables.BaseListVariable.cls_for(self.fn)
-        if obj is None:
-            return cls(
-                [],
-                mutation_type=ValueMutationNew(),
-            )
-        elif obj.has_unpack_var_sequence(tx):
-            if obj.source and not is_constant_source(obj.source):
-                if isinstance(obj, TupleIteratorVariable):
-                    install_guard(
-                        obj.source.make_guard(GuardBuilder.TUPLE_ITERATOR_LEN)
-                    )
-                else:
-                    if getattr(obj, "source", False) and isinstance(
-                        obj,
-                        (
-                            ConstDictVariable,
-                            variables.OrderedSetVariable,
-                            variables.DictKeySetVariable,
-                        ),
-                    ):
-                        tx.output.guard_on_key_order.add(obj.source)
-
-                    if isinstance(obj, variables.MappingProxyVariable):
-                        # This could be an overguarding, but its rare to iterate
-                        # through a mapping proxy and not use the keys.
-                        install_guard(
-                            obj.source.make_guard(GuardBuilder.MAPPING_KEYS_CHECK)
-                        )
-                    elif not isinstance(obj, variables.UnspecializedNNModuleVariable):
-                        # Prevent calling __len__ method for guards, the tracing
-                        # of __iter__ will insert the right guards later.
-                        install_guard(
-                            obj.source.make_guard(GuardBuilder.SEQUENCE_LENGTH)
-                        )
-
-            return cls(
-                list(obj.unpack_var_sequence(tx)),
-                mutation_type=ValueMutationNew(),
-            )
-        return None
-
-    def _call_iter_tuple_generator(
-        self,
-        tx: "InstructionTranslator",
-        obj: VariableTracker,
-        *args: VariableTracker,
-        **kwargs: VariableTracker,
-    ) -> VariableTracker:
-        cls = variables.BaseListVariable.cls_for(self.fn)
-        return cls(
-            list(obj.force_unpack_var_sequence(tx)),  # exhaust generator
-            mutation_type=ValueMutationNew(),
-        )
-
     def call_tuple(
         self,
         tx: "InstructionTranslator",
@@ -2061,7 +1988,7 @@ class BuiltinVariable(BaseBuiltinVariable):
                 f"{self.fn.__name__} takes no keyword arguments",
             )
 
-        items = unpack_iterator(tx, args[0])
+        items = unpack_iterable(tx, args[0])
         return TupleVariable(items, mutation_type=ValueMutationNew())
 
     def call_callable(
@@ -2170,7 +2097,7 @@ class BuiltinVariable(BaseBuiltinVariable):
             # CPython: frozenset(existing_frozenset) returns the same object.
             return args[0]
 
-        items = unpack_iterator(tx, args[0])
+        items = unpack_iterable(tx, args[0])
         fs = FrozensetVariable(items, mutation_type=ValueMutationNew())
         return fs
 
@@ -2659,11 +2586,9 @@ class BuiltinVariable(BaseBuiltinVariable):
         obj: VariableTracker,
         **kwargs: VariableTracker,
     ) -> VariableTracker | None:
-        if obj.has_force_unpack_var_sequence(tx) and not isinstance(
-            obj, variables.TensorVariable
-        ):
+        if not isinstance(obj, variables.TensorVariable):
             list_var = variables.ListVariable(
-                obj.force_unpack_var_sequence(tx),
+                unpack_iterable(tx, obj),
                 mutation_type=ValueMutationNew(),
             )
             list_var.call_method(tx, "sort", [], kwargs)
@@ -3169,8 +3094,7 @@ class DictBuiltinVariable(BaseBuiltinVariable):
         if isinstance(arg, dict):
             arg_list = [VariableTracker.build(tx, k) for k in arg]
             return _make_result(dict.fromkeys(arg_list, value))
-        elif arg.has_force_unpack_var_sequence(tx):
-            keys = arg.force_unpack_var_sequence(tx)
+        elif keys := unpack_iterable(tx, arg):
             if all(is_hashable(v) for v in keys):
                 return _make_result(dict.fromkeys(keys, value))
 
