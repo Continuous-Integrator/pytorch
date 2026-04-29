@@ -1,6 +1,7 @@
 # Owner(s): ["module: dynamo"]
 
 import dis
+import linecache
 import logging
 import re
 import sys
@@ -18,7 +19,7 @@ import torch.utils._pytree as python_pytree
 from torch._dynamo.exc import ResumePrologueTracingError, TorchRuntimeError, Unsupported
 from torch._dynamo.testing import skipIfNotPy312, skipIfOnlyNotPy312
 from torch._dynamo.utils import counters
-from torch.testing._internal.common_utils import IS_FBCODE, munge_exc
+from torch.testing._internal.common_utils import IS_FBCODE, IS_MACOS, munge_exc
 from torch.testing._internal.logging_utils import LoggingTestCase, make_logging_test
 
 
@@ -91,6 +92,31 @@ def _assert_failure_stack_source_attribution() -> str:
     )
 
 
+@lru_cache(None)
+def _compile_wrapper_raise_source() -> str:
+    source = "def f():\n    raise RuntimeError(\n        None\n    )\n"
+    filename = "<compile_wrapper_raise_source>"
+    linecache.cache[filename] = (
+        len(source),
+        None,
+        source.splitlines(True),
+        filename,
+    )
+    namespace = {}
+    exec(compile(source, filename, "exec"), namespace)
+    try:
+        namespace["f"]()
+    except RuntimeError as e:
+        msg = "".join(traceback.format_exception(type(e), e, e.__traceback__))
+    if "        None\n    )\n" in msg:
+        return (
+            "    raise e.with_traceback(\n"
+            "        None\n"
+            "    ) from e.__cause__  # User compiler error\n"
+        )
+    return "    raise e.with_traceback(\n"
+
+
 def _load_global_has_positions() -> bool:
     """Whether LOAD_GLOBAL bytecodes have position info on this Python build.
 
@@ -111,10 +137,17 @@ def _load_global_has_positions() -> bool:
 
 
 def _reconstruction_failure_gb_stack_source_attribution() -> str:
+    if IS_MACOS:
+        var_repr = "NullVariable originated from:"
+    else:
+        var_repr = (
+            "LazyVariableTracker(realized: SkipFunctionVariable()) originated from:"
+        )
+
     if sys.version_info >= (3, 14):
         return (
             "Stack variable source attribution:\n"
-            "  LazyVariableTracker(realized: SkipFunctionVariable()) originated from:\n"
+            f"  {var_repr}\n"
             '  File "test_error_messages.py", line N\n'
             "                torch._dynamo.graph_break()\n"
             "^^^^^^^^^^^^^^^^^^^^^^^^^\n"
@@ -124,7 +157,7 @@ def _reconstruction_failure_gb_stack_source_attribution() -> str:
     if sys.version_info >= (3, 11) and _load_global_has_positions():
         return (
             "Stack variable source attribution:\n"
-            "  NullVariable originated from:\n"
+            f"  {var_repr}\n"
             '  File "test_error_messages.py", line N\n'
             "                torch._dynamo.graph_break()\n"
             "^^^^^^^^^^^^^^^^^^^^^^^^^\n"
@@ -136,7 +169,7 @@ def _reconstruction_failure_gb_stack_source_attribution() -> str:
 
     return (
         "Stack variable source attribution:\n"
-        "  LazyVariableTracker(realized: SkipFunctionVariable()) originated from:\n"
+        f"  {var_repr}\n"
         '  File "test_error_messages.py", line N\n'
         "                torch._dynamo.graph_break()\n"
         "\n"
@@ -281,16 +314,13 @@ from user code:
                 zip(range(5), range(10))
             ),
             """\
-Unsupported method call
-  Explanation: Dynamo does not know how to trace method `__iter__` of class `zip`
-  Hint: Avoid calling `zip.__iter__` in your code.
-  Hint: Please report an issue to PyTorch.
-  Hint: Dynamo does not fully support tracing builtin iterators (e.g. `map`, `zip`, `enumerate`) passed in from uncompiled to compiled regions (e.g. `torch.compile(fn)(enumerate(...))`). This can happen unintentionally if a previous graph break happens with a builtin iterator in the local scope.
-  Hint: List/dict comprehensions in Python <= 3.11 result in implicit function calls, which Dynamo cannot trace as a top level frame. Possible workarounds are (1) use a loop instead of a comprehension, (2) fix any graph breaks in the function above the comprehension, (3) wrap the comprehension in a function, or (4) use Python 3.12+.
+missing tp_iter
+  Explanation: Dynamo does not know how to iterate over `UserDefinedObjectVariable(zip)`.
+  Hint: It may be possible to write Dynamo tracing rules for this code. Please report an issue to PyTorch if you encounter this graph break often and it is causing performance issues.
 
-  Developer debug context: call_method UserDefinedObjectVariable(zip) __iter__ [] {}
+  Developer debug context: tp_iter_impl not implemented for zip
 
- For more details about this graph break, please visit: https://meta-pytorch.github.io/compile-graph-break-site/gb/gb0156.html
+ For more details about this graph break, please visit: https://meta-pytorch.github.io/compile-graph-break-site/gb/gb0811.html
 
 from user code:
    File "test_error_messages.py", line N, in fn
@@ -309,17 +339,13 @@ from user code:
             Unsupported,
             lambda: torch.compile(fn, backend="eager", fullgraph=True)(x, dct.items()),
             """\
-Unsupported method call
-  Explanation: Dynamo does not know how to trace method `__iter__` of class `dict_items`
-  Hint: Avoid calling `dict_items.__iter__` in your code.
-  Hint: Please report an issue to PyTorch.
-  Hint: Consider moving the creation of dict view object (e.g. `dict.keys()`, `dict.items()`,) to the compiled region, instead of passing it as an input to the compiled region.
-  Hint: Dynamo does not fully support tracing builtin iterators (e.g. `map`, `zip`, `enumerate`) passed in from uncompiled to compiled regions (e.g. `torch.compile(fn)(enumerate(...))`). This can happen unintentionally if a previous graph break happens with a builtin iterator in the local scope.
-  Hint: List/dict comprehensions in Python <= 3.11 result in implicit function calls, which Dynamo cannot trace as a top level frame. Possible workarounds are (1) use a loop instead of a comprehension, (2) fix any graph breaks in the function above the comprehension, (3) wrap the comprehension in a function, or (4) use Python 3.12+.
+missing tp_iter
+  Explanation: Dynamo does not know how to iterate over `UserDefinedObjectVariable(dict_items)`.
+  Hint: It may be possible to write Dynamo tracing rules for this code. Please report an issue to PyTorch if you encounter this graph break often and it is causing performance issues.
 
-  Developer debug context: call_method UserDefinedObjectVariable(dict_items) __iter__ [] {}
+  Developer debug context: tp_iter_impl not implemented for dict_items
 
- For more details about this graph break, please visit: https://meta-pytorch.github.io/compile-graph-break-site/gb/gb0156.html
+ For more details about this graph break, please visit: https://meta-pytorch.github.io/compile-graph-break-site/gb/gb0811.html
 
 from user code:
    File "test_error_messages.py", line N, in fn
@@ -976,7 +1002,7 @@ Data-dependent branching
         # File "test_error_messages.py", line N, in fn, code: if x.sum() > 0:
         gt = gt(sum_1, 0)
 
-  Hint: The branch condition uses a scalar integer tensor. Consider rewriting the computation to use plain Python ints (e.g. use int attributes instead of tensor buffers) so the condition becomes a shape guard instead of data-dependent branching.
+  Hint: For the common pattern `if tensor_cond: x = transform(x)` (e.g. clamping inf/nan values), consider making the code branchless by always applying the transform. Operations like torch.clamp, torch.nan_to_num, and torch.where are typically no-ops on well-behaved inputs and compile without graph breaks.
   Hint: This graph break is fundamental - it is unlikely that Dynamo will ever be able to trace through your code. Consider finding a workaround.
   Hint: Use `torch.cond` to express dynamic control flow.
 
@@ -987,6 +1013,35 @@ Data-dependent branching
 from user code:
    File "test_error_messages.py", line N, in fn
     if x.sum() > 0:""",
+        )
+
+    def test_data_dependent_branching_bool_tensor_hints(self):
+        def cast_overflow_tensors(tensors, offset=1000):
+            if tensors.isinf().any() or tensors.isnan().any():
+                clamp_value = torch.finfo(tensors.dtype).max - offset
+                tensors = torch.clamp(tensors, min=-clamp_value, max=clamp_value)
+            return tensors
+
+        self.assertExpectedInlineMunged(
+            Unsupported,
+            lambda: torch.compile(
+                cast_overflow_tensors, backend="eager", fullgraph=True
+            )(torch.randn(3)),
+            """\
+Data-dependent branching
+  Explanation: Detected data-dependent branching (e.g. `if my_tensor.sum() > 0:`). Dynamo does not support tracing dynamic control flow.
+  Hint: For the common pattern `if tensor_cond: x = transform(x)` (e.g. clamping inf/nan values), consider making the code branchless by always applying the transform. Operations like torch.clamp, torch.nan_to_num, and torch.where are typically no-ops on well-behaved inputs and compile without graph breaks.
+  Hint: Note: Python `or`/`and` between tensor expressions (e.g. `tensor.any() or other_tensor.any()`) triggers implicit bool conversion. Use `torch.logical_or`/`torch.logical_and` or the `|`/`&` operators instead.
+  Hint: This graph break is fundamental - it is unlikely that Dynamo will ever be able to trace through your code. Consider finding a workaround.
+  Hint: Use `torch.cond` to express dynamic control flow.
+
+  Developer debug context: attempted to jump with TensorVariable()
+
+ For more details about this graph break, please visit: https://meta-pytorch.github.io/compile-graph-break-site/gb/gb0170.html
+
+from user code:
+   File "test_error_messages.py", line N, in cast_overflow_tensors
+    if tensors.isinf().any() or tensors.isnan().any():""",
         )
 
     # Test that the bytecode source attribution is correct with VariableTracker
@@ -1054,7 +1109,7 @@ Graph Break Reason: Data-dependent branching
         # File "test_error_messages.py", line N, in fn, code: if x.sum() > 0:
         gt = gt(sum_1, 0)
 
-  Hint: The branch condition uses a scalar integer tensor. Consider rewriting the computation to use plain Python ints (e.g. use int attributes instead of tensor buffers) so the condition becomes a shape guard instead of data-dependent branching.
+  Hint: For the common pattern `if tensor_cond: x = transform(x)` (e.g. clamping inf/nan values), consider making the code branchless by always applying the transform. Operations like torch.clamp, torch.nan_to_num, and torch.where are typically no-ops on well-behaved inputs and compile without graph breaks.
   Hint: This graph break is fundamental - it is unlikely that Dynamo will ever be able to trace through your code. Consider finding a workaround.
   Hint: Use `torch.cond` to express dynamic control flow.
 
@@ -1136,14 +1191,15 @@ User code traceback:
         msg = re.sub(r"line (\d+)", "line N", msg)
         # remove carets
         msg = re.sub(r"\n\s*~*\^+\n", "\n", msg)
-        self.assertExpectedInline(
-            msg,
+        expected = (
             """\
 Traceback (most recent call last):
   File "test_error_messages.py", line N, in test_no_internal_compiler_stacktrace
     torch.compile(fn, backend="eager", fullgraph=True)()
   File "eval_frame.py", line N, in compile_wrapper
-    raise e.with_traceback(None) from e.__cause__  # User compiler error
+"""
+            + _compile_wrapper_raise_source()
+            + """\
 torch._dynamo.exc.Unsupported: Call to `torch._dynamo.graph_break()`
   Explanation: User-inserted graph break. Message: None
   Hint: Remove the `torch._dynamo.graph_break()` call.
@@ -1160,7 +1216,11 @@ from user code:
 
 Set TORCHDYNAMO_VERBOSE=1 for the internal stack trace (please do this especially if you're reporting a bug to PyTorch). For even more developer context, set TORCH_LOGS="+dynamo"
 
-""",
+"""
+        )
+        self.assertExpectedInline(
+            msg,
+            expected,
         )
 
     @torch._dynamo.config.patch(verbose=True)
@@ -1286,7 +1346,7 @@ Data-dependent branching
         # File "test_error_messages.py", line N, in gn, code: if x.sum() > 0:
         gt = gt(sum_1, 0)
 
-  Hint: The branch condition uses a scalar integer tensor. Consider rewriting the computation to use plain Python ints (e.g. use int attributes instead of tensor buffers) so the condition becomes a shape guard instead of data-dependent branching.
+  Hint: For the common pattern `if tensor_cond: x = transform(x)` (e.g. clamping inf/nan values), consider making the code branchless by always applying the transform. Operations like torch.clamp, torch.nan_to_num, and torch.where are typically no-ops on well-behaved inputs and compile without graph breaks.
   Hint: This graph break is fundamental - it is unlikely that Dynamo will ever be able to trace through your code. Consider finding a workaround.
   Hint: Use `torch.cond` to express dynamic control flow.
 
@@ -1342,7 +1402,7 @@ Data-dependent branching
         # File "test_error_messages.py", line N, in fn, code: if x.sum() > 0:
         gt = gt(sum_1, 0)
 
-  Hint: The branch condition uses a scalar integer tensor. Consider rewriting the computation to use plain Python ints (e.g. use int attributes instead of tensor buffers) so the condition becomes a shape guard instead of data-dependent branching.
+  Hint: For the common pattern `if tensor_cond: x = transform(x)` (e.g. clamping inf/nan values), consider making the code branchless by always applying the transform. Operations like torch.clamp, torch.nan_to_num, and torch.where are typically no-ops on well-behaved inputs and compile without graph breaks.
   Hint: This graph break is fundamental - it is unlikely that Dynamo will ever be able to trace through your code. Consider finding a workaround.
   Hint: Use `torch.cond` to express dynamic control flow.
 
@@ -2485,7 +2545,7 @@ Data-dependent branching
         # File "test_error_messages.py", line N, in f1, code: if x.sum() > 0:
         gt = gt(sum_1, 0)
 
-  Hint: The branch condition uses a scalar integer tensor. Consider rewriting the computation to use plain Python ints (e.g. use int attributes instead of tensor buffers) so the condition becomes a shape guard instead of data-dependent branching.
+  Hint: For the common pattern `if tensor_cond: x = transform(x)` (e.g. clamping inf/nan values), consider making the code branchless by always applying the transform. Operations like torch.clamp, torch.nan_to_num, and torch.where are typically no-ops on well-behaved inputs and compile without graph breaks.
   Hint: This graph break is fundamental - it is unlikely that Dynamo will ever be able to trace through your code. Consider finding a workaround.
   Hint: Use `torch.cond` to express dynamic control flow.
 
