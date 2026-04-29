@@ -519,6 +519,15 @@ inductor_default_autotune_rep = int(
     os.getenv("TORCHINDUCTOR_DEFAULT_AUTOTUNE_REP", 100)
 )
 
+# When enabled, the autotuner captures each candidate kernel in a CUDA graph
+# and benchmarks graph replay instead of eager kernel launches. This eliminates
+# host-side dispatch overhead from timing measurements, giving results that are
+# representative of CUDA graph replay execution. Useful when the compiled output
+# will run under external CUDA graph capture.
+autotune_cudagraph_benchmarking: bool = (
+    os.environ.get("TORCHINDUCTOR_AUTOTUNE_CUDAGRAPH_BENCHMARKING") == "1"
+)
+
 
 # Modifies the number of autotuning choices displayed, set to None for all
 def _autotune_num_choices_displayed_default() -> int | None:
@@ -627,6 +636,14 @@ def _nvgemm_max_profiling_configs_default() -> int | None:
 
 
 nvgemm_max_profiling_configs: int | None = _nvgemm_max_profiling_configs_default()
+
+# When enabled, adds supplement kernel configs that nvMatmulHeuristics
+# doesn't explore (certain tile/cluster combos that empirically beat
+# cuBLAS on decode shapes). These are added on top of the heuristic
+# picks, increasing the total number of configs benchmarked.
+nvgemm_supplement_configs: bool = (
+    os.environ.get("TORCHINDUCTOR_NVGEMM_SUPPLEMENT_CONFIGS", "0") == "1"
+)
 
 
 # As above, specify candidate backends for conv autotune.
