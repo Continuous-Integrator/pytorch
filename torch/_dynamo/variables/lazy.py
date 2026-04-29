@@ -360,7 +360,12 @@ class LazyConstantVariable(LazyVariableTracker):
     """
 
     supported_types = (int, float, bool, str)
-    _nonvar_fields = {"_type_guard_installed", *LazyVariableTracker._nonvar_fields}
+    _nonvar_fields = {
+        "_type_guard_installed",
+        "_type_guard_ref",
+        "_handler_type",
+        *LazyVariableTracker._nonvar_fields,
+    }
 
     @staticmethod
     def create(  # pyrefly: ignore[bad-override]
@@ -384,6 +389,8 @@ class LazyConstantVariable(LazyVariableTracker):
     def __init__(self, _cache: LazyCache, **kwargs: Any) -> None:
         super().__init__(_cache, **kwargs)
         self._type_guard_installed = False
+        self._type_guard_ref: Any = None
+        self._handler_type: type | None = None
 
     def _ensure_type_guard(self) -> None:
         """Install TYPE_MATCH guard if not already installed and not realized."""
@@ -393,8 +400,10 @@ class LazyConstantVariable(LazyVariableTracker):
         from ..guards import GuardBuilder, install_guard
 
         assert self.source is not None
-        install_guard(self.source.make_guard(GuardBuilder.TYPE_MATCH))
+        guard = self.source.make_guard(GuardBuilder.TYPE_MATCH)
+        install_guard(guard)
         self._type_guard_installed = True
+        self._type_guard_ref = guard
 
     def realize(self) -> VariableTracker:
         """Force construction of the real VariableTracker."""
@@ -406,21 +415,20 @@ class LazyConstantVariable(LazyVariableTracker):
         from ..guards import GuardBuilder, install_guard
         from .constant import ConstantVariable
 
-        tracing_context = TracingContext.get()
         assert self.source is not None
 
-        # Realize first to see what we get
         result = super().realize()
 
         # Only remove TYPE_MATCH if we're installing CONSTANT_MATCH
         # (which subsumes it). For SymNodeVariable, keep TYPE_MATCH.
         if isinstance(result, ConstantVariable):
-            if self._type_guard_installed:
-                tracing_context.guards_context.dynamo_guards.remove_guards_with_source(
-                    self.source
+            if self._type_guard_ref is not None:
+                tracing_context = TracingContext.get()
+                tracing_context.guards_context.dynamo_guards.inner.discard(
+                    self._type_guard_ref
                 )
-            constant_guard = self.source.make_guard(GuardBuilder.CONSTANT_MATCH)
-            install_guard(constant_guard)
+                self._type_guard_ref = None
+            install_guard(self.source.make_guard(GuardBuilder.CONSTANT_MATCH))
 
         return result
 
@@ -470,25 +478,19 @@ class LazyConstantVariable(LazyVariableTracker):
     def get_handler_type_for_dispatch(self) -> type:
         """Return the VariableTracker type to use for builtin handler dispatch.
 
-        For LazyConstantVariable, we return LazyConstantVariable (this class) so
-        that the handler lookup in _make_handler can recognize it and handle
-        it specially via ComputedLazyConstantVariable.
-
-        We don't call _maybe_realize_for_type() here because that would realize
-        the variable and install guards, defeating the purpose of lazy evaluation.
-        The _make_handler code checks for LazyConstantVariable in arg_types and
-        creates ComputedLazyConstantVariable with proper reconstruct_fn.
+        This allows builtins like isinstance() and type() to find the correct
+        handler without triggering full realization of the lazy constant.
         """
-        # If already realized, return the actual type
-        if self.is_realized():
-            return type(self.realize())
+        if self._handler_type is not None:
+            return self._handler_type
 
-        # For unrealized LazyConstantVariable, return LazyConstantVariable
-        # so that _make_handler recognizes it and handles it lazily.
-        # Install TYPE_MATCH guard (not CONSTANT_MATCH) to avoid
-        # unnecessary recompilation when values change.
-        self._ensure_type_guard()
-        return LazyConstantVariable
+        from .constant import ConstantVariable
+
+        realized_type = self._maybe_realize_for_type()
+        self._handler_type = (
+            realized_type if realized_type is not None else ConstantVariable
+        )
+        return self._handler_type
 
     def lazy_isinstance(self, cls: type) -> bool:
         """Check isinstance without triggering realization when possible.
