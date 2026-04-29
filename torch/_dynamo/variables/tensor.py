@@ -57,10 +57,7 @@ from ..exc import (
     UserError,
     UserErrorType,
 )
-from ..external_utils import (
-    call_hook_from_backward_state,
-    register_hook_trampoline_for_intermediate,
-)
+from ..external_utils import call_hook_from_backward_state
 from ..guards import GuardBuilder, install_guard
 from ..source import AttrSource
 from ..utils import (
@@ -1902,10 +1899,12 @@ class TensorVariable(VariableTracker):
             )
             hook_node = target_tracer.create_proxy("get_attr", hook_name, (), {})
 
+            from torch._higher_order_ops.register_hook import register_hook_op
+
             p_args = (tensor_proxy, hook_node, *list(hook_freevars.keys()))
             hooked_proxy = target_tracer.create_proxy(
                 "call_function",
-                register_hook_trampoline_for_intermediate,
+                register_hook_op,
                 tuple(p_args),
                 {},
             )
