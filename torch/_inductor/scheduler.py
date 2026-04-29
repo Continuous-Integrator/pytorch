@@ -4358,8 +4358,6 @@ class Scheduler:
         )
         mod = PyCodeCache.load(src_code)
 
-        # Non-Triton backends (e.g. NVGEMM) emit modules without the triton_ wrapper;
-        # they don't go through async triton compile.
         if not hasattr(mod, "triton_"):
             return (None, mod)
 
@@ -4394,8 +4392,6 @@ class Scheduler:
             or node1.is_foreach()
             or node2.is_foreach()
         ):
-            # Non-Triton templates (CuteDSL, standalone NVUniversalGemmBuffer) auto-fuse.
-            # NVGEMM fusion benchmarking goes through the MultiTemplateBuffer path below.
             return FusionResult.fuse(True)
 
         node_list_1 = node1.get_nodes()
@@ -4424,7 +4420,6 @@ class Scheduler:
 
         def log_fusion(ms_fused: float, ms1: float, ms2: float) -> None:
             if fusion_log.isEnabledFor(logging.DEBUG):
-                # Guard against zero values (e.g., NVGEMM skips benchmarking)
                 if ms_fused == 0.0:
                     fusion_log.debug(
                         "can fuse (assumed): fusing %s with %s (benchmarking skipped)",
@@ -4650,7 +4645,6 @@ class Scheduler:
                                 res = mod_fused.triton_
                                 res.precompile()
                             else:
-                                # NVGEMM modules don't have triton_ attribute
                                 res = None
                         else:
                             res = None
@@ -4667,7 +4661,6 @@ class Scheduler:
                         continue
 
                     if bench_epilogue:
-                        # Use appropriate swap method based on choice type
                         is_nvgemm_choice = isinstance(choice, NVUniversalGemmCaller)
                         swap_ctx = (
                             # pyrefly: ignore [missing-attribute]
@@ -4694,16 +4687,8 @@ class Scheduler:
 
                         is_nvgemm_choice = isinstance(choice, NVUniversalGemmCaller)
                         if is_nvgemm_choice and fusible_choice:
-                            # NVGEMM kernels come from cutlass_api with fixed,
-                            # pre-tuned register allocations; the epilogue is a
-                            # downstream computation in the same kernel and does
-                            # not change MMA register pressure. Triton's
-                            # n_regs / n_spills heuristic doesn't apply here —
-                            # if an NVGEMM choice was determined fusible by
-                            # `fusible_choice`, we accept it. Picking the first
-                            # one in sorted-by-unfused-time order matches what
-                            # Triton would do if `_fuse_epilogue` always
-                            # returned True.
+                            # NVGEMM register allocations are fixed by cutlass_api;
+                            # Triton's n_regs/n_spills heuristic doesn't apply.
                             ms_fused_choice = choice
                             break
                         elif res and fusible_choice:
@@ -4738,12 +4723,6 @@ class Scheduler:
                     if config.multi_kernel_hints:
                         hint_override_best_fusion_choice[None] = ms_fused_choice
                         if isinstance(ms_fused_choice, NVUniversalGemmCaller):
-                            # NVGEMM codegen does not consume _make_kernel_renders
-                            # (multi-kernel hint dispatch is Triton-only). The
-                            # per-hint Triton compiles done above are wasted
-                            # work in this branch — there is no clean way to
-                            # avoid them since the winner isn't known until
-                            # benchmarking completes.
                             # pyrefly: ignore [missing-attribute]
                             multi_node.finalize_as_nvgemm_caller(ms_fused_choice)
                         else:
@@ -4766,11 +4745,9 @@ class Scheduler:
                 else:
                     return False
 
-            # Pick any real future (NVGEMM compile_kernel returns None as the
-            # future, since NVGEMM modules don't go through async triton compile).
-            # If we hand `None` to from_callable, the downstream gate runs
-            # `benchmark_when_ready` synchronously and inline-blocks on any
-            # remaining Triton futures inside, losing async-compile overlap.
+            # Use a non-None future when available: handing None to from_callable
+            # causes benchmark_when_ready to run synchronously, blocking any
+            # remaining Triton async-compile overlap.
             deferred_future = next(
                 (fut for _, fut, _ in future_choices if fut is not None), None
             )

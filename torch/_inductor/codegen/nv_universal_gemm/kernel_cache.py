@@ -73,10 +73,10 @@ def _build_kernel_cache() -> dict[str, Any]:
 
 
 def _get_kernel_cache() -> dict[str, Any]:
-    """Lazy-initialize and return the kernel name -> kernel cache.
+    """Return the kernel cache, initializing lazily if needed.
 
-    Returns a snapshot to the local frame: a concurrent clear_cache() that
-    rebinds the global to None cannot turn the caller's read into AttributeError.
+    Snapshot to local frame: a concurrent clear_cache() rebinding the global to
+    None cannot turn the caller's subsequent read into AttributeError.
     """
     global _kernel_by_name_cache
     if _kernel_by_name_cache is None:
@@ -157,8 +157,6 @@ def ensure_cache_initialized() -> None:
     _get_kernel_cache()
 
 
-# Cache for EFC kernels with specific epilogue configurations.
-# Key: (efc_kernel_name, epilogue_source, _epilogue_args_signature) -> kernel
 _efc_epilogue_cache: dict[tuple[str, str, tuple], Any] = {}
 
 
@@ -171,8 +169,6 @@ def clear_cache() -> None:
 
 
 class _NVGEMMCacheWrapper:
-    """Wrapper to integrate with torch._inductor.utils.clear_caches()."""
-
     def cache_clear(self) -> None:
         clear_cache()
 
@@ -188,20 +184,10 @@ def get_efc_kernel_with_epilogue(
     epilogue_args: Any,
     epilogue_source: str = "",
 ) -> Any:
-    """Get an EFC kernel configured with a specific epilogue.
+    """Get (or create and cache) an EFC kernel bound to a specific epilogue.
 
-    This avoids the slow get_kernels() call by:
-    1. Getting the base kernel's metadata from the cache
-    2. Creating a new kernel with epilogue metadata added
-
-    Args:
-        efc_kernel_name: The EFC kernel name (e.g., cutedsl.PersistentDenseGemmEFCKernel_...)
-        epilogue_args: EpilogueArguments from cutlass_api
-        epilogue_source: Source code string of the epilogue function (preferred cache key).
-            When provided, avoids unreliable inspect.getsource on generated code.
-
-    Returns:
-        The configured EFC kernel, or None if not found.
+    epilogue_source is preferred over inspect.getsource — generated functions
+    produce unstable source strings that can't be hashed reliably.
     """
     if not epilogue_source:
         epilogue_source = str(epilogue_args) if epilogue_args is not None else ""
@@ -214,8 +200,6 @@ def get_efc_kernel_with_epilogue(
 
     base_cache = _get_kernel_cache()
 
-    # Hold lock for the full operation — this is not a hot path (called once per
-    # unique kernel+epilogue combination), so simplicity beats concurrency here.
     with _cache_lock:
         if cache_key in _efc_epilogue_cache:
             log.debug("EFC kernel with epilogue found in cache: %s", efc_kernel_name)
