@@ -2129,11 +2129,6 @@ class GuardBuilder(GuardBuilderBase):
         value = self.get(guard)
         if isinstance(value, torch._subclasses.FakeTensor) and value.pytype:
             t = value.pytype
-        elif isinstance(value, FakeScriptObject):
-            # During compile-time tracing, opaque objects like DeviceMesh are
-            # wrapped in FakeScriptObject. Guard against the real underlying
-            # type so the guard passes at runtime when the real object shows up.
-            t = type(value.real_obj)
         else:
             t = type(value)
 
@@ -2147,22 +2142,50 @@ class GuardBuilder(GuardBuilderBase):
         code = f"___check_type_id({self.arg_ref(guard)}, {obj_id}), type={type_repr}"
         self._set_guard_export_info(guard, [code])
 
-        verbose_code_parts = get_verbose_code_parts(
-            code, guard, recompile_hint=f"type {t.__qualname__}"
+        self.get_guard_manager(guard).add_type_match_guard(
+            obj_id,
+            get_verbose_code_parts(
+                code, guard, recompile_hint=f"type {t.__qualname__}"
+            ),
+            guard.user_stack,
         )
+
+    @register_guard_check_spec(
+        get_metadata_fn=lambda guard, value: type(
+            value.real_obj if isinstance(value, FakeScriptObject) else value
+        ),
+        eval_fn=lambda value, metadata: type(
+            value.real_obj if isinstance(value, FakeScriptObject) else value
+        )
+        is metadata,
+    )
+    def FAKE_SCRIPT_TYPE_MATCH(self, guard: Guard) -> None:
+        # Like TYPE_MATCH, but for sources that may resolve to either a
+        # FakeScriptObject (during outer AOTAutograd tracing) or the
+        # underlying real opaque object (at runtime). The C++ leaf guard
+        # unwraps FakeScriptObject before comparing types.
+        value = self.get(guard)
         if isinstance(value, FakeScriptObject):
-            self.get_guard_manager(guard).add_fake_script_object_guard(
-                FakeScriptObject,
-                obj_id,
-                verbose_code_parts,
-                guard.user_stack,
-            )
+            t = type(value.real_obj)
         else:
-            self.get_guard_manager(guard).add_type_match_guard(
-                obj_id,
-                verbose_code_parts,
-                guard.user_stack,
-            )
+            t = type(value)
+
+        if t.__qualname__ != t.__name__:
+            guard._unserializable = True
+
+        obj_id = self.id_ref(t, f"type({guard.name})")
+        type_repr = repr(t)
+        code = f"___check_fake_script_type({self.arg_ref(guard)}, {obj_id}), type={type_repr}"
+        self._set_guard_export_info(guard, [code])
+
+        self.get_guard_manager(guard).add_fake_script_type_match_guard(
+            FakeScriptObject,
+            obj_id,
+            get_verbose_code_parts(
+                code, guard, recompile_hint=f"type {t.__qualname__}"
+            ),
+            guard.user_stack,
+        )
 
     # Dict versions change on any mutation, so a version captured during one
     # trace is meaningless for a later subgraph reuse check.

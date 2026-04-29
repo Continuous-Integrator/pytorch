@@ -333,7 +333,7 @@ class GuardManager:
         verbose_code_parts: list[str],
         user_stack: traceback.StackSummary | None,
     ) -> None: ...
-    def add_fake_script_object_guard(
+    def add_fake_script_type_match_guard(
         self,
         fake_script_object_type: type,
         type_id: int,

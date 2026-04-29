@@ -201,7 +201,7 @@ user_stack=None)
         self.assertFalse(guard(5))
         self.assertFalse(guard("foo"))
 
-    def test_fake_script_object_match_guard(self):
+    def test_fake_script_type_match_guard(self):
         class Real:
             pass
 
@@ -211,7 +211,7 @@ user_stack=None)
         root = RootGuardManager()
         real = Real()
         fake = FakeScriptObject(object(), "Real", real)
-        guard = guards.FAKE_SCRIPT_OBJECT_MATCH(
+        guard = guards.FAKE_SCRIPT_TYPE_MATCH(
             root,
             FakeScriptObject,
             id_type(real),
