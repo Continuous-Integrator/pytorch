@@ -113,7 +113,11 @@ class CUDACombinedScheduling(BaseScheduling):
                 return self._cutedsl_scheduling.can_fuse_horizontal(
                     node1, node2
                 )  # always False at the moment
-            if self._nv_universal_gemm_scheduling.is_nv_universal_gemm_template(node):
+            if self._nv_universal_gemm_scheduling.is_nv_universal_gemm_template(
+                node
+            ) or self._nv_universal_gemm_scheduling.is_nv_universal_gemm_fused_template(
+                node
+            ):
                 return self._nv_universal_gemm_scheduling.can_fuse_horizontal(
                     node1, node2
                 )  # always False at the moment
@@ -234,10 +238,17 @@ class CUDACombinedScheduling(BaseScheduling):
                 return float("inf"), module.__file__ or ""
 
             device = V.graph.get_current_device_or_throw()
-            ms = benchmarker.benchmark(
-                lambda: call(clone_args(args)),
-                device=device,
-            )
+            try:
+                ms = benchmarker.benchmark(
+                    lambda: call(clone_args(args)),
+                    device=device,
+                )
+            except Exception as e:
+                log.debug(
+                    "Exception (%s) while benchmarking NVGEMM fused kernel",
+                    e,
+                )
+                return float("inf"), module.__file__ or ""
 
             return ms, module.__file__ or ""
 
@@ -264,7 +275,7 @@ class CUDACombinedScheduling(BaseScheduling):
             if self._is_nvgemm_node(node):
                 return (
                     self._nv_universal_gemm_scheduling.generate_kernel_code_from_nodes(
-                        nodes, benchmark_kernel
+                        nodes, benchmark_kernel, hint_override=hint_override
                     )
                 )
             break

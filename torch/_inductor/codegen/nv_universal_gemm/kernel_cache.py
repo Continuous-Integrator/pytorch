@@ -15,8 +15,37 @@ import threading
 from collections.abc import Callable
 from typing import Any
 
+import torch
+
 
 log = logging.getLogger(__name__)
+
+
+def _epilogue_args_signature(epilogue_args: Any) -> tuple:
+    """Extract a hashable signature of epilogue args for cache keying.
+
+    Two callers with the same `(efc_kernel_name, epilogue_source)` but
+    different aux-tensor specs (dtype, shape, stride) would otherwise share
+    a kernel object whose internal JIT state is mutated by each call to
+    `kernel.compile(args)` — a silent miscompile, since the compiled
+    artifact's launch closure reads the kernel's CURRENT JIT at launch time
+    rather than the one from when the artifact was built.
+    """
+    if epilogue_args is None:
+        return ()
+    tensors = getattr(epilogue_args, "tensors", None)
+    if not tensors:
+        return ()
+    sig: list[tuple] = []
+    for name, val in tensors.items():
+        if torch.is_tensor(val):
+            sig.append(
+                (name, "tensor", val.dtype, tuple(val.shape), tuple(val.stride()))
+            )
+        else:
+            sig.append((name, type(val).__name__))
+    return tuple(sig)
+
 
 _cache_lock = threading.Lock()
 
@@ -109,7 +138,7 @@ def ensure_cache_initialized() -> None:
 
 # Cache for EFC kernels with specific epilogue configurations
 # Key: (efc_kernel_name, epilogue_fn_code) -> kernel object
-_efc_epilogue_cache: dict[tuple[str, str], Any] = {}
+_efc_epilogue_cache: dict[tuple[str, str, tuple], Any] = {}
 
 
 def clear_cache() -> None:
@@ -158,7 +187,11 @@ def get_efc_kernel_with_epilogue(
     if not epilogue_source:
         epilogue_source = str(epilogue_args) if epilogue_args is not None else ""
 
-    cache_key = (efc_kernel_name, epilogue_source)
+    cache_key = (
+        efc_kernel_name,
+        epilogue_source,
+        _epilogue_args_signature(epilogue_args),
+    )
 
     # Hold lock for the full operation — this is not a hot path (called once per
     # unique kernel+epilogue combination), so simplicity beats concurrency here.

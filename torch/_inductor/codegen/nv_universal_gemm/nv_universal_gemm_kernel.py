@@ -200,7 +200,19 @@ class NVUniversalGemmKernel(Kernel):
         accumulator_type={acc_dtype_str},
         epilogue=epi_args,
     )"""
-            cache_key = f'({cache_key}, "epilogue")'
+            # Aux tensors from the epilogue change the kernel's compiled
+            # artifact (cutlass_api dispatches on their dtype/shape) but the
+            # base cache_key only fingerprints A/B. Without folding aux
+            # tensor metadata in, a wrapper invoked with the same A/B but a
+            # differently-shaped aux input (e.g. dynamic-shape bias) would
+            # silently reuse a stale artifact.
+            aux_sig = ", ".join(
+                f"{name}.shape, {name}.dtype" for name in self.epilogue_reads
+            )
+            if aux_sig:
+                cache_key = f'({cache_key}, "epilogue", {aux_sig})'
+            else:
+                cache_key = f'({cache_key}, "epilogue")'
         else:
             kernel_cache_import = "from torch._inductor.codegen.nv_universal_gemm.kernel_cache import get_kernel_by_name"
             epilogue_import = ""
