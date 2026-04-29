@@ -3058,6 +3058,222 @@ class TestFxGraphCacheHashing(TestCase):
                 temp.close()
                 os.unlink(temp.name)
 
+    def _make_graph_module(self, ops, rename_map=None):
+        """
+        Build a simple FX graph: placeholders x, y followed by a chain of
+        binary ops where each op takes the previous result and x as inputs.
+
+        ops: list of callables, e.g. [torch.add, torch.mul]
+        rename_map: optional dict mapping original auto-generated node names
+                    to new names, simulating different tracing contexts
+        """
+        graph = torch.fx.Graph()
+        x = graph.placeholder("x")
+        y = graph.placeholder("y")
+        prev = y
+        for op in ops:
+            prev = graph.call_function(op, (prev, x))
+        graph.output(prev)
+        gm = torch.fx.GraphModule({}, graph)
+        if rename_map:
+            from copy import copy
+
+            old_used = copy(gm.graph._graph_namespace._used_names)
+            gm.graph._graph_namespace._used_names = set()
+            for node in gm.graph.nodes:
+                if node.name in rename_map:
+                    node._rename(rename_map[node.name])
+            gm.graph._graph_namespace._used_names = (
+                old_used | gm.graph._graph_namespace._used_names
+            )
+            gm.recompile()
+        return gm
+
+    def test_node_name_canonicalization_same_structure(self):
+        """
+        Two structurally identical graphs with different node names
+        should produce the same hash.
+        """
+        gm1 = self._make_graph_module([torch.add, torch.mul])
+        gm2 = self._make_graph_module(
+            [torch.add, torch.mul],
+            rename_map={"add": "add_42", "mul": "mul_42"},
+        )
+        gm3 = self._make_graph_module(
+            [torch.add, torch.mul],
+            rename_map={"add": "layer7_add", "mul": "layer7_mul"},
+        )
+
+        h1 = FxGraphCachePickler(gm1).get_hash(gm1)
+        h2 = FxGraphCachePickler(gm2).get_hash(gm2)
+        h3 = FxGraphCachePickler(gm3).get_hash(gm3)
+
+        self.assertEqual(h1, h2)
+        self.assertEqual(h1, h3)
+
+    def test_node_name_canonicalization_different_structure(self):
+        """
+        Structurally different graphs must still produce different hashes
+        even after canonicalization.
+        """
+        gm_add_mul = self._make_graph_module([torch.add, torch.mul])
+        gm_mul_add = self._make_graph_module([torch.mul, torch.add])
+        gm_add_only = self._make_graph_module([torch.add])
+
+        h1 = FxGraphCachePickler(gm_add_mul).get_hash(gm_add_mul)
+        h2 = FxGraphCachePickler(gm_mul_add).get_hash(gm_mul_add)
+        h3 = FxGraphCachePickler(gm_add_only).get_hash(gm_add_only)
+
+        self.assertNotEqual(h1, h2)
+        self.assertNotEqual(h1, h3)
+        self.assertNotEqual(h2, h3)
+
+    def test_node_name_canonicalization_restores_names(self):
+        """
+        After hashing, the original node names must be preserved on the
+        graph module.
+        """
+        gm = self._make_graph_module(
+            [torch.add, torch.mul, torch.sub],
+            rename_map={
+                "add": "custom_add",
+                "mul": "custom_mul",
+                "sub": "custom_sub",
+            },
+        )
+
+        original_names = [n.name for n in gm.graph.nodes]
+        FxGraphCachePickler(gm).get_hash(gm)
+        restored_names = [n.name for n in gm.graph.nodes]
+
+        self.assertEqual(original_names, restored_names)
+
+    def test_node_name_canonicalization_preserves_code(self):
+        """
+        After hashing, the generated code of the graph module must be
+        identical to what it was before (i.e. the recompile restores it).
+        """
+        gm = self._make_graph_module([torch.add, torch.mul])
+        original_code = gm._code
+        FxGraphCachePickler(gm).get_hash(gm)
+        self.assertEqual(original_code, gm._code)
+
+    def test_node_name_canonicalization_many_ops(self):
+        """
+        Canonicalization works for longer chains of operations with many
+        different op types.
+        """
+        ops = [torch.add, torch.mul, torch.sub, torch.add, torch.mul]
+        gm1 = self._make_graph_module(ops)
+        gm2 = self._make_graph_module(
+            ops,
+            rename_map={
+                "add": "block0_add",
+                "mul": "block0_mul",
+                "sub": "block0_sub",
+                "add_1": "block0_add_1",
+                "mul_1": "block0_mul_1",
+            },
+        )
+
+        h1 = FxGraphCachePickler(gm1).get_hash(gm1)
+        h2 = FxGraphCachePickler(gm2).get_hash(gm2)
+        self.assertEqual(h1, h2)
+
+    def test_node_name_canonicalization_transformer_layers(self):
+        """
+        Simulates the real-world scenario: identical transformer layer
+        graphs traced at different positions produce different node names
+        (add vs add_12) but should share the same cache entry.
+        """
+        ops = [torch.add, torch.mul, torch.add]
+
+        gms = []
+        for layer_idx in range(4):
+            rename = {}
+            for name in ["add", "mul", "add_1"]:
+                base, _, suffix = name.rpartition("_")
+                if base and suffix.isdigit():
+                    new_suffix = int(suffix) + layer_idx * 3
+                    rename[name] = f"{base}_{new_suffix}"
+                else:
+                    rename[name] = f"{name}_{layer_idx * 3}" if layer_idx else name
+            gms.append(self._make_graph_module(ops, rename_map=rename))
+
+        hashes = [FxGraphCachePickler(gm).get_hash(gm) for gm in gms]
+        for h in hashes[1:]:
+            self.assertEqual(hashes[0], h)
+
+    def test_node_name_canonicalization_with_getattr(self):
+        """
+        get_attr nodes should also be canonicalized.
+        """
+        graph1 = torch.fx.Graph()
+        x = graph1.placeholder("x")
+        weight = graph1.get_attr("weight")
+        result = graph1.call_function(torch.add, (x, weight))
+        graph1.output(result)
+
+        w = torch.randn(3)
+
+        gm1 = torch.fx.GraphModule({"weight": w}, graph1)
+
+        graph2 = torch.fx.Graph()
+        x2 = graph2.placeholder("x")
+        weight2 = graph2.get_attr("weight")
+        result2 = graph2.call_function(torch.add, (x2, weight2))
+        graph2.output(result2)
+        gm2 = torch.fx.GraphModule({"weight": w}, graph2)
+
+        from copy import copy
+
+        old_used = copy(gm2.graph._graph_namespace._used_names)
+        gm2.graph._graph_namespace._used_names = set()
+        for node in gm2.graph.nodes:
+            if node.op == "get_attr":
+                node._rename("weight_layer5")
+            elif node.op == "call_function":
+                node._rename("add_layer5")
+        gm2.graph._graph_namespace._used_names = (
+            old_used | gm2.graph._graph_namespace._used_names
+        )
+        gm2.recompile()
+
+        h1 = FxGraphCachePickler(gm1).get_hash(gm1)
+        h2 = FxGraphCachePickler(gm2).get_hash(gm2)
+        self.assertEqual(h1, h2)
+
+    def test_node_name_canonicalization_placeholders_not_renamed(self):
+        """
+        Placeholder names should NOT be canonicalized by the pickler
+        (they are handled separately by normalize_placeholder_names).
+        Changing a placeholder name should change the hash.
+        """
+        gm1 = self._make_graph_module([torch.add])
+        graph2 = torch.fx.Graph()
+        graph2.placeholder("a")
+        graph2.placeholder("b")
+        ab = graph2.call_function(torch.add, tuple(graph2.nodes)[:2])
+        graph2.output(ab)
+        gm2 = torch.fx.GraphModule({}, graph2)
+
+        h1 = FxGraphCachePickler(gm1).get_hash(gm1)
+        h2 = FxGraphCachePickler(gm2).get_hash(gm2)
+        self.assertNotEqual(h1, h2)
+
+    def test_node_name_canonicalization_idempotent(self):
+        """
+        Hashing the same graph module multiple times should always produce
+        the same result.
+        """
+        gm = self._make_graph_module(
+            [torch.add, torch.mul],
+            rename_map={"add": "custom_add", "mul": "custom_mul"},
+        )
+        hashes = [FxGraphCachePickler(gm).get_hash(gm) for _ in range(5)]
+        for h in hashes[1:]:
+            self.assertEqual(hashes[0], h)
+
 
 class TestCudaCompileCommand(TestCase):
     @requires_cuda_and_triton
