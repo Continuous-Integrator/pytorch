@@ -1,7 +1,9 @@
 # Owner(s): ["module: dynamo"]
 
 import copy
+import os
 import sys
+import tempfile
 
 import torch
 import torch.distributed as dist
@@ -12,7 +14,6 @@ from torch.fx.passes.regional_inductor import (
     regional_inductor,
 )
 from torch.testing._internal.common_utils import run_tests, TestCase
-from torch.testing._internal.distributed.fake_pg import FakeStore
 
 
 if not dist.is_available():
@@ -20,19 +21,32 @@ if not dist.is_available():
     sys.exit(0)
 
 
-def _make_fx_with_allreduce():
-    def f(t):
-        t = t.clone()
-        dist.all_reduce(t)
-        return t + 1
+def _f(t):
+    t = t.clone()
+    dist.all_reduce(t)
+    return t + 1
 
-    return make_fx(f)(torch.ones(4))
+
+def _make_fx_with_allreduce():
+    return make_fx(_f)(torch.ones(4))
 
 
 class TestRegionalInductorCollectives(TestCase):
     def setUp(self):
         super().setUp()
-        dist.init_process_group(backend="fake", rank=0, world_size=2, store=FakeStore())
+        os.environ.setdefault("MASTER_ADDR", "127.0.0.1")
+        os.environ.setdefault("MASTER_PORT", "29516")
+        # Single-rank Gloo lets us exercise real all_reduce numerics
+        # in-process without spawning a second worker. With world_size=1,
+        # ``all_reduce(t, op=SUM)`` is the identity, so any deviation in the
+        # rewrite is observable as a numeric mismatch against eager.
+        self._store_path = tempfile.mktemp()
+        dist.init_process_group(
+            backend="gloo",
+            rank=0,
+            world_size=1,
+            store=dist.FileStore(self._store_path, 1),
+        )
 
     def tearDown(self):
         try:
@@ -77,6 +91,10 @@ def forward(self, t_1):
         self.assertFalse(any(k.startswith("_torchbind_obj") for k in gm.__dict__))
         copy.deepcopy(gm)
 
+        # Numerics: rewritten graph must match eager.
+        x = torch.arange(4, dtype=torch.float32)
+        self.assertEqual(gm(x), _f(x))
+
     def test_regional_inductor_with_dist_all_reduce(self):
         gm = _make_fx_with_allreduce()
         for node in gm.graph.nodes:
@@ -95,6 +113,10 @@ def forward(self, t_1):
             compiled_gm = regional_inductor(gm)
 
         self.assertNotIn("c10d.allreduce_", compiled_gm.code)
+        x = torch.arange(4, dtype=torch.float32)
+        # ``regional_inductor`` switches the submodule to boxed calling
+        # convention; pass inputs as a list (the callee clears it).
+        self.assertEqual(compiled_gm([x]), _f(x))
 
 
 if __name__ == "__main__":

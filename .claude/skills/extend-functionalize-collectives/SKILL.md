@@ -1,6 +1,6 @@
 ---
 name: extend-functionalize-collectives
-description: Add support for a new inplace c10d collective (e.g. broadcast_, _allgather_base_, _reduce_scatter_base_, allgather_, reduce_scatter_, alltoall_, alltoall_base_, reduce_, send, recv_) to the FX-level functionalize-collectives pass in torch/fx/passes/regional_inductor.py. Use when the user wants to extend regional_inductor to handle distributed ops beyond all_reduce, when make_fx-traced graphs containing dist.* APIs hit "Tried to deepcopy object __torch__.torch.classes.c10d.ProcessGroup" errors for ops other than allreduce_, or when the user mentions extending _functionalize_inplace_collectives, _inplace_c10d_rewrites, _emit_collective_chain, _resolve_process_group_name, _resolve_reduce_op_str, or _rewrite_*_ helpers.
+description: Add support for a new inplace c10d collective (e.g. broadcast_, _allgather_base_, _reduce_scatter_base_, allgather_, reduce_scatter_, alltoall_, alltoall_base_, reduce_, send, recv_) to the FX-level functionalize-collectives pass in torch/fx/passes/regional_inductor.py. Use when the user wants to extend regional_inductor to handle distributed ops beyond all_reduce, when make_fx-traced graphs containing dist.* APIs hit "Tried to deepcopy object __torch__.torch.classes.c10d.ProcessGroup" errors for ops other than allreduce_, or when the user mentions extending _functionalize_inplace_collectives, _inplace_c10d_rewrites, _emit_collective_chain, _resolve_process_group_name, _resolve_reduce_op_str, _redirect_inplace_collective_uses, or _rewrite_*_ helpers.
 ---
 
 # Extend functionalize-collectives pass
@@ -26,8 +26,8 @@ consumers like `standalone_compile` can deepcopy the GraphModule.
 - The user mentions any of the helpers: `_functionalize_inplace_collectives`,
   `_inplace_c10d_rewrites`, `_emit_collective_chain`,
   `_resolve_process_group_name`, `_resolve_reduce_op_str`,
-  `_redirect_tensors_work_uses`, `_redirect_tensor_work_uses`, or wants
-  to add a new `_rewrite_<op>_`.
+  `_redirect_inplace_collective_uses`, or wants to add a new
+  `_rewrite_<op>_`.
 
 ## Architecture
 
@@ -35,7 +35,7 @@ The pass is built from small composable pieces. Per-op rewrites only need to
 glue them together — they don't reinvent any plumbing.
 
 ```
-_functionalize_inplace_collectives(gm)              # outer driver
+_functionalize_inplace_collectives(gm) -> gm        # outer driver
     │
     ├── _inplace_c10d_rewrites()                    # dispatch dict
     │
@@ -43,42 +43,46 @@ _functionalize_inplace_collectives(gm)              # outer driver
     │     ├── _resolve_process_group_name(gm, arg)  # PG  -> str
     │     ├── _resolve_reduce_op_str(gm, arg)       # ReduceOp -> "sum"/...
     │     ├── _emit_collective_chain(...)           # functional + wait + copy_
-    │     └── _redirect_{tensors,tensor}_work_uses  # depending on schema
+    │     └── _redirect_inplace_collective_uses(    # any (..., Work) schema
+    │           gm, node, wait_nodes               #   pass list of waits;
+    │         )                                    #   helper auto-detects
+    │                                              #   Tensor[] vs Tensor
     │
-    └── final cleanup: erase node, dead get_attr, drop _torchbind_obj* attrs
+    └── final cleanup: erase rewritten c10d node, drop unused get_attr nodes
+                       and their backing torchbind attrs
 ```
 
 Three things are shared across all rewrites:
 
-1. **Arg resolution.** `_resolve_torchbind_arg` unboxes `get_attr` nodes;
-   `_resolve_process_group_name` returns `pg.group_name`;
-   `_resolve_reduce_op_str` converts a `ReduceOp` ScriptObject (or enum) to
-   `"sum"`/`"avg"`/etc.
+1. **Arg resolution.** `_resolve_process_group_name(gm, arg)` returns
+   `pg.group_name` (unboxes the torchbind ScriptObject if needed).
+   `_resolve_reduce_op_str(gm, arg)` converts a `ReduceOp` ScriptObject (or
+   enum) to `"sum"`/`"avg"`/etc.
 2. **Chain construction.** `_emit_collective_chain(gm, before, input_t,
    output_t, target, extra_args, group_name, custom)` inserts
    `target(input, *extra, group_name)` -> `wait_tensor` -> `aten.copy_(output,
    wait)` and propagates `meta["val"]` (using `output_t`'s fake tensor) and
    `meta["custom"]`. Returns the wait node.
-3. **Use redirection.** The per-op rewrite picks the helper matching the
-   output schema (see table below).
+3. **Use redirection.** A single helper —
+   `_redirect_inplace_collective_uses(gm, node, wait_nodes)` — handles both
+   `(Tensor[], Work)` and `(Tensor, Work)` output shapes. Always pass the
+   wait nodes as a list (singleton list for the `Tensor` schema).
 
 ## Output schemas
 
-Inplace c10d ops fall into three groups. Pick the matching `_redirect_*`
-helper for the new op:
+Inplace c10d ops fall into three groups:
 
-| Output schema       | Example ops                                                                | Use redirector                  |
-|---------------------|----------------------------------------------------------------------------|---------------------------------|
-| `(Tensor[], Work)`  | `allreduce_`, `broadcast_`, `reduce_scatter_`, `alltoall_`                  | `_redirect_tensors_work_uses`   |
-| `(Tensor, Work)`    | `_allgather_base_`, `_reduce_scatter_base_`                                | `_redirect_tensor_work_uses`    |
+| Output schema       | Example ops                                                                | How to redirect                                                       |
+|---------------------|----------------------------------------------------------------------------|-----------------------------------------------------------------------|
+| `(Tensor[], Work)`  | `allreduce_`, `broadcast_`, `reduce_scatter_`, `alltoall_`                  | `_redirect_inplace_collective_uses(gm, node, [wait_0, wait_1, ...])`  |
+| `(Tensor, Work)`    | `_allgather_base_`, `_reduce_scatter_base_`                                | `_redirect_inplace_collective_uses(gm, node, [wait])` (singleton)    |
 | `Work` (no tensor)  | `alltoall_base_`, `reduce_`, `send`, `recv_`                                | (none — the op is pure side-effect; `aten.copy_` already updates the input/output tensor in place) |
 
-For `Work`-only ops there is no tensor `getitem(node, 0)` to redirect; the
-inplace `aten.copy_(output_t, wait)` emitted by `_emit_collective_chain`
-already takes care of the output mutation. You only need to erase the
-optional `getitem(node, 0)` for the work handle, if any. If you find that
-schema in practice, add a `_redirect_work_only_uses` helper following the
-same pattern.
+`_redirect_inplace_collective_uses` auto-detects whether the tensor slot is
+a list or a scalar by looking at the user chain of `getitem(node, 0)` — no
+schema flag is needed. For `Work`-only ops there is no tensor consumer to
+redirect, so just call `_emit_collective_chain` (the inplace `aten.copy_`
+captures the side-effect) and skip the redirect helper entirely.
 
 ## Common arg patterns
 
@@ -131,7 +135,7 @@ def _rewrite_broadcast_(gm: torch.fx.GraphModule, node: torch.fx.Node) -> None:
         _emit_collective_chain(gm, node, t, t, target, (root_rank,), group_name, custom)
         for t in tensors
     ]
-    _redirect_tensors_work_uses(gm, node, waits)
+    _redirect_inplace_collective_uses(gm, node, waits)
 ```
 
 **Template B — `(Tensor, Work)` schema with separate output/input** (e.g.
@@ -145,8 +149,10 @@ def _rewrite__allgather_base_(gm: torch.fx.GraphModule, node: torch.fx.Node) -> 
     import torch.distributed as dist
 
     output_t, input_t = node.args[0], node.args[1]
-    group_name = _resolve_process_group_name(gm, node.args[2])
-    pg = _resolve_torchbind_arg(gm, node.args[2])
+    pg_arg = node.args[2]
+    group_name = _resolve_process_group_name(gm, pg_arg)
+    # Need pg.size() too — re-resolve to grab the unboxed Python wrapper.
+    pg = getattr(gm, pg_arg.target) if isinstance(pg_arg, torch.fx.Node) else pg_arg
     if isinstance(pg, torch.ScriptObject):
         pg = dist.ProcessGroup.unbox(pg)
     group_size = pg.size()
@@ -155,7 +161,7 @@ def _rewrite__allgather_base_(gm: torch.fx.GraphModule, node: torch.fx.Node) -> 
     wait = _emit_collective_chain(
         gm, node, input_t, output_t, target, (group_size,), group_name, custom
     )
-    _redirect_tensor_work_uses(gm, node, wait)
+    _redirect_inplace_collective_uses(gm, node, [wait])  # singleton list
 ```
 
 Notes:
@@ -185,8 +191,14 @@ erases the rewritten node, and runs cleanup automatically.
 ### Step 4 — Add a test
 
 Add a case to `test/distributed/test_regional_inductor_collectives.py`. The
-file initialises a `fake` backend with `FakeStore`, so no real distributed
-runtime is needed.
+file uses single-rank Gloo (CPU, in-process via `FileStore`) so the rewrite
+can be exercised against real `dist.*` numerics — with `world_size=1` the
+collective is the identity, so any deviation in the rewrite shows up as a
+mismatch against eager.
+
+Prefer `assertExpectedInline` over `FileCheck` so structural drift in the
+rewritten graph (op order, dead-code cleanup, arg form) fails loudly with a
+readable diff — see `test_functionalize_inplace_allreduce` for the pattern.
 
 ```python
 def test_functionalize_inplace_<op>(self):
@@ -196,19 +208,24 @@ def test_functionalize_inplace_<op>(self):
         return t + 1
 
     gm = make_fx(f)(torch.ones(...))
-    FileCheck().check("c10d.<op>_").run(str(gm.graph))
+    self.assertExpectedInline(gm.code.strip(), """\
+... pre-rewrite snapshot ...""")
 
-    _functionalize_inplace_collectives(gm)
+    gm = _functionalize_inplace_collectives(gm)
 
-    FileCheck() \
-        .check_not("c10d.<op>_") \
-        .check("_c10d_functional.<op>") \
-        .check("wait_tensor") \
-        .check("aten.copy_") \
-        .run(str(gm.graph))
+    self.assertExpectedInline(gm.code.strip(), """\
+... post-rewrite snapshot ...""")
 
     copy.deepcopy(gm)            # must succeed: no torchbind attrs left
+
+    # Numerics: rewritten graph must match eager.
+    x = torch.arange(..., dtype=torch.float32)
+    self.assertEqual(gm(x), f(x))
 ```
+
+Tip: write the test with placeholder strings, run once with
+`EXPECTTEST_ACCEPT=1 python test/distributed/test_regional_inductor_collectives.py`
+to capture the actual graph snapshots, then re-run normally to confirm.
 
 Run:
 ```bash
@@ -241,13 +258,19 @@ lintrunner -a torch/fx/passes/regional_inductor.py test/distributed/test_regiona
   it forward automatically.
 - **Not erasing the original c10d node.** `eliminate_dead_code` treats
   inplace c10d ops as impure (they are), so it will not remove them. The
-  driver erases via `gm.graph.erase_node(node)` after the rewrite runs.
+  driver erases via `gm.graph.erase_node(node)` after the rewrite runs —
+  per-op rewrites should NOT erase `node` themselves.
 - **Leaving torchbind attrs on the GraphModule.** Even after the `get_attr`
   node is gone, `gm._torchbind_obj0` itself remains in `gm.__dict__` and
-  re-triggers the deepcopy crash. The driver cleans these up; verify with:
+  re-triggers the deepcopy crash. The driver loops over remaining
+  `get_attr` nodes with no users and `delattr`s them; verify with:
   ```python
   assert not [k for k in gm.__dict__ if k.startswith("_torchbind_obj")]
   ```
+- **Forgetting that the driver returns `gm`.** `_functionalize_inplace_collectives`
+  returns the (possibly mutated) GraphModule to match the
+  `_create_inductor_marked_regions` / `_compile_inductor_marked_regions`
+  pattern. Use `gm = _functionalize_inplace_collectives(gm)` when chaining.
 
 ## Reference
 
