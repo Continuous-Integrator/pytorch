@@ -4,7 +4,7 @@ import textwrap
 from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, cast, Optional, Union
+from typing import Any, cast
 
 import sympy
 from sympy import Integer, Symbol
@@ -38,6 +38,11 @@ from .simd import NodeInfo, prefix_is_reduction, SIMDScheduling
 from .simd_kernel_features import SIMDKernelFeatures
 from .triton import TritonKernel
 from .triton_utils import config_of, equal_1_arg_indices, signature_to_meta
+
+
+# Default block sizes used when combo kernel autotuning is disabled.
+DEFAULT_COMBO_BLOCK_SIZE_1D = 1024
+DEFAULT_COMBO_BLOCK_SIZE_2D = 32
 
 
 log = logging.getLogger(__name__)
@@ -440,24 +445,23 @@ class ComboKernel(Kernel):
         self.sub_kernels: list[TritonKernel] = []
         self.iter_vars_count = itertools.count()
         self.grids: list[list[int]] = []
-        self.min_x_blocks_list: list[Union[int, str]] = []
-        self.x_numels_list: list[Union[int, str]] = []
+        self.min_x_blocks_list: list[int | str] = []
+        self.x_numels_list: list[int | str] = []
         self.y_tree_list: list = []
         self.enable_autotune = enable_autotune
         self.mixed_sizes = mixed_sizes
-        self.dispatch_class: Optional[
+        self.dispatch_class: (
             type[
-                Union[
-                    ComboKernel.SequentialDispatch,
-                    ComboKernel.SequentialFlattenGridDispatch,
-                    ComboKernel.RoundRobinDispatch,
-                ]
+                ComboKernel.SequentialDispatch
+                | ComboKernel.SequentialFlattenGridDispatch
+                | ComboKernel.RoundRobinDispatch
             ]
-        ] = None
+            | None
+        ) = None
         self.block_args: list[str] = []
-        # there following are used when autotuning is disabled
-        self.block_size_1d = 1024  # Try tuning this value
-        self.block_size_2d = 32
+        # the following are used when autotuning is disabled
+        self.block_size_1d = DEFAULT_COMBO_BLOCK_SIZE_1D
+        self.block_size_2d = DEFAULT_COMBO_BLOCK_SIZE_2D
         self.num_warps = 8
         self.block_size_reduce = 256
         self.dynamic_shape_args: list[str] = []
@@ -569,8 +573,8 @@ class ComboKernel(Kernel):
         Kernels with no_x_dim being true has no tunable XBLOCK. They have a fixed number of X blocks.
         Grid calculation needs to make sure that they are assigned with enough number of blocks.
         """
-        min_x_blocks: Union[int, str] = 0
-        x_numels: Union[int, str] = 0
+        min_x_blocks: int | str = 0
+        x_numels: int | str = 0
         for tree in sub_kernel.range_trees:
             simplified_tree_numel = V.graph.sizevars.simplify(tree.numel)
             if tree.prefix == "x":
@@ -742,6 +746,22 @@ class ComboKernel(Kernel):
         dispatch = self.dispatch_class
         assert dispatch is not None
 
+        # Compute the max persistent R0_BLOCK across sub-kernels.
+        # This is used by _reduction_configs() to avoid generating configs
+        # where XBLOCK * max_persistent_rblock creates pathologically large
+        # tiles that cause extreme ROCm compilation times.
+        # The max_persistent_rblock mirrors how R0_BLOCK is computed in
+        # codegen_static_numels_sub_kernel() for persistent reductions.
+        max_persistent_rblock = 0
+        for sub in self.sub_kernels:
+            if sub.persistent_reduction:
+                for tree in sub.range_trees:
+                    if tree.is_reduction:
+                        simplified_numel = V.graph.sizevars.simplify(tree.numel)
+                        if isinstance(simplified_numel, (Integer, int)):
+                            val = next_power_of_2(int(simplified_numel))
+                            max_persistent_rblock = max(max_persistent_rblock, val)
+
         inductor_meta = {
             "grid_type": dispatch.grid_expr.__name__,
             "combo_grid_meta": self.combo_grid_meta(size_hints_list),
@@ -749,6 +769,8 @@ class ComboKernel(Kernel):
             "mutated_arg_names": mutated_args,
             **self.triton_kernel_cls.inductor_meta_common(),
         }
+        if max_persistent_rblock > 0:
+            inductor_meta["max_persistent_rblock"] = max_persistent_rblock
 
         sub_kernel = selected_kernel
         if heuristics == "foreach":
@@ -880,7 +902,7 @@ class ComboKernel(Kernel):
                     )
         return extra_args
 
-    def codegen_kernel(self, name: Optional[str] = None) -> str:
+    def codegen_kernel(self, name: str | None = None) -> str:
         """Generate the triton code for a combo kernel that fuses multiple sub-kernels."""
         # TODO: is it correct to use the first sub kernel's heuristics?
         heuristics_list, size_hints_list = [], []
@@ -990,7 +1012,7 @@ class ComboKernel(Kernel):
                     size = V.graph.sizevars.optimization_hints(buf.get_size())
                     stride = V.graph.sizevars.optimization_hints(buf.get_stride())
                     result.writeline(
-                        f"{var_name} = rand_strided({size}, {stride}, device='{buf.get_device()}', dtype={buf.get_dtype()})"  # noqa: B950 line too long
+                        f"{var_name} = rand_strided({size}, {stride}, device='{buf.get_device()}', dtype={buf.get_dtype()})"
                     )
                 elif arg_name in V.graph.constants:
                     # note that random seed is put in V.graph.constants
@@ -998,7 +1020,7 @@ class ComboKernel(Kernel):
                     size = V.graph.sizevars.optimization_hints(const_tensor.size())
                     stride = V.graph.sizevars.optimization_hints(const_tensor.stride())
                     result.writeline(
-                        f"{var_name} = rand_strided({size}, {stride}, device='{const_tensor.device}', dtype={const_tensor.dtype})"  # type: ignore[arg-type]  # noqa: B950 line too long
+                        f"{var_name} = rand_strided({size}, {stride}, device='{const_tensor.device}', dtype={const_tensor.dtype})"  # type: ignore[arg-type]
                     )
                 elif isinstance(arg_sig, SizeArg):
                     symval_hint = V.graph.sizevars.optimization_hint(arg_sig.expr)
@@ -1184,6 +1206,15 @@ class ComboKernel(Kernel):
                         meta[f"tile_hint_{num}"] = "TileHint.SQUARE"
                     else:
                         meta[f"tile_hint_{num}"] = "TileHint.DEFAULT"
+                    if sub_kernel.tiling_scores:
+                        meta[f"tiling_scores_{num}"] = {
+                            dim: V.graph.sizevars.optimization_hint(score, fallback=1)
+                            for dim, score in sub_kernel.tiling_scores.items()
+                        }
+                else:
+                    meta[f"reduction_hint_{num}"] = (
+                        sub_kernel.features.get_reduction_hint().name
+                    )
 
             for tree in sub_kernel.range_trees:
                 if not tree.is_reduction:

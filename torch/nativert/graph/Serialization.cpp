@@ -28,6 +28,25 @@ Value* symbolicToValue(
           graph.createListPack(std::move(listValue), Type::Kind::Tensor);
       return graph.insertBefore(listPack, insertBefore)->outputs()[0];
     }
+    case torch::_export::Argument::Tag::AS_NESTED_TENSORS: {
+      // Handle nested tensor lists (List[List[Tensor]])
+      // Create inner ListPack nodes for each inner list, then pack them
+      // together
+      std::vector<Value*> outerListValues;
+      for (const auto& innerList : arg.get_as_nested_tensors()) {
+        std::vector<Value*> innerListValues;
+        for (const auto& tensorArg : innerList) {
+          innerListValues.push_back(graph.getValue(tensorArg.get_name()));
+        }
+        auto innerListPack = graph.createListPack(
+            std::move(innerListValues), Type::Kind::Tensor);
+        outerListValues.push_back(
+            graph.insertBefore(innerListPack, insertBefore)->outputs()[0]);
+      }
+      auto outerListPack = graph.createListPack(
+          std::move(outerListValues), Type::Kind::TensorList);
+      return graph.insertBefore(outerListPack, insertBefore)->outputs()[0];
+    }
     case torch::_export::Argument::Tag::AS_OPTIONAL_TENSORS: {
       // Need to insert a list pack node
       std::vector<Value*> listValue;
@@ -608,6 +627,7 @@ bool isSymbolic(const torch::_export::Argument& arg) {
   switch (arg.tag()) {
     case torch::_export::Argument::Tag::AS_TENSOR:
     case torch::_export::Argument::Tag::AS_TENSORS:
+    case torch::_export::Argument::Tag::AS_NESTED_TENSORS:
     case torch::_export::Argument::Tag::AS_OPTIONAL_TENSORS:
     case torch::_export::Argument::Tag::AS_SYM_INT:
     case torch::_export::Argument::Tag::AS_SYM_INTS:
@@ -706,6 +726,17 @@ Constant constantToValue(
         std::vector<int64_t> inner_ret;
         for (const auto& val : inner_list) {
           inner_ret.push_back(val);
+        }
+        ret.push_back(inner_ret);
+      }
+      return ret;
+    }
+    case torch::_export::Argument::Tag::AS_FLOAT_LISTS: {
+      std::vector<std::vector<double>> ret;
+      for (const auto& inner_list : jsonArg.get_as_float_lists()) {
+        std::vector<double> inner_ret;
+        for (const auto& val : inner_list) {
+          inner_ret.push_back(val.get());
         }
         ret.push_back(inner_ret);
       }

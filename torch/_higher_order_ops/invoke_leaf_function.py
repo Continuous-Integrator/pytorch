@@ -8,12 +8,11 @@ import torch
 import torch.utils._pytree as pytree
 from torch._C import DispatchKey, DispatchKeySet
 from torch._higher_order_ops.utils import register_fake
+from torch._library.opaque_object import OpaqueBase, register_opaque_type
 from torch._ops import HigherOrderOperator
 from torch.autograd.graph import get_gradient_edge
 from torch.fx.experimental.proxy_tensor import ProxyTorchDispatchMode, track_tensor_tree
 from torch.nn.utils.stateless import _reparametrize_module
-
-from .flat_apply import func_to_graphable
 
 
 _leaf_function_module_retriever: Callable[[int], Any] | None = None
@@ -47,6 +46,17 @@ def reset_makefx_module_storage() -> None:
     global _makefx_next_index
     _makefx_next_index = 0
     _makefx_module_storage.clear()
+
+
+class _LeafCallable(OpaqueBase):
+    def __init__(self, fn: Callable) -> None:
+        self._fn = fn
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        return self._fn(*args, **kwargs)
+
+
+register_opaque_type(_LeafCallable, typ="reference")
 
 
 def set_leaf_function_module_retriever(retriever: Callable[[int], Any]) -> None:
@@ -140,7 +150,7 @@ def _resolve_mutated_flat_indices(
     indices: list[int] = []
     for expr in mutates_args:
         # Empty __builtins__ prevents access to builtins like __import__, open, exec.
-        result = eval(expr, {"__builtins__": {}}, namespace)  # noqa: S307
+        result = eval(expr, {"__builtins__": {}}, namespace)
         leaves = pytree.tree_leaves(result)
         for sentinel in leaves:
             if not isinstance(sentinel, int):
@@ -169,10 +179,6 @@ class GradientInfo:
     stride: tuple[int, ...]
     dtype: torch.dtype
     device: torch.device
-
-
-def unwrap_fn_spec(fn_spec: pytree.TreeSpec) -> Callable:
-    return pytree.tree_unflatten((), fn_spec)
 
 
 def _retrieve_module_by_index(nn_module_index: int) -> torch.nn.Module:
@@ -509,25 +515,26 @@ class InvokeLeafFunction(HigherOrderOperator):
 
     def __call__(
         self,
-        real_fn_spec,
-        fake_fn_spec,
+        real_fn_callable,
+        fake_fn_callable,
         input_spec,
         mutated_arg_indices,
         *flat_args,
-        requires_grad_indices=(),
+        requires_grad_indices="",
     ):
         """
-        real_fn_spec: pytree.TreeSpec for the real function that's wrapped in dynamo
-        fake_fn_spec: pytree.TreeSpec for the fake function that's wrapped in dynamo
+        real_fn_callable: _LeafCallable wrapping the real function
+        fake_fn_callable: _LeafCallable wrapping the fake function
         input_spec: pytree.TreeSpec for unflattening flat_args back to (args, kwargs)
         mutated_arg_indices: comma-separated string of flat-arg indices that are
             declared as mutated (e.g. "1,2"), or "" for no mutations. Encoded as a
             string so it is a pytree leaf for the HOP schema infrastructure.
-        requires_grad_indices: tuple of indices for inputs that require grad
+        requires_grad_indices: comma-separated string of flat-arg indices that
+            require grad (e.g. "0,1"), or "" for none.
         """
         return super().__call__(  # type: ignore[attr-defined]
-            real_fn_spec,
-            fake_fn_spec,
+            real_fn_callable,
+            fake_fn_callable,
             input_spec,
             mutated_arg_indices,
             *flat_args,
@@ -537,18 +544,17 @@ class InvokeLeafFunction(HigherOrderOperator):
     # pyrefly: ignore [bad-override]
     def gen_schema(
         self,
-        real_fn_spec,
-        fake_fn_spec,
+        real_fn_callable,
+        fake_fn_callable,
         input_spec,
         mutated_arg_indices,
         *flat_args,
-        requires_grad_indices=(),
+        requires_grad_indices="",
     ):
         from torch._higher_order_ops.schema import HopSchemaGenerator
         from torch._higher_order_ops.utils import _maybe_fake_prop_ignore_unbacked
         from torch.fx.experimental.proxy_tensor import disable_proxy_modes_tracing
 
-        fake_fn = unwrap_fn_spec(fake_fn_spec)
         mutated_set = _parse_mutated_arg_indices(mutated_arg_indices)
 
         with disable_proxy_modes_tracing():
@@ -567,17 +573,23 @@ class InvokeLeafFunction(HigherOrderOperator):
                     args,
                     kwargs,
                 ):
-                    return fake_fn(*args, **kwargs)
+                    return fake_fn_callable(*args, **kwargs)
 
             fake_outputs = _maybe_fake_prop_ignore_unbacked(run_fake, schema_flat_args)
 
         gen = HopSchemaGenerator(self)
-        gen.add_arg("real_fn_spec", real_fn_spec)
-        gen.add_arg("fake_fn_spec", fake_fn_spec)
+        gen.add_arg("real_fn_callable", real_fn_callable)
+        gen.add_arg("fake_fn_callable", fake_fn_callable)
         gen.add_arg("input_spec", input_spec)
         gen.add_arg("mutated_arg_indices", mutated_arg_indices)
         for i, arg in enumerate(flat_args):
             gen.add_arg(f"arg{i}", arg, is_mutated=i in mutated_set)
+        gen.add_arg(
+            "requires_grad_indices",
+            requires_grad_indices,
+            default_value="",
+            kw_only=True,
+        )
 
         if isinstance(fake_outputs, tuple):
             for out in fake_outputs:
@@ -597,12 +609,12 @@ invoke_leaf_function = InvokeLeafFunction()
 
 # NOTE: [Autograd support for invoke_leaf_function]
 #
-# The oveerall idea is that when the real forward executes, we are going to build an autograd graph
+# The overall idea is that when the real forward executes, we are going to build an autograd graph
 # and save it.  When the real backward executes, we are going to invoke the autograd graph.
 # We need to build these "real_forward" and "real_backward" functions from the "real_fn".
 #
 # Inputs:
-# real_fn_spec/fake_fn_spec are pytree.TreeSpecs that contain real_fn and fake_fn.
+# real_fn_callable/fake_fn_callable are _LeafCallable objects that wrap real_fn and fake_fn.
 # These functions were created in dynamo by wrapping the user's original leaf function and fake function:
 #   - They accept *flat_args (flattened LeafModuleState objects + other args)
 #   - They unflatten flat_args and convert LeafModuleState back to nn.Modules
@@ -626,20 +638,25 @@ class InvokeLeafFunctionAutogradOp(torch.autograd.Function):
     @staticmethod
     # pyrefly: ignore [bad-override]
     def forward(
-        ctx, real_fn_spec, fake_fn_spec, input_spec, mutated_arg_indices, *flat_args
+        ctx,
+        real_fn_callable,
+        fake_fn_callable,
+        input_spec,
+        mutated_arg_indices,
+        *flat_args,
     ):
-        real_fn = unwrap_fn_spec(real_fn_spec)
-
         include_keys = torch._C._dispatch_tls_local_include_set()
         exclude_keys = torch._C._dispatch_tls_local_exclude_set()
 
-        requires_grad_indices = tuple(
-            i
+        requires_grad_indices = ",".join(
+            str(i)
             for i, arg in enumerate(flat_args)
             if isinstance(arg, torch.Tensor) and arg.requires_grad
         )
 
-        real_forward, real_state = _make_forward(real_fn, include_keys, exclude_keys)
+        real_forward, real_state = _make_forward(
+            real_fn_callable, include_keys, exclude_keys
+        )
 
         def real_backward(*grads):
             if real_state["inputs"] is None or real_state["outputs"] is None:
@@ -676,17 +693,52 @@ class InvokeLeafFunctionAutogradOp(torch.autograd.Function):
                 for info in input_infos_for_fake
             )
 
-        _, new_real_fn_spec = func_to_graphable(real_forward)
+        new_real_fn_callable = _LeafCallable(real_forward)
 
         with torch._C._AutoDispatchBelowAutograd():
             fw_outputs = invoke_leaf_function(
-                new_real_fn_spec,
-                fake_fn_spec,
+                new_real_fn_callable,
+                fake_fn_callable,
                 input_spec,
                 mutated_arg_indices,
                 *flat_args,
                 requires_grad_indices=requires_grad_indices,
             )
+
+        hook_real = getattr(real_fn_callable, "_leaf_hook_real_fn", None)
+        hook_fake = getattr(real_fn_callable, "_leaf_hook_fake_fn", None)
+        if hook_real is not None:
+            assert hook_fake is not None  # noqa: S101
+            hook_captured_out_spec: list[pytree.TreeSpec | None] = [None]
+            wrapped_hook_real, wrapped_hook_fake = make_leaf_function_wrappers(
+                hook_real, hook_fake, hook_captured_out_spec
+            )
+            hook_real_callable = _LeafCallable(wrapped_hook_real)
+            hook_fake_callable = _LeafCallable(wrapped_hook_fake)
+
+            grad_tensors = [
+                arg
+                for arg in flat_args
+                if isinstance(arg, torch.Tensor) and arg.requires_grad
+            ]
+            if grad_tensors:
+
+                @torch._dynamo.disable
+                def _multi_grad_callback(
+                    grads: Sequence[torch.Tensor],
+                ) -> None:
+                    _, hook_spec = pytree.tree_flatten((tuple(grads), {}))
+                    invoke_leaf_function(
+                        hook_real_callable,
+                        hook_fake_callable,
+                        hook_spec,
+                        "",
+                        *grads,
+                    )
+
+                torch.autograd.graph.register_multi_grad_hook(
+                    grad_tensors, _multi_grad_callback
+                )
 
         ctx.real_backward = real_backward
         ctx.fake_backward = fake_backward
@@ -696,26 +748,26 @@ class InvokeLeafFunctionAutogradOp(torch.autograd.Function):
     @staticmethod
     # pyrefly: ignore [bad-override]
     def backward(ctx, *grads):
-        _, real_bw_spec = func_to_graphable(ctx.real_backward)
-        _, fake_bw_spec = func_to_graphable(ctx.fake_backward)
+        real_bw_callable = _LeafCallable(ctx.real_backward)
+        fake_bw_callable = _LeafCallable(ctx.fake_backward)
         _, bw_input_spec = pytree.tree_flatten((grads, {}))
         fw_grads = invoke_leaf_function(
-            real_bw_spec, fake_bw_spec, bw_input_spec, "", *grads
+            real_bw_callable, fake_bw_callable, bw_input_spec, "", *grads
         )
         return None, None, None, None, *fw_grads
 
 
 @invoke_leaf_function.py_autograd_impl
 def invoke_leaf_function_autograd(
-    real_fn_spec,
-    fake_fn_spec,
+    real_fn_callable,
+    fake_fn_callable,
     input_spec,
     mutated_arg_indices,
     *flat_args,
-    requires_grad_indices=(),
+    requires_grad_indices="",
 ):
     return InvokeLeafFunctionAutogradOp.apply(
-        real_fn_spec, fake_fn_spec, input_spec, mutated_arg_indices, *flat_args
+        real_fn_callable, fake_fn_callable, input_spec, mutated_arg_indices, *flat_args
     )
 
 
@@ -833,26 +885,25 @@ def _check_no_input_mutation(
 
 @register_fake(invoke_leaf_function)
 def invoke_leaf_function_fake(
-    real_fn_spec,
-    fake_fn_spec,
+    real_fn_callable,
+    fake_fn_callable,
     input_spec,
     mutated_arg_indices,
     *flat_args,
-    requires_grad_indices=(),
+    requires_grad_indices="",
 ):
-    fake_fn = unwrap_fn_spec(fake_fn_spec)
     with unflatten_args_with_modules(flat_args, input_spec) as (args, kwargs):
-        return fake_fn(*args, **kwargs)
+        return fake_fn_callable(*args, **kwargs)
 
 
 @invoke_leaf_function.py_impl(DispatchKey.CompositeExplicitAutograd)
 def invoke_leaf_function_dense(
-    real_fn_spec,
-    fake_fn_spec,
+    real_fn_callable,
+    fake_fn_callable,
     input_spec,
     mutated_arg_indices,
     *flat_args,
-    requires_grad_indices=(),
+    requires_grad_indices="",
 ):
     from torch._dynamo import config as dynamo_config
 
@@ -863,21 +914,19 @@ def invoke_leaf_function_dense(
     flat_args = tuple(
         arg.detach() if isinstance(arg, torch.Tensor) else arg for arg in flat_args
     )
-    requires_grad_indices_set = set(requires_grad_indices)
+    requires_grad_indices_set = _parse_mutated_arg_indices(requires_grad_indices)
     flat_args = tuple(
         arg.requires_grad_(True) if idx in requires_grad_indices_set else arg
         for idx, arg in enumerate(flat_args)
     )
 
-    real_fn = unwrap_fn_spec(real_fn_spec)
     with unflatten_args_with_modules(flat_args, input_spec) as (args, kwargs):
-        real_output = real_fn(*args, **kwargs)
+        real_output = real_fn_callable(*args, **kwargs)
 
         _check_no_input_mutation(flat_args, version_before, mutated_arg_indices)
 
         if dynamo_config.leaf_function_validate_outputs:
-            fake_fn = unwrap_fn_spec(fake_fn_spec)
-            fake_output = fake_fn(*args, **kwargs)
+            fake_output = fake_fn_callable(*args, **kwargs)
             _validate_outputs_match(fake_output, real_output)
 
     return real_output
