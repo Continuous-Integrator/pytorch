@@ -314,6 +314,20 @@ OPINFO_SAMPLE_INPUT_INDEX: int | None = TestEnvironment.def_setting(
     parse_fn=lambda val: None if val is None else int(val),
 )
 
+# Possibly restrict OpInfo tests to a single DSL runtime.
+# Example inputs: "triton", "cutedsl", all possible values
+# given by: torch.backends.python_native.all_dsls
+OPINFO_RESTRICT_TO_DSL: str | None = TestEnvironment.def_setting(
+    "OPINFO_RESTRICT_TO_DSL",
+    env_var="OPINFO_RESTRICT_TO_DSL",
+    default=None,
+    # Don't include the env var value in the repro command because the info will
+    # be queried from the tracked sample input instead
+    include_in_repro=True,
+    parse_fn=lambda val: None if val is None else str(val),
+)
+
+
 DEFAULT_DISABLED_TESTS_FILE = '.pytorch-disabled-tests.json'
 DEFAULT_SLOW_TESTS_FILE = 'slow_tests.json'
 
@@ -5136,7 +5150,7 @@ def make_fullrank_matrices_with_distinct_singular_values(*shape, device, dtype, 
         # This gives a condition number of 9/4, which should be good enough
         s.reciprocal_().add_(1.)
         # Note that the singular values need not be ordered in an SVD so
-        # we don't need need to sort S
+        # we don't need to sort S
         x = (u * s.to(u.dtype)) @ vh
     x.requires_grad_(requires_grad)
     return x
@@ -6008,7 +6022,7 @@ def munge_exc(e, *, suppress_suffix=True, suppress_prefix=True, file=None, skip=
         return m.group(0)
 
     s = re.sub(
-        r'( *)File "([^"]+)", line \d+, in (.+)\n(\1  .+\n( +[~^]+ *\n)?)+',
+        r'( *)File "([^"]+)", line \d+, in (.+)\n(\1  .+\n( +[~^]+ *\n)?)*',
         repl_frame,
         s,
     )
