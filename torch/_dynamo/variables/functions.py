@@ -23,6 +23,8 @@ accurate graph capture while handling Python's various function-related behavior
 
 import builtins
 import functools
+import importlib.metadata
+import importlib.util
 import inspect
 import itertools
 import logging
@@ -295,7 +297,7 @@ def init_cellvars(
 ) -> None:
     """
     Update `result` to add mapping from local name to new cells created
-    directly by `code`, or update SideEffects in `parent` if the a local cell is
+    directly by `code`, or update SideEffects in `parent` if a local cell is
     already in `result` (cell argument).
     """
     side_effects = parent.output.side_effects
@@ -1157,6 +1159,7 @@ class LocalGeneratorObjectVariable(VariableTracker):
         return types.GeneratorType
 
     def tp_iternext_impl(self, tx: "InstructionTranslatorBase") -> VariableTracker:
+        # ref: https://github.com/python/cpython/blob/v3.13.3/Objects/genobject.c#L832
         tracer = self.inline_tracer
 
         if self._is_generator_exhausted():
@@ -2166,6 +2169,16 @@ class SkipFunctionVariable(VariableTracker):
         args: Sequence[VariableTracker],
         kwargs: dict[str, VariableTracker],
     ) -> VariableTracker:
+        # importlib functions are frozen builtins that Dynamo cannot trace
+        # into.  They are deterministic for a given package name, so
+        # constant-fold them when all args are constants.
+        if self.value in (importlib.util.find_spec, importlib.metadata.version) and all(
+            a.is_python_constant() for a in args
+        ):
+            return VariableTracker.build(
+                tx, self.value(*(a.as_python_constant() for a in args))
+            )
+
         if inspect.getattr_static(self.value, "_torchdynamo_disable", False):
             msg = inspect.getattr_static(self.value, "_torchdynamo_disable_msg", None)
             unimplemented(
@@ -2758,9 +2771,6 @@ class FunctoolsPartialVariable(VariableTracker):
         self.args = args
         assert isinstance(keywords, dict)
         self.keywords = keywords
-        # fake_value is used for id calculation. Creating this value and id'ng
-        # on it is sufficient for the tracing purposes.
-        self.fake_value = functools.partial(identity)
         # Store cache_hash from the original partial for SAC context_fn caching
         self.original_cache_hash = original_cache_hash
 
@@ -3247,6 +3257,9 @@ class TritonKernelVariable(VariableTracker):
         self.kernel_source = kwargs.pop("kernel_source", kwargs.get("source"))
         super().__init__(**kwargs)
         dynamo_triton_hopifier_singleton.init_variable(self, kernel, kernel_idx, grid)
+
+    def python_type(self) -> type:
+        return type(self.kernel)
 
     def call_function(
         self,

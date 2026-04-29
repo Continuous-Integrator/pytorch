@@ -586,10 +586,14 @@ class VariableTracker(metaclass=VariableTrackerMeta):
         Implements PyObject_GetIter semantics (tp_iter slot).
         Subclasses override this to support iteration.
         """
-        raise_observed_exception(
-            TypeError,
-            tx,
-            args=[f"'{self.python_type_name()}' object is not iterable"],
+        # PyObject_GetIter: https://github.com/python/cpython/blob/3.13/Objects/abstract.c#L2847-L2870
+        # TODO: raise TypeError instead - Make sure the jit tests for ScriptDict/ScriptList works with
+        # this change
+        unimplemented(
+            gb_type="missing tp_iter",
+            context=f"tp_iter_impl not implemented for {self.python_type_name()}",
+            explanation=f"Dynamo does not know how to iterate over `{self.debug_repr()}`.",
+            hints=[*graph_break_hints.SUPPORTABLE],
         )
 
     def call_function(
@@ -662,13 +666,9 @@ class VariableTracker(metaclass=VariableTrackerMeta):
 
             return generic_len(tx, self)
         elif name == "__iter__" and not args and not kwargs:
-            from .object_protocol import generic_getiter
-
-            return generic_getiter(tx, self)
+            return self.tp_iter_impl(tx)
         elif name == "__next__" and not args and not kwargs:
-            from .object_protocol import generic_iternext
-
-            return generic_iternext(tx, self)
+            return self.tp_iternext_impl(tx)
         elif (
             name == "__getattr__"
             and len(args) == 1
@@ -1024,6 +1024,22 @@ class VariableTracker(metaclass=VariableTrackerMeta):
                 *graph_break_hints.SUPPORTABLE,
             ],
         )
+
+    def get_id(self, tx: InstructionTranslator) -> int | None:
+        """Return id() of the underlying Python object, or None if unavailable.
+
+        The base implementation uses source resolution for sourceful VTs.
+        Subclasses override for special cases (e.g. NNModuleVariable uses
+        get_submodule, ConstantVariable handles singletons).
+        """
+        if self.source:
+            return id(tx.output.resolve_source_value(self.source))
+        return None
+
+    def get_id_guard_type(self) -> Callable[..., Any] | None:
+        if self.source:
+            return GuardBuilder.ID_MATCH
+        return None
 
     def get_real_python_backed_value(self) -> object:
         """Return the Python object this VT wraps, for `is` comparison.

@@ -192,9 +192,7 @@ class ItertoolsVariable(VariableTracker):
             )
         elif self.value is itertools.repeat:
             if len(args) < 2:
-                return variables.RepeatIteratorVariable(
-                    *args, mutation_type=ValueMutationNew()
-                )
+                return RepeatIteratorVariable(*args, mutation_type=ValueMutationNew())
 
             return tx.inline_user_function_return(
                 VariableTracker.build(tx, polyfills.repeat), args, kwargs
@@ -296,6 +294,8 @@ class RepeatIteratorVariable(IteratorVariable):
 
     # Repeat needs no mutation, clone self
     def tp_iternext_impl(self, tx: "InstructionTranslator") -> VariableTracker:
+        # ref: https://github.com/python/cpython/blob/3.13/Modules/itertoolsmodule.c#L4332-L4340
+        # TODO(dynamo-team): Missing `times` argument handling
         return self.item
 
     def reconstruct(self, codegen: "PyCodegen") -> None:
@@ -339,6 +339,7 @@ class CountIteratorVariable(IteratorVariable):
         self.advance_count = advance_count
 
     def tp_iternext_impl(self, tx: "InstructionTranslator") -> VariableTracker:
+        # ref: https://github.com/python/cpython/blob/3.13/Modules/itertoolsmodule.c#L4189-L4216
         assert self.is_mutable()
         old_item = self.item
         tx.output.side_effects.mutation(self)
@@ -411,6 +412,7 @@ class ZipVariable(IteratorVariable):
         return [variables.TupleVariable(list(var)) for var in zipped]
 
     def tp_iternext_impl(self, tx: "InstructionTranslator") -> VariableTracker:
+        # ref: https://github.com/python/cpython/blob/v3.13.3/Python/bltinmodule.c#L2906-L2994
         assert self.is_mutable()
 
         if len(self.iterables) == 0:
@@ -579,6 +581,7 @@ class FilterVariable(IteratorVariable):
         return [variables.TupleVariable([filtered])]
 
     def tp_iternext_impl(self, tx: "InstructionTranslator") -> VariableTracker:
+        # ref: https://github.com/python/cpython/blob/v3.13.3/Python/bltinmodule.c#L573-L606
         def _next() -> VariableTracker:
             old_index = self.index
             if isinstance(self.iterable, list):
@@ -642,6 +645,9 @@ class DictViewIterator(IteratorVariable):
             self._iter = iter(items.items())  # type: ignore[bad-assignment]
 
     def tp_iternext_impl(self, tx: "InstructionTranslator") -> VariableTracker:
+        # dictiter_iternextitem: https://github.com/python/cpython/blob/v3.13.3/Objects/dictobject.c#L5538-L5578
+        # dictiter_iternextkey: https://github.com/python/cpython/blob/v3.13.3/Objects/dictobject.c#L5125-L5144
+        # dictiter_iternextvalue: https://github.com/python/cpython/blob/v3.13.3/Objects/dictobject.c#L5248-L5267
         try:
             item = next(self._iter)
 

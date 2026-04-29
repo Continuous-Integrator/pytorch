@@ -347,7 +347,7 @@ class BaseListVariable(VariableTracker):
                 )
 
             if name == "__add__":
-                return type(self)(self.items + args[0].items, source=self.source)  # type: ignore[attr-defined]
+                return type(self)(self.items + args[0].items)  # type: ignore[attr-defined]
             else:
                 self.items += args[0].items  # type: ignore[attr-defined]
                 return self
@@ -1348,6 +1348,9 @@ class DequeVariable(CommonListMethodsVariable):
 
     def tp_iter_impl(self, tx: "InstructionTranslator") -> VariableTracker:
         # ref: https://github.com/python/cpython/blob/v3.13.3/Modules/_collectionsmodule.c#L1886-L1904
+        # TODO(guilhermeleobas): Replace this by a proper DequeIteratorVariable
+        # that keeps track of the maxlen and doesn't allow iterating over more
+        # items than maxlen.
         return ListIteratorVariable(self.items, mutation_type=ValueMutationNew())
 
 
@@ -1690,6 +1693,7 @@ class ListIteratorVariable(IteratorVariable):
         return f"{self.__class__.__name__}(length={len(self.items)}, index={repr(self.index)})"
 
     def tp_iternext_impl(self, tx: "InstructionTranslator") -> VariableTracker:
+        # ref: https://github.com/python/cpython/blob/6280bb547840b609feedb78887c6491af75548e8/Objects/listobject.c#L4110-L4133
         assert self.is_mutable()
         old_index = self.index
         if old_index >= len(self.items) or self.is_exhausted:
@@ -1773,6 +1777,7 @@ class RangeIteratorVariable(IteratorVariable):
         return super().call_obj_hasattr(tx, name)
 
     def tp_iternext_impl(self, tx: "InstructionTranslator") -> VariableTracker:
+        # ref: https://github.com/python/cpython/blob/v3.13.3/Objects/rangeobject.c#L1072-L1091
         if self.len <= 0:
             raise_observed_exception(StopIteration, tx)
 

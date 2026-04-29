@@ -21,6 +21,7 @@ from .builtin import (
     BaseBuiltinVariable,
     BuiltinVariable,
     DictBuiltinVariable,
+    GetAttrBuiltinVariable,
     IterBuiltinVariable,
     ListBuiltinVariable,
 )
@@ -51,7 +52,6 @@ from .ctx_manager import (
 )
 from .dicts import (
     ConstDictVariable,
-    DefaultDictVariable,
     DictItemsVariable,
     DunderDictVariable,
     MappingProxyVariable,
@@ -163,6 +163,7 @@ from .tensor import (
 )
 from .torch import TorchCtxManagerClassVariable, TorchInGraphFunctionVariable
 from .user_defined import (
+    DefaultDictVariable,
     FrozenDataClassVariable,
     InspectVariable,
     MutableMappingVariable,
@@ -206,6 +207,7 @@ __all__ = [
     "DictKeySetVariable",
     "DynamoConfigPatchVariable",
     "FakeItemVariable",
+    "GetAttrBuiltinVariable",
     "GetAttrVariable",
     "GradModeVariable",
     "InspectSignatureVariable",

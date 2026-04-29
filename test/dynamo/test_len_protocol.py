@@ -15,7 +15,6 @@ Tests cover:
 import collections
 import dataclasses
 import types
-import unittest
 
 import torch
 import torch._dynamo.test_case
@@ -629,11 +628,6 @@ class ListSubclassCustomLen(list):
         return super().__len__() * 2
 
 
-class ListSubclassListLen(list):
-    def __len__(self):
-        return list.__len__(self) * 2
-
-
 class CustomMapping:
     """A user-defined mapping (dict-like) class"""
 
@@ -679,13 +673,6 @@ class TupleSubclassCustomLen(tuple):
 
     def __len__(self):
         return super().__len__() + 1
-
-
-class TupleSubclassTupleLen(tuple):
-    __slots__ = ()
-
-    def __len__(self):
-        return tuple.__len__() + 1
 
 
 class DictSubclassCustomLen(dict):
@@ -765,29 +752,12 @@ class TestSubclassOverloadedLen(torch._dynamo.test_case.TestCase):
         self.assertEqual(obj.__len__(), 6)
         self.assertEqual(ListSubclassCustomLen.__len__(obj), 6)
 
-    @unittest.expectedFailure
-    @make_dynamo_test
-    def test_list_subclass_builtin_len(self):
-        """Test calling list.__len__ directly on a custom list subclass.
-
-        This bypasses the custom __len__ and uses the builtin implementation,
-        similar to how list.__iter__(custom_list) uses the builtin iterator.
-        """
-        obj = ListSubclassListLen([1, 2, 3])
-        self.assertEqual(list.__len__(obj), 3)
-
     @make_dynamo_test
     def test_tuple_subclass_custom_len(self):
         obj = TupleSubclassCustomLen([1, 2, 3])
         self.assertEqual(len(obj), 4)
         self.assertEqual(obj.__len__(), 4)
         self.assertEqual(TupleSubclassCustomLen.__len__(obj), 4)
-
-    @make_dynamo_test
-    def test_tuple_subclass_builtin_len(self):
-        """Test calling tuple.__len__ directly on a custom tuple subclass."""
-        obj = TupleSubclassTupleLen([1, 2, 3])
-        self.assertEqual(tuple.__len__(obj), 3)
 
     @make_dynamo_test
     def test_dict_subclass_custom_len(self):
@@ -797,23 +767,11 @@ class TestSubclassOverloadedLen(torch._dynamo.test_case.TestCase):
         self.assertEqual(DictSubclassCustomLen.__len__(obj), 2)
 
     @make_dynamo_test
-    def test_dict_subclass_builtin_len(self):
-        """Test calling dict.__len__ directly on a custom dict subclass."""
-        obj = DictSubclassCustomLen({"a": 1, "b": 2, "c": 3})
-        self.assertEqual(dict.__len__(obj), 3)
-
-    @make_dynamo_test
     def test_set_subclass_custom_len(self):
         obj = SetSubclassCustomLen([1, 2, 3])
         self.assertEqual(len(obj), 0)
         self.assertEqual(obj.__len__(), 0)
         self.assertEqual(SetSubclassCustomLen.__len__(obj), 0)
-
-    @make_dynamo_test
-    def test_set_subclass_builtin_len(self):
-        """Test calling set.__len__ directly on a custom set subclass."""
-        obj = SetSubclassCustomLen([1, 2, 3])
-        self.assertEqual(set.__len__(obj), 3)
 
 
 class DescriptorLenClass:
