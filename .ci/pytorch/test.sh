@@ -2203,6 +2203,14 @@ elif [[ "${TEST_CONFIG}" == *repro_181685_q* ]]; then
   # failing CI run) into 4 chronological quarters. Run each quarter +
   # the failing test on a parallel runner to identify which subset of
   # prior tests is necessary to reproduce the bug.
+  #
+  # We bypass run_test.py and call pytest directly because run_test.py
+  # auto-shards test_ops into 7 separate Python subprocesses (per
+  # tools/testing/test_selections.py THRESHOLD=600s), which would scatter
+  # the 312 tests across processes with fresh CUDA contexts and break the
+  # state-pollution-based bisection. With --num-shards=1, all selected
+  # tests run in a single process so state accumulates as it does in the
+  # original failing run.
   case "${TEST_CONFIG}" in
     *repro_181685_q1*) Q_FILE=.ci/repro_181685/quarter_1.txt ;;
     *repro_181685_q2*) Q_FILE=.ci/repro_181685/quarter_2.txt ;;
@@ -2213,7 +2221,12 @@ elif [[ "${TEST_CONFIG}" == *repro_181685_q* ]]; then
   echo "Quarter file: ${Q_FILE} ($(wc -l < "${Q_FILE}") prior tests)"
   K_EXPR=$(python3 -c 'import sys; print(" or ".join(open(sys.argv[1]).read().split()))' "${Q_FILE}")
   K_EXPR="${K_EXPR} or test_cow_input_nn_functional_linear_cross_entropy_cuda_float32"
-  python test/run_test.py --inductor --include test_ops -k "${K_EXPR}" --verbose || true
+  cd test
+  PYTORCH_TEST_WITH_INDUCTOR=1 python -bb test_ops.py \
+    --shard-id=1 --num-shards=1 \
+    -v -rfEX -p no:xdist --use-pytest \
+    -k "${K_EXPR}" \
+    --import-slow-tests --import-disabled-tests || true
 elif [[ "${TEST_CONFIG}" == *inductor_distributed* ]]; then
   setup_torch_trace
   test_inductor_distributed
