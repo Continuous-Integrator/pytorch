@@ -37,13 +37,6 @@ class TestRegionalInductorCollectives(TestCase):
         super().setUp()
         os.environ.setdefault("MASTER_ADDR", "127.0.0.1")
         os.environ.setdefault("MASTER_PORT", "29516")
-        # Single-rank Gloo lets us exercise real all_reduce numerics
-        # in-process without spawning a second worker. With world_size=1,
-        # ``all_reduce(t, op=SUM)`` is the identity, so any deviation in the
-        # rewrite is observable as a numeric mismatch against eager. Use
-        # ``NamedTemporaryFile`` rather than ``mktemp`` to avoid the TOCTOU
-        # race in path generation; close the FD immediately so ``FileStore``
-        # can take ownership.
         with tempfile.NamedTemporaryFile(
             prefix="regional_inductor_store_", delete=False
         ) as fd:

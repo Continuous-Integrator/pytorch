@@ -11,10 +11,18 @@ functionalize-collectives FX pass at
 
 The pass mirrors what Dynamo's `traceable_collective_remaps` does at trace
 time, but operates on graphs already produced by `make_fx`. It rewrites
-opaque `torch.ops.c10d.{op}_` calls (which carry non-deepcopiable
-ProcessGroup/ReduceOp torchbind ScriptObjects) into the
-`_c10d_functional.{op}` + `wait_tensor` + `aten.copy_` form, so downstream
-consumers like `standalone_compile` can deepcopy the GraphModule.
+opaque `torch.ops.c10d.{op}_` calls into
+`_c10d_functional.{op}` + `wait_tensor` + `aten.copy_` form because
+**Inductor's collective machinery only understands the functional form**.
+`_inductor.comm_lowering`, `fx_passes.bucketing`, `fx_passes.ddp_fusion`,
+`fx_passes.overlap_scheduling`, `fx_passes.micro_pipeline_tp`, and
+`fx_passes.low_contention_collectives` pattern-match exclusively on
+`torch.ops._c10d_functional.*` + `wait_tensor`. Legacy
+`torch.ops.c10d.{op}_` ops have no lowering registered, so a graph that
+retains them either crashes at the lowering phase or skips every
+comm/compute optimization. The compute/comm overlap scheduler also needs
+a standalone `wait_tensor` node to schedule against — there is no
+equivalent for the opaque `Work` handle returned by the inplace ops.
 
 ## When to use this skill
 
