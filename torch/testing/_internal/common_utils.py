@@ -5136,7 +5136,7 @@ def make_fullrank_matrices_with_distinct_singular_values(*shape, device, dtype, 
         # This gives a condition number of 9/4, which should be good enough
         s.reciprocal_().add_(1.)
         # Note that the singular values need not be ordered in an SVD so
-        # we don't need need to sort S
+        # we don't need to sort S
         x = (u * s.to(u.dtype)) @ vh
     x.requires_grad_(requires_grad)
     return x
@@ -6008,7 +6008,7 @@ def munge_exc(e, *, suppress_suffix=True, suppress_prefix=True, file=None, skip=
         return m.group(0)
 
     s = re.sub(
-        r'( *)File "([^"]+)", line \d+, in (.+)\n(\1  .+\n( +[~^]+ *\n)?)+',
+        r'( *)File "([^"]+)", line \d+, in (.+)\n(\1  .+\n( +[~^]+ *\n)?)*',
         repl_frame,
         s,
     )
