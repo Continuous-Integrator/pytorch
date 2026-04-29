@@ -223,11 +223,12 @@ def _functionalize_inplace_collectives(
     # ReduceOp attrs left behind by the rewrite) along with their backing
     # module attributes so the graph is deepcopy-safe for downstream
     # consumers like ``standalone_compile``.
+    from torch.fx.graph_module import _del_attr
+
     for n in list(gm.graph.find_nodes(op="get_attr")):
         if n.users:
             continue
-        if hasattr(gm, n.target):
-            delattr(gm, n.target)
+        _del_attr(gm, n.target)  # type: ignore[arg-type]
         gm.graph.erase_node(n)
     gm.recompile()
     return gm

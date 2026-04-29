@@ -96,6 +96,12 @@ def forward(self, t_1):
         self.assertEqual(gm(x), _f(x))
 
     def test_regional_inductor_with_dist_all_reduce(self):
+        # End-to-end check that ``regional_inductor`` (which calls
+        # ``_functionalize_inplace_collectives`` internally) handles a
+        # ``make_fx`` graph containing ``dist.all_reduce``. Without the
+        # rewrite, ``standalone_compile`` would crash deepcopying the
+        # ProcessGroup torchbind arg — reaching the assertions at all proves
+        # the rewrite ran.
         gm = _make_fx_with_allreduce()
         for node in gm.graph.nodes:
             if node.op not in ("placeholder", "output"):
@@ -112,10 +118,24 @@ def forward(self, t_1):
         with tracing(TracingContext(fake_mode)):
             compiled_gm = regional_inductor(gm)
 
-        self.assertNotIn("c10d.allreduce_", compiled_gm.code)
+        # The rewritten region (clone + functional all_reduce + wait + copy_ +
+        # add) has been scooped into a single standalone-compiled call.
+        self.assertExpectedInline(
+            compiled_gm.code.strip(),
+            """\
+def forward(self, args_list):
+    args_iter = iter(args_list)
+    t_1 = next(args_iter)
+    args_list.clear()
+    inner = torch__inductor_standalone_compile_inner(t_1);  t_1 = None
+    getitem_3 = inner[0];  inner = None
+    return getitem_3""",
+        )
+
+        # Numerics: rewritten + standalone-compiled graph matches eager.
+        # ``regional_inductor`` switches to boxed calling convention; pass
+        # inputs as a list (the callee clears it).
         x = torch.arange(4, dtype=torch.float32)
-        # ``regional_inductor`` switches the submodule to boxed calling
-        # convention; pass inputs as a list (the callee clears it).
         self.assertEqual(compiled_gm([x]), _f(x))
 
 
