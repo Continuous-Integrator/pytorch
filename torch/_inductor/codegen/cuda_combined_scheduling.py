@@ -84,11 +84,9 @@ class CUDACombinedScheduling(BaseScheduling):
             node1
         ) or self._cutedsl_scheduling.is_cutedsl_template(node2):
             return False
-        # NVIDIA Universal GEMM supports epilogue fusion (template = node1, epilogue = node2).
-        # We only intercept when node1 is the NVGEMM template — the prologue direction
-        # (node1 = pointwise, node2 = template) must fall through to Triton, otherwise
-        # NVGEMM-winning MultiTemplateBuffers silently lose Triton prologue fusion (NVGEMM
-        # does not support prologue fusion and would just return False here).
+        # Only intercept when node1 is the NVGEMM template (epilogue direction).
+        # Prologue direction (node1=pointwise, node2=template) must fall through to
+        # Triton, or NVGEMM-winning MTBs silently lose Triton prologue fusion.
         elif self._nv_universal_gemm_scheduling.is_nv_universal_gemm_template(node1):
             return self._nv_universal_gemm_scheduling.can_fuse_vertical(node1, node2)
         elif self._nv_universal_gemm_scheduling.is_nv_universal_gemm_fused_template(
@@ -187,23 +185,11 @@ class CUDACombinedScheduling(BaseScheduling):
         return self._triton_scheduling.benchmark_fused_nodes(nodes)
 
     def benchmark_codegened_module(self, module):
-        # Check if this is an NVGEMM module
         if getattr(module, "is_nvgemm", False):
             return self._benchmark_nvgemm_module(module)
         return self._triton_scheduling.benchmark_codegened_module(module)
 
     def _benchmark_nvgemm_module(self, module) -> tuple[float, str]:
-        """
-        Benchmark an NVGEMM module.
-
-        NVGEMM modules have get_args() and call() functions similar to Triton,
-        but without the triton_ wrapper. Mirrors the safety nets from
-        TritonScheduling.benchmark_codegened_module: clones args between calls
-        (defends against any future epilogue that writes back to a read buffer)
-        and broadly catches Exception so a single backend failure does not abort
-        autotuning of the whole graph.
-        """
-
         from torch._dynamo.utils import preserve_rng_state
         from torch._inductor.runtime.benchmarking import benchmarker
         from torch._inductor.utils import (
@@ -226,8 +212,6 @@ class CUDACombinedScheduling(BaseScheduling):
             args = module.get_args()
             call = module.call
 
-            # Warmup call to trigger compilation. Use cloned args so the warmup
-            # can't perturb the args the benchmark loop reuses.
             try:
                 call(clone_args(args))
             except Exception as e:
