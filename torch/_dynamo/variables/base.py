@@ -700,8 +700,6 @@ class VariableTracker(metaclass=VariableTrackerMeta):
             return self.nb_int_impl(tx)
         elif name == "__float__" and not args and not kwargs:
             return self.nb_float_impl(tx)
-        elif name == "__neg__" and not args and not kwargs:
-            return self.nb_negative_impl(tx)
         elif name in cmp_name_to_op_mapping and len(args) == 1 and not kwargs:
             other = args[0]
             if not isinstance(self, type(other)) and not (
