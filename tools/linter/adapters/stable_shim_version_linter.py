@@ -11,13 +11,11 @@ import argparse
 import json
 import logging
 import re
-import subprocess
 import sys
 from pathlib import Path
 
 
-# Add repo root to sys.path so we can import sibling adapters as a package and
-# from tools.setup_helpers.
+# Add repo root to sys.path so we can import from tools.setup_helpers
 REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO_ROOT))
 
@@ -34,12 +32,14 @@ LINTER_CODE = "STABLE_SHIM_VERSION"
 
 def get_current_version() -> tuple[int, int]:
     """
-    Read the current PyTorch (major, minor) from version.txt.
+    Get the current PyTorch version from version.txt.
+    This uses the same logic as tools/setup_helpers/gen_version_header.py
+    which is used to generate torch/headeronly/version.h from version.h.in.
 
-    Uses the same parser as tools/setup_helpers/gen_version_header.py, which
-    generates torch/headeronly/version.h from version.h.in.
+    Returns (major, minor) tuple or None if not found.
     """
-    version_file = REPO_ROOT / "version.txt"
+    repo_root = Path(__file__).resolve().parents[3]
+    version_file = repo_root / "version.txt"
 
     if not version_file.exists():
         raise RuntimeError(
@@ -48,23 +48,29 @@ def get_current_version() -> tuple[int, int]:
 
     with open(version_file) as f:
         version = f.read().strip()
-        major, minor, _patch = parse_version(version)
+        major, minor, patch = parse_version(version)
 
     return (major, minor)
 
 
 def get_added_lines(filename: str) -> set[int]:
     """
-    Return line numbers (1-indexed) that are new additions in either:
-      1. Current uncommitted changes (git diff HEAD), or
-      2. Any commit in the current PR (git diff merge-base..HEAD).
+    Get the line numbers of added lines in:
+    1. Current uncommitted changes (git diff HEAD)
+    2. All commits in the current PR (git diff merge-base..HEAD)
 
-    This ensures CI catches issues across all PR commits.
+    This ensures that in CI we catch version macro issues across all PR commits.
+
+    Returns:
+        Set of line numbers (1-indexed) that are new additions.
     """
-    added_lines: set[int] = set()
+    import subprocess
+
+    added_lines = set()
 
     def parse_diff(diff_output: str) -> set[int]:
-        lines: set[int] = set()
+        """Parse git diff output and return line numbers of added lines."""
+        lines = set()
         current_line = 0
         for line in diff_output.split("\n"):
             # Unified diff format: @@ -old_start,old_count +new_start,new_count @@
@@ -73,14 +79,16 @@ def get_added_lines(filename: str) -> set[int]:
                 if match:
                     current_line = int(match.group(1))
             elif line.startswith("+") and not line.startswith("+++"):
+                # This is an added line
                 lines.add(current_line)
                 current_line += 1
             elif not line.startswith("-"):
+                # Context line or unchanged line
                 current_line += 1
         return lines
 
     try:
-        # Uncommitted changes
+        # Check uncommitted changes (working directory vs HEAD)
         result = subprocess.run(
             ["git", "diff", "HEAD", filename],
             capture_output=True,
@@ -90,7 +98,7 @@ def get_added_lines(filename: str) -> set[int]:
         if result.returncode == 0:
             added_lines.update(parse_diff(result.stdout))
 
-        # Ensure origin/main is up to date before computing merge-base
+        # Get merge-base with origin/main to check all PR commits
         result = subprocess.run(
             ["git", "fetch", "origin", "main"],
             capture_output=True,

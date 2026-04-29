@@ -40,7 +40,8 @@ class PreprocessorTracker:
     (#if, #elif, #else, #endif) and tracks which code is inside version blocks.
     """
 
-    def __init__(self) -> None:
+    def __init__(self):
+        """Initialize the preprocessor tracker."""
         # Stack of (is_version_block, version_tuple) tuples
         # is_version_block: True if this is a TORCH_FEATURE_VERSION >= TORCH_VERSION_X_Y_0 block
         # version_tuple: (major, minor) if is_version_block is True, else None
@@ -61,21 +62,27 @@ class PreprocessorTracker:
         """
         Process a line and update the preprocessor state.
 
-        Returns True if the line was a preprocessor directive or comment,
-        False if it's a regular code line that should be further analyzed.
+        Args:
+            line: The line to process
+
+        Returns:
+            True if the line was processed (is a preprocessor directive or comment),
+            False if it's a regular code line that should be further analyzed.
         """
         stripped = line.strip()
 
         # Handle block comments (/* ... */)
+        # Check if we're entering a block comment
         if "/*" in line:
             self.in_block_comment = True
 
+        # If we're in a block comment, check if we're exiting
         if self.in_block_comment:
             if "*/" in line:
                 self.in_block_comment = False
-            return True
+            return True  # Skip the line if we're in a block comment
 
-        # Skip line comments
+        # Skip line comments - they're not active code
         if stripped.startswith("//"):
             return True
 
@@ -89,6 +96,7 @@ class PreprocessorTracker:
                 self.preprocessor_stack.append((True, version_tuple))
                 self.version_of_block = version_tuple
             else:
+                # Regular #if (not a version block)
                 self.preprocessor_stack.append((False, None))
             return True
 
@@ -102,6 +110,7 @@ class PreprocessorTracker:
             if self.preprocessor_stack:
                 is_version_block, _ = self.preprocessor_stack.pop()
                 if is_version_block:
+                    # Restore previous version block if any
                     self.version_of_block = None
                     for i in range(len(self.preprocessor_stack) - 1, -1, -1):
                         if self.preprocessor_stack[i][0]:
@@ -114,17 +123,20 @@ class PreprocessorTracker:
         if stripped.startswith("#else"):
             if self.preprocessor_stack:
                 self.preprocessor_stack.pop()
+            # #else is never versioned, so push (False, None)
             self.preprocessor_stack.append((False, None))
             self.version_of_block = None
             return True
 
         # Track #elif directives
+        # #elif replaces the previous #if or #elif, so we pop and push
         if stripped.startswith("#elif"):
             if self.preprocessor_stack:
                 self.preprocessor_stack.pop()
 
             self.version_of_block = None
 
+            # Check if this #elif has a version condition
             version_match_elif = self.version_pattern.match(stripped)
             if version_match_elif:
                 major = int(version_match_elif.group(1))
@@ -133,13 +145,17 @@ class PreprocessorTracker:
                 self.preprocessor_stack.append((True, version_tuple))
                 self.version_of_block = version_tuple
             else:
+                # Not a version elif, treat as regular conditional
                 self.preprocessor_stack.append((False, None))
             return True
 
+        # Not a preprocessor directive or comment
         return False
 
     def is_in_version_block(self) -> bool:
+        """Check if currently inside any version block."""
         return self.version_of_block is not None
 
     def get_version_of_block(self) -> tuple[int, int] | None:
+        """Get the current version requirement, or None if not in a version block."""
         return self.version_of_block
