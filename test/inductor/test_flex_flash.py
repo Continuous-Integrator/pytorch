@@ -1,9 +1,10 @@
 # Owner(s): ["module: inductor"]
 
 import functools
+import math
 import unittest
 from collections.abc import Callable
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 
 import torch
@@ -80,6 +81,21 @@ def _distance_decay(score, _b, _h, q_idx, kv_idx):
     distance_sq = (q_idx - kv_idx) * (q_idx - kv_idx)
     decay = 1.0 / (1.0 + distance_sq * 0.0001)
     return score * decay
+
+
+def _fake_flex_attention_hop_units_by_backend(
+    query, key, value, _score_mod, _block_mask, scale, kernel_options
+):
+    scores = torch.matmul(query.float(), key.float().transpose(-2, -1)) * scale
+    out = torch.matmul(torch.softmax(scores, dim=-1).to(query.dtype), value)
+    if kernel_options["BACKEND"] == "FLASH":
+        return out, torch.logsumexp(scores, dim=-1), torch.max(scores, dim=-1).values
+    inv_ln2 = 1 / math.log(2.0)
+    return (
+        out,
+        torch.logsumexp(scores, dim=-1) * inv_ln2,
+        torch.max(scores, dim=-1).values * inv_ln2,
+    )
 
 
 def create_alibi_learned(num_heads=4, dtype=torch.float16):
@@ -1323,6 +1339,59 @@ class TestFlexFlash(InductorTestCase):
                 flash_vs_triton(q, k, v, block_mask=block_mask)
         else:
             flash_vs_triton(q, k, v, block_mask=block_mask)
+
+    @xfailIfSM120OrLater
+    @dtypes(torch.float16, torch.bfloat16)
+    @parametrize("deterministic", [False, True])
+    def test_flash_backend_return_lse_matches_triton_and_reference(
+        self, device, dtype, deterministic
+    ):
+        from torch.nn.attention import flex_attention as flex_attention_module
+
+        torch.manual_seed(0)
+        q, k, v = create_test_tensors(
+            batch_size=1,
+            num_heads=2,
+            seq_len=128,
+            dim=32,
+            dtype=dtype,
+            device=device,
+        )
+
+        flash_flex = torch.compile(
+            functools.partial(
+                flex_attention,
+                scale=1.0,
+                return_lse=True,
+                kernel_options={"BACKEND": "FLASH"},
+            )
+        )
+        triton_flex = torch.compile(
+            functools.partial(
+                flex_attention,
+                scale=1.0,
+                return_lse=True,
+                kernel_options={"BACKEND": "TRITON"},
+            )
+        )
+        context = DeterministicGuard(True) if deterministic else nullcontext()
+        ref_lse = torch.logsumexp(
+            torch.matmul(q.float(), k.float().transpose(-2, -1)), dim=-1
+        )
+
+        with (
+            unittest.mock.patch.object(
+                flex_attention_module,
+                "flex_attention_hop",
+                _fake_flex_attention_hop_units_by_backend,
+            ),
+            context,
+        ):
+            _, lse_flash = flash_flex(q, k, v)
+            _, lse_triton = triton_flex(q, k, v)
+
+        torch.testing.assert_close(lse_triton.float(), ref_lse, atol=1e-5, rtol=1e-5)
+        torch.testing.assert_close(lse_flash.float(), ref_lse, atol=1e-5, rtol=1e-5)
 
     @xfailIfSM120OrLater
     @dtypes(torch.float16, torch.bfloat16)
