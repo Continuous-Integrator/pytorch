@@ -35,7 +35,6 @@ from collections.abc import Callable, Iterable, KeysView, Sequence
 from typing import Any, cast, TYPE_CHECKING
 
 import torch
-from torch import sym_float, sym_int
 from torch._subclasses.meta_utils import is_sparse_any
 from torch.overrides import BaseTorchFunctionMode
 from torch.utils._python_dispatch import is_traceable_wrapper_subclass
@@ -88,12 +87,7 @@ from .base import (
     ValueMutationNew,
     VariableTracker,
 )
-from .constant import (
-    CONSTANT_VARIABLE_FALSE,
-    CONSTANT_VARIABLE_NONE,
-    ConstantVariable,
-    FakeIdVariable,
-)
+from .constant import ConstantVariable, FakeIdVariable
 from .dicts import (
     ConstDictVariable,
     DefaultDictVariable,
@@ -111,7 +105,7 @@ from .lists import (
     TupleIteratorVariable,
     TupleVariable,
 )
-from .misc import NullVariable, StringFormatVariable
+from .misc import NullVariable
 from .sets import FrozensetVariable, OrderedSetClassVariable, SetVariable
 from .tensor import (
     FakeItemVariable,
@@ -338,7 +332,10 @@ class BaseBuiltinVariable(VariableTracker):
 
     def var_getattr(self, tx: "InstructionTranslator", name: str) -> VariableTracker:
         source = self.source and AttrSource(self.source, name)
-        return variables.GetAttrVariable(self, name, source=source)
+        attr = getattr(self._fn, name, None)
+        return variables.GetAttrVariable(
+            self, name, py_type=type(attr) if attr is not None else None, source=source
+        )
 
     def call_obj_hasattr(
         self, tx: "InstructionTranslator", name: str
@@ -1564,7 +1561,7 @@ class BuiltinVariable(BaseBuiltinVariable):
 
         if self.fn is object and name == "__init__":
             # object.__init__ is a no-op
-            return variables.CONSTANT_VARIABLE_NONE
+            return variables.ConstantVariable.create(None)
 
         if self.fn is set:
             resolved_fn = getattr(self.fn, name)
@@ -1604,74 +1601,27 @@ class BuiltinVariable(BaseBuiltinVariable):
 
         return super().call_method(tx, name, args, kwargs)
 
-    def _call_int_float(
+    def call_int(
         self, tx: "InstructionTranslator", arg: VariableTracker
     ) -> VariableTracker | None:
-        # Handle cases like int(torch.seed())
-        # Also handle sym_float to sym_int cases
-        if arg.is_tensor() or isinstance(arg, SymNodeVariable):
-            if arg.is_tensor():
-                item = arg.call_method(tx, "item", [], {})
-            else:
-                item = arg
-            fn_ = sym_int if self.fn is int else sym_float
-            from torch._dynamo.variables.builder import wrap_fx_proxy
+        from .object_protocol import generic_int
 
-            return wrap_fx_proxy(
-                tx=tx,
-                proxy=tx.output.create_proxy(
-                    "call_function",
-                    fn_,
-                    (item.as_proxy(),),
-                    {},
-                ),
-            )
-        return None
+        return generic_int(tx, arg)
 
-    call_int = _call_int_float
-    call_float = _call_int_float
+    def call_float(
+        self, tx: "InstructionTranslator", arg: VariableTracker
+    ) -> VariableTracker | None:
+        from .object_protocol import generic_float
+
+        return generic_float(tx, arg)
 
     def call_bool(
         self, tx: "InstructionTranslator", arg: VariableTracker
     ) -> VariableTracker | None:
-        if arg.is_tensor():
-            item = arg.call_method(tx, "item", [], {})
-            if isinstance(item, SymNodeVariable) and isinstance(
-                item.sym_num, torch.SymBool
-            ):
-                return item
-            if isinstance(item, variables.ConstantVariable):
-                return VariableTracker.build(tx, bool(item.value))
-            return SymNodeVariable.create(tx, item.as_proxy() != 0)
-        # Emulate `PyBool_Type.tp_vectorcall` which boils down to `PyObject_IsTrue`.
-        # https://github.com/python/cpython/blob/3.12/Objects/object.c#L1674-L1697
-        if isinstance(arg, SymNodeVariable):
-            # Note that we delay specializing on symbolic values to avoid
-            # unnecessary guards. Specialization will happen later if, e.g., the
-            # resulting boolean is used for branching.
-            if isinstance(arg.sym_num, torch.SymBool):
-                return arg
+        # Emulate PyBool_Type.tp_vectorcall which boils down to PyObject_IsTrue.
+        from .object_protocol import generic_bool
 
-            # Emulate `nb_bool` of int/float objects
-            # - https://github.com/python/cpython/blob/3.12/Objects/longobject.c#L4940-L4944
-            # - https://github.com/python/cpython/blob/3.12/Objects/floatobject.c#L878-L882
-            assert istype(arg.sym_num, (torch.SymInt, torch.SymFloat))
-            return SymNodeVariable.create(tx, arg.as_proxy() != 0)
-        if isinstance(arg, (ConstDictVariable, SetVariable)):
-            return ConstantVariable.build(tx, bool(arg.items))
-        if isinstance(arg, variables.UserDefinedObjectVariable):
-            # for user-defined objects, first try __bool__ if defined, else
-            # __len__. If neither is defined, then any instance is considered True
-            if arg.call_obj_hasattr(tx, "__bool__").value:
-                return arg.call_method(tx, "__bool__", [], {})
-            elif arg.call_obj_hasattr(tx, "__len__").value:
-                length = arg.call_method(tx, "__len__", [], {})
-                return ConstantVariable.create(length.value > 0)  # type: ignore[missing-attr]
-            else:
-                return ConstantVariable.create(True)
-
-        # TODO handle more cases and merge this with this with `generic_jump`.
-        return None
+        return generic_bool(tx, arg)
 
     def call_repr(
         self, tx: "InstructionTranslator", arg: VariableTracker
@@ -2107,7 +2057,7 @@ class BuiltinVariable(BaseBuiltinVariable):
                 NNModuleVariable,
             ),
         ):
-            return variables.CONSTANT_VARIABLE_TRUE
+            return variables.ConstantVariable.create(True)
         elif isinstance(arg, UserDefinedVariable):
             return VariableTracker.build(tx, callable(arg.value))
         elif isinstance(
@@ -2115,14 +2065,13 @@ class BuiltinVariable(BaseBuiltinVariable):
             (
                 ConstantVariable,
                 SymNodeVariable,
-                StringFormatVariable,
                 TensorVariable,
                 ListVariable,
                 TupleVariable,
                 ListIteratorVariable,
             ),
         ):
-            return variables.CONSTANT_VARIABLE_FALSE
+            return variables.ConstantVariable.create(False)
         else:
             return None
 
@@ -2234,7 +2183,7 @@ class BuiltinVariable(BaseBuiltinVariable):
                     "1 kwargs (`strict`)",
                     f"{len(kwargs)} kwargs",
                 )
-        strict = kwargs.pop("strict", CONSTANT_VARIABLE_FALSE)
+        strict = kwargs.pop("strict", ConstantVariable.create(False))
         iter_args = [
             SourcelessBuilder.create(tx, iter).call_function(tx, [arg], {})
             for arg in args
@@ -2261,7 +2210,9 @@ class BuiltinVariable(BaseBuiltinVariable):
         *args: VariableTracker,
         **kwargs: VariableTracker,
     ) -> VariableTracker:
-        return args[0].call_method(tx, "__getitem__", list(args[1:]), kwargs)
+        from .object_protocol import vt_getitem
+
+        return vt_getitem(tx, args[0], args[1])
 
     def call_isinstance(
         self,
@@ -2431,7 +2382,7 @@ class BuiltinVariable(BaseBuiltinVariable):
         *seqs: VariableTracker,
         **kwargs: VariableTracker,
     ) -> VariableTracker:
-        strict = CONSTANT_VARIABLE_FALSE
+        strict = ConstantVariable.create(False)
         if kwargs:
             if sys.version_info >= (3, 14):
                 if not (len(kwargs) == 1 and "strict" in kwargs):
@@ -2441,7 +2392,7 @@ class BuiltinVariable(BaseBuiltinVariable):
                         "1 kwargs (`strict`)",
                         f"{len(kwargs)} kwargs",
                     )
-                strict = kwargs.pop("strict", CONSTANT_VARIABLE_FALSE)
+                strict = kwargs.pop("strict", ConstantVariable.create(False))
             else:
                 raise_args_mismatch(
                     tx,
@@ -2485,7 +2436,10 @@ class BuiltinVariable(BaseBuiltinVariable):
                 raise_observed_exception(AttributeError, tx)
             if not callable(value):
                 return VariableTracker.build(tx, value, source)
-        return variables.GetAttrVariable(self, name, source=source)
+        attr = getattr(self.fn, name, None)
+        return variables.GetAttrVariable(
+            self, name, py_type=type(attr) if attr is not None else None, source=source
+        )
 
     def call_getattr(
         self,
@@ -2633,7 +2587,9 @@ class BuiltinVariable(BaseBuiltinVariable):
             ) and torch._dynamo.trace_rules.is_aten_op_or_tensor_method(member):
                 return variables.TorchInGraphFunctionVariable(member, source=source)
             elif name in cmp_name_to_op_mapping:
-                return variables.GetAttrVariable(obj, name, source=source)
+                return variables.GetAttrVariable(
+                    obj, name, py_type=type(member), source=source
+                )
             else:
                 return None
         elif isinstance(obj, DummyModule):
@@ -2906,7 +2862,7 @@ class BuiltinVariable(BaseBuiltinVariable):
     ) -> VariableTracker:
         format_string = _format_string.as_python_constant()
         format_string = str(format_string)
-        return StringFormatVariable.create(format_string, args, kwargs)
+        return variables.StringFormatVariable.create(format_string, args, kwargs)
 
     def call_id(
         self, tx: "InstructionTranslator", *args: VariableTracker
@@ -3034,8 +2990,14 @@ class BuiltinVariable(BaseBuiltinVariable):
                 hints=[*graph_break_hints.SUPPORTABLE],
             )
 
-        # This is seen in inspect signature where we check if the value is a default value
-        if isinstance(right, variables.UserDefinedClassVariable):
+        # SymNodes are numeric (int/float/bool). The non-SymNode operand
+        # must be a type that can participate in a traced numeric comparison.
+        # Anything else (classes, DataPtrVariable, etc.) is a different type
+        # entirely — the comparison result is known at compile time.
+        non_symnode = right if isinstance(left, SymNodeVariable) else left
+        if not isinstance(
+            non_symnode, (SymNodeVariable, ConstantVariable, TensorVariable)
+        ):
             # pyrefly: ignore [bad-argument-type]
             return VariableTracker.build(tx, op(object(), None))
 
@@ -3338,7 +3300,7 @@ class DictBuiltinVariable(BaseBuiltinVariable):
                 f"{len(args)} args",
             )
         if len(args) == 1:
-            args = (*args, CONSTANT_VARIABLE_NONE)
+            args = (*args, ConstantVariable.create(None))
         if len(args) != 2:
             raise_args_mismatch(
                 tx,
