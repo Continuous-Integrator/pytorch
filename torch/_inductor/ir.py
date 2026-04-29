@@ -5719,6 +5719,11 @@ class MultiTemplateBuffer(TritonTemplateBuffer):
         # Tracks which backend's make_kernel_render is currently bound. Updated by
         # swap_as_*_caller and finalize_as_*_caller. None until one of those runs.
         self._render_kind: str | None = None
+        # The currently-bound caller (set by swap/finalize). Lets backends like
+        # NVGEMM access the exact ChoiceCaller their codegen path needs to
+        # render, so the autotune fusion-benchmark loop's per-iteration swap
+        # is not silently overridden by a re-selection from choice_timings().
+        self._render_caller: ChoiceCaller | None = None
 
     @property
     def output_plannable(self) -> bool:
@@ -5750,13 +5755,16 @@ class MultiTemplateBuffer(TritonTemplateBuffer):
 
         render = self.make_kernel_render
         prev_kind = self._render_kind
+        prev_caller = self._render_caller
         self.make_kernel_render = caller.get_make_kernel_render()
         self._render_kind = "triton"
+        self._render_caller = caller
         try:
             yield
         finally:
             self.make_kernel_render = render
             self._render_kind = prev_kind
+            self._render_caller = prev_caller
 
     def finalize_as_triton_caller(self, caller: TritonTemplateCallerBase) -> None:
         assert isinstance(
@@ -5766,6 +5774,7 @@ class MultiTemplateBuffer(TritonTemplateBuffer):
         assert self.get_stride() == caller.layout.stride
         self.make_kernel_render = caller.get_make_kernel_render()
         self._render_kind = "triton"
+        self._render_caller = caller
 
     @contextlib.contextmanager
     def swap_as_nvgemm_caller(self, caller: ChoiceCaller) -> Iterator[None]:
@@ -5777,13 +5786,16 @@ class MultiTemplateBuffer(TritonTemplateBuffer):
 
         render = self.make_kernel_render
         prev_kind = self._render_kind
+        prev_caller = self._render_caller
         self.make_kernel_render = caller.get_make_kernel_render()
         self._render_kind = "nvgemm"
+        self._render_caller = caller
         try:
             yield
         finally:
             self.make_kernel_render = render
             self._render_kind = prev_kind
+            self._render_caller = prev_caller
 
     def finalize_as_nvgemm_caller(self, caller: ChoiceCaller) -> None:
         """Finalize with an NVUniversalGemmCaller's make_kernel_render."""
@@ -5794,6 +5806,7 @@ class MultiTemplateBuffer(TritonTemplateBuffer):
         assert self.get_stride() == caller.layout.stride
         self.make_kernel_render = caller.get_make_kernel_render()
         self._render_kind = "nvgemm"
+        self._render_caller = caller
 
     def get_min_choice(
         self, hint_override: int | None = None
@@ -5811,6 +5824,8 @@ class MultiTemplateBuffer(TritonTemplateBuffer):
 
         # Set the default to be the one without hint override
         self.make_kernel_render = self._make_kernel_renders[None]
+        self._render_kind = "triton"
+        self._render_caller = callers[None]
 
 
 class CUTLASSTemplateBuffer(TemplateBuffer):
