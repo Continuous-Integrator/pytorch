@@ -72,23 +72,27 @@ def _build_kernel_cache() -> dict[str, Any]:
     return cache
 
 
+def _get_kernel_cache() -> dict[str, Any]:
+    """Lazy-initialize and return the kernel name -> kernel cache.
+
+    Returns a snapshot to the local frame: a concurrent clear_cache() that
+    rebinds the global to None cannot turn the caller's read into AttributeError.
+    """
+    global _kernel_by_name_cache
+    if _kernel_by_name_cache is None:
+        with _cache_lock:
+            if _kernel_by_name_cache is None:
+                _kernel_by_name_cache = _build_kernel_cache()
+    return _kernel_by_name_cache
+
+
 def get_compatible_kernels(
     args: Any,
     cc: int,
     metadata_filter: Callable[[Any], bool] | None = None,
 ) -> list[Any]:
     """Get kernels compatible with the given arguments from the cache."""
-    global _kernel_by_name_cache
-
-    if _kernel_by_name_cache is None:
-        with _cache_lock:
-            if _kernel_by_name_cache is None:
-                _kernel_by_name_cache = _build_kernel_cache()
-
-    # Snapshot the global into a local so a concurrent clear_cache() (which
-    # rebinds _kernel_by_name_cache to None) can't turn the post-init read
-    # into len(None) or AttributeError mid-function.
-    cache = _kernel_by_name_cache
+    cache = _get_kernel_cache()
     compatible = []
     for kernel in cache.values():
         if kernel.metadata.min_cc > cc:
@@ -112,32 +116,16 @@ def get_compatible_kernels(
 
 def get_kernel_by_name(kernel_name: str) -> Any:
     """Get a cutlass_api kernel by name using the global cache."""
-    global _kernel_by_name_cache
-
-    if _kernel_by_name_cache is None:
-        with _cache_lock:
-            if _kernel_by_name_cache is None:
-                _kernel_by_name_cache = _build_kernel_cache()
-
-    # Snapshot to local: same race-safety pattern as get_compatible_kernels —
-    # a concurrent clear_cache() rebinding the global to None can't turn this
-    # post-init read into AttributeError.
-    cache = _kernel_by_name_cache
-    return cache.get(kernel_name)
+    return _get_kernel_cache().get(kernel_name)
 
 
 def ensure_cache_initialized() -> None:
     """Ensure the kernel cache is initialized."""
-    global _kernel_by_name_cache
-
-    if _kernel_by_name_cache is None:
-        with _cache_lock:
-            if _kernel_by_name_cache is None:
-                _kernel_by_name_cache = _build_kernel_cache()
+    _get_kernel_cache()
 
 
-# Cache for EFC kernels with specific epilogue configurations
-# Key: (efc_kernel_name, epilogue_fn_code) -> kernel object
+# Cache for EFC kernels with specific epilogue configurations.
+# Key: (efc_kernel_name, epilogue_source, _epilogue_args_signature) -> kernel
 _efc_epilogue_cache: dict[tuple[str, str, tuple], Any] = {}
 
 
@@ -182,8 +170,6 @@ def get_efc_kernel_with_epilogue(
     Returns:
         The configured EFC kernel, or None if not found.
     """
-    global _kernel_by_name_cache
-
     if not epilogue_source:
         epilogue_source = str(epilogue_args) if epilogue_args is not None else ""
 
@@ -193,6 +179,8 @@ def get_efc_kernel_with_epilogue(
         _epilogue_args_signature(epilogue_args),
     )
 
+    base_cache = _get_kernel_cache()
+
     # Hold lock for the full operation — this is not a hot path (called once per
     # unique kernel+epilogue combination), so simplicity beats concurrency here.
     with _cache_lock:
@@ -200,10 +188,7 @@ def get_efc_kernel_with_epilogue(
             log.debug("EFC kernel with epilogue found in cache: %s", efc_kernel_name)
             return _efc_epilogue_cache[cache_key]
 
-        if _kernel_by_name_cache is None:
-            _kernel_by_name_cache = _build_kernel_cache()
-
-        base_kernel = _kernel_by_name_cache.get(efc_kernel_name)
+        base_kernel = base_cache.get(efc_kernel_name)
         if base_kernel is None:
             log.debug("Base EFC kernel not found: %s", efc_kernel_name)
             return None
