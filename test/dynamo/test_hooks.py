@@ -365,10 +365,10 @@ def forward(self, L_x_ : torch.Tensor):
     y = l_x_ * 2;  l_x_ = None
     a = y * 3
     hook_body_0 = self.hook_body_0
-    _register_hook_trampoline = torch__dynamo_external_utils__RegisterHookTrampoline(y, hook_body_0);  y = hook_body_0 = None
-    add = a + _register_hook_trampoline;  a = None
+    register_hook_trampoline_for_intermediate = torch__dynamo_external_utils_register_hook_trampoline_for_intermediate(y, hook_body_0);  y = hook_body_0 = None
+    add = a + register_hook_trampoline_for_intermediate;  a = None
     sum_1 = add.sum();  add = None
-    return (sum_1, _register_hook_trampoline)""",
+    return (sum_1, register_hook_trampoline_for_intermediate)""",
         )
 
     def test_hook_on_intermediate_used_before_and_after(self):
@@ -514,9 +514,9 @@ def forward(self, L_x_ : torch.Tensor):
     getitem_2 = split[2];  split = None
     result = torch.cat((y, getitem_1, getitem_2));  getitem_1 = getitem_2 = None
     hook_body_0 = self.hook_body_0
-    _register_hook_trampoline = torch__dynamo_external_utils__RegisterHookTrampoline(y, hook_body_0);  y = hook_body_0 = None
+    register_hook_trampoline_for_intermediate = torch__dynamo_external_utils_register_hook_trampoline_for_intermediate(y, hook_body_0);  y = hook_body_0 = None
     sum_1 = result.sum();  result = None
-    sum_2 = _register_hook_trampoline.sum();  _register_hook_trampoline = None
+    sum_2 = register_hook_trampoline_for_intermediate.sum();  register_hook_trampoline_for_intermediate = None
     add = sum_1 + sum_2;  sum_1 = sum_2 = None
     return (add,)""",
         )
