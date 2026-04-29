@@ -25,6 +25,7 @@
 # guard. When absent, the declaration is emitted ungated, which would signify that the op was
 # available since torch 2.9. ALL NEWLY ADDED OPS MUST INCLUDE A "since" KEY WITH THE VALUE SET
 # TO THE CURRENT TORCH VERSION (the version when the op was added).
+
 inductor_fallback_ops: dict[
     str, dict[str, list[str] | str | dict[str, list[str] | str]]
 ] = {
