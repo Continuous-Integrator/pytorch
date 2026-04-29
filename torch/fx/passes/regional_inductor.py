@@ -33,26 +33,31 @@ __all__ = ["regional_inductor"]
 # ``_inplace_c10d_rewrites``.
 
 
-def _resolve_process_group_name(gm: torch.fx.GraphModule, arg: Any) -> str:
-    """Get the ``group_name`` string for a c10d ProcessGroup arg, unboxing
-    the torchbind ScriptObject if needed.
+def _resolve_process_group_name(gm: torch.fx.GraphModule, arg: torch.fx.Node) -> str:
+    """Get the ``group_name`` string for a c10d ProcessGroup ``get_attr`` arg,
+    unboxing the torchbind ScriptObject if needed.
     """
     import torch.distributed as dist
 
-    pg = getattr(gm, arg.target) if isinstance(arg, torch.fx.Node) else arg  # type: ignore[arg-type]
+    if arg.op != "get_attr":
+        raise AssertionError(f"expected get_attr, got op={arg.op!r}")
+    pg = getattr(gm, arg.target)  # type: ignore[arg-type]
     if isinstance(pg, torch.ScriptObject):
         pg = dist.ProcessGroup.unbox(pg)
     return pg.group_name
 
 
-def _resolve_reduce_op_str(gm: torch.fx.GraphModule, arg: Any) -> str:
-    """Get the lower-case op string ("sum"/"avg"/...) for a c10d ReduceOp arg,
-    converting from the torchbind ScriptObject form if needed.
+def _resolve_reduce_op_str(gm: torch.fx.GraphModule, arg: torch.fx.Node) -> str:
+    """Get the lower-case op string (``"sum"``/``"avg"``/...) for a c10d
+    ReduceOp ``get_attr`` arg, converting from the torchbind ScriptObject
+    form if needed.
     """
     import torch.distributed as dist
     from torch.distributed._functional_collectives import REDUCE_OP_TO_STR
 
-    reduce_op = getattr(gm, arg.target) if isinstance(arg, torch.fx.Node) else arg  # type: ignore[arg-type]
+    if arg.op != "get_attr":
+        raise AssertionError(f"expected get_attr, got op={arg.op!r}")
+    reduce_op = getattr(gm, arg.target)  # type: ignore[arg-type]
     if isinstance(reduce_op, torch.ScriptObject):
         reduce_op = dist.ReduceOp.RedOpType(reduce_op.op())  # type: ignore[attr-defined]
     return REDUCE_OP_TO_STR[reduce_op]
@@ -171,8 +176,8 @@ def _rewrite_allreduce_(gm: torch.fx.GraphModule, node: torch.fx.Node) -> None:
         # downstream uses of ``getitem_<i>`` are redirected to ``wait_i``
     """
     tensors = node.args[0]
-    group_name = _resolve_process_group_name(gm, node.args[1])
-    op_str = _resolve_reduce_op_str(gm, node.args[2])
+    group_name = _resolve_process_group_name(gm, node.args[1])  # type: ignore[arg-type]
+    op_str = _resolve_reduce_op_str(gm, node.args[2])  # type: ignore[arg-type]
     custom = node.meta.get("custom")
     target = torch.ops._c10d_functional.all_reduce.default
     waits = [
@@ -190,8 +195,8 @@ def _inplace_c10d_rewrites() -> dict[Any, _InplaceCollectiveRewrite]:
 
     To support a new collective: write ``_rewrite_<op>_`` (typically a few
     lines using ``_resolve_process_group_name`` / ``_resolve_reduce_op_str`` /
-    ``_emit_collective_chain`` and a ``_redirect_*_work_uses`` matching the
-    output schema), then register it here.
+    ``_emit_collective_chain`` / ``_redirect_inplace_collective_uses``), then
+    register it here.
     """
     if not torch.distributed.is_available():
         return {}
