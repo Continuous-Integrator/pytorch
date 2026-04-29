@@ -593,7 +593,7 @@ class GraphModule(torch.nn.Module):
             # No stacktrace found for following nodes
             wait_event_default = torch.ops.streams.wait_event.default(2, 0)
             return (wait_event_default, dep_0, dep_1)
-""",  # noqa: B950
+""",
         )
 
     @requires_cuda
@@ -778,7 +778,7 @@ class GraphModule(torch.nn.Module):
             # No stacktrace found for following nodes
             record_event_default = torch.ops.streams.record_event.default(5, 3)
             return (record_event_default, dep_0)
-""",  # noqa: B950
+""",
         )
 
     @requires_cuda
@@ -989,7 +989,7 @@ class GraphModule(torch.nn.Module):
             # No stacktrace found for following nodes
             record_event_default = torch.ops.streams.record_event.default(13, 4)
             return (record_event_default, dep_0)
-""",  # noqa: B950
+""",
         )
 
     @requires_cuda
@@ -1745,7 +1745,7 @@ class <lambda>(torch.nn.Module):
             #
             synchronize_event_default = torch.ops.streams.synchronize_event.default(1)
             return (synchronize_event_default, dep_0)
-""",  # noqa: B950
+""",
         )
 
     @requires_cuda
@@ -1951,7 +1951,7 @@ class <lambda>(torch.nn.Module):
             #
             synchronize_event_default = torch.ops.streams.synchronize_event.default(0)
             return (synchronize_event_default, dep_0)
-""",  # noqa: B950
+""",
         )
 
     @requires_cuda
