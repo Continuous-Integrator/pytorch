@@ -76,14 +76,13 @@ jobs:
             const title = pr.title.toUpperCase();
 
             // Filter criteria based on:
-            // is:open base:main draft:false label:"open source" -label:triaged
+            // base:main draft:false label:"open source" -label:triaged
             // -review:approved NOT WIP NOT TESTING in:title
             const skip = (reason) => {
               core.info(`Skipping PR #${prNumber}: ${reason}`);
               core.setOutput('eligible', 'false');
             };
 
-            if (pr.state !== 'open') return skip('PR is not open');
             if (pr.base.ref !== 'main') return skip(`base branch is '${pr.base.ref}', not 'main'`);
             if (pr.draft) return skip('PR is a draft');
             if (!labels.includes('open source')) return skip('missing "open source" label');
@@ -92,18 +91,12 @@ jobs:
 
             // Skip if any reviewer has already approved or requested changes —
             // the PR already has review activity and doesn't need auto-triage.
-            const allReviews = [];
-            for (let page = 1; ; page++) {
-              const resp = await github.rest.pulls.listReviews({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                pull_number: prNumber,
-                per_page: 100,
-                page,
-              });
-              allReviews.push(...resp.data);
-              if (resp.data.length < 100) break;
-            }
+            const allReviews = await github.paginate(github.rest.pulls.listReviews, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber,
+              per_page: 100,
+            });
             const hasReviewActivity = allReviews.some(
               r => r.state === 'APPROVED' || r.state === 'CHANGES_REQUESTED'
             );
@@ -123,23 +116,12 @@ jobs:
         with:
           script: |
             const prNumber = parseInt(process.env.PR_NUMBER);
-            const files = [];
-            const per_page = 100;
-            let page = 1;
-            while (true) {
-              const resp = await github.rest.pulls.listFiles({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                pull_number: prNumber,
-                per_page,
-                page,
-              });
-              for (const f of resp.data) {
-                files.push(f.filename);
-              }
-              if (resp.data.length < per_page) break;
-              page++;
-            }
+            const files = await github.paginate(github.rest.pulls.listFiles, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber,
+              per_page: 100,
+            }, (resp) => resp.data.map(f => f.filename));
             core.setOutput('files', JSON.stringify(files));
 
       - name: Install PyYAML
