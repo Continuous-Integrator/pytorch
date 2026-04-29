@@ -206,6 +206,15 @@ its type to `common_constant_types`.
             raise NotImplementedError
         return member
 
+    def tp_iter_impl(self, tx: InstructionTranslator) -> VariableTracker:
+        from .lists import ListIteratorVariable
+
+        if istype(self.value, str):
+            return ListIteratorVariable(
+                self.unpack_var_sequence(tx), mutation_type=ValueMutationNew()
+            )
+        return super().tp_iter_impl(tx)
+
     def call_method(
         self,
         tx: InstructionTranslator,
@@ -233,14 +242,6 @@ its type to `common_constant_types`.
                 return ConstantVariable.create(self.value.join(arg_const))
             except NotImplementedError:
                 return super().call_method(tx, name, args, kwargs)
-        elif name == "__iter__" and istype(self.value, str):
-            # this could be some generic iterator to avoid the circular import,
-            # but ListIterator does what we want
-            from .lists import ListIteratorVariable
-
-            return ListIteratorVariable(
-                self.unpack_var_sequence(tx), mutation_type=ValueMutationNew()
-            )
 
         if any(isinstance(x, SymNodeVariable) for x in args):
             # Promote to SymNodeVariable for operations involving dynamic shapes.
@@ -253,6 +254,9 @@ its type to `common_constant_types`.
             const_kwargs = {k: v.as_python_constant() for k, v in kwargs.items()}
         except NotImplementedError:
             return super().call_method(tx, name, args, kwargs)
+
+        if name == "__iter__":
+            return self.tp_iter_impl(tx)
 
         if isinstance(self.value, str) and name in str.__dict__:
             method = getattr(self.value, name)
@@ -392,6 +396,16 @@ its type to `common_constant_types`.
             and self.as_python_constant() == other.as_python_constant()
         )
 
+    def get_id(self, tx: InstructionTranslator) -> int | None:
+        # Singletons have guaranteed stable identity across the process lifetime.
+        if self.value is None or self.value is True or self.value is False:
+            return id(self.value)
+        # Sourceful constants resolve via source like any other sourceful VT.
+        # Sourceless non-singleton constants (e.g. literal 42 in compiled code)
+        # get FakeIdVariable — CPython interning of small ints/strings is an
+        # implementation detail users shouldn't rely on.
+        return super().get_id(tx)
+
     def get_real_python_backed_value(self) -> object:
         return self.value
 
@@ -467,6 +481,23 @@ class FakeIdVariable(VariableTracker):
         if isinstance(other, (FakeIdVariable, ConstantVariable)):
             return self.value == other.as_python_constant()
         return False
+
+    def call_method(
+        self,
+        tx: InstructionTranslator,
+        name: str,
+        args: list[VariableTracker],
+        kwargs: dict[str, VariableTracker],
+    ) -> VariableTracker:
+        from ..utils import cmp_name_to_op_mapping
+
+        if name in cmp_name_to_op_mapping and len(args) == 1 and not kwargs:
+            other = args[0]
+            if isinstance(other, (FakeIdVariable, ConstantVariable)):
+                return ConstantVariable.create(
+                    cmp_name_to_op_mapping[name](self.value, other.as_python_constant())
+                )
+        return super().call_method(tx, name, args, kwargs)
 
     def reconstruct(self, codegen: Any) -> None:
         unimplemented(
