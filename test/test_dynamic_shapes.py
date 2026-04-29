@@ -5950,11 +5950,29 @@ class TestTransferSymbolsFromForeignShapeEnv(TestCase):
             skip_nested_compile(),
             torch.compiler._non_strict_tracing_context(),
         ):
-            make_fx(
+            gm = make_fx(
                 wrapped,
                 record_stack_traces=True,
                 record_module_stack=False,
             )(*fake_args)
+
+        # Verify unbacked dims are preserved in the captured graph.
+        # The 4 index tensors (kv_indices, full_kv_indices, q_indices,
+        # full_q_indices) should each have an unbacked dim, not a
+        # concrete value like 2.
+        unbacked_count = 0
+        for node in gm.graph.nodes:
+            if node.op == "placeholder":
+                val = node.meta.get("val", None)
+                if val is not None and isinstance(val, torch.Tensor):
+                    for s in val.size():
+                        if is_symbolic(s) and not has_guarding_hint(s):
+                            unbacked_count += 1
+        self.assertGreaterEqual(
+            unbacked_count, 4,
+            "Expected at least 4 unbacked dims (kv_indices, full_kv_indices, "
+            "q_indices, full_q_indices) but found {unbacked_count}",
+        )
 
 
 if __name__ == "__main__":

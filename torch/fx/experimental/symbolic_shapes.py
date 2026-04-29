@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sympy
 from sympy import S
+
 from torch._prims_common import BoolLike, FloatLike, IntLike
 
 
@@ -46,6 +47,7 @@ from typing import (
     TypeGuard,
     TypeVar,
 )
+from typing_extensions import deprecated, ParamSpec
 
 import torch
 import torch.fx
@@ -100,7 +102,6 @@ from torch.utils._sympy.value_ranges import (
     ValueRanges,
 )
 from torch.utils._traceback import CapturedTraceback, format_frame
-from typing_extensions import deprecated, ParamSpec
 
 
 if TYPE_CHECKING:
@@ -4763,6 +4764,7 @@ class ShapeEnv:
                         hint_overrides[i] = opt_hint
 
         import sympy
+
         from torch._dynamo.source import TensorProperty, TensorPropertySource
 
         ex_size = tuple(_hint(sz) for sz in sizes)
@@ -4813,18 +4815,15 @@ class ShapeEnv:
         if is_symbolic(storage_offset):
             new_offset_expr = storage_offset.node.expr.xreplace(old_to_new)  # type: ignore[union-attr]
         else:
-            new_offset_expr = self.create_symbol(
-                ex_storage_offset,
-                TensorPropertySource(source, TensorProperty.STORAGE_OFFSET),
-                dynamic_dim=DimDynamic.STATIC,
-                constraint_dim=None,
-                symbolic_context=symbolic_context,
-            )
+            new_offset_expr = sympy.Integer(storage_offset)
 
         # 5. Wrap into SymInt nodes.
         sym_sizes = []
         for i, sym in enumerate(new_size_exprs):
-            hint = (hint_overrides or {}).get(i, ex_size[i])
+            if dynamic_sizes[i] is DimDynamic.UNBACKED:
+                hint = None
+            else:
+                hint = ex_size[i]
             sym_sizes.append(
                 self.create_symintnode(
                     sym,
@@ -4841,9 +4840,8 @@ class ShapeEnv:
 
         sym_strides = []
         for i, stride_expr in enumerate(new_stride_exprs):
-            hint_stride = stride_expr.xreplace(self.backed_var_to_val)
-            if isinstance(hint_stride, (int, sympy.core.numbers.Integer)):
-                hint_stride = int(hint_stride)
+            if is_symbolic(strides[i]) and not has_guarding_hint(strides[i]):
+                hint_stride = None
             else:
                 hint_stride = ex_stride[i]
             sym_strides.append(
