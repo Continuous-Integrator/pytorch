@@ -11,9 +11,31 @@ the loop via ``asyncio.run_coroutine_threadsafe`` and block.
 """
 
 import asyncio
+import importlib.util
 import os
 import threading
 from typing import Any
+
+_spec = importlib.util.spec_from_file_location(
+    "coord_client",
+    os.path.join(os.path.dirname(__file__), "../../checkpoint/coord_client.py"),
+)
+_base = importlib.util.module_from_spec(_spec)
+
+# The base module does `from protocol import ...` which needs protocol.py
+# on sys.path. Temporarily add checkpoint/ so its bare imports resolve.
+import sys
+
+_ckpt_dir = os.path.join(os.path.dirname(__file__), "../../checkpoint")
+sys.path.insert(0, _ckpt_dir)
+try:
+    _spec.loader.exec_module(_base)
+finally:
+    sys.path.remove(_ckpt_dir)
+
+CoordClientError = _base.CoordClientError
+PeerGone = _base.PeerGone
+NoPeers = _base.NoPeers
 
 from torch.distributed._coord_protocol import (
     ERR_NO_PEERS,
@@ -28,18 +50,6 @@ from torch.distributed._coord_protocol import (
     read_message,
     write_message,
 )
-
-
-class CoordClientError(RuntimeError):
-    pass
-
-
-class PeerGone(CoordClientError):
-    pass
-
-
-class NoPeers(CoordClientError):
-    pass
 
 
 # ---- Tensor serialization ----

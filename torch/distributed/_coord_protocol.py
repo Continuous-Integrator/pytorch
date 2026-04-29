@@ -1,82 +1,29 @@
 """
 Wire protocol for the torchmux coordinator.
 
-Defines op names, error codes, framing, and header shapes shared between
-``_coordinator.py`` and ``_coord_client.py``.
-
-Wire format per message::
-
-    [ 4 bytes big-endian u32 : header_len ]
-    [ header_len bytes       : UTF-8 JSON header ]
-    [ 8 bytes big-endian u64 : payload_len ]    # 0 if no payload
-    [ payload_len bytes      : concatenated tensor bodies ]
-
-Every response header includes ``{"ok": bool, "error": str | None, ...}``.
+Extends checkpoint/protocol.py with baton-management ops for multi-GPU
+scheduling (OP_RELEASE_BATON, OP_ACQUIRE_BATON).
 """
 
-import asyncio
-import json
-import struct
-from typing import TypedDict
+import importlib.util
+import os
 
+_spec = importlib.util.spec_from_file_location(
+    "protocol",
+    os.path.join(os.path.dirname(__file__), "../../checkpoint/protocol.py"),
+)
+_mod = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_mod)
 
-# ---- Op names ----
+OP_REGISTER = _mod.OP_REGISTER
+OP_WAIT_FOR_TURN = _mod.OP_WAIT_FOR_TURN
+OP_PREPARE = _mod.OP_PREPARE
+OP_RELEASE_GPU = _mod.OP_RELEASE_GPU
+OP_DONE = _mod.OP_DONE
+ERR_NO_PEERS = _mod.ERR_NO_PEERS
+ERR_PEER_GONE = _mod.ERR_PEER_GONE
+read_message = _mod.read_message
+write_message = _mod.write_message
 
-OP_REGISTER = "register"
-OP_WAIT_FOR_TURN = "wait_for_turn"
-OP_PREPARE = "prepare"
-OP_RELEASE_GPU = "release_gpu"
 OP_RELEASE_BATON = "release_baton"
 OP_ACQUIRE_BATON = "acquire_baton"
-OP_DONE = "done"
-
-# ---- Error codes ----
-
-ERR_NO_PEERS = "no_peers"
-ERR_PEER_GONE = "peer_gone"
-ERR_MISMATCH = "mismatch"
-
-# ---- Header shapes ----
-
-
-class TensorHeader(TypedDict):
-    shape: list[int]
-    dtype: str
-    nbytes: int
-
-
-class SendEntry(TypedDict):
-    dsts: list[int]
-    tensor: TensorHeader | None
-
-
-class RecvEntry(TypedDict):
-    src: int
-    tensor: TensorHeader | None
-
-
-# ---- Framing ----
-
-
-async def read_message(
-    reader: asyncio.StreamReader,
-) -> tuple[dict, bytes]:
-    (hdr_len,) = struct.unpack(">I", await reader.readexactly(4))
-    header: dict = json.loads((await reader.readexactly(hdr_len)).decode("utf-8"))
-    (payload_len,) = struct.unpack(">Q", await reader.readexactly(8))
-    payload: bytes = await reader.readexactly(payload_len) if payload_len else b""
-    return header, payload
-
-
-async def write_message(
-    writer: asyncio.StreamWriter,
-    header: dict,
-    payload: bytes = b"",
-) -> None:
-    hdr_bytes = json.dumps(header).encode("utf-8")
-    writer.write(struct.pack(">I", len(hdr_bytes)))
-    writer.write(hdr_bytes)
-    writer.write(struct.pack(">Q", len(payload)))
-    if payload:
-        writer.write(payload)
-    await writer.drain()
