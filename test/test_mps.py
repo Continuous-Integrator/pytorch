@@ -13999,7 +13999,7 @@ class TestFlashAttentionMPS(TestCaseMPS):
             qc, kc_exp, vc_exp, is_causal=causal, scale=scale)
         ref.sum().backward()
 
-        tol = 5e-2 if dtype == torch.bfloat16 else (2e-2 if dtype == torch.float16 else 1e-3)
+        tol = 2e-2 if dtype in (torch.float16, torch.bfloat16) else 1e-3
         torch.testing.assert_close(q.grad.cpu().float(),  qc.grad,  atol=tol, rtol=tol)
         # dK and dV are accumulated across gqa_factor q-heads; compare per kv-head
         dk_ref = kc.grad.reshape(B, kvH, g, S, D).sum(dim=2)
@@ -14151,7 +14151,7 @@ class TestFlashAttentionVarlenMPS(TestCaseMPS):
         ref = self._ref_forward(qc, kc, vc, seqlens, causal, scale)
         ref.sum().backward()
 
-        tol = 5e-2 if dtype == torch.bfloat16 else (2e-2 if dtype == torch.float16 else 1e-3)
+        tol = 2e-2 if dtype in (torch.float16, torch.bfloat16) else 1e-3
         torch.testing.assert_close(q.grad.cpu().float(), qc.grad, atol=tol, rtol=tol,
                                    msg="dQ mismatch")
         torch.testing.assert_close(k.grad.cpu().float(), kc.grad, atol=tol, rtol=tol,
@@ -14308,8 +14308,8 @@ class TestFlashAttentionVarlenMPS(TestCaseMPS):
     def test_varlen_bwd_fp16_causal_d64(self):
         self._run_backward([32, 48, 16], H=4, D=64, dtype=torch.float16, causal=True)
 
-    def test_varlen_bwd_bf16_d128(self):
-        self._run_backward([32, 48], H=4, D=128, dtype=torch.bfloat16)
+    def test_varlen_bwd_fp16_d128(self):
+        self._run_backward([32, 48], H=4, D=128, dtype=torch.float16)
 
     def test_varlen_bwd_fp32_d64(self):
         self._run_backward([16, 32, 8], H=4, D=64, dtype=torch.float32)
@@ -14399,7 +14399,7 @@ class TestFlashAttentionVarlenMPS(TestCaseMPS):
         ref.sum().backward()
 
         # dK / dV are [total, kvH, D] — reference kc.grad/vc.grad already in that shape
-        tol = 5e-2 if dtype == torch.bfloat16 else (2e-2 if dtype == torch.float16 else 1e-3)
+        tol = 2e-2 if dtype in (torch.float16, torch.bfloat16) else 1e-3
         torch.testing.assert_close(q.grad.cpu().float(), qc.grad, atol=tol, rtol=tol,
                                    msg=f"GQA dQ mismatch H={H} kvH={kvH}")
         torch.testing.assert_close(k.grad.cpu().float(), kc.grad, atol=tol, rtol=tol,
@@ -14535,7 +14535,7 @@ class TestFlashAttentionVarlenMPS(TestCaseMPS):
                                        wnd_left, wnd_right)
         ref.sum().backward()
 
-        tol = 5e-2 if dtype == torch.bfloat16 else (2e-2 if dtype == torch.float16 else 1e-3)
+        tol = 2e-2 if dtype in (torch.float16, torch.bfloat16) else 1e-3
         torch.testing.assert_close(q.grad.cpu().float(), qc.grad, atol=tol, rtol=tol,
                                    msg=f"window dQ mismatch wnd=({wnd_left},{wnd_right})")
         torch.testing.assert_close(k.grad.cpu().float(), kc.grad, atol=tol, rtol=tol,
@@ -14677,7 +14677,7 @@ class TestFlashAttentionVarlenMPS(TestCaseMPS):
         ref = self._ref_forward_alibi(qc, kc, vc, seqlens, causal, scale, slopes)
         ref.sum().backward()
 
-        tol = 5e-2 if dtype == torch.bfloat16 else (2e-2 if dtype == torch.float16 else 1e-3)
+        tol = 2e-2 if dtype in (torch.float16, torch.bfloat16) else 1e-3
         torch.testing.assert_close(q.grad.cpu().float(), qc.grad, atol=tol, rtol=tol,
                                    msg=f"ALiBi dQ mismatch H={H} causal={causal}")
         torch.testing.assert_close(k.grad.cpu().float(), kc.grad, atol=tol, rtol=tol,
