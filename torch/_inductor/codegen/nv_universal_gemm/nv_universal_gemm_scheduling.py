@@ -57,40 +57,36 @@ class NVUniversalGemmScheduling(BaseScheduling):
         return OrderedSet()
 
     @staticmethod
-    def is_nv_universal_gemm_template(node: BaseSchedulerNode) -> bool:
-        """Check if a node is a NVIDIA Universal GEMM template.
+    def _is_nvgemm_ir_buffer(ir_node: Any) -> bool:
+        """Return True if `ir_node` is an NVGEMM buffer or an MTB resolving to one.
 
-        Returns True if the node wraps:
-        1. A NVUniversalGemmBuffer directly, OR
-        2. A MultiTemplateBuffer whose current render kind is NVGEMM (after
-           finalize_as_*_caller has run), OR whose winning (min) autotune
-           choice is an NVUniversalGemmCaller.
+        Honors finalize_as_*_caller's swap (a MultiTemplateBuffer whose render
+        kind is "triton" is no longer NVGEMM, even if the autotune winner was).
+        Falls back to the autotune winner only when no swap has happened.
         """
-        if not isinstance(node, SchedulerNode):
-            return False
-
-        ir_node = node.node
         if isinstance(ir_node, NVUniversalGemmBuffer):
             return True
-        elif isinstance(ir_node, MultiTemplateBuffer):
-            # Honor finalize_as_*_caller's swap: a MultiTemplateBuffer whose
-            # render kind is "triton" is no longer NVGEMM, even if the autotune
-            # winner was NVGEMM.
-            if ir_node._render_kind == "triton":
-                return False
-            if ir_node._render_kind == "nvgemm":
-                return True
-            # Fast path: if no NVGEMM choice exists, skip the autotune trigger
-            # below. _choices is populated eagerly in __init__, so this read is
-            # cheap and avoids forcing benchmarking just to answer this query.
-            if not any(isinstance(c, NVUniversalGemmCaller) for c in ir_node._choices):
-                return False
-            try:
-                min_choice, _ = ir_node.get_min_choice()
-                return isinstance(min_choice, NVUniversalGemmCaller)
-            except (RuntimeError, ValueError):
-                return False
-        return False
+        if not isinstance(ir_node, MultiTemplateBuffer):
+            return False
+        if ir_node._render_kind == "triton":
+            return False
+        if ir_node._render_kind == "nvgemm":
+            return True
+        # Fast path: avoid forcing autotune just to answer this query.
+        if not any(isinstance(c, NVUniversalGemmCaller) for c in ir_node._choices):
+            return False
+        try:
+            min_choice, _ = ir_node.get_min_choice()
+            return isinstance(min_choice, NVUniversalGemmCaller)
+        except (RuntimeError, ValueError):
+            return False
+
+    @staticmethod
+    def is_nv_universal_gemm_template(node: BaseSchedulerNode) -> bool:
+        """Check if a node is an NVGEMM template SchedulerNode."""
+        if not isinstance(node, SchedulerNode):
+            return False
+        return NVUniversalGemmScheduling._is_nvgemm_ir_buffer(node.node)
 
     @staticmethod
     def get_nv_gemm_buffer_from_node(
@@ -169,28 +165,12 @@ class NVUniversalGemmScheduling(BaseScheduling):
             f"Expected NVUniversalGemmBuffer or MultiTemplateBuffer, got {type(ir_node).__name__}"
         )
 
-    def is_nv_universal_gemm_fused_template(self, node: BaseSchedulerNode) -> bool:
+    @staticmethod
+    def is_nv_universal_gemm_fused_template(node: BaseSchedulerNode) -> bool:
         """Check if a node is a fused NVIDIA Universal GEMM template."""
         if not isinstance(node, FusedSchedulerNode):
             return False
-        template_node = node.get_template_node()
-        if isinstance(template_node, NVUniversalGemmBuffer):
-            return True
-        if isinstance(template_node, MultiTemplateBuffer):
-            if template_node._render_kind == "triton":
-                return False
-            if template_node._render_kind == "nvgemm":
-                return True
-            if not any(
-                isinstance(c, NVUniversalGemmCaller) for c in template_node._choices
-            ):
-                return False
-            try:
-                min_choice, _ = template_node.get_min_choice()
-                return isinstance(min_choice, NVUniversalGemmCaller)
-            except (RuntimeError, ValueError):
-                return False
-        return False
+        return NVUniversalGemmScheduling._is_nvgemm_ir_buffer(node.get_template_node())
 
     def can_fuse_vertical(
         self, node1: BaseSchedulerNode, node2: BaseSchedulerNode
@@ -271,29 +251,24 @@ class NVUniversalGemmScheduling(BaseScheduling):
                 )
                 return False
         elif isinstance(ir_node, MultiTemplateBuffer):
-            # Check that at least one EFC choice exists AND
-            # that all EFC choices are plain GEMM (not grouped/scaled).
-            try:
-                has_efc_choice = False
-                for choice in ir_node.choice_timings():
-                    if not (
-                        isinstance(choice, NVUniversalGemmCaller)
-                        and choice.supports_epilogue_fusion
-                    ):
-                        continue
-                    has_efc_choice = True
-                    if choice.variant != GemmVariant.GEMM:
-                        log.debug(
-                            "NVGEMM epilogue fusion: MultiTemplateBuffer has non-GEMM EFC choices"
-                        )
-                        return False
-                if not has_efc_choice:
+            # Iterate `_choices` (set in __init__) instead of `choice_timings()`
+            # — the latter forces autotune-benchmark synchronization, which
+            # we don't need just to answer a fusibility question.
+            has_efc_choice = False
+            for choice in ir_node._choices:
+                if not (
+                    isinstance(choice, NVUniversalGemmCaller)
+                    and choice.supports_epilogue_fusion
+                ):
+                    continue
+                has_efc_choice = True
+                if choice.variant != GemmVariant.GEMM:
                     log.debug(
-                        "NVGEMM epilogue fusion: no EFC kernel available in choices"
+                        "NVGEMM epilogue fusion: MultiTemplateBuffer has non-GEMM EFC choices"
                     )
                     return False
-            except (RuntimeError, ValueError) as e:
-                log.debug("NVGEMM epilogue fusion: error checking choices: %s", e)
+            if not has_efc_choice:
+                log.debug("NVGEMM epilogue fusion: no EFC kernel available in choices")
                 return False
 
         scheduler_nodes_to_fuse = node_to_fuse.get_nodes()
@@ -488,15 +463,7 @@ class NVUniversalGemmScheduling(BaseScheduling):
             [n.get_name() for n in epilogue_nodes] if epilogue_nodes else [],
             [n.get_name() for n in prologue_nodes] if prologue_nodes else [],
         )
-        # During epilogue fusion benchmarking, a MultiTemplateBuffer may have its
-        # make_kernel_render temporarily swapped to NVGEMM (via swap_as_nvgemm_caller),
-        # even though get_min_choice() still returns the autotuning winner.
-        is_nvgemm = self.is_nv_universal_gemm_template(template_node)
-        if not is_nvgemm and isinstance(template_node, SchedulerNode):
-            ir_node = template_node.node
-            if isinstance(ir_node, MultiTemplateBuffer):
-                is_nvgemm = ir_node._render_kind == "nvgemm"
-        assert is_nvgemm, (
+        assert self.is_nv_universal_gemm_template(template_node), (
             "Template node passed to NVUniversalGemmScheduling.codegen_template must be a "
             "SchedulerNode that wraps a NVUniversalGemmBuffer or MultiTemplateBuffer with NVGEMM choice"
         )
@@ -646,10 +613,30 @@ class NVUniversalGemmScheduling(BaseScheduling):
         This is used during epilogue fusion benchmarking to generate source code
         without actually defining or calling the kernel.
         """
-        # Extract template and epilogue nodes
         prologue, template, epilogue = nodes[0].get_prologue_template_epilogue(
             list(nodes)
         )
+
+        # Pre-compute epilogue reads once and pass to both codegen_template and
+        # _add_benchmark_helpers; the EVT codegen pass is otherwise expensive
+        # enough to want to amortize.
+        epilogue_reads: list[str] = []
+        if epilogue:
+            template_sn = cast(SchedulerNode, template)
+            assert isinstance(template_sn.node, Buffer)
+            original_buffer_name = template_sn.node.get_name()
+            removed_buffers_with_gemm = V.graph.removed_buffers | OrderedSet(
+                [original_buffer_name]
+            )
+            try:
+                reads, _, _, _ = CutlassEVTCodegen.ir_to_evt_python_code(
+                    original_buffer_name,
+                    list(epilogue),
+                    removed_buffers_with_gemm,
+                )
+                epilogue_reads = reads
+            except (NotImplementedError, AssertionError) as e:
+                log.warning("NVGEMM benchmark epilogue codegen failed: %s", e)
 
         with config.patch("benchmark_kernel", benchmark_kernel):
             src_code = self.codegen_template(
@@ -660,14 +647,14 @@ class NVUniversalGemmScheduling(BaseScheduling):
             )
 
         assert src_code is not None
-        # Replace placeholder with generic name for benchmarking
         src_code = src_code.replace(
             str(Placeholder.KERNEL_NAME), _BENCHMARK_KERNEL_PREFIX
         )
 
-        # Add benchmarking helpers for epilogue fusion benchmarking
         if benchmark_kernel:
-            src_code = self._add_benchmark_helpers(src_code, template, epilogue)
+            src_code = self._add_benchmark_helpers(
+                src_code, template, epilogue, epilogue_reads
+            )
 
         return src_code
 
@@ -676,6 +663,7 @@ class NVUniversalGemmScheduling(BaseScheduling):
         src_code: str,
         template_node: BaseSchedulerNode,
         epilogue_nodes: Sequence[BaseSchedulerNode],
+        epilogue_reads: list[str],
     ) -> str:
         """
         Add get_args() and call() functions to enable benchmarking.
@@ -692,36 +680,15 @@ class NVUniversalGemmScheduling(BaseScheduling):
             template_node, require_epilogue_fusion=bool(epilogue_nodes)
         )
 
-        # Get the original buffer name (important for MultiTemplateBuffer case)
-        # This name is what the epilogue nodes reference as their input
-        assert isinstance(template_node.node, Buffer)
-        original_buffer_name = template_node.node.get_name()
-
-        # Get input shapes and dtypes
         input_nodes = cast(list[Buffer], ctb.inputs)
         output_layout = cast(Layout, ctb.layout)
-
-        # Pre-compute epilogue reads if there are epilogue nodes
-        epilogue_reads: list[str] = []
-        if epilogue_nodes:
-            removed_buffers_with_gemm = V.graph.removed_buffers | OrderedSet(
-                [original_buffer_name]
-            )
-            try:
-                reads, _, _, _ = CutlassEVTCodegen.ir_to_evt_python_code(
-                    original_buffer_name,  # Use original buffer name, not ctb.get_name()
-                    list(epilogue_nodes),
-                    removed_buffers_with_gemm,
-                )
-                epilogue_reads = reads
-            except (NotImplementedError, AssertionError) as e:
-                log.warning("NVGEMM benchmark epilogue codegen failed: %s", e)
 
         # Build get_args code
         args_code = IndentedBuffer()
         args_code.writeline("")
-        args_code.writeline("# Benchmark helper functions for NVGEMM")
-        args_code.writeline("is_nvgemm = True  # Marker for NVGEMM modules")
+        # Marker the dispatcher checks via getattr(module, "is_nvgemm", False)
+        # to route benchmarking through _benchmark_nvgemm_module.
+        args_code.writeline("is_nvgemm = True")
         args_code.writeline("")
         args_code.writeline("def get_args():")
         with args_code.indent():
@@ -729,28 +696,23 @@ class NVUniversalGemmScheduling(BaseScheduling):
             args_code.writeline("from torch._dynamo.testing import rand_strided")
             args_code.writeline("args = []")
 
-            # Generate random tensors for each input
-            for i, inp in enumerate(input_nodes):
+            for inp in input_nodes:
                 size = V.graph.sizevars.optimization_hints(inp.get_size())
                 stride = V.graph.sizevars.optimization_hints(inp.get_stride())
                 dtype = inp.get_dtype()
                 device = inp.get_device()
-                args_code.writeline(f"# Input {i}: {inp.get_name()}")
                 args_code.writeline(
                     f"args.append(rand_strided({size}, {stride}, device='{device}', dtype={dtype}))"
                 )
 
-            # Generate output tensor
             out_size = V.graph.sizevars.optimization_hints(output_layout.size)
             out_stride = V.graph.sizevars.optimization_hints(output_layout.stride)
             out_dtype = output_layout.dtype
             out_device = output_layout.device
-            args_code.writeline("# Output")
             args_code.writeline(
                 f"args.append(rand_strided({out_size}, {out_stride}, device='{out_device}', dtype={out_dtype}))"
             )
 
-            # Handle epilogue read tensors (external inputs, not the accumulator)
             for read_name in epilogue_reads:
                 buf = V.graph.get_buffer(read_name)
                 if buf is not None:
@@ -758,7 +720,6 @@ class NVUniversalGemmScheduling(BaseScheduling):
                     stride = V.graph.sizevars.optimization_hints(buf.get_stride())
                     dtype = buf.get_dtype()
                     device = buf.get_device()
-                    args_code.writeline(f"# Epilogue input: {read_name}")
                     args_code.writeline(
                         f"args.append(rand_strided({size}, {stride}, device='{device}', dtype={dtype}))"
                     )

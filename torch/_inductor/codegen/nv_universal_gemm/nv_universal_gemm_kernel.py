@@ -138,7 +138,7 @@ def _lookup_gemm_kernel(
     kernel_name: str,
     *,
     epilogue_args: Any | None = None,
-    epilogue_source: str | None = None,
+    epilogue_source: str = "",
 ):
     if epilogue_args is None:
         from torch._inductor.codegen.nv_universal_gemm.kernel_cache import (
