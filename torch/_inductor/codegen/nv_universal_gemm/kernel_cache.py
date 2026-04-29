@@ -56,8 +56,12 @@ def get_compatible_kernels(
             if _kernel_by_name_cache is None:
                 _kernel_by_name_cache = _build_kernel_cache()
 
+    # Snapshot the global into a local so a concurrent clear_cache() (which
+    # rebinds _kernel_by_name_cache to None) can't turn the post-init read
+    # into len(None) or AttributeError mid-function.
+    cache = _kernel_by_name_cache
     compatible = []
-    for kernel in _kernel_by_name_cache.values():
+    for kernel in cache.values():
         if kernel.metadata.min_cc > cc:
             continue
 
@@ -72,7 +76,7 @@ def get_compatible_kernels(
     log.debug(
         "Found %d compatible kernels from cache of %d total",
         len(compatible),
-        len(_kernel_by_name_cache),
+        len(cache),
     )
     return compatible
 

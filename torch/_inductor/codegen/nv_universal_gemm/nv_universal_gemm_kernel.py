@@ -251,14 +251,24 @@ def {self.kernel_name}_main({params_str}):
         Maps Python variable names from the epilogue function to actual tensor arguments.
         The 'D' output is mapped to out_ptr0, 'accum' is implicit (provided by GEMM),
         and other reads are passed directly.
+
+        Skips intermediate stores (var_name → write_buf entries left behind by
+        CutlassEVTCodegen.store() when an epilogue chain has more than one
+        ComputedBuffer, e.g. relu((a@b)+bias)). Only the final 'D' rename and
+        external read inputs are emitted as kwargs; intermediate buffers aren't
+        kernel parameters and would produce NameError at runtime.
         """
         kwargs_parts = []
+        write_buffer_names = OrderedSet(self.epilogue_writes)
 
         # Map Python var names to actual tensor args
         for var_name, buffer_name in self.epilogue_var_renames.items():
             if var_name == "D":
                 kwargs_parts.append("D=out_ptr0")
             elif var_name == _ACCUMULATOR_ARG_NAME:
+                continue
+            elif buffer_name in write_buffer_names:
+                # Intermediate store from a multi-stage epilogue chain.
                 continue
             else:
                 kwargs_parts.append(f"{var_name}={buffer_name}")

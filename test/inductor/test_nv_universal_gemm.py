@@ -879,35 +879,24 @@ class TestNVUniversalGemmEpilogueFusion(TestCase):
             "reduction after GEMM should NOT be fused into NVGEMM epilogue",
         )
 
-    def test_workspace_in_benchmark_helpers(self):
-        """Mock the chosen kernel's workspace_size and verify the generated
-        autotune benchmark module allocates the workspace and passes it
-        positionally. Without this, the rendered main signature
-        ``(..., *epilogue_reads, workspace, stream=None)`` is called with
-        too few positional args and silently misbinds stream."""
+    def test_workspace_runtime_integration(self):
+        """End-to-end: mock the chosen kernel's workspace_size to non-zero and
+        actually let benchmark_codegened_module run, exercising the runtime
+        path that consumes the generated get_args()/call() helpers. Without
+        the workspace fix, this would crash with TypeError (missing positional
+        arg) inside _benchmark_nvgemm_module."""
         import cutlass_api
-
-        from torch._inductor.codegen.nv_universal_gemm.nv_universal_gemm_scheduling import (
-            NVUniversalGemmScheduling,
-        )
 
         a = torch.randn(self.M, self.K, device="cuda", dtype=torch.bfloat16)
         b = torch.randn(self.K, self.N, device="cuda", dtype=torch.bfloat16)
-        captured: list[str] = []
-        orig = NVUniversalGemmScheduling._add_benchmark_helpers
 
-        def capture(self, src_code, template, epilogue):
-            full = orig(self, src_code, template, epilogue)
-            captured.append(full)
-            return full
+        def fn(a, b):
+            return torch.relu(a @ b)
 
         torch._dynamo.reset()
         with (
             patch.object(
                 cutlass_api.Kernel, "get_workspace_size", lambda self, args: 4096
-            ),
-            mock.patch.object(
-                NVUniversalGemmScheduling, "_add_benchmark_helpers", capture
             ),
             config.patch(
                 {
@@ -917,20 +906,12 @@ class TestNVUniversalGemmEpilogueFusion(TestCase):
                     "force_disable_caches": True,
                 }
             ),
-            mock.patch.object(
-                Scheduler, "benchmark_fused_nodes", return_value=(1.0, "")
-            ),
-            mock.patch.object(
-                Scheduler, "benchmark_codegened_module", return_value=(0.5, "")
-            ),
         ):
-            torch.compile(lambda x, y: torch.relu(x @ y))(a, b)
-
-        self.assertTrue(captured, "_add_benchmark_helpers was never invoked")
-        for src in captured:
-            self.assertIn("torch.empty(4096", src)
-            call_block = src[src.find("def call(args):") :]
-            self.assertIn("args[", call_block[: call_block.find("stream=stream)")])
+            # No mock on benchmark_codegened_module — the real
+            # _benchmark_nvgemm_module path must execute the rendered
+            # get_args()/call() with workspace.
+            result = torch.compile(fn)(a, b)
+        torch.testing.assert_close(result, fn(a, b), atol=1e-2, rtol=1e-2)
 
 
 if __name__ == "__main__":

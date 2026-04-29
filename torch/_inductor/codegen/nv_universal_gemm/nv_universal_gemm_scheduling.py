@@ -62,7 +62,9 @@ class NVUniversalGemmScheduling(BaseScheduling):
 
         Returns True if the node wraps:
         1. A NVUniversalGemmBuffer directly, OR
-        2. A MultiTemplateBuffer whose winning (min) choice is an NVUniversalGemmCaller
+        2. A MultiTemplateBuffer whose current render kind is NVGEMM (after
+           finalize_as_*_caller has run), OR whose winning (min) autotune
+           choice is an NVUniversalGemmCaller.
         """
         if not isinstance(node, SchedulerNode):
             return False
@@ -71,7 +73,18 @@ class NVUniversalGemmScheduling(BaseScheduling):
         if isinstance(ir_node, NVUniversalGemmBuffer):
             return True
         elif isinstance(ir_node, MultiTemplateBuffer):
-            # Check if the winning choice would be NVGEMM
+            # Honor finalize_as_*_caller's swap: a MultiTemplateBuffer whose
+            # render kind is "triton" is no longer NVGEMM, even if the autotune
+            # winner was NVGEMM.
+            if ir_node._render_kind == "triton":
+                return False
+            if ir_node._render_kind == "nvgemm":
+                return True
+            # Fast path: if no NVGEMM choice exists, skip the autotune trigger
+            # below. _choices is populated eagerly in __init__, so this read is
+            # cheap and avoids forcing benchmarking just to answer this query.
+            if not any(isinstance(c, NVUniversalGemmCaller) for c in ir_node._choices):
+                return False
             try:
                 min_choice, _ = ir_node.get_min_choice()
                 return isinstance(min_choice, NVUniversalGemmCaller)
@@ -100,7 +113,10 @@ class NVUniversalGemmScheduling(BaseScheduling):
             return ir_node
         elif isinstance(ir_node, MultiTemplateBuffer):
             if require_epilogue_fusion:
-                # Find the best EFC kernel for epilogue fusion
+                # Find the best EFC kernel for epilogue fusion. Use <= so a
+                # choice whose autotune timing was inf (benchmark failed) can
+                # still be selected when it's the only EFC option — the strict
+                # `<` against an inf seed previously made such cases unselectable.
                 choice_timings = ir_node.choice_timings()
                 best_efc_choice = None
                 best_efc_time = float("inf")
@@ -109,7 +125,7 @@ class NVUniversalGemmScheduling(BaseScheduling):
                         isinstance(choice, NVUniversalGemmCaller)
                         and choice.supports_epilogue_fusion
                     ):
-                        if timing < best_efc_time:
+                        if best_efc_choice is None or timing < best_efc_time:
                             best_efc_time = timing
                             best_efc_choice = choice
                 if best_efc_choice is None:
@@ -126,9 +142,8 @@ class NVUniversalGemmScheduling(BaseScheduling):
                     best_nvgemm = None
                     best_time = float("inf")
                     for choice, timing in choice_timings.items():
-                        if (
-                            isinstance(choice, NVUniversalGemmCaller)
-                            and timing < best_time
+                        if isinstance(choice, NVUniversalGemmCaller) and (
+                            best_nvgemm is None or timing < best_time
                         ):
                             best_time = timing
                             best_nvgemm = choice
@@ -151,6 +166,14 @@ class NVUniversalGemmScheduling(BaseScheduling):
         if isinstance(template_node, NVUniversalGemmBuffer):
             return True
         if isinstance(template_node, MultiTemplateBuffer):
+            if template_node._render_kind == "triton":
+                return False
+            if template_node._render_kind == "nvgemm":
+                return True
+            if not any(
+                isinstance(c, NVUniversalGemmCaller) for c in template_node._choices
+            ):
+                return False
             try:
                 min_choice, _ = template_node.get_min_choice()
                 return isinstance(min_choice, NVUniversalGemmCaller)
@@ -174,11 +197,17 @@ class NVUniversalGemmScheduling(BaseScheduling):
             )
         elif self.is_nv_universal_gemm_fused_template(node1):
             fnode1 = cast(FusedSchedulerNode, node1)
-            template_node = fnode1.get_template_node()
-            if template_node is None:
+            # fnode1.get_template_node() returns an ir.TemplateBuffer (IR node);
+            # _can_fuse_epilogue_impl needs the SchedulerNode that wraps it, so
+            # find that wrapper from fnode1.snodes.
+            template_snode = next(
+                (n for n in fnode1.snodes if self.is_nv_universal_gemm_template(n)),
+                None,
+            )
+            if template_snode is None:
                 return False
             return self._can_fuse_epilogue_impl(
-                cast(SchedulerNode, template_node),
+                cast(SchedulerNode, template_snode),
                 self._unwrap_epilogue_nodes(fnode1),
                 node2,
             )
@@ -477,11 +506,29 @@ class NVUniversalGemmScheduling(BaseScheduling):
                 epilogue_var_renames = var_renames
 
                 # Mark epilogue nodes as run since they will be fused
-                # (skip when only generating source code for benchmarking)
+                # (skip when only generating source code for benchmarking).
+                # Only the FINAL output of the epilogue chain is written by
+                # the kernel (`epilogue_writes[-1]`); intermediates are
+                # consumed inside the fused kernel and don't need to be
+                # allocated. But we must NOT add a buffer to removed_buffers
+                # if it has consumers outside this fusion — otherwise that
+                # consumer would point to a never-allocated buffer.
                 if not only_gen_src_code:
+                    fused_buffer_names: OrderedSet[str] = OrderedSet(
+                        n.get_name() for n in epilogue_nodes
+                    )
+                    fused_buffer_names.add(original_buffer_name)
+                    scheduler = V.graph.scheduler
                     for node in epilogue_nodes:
                         node.mark_run()
-                        V.graph.removed_buffers.add(node.get_name())
+                        node_name = node.get_name()
+                        # Final output stays live (kernel writes to it).
+                        if epilogue_writes and node_name == epilogue_writes[-1]:
+                            continue
+                        if scheduler.can_buffer_be_removed_through_fusion(
+                            node_name, fused_buffer_names
+                        ):
+                            V.graph.removed_buffers.add(node_name)
 
                 log.debug(
                     "NVGEMM epilogue fusion: %d nodes, reads=%s, writes=%s",
@@ -578,7 +625,13 @@ class NVUniversalGemmScheduling(BaseScheduling):
         benchmark_codegened_module can use the same interface.
         """
         template_node = cast(SchedulerNode, template_node)
-        ctb: NVUniversalGemmBuffer = self.get_nv_gemm_buffer_from_node(template_node)
+        # Must mirror codegen_template's selection: when the source is being
+        # generated for a fused epilogue, the EFC kernel was chosen — not the
+        # overall autotune winner. Otherwise the benchmark helpers (workspace
+        # size, arg count) won't match the kernel the source actually calls.
+        ctb: NVUniversalGemmBuffer = self.get_nv_gemm_buffer_from_node(
+            template_node, require_epilogue_fusion=bool(epilogue_nodes)
+        )
 
         # Get the original buffer name (important for MultiTemplateBuffer case)
         # This name is what the epilogue nodes reference as their input

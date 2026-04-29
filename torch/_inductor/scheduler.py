@@ -4574,6 +4574,12 @@ class Scheduler:
                 if is_nvgemm and not choice.supports_epilogue_fusion:
                     continue
 
+                # NVGEMM doesn't support prologue fusion. Skip NVGEMM choices in
+                # the prologue direction (epilogue_fusion is False when node1 is
+                # the pointwise prologue, node2 is the template).
+                if is_nvgemm and not epilogue_fusion:
+                    continue
+
                 # For prologue fusion we check if the underlying template of the choice
                 # supports all allowed prologue inputs. If not, we skip this choice in
                 # the fusion benchmark.
