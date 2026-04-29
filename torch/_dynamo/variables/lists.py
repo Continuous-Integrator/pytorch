@@ -1035,6 +1035,8 @@ class ListVariable(CommonListMethodsVariable):
         args: list[VariableTracker],
         kwargs: dict[str, VariableTracker],
     ) -> VariableTracker:
+        from .tensor import SymNodeVariable
+
         if name == "__setitem__" and self.is_mutable():
             if kwargs or len(args) != 2:
                 raise_args_mismatch(
@@ -1072,9 +1074,10 @@ class ListVariable(CommonListMethodsVariable):
                         args=list(exc.args),
                     )
             else:
-                # Use guard_if_dyn to handle SymNodeVariable and LazyVariableTracker
-                # that may realize to SymNodeVariable
-                key = guard_if_dyn(key)
+                if isinstance(key, SymNodeVariable):
+                    key = key.evaluate_expr()
+                else:
+                    key = key.as_python_constant()
 
                 try:
                     # pyrefly: ignore[unsupported-operation]
