@@ -908,8 +908,6 @@ def generic_jump(
                     if push:
                         self.push(value)
                     self.jump(inst)
-            elif self.should_compile_partial_graph():
-                jump_graph_break(self, inst, value)
             else:
                 unimplemented(
                     gb_type="Data-dependent branching with non-constant __bool__",
