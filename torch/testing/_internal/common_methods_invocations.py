@@ -23381,6 +23381,17 @@ dsl_ops_by_dsl.setdefault('triton', []).append(
             DecorateInfo(unittest.skip("Sample generator allocates on the primary CUDA device"),
                          "TestCommon",
                          "test_multiple_devices"),
+            # The OpInfo's op is torch.bmm (the DSL override kicks in at
+            # dispatch time), so the generic tests below exercise torch.bmm's
+            # broader contract rather than the DSL override's narrower one:
+            #   - torch.bmm accepts out= (override does not) -> test_out*
+            #   - torch.bmm accepts complex dtypes (override does not) -> test_dtypes
+            DecorateInfo(unittest.skip("torch.bmm supports out= even though the DSL override does not"),
+                         "TestCommon", "test_out"),
+            DecorateInfo(unittest.skip("torch.bmm supports out= even though the DSL override does not"),
+                         "TestCommon", "test_out_warning"),
+            DecorateInfo(unittest.skip("torch.bmm supports more dtypes than the DSL override advertises"),
+                         "TestCommon", "test_dtypes"),
         ),
         variant_test_name="triton_optimized",
     )
