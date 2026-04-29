@@ -354,7 +354,11 @@ def _create_dummy_tensor_from_layout(layout: Layout) -> torch.Tensor | None:
     """
     try:
         return layout.get_example()
-    except (RuntimeError, ValueError):
+    except Exception:
+        # Broad: layout.get_example()/torch.empty_strided under fake mode can
+        # raise a variety of unexpected errors (TypeError, AssertionError, etc.)
+        # depending on stride/symint state. Failing to materialize a dummy
+        # should never abort autotune — just skip this candidate.
         return None
 
 
@@ -520,7 +524,10 @@ def _add_nv_gemm_choices_impl(
             )
             choices.append(caller)
             num_added += 1
-        except (RuntimeError, ValueError):
+        except Exception:
+            # Broad: caller construction touches cutlass_api / fake-mode tensors
+            # which can raise types other than RuntimeError/ValueError. A single
+            # bad choice should never abort the rest of autotune choice population.
             log.debug("Failed to create %s choice", variant.op_name, exc_info=True)
 
     log.debug("Added %d %s choices", num_added, variant.op_name)
