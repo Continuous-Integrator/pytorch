@@ -15,6 +15,10 @@
 #else
 #include <ATen/ops/_scaled_dot_product_attention_math_for_mps_native.h>
 #include <ATen/ops/empty_native.h>
+#include <ATen/ops/_scaled_dot_product_flash_attention_for_mps_native.h>
+#include <ATen/ops/_scaled_dot_product_flash_attention_for_mps_backward_native.h>
+#include <ATen/ops/_scaled_dot_product_flash_attention_varlen_for_mps_native.h>
+#include <ATen/ops/_scaled_dot_product_flash_attention_varlen_for_mps_backward_native.h>
 #endif
 
 namespace at {
@@ -446,208 +450,6 @@ static std::tuple<Tensor, Tensor> sdpa_full_attention_mps(const Tensor& q_,
   return {std::move(final_out), std::move(final_out)};
 }
 
-// Flash-attention prefill (kernels in Attention.metal). Picks block sizes
-// per head dim and dispatches one threadgroup per (Q-block, head, batch).
-namespace {
-
-struct PrefillAttnParamsHost {
-  int B;
-  int H;
-  int D;
-  int qL;
-  int kL;
-  int gqa_factor;
-  float scale;
-  float softcapping;
-  int Q_strides[3];
-  int K_strides[3];
-  int V_strides[3];
-  int O_strides[3];
-};
-
-struct PrefillAttnMaskParamsHost {
-  int M_strides[4];
-};
-
-struct PrefillBlockShape {
-  int BQ;
-  int BK;
-  int WM;
-  int WN;
-};
-
-inline PrefillBlockShape prefill_block_shape_for_head_dim(int64_t head_dim) {
-  switch (head_dim) {
-    case 256:
-      return {16, 8, 2, 1};
-    case 128:
-      return {32, 16, 4, 1};
-    case 96:
-    case 80:
-    case 72:
-    case 64:
-    case 32:
-      return {32, 32, 4, 1};
-    default:
-      TORCH_INTERNAL_ASSERT(false, "Unsupported head_dim for prefill attention: ", head_dim);
-  }
-}
-
-inline bool prefill_attention_supports_head_dim(int64_t head_dim) {
-  switch (head_dim) {
-    case 32:
-    case 64:
-    case 72:
-    case 80:
-    case 96:
-    case 128:
-    case 256:
-      return true;
-    default:
-      return false;
-  }
-}
-
-} // namespace
-
-static std::tuple<Tensor, Tensor> sdpa_prefill_mps(const Tensor& q_,
-                                                   const Tensor& k_,
-                                                   const Tensor& v_,
-                                                   const std::optional<Tensor>& mask_,
-                                                   bool is_causal,
-                                                   std::optional<double> scale,
-                                                   const Tensor& orig_query,
-                                                   bool unsqueezed) {
-  using namespace mps;
-
-  const int64_t batchSize = q_.size(0);
-  const int64_t num_heads = q_.size(1);
-  const int64_t qL = q_.size(2);
-  const int64_t kL = k_.size(2);
-  const int64_t headSize = q_.size(3);
-  const int64_t num_kv_heads = k_.size(1);
-  const int gqa_factor = static_cast<int>(num_heads / num_kv_heads);
-
-  auto out = at::empty_like(q_);
-
-  // Strides for [B, H, L, D] layout. Last-dim stride must be 1.
-  TORCH_CHECK(q_.stride(-1) == 1, "sdpa prefill:query last-dim must be contiguous");
-  TORCH_CHECK(k_.stride(-1) == 1, "sdpa prefill:key last-dim must be contiguous");
-  TORCH_CHECK(v_.stride(-1) == 1, "sdpa prefill:value last-dim must be contiguous");
-
-  PrefillAttnParamsHost params{};
-  params.B = static_cast<int>(batchSize);
-  params.H = static_cast<int>(num_heads);
-  params.D = static_cast<int>(headSize);
-  params.qL = static_cast<int>(qL);
-  params.kL = static_cast<int>(kL);
-  params.gqa_factor = gqa_factor;
-  params.scale = sdp::calculate_scale(orig_query, scale).expect_float();
-  params.softcapping = 1.0f;
-  params.Q_strides[0] = static_cast<int>(q_.stride(0));
-  params.Q_strides[1] = static_cast<int>(q_.stride(1));
-  params.Q_strides[2] = static_cast<int>(q_.stride(2));
-  params.K_strides[0] = static_cast<int>(k_.stride(0));
-  params.K_strides[1] = static_cast<int>(k_.stride(1));
-  params.K_strides[2] = static_cast<int>(k_.stride(2));
-  params.V_strides[0] = static_cast<int>(v_.stride(0));
-  params.V_strides[1] = static_cast<int>(v_.stride(1));
-  params.V_strides[2] = static_cast<int>(v_.stride(2));
-  params.O_strides[0] = static_cast<int>(out.stride(0));
-  params.O_strides[1] = static_cast<int>(out.stride(1));
-  params.O_strides[2] = static_cast<int>(out.stride(2));
-
-  const bool has_mask = mask_.has_value();
-  std::optional<Tensor> mask_local;
-  PrefillAttnMaskParamsHost mask_params{};
-  if (has_mask) {
-    Tensor m = mask_.value();
-    TORCH_CHECK(m.dim() == 4, "sdpa prefill:mask must be 4D after broadcast");
-    // Kernel assumes mask kL stride is 1; materialize if not.
-    if (m.stride(-1) != 1) {
-      m = m.contiguous();
-    }
-    mask_local = m;
-    mask_params.M_strides[0] = static_cast<int>(m.stride(0));
-    mask_params.M_strides[1] = static_cast<int>(m.stride(1));
-    mask_params.M_strides[2] = static_cast<int>(m.stride(2));
-    mask_params.M_strides[3] = static_cast<int>(m.stride(3));
-  }
-
-  const auto shape = prefill_block_shape_for_head_dim(headSize);
-
-  // Compose kernel name. Name format must match the instantiations in
-  // Attention.metal:
-  //   prefill_attention_<dtype>_bq<BQ>_bk<BK>_bd<BD>_wm<WM>_wn<WN>
-  //                    _hm<has_mask>_dc<do_causal>_mask<mask_dtype>
-  std::string_view dtype_str;
-  switch (q_.scalar_type()) {
-    case kFloat:
-      dtype_str = "float32";
-      break;
-    case kHalf:
-      dtype_str = "float16";
-      break;
-    case kBFloat16:
-      dtype_str = "bfloat16";
-      break;
-    default:
-      TORCH_CHECK(false, "sdpa prefill:unsupported dtype ", q_.scalar_type());
-  }
-
-  std::string_view mask_dtype_str = dtype_str;
-  if (has_mask) {
-    if (mask_.value().scalar_type() == kBool) {
-      mask_dtype_str = "bool_";
-    } else {
-      TORCH_CHECK(mask_.value().scalar_type() == q_.scalar_type(),
-                  "sdpa prefill:float mask dtype must match query dtype");
-    }
-  }
-
-  const std::string kname = fmt::format("prefill_attention_{}_bq{}_bk{}_bd{}_wm{}_wn{}_hm{}_dc{}_mask{}",
-                                        dtype_str,
-                                        shape.BQ,
-                                        shape.BK,
-                                        static_cast<int>(headSize),
-                                        shape.WM,
-                                        shape.WN,
-                                        has_mask ? 1 : 0,
-                                        is_causal ? 1 : 0,
-                                        mask_dtype_str);
-
-  // Threadgroup grid: (Q-blocks, head, batch).
-  const int64_t nQ = (qL + shape.BQ - 1) / shape.BQ;
-  MTLSize gridSize = MTLSizeMake(nQ, num_heads, batchSize);
-  MTLSize threadgroupSize = MTLSizeMake(32, shape.WM, shape.WN);
-
-  // For has_mask=false we still bind a 1-byte dummy buffer to slots 5/6 so
-  // Metal validation is happy. The kernel never reads them.
-  auto attentionPSO = lib.getPipelineStateForFunc(kname);
-
-  MPSStream* mpsStream = getCurrentMPSStream();
-  dispatch_sync_with_rethrow(mpsStream->queue(), ^{
-    @autoreleasepool {
-      auto computeEncoder = mpsStream->commandEncoder();
-      [computeEncoder setComputePipelineState:attentionPSO];
-      mtl_setArgs(computeEncoder, q_, k_, v_, out, params);
-      if (has_mask) {
-        mtl_setArgs<5>(computeEncoder, mask_params, mask_local.value());
-      } else {
-        // Dummy bindings to satisfy buffer slots 5 and 6 in the kernel
-        // signature. The kernel never accesses them when HAS_MASK=false.
-        const uint32_t dummy[1] = {0};
-        [computeEncoder setBytes:dummy length:sizeof(dummy) atIndex:5];
-        [computeEncoder setBytes:dummy length:sizeof(dummy) atIndex:6];
-      }
-      [computeEncoder dispatchThreadgroups:gridSize threadsPerThreadgroup:threadgroupSize];
-    }
-  });
-
-  auto final_out = unsqueezed ? out.view_as(orig_query) : out;
-  return {std::move(final_out), std::move(final_out)};
-}
-
 std::tuple<Tensor, Tensor> _scaled_dot_product_attention_math_mps(const Tensor& query,
                                                                   const Tensor& key_,
                                                                   const Tensor& value_,
@@ -720,30 +522,8 @@ std::tuple<Tensor, Tensor> _scaled_dot_product_attention_math_mps(const Tensor& 
   // boolean to decide if we can use kernel paths
   bool supports_fast_sdpa = !is_causal && supports_sdpa_vector;
 
-  // Prefill kernel: long-Q path. Requires Q/K/V to share the same
-  // head dim, the head dim to be one of the instantiated shapes, the dtype to
-  // be float/half/bfloat, and any mask to be either bool or matching the
-  // query dtype. Set PYTORCH_MPS_DISABLE_PREFILL_ATTENTION=1 to fall back to
-  // MPSGraph for benchmarking / debugging.
-  static const bool prefill_attention_disabled = []() {
-    auto val = c10::utils::get_env("PYTORCH_MPS_DISABLE_PREFILL_ATTENTION");
-    return val.has_value() && val != "0";
-  }();
-  bool prefill_supported_dtype =
-      q_.scalar_type() == at::kFloat || q_.scalar_type() == at::kHalf || q_.scalar_type() == at::kBFloat16;
-  bool prefill_mask_compatible =
-      !mask_.has_value() || (mask_.value().dtype() == at::kBool || mask_.value().dtype() == q_.dtype());
-  bool prefill_head_dim_supported =
-      (query_head_dim == value_head_dim) && prefill_attention_supports_head_dim(query_head_dim);
-  // For very short Q (qL <= 8) the BQ=16/32 prefill tile is mostly empty and
-  // the existing MPSGraph fallback gives similar throughput with tighter
-  // numerical accuracy at small head counts. Skip prefill there so we don't
-  // regress the existing decode-style tests.
-  bool prefill_q_long_enough = query_seq_len > 8;
-  bool supports_prefill = !prefill_attention_disabled && !supports_fast_sdpa && prefill_supported_dtype &&
-      prefill_mask_compatible && prefill_head_dim_supported && prefill_q_long_enough && (k_.size(2) > 0);
-
-  if (!supports_fast_sdpa && !supports_prefill) {
+  // if none of the fast paths apply, fall back to the generic mps graph solution
+  if (!supports_fast_sdpa) {
     return sdpa_general_mps(q_, k_, v_, mask_, dropout_p, is_causal, dropout_mask, scale, query, unsqueezed);
   }
 
@@ -754,10 +534,6 @@ std::tuple<Tensor, Tensor> _scaled_dot_product_attention_math_mps(const Tensor& 
   Tensor k_contig = can_use_kernel_strides(k_) ? k_ : k_.contiguous();
   Tensor v_contig = can_use_kernel_strides(v_) ? v_ : v_.contiguous();
 
-  if (supports_prefill) {
-    return sdpa_prefill_mps(q_contig, k_contig, v_contig, mask_, is_causal, scale, query, unsqueezed);
-  }
-
   // for short sequences, differentiate based on key sequence length
   if ((k_.size(2) >= 1024) || (k_.size(1) < q_.size(1) && k_.size(2) >= 4096)) {
     return sdpa_vector_2pass_mps(
@@ -767,5 +543,477 @@ std::tuple<Tensor, Tensor> _scaled_dot_product_attention_math_mps(const Tensor& 
         q_contig, k_contig, v_contig, mask_, dropout_p, is_causal, dropout_mask, scale, query, unsqueezed);
   }
 }
+
+// ---------------------------------------------------------------------------
+// FlashAttention-2 forward for MPS
+// Returns (output, logsumexp) — logsumexp is saved for backward pass.
+// Supports head_dim 64 and 128; GQA; causal and non-causal.
+// ---------------------------------------------------------------------------
+
+std::tuple<Tensor, Tensor> _scaled_dot_product_flash_attention_for_mps(
+    const Tensor& query,
+    const Tensor& key,
+    const Tensor& value,
+    double dropout_p,
+    bool is_causal,
+    const std::optional<Tensor>& attn_mask,
+    std::optional<double> scale) {
+  TORCH_CHECK(dropout_p == 0.0,
+              "_scaled_dot_product_flash_attention_for_mps: dropout is not supported");
+  TORCH_CHECK(!attn_mask.has_value(),
+              "_scaled_dot_product_flash_attention_for_mps: attn_mask is not supported");
+  TORCH_CHECK(c10::isFloatingType(query.scalar_type()),
+              "_scaled_dot_product_flash_attention_for_mps: unsupported dtype ", query.scalar_type());
+
+  auto [q_, uq] = ensure_4d(query);
+  auto [k_, uk] = ensure_4d(key);
+  auto [v_, uv] = ensure_4d(value);
+
+  const int64_t B   = q_.size(0);
+  const int64_t H   = q_.size(1);
+  const int64_t qL  = q_.size(2);
+  const int64_t kL  = k_.size(2);
+  const int64_t D   = q_.size(3);
+  const int64_t kvH = k_.size(1);
+
+  TORCH_CHECK(D == 64 || D == 128,
+              "_scaled_dot_product_flash_attention_for_mps: only head_dim 64 or 128 supported, got ", D);
+  TORCH_CHECK(H % kvH == 0,
+              "_scaled_dot_product_flash_attention_for_mps: query heads (", H,
+              ") must be divisible by kv heads (", kvH, ")");
+
+  const uint32_t gqa_factor  = H / kvH;
+  const uint32_t num_heads   = H;
+  const float    scale_value = sdp::calculate_scale(query, scale).expect_float();
+
+  auto out = at::empty({B, H, qL, D}, q_.options());
+  // logsumexp is always [B, H, qL] float, regardless of input rank
+  auto lse = at::empty({B, H, qL}, at::TensorOptions().dtype(at::kFloat).device(q_.device()));
+
+  auto q_c = q_.is_contiguous() ? q_ : q_.contiguous();
+  auto k_c = k_.is_contiguous() ? k_ : k_.contiguous();
+  auto v_c = v_.is_contiguous() ? v_ : v_.contiguous();
+
+  using namespace mps;
+  const std::string kname = fmt::format("flash_attn_fwd_{}_{}", scalarToMetalTypeString(q_c), D);
+  MPSStream* mpsStream = getCurrentMPSStream();
+
+  dispatch_sync_with_rethrow(mpsStream->queue(), ^() {
+    @autoreleasepool {
+      auto computeEncoder = mpsStream->commandEncoder();
+      constexpr uint32_t BQ = 32;
+      const MTLSize tg   = MTLSizeMake(32, BQ, 1);
+      const MTLSize grid = MTLSizeMake(B * H, (qL + BQ - 1) / BQ, 1);
+
+      auto pso = lib.getPipelineStateForFunc(kname);
+      [computeEncoder setComputePipelineState:pso];
+
+      const auto q_str = std::array<uint32_t, 4>{(uint32_t)q_c.stride(0), (uint32_t)q_c.stride(1), (uint32_t)q_c.stride(2), 1};
+      const auto k_str = std::array<uint32_t, 4>{(uint32_t)k_c.stride(0), (uint32_t)k_c.stride(1), (uint32_t)k_c.stride(2), 1};
+      const auto v_str = std::array<uint32_t, 4>{(uint32_t)v_c.stride(0), (uint32_t)v_c.stride(1), (uint32_t)v_c.stride(2), 1};
+      const auto o_str = std::array<uint32_t, 4>{(uint32_t)out.stride(0), (uint32_t)out.stride(1), (uint32_t)out.stride(2), 1};
+
+      mtl_setArgs(computeEncoder,
+                  q_c, k_c, v_c, out, lse,
+                  (uint32_t)qL, (uint32_t)kL,
+                  gqa_factor, num_heads,
+                  scale_value, is_causal,
+                  q_str, k_str, v_str, o_str);
+      [computeEncoder dispatchThreadgroups:grid threadsPerThreadgroup:tg];
+    }
+  });
+
+  // Restore original rank for output; logsumexp stays [B, H, qL]
+  auto final_out = uq ? out.squeeze(0) : out;
+  return {std::move(final_out), std::move(lse)};
+}
+
+// ---------------------------------------------------------------------------
+// FlashAttention-2 backward for MPS
+// Three kernel passes: preprocess → dQ → dK+dV
+// GQA (gqa_factor > 1) not yet supported in backward (dK/dV race condition);
+// falls back gracefully via TORCH_CHECK.
+// ---------------------------------------------------------------------------
+
+std::tuple<Tensor, Tensor, Tensor> _scaled_dot_product_flash_attention_for_mps_backward(
+    const Tensor& grad_out,
+    const Tensor& query,
+    const Tensor& key,
+    const Tensor& value,
+    const Tensor& out,
+    const Tensor& logsumexp,
+    double dropout_p,
+    bool is_causal,
+    const std::optional<Tensor>& attn_mask,
+    std::optional<double> scale) {
+  TORCH_CHECK(dropout_p == 0.0,
+              "_scaled_dot_product_flash_attention_for_mps_backward: dropout is not supported");
+
+  auto [q_, uq]  = ensure_4d(query);
+  auto [k_, uk]  = ensure_4d(key);
+  auto [v_, uv]  = ensure_4d(value);
+  auto [o_, uo]  = ensure_4d(out);
+  auto [do_, udo] = ensure_4d(grad_out);
+
+  const int64_t B   = q_.size(0);
+  const int64_t H   = q_.size(1);
+  const int64_t qL  = q_.size(2);
+  const int64_t kL  = k_.size(2);
+  const int64_t D   = q_.size(3);
+  const int64_t kvH = k_.size(1);
+
+  TORCH_CHECK(H % kvH == 0,
+              "_scaled_dot_product_flash_attention_for_mps_backward: query heads (", H,
+              ") must be divisible by kv heads (", kvH, ")");
+
+  const uint32_t gqa_factor  = (uint32_t)(H / kvH);
+  const uint32_t num_heads   = H;
+  const float    scale_value = sdp::calculate_scale(query, scale).expect_float();
+
+  // logsumexp from forward is always [B, H, qL] float
+  Tensor lse = logsumexp.is_contiguous() ? logsumexp : logsumexp.contiguous();
+
+  auto q_c  = q_.is_contiguous()  ? q_  : q_.contiguous();
+  auto k_c  = k_.is_contiguous()  ? k_  : k_.contiguous();
+  auto v_c  = v_.is_contiguous()  ? v_  : v_.contiguous();
+  auto o_c  = o_.is_contiguous()  ? o_  : o_.contiguous();
+  auto do_c = do_.is_contiguous() ? do_ : do_.contiguous();
+
+  auto dQ    = at::zeros_like(q_c);
+  auto dK    = at::zeros_like(k_c);
+  auto dV    = at::zeros_like(v_c);
+  auto D_vec = at::empty({B, H, qL},
+                          at::TensorOptions().dtype(at::kFloat).device(q_.device()));
+
+  using namespace mps;
+  const std::string dtype_str  = scalarToMetalTypeString(q_c);
+  const std::string pre_kname  = fmt::format("flash_attn_bwd_pre_{}_{}", dtype_str, D);
+  const std::string dq_kname   = fmt::format("flash_attn_bwd_dq_{}_{}", dtype_str, D);
+  const std::string dkdv_kname = fmt::format("flash_attn_bwd_dkdv_{}_{}", dtype_str, D);
+
+  const auto q_str  = std::array<uint32_t, 4>{(uint32_t)q_c.stride(0),  (uint32_t)q_c.stride(1),  (uint32_t)q_c.stride(2),  1};
+  const auto k_str  = std::array<uint32_t, 4>{(uint32_t)k_c.stride(0),  (uint32_t)k_c.stride(1),  (uint32_t)k_c.stride(2),  1};
+  const auto v_str  = std::array<uint32_t, 4>{(uint32_t)v_c.stride(0),  (uint32_t)v_c.stride(1),  (uint32_t)v_c.stride(2),  1};
+  const auto o_str  = std::array<uint32_t, 4>{(uint32_t)o_c.stride(0),  (uint32_t)o_c.stride(1),  (uint32_t)o_c.stride(2),  1};
+  const auto do_str = std::array<uint32_t, 4>{(uint32_t)do_c.stride(0), (uint32_t)do_c.stride(1), (uint32_t)do_c.stride(2), 1};
+  const auto dq_str = std::array<uint32_t, 4>{(uint32_t)dQ.stride(0),   (uint32_t)dQ.stride(1),   (uint32_t)dQ.stride(2),   1};
+  const auto dk_str = std::array<uint32_t, 4>{(uint32_t)dK.stride(0),   (uint32_t)dK.stride(1),   (uint32_t)dK.stride(2),   1};
+  const auto dv_str = std::array<uint32_t, 4>{(uint32_t)dV.stride(0),   (uint32_t)dV.stride(1),   (uint32_t)dV.stride(2),   1};
+
+  MPSStream* mpsStream = getCurrentMPSStream();
+
+  // Pass 1: preprocess — compute D_vec[i] = rowsum(dO_i * O_i)
+  dispatch_sync_with_rethrow(mpsStream->queue(), ^() {
+    @autoreleasepool {
+      auto computeEncoder = mpsStream->commandEncoder();
+      constexpr uint32_t BQ = 32;
+      auto pso = lib.getPipelineStateForFunc(pre_kname);
+      [computeEncoder setComputePipelineState:pso];
+      mtl_setArgs(computeEncoder,
+                  do_c, o_c, D_vec,
+                  (uint32_t)qL, num_heads,
+                  do_str, o_str);
+      [computeEncoder dispatchThreadgroups:MTLSizeMake(B * H, (qL + BQ - 1) / BQ, 1)
+                     threadsPerThreadgroup:MTLSizeMake(32, BQ, 1)];
+    }
+  });
+
+  // Pass 2: dQ — outer Q-tiles, inner K-tiles; no atomics
+  dispatch_sync_with_rethrow(mpsStream->queue(), ^() {
+    @autoreleasepool {
+      auto computeEncoder = mpsStream->commandEncoder();
+      constexpr uint32_t BQ = 32;
+      auto pso = lib.getPipelineStateForFunc(dq_kname);
+      [computeEncoder setComputePipelineState:pso];
+      mtl_setArgs(computeEncoder,
+                  q_c, k_c, v_c, o_c, do_c, lse, D_vec, dQ,
+                  (uint32_t)qL, (uint32_t)kL,
+                  gqa_factor, num_heads,
+                  scale_value, is_causal,
+                  q_str, k_str, v_str, o_str, do_str, dq_str);
+      [computeEncoder dispatchThreadgroups:MTLSizeMake(B * H, (qL + BQ - 1) / BQ, 1)
+                     threadsPerThreadgroup:MTLSizeMake(32, BQ, 1)];
+    }
+  });
+
+  // Pass 3: dK + dV — outer K-tiles, inner Q-tiles; no atomics
+  dispatch_sync_with_rethrow(mpsStream->queue(), ^() {
+    @autoreleasepool {
+      auto computeEncoder = mpsStream->commandEncoder();
+      constexpr uint32_t BK = 32;
+      auto pso = lib.getPipelineStateForFunc(dkdv_kname);
+      [computeEncoder setComputePipelineState:pso];
+      mtl_setArgs(computeEncoder,
+                  q_c, k_c, v_c, o_c, do_c, lse, D_vec, dK, dV,
+                  (uint32_t)qL, (uint32_t)kL,
+                  gqa_factor, (uint32_t)kvH,
+                  scale_value, is_causal,
+                  q_str, k_str, v_str, o_str, do_str, dk_str, dv_str);
+      [computeEncoder dispatchThreadgroups:MTLSizeMake(B * kvH, (kL + BK - 1) / BK, 1)
+                     threadsPerThreadgroup:MTLSizeMake(32, BK, 1)];
+    }
+  });
+
+  auto final_dQ = uq ? dQ.squeeze(0) : dQ;
+  auto final_dK = uk ? dK.squeeze(0) : dK;
+  auto final_dV = uv ? dV.squeeze(0) : dV;
+  return {std::move(final_dQ), std::move(final_dK), std::move(final_dV)};
+}
+
+
+// ---------------------------------------------------------------------------
+// FlashAttention-2 varlen forward for MPS
+// Input  Q   : [total_q, H,   D]  K/V : [total_k, kvH, D]  (packed, PyG format)
+// Output O   : [total_q, H,   D]
+//        LSE : [H, total_q]       (flat: h*total_q + abs_q_row)
+// gqa = H / kvH  (1 for standard MHA, >1 for GQA/MQA)
+// Kernels use [H/kvH, total, D] layout; we permute in/out here.
+// ---------------------------------------------------------------------------
+
+std::tuple<Tensor, Tensor> _scaled_dot_product_flash_attention_varlen_for_mps(
+    const Tensor& query,
+    const Tensor& key,
+    const Tensor& value,
+    const Tensor& cum_seq_q,
+    const Tensor& cum_seq_k,
+    int64_t max_q,
+    int64_t max_k,
+    double dropout_p,
+    bool is_causal,
+    std::optional<double> scale,
+    std::optional<int64_t> window_size_left,
+    std::optional<int64_t> window_size_right,
+    const std::optional<Tensor>& alibi_slopes) {
+  TORCH_CHECK(dropout_p == 0.0,
+    "_scaled_dot_product_flash_attention_varlen_for_mps: dropout is not supported");
+  TORCH_CHECK(c10::isFloatingType(query.scalar_type()),
+    "_scaled_dot_product_flash_attention_varlen_for_mps: unsupported dtype ", query.scalar_type());
+  TORCH_CHECK(query.dim() == 3 && key.dim() == 3 && value.dim() == 3,
+    "_scaled_dot_product_flash_attention_varlen_for_mps: Q/K/V must be 3D [total, H, D]");
+
+  // query: [total_q, H, D]
+  const int64_t total_q = query.size(0);
+  const int64_t H       = query.size(1);
+  const int64_t D       = query.size(2);
+  const int64_t total_k = key.size(0);
+  const int64_t B       = cum_seq_q.numel() - 1;
+
+  const int64_t kvH = key.size(1);
+  const int64_t gqa_factor = H / kvH;
+  TORCH_CHECK(D >= 1 && D <= 512,
+    "_scaled_dot_product_flash_attention_varlen_for_mps: head_dim must be in [1, 512], got ", D);
+  TORCH_CHECK(H % kvH == 0,
+    "_scaled_dot_product_flash_attention_varlen_for_mps: H must be divisible by kvH, got H=",
+    H, " kvH=", kvH);
+  TORCH_CHECK(key.size(2) == D && value.size(1) == kvH && value.size(2) == D,
+    "_scaled_dot_product_flash_attention_varlen_for_mps: K/V shape mismatch");
+
+  // [total, H, D] -> [H, total, D] (contiguous for kernel)
+  auto q_t = query.permute({1, 0, 2}).contiguous();
+  auto k_t = key.permute({1, 0, 2}).contiguous();
+  auto v_t = value.permute({1, 0, 2}).contiguous();
+
+  // cu_seqlens: kernel uses uint*; coerce int64 -> int32 if needed
+  auto cu_q = cum_seq_q.to(at::kInt).contiguous();
+  auto cu_k = cum_seq_k.to(at::kInt).contiguous();
+
+  const float scale_val = sdp::calculate_scale(query, scale).expect_float();
+
+  // Allocate outputs in kernel layout
+  auto out_t = at::empty({H, total_q, D}, q_t.options());
+  auto lse   = at::empty({H, total_q},
+                          at::TensorOptions().dtype(at::kFloat).device(query.device()));
+
+  // Window attention sentinels: -1 means no bound
+  const int32_t wnd_left  = window_size_left ? (int32_t)*window_size_left  : -1;
+  const int32_t wnd_right = window_size_right ? (int32_t)*window_size_right : -1;
+  const bool has_alibi = alibi_slopes.has_value() && alibi_slopes->defined();
+  TORCH_CHECK(!has_alibi || c10::isFloatingType(alibi_slopes->scalar_type()),
+    "_scaled_dot_product_flash_attention_varlen_for_mps: alibi_slopes must be floating-point");
+  // Alibi buffer: [H] float slopes, or a 1-element dummy when unused
+  auto alibi_buf = has_alibi
+      ? alibi_slopes->to(at::kFloat).contiguous()
+      : at::zeros({1}, at::TensorOptions().dtype(at::kFloat).device(query.device()));
+
+  using namespace mps;
+  const std::string kname =
+    fmt::format("flash_attn_varlen_fwd_{}_{}", scalarToMetalTypeString(q_t), D);
+  MPSStream* mpsStream = getCurrentMPSStream();
+
+  dispatch_sync_with_rethrow(mpsStream->queue(), ^() {
+    @autoreleasepool {
+      auto computeEncoder = mpsStream->commandEncoder();
+      constexpr uint32_t BQ = 32;
+      // Kernel uses flat 1024-thread TG; grid axes: (H, q-tiles, B)
+      const MTLSize tg   = MTLSizeMake(32 * BQ, 1, 1);
+      const MTLSize grid = MTLSizeMake((NSUInteger)H,
+                                       ((NSUInteger)max_q + BQ - 1) / BQ,
+                                       (NSUInteger)B);
+      auto pso = lib.getPipelineStateForFunc(kname);
+      [computeEncoder setComputePipelineState:pso];
+      mtl_setArgs(computeEncoder,
+                  q_t, k_t, v_t, out_t, lse,
+                  cu_q, cu_k,
+                  (uint32_t)total_q, (uint32_t)total_k,
+                  scale_val, is_causal,
+                  (uint32_t)gqa_factor,
+                  wnd_left, wnd_right,
+                  alibi_buf,
+                  has_alibi);
+      [computeEncoder dispatchThreadgroups:grid threadsPerThreadgroup:tg];
+    }
+  });
+
+  // Permute output back: [H, total_q, D] -> [total_q, H, D]
+  auto out = out_t.permute({1, 0, 2}).contiguous();
+  return {std::move(out), std::move(lse)};
+}
+
+// ---------------------------------------------------------------------------
+// FlashAttention-2 varlen backward for MPS
+// Three passes: preprocess -> dQ -> dK+dV
+// Q/K/V/O/dO : [total, H, D];  LSE : [H, total_q]
+// ---------------------------------------------------------------------------
+
+std::tuple<Tensor, Tensor, Tensor>
+_scaled_dot_product_flash_attention_varlen_for_mps_backward(
+    const Tensor& grad_out,
+    const Tensor& query,
+    const Tensor& key,
+    const Tensor& value,
+    const Tensor& out,
+    const Tensor& logsumexp,
+    const Tensor& cum_seq_q,
+    const Tensor& cum_seq_k,
+    int64_t max_q,
+    int64_t max_k,
+    double dropout_p,
+    bool is_causal,
+    std::optional<double> scale,
+    std::optional<int64_t> window_size_left,
+    std::optional<int64_t> window_size_right,
+    const std::optional<Tensor>& alibi_slopes) {
+  TORCH_CHECK(dropout_p == 0.0,
+    "_scaled_dot_product_flash_attention_varlen_for_mps_backward: dropout is not supported");
+
+  const int64_t total_q = query.size(0);
+  const int64_t H       = query.size(1);
+  const int64_t D       = query.size(2);
+  const int64_t total_k = key.size(0);
+  const int64_t kvH     = key.size(1);
+  const int64_t gqa_factor = H / kvH;
+  const int64_t B       = cum_seq_q.numel() - 1;
+
+  const float scale_val = sdp::calculate_scale(query, scale).expect_float();
+
+  // [total, H/kvH, D] -> [H/kvH, total, D]
+  auto q_t  = query.permute({1, 0, 2}).contiguous();
+  auto k_t  = key.permute({1, 0, 2}).contiguous();
+  auto v_t  = value.permute({1, 0, 2}).contiguous();
+  auto o_t  = out.permute({1, 0, 2}).contiguous();
+  auto do_t = grad_out.permute({1, 0, 2}).contiguous();
+
+  // LSE from forward is already [H, total_q]
+  auto lse = logsumexp.is_contiguous() ? logsumexp : logsumexp.contiguous();
+
+  auto cu_q = cum_seq_q.to(at::kInt).contiguous();
+  auto cu_k = cum_seq_k.to(at::kInt).contiguous();
+
+  // Outputs in [H/kvH, total, D]; permute back at the end
+  auto dQ_t  = at::zeros({H,   total_q, D}, q_t.options());
+  auto dK_t  = at::zeros({kvH, total_k, D}, k_t.options());
+  auto dV_t  = at::zeros({kvH, total_k, D}, v_t.options());
+  // D_vec[h * total_q + abs_q_row] = rowsum(dO * O)
+  auto D_vec = at::empty({H, total_q},
+                          at::TensorOptions().dtype(at::kFloat).device(query.device()));
+
+  // Window attention sentinels: -1 means no bound
+  const int32_t wnd_left  = window_size_left ? (int32_t)*window_size_left  : -1;
+  const int32_t wnd_right = window_size_right ? (int32_t)*window_size_right : -1;
+  const bool has_alibi = alibi_slopes.has_value() && alibi_slopes->defined();
+  TORCH_CHECK(!has_alibi || c10::isFloatingType(alibi_slopes->scalar_type()),
+    "_scaled_dot_product_flash_attention_varlen_for_mps_backward: alibi_slopes must be floating-point");
+  auto alibi_buf = has_alibi
+      ? alibi_slopes->to(at::kFloat).contiguous()
+      : at::zeros({1}, at::TensorOptions().dtype(at::kFloat).device(query.device()));
+
+  using namespace mps;
+  const std::string dtype_str   = scalarToMetalTypeString(q_t);
+  const std::string pre_kname   = fmt::format("flash_attn_varlen_bwd_pre_{}_{}", dtype_str, D);
+  const std::string dq_kname    = fmt::format("flash_attn_varlen_bwd_dq_{}_{}", dtype_str, D);
+  const std::string dkdv_kname  = fmt::format("flash_attn_varlen_bwd_dkdv_{}_{}", dtype_str, D);
+  MPSStream* mpsStream = getCurrentMPSStream();
+
+  // Pass 1: preprocess — D_vec[h*total_q + q_start + q_row] = rowsum(dO*O)
+  dispatch_sync_with_rethrow(mpsStream->queue(), ^() {
+    @autoreleasepool {
+      auto computeEncoder = mpsStream->commandEncoder();
+      constexpr uint32_t BQ = 32;
+      auto pso = lib.getPipelineStateForFunc(pre_kname);
+      [computeEncoder setComputePipelineState:pso];
+      mtl_setArgs(computeEncoder,
+                  do_t, o_t, D_vec,
+                  cu_q,
+                  (uint32_t)total_q);
+      [computeEncoder dispatchThreadgroups:MTLSizeMake((NSUInteger)H,
+                                                       ((NSUInteger)max_q + BQ - 1) / BQ,
+                                                       (NSUInteger)B)
+                     threadsPerThreadgroup:MTLSizeMake(32 * BQ, 1, 1)];
+    }
+  });
+
+  // Pass 2: dQ — outer Q-tiles, inner K-tiles; no atomics needed
+  dispatch_sync_with_rethrow(mpsStream->queue(), ^() {
+    @autoreleasepool {
+      auto computeEncoder = mpsStream->commandEncoder();
+      constexpr uint32_t BQ = 32;
+      auto pso = lib.getPipelineStateForFunc(dq_kname);
+      [computeEncoder setComputePipelineState:pso];
+      mtl_setArgs(computeEncoder,
+                  q_t, k_t, v_t, do_t, lse, D_vec, dQ_t,
+                  cu_q, cu_k,
+                  (uint32_t)total_q, (uint32_t)total_k,
+                  scale_val, is_causal,
+                  (uint32_t)gqa_factor,
+                  wnd_left, wnd_right,
+                  alibi_buf,
+                  has_alibi);
+      [computeEncoder dispatchThreadgroups:MTLSizeMake((NSUInteger)H,
+                                                       ((NSUInteger)max_q + BQ - 1) / BQ,
+                                                       (NSUInteger)B)
+                     threadsPerThreadgroup:MTLSizeMake(32 * BQ, 1, 1)];
+    }
+  });
+
+  // Pass 3: dK + dV — outer K-tiles, inner Q-tiles; no atomics needed
+  dispatch_sync_with_rethrow(mpsStream->queue(), ^() {
+    @autoreleasepool {
+      auto computeEncoder = mpsStream->commandEncoder();
+      constexpr uint32_t BK = 32;
+      auto pso = lib.getPipelineStateForFunc(dkdv_kname);
+      [computeEncoder setComputePipelineState:pso];
+      mtl_setArgs(computeEncoder,
+                  q_t, k_t, v_t, do_t, lse, D_vec, dK_t, dV_t,
+                  cu_q, cu_k,
+                  (uint32_t)total_q, (uint32_t)total_k,
+                  scale_val, is_causal,
+                  (uint32_t)gqa_factor,
+                  wnd_left, wnd_right,
+                  alibi_buf,
+                  has_alibi);
+      [computeEncoder dispatchThreadgroups:MTLSizeMake((NSUInteger)kvH,
+                                                       ((NSUInteger)max_k + BK - 1) / BK,
+                                                       (NSUInteger)B)
+                     threadsPerThreadgroup:MTLSizeMake(32 * BK, 1, 1)];
+    }
+  });
+
+  // Permute gradients back: [H, total, D] -> [total, H, D]
+  auto dQ = dQ_t.permute({1, 0, 2}).contiguous();
+  auto dK = dK_t.permute({1, 0, 2}).contiguous();
+  auto dV = dV_t.permute({1, 0, 2}).contiguous();
+  return {std::move(dQ), std::move(dK), std::move(dV)};
+}
+
 } // namespace native
 } // namespace at
