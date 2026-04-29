@@ -53,4 +53,5 @@ jobs:
       build-environment: ${{ needs.repro-build.outputs.build-environment }}
       docker-image: ${{ needs.repro-build.outputs.docker-image }}
       test-matrix: ${{ needs.repro-build.outputs.test-matrix }}
+      timeout-minutes: 360
     secrets: inherit
