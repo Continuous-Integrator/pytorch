@@ -381,13 +381,13 @@ static void upsample_nearest2d_out_cuda_template(
     const unsigned int launch_grid =
         static_cast<unsigned int>(use_grid_stride ? safe_max_grid : grid);
 #else
+    constexpr bool use_grid_stride = false;
     const int64_t launch_grid = grid;
 #endif
 
     AT_DISPATCH_FLOATING_TYPES_AND3(ScalarType::Half, ScalarType::BFloat16, ScalarType::Byte, input.scalar_type(), "upsample_nearest2d_nhwc_out_frame", [&] {
       const scalar_t* idata = input.const_data_ptr<scalar_t>();
       scalar_t* odata = output.mutable_data_ptr<scalar_t>();
-#ifdef USE_ROCM
       if (use_grid_stride) {
         upsample_nearest2d_nhwc_out_frame_grid_stride<scalar_t, nn_compute_source_index_fn>
           <<<launch_grid, num_threads, 0, at::cuda::getCurrentCUDAStream()>>>(
@@ -402,22 +402,20 @@ static void upsample_nearest2d_out_cuda_template(
             width_scale,
             output.numel()
         );
-      } else
-#endif
-      {
-      upsample_nearest2d_nhwc_out_frame<scalar_t, nn_compute_source_index_fn>
-        <<<launch_grid, num_threads, 0, at::cuda::getCurrentCUDAStream()>>>(
-          idata,
-          odata,
-          channels,
-          input_height,
-          input_width,
-          output_height,
-          output_width,
-          height_scale,
-          width_scale,
-          output.numel()
-      );
+      } else {
+        upsample_nearest2d_nhwc_out_frame<scalar_t, nn_compute_source_index_fn>
+          <<<launch_grid, num_threads, 0, at::cuda::getCurrentCUDAStream()>>>(
+            idata,
+            odata,
+            channels,
+            input_height,
+            input_width,
+            output_height,
+            output_width,
+            height_scale,
+            width_scale,
+            output.numel()
+        );
       }
       C10_CUDA_KERNEL_LAUNCH_CHECK();
     });
@@ -495,6 +493,7 @@ static void upsample_nearest2d_out_cuda_template(
         "input tensor has spatial dimension larger than the kernel capacity");
 
     const dim3 grid(grid_x, grid_y, grid_z);
+    constexpr bool use_grid_stride = false;
 #endif
     cudaStream_t stream = at::cuda::getCurrentCUDAStream();
     AT_DISPATCH_FLOATING_TYPES_AND3(ScalarType::Half, ScalarType::BFloat16, ScalarType::Byte, input.scalar_type(), "upsample_nearest2d_out_frame", [&] {
@@ -503,7 +502,6 @@ static void upsample_nearest2d_out_cuda_template(
           auto idata = input.const_data_ptr<scalar_t>();
           auto odata = output_c.mutable_data_ptr<scalar_t>();
 
-#ifdef USE_ROCM
           if (use_grid_stride) {
             upsample_nearest2d_out_frame_grid_stride<scalar_t, nn_compute_source_index_fn>
                 <<<grid, block, 0, stream>>>(
@@ -516,20 +514,18 @@ static void upsample_nearest2d_out_cuda_template(
                     output_width,
                     height_scale,
                     width_scale);
-          } else
-#endif
-          {
-          upsample_nearest2d_out_frame<scalar_t, nn_compute_source_index_fn>
-              <<<grid, block, 0, stream>>>(
-                  idata,
-                  odata,
-                  nc,
-                  input_height,
-                  input_width,
-                  output_height,
-                  output_width,
-                  height_scale,
-                  width_scale);
+          } else {
+            upsample_nearest2d_out_frame<scalar_t, nn_compute_source_index_fn>
+                <<<grid, block, 0, stream>>>(
+                    idata,
+                    odata,
+                    nc,
+                    input_height,
+                    input_width,
+                    output_height,
+                    output_width,
+                    height_scale,
+                    width_scale);
           }
           C10_CUDA_KERNEL_LAUNCH_CHECK();
         });
