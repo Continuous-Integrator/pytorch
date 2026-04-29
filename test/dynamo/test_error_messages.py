@@ -1,6 +1,7 @@
 # Owner(s): ["module: dynamo"]
 
 import dis
+import linecache
 import logging
 import re
 import sys
@@ -18,7 +19,7 @@ import torch.utils._pytree as python_pytree
 from torch._dynamo.exc import ResumePrologueTracingError, TorchRuntimeError, Unsupported
 from torch._dynamo.testing import skipIfNotPy312, skipIfOnlyNotPy312
 from torch._dynamo.utils import counters
-from torch.testing._internal.common_utils import IS_FBCODE, munge_exc
+from torch.testing._internal.common_utils import IS_FBCODE, IS_MACOS, munge_exc
 from torch.testing._internal.logging_utils import LoggingTestCase, make_logging_test
 
 
@@ -91,6 +92,31 @@ def _assert_failure_stack_source_attribution() -> str:
     )
 
 
+@lru_cache(None)
+def _compile_wrapper_raise_source() -> str:
+    source = "def f():\n    raise RuntimeError(\n        None\n    )\n"
+    filename = "<compile_wrapper_raise_source>"
+    linecache.cache[filename] = (
+        len(source),
+        None,
+        source.splitlines(True),
+        filename,
+    )
+    namespace = {}
+    exec(compile(source, filename, "exec"), namespace)
+    try:
+        namespace["f"]()
+    except RuntimeError as e:
+        msg = "".join(traceback.format_exception(type(e), e, e.__traceback__))
+    if "        None\n    )\n" in msg:
+        return (
+            "    raise e.with_traceback(\n"
+            "        None\n"
+            "    ) from e.__cause__  # User compiler error\n"
+        )
+    return "    raise e.with_traceback(\n"
+
+
 def _load_global_has_positions() -> bool:
     """Whether LOAD_GLOBAL bytecodes have position info on this Python build.
 
@@ -111,10 +137,17 @@ def _load_global_has_positions() -> bool:
 
 
 def _reconstruction_failure_gb_stack_source_attribution() -> str:
+    if IS_MACOS:
+        var_repr = "NullVariable originated from:"
+    else:
+        var_repr = (
+            "LazyVariableTracker(realized: SkipFunctionVariable()) originated from:"
+        )
+
     if sys.version_info >= (3, 14):
         return (
             "Stack variable source attribution:\n"
-            "  LazyVariableTracker(realized: SkipFunctionVariable()) originated from:\n"
+            f"  {var_repr}\n"
             '  File "test_error_messages.py", line N\n'
             "                torch._dynamo.graph_break()\n"
             "^^^^^^^^^^^^^^^^^^^^^^^^^\n"
@@ -124,7 +157,7 @@ def _reconstruction_failure_gb_stack_source_attribution() -> str:
     if sys.version_info >= (3, 11) and _load_global_has_positions():
         return (
             "Stack variable source attribution:\n"
-            "  LazyVariableTracker(realized: SkipFunctionVariable()) originated from:\n"
+            f"  {var_repr}\n"
             '  File "test_error_messages.py", line N\n'
             "                torch._dynamo.graph_break()\n"
             "^^^^^^^^^^^^^^^^^^^^^^^^^\n"
@@ -136,7 +169,7 @@ def _reconstruction_failure_gb_stack_source_attribution() -> str:
 
     return (
         "Stack variable source attribution:\n"
-        "  LazyVariableTracker(realized: SkipFunctionVariable()) originated from:\n"
+        f"  {var_repr}\n"
         '  File "test_error_messages.py", line N\n'
         "                torch._dynamo.graph_break()\n"
         "\n"
@@ -281,14 +314,13 @@ from user code:
                 zip(range(5), range(10))
             ),
             """\
-Observed exception
-  Explanation: Dynamo found no exception handler at the top-level compiled function when encountering an exception. Exception will propagate outside the compiled region.
-  Hint: Your code may result in an error when running in eager. Please double check that your code doesn't contain a similar error when actually running eager/uncompiled. You can do this by removing the `torch.compile` call, or by using `torch.compiler.set_stance("force_eager")`.
+missing tp_iter
+  Explanation: Dynamo does not know how to iterate over `UserDefinedObjectVariable(zip)`.
   Hint: It may be possible to write Dynamo tracing rules for this code. Please report an issue to PyTorch if you encounter this graph break often and it is causing performance issues.
 
-  Developer debug context: raised exception TypeError("'zip' object is not iterable")
+  Developer debug context: tp_iter_impl not implemented for zip
 
- For more details about this graph break, please visit: https://meta-pytorch.github.io/compile-graph-break-site/gb/gb0088.html
+ For more details about this graph break, please visit: https://meta-pytorch.github.io/compile-graph-break-site/gb/gb0811.html
 
 from user code:
    File "test_error_messages.py", line N, in fn
@@ -307,14 +339,13 @@ from user code:
             Unsupported,
             lambda: torch.compile(fn, backend="eager", fullgraph=True)(x, dct.items()),
             """\
-Observed exception
-  Explanation: Dynamo found no exception handler at the top-level compiled function when encountering an exception. Exception will propagate outside the compiled region.
-  Hint: Your code may result in an error when running in eager. Please double check that your code doesn't contain a similar error when actually running eager/uncompiled. You can do this by removing the `torch.compile` call, or by using `torch.compiler.set_stance("force_eager")`.
+missing tp_iter
+  Explanation: Dynamo does not know how to iterate over `UserDefinedObjectVariable(dict_items)`.
   Hint: It may be possible to write Dynamo tracing rules for this code. Please report an issue to PyTorch if you encounter this graph break often and it is causing performance issues.
 
-  Developer debug context: raised exception TypeError("'dict_items' object is not iterable")
+  Developer debug context: tp_iter_impl not implemented for dict_items
 
- For more details about this graph break, please visit: https://meta-pytorch.github.io/compile-graph-break-site/gb/gb0088.html
+ For more details about this graph break, please visit: https://meta-pytorch.github.io/compile-graph-break-site/gb/gb0811.html
 
 from user code:
    File "test_error_messages.py", line N, in fn
@@ -1010,7 +1041,7 @@ Data-dependent branching
 
 from user code:
    File "test_error_messages.py", line N, in cast_overflow_tensors
-    if tensors.isinf().any() or tensors.isnan().any():""",  # noqa: B950
+    if tensors.isinf().any() or tensors.isnan().any():""",
         )
 
     # Test that the bytecode source attribution is correct with VariableTracker
@@ -1160,14 +1191,15 @@ User code traceback:
         msg = re.sub(r"line (\d+)", "line N", msg)
         # remove carets
         msg = re.sub(r"\n\s*~*\^+\n", "\n", msg)
-        self.assertExpectedInline(
-            msg,
+        expected = (
             """\
 Traceback (most recent call last):
   File "test_error_messages.py", line N, in test_no_internal_compiler_stacktrace
     torch.compile(fn, backend="eager", fullgraph=True)()
   File "eval_frame.py", line N, in compile_wrapper
-    raise e.with_traceback(None) from e.__cause__  # User compiler error
+"""
+            + _compile_wrapper_raise_source()
+            + """\
 torch._dynamo.exc.Unsupported: Call to `torch._dynamo.graph_break()`
   Explanation: User-inserted graph break. Message: None
   Hint: Remove the `torch._dynamo.graph_break()` call.
@@ -1184,7 +1216,11 @@ from user code:
 
 Set TORCHDYNAMO_VERBOSE=1 for the internal stack trace (please do this especially if you're reporting a bug to PyTorch). For even more developer context, set TORCH_LOGS="+dynamo"
 
-""",
+"""
+        )
+        self.assertExpectedInline(
+            msg,
+            expected,
         )
 
     @torch._dynamo.config.patch(verbose=True)
