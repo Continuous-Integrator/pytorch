@@ -99,6 +99,14 @@ class IntSpec:
         if not isinstance(type, IntSpecType):
             raise TypeError(f"IntSpec type must be an IntSpecType, got {type!r}")
         self._type = type
+        # Auto-generate a name when the user doesn't supply one. Two
+        # otherwise-anonymous specs constructed at different points need
+        # to be distinguishable in error messages, structured logs, and
+        # ``ObjectSpec`` lookups. ``id(self)`` is process-stable for the
+        # spec's lifetime and unique per live instance — good enough for
+        # a debugging handle.
+        if name is None:
+            name = f"_intspec_{type.value}_{id(self):x}"
         self._name = name
         self._min = min
         self._max = max
