@@ -4741,18 +4741,12 @@ class Scheduler:
                     if config.multi_kernel_hints:
                         hint_override_best_fusion_choice[None] = ms_fused_choice
                         if isinstance(ms_fused_choice, NVUniversalGemmCaller):
-                            # Preserve per-hint Triton compiles (which already
-                            # ran above). Without this, finalize_as_nvgemm_caller
-                            # only sets the no-hint render and the hint dict's
-                            # work is discarded, silently disabling
-                            # multi-kernel specialization for this op.
-                            for h, c in hint_override_best_fusion_choice.items():
-                                if h is None:
-                                    continue
-                                # pyrefly: ignore [missing-attribute]
-                                render = c.get_make_kernel_render()
-                                # pyrefly: ignore [missing-attribute]
-                                multi_node._make_kernel_renders[h] = render
+                            # NVGEMM codegen does not consume _make_kernel_renders
+                            # (multi-kernel hint dispatch is Triton-only). The
+                            # per-hint Triton compiles done above are wasted
+                            # work in this branch — there is no clean way to
+                            # avoid them since the winner isn't known until
+                            # benchmarking completes.
                             # pyrefly: ignore [missing-attribute]
                             multi_node.finalize_as_nvgemm_caller(ms_fused_choice)
                         else:
@@ -4775,9 +4769,15 @@ class Scheduler:
                 else:
                     return False
 
-            return FusionResult.from_callable(
-                benchmark_when_ready, future_choices[0][1]
+            # Pick any real future (NVGEMM compile_kernel returns None as the
+            # future, since NVGEMM modules don't go through async triton compile).
+            # If we hand `None` to from_callable, the downstream gate runs
+            # `benchmark_when_ready` synchronously and inline-blocks on any
+            # remaining Triton futures inside, losing async-compile overlap.
+            deferred_future = next(
+                (fut for _, fut, _ in future_choices if fut is not None), None
             )
+            return FusionResult.from_callable(benchmark_when_ready, deferred_future)
 
         else:
             # Start parallel compilation for all three kernels

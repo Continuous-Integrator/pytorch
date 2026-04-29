@@ -169,6 +169,7 @@ def _create_gemm_cache_key(
     input_tensors,
     *,
     has_epilogue: bool = False,
+    aux_tensors: tuple = (),
 ):
     if variant_name == "GROUPED_GEMM":
         a, b, offsets = input_tensors
@@ -183,7 +184,13 @@ def _create_gemm_cache_key(
         raise NotImplementedError(f"Unsupported NVGEMM variant: {variant_name}")
 
     if has_epilogue:
-        return (*cache_key, "epilogue")
+        # Aux tensors from the epilogue change the kernel's compiled artifact
+        # (cutlass_api dispatches on their dtype/shape) but the base cache_key
+        # only fingerprints A/B. Without folding aux tensor metadata in, a
+        # wrapper invoked with the same A/B but a differently-shaped aux input
+        # (e.g. dynamic-shape bias) would silently reuse a stale artifact.
+        aux_sig = tuple((t.shape, t.dtype) for t in aux_tensors)
+        return (*cache_key, "epilogue", aux_sig)
     return cache_key
 
 
@@ -397,15 +404,29 @@ class NVUniversalGemmKernel(Kernel):
                 "_lookup_gemm_kernel",
                 (kernel_name_var, *epilogue_spec.kernel_lookup_kwargs),
             )
+            if epilogue_spec.enabled and self.epilogue_reads:
+                aux_arg = (
+                    "aux_tensors=("
+                    + ", ".join(f"{name}" for name in self.epilogue_reads)
+                    + ",)"
+                )
+                cache_key_args = (
+                    f'variant_name="{self.variant.name}"',
+                    "input_tensors=input_tensors",
+                    f"has_epilogue={epilogue_spec.enabled}",
+                    aux_arg,
+                )
+            else:
+                cache_key_args = (
+                    f'variant_name="{self.variant.name}"',
+                    "input_tensors=input_tensors",
+                    f"has_epilogue={epilogue_spec.enabled}",
+                )
             self._write_assign_call(
                 code,
                 "cache_key",
                 "_create_gemm_cache_key",
-                (
-                    f'variant_name="{self.variant.name}"',
-                    "input_tensors=input_tensors",
-                    f"has_epilogue={epilogue_spec.enabled}",
-                ),
+                cache_key_args,
             )
             code.writeline(f"artifact = {cache_var}.get(cache_key)")
             code.writeline("if artifact is None:")

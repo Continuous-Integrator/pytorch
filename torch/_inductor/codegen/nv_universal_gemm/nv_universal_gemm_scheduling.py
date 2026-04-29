@@ -321,6 +321,11 @@ class NVUniversalGemmScheduling(BaseScheduling):
 
         # All epilogue read inputs must match the GEMM output size and have
         # non-zero strides (no broadcasting). EFC kernels don't support broadcast.
+        # Reject conservatively when a read can't be resolved: V.graph.constants
+        # (folded weights/biases) and other non-Buffer-tracked names aren't in
+        # name_to_buf, so silently `continue` would skip the broadcast/size
+        # validation for those — and a folded 1D bias passing through would
+        # then run the EFC kernel with a stride-0 read it cannot support.
         gemm_size = ir_node.get_size()
         name_to_buf = V.graph.name_to_buffer | V.graph.graph_inputs
         for s_node in scheduler_nodes_to_fuse:
@@ -329,7 +334,11 @@ class NVUniversalGemmScheduling(BaseScheduling):
                     continue
                 read_buf = name_to_buf.get(rd.name)
                 if read_buf is None:
-                    continue
+                    log.debug(
+                        "NVGEMM epilogue fusion: read %s not in name_to_buffer/graph_inputs, refusing to fuse",
+                        rd.name,
+                    )
+                    return False
                 read_size = read_buf.get_size()
                 if not V.graph.sizevars.statically_known_list_equals(
                     read_size, gemm_size
@@ -399,8 +408,12 @@ class NVUniversalGemmScheduling(BaseScheduling):
                 all_epilogue_nodes,
                 trial_removed_buffers,
             )
-        except NotImplementedError as e:
-            log.debug("NVGEMM epilogue fusion: unsupported EVT operation: %s", e)
+        except (NotImplementedError, AssertionError) as e:
+            # CutlassEVTCodegen has internal asserts that fire on shapes/IRs
+            # we shouldn't have reached this far. They mean "this fusion is
+            # not supported", not "the compiler is broken" — so reject the
+            # fusion rather than aborting the whole pass.
+            log.debug("NVGEMM epilogue fusion: trial EVT codegen failed: %s", e)
             return False
 
         return True
@@ -547,16 +560,34 @@ class NVUniversalGemmScheduling(BaseScheduling):
                     )
                     fused_buffer_names.add(original_buffer_name)
                     scheduler = V.graph.scheduler
+                    # Add removable names to V.graph.removed_buffers BEFORE
+                    # calling mark_run on the corresponding nodes. mark_run
+                    # eagerly emits an AllocateLine for each output buffer;
+                    # codegen_allocation only short-circuits to a NullLine
+                    # when the name is *already* in removed_buffers.
+                    # AllocateLine.plan() rechecks at planning time and turns
+                    # stale allocations into NullLines today, so the wrong
+                    # ordering is harmless under the current wrapper, but it
+                    # is a latent hazard for any wrapper (e.g. AOTI's
+                    # CppWrapper) that emits allocations eagerly.
                     for node in epilogue_nodes:
-                        node.mark_run()
                         node_name = node.get_name()
-                        # Final output stays live (kernel writes to it).
                         if epilogue_writes and node_name == epilogue_writes[-1]:
                             continue
                         if scheduler.can_buffer_be_removed_through_fusion(
                             node_name, fused_buffer_names
                         ):
                             V.graph.removed_buffers.add(node_name)
+                    if (
+                        epilogue_writes
+                        and original_buffer_name != epilogue_writes[-1]
+                        and scheduler.can_buffer_be_removed_through_fusion(
+                            original_buffer_name, fused_buffer_names
+                        )
+                    ):
+                        V.graph.removed_buffers.add(original_buffer_name)
+                    for node in epilogue_nodes:
+                        node.mark_run()
 
                 log.debug(
                     "NVGEMM epilogue fusion: %d nodes, reads=%s, writes=%s",
