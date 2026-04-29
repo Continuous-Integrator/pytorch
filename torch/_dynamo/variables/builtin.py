@@ -78,6 +78,7 @@ from ..utils import (
     specialize_symnode,
     str_methods,
     tensortype_to_dtype,
+    unpack_iterable,
 )
 from .base import AsPythonConstantNotImplementedError, ValueMutationNew, VariableTracker
 from .constant import ConstantVariable, FakeIdVariable
@@ -104,7 +105,6 @@ from .object_protocol import (
     generic_getiter,
     generic_int,
     generic_len,
-    unpack_iterator,
     vt_getitem,
     vt_identity_compare,
 )
@@ -2061,7 +2061,7 @@ class BuiltinVariable(BaseBuiltinVariable):
                 f"{self.fn.__name__} takes no keyword arguments",
             )
 
-        items = unpack_iterator(tx, args[0])
+        items = unpack_iterable(tx, args[0])
         return TupleVariable(items, mutation_type=ValueMutationNew())
 
     def call_callable(
@@ -2170,7 +2170,7 @@ class BuiltinVariable(BaseBuiltinVariable):
             # CPython: frozenset(existing_frozenset) returns the same object.
             return args[0]
 
-        items = unpack_iterator(tx, args[0])
+        items = unpack_iterable(tx, args[0])
         fs = FrozensetVariable(items, mutation_type=ValueMutationNew())
         return fs
 

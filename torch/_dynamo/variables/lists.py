@@ -44,12 +44,13 @@ from ..utils import (
     raise_args_mismatch,
     range_iterator,
     set_example_value,
+    unpack_and_apply_fn,
+    unpack_iterable,
 )
 from .base import AsPythonConstantNotImplementedError, ValueMutationNew, VariableTracker
 from .constant import ConstantVariable
 from .functions import UserFunctionVariable
 from .iter import IteratorVariable
-from .object_protocol import unpack_and_apply_fn, unpack_iterator
 
 
 if TYPE_CHECKING:
@@ -815,12 +816,12 @@ class CommonListMethodsVariable(BaseListVariable):
             if isinstance(args[0], (ListVariable, TupleVariable)):
                 self.items.extend(args[0].items)
             elif isinstance(args[0], UserDefinedObjectVariable):
-                self.items.extend(unpack_iterator(tx, args[0]))
+                self.items.extend(unpack_iterable(tx, args[0]))
             elif isinstance(args[0], (ConstDictVariable, SetVariable)):
                 items = [item.vt for item in args[0].items]
                 self.items.extend(items)
             elif isinstance(args[0], ConstantVariable):
-                items = unpack_iterator(tx, args[0])
+                items = unpack_iterable(tx, args[0])
                 self.items.extend(items)
             else:
                 unpack_and_apply_fn(
@@ -1154,7 +1155,7 @@ class ListVariable(CommonListMethodsVariable):
             elif len(args) == 1:
                 (arg,) = args
                 tx.output.side_effects.mutation(self)
-                self.items[:] = unpack_iterator(tx, arg)
+                self.items[:] = unpack_iterable(tx, arg)
                 return ConstantVariable.create(None)
 
         return super().call_method(tx, name, args, kwargs)
