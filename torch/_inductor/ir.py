@@ -5667,7 +5667,6 @@ _NVUniversalGemmCallerClass: type | None = None
 
 
 def _is_output_plannable_nvgemm_choice(choice: ChoiceCaller) -> bool:
-    """Check if a choice is an NVUniversalGemmCaller (output-plannable since it writes to out_ptr0)."""
     global _NVUniversalGemmCallerClass
     if _NVUniversalGemmCallerClass is None:
         try:
@@ -5716,23 +5715,14 @@ class MultiTemplateBuffer(TritonTemplateBuffer):
             for choice in unfiltered_choices
         )
         self._make_kernel_renders: dict[int | None, Any] = {}
-        # Tracks which backend's make_kernel_render is currently bound. Updated by
-        # swap_as_*_caller and finalize_as_*_caller. None until one of those runs.
         self._render_kind: str | None = None
-        # The currently-bound caller (set by swap/finalize). Lets backends like
-        # NVGEMM access the exact ChoiceCaller their codegen path needs to
-        # render, so the autotune fusion-benchmark loop's per-iteration swap
-        # is not silently overridden by a re-selection from choice_timings().
+        # Tracks the bound caller so the fusion-benchmark loop's per-iteration
+        # swap is not silently overridden by re-selection from choice_timings().
         self._render_caller: ChoiceCaller | None = None
 
     @property
     def output_plannable(self) -> bool:
-        """
-        Are all possible choices TritonTemplates, NVUniversalGemmCallers
-        (which write to out_ptr0 — for fused epilogues, epilogue_writes[-1]
-        must equal the planned output buffer), or Extern Kernels with out
-        variants.
-        """
+        """True when all choices are TritonTemplates, NVUniversalGemmCallers, or Extern Kernels with out variants."""
         return self._output_plannable
 
     @property
@@ -5778,7 +5768,6 @@ class MultiTemplateBuffer(TritonTemplateBuffer):
 
     @contextlib.contextmanager
     def swap_as_nvgemm_caller(self, caller: ChoiceCaller) -> Iterator[None]:
-        """Temporarily swap make_kernel_render with an NVUniversalGemmCaller's version."""
         from torch._inductor.codegen.nv_universal_gemm import NVUniversalGemmCaller
 
         assert isinstance(caller, NVUniversalGemmCaller), type(caller)
@@ -5798,7 +5787,6 @@ class MultiTemplateBuffer(TritonTemplateBuffer):
             self._render_caller = prev_caller
 
     def finalize_as_nvgemm_caller(self, caller: ChoiceCaller) -> None:
-        """Finalize with an NVUniversalGemmCaller's make_kernel_render."""
         from torch._inductor.codegen.nv_universal_gemm import NVUniversalGemmCaller
 
         assert isinstance(caller, NVUniversalGemmCaller), type(caller)
@@ -5975,19 +5963,6 @@ class NVUniversalGemmBuffer(TemplateBuffer):
         Returns (kernel, render) tuple where:
         - kernel: NVUniversalGemmKernel object with call_kernel() method
         - render: function that returns source code string
-
-        Args:
-            out_node: The output node for the GEMM
-            hint_override: Optional hint override (unused)
-            epilogue_fn_code: Python function code string for epilogue
-            epilogue_reads: List of buffer names read by the epilogue
-            epilogue_writes: List of buffer names written by the epilogue
-            epilogue_var_renames: Mapping from Python var names to buffer names
-
-        The four ``epilogue_*`` params form a single contract: when
-        ``epilogue_fn_code`` is set, ``epilogue_var_renames`` must also be set
-        (it's referenced inside the emitted function body). The list params
-        may be empty containers when fn_code is None.
         """
         if epilogue_fn_code is not None:
             assert epilogue_var_renames is not None, (

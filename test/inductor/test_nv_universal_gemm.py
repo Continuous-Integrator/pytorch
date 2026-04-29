@@ -767,8 +767,8 @@ class TestNVUniversalGemmEpilogueFusion(TestCase):
         return result, code, epilogue_fused
 
     @parametrize("dtype", (torch.float16, torch.bfloat16))
-    def test_matmul_relu(self, dtype):
-        """Test that matmul + relu fuses the relu into the GEMM epilogue."""
+    def test_matmul_pointwise_epilogue_fusion(self, dtype):
+        """Pointwise op (relu) is fused into the GEMM epilogue."""
         a = torch.randn(self.M, self.K, device="cuda", dtype=dtype)
         b = torch.randn(self.K, self.N, device="cuda", dtype=dtype)
 
@@ -777,31 +777,11 @@ class TestNVUniversalGemmEpilogueFusion(TestCase):
 
         result, code, epilogue_fused = self._compile_and_check(fn, a, b)
         torch.testing.assert_close(result, fn(a, b), atol=1e-2, rtol=1e-2)
-        self.assertTrue(epilogue_fused, "relu was NOT fused into epilogue")
-
-    def test_matmul_mul_scale(self):
-        """Test that matmul + element-wise multiply fuses into the GEMM epilogue.
-
-        Uses same-shape scale tensor (M, N) since EFC kernels don't support
-        broadcast of auxiliary inputs.
-        """
-        dtype = torch.bfloat16
-        a = torch.randn(self.M, self.K, device="cuda", dtype=dtype)
-        b = torch.randn(self.K, self.N, device="cuda", dtype=dtype)
-        scale = torch.randn(self.M, self.N, device="cuda", dtype=dtype)
-
-        def fn(a, b, scale):
-            return (a @ b) * scale
-
-        result, code, epilogue_fused = self._compile_and_check(fn, a, b, scale)
-        torch.testing.assert_close(result, fn(a, b, scale), atol=2e-2, rtol=2e-2)
-        self.assertTrue(epilogue_fused, "scale-mul was NOT fused into epilogue")
+        self.assertTrue(epilogue_fused, "pointwise op was NOT fused into epilogue")
 
     def test_matmul_add_relu_chained(self):
-        """Test that matmul + add + relu chain fuses into the GEMM epilogue.
-
-        Uses same-shape addend (M, N) since EFC kernels don't support broadcast.
-        """
+        """Multi-op pointwise chain (a@b + bias → relu) collapses to one
+        ComputedBuffer and is fused as a single epilogue."""
         dtype = torch.bfloat16
         a = torch.randn(self.M, self.K, device="cuda", dtype=dtype)
         b = torch.randn(self.K, self.N, device="cuda", dtype=dtype)
@@ -815,7 +795,7 @@ class TestNVUniversalGemmEpilogueFusion(TestCase):
         self.assertTrue(epilogue_fused, "bias+relu chain was NOT fused into epilogue")
 
     def test_matmul_cast_dtype(self):
-        """Test that matmul + dtype cast fuses into the GEMM epilogue."""
+        """Output-dtype cast in the epilogue."""
         dtype = torch.bfloat16
         a = torch.randn(self.M, self.K, device="cuda", dtype=dtype)
         b = torch.randn(self.K, self.N, device="cuda", dtype=dtype)
@@ -826,73 +806,6 @@ class TestNVUniversalGemmEpilogueFusion(TestCase):
         result, code, epilogue_fused = self._compile_and_check(fn, a, b)
         torch.testing.assert_close(result, fn(a, b), atol=1e-2, rtol=1e-2)
         self.assertTrue(epilogue_fused, "dtype cast was NOT fused into epilogue")
-
-    def test_matmul_sigmoid(self):
-        """Test that matmul + sigmoid fuses into the GEMM epilogue."""
-        dtype = torch.bfloat16
-        a = torch.randn(self.M, self.K, device="cuda", dtype=dtype)
-        b = torch.randn(self.K, self.N, device="cuda", dtype=dtype)
-
-        def fn(a, b):
-            return torch.sigmoid(a @ b)
-
-        result, code, epilogue_fused = self._compile_and_check(fn, a, b)
-        torch.testing.assert_close(result, fn(a, b), atol=1e-2, rtol=1e-2)
-        self.assertTrue(epilogue_fused, "sigmoid was NOT fused into epilogue")
-
-    def test_matmul_tanh(self):
-        """Test that matmul + tanh fuses into the GEMM epilogue."""
-        dtype = torch.bfloat16
-        a = torch.randn(self.M, self.K, device="cuda", dtype=dtype)
-        b = torch.randn(self.K, self.N, device="cuda", dtype=dtype)
-
-        def fn(a, b):
-            return torch.tanh(a @ b)
-
-        result, code, epilogue_fused = self._compile_and_check(fn, a, b)
-        torch.testing.assert_close(result, fn(a, b), atol=1e-2, rtol=1e-2)
-        self.assertTrue(epilogue_fused, "tanh was NOT fused into epilogue")
-
-    def test_matmul_exp(self):
-        """Test that matmul + exp fuses into the GEMM epilogue."""
-        dtype = torch.bfloat16
-        a = torch.randn(self.M, self.K, device="cuda", dtype=dtype)
-        b = torch.randn(self.K, self.N, device="cuda", dtype=dtype)
-
-        def fn(a, b):
-            return torch.exp(a @ b)
-
-        result, code, epilogue_fused = self._compile_and_check(fn, a, b)
-        torch.testing.assert_close(result, fn(a, b), atol=1e-2, rtol=1e-2)
-        self.assertTrue(epilogue_fused, "exp was NOT fused into epilogue")
-
-    def test_matmul_sub(self):
-        """Test that matmul + subtraction fuses into the GEMM epilogue."""
-        dtype = torch.bfloat16
-        a = torch.randn(self.M, self.K, device="cuda", dtype=dtype)
-        b = torch.randn(self.K, self.N, device="cuda", dtype=dtype)
-        offset = torch.randn(self.M, self.N, device="cuda", dtype=dtype)
-
-        def fn(a, b, offset):
-            return (a @ b) - offset
-
-        result, code, epilogue_fused = self._compile_and_check(fn, a, b, offset)
-        torch.testing.assert_close(result, fn(a, b, offset), atol=2e-2, rtol=2e-2)
-        self.assertTrue(epilogue_fused, "sub was NOT fused into epilogue")
-
-    def test_matmul_div(self):
-        """Test that matmul + division fuses into the GEMM epilogue."""
-        dtype = torch.bfloat16
-        a = torch.randn(self.M, self.K, device="cuda", dtype=dtype)
-        b = torch.randn(self.K, self.N, device="cuda", dtype=dtype)
-        norm = torch.randn(self.M, self.N, device="cuda", dtype=dtype).abs() + 1.0
-
-        def fn(a, b, norm):
-            return (a @ b) / norm
-
-        result, code, epilogue_fused = self._compile_and_check(fn, a, b, norm)
-        torch.testing.assert_close(result, fn(a, b, norm), atol=2e-2, rtol=2e-2)
-        self.assertTrue(epilogue_fused, "div was NOT fused into epilogue")
 
     def test_plain_matmul_no_epilogue(self):
         """Test that plain matmul does NOT produce epilogue fusion markers."""

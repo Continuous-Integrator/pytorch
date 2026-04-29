@@ -92,38 +92,23 @@ class NVUniversalGemmScheduling(BaseScheduling):
     def get_nv_gemm_buffer_from_node(
         node: BaseSchedulerNode, require_epilogue_fusion: bool = False
     ) -> NVUniversalGemmBuffer:
-        """Extract NVUniversalGemmBuffer from a scheduler node.
-
-        Works with both direct NVUniversalGemmBuffer and MultiTemplateBuffer
-        whose winning choice is NVGEMM.
-
-        Args:
-            node: The scheduler node to extract from
-            require_epilogue_fusion: If True, select the best EFC kernel (for epilogue fusion)
-                                     instead of the overall winner
-        """
+        """Extract NVUniversalGemmBuffer from node (direct or via MultiTemplateBuffer)."""
         assert isinstance(node, SchedulerNode)
         ir_node = node.node
 
         if isinstance(ir_node, NVUniversalGemmBuffer):
             return ir_node
         elif isinstance(ir_node, MultiTemplateBuffer):
-            # If a caller was explicitly bound via swap_as_nvgemm_caller or
-            # finalize_as_nvgemm_caller, honor that — the autotune fusion
-            # benchmark loop in Scheduler.speedup_by_fusion swaps in each EFC
-            # choice one at a time and expects each to drive a distinct
-            # codegen, not a re-selection from choice_timings().
+            # Honor an explicit swap/finalize — the fusion benchmark loop swaps
+            # in each EFC choice one at a time and must not re-select from timings.
             if isinstance(ir_node._render_caller, NVUniversalGemmCaller) and (
                 not require_epilogue_fusion
                 or ir_node._render_caller.supports_epilogue_fusion
             ):
                 selected_choice = ir_node._render_caller
             elif require_epilogue_fusion:
-                # Find the best EFC kernel for epilogue fusion. Use
-                # `best is None or timing < best` so a choice whose autotune
-                # timing was inf (benchmark failed) can still be selected when
-                # it's the only EFC option — strict `<` against an inf seed
-                # previously made such cases unselectable.
+                # `best is None or timing < best_time` so a choice with timing=inf
+                # (benchmark failed) can still win when it's the only EFC option.
                 choice_timings = ir_node.choice_timings()
                 best_efc_choice = None
                 best_efc_time = float("inf")
@@ -143,8 +128,6 @@ class NVUniversalGemmScheduling(BaseScheduling):
                 if isinstance(min_choice, NVUniversalGemmCaller):
                     selected_choice = min_choice
                 else:
-                    # During swap_as_nvgemm_caller, the autotuning winner may not
-                    # be NVGEMM. Find the best NVGEMM choice from all choices.
                     choice_timings = ir_node.choice_timings()
                     best_nvgemm = None
                     best_time = float("inf")
@@ -175,11 +158,6 @@ class NVUniversalGemmScheduling(BaseScheduling):
     def can_fuse_vertical(
         self, node1: BaseSchedulerNode, node2: BaseSchedulerNode
     ) -> bool:
-        """
-        Check if node2 can be fused as an epilogue to node1 (NVGEMM template).
-
-        Supports fusing pointwise operations as epilogues.
-        """
         if self.is_nv_universal_gemm_template(node1):
             return self._can_fuse_epilogue_impl(
                 cast(SchedulerNode, node1),
@@ -188,9 +166,6 @@ class NVUniversalGemmScheduling(BaseScheduling):
             )
         elif self.is_nv_universal_gemm_fused_template(node1):
             fnode1 = cast(FusedSchedulerNode, node1)
-            # fnode1.get_template_node() returns an ir.TemplateBuffer (IR node);
-            # _can_fuse_epilogue_impl needs the SchedulerNode that wraps it, so
-            # find that wrapper from fnode1.snodes.
             template_snode = next(
                 (n for n in fnode1.snodes if self.is_nv_universal_gemm_template(n)),
                 None,
@@ -220,12 +195,6 @@ class NVUniversalGemmScheduling(BaseScheduling):
         existing_epilogue_nodes: list[BaseSchedulerNode],
         node_to_fuse: BaseSchedulerNode,
     ) -> bool:
-        """
-        Check if the given node can be fused as an epilogue.
-
-        Supports fusion with Pointwise operations wrapped in ComputedBuffer nodes.
-        Only EFC (Epilogue Fusion Compatible) kernels support epilogue fusion.
-        """
         from .nv_universal_gemm import GemmVariant
 
         if not config.epilogue_fusion:
@@ -235,8 +204,6 @@ class NVUniversalGemmScheduling(BaseScheduling):
         if not isinstance(ir_node, (NVUniversalGemmBuffer, MultiTemplateBuffer)):
             return False
 
-        # Epilogue fusion only supported for plain GEMM, not grouped/scaled,
-        # and only when an EFC kernel is available.
         if isinstance(ir_node, NVUniversalGemmBuffer):
             if ir_node.variant != GemmVariant.GEMM:
                 log.debug(
@@ -251,9 +218,7 @@ class NVUniversalGemmScheduling(BaseScheduling):
                 )
                 return False
         elif isinstance(ir_node, MultiTemplateBuffer):
-            # Iterate `_choices` (set in __init__) instead of `choice_timings()`
-            # — the latter forces autotune-benchmark synchronization, which
-            # we don't need just to answer a fusibility question.
+            # Use _choices, not choice_timings() — the latter forces autotune sync.
             has_efc_choice = False
             for choice in ir_node._choices:
                 if not (
@@ -273,7 +238,6 @@ class NVUniversalGemmScheduling(BaseScheduling):
 
         scheduler_nodes_to_fuse = node_to_fuse.get_nodes()
 
-        # Checks on constituent nodes
         for s_node in scheduler_nodes_to_fuse:
             node = s_node.node
             if not isinstance(node, ComputedBuffer):
@@ -283,7 +247,6 @@ class NVUniversalGemmScheduling(BaseScheduling):
                 log.debug("NVGEMM epilogue fusion: %s is not a Pointwise op", node)
                 return False
 
-            # Size must match the GEMM output
             if not V.graph.sizevars.statically_known_list_equals(
                 node.get_size(), ir_node.get_size()
             ):
@@ -294,13 +257,9 @@ class NVUniversalGemmScheduling(BaseScheduling):
                 )
                 return False
 
-        # All epilogue read inputs must match the GEMM output size and have
-        # non-zero strides (no broadcasting). EFC kernels don't support broadcast.
-        # Reject conservatively when a read can't be resolved: V.graph.constants
-        # (folded weights/biases) and other non-Buffer-tracked names aren't in
-        # name_to_buf, so silently `continue` would skip the broadcast/size
-        # validation for those — and a folded 1D bias passing through would
-        # then run the EFC kernel with a stride-0 read it cannot support.
+        # EFC kernels don't support broadcast. Reject conservatively when a read
+        # can't be resolved — folded constants (weights/biases) aren't in
+        # name_to_buf, and silently skipping them would let a stride-0 bias through.
         gemm_size = ir_node.get_size()
         name_to_buf = V.graph.name_to_buffer | V.graph.graph_inputs
         for s_node in scheduler_nodes_to_fuse:
@@ -334,10 +293,8 @@ class NVUniversalGemmScheduling(BaseScheduling):
                             )
                             return False
 
-        # First epilogue node must read from the GEMM template buffer
         if not existing_epilogue_nodes:
             reads = OrderedSet(rd.name for rd in node_to_fuse.read_writes.reads)
-            # Use the original buffer name (works for both NVUniversalGemmBuffer and MultiTemplateBuffer)
             if ir_node.get_name() not in reads:
                 log.debug(
                     "NVGEMM epilogue fusion: first epilogue node doesn't read from GEMM output"
@@ -351,22 +308,14 @@ class NVUniversalGemmScheduling(BaseScheduling):
             log.debug("NVGEMM epilogue fusion: reductions not supported")
             return False
 
-        # Trial EVT codegen to verify the epilogue ops are translatable.
-        # Use the same removed_buffers as the real codegen path to avoid
-        # false positives/negatives from seeing different graph state.
         all_epilogue_nodes = list(existing_epilogue_nodes) + list(
             node_to_fuse.get_nodes()
         )
 
-        # Multi-store epilogues (more than one ComputedBuffer) are not yet
-        # supported: CutlassEVTCodegen would emit `return tmp_X, ..., D` and
-        # cutlass_api's EpilogueArguments AST tracer would require kwargs
-        # for every output. _render_epilogue_kwargs currently skips intermediate
-        # stores (so those kwargs are missing) — running fusion would raise at
-        # EpilogueArguments construction time. Inductor's pointwise pre-fusion
-        # normally collapses chains into one ComputedBuffer, so this path is
-        # latent today, but we reject it explicitly to avoid silent miscompiles
-        # if upstream fusion behavior changes.
+        # Multi-store chains (>1 node) not yet supported: _render_epilogue_kwargs
+        # skips intermediate stores, so EpilogueArguments construction would fail.
+        # Normally pre-fusion collapses chains, but reject explicitly to avoid
+        # silent miscompile if that changes.
         if len(all_epilogue_nodes) > 1:
             log.debug(
                 "NVGEMM epilogue fusion: multi-stage chains (%d nodes) not yet supported",
@@ -384,10 +333,6 @@ class NVUniversalGemmScheduling(BaseScheduling):
                 trial_removed_buffers,
             )
         except (NotImplementedError, AssertionError) as e:
-            # CutlassEVTCodegen has internal asserts that fire on shapes/IRs
-            # we shouldn't have reached this far. They mean "this fusion is
-            # not supported", not "the compiler is broken" — so reject the
-            # fusion rather than aborting the whole pass.
             log.debug("NVGEMM epilogue fusion: trial EVT codegen failed: %s", e)
             return False
 
@@ -467,25 +412,20 @@ class NVUniversalGemmScheduling(BaseScheduling):
             "Template node passed to NVUniversalGemmScheduling.codegen_template must be a "
             "SchedulerNode that wraps a NVUniversalGemmBuffer or MultiTemplateBuffer with NVGEMM choice"
         )
-        # Prologue fusion is not yet supported
         assert not prologue_nodes, (
             "NVIDIA Universal GEMM doesn't support prologue fusion yet"
         )
 
         template_node = cast(SchedulerNode, template_node)
 
-        # Get the original buffer name (for epilogue processing - could be MultiTemplateBuffer name)
         original_ir_node = template_node.node
         assert isinstance(original_ir_node, Buffer)
         original_buffer_name = original_ir_node.get_name()
 
-        # Get the NVUniversalGemmBuffer (extract from MultiTemplateBuffer if needed)
-        # When epilogue fusion is requested, select the best EFC kernel instead of overall winner
         ctb: NVUniversalGemmBuffer = self.get_nv_gemm_buffer_from_node(
             template_node, require_epilogue_fusion=bool(epilogue_nodes)
         )
 
-        # Process epilogue nodes if present
         epilogue_fn_code: str | None = None
         epilogue_reads: list[str] = []
         epilogue_writes: list[str] = []
@@ -493,8 +433,6 @@ class NVUniversalGemmScheduling(BaseScheduling):
 
         if epilogue_nodes:
             try:
-                # Add GEMM output to removed_buffers so it's not treated as a store
-                # (it becomes the 'accum' input to the epilogue)
                 removed_buffers_with_gemm = V.graph.removed_buffers | OrderedSet(
                     [original_buffer_name]
                 )
@@ -513,30 +451,15 @@ class NVUniversalGemmScheduling(BaseScheduling):
                 epilogue_writes = writes
                 epilogue_var_renames = var_renames
 
-                # Mark epilogue nodes as run since they will be fused
-                # (skip when only generating source code for benchmarking).
-                # Only the FINAL output of the epilogue chain is written by
-                # the kernel (`epilogue_writes[-1]`); intermediates are
-                # consumed inside the fused kernel and don't need to be
-                # allocated. But we must NOT add a buffer to removed_buffers
-                # if it has consumers outside this fusion — otherwise that
-                # consumer would point to a never-allocated buffer.
                 if not only_gen_src_code:
                     fused_buffer_names: OrderedSet[str] = OrderedSet(
                         n.get_name() for n in epilogue_nodes
                     )
                     fused_buffer_names.add(original_buffer_name)
                     scheduler = V.graph.scheduler
-                    # Add removable names to V.graph.removed_buffers BEFORE
-                    # calling mark_run on the corresponding nodes. mark_run
-                    # eagerly emits an AllocateLine for each output buffer;
-                    # codegen_allocation only short-circuits to a NullLine
-                    # when the name is *already* in removed_buffers.
-                    # AllocateLine.plan() rechecks at planning time and turns
-                    # stale allocations into NullLines today, so the wrong
-                    # ordering is harmless under the current wrapper, but it
-                    # is a latent hazard for any wrapper (e.g. AOTI's
-                    # CppWrapper) that emits allocations eagerly.
+                    # Must add to removed_buffers BEFORE mark_run: mark_run emits
+                    # AllocateLine eagerly, and codegen_allocation only skips it
+                    # when the name is already in removed_buffers.
                     for node in epilogue_nodes:
                         node_name = node.get_name()
                         if epilogue_writes and node_name == epilogue_writes[-1]:
@@ -563,8 +486,6 @@ class NVUniversalGemmScheduling(BaseScheduling):
                     epilogue_writes,
                 )
             except (NotImplementedError, AssertionError) as e:
-                # EVT codegen was pre-validated at can_fuse time, so failure here
-                # indicates a bug. Re-raise rather than silently dropping epilogue.
                 log.warning("NVGEMM epilogue codegen failed unexpectedly: %s", e)
                 raise
 
@@ -577,19 +498,16 @@ class NVUniversalGemmScheduling(BaseScheduling):
             epilogue_var_renames=epilogue_var_renames,
         )
 
-        # Mark template as run (skip when only generating source code for benchmarking)
         if not only_gen_src_code:
             template_node.mark_run()
 
         src_code = render()
 
-        # If only generating source code, return it without defining/calling the kernel
         if only_gen_src_code:
             return src_code
 
         with V.set_kernel_handler(kernel):
             node_schedule: list[BaseSchedulerNode] = [template_node]
-            # Include epilogue nodes in schedule if they were fused
             if epilogue_fn_code and epilogue_nodes:
                 node_schedule.extend(epilogue_nodes)
             kernel_name = self.define_kernel(src_code, node_schedule)
@@ -607,19 +525,10 @@ class NVUniversalGemmScheduling(BaseScheduling):
         benchmark_kernel: bool = False,
         hint_override: int | None = None,
     ) -> str:
-        """
-        Generate kernel source code from nodes for benchmarking.
-
-        This is used during epilogue fusion benchmarking to generate source code
-        without actually defining or calling the kernel.
-        """
         prologue, template, epilogue = nodes[0].get_prologue_template_epilogue(
             list(nodes)
         )
 
-        # Pre-compute epilogue reads once and pass to both codegen_template and
-        # _add_benchmark_helpers; the EVT codegen pass is otherwise expensive
-        # enough to want to amortize.
         epilogue_reads: list[str] = []
         if epilogue:
             template_sn = cast(SchedulerNode, template)
@@ -665,17 +574,7 @@ class NVUniversalGemmScheduling(BaseScheduling):
         epilogue_nodes: Sequence[BaseSchedulerNode],
         epilogue_reads: list[str],
     ) -> str:
-        """
-        Add get_args() and call() functions to enable benchmarking.
-
-        This generates code similar to Triton's benchmark helpers so that
-        benchmark_codegened_module can use the same interface.
-        """
         template_node = cast(SchedulerNode, template_node)
-        # Must mirror codegen_template's selection: when the source is being
-        # generated for a fused epilogue, the EFC kernel was chosen — not the
-        # overall autotune winner. Otherwise the benchmark helpers (workspace
-        # size, arg count) won't match the kernel the source actually calls.
         ctb: NVUniversalGemmBuffer = self.get_nv_gemm_buffer_from_node(
             template_node, require_epilogue_fusion=bool(epilogue_nodes)
         )
@@ -683,11 +582,8 @@ class NVUniversalGemmScheduling(BaseScheduling):
         input_nodes = cast(list[Buffer], ctb.inputs)
         output_layout = cast(Layout, ctb.layout)
 
-        # Build get_args code
         args_code = IndentedBuffer()
         args_code.writeline("")
-        # Marker the dispatcher checks via getattr(module, "is_nvgemm", False)
-        # to route benchmarking through _benchmark_nvgemm_module.
         args_code.writeline("is_nvgemm = True")
         args_code.writeline("")
         args_code.writeline("def get_args():")
@@ -732,17 +628,14 @@ class NVUniversalGemmScheduling(BaseScheduling):
 
             args_code.writeline("return args")
 
-        # Build call function
         args_code.writeline("")
         args_code.writeline("def call(args):")
         with args_code.indent():
             args_code.writeline("import torch")
-            # Extract args and call main function
             num_inputs = len(input_nodes)
             param_list = [f"args[{i}]" for i in range(num_inputs)]
-            param_list.append(f"args[{num_inputs}]")  # output
+            param_list.append(f"args[{num_inputs}]")
 
-            # Add epilogue read args
             for j in range(len(epilogue_reads)):
                 param_list.append(f"args[{num_inputs + 1 + j}]")
 
