@@ -5710,6 +5710,42 @@ class TestTransferSymbolsFromForeignShapeEnv(TestCase):
             self.assertIs(s.node.shape_env, local_env)
             self.assertFalse(local_env.has_guarding_hint(s.node.expr))
 
+    def test_shared_unbacked_symbol_preserved(self):
+        """When two dims share the same unbacked symbol (e.g. size=[u0, u0]),
+        the transfer preserves that sharing."""
+        foreign_env = ShapeEnv()
+        u0 = foreign_env.create_unbacked_symint()
+
+        sizes = (u0, u0)
+        strides = (u0, 1)
+        storage_offset = 0
+
+        local_env = ShapeEnv()
+        new_sizes, new_strides, new_offset = (
+            local_env.transfer_symbols_from_foreign_shape_env(
+                sizes,
+                strides,
+                storage_offset,
+                source=self._make_source("local"),
+            )
+        )
+        # Both dims should map to the same new symbol since they were
+        # the same unbacked symbol in the foreign env.
+        self.assertTrue(is_symbolic(new_sizes[0]))
+        self.assertTrue(is_symbolic(new_sizes[1]))
+        self.assertEqual(
+            new_sizes[0].node.expr,
+            new_sizes[1].node.expr,
+            "Shared unbacked symbol should be preserved across dims",
+        )
+        # Stride[0] should equal the shared size symbol (contiguous relationship)
+        self.assertTrue(is_symbolic(new_strides[0]))
+        self.assertEqual(
+            new_strides[0].node.expr,
+            new_sizes[0].node.expr,
+            "Stride should preserve relationship with size via substitution",
+        )
+
     def test_unbacked_hint_overrides_transferred(self):
         """Hint overrides on unbacked symbols in the foreign env should be
         transferred to the new env."""
@@ -5957,21 +5993,19 @@ class TestTransferSymbolsFromForeignShapeEnv(TestCase):
             )(*fake_args)
 
         # Verify unbacked dims are preserved in the captured graph.
-        # The 4 index tensors (kv_indices, full_kv_indices, q_indices,
-        # full_q_indices) should each have an unbacked dim, not a
-        # concrete value like 2.
+        # Check placeholder shapes for unbacked symbols (u0, u1, etc.)
         unbacked_count = 0
         for node in gm.graph.nodes:
             if node.op == "placeholder":
                 val = node.meta.get("val", None)
-                if val is not None and isinstance(val, torch.Tensor):
+                if val is not None and hasattr(val, "size"):
                     for s in val.size():
-                        if is_symbolic(s) and not has_guarding_hint(s):
+                        if is_symbolic(s) and not s.node.has_hint():
                             unbacked_count += 1
         self.assertGreaterEqual(
-            unbacked_count, 4,
-            "Expected at least 4 unbacked dims (kv_indices, full_kv_indices, "
-            "q_indices, full_q_indices) but found {unbacked_count}",
+            unbacked_count,
+            4,
+            f"Expected at least 4 unbacked dims but found {unbacked_count}",
         )
 
 

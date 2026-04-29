@@ -1119,10 +1119,21 @@ class MetaConverter(Generic[_TensorT]):
                     and symbolic_context is None
                 ):
                     return (t.size, t.stride, t.storage_offset)
+                elif fake_mode is None:
+                    # Real tensor (not a FakeTensor).  Use
+                    # _create_symbolic_sizes_strides_storage_offset directly
+                    # since there are no foreign symbols to transfer.
+                    return shape_env._create_symbolic_sizes_strides_storage_offset(
+                        t.size,
+                        t.stride,
+                        t.storage_offset,
+                        [False] * t.ndim,
+                        src,
+                        symbolic_context=symbolic_context,
+                        hint_overrides=t.dynamo_hint_overrides,
+                    )
                 else:
-                    # Different shape env than the one the tensor was created with.
-                    # Transfer symbols into this ShapeEnv, classifying each dim
-                    # as STATIC, DYNAMIC, or UNBACKED automatically.
+                    # FakeTensor from a different ShapeEnv.  Transfer symbols.
                     return shape_env.transfer_symbols_from_foreign_shape_env(
                         t.size,
                         t.stride,

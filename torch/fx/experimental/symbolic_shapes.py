@@ -4737,12 +4737,7 @@ class ShapeEnv:
 
         if symbolic_context is None:
             dynamic_sizes = [_classify(sz) for sz in sizes]
-            dynamic_strides = [
-                DimDynamic.UNBACKED
-                if ds is DimDynamic.UNBACKED
-                else DimDynamic.INFER_STRIDE
-                for ds in dynamic_sizes
-            ]
+            dynamic_strides = [DimDynamic.INFER_STRIDE] * len(sizes)
             symbolic_context = StatelessSymbolicContext(
                 dynamic_sizes=dynamic_sizes,
                 dynamic_strides=dynamic_strides,
@@ -4786,22 +4781,31 @@ class ShapeEnv:
 
         # Unbacked path
 
-        # Unbacked path: create new size symbols, then derive strides
-        # by substituting old foreign symbols with new ones.
+        # Unbacked path: create new size symbols with dedup for shared
+        # unbacked symbols, then derive strides by substitution.
 
-        # 1. Create new size symbols.
-        new_size_exprs: list[sympy.Expr] = self._produce_dyn_sizes_from_int_tuple(
-            ex_size,
-            source,
-            symbolic_context,
-            hint_overrides=hint_overrides,
-        )
-
-        # 2. Build old→new mapping from sizes.
+        # 1. Create new size symbols, deduplicating shared unbacked symbols.
         old_to_new: dict[sympy.Expr, sympy.Expr] = {}
-        for old_sz, new_expr in zip(sizes, new_size_exprs):
+        new_size_exprs: list[sympy.Expr] = []
+        for i, old_sz in enumerate(sizes):
             if is_symbolic(old_sz):
-                old_to_new[old_sz.node.expr] = new_expr  # type: ignore[union-attr]
+                old_expr = old_sz.node.expr  # type: ignore[union-attr]
+                if old_expr in old_to_new:
+                    new_size_exprs.append(old_to_new[old_expr])
+                else:
+                    sym = self.create_symbol(
+                        ex_size[i],
+                        TensorPropertySource(source, TensorProperty.SIZE, i),
+                        dynamic_sizes[i],
+                        symbolic_context.constraint_sizes[i]
+                        if hasattr(symbolic_context, "constraint_sizes")
+                        else None,  # type: ignore[attr-defined]
+                        symbolic_context=symbolic_context,
+                    )
+                    old_to_new[old_expr] = sym
+                    new_size_exprs.append(sym)
+            else:
+                new_size_exprs.append(sympy.Integer(old_sz))
 
         # 3. Derive new strides by substituting old symbols.
         new_stride_exprs: list[sympy.Expr] = []
