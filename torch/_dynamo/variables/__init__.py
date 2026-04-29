@@ -50,6 +50,7 @@ from .ctx_manager import (
     VmapIncrementNestingCtxManagerVariable,
     WithEnterFunctionVariable,
     WithExitFunctionVariable,
+    XPUDeviceVariable,
 )
 from .dicts import (
     ConstDictVariable,
@@ -187,6 +188,7 @@ from .user_defined import (
 
 
 __all__ = [
+    "XPUDeviceVariable",
     "AcceleratorDeviceIndexVariable",
     "AutogradFunctionContextVariable",
     "AutogradFunctionVariable",
