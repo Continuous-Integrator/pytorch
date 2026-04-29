@@ -1138,7 +1138,7 @@ class TestFlexFlash(InductorTestCase):
             )
             with self.assertWarnsRegex(
                 UserWarning,
-                "Deterministic backward for flex_attention with block_mask",
+                "does not have a deterministic implementation for this configuration",
             ):
                 out.sum().backward()
 
