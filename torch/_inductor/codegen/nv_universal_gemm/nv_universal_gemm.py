@@ -105,10 +105,6 @@ class NVUniversalGemmBenchmarkRequest(GPUDeviceBenchmarkMixin, BenchmarkRequest)
         we ensure each input gets its own tensor with the correct size/stride/offset
         from the view's layout.
 
-        Mirrors the base class's `benchmark_with_cudagraphs` branch and
-        `cleanup_run_fn()` call so NVGEMM choices honor the same caller
-        contract as Triton/Extern (workspace gets released, cudagraph timing
-        path is honored when requested).
         """
         from torch._inductor.runtime.benchmarking import benchmarker
 
@@ -255,13 +251,9 @@ class NVUniversalGemmCaller(ChoiceCaller):
     def output_node(self) -> TensorBox:
         from torch._inductor.ir import NVUniversalGemmBuffer
 
-        # Memoized: NVUniversalGemmBuffer.__init__ chains to TemplateBuffer.__init__
-        # which calls V.graph.register_buffer(self), appending to V.graph.buffers
-        # and assigning a new "buf{N}" name. During epilogue-fusion benchmarking
-        # this caller's output_node() is invoked once per benchmarked candidate
-        # (in get_nv_gemm_buffer_from_node, both from codegen_template and
-        # _add_benchmark_helpers), so without memoization each EFC candidate
-        # leaks one orphan buffer per call into the graph's name tables.
+        # Without memoization, each call registers a new buffer (via
+        # TemplateBuffer.__init__ → V.graph.register_buffer), leaking orphan
+        # buffers into the graph's name tables during EFC benchmarking.
         if self._cached_output_node is not None:
             return self._cached_output_node
 
@@ -315,18 +307,11 @@ class NVUniversalGemmCaller(ChoiceCaller):
         }
 
     def get_make_kernel_render(self):
-        """
-        Return a make_kernel_render function for this caller.
-
-        This allows NVUniversalGemmCaller to participate in MultiTemplateBuffer's
-        epilogue benchmarking mechanism, similar to TritonTemplateCaller.
-        """
         from torch._inductor.codegen.nv_universal_gemm.nv_universal_gemm_kernel import (
             NVUniversalGemmKernel,
         )
         from torch._inductor.utils import Placeholder
 
-        # Capture caller state in closure
         kernel_metadata = {
             "kernel_name": self.kernel.metadata.kernel_name,
             "min_cc": self.kernel.metadata.min_cc,
@@ -350,7 +335,6 @@ class NVUniversalGemmCaller(ChoiceCaller):
         ):
             from torch._inductor.ir import StorageBox, TensorBox
 
-            # Process input nodes
             processed_inputs = []
             for inp in input_nodes:
                 if isinstance(inp, TensorBox):
@@ -563,8 +547,6 @@ def _add_nv_gemm_choices_impl(
         non_efc_kernels = non_efc_kernels[:max_configs]
         efc_kernels = efc_kernels[:max_configs]
 
-    # Add callers for both non-EFC and EFC kernels
-    # Non-EFC kernels don't support epilogue fusion, EFC kernels do
     all_kernels = [(kernel, False) for kernel in non_efc_kernels] + [
         (kernel, True) for kernel in efc_kernels
     ]
