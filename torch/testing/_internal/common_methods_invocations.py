@@ -47,7 +47,7 @@ from torch.testing._internal.common_utils import (
     TEST_WITH_ROCM, IS_FBCODE, IS_WINDOWS, IS_MACOS, TEST_SCIPY,
     torch_to_numpy_dtype_dict, numpy_to_torch_dtype, TEST_WITH_ASAN,
     GRADCHECK_NONDET_TOL, slowTest, TEST_WITH_SLOW,
-    TEST_WITH_TORCHINDUCTOR,
+    TEST_WITH_TORCHINDUCTOR, skipIfNoTritonDSL,
 )
 from torch.testing._utils import wrapper_set_seed
 
@@ -23164,22 +23164,13 @@ dsl_ops_by_dsl: dict[str, list[OpInfo]] = {}
 for dsl_name in torch.backends.python_native.available_dsls:
     dsl_ops_by_dsl[dsl_name] = []
 
-# DSL OpInfos. The underlying kernels live under torch/_native/ops; import failures
-# (e.g. no Triton installed) just disable the corresponding OpInfo.
-try:
-    from torch._native.ops.bmm_outer_product.triton_kernels import (
-        bmm_outer_product as _triton_bmm_outer_product_kernel,
-    )
-    _HAS_TRITON_BMM = True
-except ImportError:
-    def _triton_bmm_outer_product_kernel(a, b):
-        return torch.ops.aten.bmm(a, b)
-    _HAS_TRITON_BMM = False
-
+# DSL OpInfo for the triton BMM outer-product override. The op is torch.bmm because the
+# DSL override kicks in at dispatch time for the (B,M,1) x (B,1,N) shape contract.
+# Calling the raw triton kernel here ould bypasses FakeTensorMode and crashes with an IMA
 dsl_ops_by_dsl.setdefault('triton', []).append(
     OpInfo(
         "triton_bmm_outer_product",
-        op=_triton_bmm_outer_product_kernel,
+        op=torch.bmm,
         dtypes=floating_types_and(torch.half, torch.bfloat16),
         dtypesIfCUDA=floating_types_and(torch.half, torch.bfloat16),
         sample_inputs_func=sample_inputs_triton_bmm_outer_product,
@@ -23197,7 +23188,7 @@ dsl_ops_by_dsl.setdefault('triton', []).append(
         ],
         skips=(
             DecorateInfo(skipCUDAIf(not torch.cuda.is_available(), "CUDA not available")),
-            DecorateInfo(unittest.skipIf(not _HAS_TRITON_BMM, "Triton BMM outer product not available")),
+            DecorateInfo(skipIfNoTritonDSL),
             # noncontiguous_like() on (B,M,1)/(B,1,N) breaks the shape contract the
             # kernel requires, so skip the generic non-contig test.
             DecorateInfo(
