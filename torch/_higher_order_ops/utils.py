@@ -86,6 +86,25 @@ def autograd_not_implemented(op: OperatorBase, deferred_error: bool) -> Callable
 
 
 def _maybe_run_with_interpreter(fn):
+    # Unwrap any FunctionalTensor attributes in the GraphModule.
+    if isinstance(fn, torch.fx.GraphModule):
+        for name in dir(fn):
+            if name.startswith('_') and not name.startswith('__'):
+                try:
+                    attr = getattr(fn, name)
+                    if isinstance(attr, torch.Tensor):
+                        if isinstance(attr, FunctionalTensor):
+                            torch._sync(attr)
+                            from torch._functorch.aot_autograd import from_fun
+                            unwrapped = from_fun(attr)
+                            setattr(fn, name, unwrapped)
+                        elif torch._is_functional_tensor(attr):
+                            torch._sync(attr)
+                            unwrapped = torch._from_functional_tensor(attr)
+                            setattr(fn, name, unwrapped)
+                except (AttributeError, RuntimeError):
+                    pass
+    
     maybe_interpreted_fn = fn
     if isinstance(fn, torch.fx.GraphModule) and fx_traceback.has_preserved_node_meta():
         # Running graph with interpreter is needed for propagating the stack_trace
@@ -107,6 +126,25 @@ def _maybe_compile_and_run_fn(fn, *args):
 
 def reenter_make_fx(fn, subgraph_decomp_table=None):
     from torch.fx.experimental.proxy_tensor import _CURRENT_MAKE_FX_TRACER
+
+    # Unwrap any FunctionalTensor attributes before tracing.
+    if isinstance(fn, torch.fx.GraphModule):
+        for name in dir(fn):
+            if name.startswith('_') and not name.startswith('__'):
+                try:
+                    attr = getattr(fn, name)
+                    if isinstance(attr, torch.Tensor):
+                        if isinstance(attr, FunctionalTensor):
+                            torch._sync(attr)
+                            from torch._functorch.aot_autograd import from_fun
+                            unwrapped = from_fun(attr)
+                            setattr(fn, name, unwrapped)
+                        elif torch._is_functional_tensor(attr):
+                            torch._sync(attr)
+                            unwrapped = torch._from_functional_tensor(attr)
+                            setattr(fn, name, unwrapped)
+                except (AttributeError, RuntimeError):
+                    pass
 
     @functools.wraps(fn)
     def wrapped(*args):
@@ -344,6 +382,29 @@ def _maybe_fake_tracing(fn, inputs: list[Any], pre_dispatch):
             pre_dispatch=pre_dispatch,
             _error_on_data_dependent_ops=False,
         )(*inputs)
+        
+        # Unwrap any FunctionalTensor attributes after tracing
+        for name in list(dir(gm)):
+            if name.startswith('_tensor_constant'):
+                try:
+                    attr = getattr(gm, name)
+                    if isinstance(attr, torch.Tensor):
+                        unwrapped_tensor = None
+                        if isinstance(attr, FunctionalTensor):
+                            torch._sync(attr)
+                            from torch._functorch.aot_autograd import from_fun
+                            unwrapped_tensor = from_fun(attr)
+                        elif torch._is_functional_tensor(attr):
+                            torch._sync(attr)
+                            unwrapped_tensor = torch._from_functional_tensor(attr)
+                        
+                        if unwrapped_tensor is not None:
+                            setattr(gm, name, unwrapped_tensor)
+                            if hasattr(gm, '_buffers') and name in gm._buffers:
+                                del gm._buffers[name]
+                except (AttributeError, RuntimeError, KeyError):
+                    pass
+        
         if not isinstance(fake_mode, nullcontext) and fake_mode.shape_env is not None:  # type: ignore[attr-defined]
             insert_deferred_runtime_asserts(
                 gm,
