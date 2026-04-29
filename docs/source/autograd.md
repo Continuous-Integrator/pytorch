@@ -362,6 +362,7 @@ and vtune profiler based using
     :nosignatures:
 
     grad_mode.set_multithreading_enabled
+    grad_mode.enforce_grad_layout_policy
 
 
 ```
@@ -440,6 +441,10 @@ Also see {ref}`saved-tensors-hooks-doc`.
 
 ```{eval-rst}
 .. autofunction:: torch.autograd.graph.set_warn_on_accumulate_grad_stream_mismatch
+```
+
+```{eval-rst}
+.. autofunction:: torch.autograd.graph.set_override_stale_capture_stream
 ```
 
 % This module needs to be documented. Adding here in the meantime

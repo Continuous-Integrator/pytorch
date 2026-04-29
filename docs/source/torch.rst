@@ -298,6 +298,14 @@ Serialization
     save
     load
 
+.. currentmodule:: torch.serialization
+
+.. autofunction:: check_module_version_greater_or_equal
+
+.. autofunction:: default_restore_location
+
+.. currentmodule:: torch
+
 Parallelism
 ----------------------------------
 .. autosummary::
@@ -974,7 +982,6 @@ Utilities
     result_type
     can_cast
     promote_types
-    read_vitals
     set_anomaly_enabled
     set_autocast_cache_enabled
     set_autocast_cpu_dtype
@@ -986,7 +993,6 @@ Utilities
     set_autocast_ipu_enabled
     set_autocast_xla_dtype
     set_autocast_xla_enabled
-    set_vital
     use_deterministic_algorithms
     are_deterministic_algorithms_enabled
     is_deterministic_algorithms_warn_only_enabled
@@ -996,7 +1002,6 @@ Utilities
     get_float32_matmul_precision
     set_warn_always
     is_warn_always_enabled
-    vitals_enabled
     vmap
     _assert
     typename
@@ -1079,9 +1084,17 @@ Operator Tags
 .. This module is only used internally for ROCm builds.
 .. py:module:: torch.utils.hipify
 
-.. This module needs to be documented. Adding here in the meantime
-.. for tracking purposes
 .. py:module:: torch.utils.model_dump
+
+.. currentmodule:: torch.utils.model_dump
+
+.. autosummary::
+    :toctree: generated
+    :nosignatures:
+
+    get_inline_skeleton
+    get_model_info
+
 .. py:module:: torch.utils.viz
 .. py:module:: torch.quasirandom
 .. py:module:: torch.return_types

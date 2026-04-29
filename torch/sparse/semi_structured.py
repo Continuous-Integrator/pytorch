@@ -77,7 +77,7 @@ class SparseSemiStructuredTensor(torch.Tensor):
     __slots__ = ["packed", "meta", "packed_t", "meta_t", "compressed_swizzled_bitmask"]
 
     @staticmethod
-    def __new__(  # noqa: PYI034
+    def __new__(
         cls,
         shape: torch.Size,
         packed: torch.Tensor | None,
@@ -730,23 +730,28 @@ def _ensure_cutlass_mm_registered():
         out_features: int,
         min_rows: int,
         min_cols: int,
-        transpose_dense: bool,
+        should_transpose_dense: bool,
     ) -> torch.Tensor:
         m, n = dense.shape
         to_pad_m = (-m) % min_rows
         to_pad_n = (-n) % min_cols
-        dense_padded = torch.nn.functional.pad(dense, (0, to_pad_n, 0, to_pad_m))
-        mm_input = dense_padded.t() if transpose_dense else dense_padded
+        need_pad = to_pad_m != 0 or to_pad_n != 0
+        dense_padded = dense
+        if need_pad:
+            dense_padded = torch.nn.functional.pad(dense, (0, to_pad_n, 0, to_pad_m))
+        mm_input = dense_padded.t() if should_transpose_dense else dense_padded
         if bias is None:
             res = torch._sparse_semi_structured_mm(packed, meta, mm_input)
         else:
             res = torch._sparse_semi_structured_addmm(bias, packed, meta, mm_input)
-        out_cols = m if transpose_dense else n
-        return (
-            res[:out_features]
-            .narrow(1, 0, out_cols)
-            .clone(memory_format=torch.contiguous_format)
-        )
+        if need_pad:
+            out_cols = m if should_transpose_dense else n
+            return (
+                res[:out_features]
+                .narrow(1, 0, out_cols)
+                .clone(memory_format=torch.contiguous_format)
+            )
+        return res.contiguous()
 
     @cutlass_mm.register_fake
     def _cutlass_mm_fake(
@@ -795,7 +800,10 @@ def _ensure_cusparselt_mm_registered():
         m, n = dense.shape
         to_pad_m = (-m) % min_rows
         to_pad_n = (-n) % min_cols
-        dense_padded = torch.nn.functional.pad(dense, (0, to_pad_n, 0, to_pad_m))
+        need_pad = to_pad_m != 0 or to_pad_n != 0
+        dense_padded = dense
+        if need_pad:
+            dense_padded = torch.nn.functional.pad(dense, (0, to_pad_n, 0, to_pad_m))
         mm_input = dense_padded.t() if should_transpose_dense else dense_padded
         res = torch._cslt_sparse_mm(
             packed,
@@ -806,8 +814,12 @@ def _ensure_cusparselt_mm_registered():
         )
         if fuse_transpose:
             res = res.t()
-        out_cols = m if should_transpose_dense else n
-        return res.narrow(1, 0, out_cols).clone(memory_format=torch.contiguous_format)
+        if need_pad:
+            out_cols = m if should_transpose_dense else n
+            return res.narrow(1, 0, out_cols).clone(
+                memory_format=torch.contiguous_format
+            )
+        return res.contiguous()
 
     @cusparselt_mm.register_fake
     def _cusparselt_mm_fake(
