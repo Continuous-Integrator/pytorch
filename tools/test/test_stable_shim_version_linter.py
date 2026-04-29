@@ -8,11 +8,11 @@ from unittest.mock import MagicMock, patch
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.append(str(REPO_ROOT))
 
-from tools.linter.adapters.stable_shim_version_linter import (
-    check_file,
+from tools.linter.adapters._stable_shim_utils import (
     get_added_lines,
     get_current_version,
 )
+from tools.linter.adapters.stable_shim_version_linter import check_file
 
 
 class TestStableShimVersionLinter(unittest.TestCase):
