@@ -882,10 +882,20 @@ class TestNVUniversalGemmEpilogueFusion(TestCase):
     def test_workspace_runtime_integration(self):
         """End-to-end: mock the chosen kernel's workspace_size to non-zero and
         actually let benchmark_codegened_module run, exercising the runtime
-        path that consumes the generated get_args()/call() helpers. Without
-        the workspace fix, this would crash with TypeError (missing positional
-        arg) inside _benchmark_nvgemm_module."""
+        path that consumes the generated get_args()/call() helpers.
+
+        Without the workspace fix, the rendered call would TypeError on the
+        missing positional arg, _benchmark_nvgemm_module's broad except would
+        return inf, autotune would silently fall back to a non-EFC choice,
+        and a naive `assert_close` against eager would still pass. To actually
+        catch the regression we intercept _benchmark_nvgemm_module to record
+        every (ms, path) it returns and assert at least one finite-ms result —
+        i.e., at least one EFC choice with workspace did get benchmarked."""
         import cutlass_api
+
+        from torch._inductor.codegen.cuda_combined_scheduling import (
+            CUDACombinedScheduling,
+        )
 
         a = torch.randn(self.M, self.K, device="cuda", dtype=torch.bfloat16)
         b = torch.randn(self.K, self.N, device="cuda", dtype=torch.bfloat16)
@@ -893,10 +903,21 @@ class TestNVUniversalGemmEpilogueFusion(TestCase):
         def fn(a, b):
             return torch.relu(a @ b)
 
+        bench_results: list[tuple[float, str]] = []
+        orig_bench = CUDACombinedScheduling._benchmark_nvgemm_module
+
+        def capturing_bench(self, module):
+            ms, path = orig_bench(self, module)
+            bench_results.append((ms, path))
+            return ms, path
+
         torch._dynamo.reset()
         with (
             patch.object(
                 cutlass_api.Kernel, "get_workspace_size", lambda self, args: 4096
+            ),
+            mock.patch.object(
+                CUDACombinedScheduling, "_benchmark_nvgemm_module", capturing_bench
             ),
             config.patch(
                 {
@@ -907,11 +928,15 @@ class TestNVUniversalGemmEpilogueFusion(TestCase):
                 }
             ),
         ):
-            # No mock on benchmark_codegened_module — the real
-            # _benchmark_nvgemm_module path must execute the rendered
-            # get_args()/call() with workspace.
             result = torch.compile(fn)(a, b)
         torch.testing.assert_close(result, fn(a, b), atol=1e-2, rtol=1e-2)
+        self.assertTrue(bench_results, "_benchmark_nvgemm_module never invoked")
+        finite = [(ms, p) for ms, p in bench_results if ms != float("inf")]
+        self.assertTrue(
+            finite,
+            f"All NVGEMM benchmarks returned inf — workspace handling likely "
+            f"broken. Results: {bench_results}",
+        )
 
 
 if __name__ == "__main__":

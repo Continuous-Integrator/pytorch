@@ -103,14 +103,27 @@ class NVUniversalGemmBenchmarkRequest(GPUDeviceBenchmarkMixin, BenchmarkRequest)
         fewer tensors than expected. By always creating from input_tensor_meta,
         we ensure each input gets its own tensor with the correct size/stride/offset
         from the view's layout.
+
+        Mirrors the base class's `benchmark_with_cudagraphs` branch and
+        `cleanup_run_fn()` call so NVGEMM choices honor the same caller
+        contract as Triton/Extern (workspace gets released, cudagraph timing
+        path is honored when requested).
         """
-        # Always create tensors from input_tensor_meta, ignoring passed-in tensors
+        from torch._inductor.runtime.benchmarking import benchmarker
+
         input_tensors = tuple(x.to_tensor() for x in self.input_tensor_meta)
         if out is None:
             out = self.output_tensor_meta.to_tensor()
 
         fn = self.make_run_fn(*input_tensors, out=out)
-        return self.do_bench(fn, *input_tensors, out=out)
+        try:
+            if self.benchmark_with_cudagraphs:
+                res = benchmarker.benchmark_gpu_with_cuda_graph(fn)
+            else:
+                res = self.do_bench(fn, *input_tensors, out=out)
+        finally:
+            self.cleanup_run_fn()
+        return res
 
     def make_run_fn(self, *input_tensors: torch.Tensor, out: torch.Tensor):
         """Create a function to run the NVIDIA Universal GEMM kernel."""
@@ -227,6 +240,7 @@ class NVUniversalGemmCaller(ChoiceCaller):
         self.swizzle_type_a = swizzle_type_a
         self.swizzle_type_b = swizzle_type_b
         self.supports_epilogue_fusion = supports_epilogue_fusion
+        self._cached_output_node: TensorBox | None = None
 
         output_buffer = Buffer(name=f"{variant.op_name}_out", layout=layout)
 
@@ -248,10 +262,21 @@ class NVUniversalGemmCaller(ChoiceCaller):
         return f"NVUniversalGemmCaller({self.kernel.metadata.kernel_name})"
 
     def benchmark(self, *args, out) -> float:
+        self.bmreq.benchmark_with_cudagraphs = self._benchmark_with_cudagraphs
         return self.bmreq.benchmark(*args, out=out)
 
     def output_node(self) -> TensorBox:
         from torch._inductor.ir import NVUniversalGemmBuffer
+
+        # Memoized: NVUniversalGemmBuffer.__init__ chains to TemplateBuffer.__init__
+        # which calls V.graph.register_buffer(self), appending to V.graph.buffers
+        # and assigning a new "buf{N}" name. During epilogue-fusion benchmarking
+        # this caller's output_node() is invoked once per benchmarked candidate
+        # (in get_nv_gemm_buffer_from_node, both from codegen_template and
+        # _add_benchmark_helpers), so without memoization each EFC candidate
+        # leaks one orphan buffer per call into the graph's name tables.
+        if self._cached_output_node is not None:
+            return self._cached_output_node
 
         buffer = NVUniversalGemmBuffer(
             layout=self.layout,
@@ -266,10 +291,10 @@ class NVUniversalGemmCaller(ChoiceCaller):
             swizzle_type_b=self.swizzle_type_b,
             supports_epilogue_fusion=self.supports_epilogue_fusion,
         )
-        # Pass KTC annotation to the buffer for encoding
         if "ktc" in self.annotations:
             buffer.annotations["ktc"] = self.annotations["ktc"]
-        return TensorBox.create(buffer)
+        self._cached_output_node = TensorBox.create(buffer)
+        return self._cached_output_node
 
     def call_name(self) -> str:
         return self.name
@@ -278,7 +303,22 @@ class NVUniversalGemmCaller(ChoiceCaller):
         return self.bmreq.make_run_fn
 
     def hash_key(self) -> str:
-        return f"{self.variant.op_name}_{self.kernel.metadata.kernel_name}"
+        # `select_algorithm` uses this as a precompile dedup key. Two callers
+        # wrapping the same physical kernel name but with different accumulator/
+        # scale/swizzle types produce distinct compiled artifacts; collapsing
+        # them here would silently drop the second from autotuning.
+        return "_".join(
+            str(x)
+            for x in (
+                self.variant.op_name,
+                self.kernel.metadata.kernel_name,
+                self.accumulator_type,
+                self.scale_type_a,
+                self.scale_type_b,
+                self.swizzle_type_a,
+                self.swizzle_type_b,
+            )
+        )
 
     def info_dict(self) -> dict[str, Any]:
         return {
