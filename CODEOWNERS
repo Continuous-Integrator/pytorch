@@ -72,22 +72,11 @@ nn/qat/ @jerryzh168
 /.ci  @pytorch/pytorch-dev-infra
 
 # Docker
-# ROCm-specific docker plumbing, plus shared multi-flavor build entry
-# points that produce ROCm images. Other CPU/CUDA/XPU-only files under
-# /.ci/docker/ fall through to the /.ci catch-all above.
 /.ci/docker/ubuntu-rocm/                              @jeffdaily
-/.ci/docker/common/install_rocm.sh                    @jeffdaily
-/.ci/docker/common/install_rocm_drm.sh                @jeffdaily
-/.ci/docker/common/install_rocm_magma.sh              @jeffdaily
+/.ci/docker/common/install_roc*.sh                    @jeffdaily
 /.ci/docker/common/install_miopen.sh                  @jeffdaily
-/.ci/docker/common/install_rocSHMEM.sh                @jeffdaily
 /.ci/docker/common/install_amdsmi.sh                  @jeffdaily
-/.ci/docker/ci_commit_pins/rocm-composable-kernel.txt @jeffdaily
-/.ci/docker/build.sh                                  @jeffdaily
-/.ci/docker/manywheel/build.sh                        @jeffdaily
-/.ci/docker/manywheel/Dockerfile_2_28                 @jeffdaily
-/.ci/docker/almalinux/Dockerfile                      @jeffdaily
-/.ci/docker/almalinux/build.sh                        @jeffdaily
+/.ci/docker/ci_commit_pins/rocm-*.txt                 @jeffdaily
 /.ci/docker/ci_commit_pins/triton.txt @desertfire @Chillee @eellison @shunting314 @bertmaher @jeffdaily @jataylo @jithunnair-amd @pruthvistony
 /.ci/docker/ci_commit_pins/triton-xpu.txt @EikanWang @gujinghui
 
