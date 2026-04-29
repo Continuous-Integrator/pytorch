@@ -1191,11 +1191,11 @@ def forward(self, arg0_1, arg1_1, arg2_1):
             out = x.redistribute(mesh, [placement])
             return out
 
-        # Temporarily ignore setUp(), and use rank3 graphs during tracing
+        # Temporarily ignore setUp(), and use rank1 graphs during tracing
         dist.destroy_process_group()
         fake_store = FakeStore()
-        dist.init_process_group("fake", store=fake_store, rank=3, world_size=2)
-        mesh = DeviceMesh(self.device_type, [1, 3])
+        dist.init_process_group("fake", store=fake_store, rank=1, world_size=2)
+        mesh = DeviceMesh(self.device_type, [0, 1])
 
         x = torch.randn(10, 257, 160, requires_grad=True)
         x_dt = DTensor.from_local(
@@ -1232,11 +1232,11 @@ def forward(self, arg0_1, arg1_1, arg2_1):
             out = x.redistribute(mesh, [placement])
             return out
 
-        # Temporarily ignore setUp(), and use rank3 graphs during tracing
+        # Temporarily ignore setUp(), and use rank1 graphs during tracing
         dist.destroy_process_group()
         fake_store = FakeStore()
-        dist.init_process_group("fake", store=fake_store, rank=3, world_size=2)
-        mesh = DeviceMesh(self.device_type, [1, 3])
+        dist.init_process_group("fake", store=fake_store, rank=1, world_size=2)
+        mesh = DeviceMesh(self.device_type, [0, 1])
 
         x = torch.randn(10, 257, 160, requires_grad=True)
         x_dt = DTensor.from_local(
@@ -1577,17 +1577,16 @@ def forward(self, L_x_ : torch.Tensor, L_mesh_ : torch.distributed.device_mesh.D
         x2 = x2.to_local()
         self.assertTrue(isinstance(x2, AsyncCollectiveTensor))
         opt_fn(x2)
-        # The important part: we get a wait_tensor() in the graph.
-        # At runtime, the input to the graph is an AsyncCollectiveTensor,
-        # and inside the graph we need to issue a wait() to synchronize.
+        # ACTs are unwrapped before AOT autograd tracing in
+        # process_inputs, so the graph receives a plain tensor with
+        # no wait_tensor op.
         self.assertExpectedInline(
             str(fw_graph_cell[0]).strip(),
             """\
-def forward(self, primals_1):
-    wait_tensor = torch.ops._c10d_functional.wait_tensor.default(primals_1)
-    sin = torch.ops.aten.sin.default(wait_tensor)
+def forward(self, arg0_1):
+    sin = torch.ops.aten.sin.default(arg0_1);  arg0_1 = None
     sin_1 = torch.ops.aten.sin.default(sin);  sin = None
-    return (sin_1, primals_1, wait_tensor)""",
+    return (sin_1,)""",
         )
 
     @skipIfTorchDynamo()
