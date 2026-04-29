@@ -141,6 +141,11 @@ jobs:
 
       - name: Test PyTorch binary
         shell: bash
+        env:
+          OUTPUT_SCRIPT: /run.sh
         run: |
+          ln -sf "${GITHUB_WORKSPACE}" /pytorch
+          ln -sf "${PYTORCH_FINAL_PACKAGE_DIR}" /final_pkgs
+          bash .ci/pytorch/binary_linux_test.sh
           source "${BINARY_ENV_FILE}"
-          bash .ci/pytorch/check_binary.sh
+          bash -x /run.sh
