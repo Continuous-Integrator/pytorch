@@ -2206,7 +2206,7 @@ def _has_uninterpretable_sympy_function(expr: sympy.Basic) -> bool:
 class SymbolicContext:
     """
     Data structure specifying how we should create symbols in
-    ``create_symbolic_sizes_strides_storage_offset``; e.g., should
+    ``_create_symbolic_sizes_strides_storage_offset``; e.g., should
     they be static or dynamic.
 
     This is an abstract base class because we are probably going to add
@@ -2231,7 +2231,7 @@ _T1 = TypeVar("_T1")
 @dataclass(frozen=True, slots=True)
 class StatelessSymbolicContext(SymbolicContext, Generic[_P1, _T1]):
     """
-    Create symbols in ``create_symbolic_sizes_strides_storage_offset`` via
+    Create symbols in ``_create_symbolic_sizes_strides_storage_offset`` via
     a symbolic_context determination as given by ``DimDynamic`` and ``DimConstraint``.
     This will cause fresh symbols to be allocated
     """
@@ -2306,7 +2306,7 @@ class StatelessSymbolicContext(SymbolicContext, Generic[_P1, _T1]):
 @dataclass(frozen=True, slots=True, kw_only=True)
 class StatefulSymbolicContext(StatelessSymbolicContext[..., Any]):
     """
-    Create symbols in ``create_symbolic_sizes_strides_storage_offset`` via
+    Create symbols in ``_create_symbolic_sizes_strides_storage_offset`` via
     a symbolic_context determination as given by a cache of Source:Symbol. A cache hit
     will reuse a stored symbol, and a cache miss will write to this cache.
 
@@ -4691,6 +4691,40 @@ class ShapeEnv:
                 self.size_like.add(sym)
             size.append(sym)
         return size
+
+    def create_symbolic_sizes_strides_storage_offset(
+        self,
+        ex: torch.Tensor,
+        source: Source,
+        *,
+        symbolic_context: SymbolicContext | None = None,
+    ) -> tuple[
+        tuple[IntLikeType, ...],
+        tuple[IntLikeType, ...],
+        IntLikeType,
+    ]:
+        """Create symbolic sizes/strides/offset for a tensor.
+
+        If the tensor has symbolic sizes from a different ShapeEnv,
+        delegates to transfer_symbols_from_foreign_shape_env.
+        """
+        fake_mode = getattr(ex, "fake_mode", None)
+        if fake_mode is not None and fake_mode.shape_env is not self:
+            return self.transfer_symbols_from_foreign_shape_env(
+                ex.size(),
+                ex.stride(),
+                ex.storage_offset(),
+                source,
+                symbolic_context=symbolic_context,
+            )
+        return self._create_symbolic_sizes_strides_storage_offset(
+            ex.size(),
+            ex.stride(),
+            ex.storage_offset(),
+            [False] * ex.dim(),
+            source,
+            symbolic_context=symbolic_context,
+        )
 
     def transfer_symbols_from_foreign_shape_env(
         self,
