@@ -9,17 +9,8 @@ Consumed by:
 from __future__ import annotations
 
 import re
-import subprocess
-import sys
 from enum import Enum
-from pathlib import Path
 from typing import NamedTuple
-
-
-REPO_ROOT = Path(__file__).resolve().parents[3]
-sys.path.insert(0, str(REPO_ROOT))
-
-from tools.setup_helpers.gen_version_header import parse_version
 
 
 class LintSeverity(str, Enum):
@@ -152,107 +143,3 @@ class PreprocessorTracker:
 
     def get_version_of_block(self) -> tuple[int, int] | None:
         return self.version_of_block
-
-
-def get_current_version() -> tuple[int, int]:
-    """
-    Read the current PyTorch (major, minor) from version.txt.
-
-    Uses the same parser as tools/setup_helpers/gen_version_header.py, which
-    generates torch/headeronly/version.h from version.h.in.
-    """
-    version_file = REPO_ROOT / "version.txt"
-
-    if not version_file.exists():
-        raise RuntimeError(
-            "Could not find version.txt. This linter requires version.txt to run"
-        )
-
-    with open(version_file) as f:
-        version = f.read().strip()
-        major, minor, _patch = parse_version(version)
-
-    return (major, minor)
-
-
-def get_added_lines(filename: str) -> set[int]:
-    """
-    Return line numbers (1-indexed) that are new additions in either:
-      1. Current uncommitted changes (git diff HEAD), or
-      2. Any commit in the current PR (git diff merge-base..HEAD).
-
-    This ensures CI catches issues across all PR commits.
-    """
-    added_lines: set[int] = set()
-
-    def parse_diff(diff_output: str) -> set[int]:
-        lines: set[int] = set()
-        current_line = 0
-        for line in diff_output.split("\n"):
-            # Unified diff format: @@ -old_start,old_count +new_start,new_count @@
-            if line.startswith("@@"):
-                match = re.search(r"\+(\d+)", line)
-                if match:
-                    current_line = int(match.group(1))
-            elif line.startswith("+") and not line.startswith("+++"):
-                lines.add(current_line)
-                current_line += 1
-            elif not line.startswith("-"):
-                current_line += 1
-        return lines
-
-    try:
-        # Uncommitted changes
-        result = subprocess.run(
-            ["git", "diff", "HEAD", filename],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        if result.returncode == 0:
-            added_lines.update(parse_diff(result.stdout))
-
-        # Ensure origin/main is up to date before computing merge-base
-        result = subprocess.run(
-            ["git", "fetch", "origin", "main"],
-            capture_output=True,
-            text=True,
-            timeout=600,
-        )
-        if result.returncode != 0:
-            raise RuntimeError(
-                f"Failed to fetch origin. Error: {result.stderr.strip()}"
-            )
-
-        result = subprocess.run(
-            ["git", "merge-base", "HEAD", "origin/main"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        if result.returncode != 0:
-            raise RuntimeError(
-                f"Failed to find merge-base with origin/main. "
-                f"Make sure origin/main exists (run 'git fetch origin main'). "
-                f"Error: {result.stderr.strip()}"
-            )
-
-        merge_base = result.stdout.strip()
-        result = subprocess.run(
-            ["git", "diff", f"{merge_base}..HEAD", filename],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        if result.returncode != 0:
-            raise RuntimeError(
-                f"Failed to get git diff information for {filename}. Error: {result.stderr}"
-            )
-        added_lines.update(parse_diff(result.stdout))
-
-    except Exception as e:
-        raise RuntimeError(
-            f"Failed to get git diff information for {filename}. Error: {e}"
-        ) from e
-
-    return added_lines
