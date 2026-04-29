@@ -478,11 +478,16 @@ class VariableTracker(metaclass=VariableTrackerMeta):
         # object.__hash__ = Py_HashPointer(obj) — identity hash.
         if self.source:
             real_val = tx.output.resolve_source_value(self.source)
-            assert type(real_val).__hash__ is object.__hash__, (
-                f"{type(self).__name__} wraps {type(real_val).__name__} which "
-                f"has a non-default tp_hash ({type(real_val).__hash__}). "
-                f"Add a hash_impl override to {type(self).__name__}."
-            )
+            if type(real_val).__hash__ is not object.__hash__:
+                unimplemented(
+                    gb_type="Missing hash_impl override",
+                    context=f"hash_impl {self}",
+                    explanation=f"{type(self).__name__} wraps "
+                    f"{type(real_val).__name__} which has a non-default "
+                    f"tp_hash. Add a hash_impl override to "
+                    f"{type(self).__name__}.",
+                    hints=[*graph_break_hints.DYNAMO_BUG],
+                )
             install_guard(self.source.make_guard(GuardBuilder.ID_MATCH))
             return hash(real_val), False
         # Sourceless: no real object to hash — fake id.

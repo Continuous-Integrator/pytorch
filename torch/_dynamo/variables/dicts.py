@@ -839,6 +839,11 @@ class MappingProxyVariable(VariableTracker):
     def python_type(self) -> type:
         return types.MappingProxyType
 
+    def hash_impl(self, tx: "InstructionTranslator") -> tuple[int, bool]:
+        # mappingproxy.__hash__ delegates to the underlying dict, which
+        # raises TypeError. Mirror that behavior.
+        return self.dv_dict.hash_impl(tx)
+
     def unpack_var_sequence(self, tx: "InstructionTranslator") -> list[VariableTracker]:
         return self.dv_dict.unpack_var_sequence(tx)
 

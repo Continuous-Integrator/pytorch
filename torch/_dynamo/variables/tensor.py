@@ -2318,6 +2318,14 @@ class NumpyNdarrayVariable(TensorVariable):
             **options,
         )
 
+    def is_hashable(self) -> bool:
+        return False
+
+    def hash_impl(self, tx: "InstructionTranslator") -> tuple[int, bool]:
+        from ..exc import raise_type_error
+
+        raise_type_error(tx, "unhashable type: 'numpy.ndarray'")
+
     def var_getattr(self, tx: "InstructionTranslator", name: str) -> VariableTracker:
         # NB: This INTENTIONALLY does not call super(), because there is
         # no intrinsic reason ndarray properties are related to Tensor

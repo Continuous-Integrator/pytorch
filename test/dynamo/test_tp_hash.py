@@ -166,6 +166,14 @@ class TpHashTests(torch._dynamo.test_case.TestCase):
             lambda: deque([1, 2]), expect_msg="unhashable type: 'deque'"
         )
 
+    def test_hash_mappingproxy_raises(self):
+        import types
+
+        self._assert_hash_raises(
+            lambda: types.MappingProxyType({1: 2}),
+            expect_msg="unhashable type: 'dict'",
+        )
+
     def test_hash_tuple_with_list_raises(self):
         self._assert_hash_raises(
             lambda: ([1, 2], 3), expect_msg="unhashable type: 'list'"
@@ -420,6 +428,24 @@ class TpHashTests(torch._dynamo.test_case.TestCase):
         # After registration: no graph break
         torch._dynamo.allow_c_hash(sqlite3.Row)
         self._assert_hash_equals(row)
+
+    def test_hash_non_constant_getattr_graph_breaks(self):
+        """Hashing a non-constant GetAttrVariable graph-breaks instead of crashing.
+
+        Regression test for test_public_api_surface: v.__name__ in seen where
+        the GetAttrVariable wraps a dict with non-constant values (ModuleSpec).
+        """
+
+        def fn(x):
+            seen = set()
+            seen.add(torch.fx.__name__)
+            for v in torch.fx.__dict__.values():
+                if hasattr(v, "__name__") and v.__name__ in seen:
+                    pass
+            return x
+
+        result = torch.compile(fn, backend="eager")(torch.tensor(0))
+        self.assertEqual(result, torch.tensor(0))
 
     # --- functools.partial ---
 

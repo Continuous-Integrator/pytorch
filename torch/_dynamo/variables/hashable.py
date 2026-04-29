@@ -27,16 +27,34 @@ def raise_unhashable(
         from torch._dynamo.symbolic_convert import InstructionTranslator
 
         tx = InstructionTranslator.current_tx()
+
     try:
         arg_type = arg.python_type()
     except Exception:
-        arg_type = type(arg)
+        arg_type = None
 
+    # Safety check: if we know the real Python type and it IS hashable,
+    # our is_hashable() disagrees with CPython. Graph-break rather than
+    # raising a wrong TypeError.
+    if arg_type is not None and arg_type.__hash__ is not None:
+        from .. import graph_break_hints
+        from ..exc import unimplemented
+
+        unimplemented(
+            gb_type="Hashability mismatch",
+            context=f"raise_unhashable {arg}",
+            explanation=f"Dynamo thinks {arg_type.__name__} is unhashable, "
+            f"but its __hash__ is not None. This likely indicates a missing "
+            f"or incorrect is_hashable() override.",
+            hints=[*graph_break_hints.DYNAMO_BUG],
+        )
+
+    type_name = arg_type.__name__ if arg_type is not None else type(arg).__name__
     raise_observed_exception(
         TypeError,
         tx,
         args=[
-            f"unhashable type: '{arg_type.__name__}'",
+            f"unhashable type: '{type_name}'",
         ],
     )
 

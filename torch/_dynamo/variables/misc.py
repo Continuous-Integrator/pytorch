@@ -1327,7 +1327,19 @@ class GetAttrVariable(VariableTracker):
     def hash_impl(self, tx: Any) -> tuple[int, bool]:
         # GetAttrVariable can wrap various types (bound methods, descriptors,
         # etc.) with different C tp_hash.  Resolve to the actual value and hash.
-        return hash(self.as_python_constant()), False
+        try:
+            val = self.as_python_constant()
+        except AsPythonConstantNotImplementedError:
+            from ..exc import unimplemented
+
+            unimplemented(
+                gb_type="Non-constant GetAttrVariable hash",
+                context=f"hash_impl {self}",
+                explanation=f"Cannot hash {self} because Dynamo doesn't know how to represent "
+                "the type of the getattr() result, which is not a constant.",
+                hints=[*graph_break_hints.SUPPORTABLE],
+            )
+        return hash(val), False
 
     def const_getattr(self, tx: "InstructionTranslator", name: str) -> Any:
         if not isinstance(self.obj, variables.NNModuleVariable):
