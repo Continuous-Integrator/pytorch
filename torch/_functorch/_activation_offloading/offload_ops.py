@@ -172,6 +172,35 @@ def _ao_wait_tensor_fake(
 has_side_effect(torch.ops.ao.wait_tensor.default)
 
 
+# --- ao::dealloc: free GPU tensor storage after offload completes ---
+# ``deps`` creates data dependencies on all forward consumers of the tensor so
+# that the graph partitioner's topological sort cannot reorder dealloc before
+# them.  The values are not read by the op.
+_lib.define("dealloc(Tensor(a!) tensor, Tensor[] deps) -> ()")
+
+
+@torch.library.impl("ao::dealloc", "CompositeExplicitAutograd")
+def _ao_dealloc(tensor: torch.Tensor, deps: list[torch.Tensor]) -> None:
+    """Free a tensor's storage so the allocator can reclaim the memory.
+
+    Called in the forward graph after all forward consumers of an offloaded
+    activation have executed and the async D2H copy has completed.  The Python
+    tensor object stays alive (satisfying FX env references), but its backing
+    memory is released.
+    """
+    storage = tensor.untyped_storage()
+    if storage.size() > 0:
+        storage.resize_(0)
+
+
+@torch.library.register_fake("ao::dealloc")
+def _ao_dealloc_fake(tensor: torch.Tensor, deps: list[torch.Tensor]) -> None:
+    pass
+
+
+has_side_effect(torch.ops.ao.dealloc.default)
+
+
 def wait_tensor(
     tensor: torch.Tensor,
     keepalive: torch.Tensor | None = None,
