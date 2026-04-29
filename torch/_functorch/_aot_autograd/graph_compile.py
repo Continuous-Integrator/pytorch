@@ -1235,20 +1235,6 @@ def run_joint_graph_passes_on_hops(
     joint_gm.graph.eliminate_dead_code()
     joint_gm.graph.lint()
     joint_gm.recompile()
-
-    trace_structured(
-        "artifact",
-        metadata_fn=lambda: {
-            "name": "gm_after_joint_graph_passes_on_hops",
-            "encoding": "string",
-        },
-        payload_fn=lambda: joint_gm.print_readable(
-            print_output=False,
-            include_stride=True,
-            include_device=True,
-            expanded_def=True,
-        ),
-    )
     return joint_gm
 
 
