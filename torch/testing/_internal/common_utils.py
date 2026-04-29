@@ -1489,7 +1489,12 @@ def make_lazy_class(cls):
 
 @make_lazy_class
 class LazyVal:
-    pass
+    @property
+    def value(self):
+        if self._cb is not None:
+            self._value = self._cb()
+            self._cb = None
+        return self._value
 
 
 IS_FILESYSTEM_UTF8_ENCODING = sys.getfilesystemencoding() == 'utf-8'
@@ -1506,6 +1511,7 @@ TEST_HPU = bool(hasattr(torch, "hpu") and torch.hpu.is_available())
 TEST_CUDA = torch.cuda.is_available()
 TEST_ACCELERATOR = LazyVal(lambda: torch.accelerator.is_available())  # type: ignore[call-arg]
 TEST_MULTIACCELERATOR = LazyVal(lambda: torch.accelerator.device_count() > 1)  # type: ignore[call-arg]
+ACCELERATOR_TYPE = LazyVal(lambda: acc.type if (acc := torch.accelerator.current_accelerator(check_available=True)) else None)
 custom_device_mod = getattr(torch, torch._C._get_privateuse1_backend_name(), None)
 TEST_PRIVATEUSE1 = _is_privateuse1_backend_available()
 TEST_PRIVATEUSE1_DEVICE_TYPE = torch._C._get_privateuse1_backend_name()
