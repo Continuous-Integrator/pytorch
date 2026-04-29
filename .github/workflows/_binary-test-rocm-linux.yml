@@ -51,7 +51,7 @@ permissions:
 jobs:
   # ROCm test runs the test container via the GHA `container:` directive.
   # ROCm device passthrough flags go through container.options. Same shape
-  # as the standard _binary-container-test-linux.yml.
+  # as the standard _binary-test-linux.yml.
   test:
     runs-on: ${{ inputs.runs_on }}
     timeout-minutes: ${{ inputs.timeout-minutes }}
