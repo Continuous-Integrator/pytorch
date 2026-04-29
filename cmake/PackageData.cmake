@@ -5,6 +5,10 @@
 #
 # Destinations are relative to CMAKE_INSTALL_PREFIX which maps to torch/ in
 # the wheel (via wheel.install-dir = "torch") or <root>/torch for setuptools.
+#
+# Must be included after FileMirroring.cmake: the valgrind headers picked up
+# by the benchmark utilities rule below are copied into the source tree by
+# that module.
 
 if(NOT DEFINED TORCH_SRC_DIR)
   set(TORCH_SRC_DIR "${PROJECT_SOURCE_DIR}/torch")
@@ -86,9 +90,5 @@ install(FILES "${TORCH_SRC_DIR}/testing/_internal/generated/annotated_fn_args.py
 # Dynamo data
 install(FILES "${TORCH_SRC_DIR}/_dynamo/graph_break_registry.json"
   DESTINATION "_dynamo"
-  OPTIONAL
-)
-install(FILES "${TORCH_SRC_DIR}/tools/dynamo/gb_id_mapping.py"
-  DESTINATION "tools/dynamo"
   OPTIONAL
 )
