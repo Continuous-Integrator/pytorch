@@ -1137,11 +1137,33 @@ class BuiltinVariable(BaseBuiltinVariable):
         obj = BuiltinVariable(fn)
         handlers: list[_HandlerCallback] = []
 
-        if any(issubclass(t, LazyVariableTracker) for t in arg_types):
-            # Special handling for isinstance and type with lazy constants.
-            # These only need the TYPE of the value, not the specific value.
-            # LazyConstantVariable.python_type() only installs a TYPE_MATCH guard,
-            # not a CONSTANT_MATCH guard, so changing the value won't cause recompilation.
+        lazy_types = [t for t in arg_types if issubclass(t, LazyVariableTracker)]
+        if lazy_types:
+            if not all(
+                issubclass(t, (LazyConstantVariable, ComputedLazyConstantVariable))
+                for t in lazy_types
+            ):
+                # Realize non-constant lazy args and re-dispatch.  Any
+                # LazyConstantVariable/ComputedLazyConstantVariable args are
+                # kept and handled on the second dispatch through the branches
+                # below.
+                return lambda tx, args, kwargs: obj.call_function(
+                    tx,
+                    [
+                        a.realize()
+                        if isinstance(a, LazyVariableTracker)
+                        and not isinstance(
+                            a, (LazyConstantVariable, ComputedLazyConstantVariable)
+                        )
+                        else a
+                        for a in args
+                    ],
+                    kwargs,
+                )
+
+            # All lazy types are LazyConstantVariable (or ComputedLazy).
+            # Special handling for isinstance and type: these only need the
+            # TYPE of the value, not the specific value.
             first_arg_is_lazy = arg_types and issubclass(
                 arg_types[0], (LazyConstantVariable, ComputedLazyConstantVariable)
             )
@@ -1164,8 +1186,9 @@ class BuiltinVariable(BaseBuiltinVariable):
 
                     return handle_type
 
-            # Check if we can handle this lazily (all args are lazy/computed lazy constants
-            # or regular constants, and the op can be constant-folded)
+            # Check if we can handle this lazily (all args are lazy/computed
+            # lazy constants or regular constants, and the op can be
+            # constant-folded)
             all_constant_like = all(
                 issubclass(
                     t,
@@ -1177,9 +1200,6 @@ class BuiltinVariable(BaseBuiltinVariable):
                 )
                 for t in arg_types
             )
-            # Check upfront if we have a reconstruct_fn for this operation.
-            # Only use ComputedLazyConstantVariable if we can reconstruct
-            # the result at runtime (via bytecode generation).
             reconstruct_fn = _make_binary_op_reconstruct_fn(fn)
             if (
                 all_constant_like
@@ -1187,29 +1207,12 @@ class BuiltinVariable(BaseBuiltinVariable):
                 and not has_kwargs
                 and reconstruct_fn is not None
             ):
-                # Return a ComputedLazyConstantVariable instead of realizing.
-                # This allows operations on lazy constants to remain lazy, deferring
-                # guard installation until the result is actually used.
-                #
-                # If the result is used in a tensor operation and automatic_dynamic_shapes
-                # kicks in (making source vars symbolic), ComputedLazyCache.realize()
-                # will detect this and re-apply the operation symbolically.
 
                 def handle_lazy_constant(
                     tx: Any, args: Any, kwargs: Any
                 ) -> VariableTracker | None:
                     from .. import config
 
-                    # Check if any lazy constant might become symbolic due to
-                    # specialize_int=False or specialize_float=False. If so, we must
-                    # realize to allow symbolic tracing.
-                    #
-                    # This is important because if we don't realize, the function may
-                    # skip compilation entirely (no tensor ops in graph), but we need
-                    # the symbolic tracing to happen for unbacked int/float support.
-                    #
-                    # Exception: str.format always produces a string result, so it
-                    # doesn't benefit from symbolic handling and can stay lazy.
                     if fn is not str.format:
                         for arg in args:
                             if (
@@ -1218,17 +1221,25 @@ class BuiltinVariable(BaseBuiltinVariable):
                             ):
                                 val_type = arg.peek_type()
                                 if val_type is int and not config.specialize_int:
-                                    # Int might become SymNodeVariable - must realize
                                     return obj.call_function(
                                         tx,
-                                        [v.realize() for v in args],
+                                        [
+                                            v.realize()
+                                            if isinstance(v, LazyVariableTracker)
+                                            else v
+                                            for v in args
+                                        ],
                                         kwargs,
                                     )
                                 if val_type is float and not config.specialize_float:
-                                    # Float might become SymNodeVariable - must realize
                                     return obj.call_function(
                                         tx,
-                                        [v.realize() for v in args],
+                                        [
+                                            v.realize()
+                                            if isinstance(v, LazyVariableTracker)
+                                            else v
+                                            for v in args
+                                        ],
                                         kwargs,
                                     )
 
@@ -1242,26 +1253,43 @@ class BuiltinVariable(BaseBuiltinVariable):
                         ValueError,
                         AsPythonConstantNotImplementedError,
                     ):
-                        # Operation failed - fall back to realizing lazy args.
-                        # AsPythonConstantNotImplementedError: a realized lazy arg
-                        # became symbolic (e.g. SymNodeVariable with specialize_int=False).
                         return obj.call_function(
                             tx,
-                            [v.realize() for v in args],
+                            [
+                                v.realize() if isinstance(v, LazyVariableTracker) else v
+                                for v in args
+                            ],
                             kwargs,
                         )
 
                 return handle_lazy_constant
 
-            # Fall back to realizing lazy args.
-            # We must realize all LazyVariableTracker (including LazyConstantVariable)
-            # to avoid infinite recursion in handler dispatch - calling obj.call_function()
-            # with unrealized lazy constants would dispatch back to this same handler.
-            return lambda tx, args, kwargs: obj.call_function(
-                tx,
-                [v.realize() for v in args],
-                kwargs,
+            # Remap lazy constant types → ConstantVariable for inner handler
+            # creation and install type guards when the handler is called.
+            inner_handler = BuiltinVariable._make_handler(
+                fn,
+                [
+                    ConstantVariable
+                    if issubclass(
+                        t, (LazyConstantVariable, ComputedLazyConstantVariable)
+                    )
+                    else t
+                    for t in arg_types
+                ],
+                has_kwargs,
             )
+
+            def lazy_constant_handler(
+                tx: "InstructionTranslator",
+                args: list[VariableTracker],
+                kwargs: dict[str, VariableTracker],
+            ) -> VariableTracker | None:
+                for a in args:
+                    if isinstance(a, LazyConstantVariable):
+                        a.get_handler_type_for_dispatch()
+                return inner_handler(tx, args, kwargs)
+
+            return lazy_constant_handler
 
         if inspect.isclass(fn) and (
             issubclass(fn, BaseException)
@@ -1749,20 +1777,17 @@ class BuiltinVariable(BaseBuiltinVariable):
         args: Sequence[VariableTracker],
         kwargs: dict[str, VariableTracker],
     ) -> VariableTracker:
-        # Get handler types for dispatch. This may install guards for lazy variables.
-        handler_types = [x.get_handler_type_for_dispatch() for x in args]
-
         key: tuple[object, ...]
         if kwargs:
             kwargs = {k: v.realize() for k, v in kwargs.items()}
-            key = (self.fn, *handler_types, True)
+            key = (self.fn, *(type(x) for x in args), True)
         else:
-            key = (self.fn, *handler_types)
+            key = (self.fn, *(type(x) for x in args))
 
         handler = self.call_function_handler_cache.get(key)
         if not handler:
             self.call_function_handler_cache[key] = handler = self._make_handler(  # type: ignore[assignment]
-                self.fn, handler_types, bool(kwargs)
+                self.fn, [type(x) for x in args], bool(kwargs)
             )
         assert handler is not None
         return handler(tx, args, kwargs)  # type: ignore[return-value]

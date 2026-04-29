@@ -83,6 +83,28 @@ class LazyConstantVariableTests(TestCase):
 
         self.assertGreater(counter.frame_count, 1)
 
+    @torch._dynamo.config.patch(specialize_int=False, assume_static_by_default=False)
+    def test_lazy_constant_int_becomes_symnode_in_builtin(self):
+        """Test that lazy constant ints work through builtin handlers when they
+        realize to SymNodeVariable.
+
+        With specialize_int=False, lazy constant ints realize to SymNodeVariable
+        instead of ConstantVariable.  The handler dispatch remaps
+        LazyConstantVariable → ConstantVariable, so the inner handler must
+        gracefully handle the SymNodeVariable that appears after realization.
+        """
+
+        def fn(x, a, b):
+            return x + 1, a + b
+
+        opt_fn = torch.compile(fn, backend="eager")
+        x = torch.randn(3)
+
+        eager = fn(x, 10, 20)
+        compiled = opt_fn(x, 10, 20)
+        self.assertTrue(same(eager[0], compiled[0]))
+        self.assertEqual(eager[1], compiled[1])
+
     def test_slice_indices_unspecialized_ints(self):
         """Test that slice indices work with unspecialized ints.
 
