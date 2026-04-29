@@ -4817,13 +4817,10 @@ class ShapeEnv:
         else:
             new_offset_expr = sympy.Integer(storage_offset)
 
-        # 5. Wrap into SymInt nodes.
+        # 5. Wrap into SymInt nodes.  Use None hint for unbacked (== -1).
         sym_sizes = []
         for i, sym in enumerate(new_size_exprs):
-            if dynamic_sizes[i] is DimDynamic.UNBACKED:
-                hint = None
-            else:
-                hint = ex_size[i]
+            hint = None if ex_size[i] == -1 else ex_size[i]
             sym_sizes.append(
                 self.create_symintnode(
                     sym,
@@ -4840,10 +4837,7 @@ class ShapeEnv:
 
         sym_strides = []
         for i, stride_expr in enumerate(new_stride_exprs):
-            if is_symbolic(strides[i]) and not has_guarding_hint(strides[i]):
-                hint_stride = None
-            else:
-                hint_stride = ex_stride[i]
+            hint_stride = None if ex_stride[i] == -1 else ex_stride[i]
             sym_strides.append(
                 self.create_symintnode(
                     stride_expr,
@@ -4854,7 +4848,7 @@ class ShapeEnv:
 
         sym_offset = self.create_symintnode(
             new_offset_expr,
-            hint=ex_storage_offset,
+            hint=None if ex_storage_offset == -1 else ex_storage_offset,
             source=TensorPropertySource(source, TensorProperty.STORAGE_OFFSET),
         )
 
@@ -5039,28 +5033,11 @@ class ShapeEnv:
         stride: list[sympy.Expr | None] = [None] * len(size)
         candidates: dict[IntLikeType, sympy.Expr] = {}
 
-        # Handle UNBACKED strides first — create fresh unbacked symbols
-        # directly, skipping contiguity checks and candidate matching.
-        for i, dynamic_stride in enumerate(dynamic_strides):
-            if dynamic_stride is DimDynamic.UNBACKED:
-                out = self.create_symbol(
-                    ex_stride[i],
-                    TensorPropertySource(source, TensorProperty.STRIDE, i),
-                    dynamic_dim=DimDynamic.UNBACKED,
-                    constraint_dim=constraint_strides[i],
-                    symbolic_context=symbolic_context,
-                )
-                stride[i] = out
-
-        # iterate over non-UNBACKED strides in val ascending order with
+        # iterate over unbound strides in val ascending order with
         # index descending as a tie breaker since for cases like
         # [(1, 1), (1, 0)], we want to fill in the right most
         # stride first.
-        val_list = [
-            (val, -i)
-            for i, val in enumerate(ex_stride)
-            if dynamic_strides[i] is not DimDynamic.UNBACKED
-        ]
+        val_list = [(val, -i) for i, val in enumerate(ex_stride)]
         val_list.sort(key=_nested_int_aware_sort)
 
         for val, neg_i in val_list:
@@ -5491,7 +5468,7 @@ class ShapeEnv:
 
         if not isinstance(source, Source):
             raise AssertionError(f"{type(source)} {source}")
-        if positive and val < 0 and dynamic_dim is not DimDynamic.UNBACKED:
+        if positive and val < 0:
             raise AssertionError(f"positive set for negative value: {val}")
         # It's always sound to allocate a symbol as DYNAMIC.  If the user
         # constrained the symbol, force the symbolic_context to DYNAMIC, because our
