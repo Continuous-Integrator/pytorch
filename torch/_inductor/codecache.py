@@ -516,6 +516,7 @@ class FxGraphCachePickler(pickle.Pickler):
         self._device_id_agnostic = device_id_agnostic
         super().__init__(self._stream)
 
+        self._has_user_defined_triton_kernels = has_user_defined_triton_kernels
         self.dispatch_table = copyreg.dispatch_table.copy()
         self.dispatch_table.update(
             {
@@ -529,11 +530,8 @@ class FxGraphCachePickler(pickle.Pickler):
                 FakeScriptObject: functools.partial(self._reduce_fake_script_object),
             }
         )
-        if has_user_defined_triton_kernels:
-            # Need to use runtime type as GraphModule generates a singleton in __new__ function
-            self.dispatch_table[gm.__class__] = functools.partial(
-                self._reduce_graph_module
-            )
+        # Need to use runtime type as GraphModule generates a singleton in __new__ function
+        self.dispatch_table[gm.__class__] = functools.partial(self._reduce_graph_module)
 
         # Run with pickler.fast so it doesn't intern strings, making the hash result more predictable
         # TODO: pickler.fast is technically deprecated. Will this work on new python versions?
@@ -610,19 +608,38 @@ class FxGraphCachePickler(pickle.Pickler):
         self, gm: torch.fx.GraphModule
     ) -> tuple[Any, tuple[dict[str, Any], str]]:
         """
-        Custom reducer for graph module to handle irrelevant data for user
-        defined triton kernels
-        Essentially what we are doing here is a huge hack where user defined
-        triton kernel contain a dynamo time side table and the arguments to the
-        call_function are indices into this side table. These arguments are not
-        for hashing purposes since we included the source code into the cache
-        key and the numbers are prone to give false negatives due to ordering.
+        Custom reducer for graph module that canonicalizes node names
+        so structurally identical graphs hash the same regardless of
+        the names assigned during tracing (e.g. add vs add_42). Also
+        strips user-defined triton kernel side-table indices which are
+        prone to false-negative cache misses.
         """
+        old_names: list[tuple[torch.fx.Node, str]] = []
+        old_used_names = copy(gm.graph._graph_namespace._used_names)
+        gm.graph._graph_namespace._used_names = set()
+
+        i = 0
+        for node in gm.graph.nodes:
+            if node.op not in ("placeholder", "output"):
+                old_names.append((node, node.name))
+                node._rename(f"n{i}")
+                i += 1
+
+        gm.recompile()
         fn, (data, imports) = gm.__reduce__()
         code = data["_code"]
-        code = re.sub(r"kernel_idx = \d+", "", code)
-        code = re.sub(r"constant_args_idx = \d+", "", code)
+
+        if self._has_user_defined_triton_kernels:
+            code = re.sub(r"kernel_idx = \d+", "", code)
+            code = re.sub(r"constant_args_idx = \d+", "", code)
         data["_code"] = code
+
+        gm.graph._graph_namespace._used_names = set()
+        for node, name in old_names:
+            node._rename(name)
+        gm.graph._graph_namespace._used_names = old_used_names
+        gm.recompile()
+
         return fn, (data, imports)
 
     def _reduce_fake_script_object(
