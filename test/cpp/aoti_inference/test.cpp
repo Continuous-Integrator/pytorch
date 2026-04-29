@@ -1097,6 +1097,89 @@ void test_multi_cuda_streams(const std::string& device) {
   }
 }
 #endif // USE_CUDA
+
+void test_concurrent_run_with_const_fold(const std::string& device) {
+  torch::NoGradGuard no_grad;
+
+  std::string data_path =
+      (std::filesystem::path(STRINGIZE(CMAKE_CURRENT_BINARY_DIR)) / "data.pt")
+           .string();
+
+  torch::jit::script::Module data_loader = torch::jit::load(data_path);
+  std::string suffix = device + "_use_runtime_constant_folding";
+  const auto& model_so_path =
+      data_loader.attr(("model_so_path_" + suffix).c_str()).toStringRef();
+  auto input_tensors =
+      data_loader.attr(("inputs_" + suffix).c_str()).toTensorList().vec();
+  const auto& ref_output_tensors =
+      data_loader.attr(("outputs_" + suffix).c_str()).toTensorList().vec();
+
+  // num_models=1 forces all threads to contend for the single model instance.
+  std::unique_ptr<torch::inductor::AOTIModelContainerRunner> runner;
+  if (device == "cuda") {
+    runner = std::make_unique<torch::inductor::AOTIModelContainerRunnerCuda>(
+        model_so_path, /* num_models = */ 1);
+  } else {
+    FAIL() << "unsupported device: " << device;
+  }
+
+  constexpr int num_threads = 4;
+  constexpr int num_iters = 4;
+  std::atomic<int> ready{0};
+  std::atomic<int> completed{0};
+  std::atomic<bool> failed{false};
+  std::mutex mtx;
+  std::condition_variable cv;
+
+  std::vector<std::thread> threads;
+  for (int t = 0; t < num_threads; t++) {
+    threads.emplace_back([&]() {
+      try {
+        // Spin until all threads are ready so they call run() simultaneously.
+        ready.fetch_add(1);
+        while (ready.load() < num_threads) {
+        }
+
+        for (int i = 0; i < num_iters; i++) {
+          auto outputs = runner->run(input_tensors);
+          if (!torch::allclose(ref_output_tensors[0], outputs[0])) {
+            failed.store(true);
+          }
+        }
+      } catch (...) {
+        failed.store(true);
+      }
+      completed.fetch_add(1);
+      cv.notify_all();
+    });
+  }
+
+  // Wait for all threads with a timeout to detect deadlock.
+  {
+    std::unique_lock<std::mutex> lk(mtx);
+    bool finished = cv.wait_for(lk, std::chrono::seconds(60), [&]() {
+      return completed.load() == num_threads;
+    });
+    if (!finished) {
+      for (auto& t : threads) {
+        if (t.joinable()) {
+          t.detach();
+        }
+      }
+      FAIL() << "Deadlock detected: " << completed.load() << "/" << num_threads
+             << " threads completed within 60s timeout";
+      return;
+    }
+  }
+
+  for (auto& t : threads) {
+    t.join();
+  }
+
+  ASSERT_FALSE(failed.load())
+      << "One or more threads produced incorrect output";
+  ASSERT_EQ(completed.load(), num_threads);
+}
 #endif // USE_CUDA || USE_ROCM
 } // namespace
 
@@ -1187,6 +1270,10 @@ TEST_F(AotInductorTest, MultiStreamTestCuda) {
 
 TEST_F(AotInductorTest, CudaAllocTestCuda) {
   test_cuda_alloc_test();
+}
+
+TEST_F(AotInductorTest, ConcurrentRunConstFoldCuda) {
+  test_concurrent_run_with_const_fold("cuda");
 }
 #endif
 
