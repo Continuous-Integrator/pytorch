@@ -123,15 +123,16 @@ class CppWrapperCpu(PythonWrapperCodegen):
         # e.g. const double** is possible, but not const double* const*.  This means
         # that an array containing pointers must _already_ be properly const-qualified
         # by the c_type, and not add additional const-ness.
-        # MSVC does not support implicitly converting a const iterator to a const pointer.
-        ptr_call = (
-            "data()"
-            if force_mutable or c_type.endswith("*") or cpp_builder.is_msvc_cl()
-            else "cbegin()"
-        )
-        return (
-            f"std::array<{c_type}, {len(elements)}>{{{', '.join(elements)}}}.{ptr_call}"
-        )
+        array_expr = f"std::array<{c_type}, {len(elements)}>{{{', '.join(elements)}}}"
+        if force_mutable or c_type.endswith("*"):
+            return f"{array_expr}.data()"
+
+        # MSVC does not support implicitly converting a const iterator to a const
+        # pointer, so use data() and cast to keep const qualification.
+        if cpp_builder.is_msvc_cl():
+            return f"static_cast<const {c_type}*>({array_expr}.data())"
+
+        return f"{array_expr}.cbegin()"
 
     def _generate_kernel_call_helper(
         self,
@@ -2854,12 +2855,12 @@ if (!custom_op_wrapper) {
 
         extern_kernel_node_index = len(V.extern_kernel_nodes) - 1
         self.writeline(
-            f"aoti_torch_proxy_executor_call_function(proxy_executor, "
+            f"AOTI_TORCH_ERROR_CODE_CHECK(aoti_torch_proxy_executor_call_function(proxy_executor, "
             f"{extern_kernel_node_index}, "
             f"{len(int_call_args)}, "
             f"{int_call_str}, "
             f"{len(tensor_call_args)}, "
-            f"{tensor_call_str});"
+            f"{tensor_call_str}));"
         )
 
     def generate_reset_kernel_saved_flags(self):
