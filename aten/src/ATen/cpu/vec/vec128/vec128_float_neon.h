@@ -47,14 +47,14 @@ inline namespace CPU_CAPABILITY {
 // With -msve-vector-bits=128, svfloat32_t and float32x4_t have identical layout
 // so these conversions compile to zero instructions.
 static inline svfloat32_t neon_to_sve(float32x4_t v) {
-    svfloat32_t r;
-    __builtin_memcpy(&r, &v, sizeof(v));
-    return r;
+  svfloat32_t r;
+  __builtin_memcpy(&r, &v, sizeof(v));
+  return r;
 }
 static inline float32x4_t sve_to_neon(svfloat32_t v) {
-    float32x4_t r;
-    __builtin_memcpy(&r, &v, sizeof(r));
-    return r;
+  float32x4_t r;
+  __builtin_memcpy(&r, &v, sizeof(r));
+  return r;
 }
 #endif
 
@@ -281,29 +281,15 @@ class Vectorized<float> {
   Vectorized<float> conj() const {
     return *this;
   }
-#if defined(CPU_CAPABILITY_SVE128) && defined(AT_BUILD_ARM_VEC256_WITH_SLEEF)
-#define DEFINE_SLEEF_COMPATIBLE_UNARY_ELEMENTWISE_FUNC_WITH_SLEEF_NAME(          \
-    name, sleef_name)                                                            \
-  Vectorized<float> name() const {                                               \
-    return Vectorized<float>(sve_to_neon(sleef_name(neon_to_sve(values))));       \
-  }
-#else
 #define DEFINE_SLEEF_COMPATIBLE_UNARY_ELEMENTWISE_FUNC_WITH_SLEEF_NAME(      \
     name, sleef_name)                                                        \
   Vectorized<float> name() const {                                           \
     return USE_SLEEF(Vectorized<float>(sleef_name(values)), map(std::name)); \
   }
-#endif
 
-#if defined(CPU_CAPABILITY_SVE128) && defined(AT_BUILD_ARM_VEC256_WITH_SLEEF)
-#define DEFINE_SLEEF_COMPATIBLE_UNARY_ELEMENTWISE_FUNC(name)      \
-  DEFINE_SLEEF_COMPATIBLE_UNARY_ELEMENTWISE_FUNC_WITH_SLEEF_NAME( \
-      name, Sleef_##name##fx_u10sve)
-#else
 #define DEFINE_SLEEF_COMPATIBLE_UNARY_ELEMENTWISE_FUNC(name)      \
   DEFINE_SLEEF_COMPATIBLE_UNARY_ELEMENTWISE_FUNC_WITH_SLEEF_NAME( \
       name, Sleef_##name##f4_u10)
-#endif
 
   DEFINE_SLEEF_COMPATIBLE_UNARY_ELEMENTWISE_FUNC(acos)
   DEFINE_SLEEF_COMPATIBLE_UNARY_ELEMENTWISE_FUNC(acosh)
@@ -312,14 +298,6 @@ class Vectorized<float> {
   DEFINE_SLEEF_COMPATIBLE_UNARY_ELEMENTWISE_FUNC(atan)
   DEFINE_SLEEF_COMPATIBLE_UNARY_ELEMENTWISE_FUNC(atanh)
 
-#if defined(CPU_CAPABILITY_SVE128) && defined(AT_BUILD_ARM_VEC256_WITH_SLEEF)
-#define DEFINE_SLEEF_COMPATIBLE_BINARY_ELEMENTWISE_FUNC_WITH_SLEEF_NAME(         \
-    name, sleef_name)                                                            \
-  Vectorized<float> name(const Vectorized<float>& arg) const {                   \
-    return Vectorized<float>(                                                    \
-        sve_to_neon(sleef_name(neon_to_sve(values), neon_to_sve(arg.values))));   \
-  }
-#else
 #define DEFINE_SLEEF_COMPATIBLE_BINARY_ELEMENTWISE_FUNC_WITH_SLEEF_NAME( \
     name, sleef_name)                                                    \
   Vectorized<float> name(const Vectorized<float>& arg) const {           \
@@ -327,39 +305,31 @@ class Vectorized<float> {
         Vectorized<float>(sleef_name(values, arg.values)),               \
         map2(arg, std::name));                                           \
   }
-#endif
 
-#if defined(CPU_CAPABILITY_SVE128) && defined(AT_BUILD_ARM_VEC256_WITH_SLEEF)
-#define DEFINE_SLEEF_COMPATIBLE_BINARY_ELEMENTWISE_FUNC(name)      \
-  DEFINE_SLEEF_COMPATIBLE_BINARY_ELEMENTWISE_FUNC_WITH_SLEEF_NAME( \
-      name, Sleef_##name##fx_u10sve)
-#else
 #define DEFINE_SLEEF_COMPATIBLE_BINARY_ELEMENTWISE_FUNC(name)      \
   DEFINE_SLEEF_COMPATIBLE_BINARY_ELEMENTWISE_FUNC_WITH_SLEEF_NAME( \
       name, Sleef_##name##f4_u10)
-#endif
 
   DEFINE_SLEEF_COMPATIBLE_BINARY_ELEMENTWISE_FUNC(atan2)
-#if defined(CPU_CAPABILITY_SVE128) && defined(AT_BUILD_ARM_VEC256_WITH_SLEEF)
   DEFINE_SLEEF_COMPATIBLE_BINARY_ELEMENTWISE_FUNC_WITH_SLEEF_NAME(
-      copysign, Sleef_copysignfx_sve)
-#else
-  DEFINE_SLEEF_COMPATIBLE_BINARY_ELEMENTWISE_FUNC_WITH_SLEEF_NAME(
-      copysign, Sleef_copysignf4)
-#endif
+      copysign,
+      Sleef_copysignf4)
   Vectorized<float> erf() const;
-#if defined(CPU_CAPABILITY_SVE128) && defined(AT_BUILD_ARM_VEC256_WITH_SLEEF)
   DEFINE_SLEEF_COMPATIBLE_UNARY_ELEMENTWISE_FUNC_WITH_SLEEF_NAME(
-      erfc, Sleef_erfcfx_u15sve)
-#else
-  DEFINE_SLEEF_COMPATIBLE_UNARY_ELEMENTWISE_FUNC_WITH_SLEEF_NAME(
-      erfc, Sleef_erfcf4_u15)
-#endif
+      erfc,
+      Sleef_erfcf4_u15)
   Vectorized<float> erfinv() const {
     return map(calc_erfinv);
   }
   DEFINE_SLEEF_COMPATIBLE_UNARY_ELEMENTWISE_FUNC(exp)
+#if defined(CPU_CAPABILITY_SVE128) && defined(AT_BUILD_ARM_VEC256_WITH_SLEEF)
+  Vectorized<float> exp2() const {
+    return Vectorized<float>(
+        sve_to_neon(Sleef_exp2fx_u10sve(neon_to_sve(values))));
+  }
+#else
   DEFINE_SLEEF_COMPATIBLE_UNARY_ELEMENTWISE_FUNC(exp2)
+#endif
   DEFINE_SLEEF_COMPATIBLE_UNARY_ELEMENTWISE_FUNC(expm1)
   // Implementation copied from Arm Optimized Routine
   // https://github.com/ARM-software/optimized-routines/blob/master/math/aarch64/advsimd/expf.c
@@ -448,17 +418,12 @@ class Vectorized<float> {
     y = vbslq_f32(gt_upper, vdupq_n_f32(INFINITY), y);
     return y;
   }
-#if defined(CPU_CAPABILITY_SVE128) && defined(AT_BUILD_ARM_VEC256_WITH_SLEEF)
   DEFINE_SLEEF_COMPATIBLE_BINARY_ELEMENTWISE_FUNC_WITH_SLEEF_NAME(
-      fmod, Sleef_fmodfx_sve)
+      fmod,
+      Sleef_fmodf4)
   DEFINE_SLEEF_COMPATIBLE_BINARY_ELEMENTWISE_FUNC_WITH_SLEEF_NAME(
-      hypot, Sleef_hypotfx_u05sve)
-#else
-  DEFINE_SLEEF_COMPATIBLE_BINARY_ELEMENTWISE_FUNC_WITH_SLEEF_NAME(
-      fmod, Sleef_fmodf4)
-  DEFINE_SLEEF_COMPATIBLE_BINARY_ELEMENTWISE_FUNC_WITH_SLEEF_NAME(
-      hypot, Sleef_hypotf4_u05)
-#endif
+      hypot,
+      Sleef_hypotf4_u05)
   Vectorized<float> i0() const {
     return map(calc_i0);
   }
@@ -478,13 +443,9 @@ class Vectorized<float> {
   DEFINE_SLEEF_COMPATIBLE_UNARY_ELEMENTWISE_FUNC(log10)
   DEFINE_SLEEF_COMPATIBLE_UNARY_ELEMENTWISE_FUNC(log1p)
   DEFINE_SLEEF_COMPATIBLE_UNARY_ELEMENTWISE_FUNC(log2)
-#if defined(CPU_CAPABILITY_SVE128) && defined(AT_BUILD_ARM_VEC256_WITH_SLEEF)
   DEFINE_SLEEF_COMPATIBLE_BINARY_ELEMENTWISE_FUNC_WITH_SLEEF_NAME(
-      nextafter, Sleef_nextafterfx_sve)
-#else
-  DEFINE_SLEEF_COMPATIBLE_BINARY_ELEMENTWISE_FUNC_WITH_SLEEF_NAME(
-      nextafter, Sleef_nextafterf4)
-#endif
+      nextafter,
+      Sleef_nextafterf4)
   Vectorized<float> frac() const;
   DEFINE_SLEEF_COMPATIBLE_UNARY_ELEMENTWISE_FUNC(sin)
   DEFINE_SLEEF_COMPATIBLE_UNARY_ELEMENTWISE_FUNC(sinh)
