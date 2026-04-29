@@ -39,8 +39,14 @@ class TestRegionalInductorCollectives(TestCase):
         # Single-rank Gloo lets us exercise real all_reduce numerics
         # in-process without spawning a second worker. With world_size=1,
         # ``all_reduce(t, op=SUM)`` is the identity, so any deviation in the
-        # rewrite is observable as a numeric mismatch against eager.
-        self._store_path = tempfile.mktemp()
+        # rewrite is observable as a numeric mismatch against eager. Use
+        # ``NamedTemporaryFile`` rather than ``mktemp`` to avoid the TOCTOU
+        # race in path generation; close the FD immediately so ``FileStore``
+        # can take ownership.
+        with tempfile.NamedTemporaryFile(
+            prefix="regional_inductor_store_", delete=False
+        ) as fd:
+            self._store_path = fd.name
         dist.init_process_group(
             backend="gloo",
             rank=0,
@@ -53,6 +59,8 @@ class TestRegionalInductorCollectives(TestCase):
             dist.destroy_process_group()
         except AssertionError:
             pass
+        if os.path.exists(self._store_path):
+            os.unlink(self._store_path)
         super().tearDown()
 
     def test_functionalize_inplace_allreduce(self):

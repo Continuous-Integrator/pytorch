@@ -98,39 +98,54 @@ def _redirect_inplace_collective_uses(
     node: torch.fx.Node,
     wait_nodes: list[torch.fx.Node],
 ) -> None:
-    """Re-route uses for any inplace c10d op whose output ends in ``..., Work``.
+    """Re-route uses for an inplace c10d op with output schema
+    ``(Tensor[], Work)`` — e.g. ``allreduce_``, ``broadcast_``,
+    ``reduce_scatter_``, ``alltoall_``.
 
-    Handles both per-op output shapes uniformly — the rewrite always supplies
-    ``wait_nodes`` as a list:
+    ``make_fx`` lowers tensor consumers into ``getitem(node, 0)[i]``; replace
+    each with ``wait_nodes[i]``. The work-handle ``getitem(node, 1)`` is erased
+    if unused (live users raise — functional collectives have no Work object
+    to forward to, so we can't preserve that synchronization).
 
-    * ``(Tensor[], Work)`` (e.g. ``allreduce_``, ``broadcast_``,
-      ``reduce_scatter_``, ``alltoall_``): tensor uses look like
-      ``getitem(node, 0)[i]``; replace each with ``wait_nodes[i]``.
-    * ``(Tensor, Work)`` (e.g. ``_allgather_base_``,
-      ``_reduce_scatter_base_``): the single tensor use is ``getitem(node, 0)``
-      directly; replace with ``wait_nodes[0]``.
-
-    In both cases the work-handle ``getitem(node, 1)`` is erased if unused.
+    TODO: extend to ``(Tensor, Work)`` schemas (``_allgather_base_``,
+    ``_reduce_scatter_base_``) when those rewrites are added. There the
+    ``getitem(node, 0)`` is itself the tensor consumer (no inner
+    ``getitem`` chain), so the inner loop below would need to fall back to
+    ``use.replace_all_uses_with(wait_nodes[0])`` when ``use`` has no inner
+    ``getitem`` users.
     """
     for use in list(node.users):
         if use.op != "call_function" or use.target is not operator.getitem:
-            continue
+            raise AssertionError(
+                f"Cannot functionalize {node.target}: unexpected use {use} "
+                f"(op={use.op!r}, target={use.target!r}). The c10d inplace "
+                f"output is a tuple consumed via ``getitem`` in ``make_fx`` "
+                f"graphs; non-getitem users are not supported by this pass."
+            )
         if use.args[1] == 0:
-            sub_uses = [
-                u
-                for u in list(use.users)
-                if u.op == "call_function" and u.target is operator.getitem
-            ]
-            if sub_uses:
-                # (Tensor[], Work) — index into the tensor list.
-                for sub_use in sub_uses:
-                    sub_use.replace_all_uses_with(wait_nodes[sub_use.args[1]])  # type: ignore[index]
-                    gm.graph.erase_node(sub_use)
-            else:
-                # (Tensor, Work) — the getitem itself is the tensor consumer.
-                use.replace_all_uses_with(wait_nodes[0])
+            for sub_use in list(use.users):
+                if (
+                    sub_use.op != "call_function"
+                    or sub_use.target is not operator.getitem
+                ):
+                    raise AssertionError(
+                        f"Cannot functionalize {node.target}: tensor list "
+                        f"consumed by non-getitem user {sub_use}. Extend "
+                        f"_redirect_inplace_collective_uses to support this "
+                        f"schema if needed."
+                    )
+                sub_use.replace_all_uses_with(wait_nodes[sub_use.args[1]])  # type: ignore[index]
+                gm.graph.erase_node(sub_use)
             gm.graph.erase_node(use)
-        elif use.args[1] == 1 and not use.users:
+        elif use.args[1] == 1:
+            if use.users:
+                raise AssertionError(
+                    f"Cannot functionalize {node.target}: Work handle has "
+                    f"{len(use.users)} live use(s) ({list(use.users)}). "
+                    f"Functional collectives express synchronization via "
+                    f"``wait_tensor`` on the data tensor, so the Work object "
+                    f"has no equivalent to forward to."
+                )
             gm.graph.erase_node(use)
 
 
