@@ -2533,6 +2533,8 @@ class TritonTemplate(KernelTemplate):
                 stack_info=log.getEffectiveLevel() < logging.INFO,
             )
             return e
+        except Exception as e:
+            raise
 
     # NOTE: MAKE SURE THAT ANY ARGUMENT ADDED TO THIS FUNCTION IS PROPERLY HANDLED IN _generated_code_cache.make_key.
     def generate_and_load(
