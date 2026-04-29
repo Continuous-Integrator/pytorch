@@ -5325,6 +5325,7 @@ class AlgorithmSelectorCache(PersistentCache):
     def maybe_log_flex_attention_results(
         name: str, input_nodes: list[ir.IRNode], timings: dict[ChoiceCaller, float]
     ) -> None:
+        """Log flex attention autotuning choices when logging is enabled."""
         flex_attention_filename = get_flex_attention_log_filename()
         # Support both flex_attention and flex_decoding
         if not flex_attention_filename or (
@@ -5368,16 +5369,22 @@ class AlgorithmSelectorCache(PersistentCache):
             else ("decode" if "decoding" in name else "forward")
         )
 
+        def shape_value_for_log(value: object) -> int | str:
+            try:
+                return int(value)  # type: ignore[arg-type]
+            except TypeError:
+                return str(value)
+
         # Create shape info dictionary
         shape_info = {
             "kernel_type": kernel_type,
-            "B": int(B),
-            "Hq": int(Hq),
-            "Hkv": int(Hkv),
-            "seq_len_q": int(seq_len_q),
-            "seq_len_kv": int(seq_len_kv),
-            "qk_head_dim": int(qk_head_dim),
-            "v_head_dim": int(v_head_dim),
+            "B": shape_value_for_log(B),
+            "Hq": shape_value_for_log(Hq),
+            "Hkv": shape_value_for_log(Hkv),
+            "seq_len_q": shape_value_for_log(seq_len_q),
+            "seq_len_kv": shape_value_for_log(seq_len_kv),
+            "qk_head_dim": shape_value_for_log(qk_head_dim),
+            "v_head_dim": shape_value_for_log(v_head_dim),
         }
 
         sorted_choices = sorted(timings, key=timings.__getitem__)

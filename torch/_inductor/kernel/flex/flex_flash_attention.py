@@ -4,6 +4,7 @@
 import dataclasses
 import functools
 import importlib
+import warnings
 from collections.abc import Callable, Sequence
 from contextlib import contextmanager
 from typing import Any, cast, Literal
@@ -554,6 +555,9 @@ def create_flex_flash_attention_backward_kernel(
     q_indices: TensorBox | None = None,
     full_q_num_blocks: TensorBox | None = None,
     full_q_indices: TensorBox | None = None,
+    dq_write_order: TensorBox | None = None,
+    dq_write_order_full: TensorBox | None = None,
+    dq_write_order_spt: bool | None = None,
 ) -> tuple[TensorBox | ShapeAsConstantBuffer, TensorBox, TensorBox, tuple]:
     """Create a CuteDSL flash attention backward kernel for the default mod path."""
     if not ensure_flash_available():
@@ -633,6 +637,39 @@ def create_flex_flash_attention_backward_kernel(
             ]
         )
 
+    has_dq_write_order = dq_write_order is not None
+    if has_dq_write_order:
+        input_nodes.append(dq_write_order)
+        if dq_write_order_full is not None:
+            input_nodes.append(dq_write_order_full)
+
+    deterministic_requested = torch.are_deterministic_algorithms_enabled()
+    warn_only = torch.is_deterministic_algorithms_warn_only_enabled()
+    deterministic_backward_enabled = deterministic_requested
+    if deterministic_requested and has_block_mask:
+        major, _ = torch.cuda.get_device_capability(device)
+        missing_dq_write_order = dq_write_order is None or (
+            full_q_num_blocks is not None and dq_write_order_full is None
+        )
+        if major < 10:
+            if warn_only:
+                deterministic_backward_enabled = False
+            else:
+                raise NotImplementedError(
+                    "Deterministic backward for flex_attention with block_mask and BACKEND='FLASH' "
+                    "requires SM100+ (compute capability >= 10.0). "
+                    "Use BACKEND='TRITON' for deterministic backward on older architectures."
+                )
+        elif missing_dq_write_order and warn_only:
+            deterministic_backward_enabled = False
+    if deterministic_requested and not deterministic_backward_enabled:
+        warnings.warn(
+            "flex_attention backward with block_mask and BACKEND='FLASH' does not have "
+            "a deterministic implementation for this configuration, but you set "
+            "'torch.use_deterministic_algorithms(True, warn_only=True)'. "
+            "Running non-deterministic backward.",
+        )
+
     has_score_mod = fw_subgraph_buffer is not None and joint_subgraph_buffer is not None
     subgraphs = []
     if has_score_mod:
@@ -656,6 +693,10 @@ def create_flex_flash_attention_backward_kernel(
                 HAS_SCORE_MOD=has_score_mod,
                 SCORE_MOD_VEC_SIZE=conf.score_mod_vec_size,
                 HAS_BLOCK_MASK=has_block_mask,
+                HAS_DQ_WRITE_ORDER=has_dq_write_order,
+                HAS_DQ_WRITE_ORDER_FULL=dq_write_order_full is not None,
+                DQ_WRITE_ORDER_SPT=dq_write_order_spt,
+                DETERMINISTIC_BACKWARD_ENABLED=deterministic_backward_enabled,
                 SPARSE_Q_BLOCK_SIZE=sparse_q_block_size,
                 SPARSE_KV_BLOCK_SIZE=sparse_kv_block_size,
             )

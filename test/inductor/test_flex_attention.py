@@ -30,6 +30,7 @@ from torch.nn.attention import SDPBackend
 from torch.nn.attention.experimental._paged_attention import PagedAttention
 from torch.nn.attention.flex_attention import (
     _apply_kernel_options,
+    _compute_dq_write_order_from_block_mask,
     _create_empty_block_mask,
     _DEFAULT_SPARSE_BLOCK_SIZE,
     _identity,
@@ -4947,7 +4948,7 @@ class GraphModule(torch.nn.Module):
 
         score_mod_0 = self.score_mod_0
         mask_fn_0 = self.mask_fn_0
-        flex_attention = torch.ops.higher_order.flex_attention(l_query_, l_key_, l_value_, score_mod_0, (128, 128, l_block_mask_kv_num_blocks, l_block_mask_kv_indices, l_block_mask_full_kv_num_blocks, l_block_mask_full_kv_indices, l_block_mask_q_num_blocks, l_block_mask_q_indices, l_block_mask_full_q_num_blocks, l_block_mask_full_q_indices, 128, 128, mask_fn_0), 0.5, {'BACKEND': 'AUTO', 'PRESCALE_QK': False, 'ROWS_GUARANTEED_SAFE': False, 'BLOCKS_ARE_CONTIGUOUS': False, 'WRITE_DQ': True, 'OUTPUT_LOGSUMEXP': True, 'OUTPUT_MAX': False}, (), ());  l_query_ = l_key_ = l_value_ = score_mod_0 = l_block_mask_kv_num_blocks = l_block_mask_kv_indices = l_block_mask_full_kv_num_blocks = l_block_mask_full_kv_indices = l_block_mask_q_num_blocks = l_block_mask_q_indices = l_block_mask_full_q_num_blocks = l_block_mask_full_q_indices = mask_fn_0 = None
+        flex_attention = torch.ops.higher_order.flex_attention(l_query_, l_key_, l_value_, score_mod_0, (128, 128, l_block_mask_kv_num_blocks, l_block_mask_kv_indices, l_block_mask_full_kv_num_blocks, l_block_mask_full_kv_indices, l_block_mask_q_num_blocks, l_block_mask_q_indices, l_block_mask_full_q_num_blocks, l_block_mask_full_q_indices, None, None, None, 128, 128, mask_fn_0), 0.5, {'BACKEND': 'AUTO', 'PRESCALE_QK': False, 'ROWS_GUARANTEED_SAFE': False, 'BLOCKS_ARE_CONTIGUOUS': False, 'WRITE_DQ': True, 'OUTPUT_LOGSUMEXP': True, 'OUTPUT_MAX': False}, (), ());  l_query_ = l_key_ = l_value_ = score_mod_0 = l_block_mask_kv_num_blocks = l_block_mask_kv_indices = l_block_mask_full_kv_num_blocks = l_block_mask_full_kv_indices = l_block_mask_q_num_blocks = l_block_mask_q_indices = l_block_mask_full_q_num_blocks = l_block_mask_full_q_indices = mask_fn_0 = None
         out: "f64[2, 2, 128, 4]" = flex_attention[0];  flex_attention = None
         return (out,)
 
@@ -4986,7 +4987,7 @@ class GraphModule(torch.nn.Module):
         fw_graph0 = self.fw_graph0
         joint_graph0 = self.joint_graph0
         mask_graph0 = self.mask_graph0
-        flex_attention_backward = torch.ops.higher_order.flex_attention_backward(primals_1, primals_2, primals_3, getitem_2, getitem_3, tangents_1, None, fw_graph0, joint_graph0, (1, 1, full, full_default, None, None, convert_element_type, convert_element_type_1, None, None, 1073741824, 1073741824, mask_graph0), 0.5, {'BACKEND': 'AUTO', 'PRESCALE_QK': False, 'ROWS_GUARANTEED_SAFE': False, 'BLOCKS_ARE_CONTIGUOUS': False, 'WRITE_DQ': True, 'OUTPUT_LOGSUMEXP': True, 'OUTPUT_MAX': False}, (), ());  primals_1 = primals_2 = primals_3 = getitem_2 = getitem_3 = tangents_1 = fw_graph0 = joint_graph0 = full = full_default = convert_element_type = convert_element_type_1 = mask_graph0 = None
+        flex_attention_backward = torch.ops.higher_order.flex_attention_backward(primals_1, primals_2, primals_3, getitem_2, getitem_3, tangents_1, None, fw_graph0, joint_graph0, (1, 1, full, full_default, None, None, convert_element_type, convert_element_type_1, None, None, None, None, None, 1073741824, 1073741824, mask_graph0), 0.5, {'BACKEND': 'AUTO', 'PRESCALE_QK': False, 'ROWS_GUARANTEED_SAFE': False, 'BLOCKS_ARE_CONTIGUOUS': False, 'WRITE_DQ': True, 'OUTPUT_LOGSUMEXP': True, 'OUTPUT_MAX': False}, (), ());  primals_1 = primals_2 = primals_3 = getitem_2 = getitem_3 = tangents_1 = fw_graph0 = joint_graph0 = full = full_default = convert_element_type = convert_element_type_1 = mask_graph0 = None
         getitem_5: "f64[2, 2, 128, 4]" = flex_attention_backward[0]
         getitem_6: "f64[2, 2, 128, 4]" = flex_attention_backward[1]
         getitem_7: "f64[2, 2, 128, 4]" = flex_attention_backward[2];  flex_attention_backward = None
@@ -6887,6 +6888,45 @@ BlockMask(shape=(1,s1,s2048,s2048),ssparsity=46.88%,s
             self.assertIsNone(cpu_mask.q_indices)
 
     @supported_platform
+    def test_compute_dq_write_order_with_expanded_kv_indices(self, device):
+        def causal_mask(b, h, q_idx, kv_idx):
+            return q_idx >= kv_idx
+
+        block_mask = create_block_mask(
+            causal_mask, B=1, H=1, Q_LEN=256, KV_LEN=256, BLOCK_SIZE=128, device=device
+        )
+        expanded_kv_block_mask = BlockMask(
+            seq_lengths=block_mask.seq_lengths,
+            kv_num_blocks=block_mask.kv_num_blocks.expand(2, 1, -1),
+            kv_indices=block_mask.kv_indices.expand(2, 1, -1, -1),
+            full_kv_num_blocks=(
+                block_mask.full_kv_num_blocks.expand(2, 1, -1)
+                if block_mask.full_kv_num_blocks is not None
+                else None
+            ),
+            full_kv_indices=(
+                block_mask.full_kv_indices.expand(2, 1, -1, -1)
+                if block_mask.full_kv_indices is not None
+                else None
+            ),
+            q_num_blocks=block_mask.q_num_blocks,
+            q_indices=block_mask.q_indices,
+            full_q_num_blocks=block_mask.full_q_num_blocks,
+            full_q_indices=block_mask.full_q_indices,
+            BLOCK_SIZE=block_mask.BLOCK_SIZE,
+            mask_mod=block_mask.mask_mod,
+        )
+        dq_write_order, dq_write_order_full = _compute_dq_write_order_from_block_mask(
+            expanded_kv_block_mask
+        )
+
+        self.assertEqual(dq_write_order.shape[:2], (2, 1))
+        self.assertEqual(dq_write_order[0], dq_write_order[1])
+        if dq_write_order_full is not None:
+            self.assertEqual(dq_write_order_full.shape[:2], (2, 1))
+            self.assertEqual(dq_write_order_full[0], dq_write_order_full[1])
+
+    @supported_platform
     @skip_on_cpu
     def test_broadcasted_head_block_mask(self, device):
         torch.manual_seed(42)
@@ -8264,12 +8304,17 @@ class TestLearnableBiases(InductorTestCase):
 
     @skip_on_cpu
     def test_flex_attention_logging(self, device):
+        from torch._inductor.select_algorithm import get_flex_attention_log_filename
+
+        get_flex_attention_log_filename.cache_clear()
+        self.addCleanup(get_flex_attention_log_filename.cache_clear)
         with tempfile.TemporaryDirectory() as tmpdir:
             log_file = os.path.join(tmpdir, "flex_attention_configs")
 
             with patch.dict(
                 os.environ, {"TORCHINDUCTOR_FLEX_ATTENTION_LOGGING_FILE": log_file}
             ):
+                get_flex_attention_log_filename.cache_clear()
                 query = torch.randn(
                     1,
                     2,
