@@ -1096,9 +1096,12 @@ class BuiltinVariable(BaseBuiltinVariable):
                     kwargs,
                 )
 
-            # Only LazyConstantVariable lazy types.  Remap to
-            # ConstantVariable for inner handler creation and install type
-            # guards when the handler is called.
+            # Only LazyConstantVariable lazy types.  Install type guards
+            # and resolve the dispatch type.  If the resolved type is
+            # ConstantVariable (the common case), delegate to a handler
+            # built for ConstantVariable.  Otherwise (e.g. specialize_int=
+            # False turned the int into a SymNodeVariable), realize and
+            # re-dispatch so the correct handler is used.
             inner_handler = BuiltinVariable._make_handler(
                 fn,
                 [
@@ -1115,7 +1118,17 @@ class BuiltinVariable(BaseBuiltinVariable):
             ) -> VariableTracker | None:
                 for a in args:
                     if isinstance(a, LazyConstantVariable):
-                        a.get_handler_type_for_dispatch()
+                        if a.get_handler_type_for_dispatch() is not ConstantVariable:
+                            return obj.call_function(
+                                tx,
+                                [
+                                    v.realize()
+                                    if isinstance(v, LazyConstantVariable)
+                                    else v
+                                    for v in args
+                                ],
+                                kwargs,
+                            )
                 return inner_handler(tx, args, kwargs)
 
             return lazy_constant_handler
