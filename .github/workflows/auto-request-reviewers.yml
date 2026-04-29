@@ -77,13 +77,14 @@ jobs:
 
             // Filter criteria based on:
             // base:main draft:false label:"open source" -label:triaged
-            // -review:approved NOT WIP NOT TESTING in:title
+            // -review:approved NOT WIP NOT TESTING in:title created:>=2019-06-06
             const skip = (reason) => {
               core.info(`Skipping PR #${prNumber}: ${reason}`);
               core.setOutput('eligible', 'false');
             };
 
             if (pr.base.ref !== 'main') return skip(`base branch is '${pr.base.ref}', not 'main'`);
+            if (new Date(pr.created_at) < new Date('2019-06-06')) return skip(`created before 2019-06-06 (${pr.created_at})`);
             if (pr.draft) return skip('PR is a draft');
             if (!labels.includes('open source')) return skip('missing "open source" label');
             if (labels.includes('triaged')) return skip('already has "triaged" label');
