@@ -1128,6 +1128,8 @@ class MetaConverter(Generic[_TensorT]):
                         t.stride,
                         t.storage_offset,
                         src,
+                        symbolic_context=symbolic_context,
+                        hint_overrides=t.dynamo_hint_overrides,
                     )
             else:
                 return (t.size, t.stride, t.storage_offset)
