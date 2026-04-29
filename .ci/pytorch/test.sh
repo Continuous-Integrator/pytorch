@@ -2198,6 +2198,27 @@ elif [[ "${TEST_CONFIG}" == *operator_microbenchmark* ]]; then
   test_operator_microbenchmark
 elif [[ "${TEST_CONFIG}" == *attention_microbenchmark* ]]; then
   test_attention_microbenchmark
+elif [[ "${TEST_CONFIG}" == *repro_181685_q* ]]; then
+  # Replicate the original failing subprocess invocation exactly. The
+  # original CI ran test_ops with --num-shards=19, distributing 33k
+  # collected tests via pytest-shard's hash bucketing. Only 7 of the
+  # 19 shards run for inductor (7, 11, 12, 13, 17, 18, 19); the bug
+  # fired in shard 19's '-m not serial' invocation. Each of our 4
+  # runners targets a different shard so we can localize the trigger.
+  case "${TEST_CONFIG}" in
+    *repro_181685_q1*) SHARD_ID=7  ;;
+    *repro_181685_q2*) SHARD_ID=13 ;;
+    *repro_181685_q3*) SHARD_ID=17 ;;
+    *repro_181685_q4*) SHARD_ID=19 ;;
+    *) echo "unknown TEST_CONFIG: ${TEST_CONFIG}" >&2; exit 1 ;;
+  esac
+  echo "Targeting shard ${SHARD_ID} of 19 (-m 'not serial')"
+  cd test
+  PYTORCH_TEST_WITH_INDUCTOR=1 python -bb test_ops.py \
+    -m 'not serial' \
+    --shard-id="${SHARD_ID}" --num-shards=19 \
+    -v -rfEX -p no:xdist --use-pytest \
+    --import-slow-tests --import-disabled-tests || true
 elif [[ "${TEST_CONFIG}" == *inductor_distributed* ]]; then
   setup_torch_trace
   test_inductor_distributed
