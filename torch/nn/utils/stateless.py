@@ -296,11 +296,11 @@ def _reparametrize_optimizer(
     format. This helper assumes a DCP-compatible optimizer structure, but it
     consumes the optimizer-native packed-param-id representation rather than
     DCP's FQN-keyed exported state.
-    Tensor-valued optimizer state is rebound directly without cloning, so
-    in-place optimizer updates may be reflected into ``optimizer_state_dict``.
-    This is acceptable because this helper is intended for tracing-style
-    explicit-state paths, where the provided optimizer state is treated as a
-    mutable tracing input rather than an immutable snapshot.
+    Tensor values in the per-parameter optimizer state are shared (not cloned),
+    so in-place ops on existing entries (e.g. ``exp_avg.add_(...)``) propagate
+    back to ``optimizer_state_dict``. The per-parameter state dicts themselves
+    are shallow-copied, so structural changes made during the trace (new keys,
+    re-bound tensors) stay local and do not pollute ``optimizer_state_dict``.
     """
     state, group_rebind_infos = _prepare_optimizer_reparametrization(
         optimizer, parameters_and_buffers, optimizer_state_dict
@@ -325,11 +325,10 @@ def _reparametrize_optimizer(
                 group["params"], saved_group["params"], strict=True
             ):
                 # Re-key per-parameter optimizer state from packed ids to the
-                # rebound parameter tensors expected by the live optimizer.
-                # Example: if saved_group["params"] is [0, 1] and group["params"]
-                # is [fake_p0, fake_p1], then state[0] becomes optimizer.state[fake_p0]
-                # and state[1] becomes optimizer.state[fake_p1].
-                rebind_state[rebind_param] = state.get(param_id, {})
+                # rebound parameter tensors. Shallow-copy the per-param dict so
+                # tensor values are shared (in-place ops propagate) but
+                # structural mutations during the trace stay local.
+                rebind_state[rebind_param] = dict(state.get(param_id, {}))
 
         optimizer.state = rebind_state
         yield
