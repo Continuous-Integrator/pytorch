@@ -428,7 +428,6 @@ class FSDPParamGroup:
                     [all_gather_input.dtype],
                     world_size,
                     self.device,
-                    force_recreate=False,
                 )
 
                 tensor = fsdp_param.all_gather_outputs[0]
