@@ -1135,6 +1135,51 @@ def forward(self, L_x_ : torch.Tensor):
         finally:
             hook_handle.remove()
 
+    def test_register_hook_on_intermediate_stride_dependent(self):
+        def hook(grad):
+            if grad.is_contiguous():
+                return grad.sin()
+            else:
+                return grad.cos()
+
+        def fn(x):
+            y = x * 2
+            y.register_hook(hook)
+            return y.sum()
+
+        # Hooks that branch on grad metadata (e.g. is_contiguous)
+        # graph break because grad properties are unknown at trace time.
+        x = torch.randn(4, requires_grad=True)
+        with self.assertRaises(torch._dynamo.exc.Unsupported):
+            torch.compile(fn, backend="aot_eager", fullgraph=True)(x)
+
+    @unittest.skipIf(not torch.cuda.is_available(), "CUDA is unavailable")
+    def test_register_hook_on_intermediate_autograd_cache(self):
+        from torch._dynamo.utils import counters
+
+        def fn(x):
+            y = x * 2
+            y.register_hook(lambda g: g * 0.5)
+            return y.sum()
+
+        torch._functorch.config.enable_autograd_cache = True
+        try:
+            # First compile
+            torch._dynamo.reset()
+            counters.clear()
+            x = torch.randn(4, device="cuda", requires_grad=True)
+            torch.compile(fn, fullgraph=True)(x).backward()
+
+            # Second compile (force recompile to test cache)
+            torch._dynamo.reset()
+            x2 = torch.randn(4, device="cuda", requires_grad=True)
+            torch.compile(fn, fullgraph=True)(x2).backward()
+
+            aot_counters = counters["aot_autograd"]
+            self.assertEqual(aot_counters.get("autograd_cache_bypass", 0), 0)
+        finally:
+            torch._functorch.config.enable_autograd_cache = False
+
 
 if __name__ == "__main__":
     from torch._dynamo.test_case import run_tests

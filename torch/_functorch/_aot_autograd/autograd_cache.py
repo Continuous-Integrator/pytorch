@@ -161,6 +161,7 @@ def check_node_safe(node: Node) -> None:
         "torch.sym_sum",
         "torch.autograd.grad",
         "torch.distributed.tensor._api.from_local",
+        "torch._dynamo.external_utils.register_hook_trampoline_for_intermediate",
     )
     SAFE_NON_TORCH_FUNCTIONS = (
         "einops.einops.rearrange",

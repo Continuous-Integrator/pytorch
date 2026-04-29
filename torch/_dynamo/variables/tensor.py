@@ -57,7 +57,10 @@ from ..exc import (
     UserError,
     UserErrorType,
 )
-from ..external_utils import _RegisterHookTrampoline, call_hook_from_backward_state
+from ..external_utils import (
+    call_hook_from_backward_state,
+    register_hook_trampoline_for_intermediate,
+)
 from ..guards import GuardBuilder, install_guard
 from ..source import AttrSource
 from ..utils import (
@@ -1866,17 +1869,31 @@ class TensorVariable(VariableTracker):
             tensor_proxy = self.as_proxy()
             target_tracer = tensor_proxy.tracer
 
-            (body_r, _), hook_graph, hook_freevars = speculate_subgraph(
-                tx,
-                hook,
-                [self],
-                {},
-                "register_hook",
-                source_target=None,
-                enable_grad=None,
-                set_subgraph_inputs="flatten_manual",
-                restore_side_effects=True,
-            )
+            # Trace the hook body with strict mode so stride-dependent
+            # operations (e.g. is_contiguous()) graph break instead of
+            # silently specializing on the FakeTensor's strides.
+            try:
+                with tx.strict_translation_mode(lambda v: v.is_tensor()):
+                    (body_r, _), hook_graph, hook_freevars = speculate_subgraph(
+                        tx,
+                        hook,
+                        [self],
+                        {},
+                        "register_hook",
+                        source_target=None,
+                        enable_grad=None,
+                        set_subgraph_inputs="automatic_with_forced_inputs",  # pyrefly: ignore[bad-argument-type]
+                        restore_side_effects=True,
+                    )
+            except torch._dynamo.exc.UnknownPropertiesDuringBackwardTrace:
+                unimplemented(
+                    gb_type="register_hook with stride-dependent code",
+                    context="Hook accesses grad metadata (e.g. is_contiguous)",
+                    explanation="register_hook callbacks that branch on "
+                    "gradient metadata are not supported because grad "
+                    "properties are unknown at trace time.",
+                    hints=[],
+                )
 
             hook_nn_modules = tx.output.tracing_context.module_context.copy_graphstate()
             hook_name = tx.output.install_subgraph(
@@ -1888,7 +1905,7 @@ class TensorVariable(VariableTracker):
             p_args = (tensor_proxy, hook_node, *list(hook_freevars.keys()))
             hooked_proxy = target_tracer.create_proxy(
                 "call_function",
-                _RegisterHookTrampoline(),
+                register_hook_trampoline_for_intermediate,
                 tuple(p_args),
                 {},
             )
