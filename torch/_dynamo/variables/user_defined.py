@@ -937,7 +937,7 @@ class UserDefinedClassVariable(UserDefinedVariable):
             if not args[0].is_python_constant():
                 raise_type_error(
                     tx,
-                    f"{variable_cls.module_name()}.{variable_cls.fn_name()} requires a constant argument",
+                    f"{self.value} requires a constant argument",
                 )
             return variable_cls.create(tx, args[0].as_python_constant())
         elif (
