@@ -301,7 +301,7 @@ _TORCH_VERSION_PATTERN = re.compile(r"^TORCH_VERSION_\d+_\d+_\d+$")
 
 
 def _get_earliest_torch_version_for_op_variant(
-    op_metadata: dict[str, list[str] | str | dict[str, list[str] | str]],
+    op_metadata: dict[str, str | dict[str, list[str] | str]],
     op_version: int,
 ) -> str | None:
     """
@@ -333,7 +333,7 @@ def gen_declaration_and_definition(
     schema: FunctionSchema,
     device: str,
     backend_call: str,
-    op_metadata: dict[str, list[str] | str | dict[str, list[str] | str]],
+    op_metadata: dict[str, str | dict[str, list[str] | str]],
 ) -> tuple[str, str]:
     base_name = schema.name.unambiguous_name()
 
@@ -341,10 +341,9 @@ def gen_declaration_and_definition(
     if (base_name, device, backend_call) in declaration_definition_cache:
         return declaration_definition_cache[(base_name, device, backend_call)]
 
-    # Check the validity of op_metadata. The format should look like
-    # {"v2" : ["new_arg1"], "v3": ["new_arg2, new_arg3"]}.
-    # A variant value may also be a dict {"new_args": [...], "since": "TORCH_VERSION_X_Y_Z"};
-    # op_metadata may carry a top-level "since" key that would version-gate v1.
+    # Check the validity of op_metadata. Each "vN" entry is a dict
+    # {"new_args": [...], "since": "TORCH_VERSION_X_Y_Z"} where "since" is optional;
+    # op_metadata may also carry a top-level "since" key that would version-gate v1.
     indexed_op_metadata: dict[int, list[str]] = {1: []}
     for ver_str, payload in sorted(op_metadata.items()):
         # since will get processed later per op
@@ -362,15 +361,17 @@ def gen_declaration_and_definition(
             ) from e
         if ver_id in indexed_op_metadata:
             raise AssertionError(f"{ver_str} for {base_name} has already been defined")
-        if isinstance(payload, dict):
-            new_args = payload.get("new_args", [])
-            if not isinstance(new_args, list):
-                raise AssertionError(
-                    f"Variant {ver_str} for {base_name} has non-list 'new_args' field when a "
-                    "list of arg names differing from prev versions is expected."
-                )
-        else:
-            new_args = payload
+        if not isinstance(payload, dict):
+            raise AssertionError(
+                f"Variant {ver_str} for {base_name} must be a dict of the form "
+                "{'new_args': [...], 'since': 'TORCH_VERSION_X_Y_Z'}"
+            )
+        new_args = payload.get("new_args", [])
+        if not isinstance(new_args, list):
+            raise AssertionError(
+                f"Variant {ver_str} for {base_name} has non-list 'new_args' field when a "
+                "list of arg names differing from prev versions is expected."
+            )
         indexed_op_metadata[ver_id] = new_args
 
     declarations: list[str] = []
@@ -555,7 +556,7 @@ def get_fallback_op_name(func: NativeFunction) -> str:
 
 def gen_c_shim(
     func: NativeFunction,
-    version_info: dict[str, list[str]],
+    version_info: dict[str, str | dict[str, list[str] | str]],
     func_group_mapping: dict[OperatorName, NativeFunctionsGroup],
     dispatch_key: DispatchKey | None,
     backend_indices: dict[DispatchKey, BackendIndex],
@@ -593,7 +594,7 @@ def gen_c_shim(
 
 @dataclass(frozen=True)
 class ShimGenerator:
-    inductor_fallback_ops: dict[str, dict[str, list[str]]]
+    inductor_fallback_ops: dict[str, dict[str, str | dict[str, list[str] | str]]]
     func_group_mapping: dict[OperatorName, NativeFunctionsGroup]
     dispatch_key: DispatchKey | None
     backend_indices: dict[DispatchKey, BackendIndex]
@@ -620,7 +621,7 @@ class ShimGenerator:
 
 def gen_aoti_c_shim(
     native_functions: Sequence[NativeFunction],
-    inductor_fallback_ops: dict[str, dict[str, list[str]]],
+    inductor_fallback_ops: dict[str, dict[str, str | dict[str, list[str] | str]]],
     func_group_mapping: dict[OperatorName, NativeFunctionsGroup],
     dispatch_key: DispatchKey | None,
     backend_indices: dict[DispatchKey, BackendIndex],

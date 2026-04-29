@@ -26,9 +26,7 @@
 # available since torch 2.9. ALL NEWLY ADDED OPS MUST INCLUDE A "since" KEY WITH THE VALUE SET
 # TO THE CURRENT TORCH VERSION (the version when the op was added).
 
-inductor_fallback_ops: dict[
-    str, dict[str, list[str] | str | dict[str, list[str] | str]]
-] = {
+inductor_fallback_ops: dict[str, dict[str, str | dict[str, list[str] | str]]] = {
     "aten._adaptive_avg_pool2d_backward.default": {},
     "aten._adaptive_avg_pool2d.default": {},
     "aten._adaptive_avg_pool3d_backward.default": {},
@@ -222,9 +220,7 @@ inductor_fallback_ops: dict[
 # Unlike other c_shims, operators in this file do not bypass the dispatcher.
 # The same BC rules apply as inductor_fallback_ops, read about the "since"
 # key above.
-aten_shimified_ops: dict[
-    str, dict[str, list[str] | str | dict[str, list[str] | str]]
-] = {
+aten_shimified_ops: dict[str, dict[str, str | dict[str, list[str] | str]]] = {
     "aten.fill_.Scalar": {"since": "TORCH_VERSION_2_10_0"},
     "aten.pad.default": {"since": "TORCH_VERSION_2_10_0"},
     "aten.narrow.default": {"since": "TORCH_VERSION_2_10_0"},
