@@ -4768,10 +4768,11 @@ class ShapeEnv:
         has_unbacked = any(ds is DimDynamic.UNBACKED for ds in dynamic_sizes)
 
         if not has_unbacked:
+            # No unbacked dims — ex_size/ex_stride/ex_storage_offset are all ints.
             return self._create_symbolic_sizes_strides_storage_offset(
-                ex_size,
-                ex_stride,
-                ex_storage_offset,
+                ex_size,  # type: ignore[arg-type]
+                ex_stride,  # type: ignore[arg-type]
+                ex_storage_offset,  # type: ignore[arg-type]
                 [False] * len(sizes),
                 source,
                 symbolic_context=symbolic_context,
@@ -4793,7 +4794,7 @@ class ShapeEnv:
                     new_size_exprs.append(old_to_new[old_expr])
                 else:
                     sym = self.create_symbol(
-                        ex_size[i],
+                        ex_size[i],  # type: ignore[arg-type]  # None for UNBACKED, ignored
                         TensorPropertySource(source, TensorProperty.SIZE, i),
                         dynamic_sizes[i],
                         symbolic_context.constraint_sizes[i]

@@ -5758,8 +5758,13 @@ class TestTransferSymbolsFromForeignShapeEnv(TestCase):
         storage_offset = 0
 
         local_env = ShapeEnv()
-        new_sizes, new_strides, new_offset = local_env.transfer_symbols_from_foreign_shape_env(
-            sizes, strides, storage_offset, source=self._make_source("local"),
+        new_sizes, new_strides, new_offset = (
+            local_env.transfer_symbols_from_foreign_shape_env(
+                sizes,
+                strides,
+                storage_offset,
+                source=self._make_source("local"),
+            )
         )
         # Size should be unbacked in local_env
         self.assertTrue(is_symbolic(new_sizes[0]))
