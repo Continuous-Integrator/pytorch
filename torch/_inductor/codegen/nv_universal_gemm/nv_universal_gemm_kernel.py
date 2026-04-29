@@ -124,7 +124,6 @@ class NVUniversalGemmKernel(Kernel):
             self.accumulator_type, "cutlass.Float32"
         )
 
-        # --- Common setup ---
         input_params = [f"in_ptr{i}" for i, _ in enumerate(self.input_nodes)]
         input_params.append("out_ptr0")
         input_params.extend(self.epilogue_reads)
@@ -138,7 +137,6 @@ class NVUniversalGemmKernel(Kernel):
         cache_var = f"_{var_prefix}_compiled_cache"
         kernel_name_var = f"_{var_prefix}_KERNEL_NAME"
 
-        # --- Variant-specific: cache_key, create_args, extra_imports ---
         extra_imports = ""
         if is_grouped:
             cache_key = "(in_ptr0.shape, in_ptr0.dtype, in_ptr1.shape, in_ptr1.dtype, in_ptr2.shape)"
@@ -176,7 +174,6 @@ class NVUniversalGemmKernel(Kernel):
         accumulator_type={acc_dtype_str},
     )"""
 
-        # --- Epilogue-specific overrides ---
         if has_epilogue:
             assert self.epilogue_fn_code is not None  # narrowed by has_epilogue
             epilogue_kwargs = self._render_epilogue_kwargs()
@@ -222,7 +219,6 @@ class NVUniversalGemmKernel(Kernel):
     if kernel is None:
         raise RuntimeError(f"Could not find kernel: {{{kernel_name_var}}}")"""
 
-        # --- Assemble ---
         code = IndentedBuffer()
         code.splice(
             f"""
@@ -257,30 +253,21 @@ def {self.kernel_name}_main({params_str}):
         return code.getvalue()
 
     def _render_epilogue_kwargs(self) -> str:
-        """
-        Render kwargs for EpilogueArguments constructor.
+        """Render kwargs for EpilogueArguments constructor.
 
-        Maps Python variable names from the epilogue function to actual tensor arguments.
-        The 'D' output is mapped to out_ptr0, 'accum' is implicit (provided by GEMM),
-        and other reads are passed directly.
-
-        Skips intermediate stores (var_name → write_buf entries left behind by
-        CutlassEVTCodegen.store() when an epilogue chain has more than one
-        ComputedBuffer, e.g. relu((a@b)+bias)). Only the final 'D' rename and
-        external read inputs are emitted as kwargs; intermediate buffers aren't
-        kernel parameters and would produce NameError at runtime.
+        Skips intermediate stores (write_buffer entries from CutlassEVTCodegen.store()
+        in a multi-node epilogue chain) — those names are not kernel parameters and
+        would produce NameError at runtime.
         """
         kwargs_parts = []
         write_buffer_names = OrderedSet(self.epilogue_writes)
 
-        # Map Python var names to actual tensor args
         for var_name, buffer_name in self.epilogue_var_renames.items():
             if var_name == "D":
                 kwargs_parts.append("D=out_ptr0")
             elif var_name == _ACCUMULATOR_ARG_NAME:
                 continue
             elif buffer_name in write_buffer_names:
-                # Intermediate store from a multi-stage epilogue chain.
                 continue
             else:
                 kwargs_parts.append(f"{var_name}={buffer_name}")
@@ -309,7 +296,6 @@ def {self.kernel_name}_main({params_str}):
         raw_args: list[Buffer | ReinterpretView | None] = []
         raw_keys: list[str | None] = []
 
-        # Add GEMM input args (A, B)
         for param_name, input_node in self._template_input_args:
             reinterpret_view = self._get_reinterpret_view(input_node)
             if reinterpret_view is not None:
@@ -323,11 +309,8 @@ def {self.kernel_name}_main({params_str}):
             arg_types.append(V.graph.get_dtype(input_node.get_name()))
             raw_keys.append(param_name)
 
-        # Add output arg
-        # When epilogue is fused, use the epilogue's last write (the EVT codegen's
-        # 'D' output) as the kernel call's output name. Inductor's removed_buffers
-        # mechanism aliases the GEMM output buffer to the planner's allocated
-        # output, so writing to epilogue_writes[-1] resolves correctly downstream.
+        # The kernel writes to the epilogue's final output, not the GEMM buffer
+        # (which is removed via removed_buffers aliasing).
         if self.epilogue_writes:
             output_name = self.epilogue_writes[-1]
         else:
@@ -337,7 +320,6 @@ def {self.kernel_name}_main({params_str}):
         raw_args.append(None)  # Output buffer is findable by name
         raw_keys.append("out_ptr0")
 
-        # Add epilogue input args
         for read_name in self.epilogue_reads:
             call_args.append(read_name)
             arg_types.append(V.graph.get_dtype(read_name))
@@ -363,7 +345,6 @@ def {self.kernel_name}_main({params_str}):
             raw_args.append(None)
             raw_keys.append(None)
 
-        # Generate the kernel call using triton=True for Python-based kernels
         wrapper.generate_kernel_call(
             name,
             call_args,
