@@ -129,6 +129,10 @@ class NVUniversalGemmBenchmarkRequest(GPUDeviceBenchmarkMixin, BenchmarkRequest)
         """Create a function to run the NVIDIA Universal GEMM kernel."""
         import cutlass_api
 
+        from torch._inductor.utils import _ensure_fp4_dtype_registered
+
+        _ensure_fp4_dtype_registered()
+
         args = self._create_gemm_arguments(cutlass_api, input_tensors, out)
 
         if self._compiled_artifact is None:
@@ -401,7 +405,9 @@ class NVUniversalGemmCaller(ChoiceCaller):
         return make_kernel_render
 
 
-def _create_dummy_tensor_from_layout(layout: Layout) -> torch.Tensor | None:
+def _create_dummy_tensor_from_layout(
+    layout: Layout, dtype_override: torch.dtype | None = None
+) -> torch.Tensor | None:
     """
     Create a FakeTensor from a Layout for kernel filtering.
 
@@ -410,7 +416,10 @@ def _create_dummy_tensor_from_layout(layout: Layout) -> torch.Tensor | None:
     metadata for its supports() checks.
     """
     try:
-        return layout.get_example()
+        result = layout.get_example()
+        if dtype_override is not None and result.dtype != dtype_override:
+            result = result.view(dtype_override)
+        return result
     except Exception:
         # Broad: layout.get_example()/torch.empty_strided under fake mode can
         # raise a variety of unexpected errors (TypeError, AssertionError, etc.)
@@ -481,13 +490,21 @@ def _add_nv_gemm_choices_impl(
     """
     import cutlass_api
 
+    from torch._inductor.utils import _ensure_fp4_dtype_registered
+
+    _ensure_fp4_dtype_registered()
+
     from torch._inductor.codegen.nv_universal_gemm.kernel_cache import (
         get_compatible_kernels,
     )
 
-    # Create dummy tensors for cutlass_api's supports() checks
+    # Create dummy tensors for cutlass_api's supports() checks.
+    # Pass node dtype to handle FP4 ReinterpretView (uint8 storage viewed as float4_e2m1fn_x2).
     dummy_tensors = [
-        _create_dummy_tensor_from_layout(node.get_layout()) for node in input_nodes
+        _create_dummy_tensor_from_layout(
+            node.get_layout(), dtype_override=node.get_dtype()
+        )
+        for node in input_nodes
     ]
     out_tensor = _create_dummy_tensor_from_layout(layout)
 
