@@ -53,15 +53,6 @@ inline namespace CPU_CAPABILITY {
 #define USE_AOR(aor_code, non_aor_code) non_aor_code
 #endif
 
-// AOR is used as a PoC replacement for the closest matching float32 AdvSIMD
-// routines. These do not exactly match Sleef u05/u10/u15 accuracy contracts:
-// sin, cos, tan, exp, log, asin, acos, atan, acosh, asinh, atanh, atan2,
-// sinh, cosh, tanh, exp2, log2, log10, expm1, log1p, erf, erfc, hypot, pow.
-// exp and exp2 use AOR's _1u variants. For these ops the order is AOR, then
-// Sleef, then scalar std fallback. Sleef remains the only vector path where
-// there is no direct AOR fp32 replacement below: copysign, fmod, nextafter,
-// lgamma.
-
 template <int index, bool mask_val>
 struct BlendRegs {
   static float32x4_t impl(
