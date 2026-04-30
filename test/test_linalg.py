@@ -98,6 +98,38 @@ def get_tunableop_validators():
     validators = dict(torch.cuda.tunable.get_validators())
     return validators
 
+def _get_rocm_float8_dtypes():
+    """Return the appropriate float8 dtypes for the current ROCm hardware.
+
+    MI300/MI325 (gfx942): supports fnuz float8 formats
+    MI350 (gfx950): supports OCP/IEEE float8 formats
+    Others: no float8 support (returns empty tuple, test will not run)
+    """
+    if not torch.version.hip or not torch.cuda.is_available():
+        return ()
+    arch = torch.cuda.get_device_properties(0).gcnArchName
+    if "gfx942" in arch:
+        return (torch.float8_e4m3fnuz, torch.float8_e5m2fnuz)
+    elif "gfx950" in arch:
+        return (torch.float8_e4m3fn, torch.float8_e5m2)
+    return ()
+
+def _get_rocm_float8_e4m3_dtype():
+    """Return the e4m3 float8 dtype for rowwise scaling tests.
+
+    MI300/MI325 (gfx942): float8_e4m3fnuz
+    MI350 (gfx950): float8_e4m3fn
+    Others: empty tuple (test will not run)
+    """
+    if not torch.version.hip or not torch.cuda.is_available():
+        return ()
+    arch = torch.cuda.get_device_properties(0).gcnArchName
+    if "gfx942" in arch:
+        return (torch.float8_e4m3fnuz,)
+    elif "gfx950" in arch:
+        return (torch.float8_e4m3fn,)
+    return ()
+
 def find_tunableop_result(results, OpSig, ParamSig):
     if not isinstance(results, tuple):
         raise AssertionError(f"results should be tuple, got {type(results)}")
@@ -5336,8 +5368,7 @@ class TestLinalg(TestCase):
 
     @onlyCUDA
     @skipCUDAIfNotRocm
-    @runOnRocmArch(MI300_ARCH)
-    @dtypes(torch.torch.float8_e4m3fnuz, torch.float8_e5m2fnuz)
+    @dtypes(*_get_rocm_float8_dtypes())
     def test_scaled_gemm_offline_tunableop(self, device, dtype):
         import os
         # This test is the offline version of test_scaled_gemm_tunableop
@@ -5387,7 +5418,7 @@ class TestLinalg(TestCase):
             torch._scaled_mm(matA, matB, scale_a=scaleA, scale_b=scaleB, out_dtype=torch.half)
 
             # rowwise scaling, only supported for this dtype combination
-            if dtype is torch.torch.float8_e4m3fnuz:
+            if dtype in (torch.float8_e4m3fnuz, torch.float8_e4m3fn):
                 scaleA = torch.ones((matA.shape[0], 1), device=device)
                 scaleB = torch.ones((1, matB.shape[1]), device=device)
                 torch._scaled_mm(matA, matB, scale_a=scaleA, scale_b=scaleB, out_dtype=torch.bfloat16)
@@ -5413,7 +5444,7 @@ class TestLinalg(TestCase):
             total_num_results = new_results - ref_results
 
             # Rowwise case will have an extra solution
-            if dtype is torch.torch.float8_e4m3fnuz:  # rowwise
+            if dtype in (torch.float8_e4m3fnuz, torch.float8_e4m3fn):  # rowwise
                 count = 7
             else:
                 count = 6
@@ -5854,8 +5885,7 @@ class TestLinalg(TestCase):
 
     @onlyCUDA
     @skipCUDAIfNotRocm
-    @runOnRocmArch(MI300_ARCH)
-    @dtypes(torch.torch.float8_e4m3fnuz, torch.float8_e5m2fnuz)
+    @dtypes(*_get_rocm_float8_dtypes())
     def test_scaled_gemm_tunableop(self, device, dtype):
         # Test Scaled GEMM tuning.
         # We do not test the full set of scaled GEMM parameters, since
@@ -5911,7 +5941,7 @@ class TestLinalg(TestCase):
             torch._scaled_mm(matA, matB, scale_a=scaleA, scale_b=scaleB, out_dtype=torch.half)
 
             # rowwise scaling, only supported for this dtype combination
-            if dtype is torch.torch.float8_e4m3fnuz:
+            if dtype in (torch.float8_e4m3fnuz, torch.float8_e4m3fn):
                 scaleA = torch.ones((matA.shape[0], 1), device=device)
                 scaleB = torch.ones((1, matB.shape[1]), device=device)
                 torch._scaled_mm(matA, matB, scale_a=scaleA, scale_b=scaleB, out_dtype=torch.bfloat16)
@@ -5920,7 +5950,7 @@ class TestLinalg(TestCase):
             total_num_results = len(torch.cuda.tunable.get_results())
 
             # Rowwise case will have an extra solution
-            if dtype is torch.torch.float8_e4m3fnuz:  # rowwise
+            if dtype in (torch.float8_e4m3fnuz, torch.float8_e4m3fn):  # rowwise
                 count = 7
             else:
                 count = 6
@@ -6428,8 +6458,7 @@ class TestLinalg(TestCase):
 
     @onlyCUDA
     @skipCUDAIfNotRocm
-    @runOnRocmArch(MI300_ARCH)
-    @dtypes(torch.torch.float8_e4m3fnuz)
+    @dtypes(*_get_rocm_float8_e4m3_dtype())
     def test_rowwise_scaled_gemm_numerics_tunableop(self, device, dtype):
         # Test Scaled GEMM rowwise numerics
         # Compute rowwise scaled_gemm via non-TunableOp code path
