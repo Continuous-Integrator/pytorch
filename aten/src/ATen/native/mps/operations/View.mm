@@ -75,8 +75,7 @@ static id<MTLComputePipelineState> getPipelineState(const std::string& kernel,
                                                     bool needsScatter,
                                                     bool needsConj) {
   auto cvtFunc = genScatterGatherCvtFunc(dtypeSrc, dtypeDst, needsConj);
-  return (needsScatter ? scatterLib : gatherLib)
-      .getPipelineStateForFunc(kernel, {dtypeSrc, dtypeDst, cvtFunc});
+  return (needsScatter ? scatterLib : gatherLib).getPipelineStateForFunc(kernel, {dtypeSrc, dtypeDst, cvtFunc});
 }
 
 static bool viewNeeds64BitOffsets(const at::Tensor& view) {
@@ -120,12 +119,11 @@ Tensor gatherViewTensor(const at::Tensor& src, at::Tensor& dst) {
   dispatch_sync_with_rethrow(mpsStream->queue(), ^() {
     id<MTLComputeCommandEncoder> computeEncoder = mpsStream->commandEncoder();
     std::string functionName = getGatherScatterFunctionName(output.scalar_type(), output.dim(), /*needsScatter=*/false);
-    id<MTLComputePipelineState> gatherPSO =
-        getPipelineState(functionName + (needs64Bit ? "_u64" : "_u32"),
-                         scalarToMetalTypeString(src),
-                         scalarToMetalTypeString(output),
-                         /*needsScatter=*/false,
-                         src.is_conj() != dst.is_conj());
+    id<MTLComputePipelineState> gatherPSO = getPipelineState(functionName + (needs64Bit ? "_u64" : "_u32"),
+                                                             scalarToMetalTypeString(src),
+                                                             scalarToMetalTypeString(output),
+                                                             /*needsScatter=*/false,
+                                                             src.is_conj() != dst.is_conj());
 
     // this function call is a no-op if MPS Profiler is not enabled
     getMPSProfiler().beginProfileKernel(gatherPSO, functionName, {src, output});
@@ -174,12 +172,11 @@ Tensor& scatterViewTensor(const at::Tensor& src, at::Tensor& output) {
       id<MTLComputeCommandEncoder> computeEncoder = mpsStream->commandEncoder();
       std::string functionName =
           getGatherScatterFunctionName(output.scalar_type(), output.dim(), /*needsScatter=*/true);
-      id<MTLComputePipelineState> scatterPSO =
-          getPipelineState(functionName + (needs64Bit ? "_u64" : "_u32"),
-                           scalarToMetalTypeString(src),
-                           scalarToMetalTypeString(output),
-                           /*needsScatter=*/true,
-                           src.is_conj() != output.is_conj());
+      id<MTLComputePipelineState> scatterPSO = getPipelineState(functionName + (needs64Bit ? "_u64" : "_u32"),
+                                                                scalarToMetalTypeString(src),
+                                                                scalarToMetalTypeString(output),
+                                                                /*needsScatter=*/true,
+                                                                src.is_conj() != output.is_conj());
 
       getMPSProfiler().beginProfileKernel(scatterPSO, functionName, {src, output});
 
@@ -194,9 +191,7 @@ Tensor& scatterViewTensor(const at::Tensor& src, at::Tensor& output) {
       }
 
       [computeEncoder setComputePipelineState:scatterPSO];
-      auto encode = [&](auto strides) {
-        mtl_setArgs(computeEncoder, src, output, output_sizes, strides, numThreads);
-      };
+      auto encode = [&](auto strides) { mtl_setArgs(computeEncoder, src, output, output_sizes, strides, numThreads); };
       if (needs64Bit) {
         encode(makeStridesBuffer<uint64_t>(output));
       } else {
