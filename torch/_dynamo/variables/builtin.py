@@ -2503,7 +2503,7 @@ class BuiltinVariable(BaseBuiltinVariable):
                         unimplemented(
                             gb_type="Failed to mutate tensor data attribute",
                             context=f"setattr({obj}, {name}, {val})",
-                            explanation="Dyanmo only supports mutating `.data`"
+                            explanation="Dynamo only supports mutating `.data`"
                             " of tensor created outside `torch.compile` region",
                             hints=[
                                 "Don't mutate `.data` on this tensor, or move "
@@ -2514,7 +2514,7 @@ class BuiltinVariable(BaseBuiltinVariable):
                         unimplemented(
                             gb_type="Failed to mutate tensor data attribute to different dtype",
                             context=f"setattr({obj}, {name}, {val})",
-                            explanation="Dyanmo only supports mutating `.data`"
+                            explanation="Dynamo only supports mutating `.data`"
                             " of tensor to a new one with the same dtype",
                             hints=[
                                 "Don't mutate `.data` on this tensor, or move "
@@ -2580,7 +2580,7 @@ class BuiltinVariable(BaseBuiltinVariable):
                     unimplemented(
                         gb_type="Failed to set tensor attribute",
                         context=f"setattr({obj}, {name}, {val})",
-                        explanation="Dyanmo doesn't support setting these tensor attributes",
+                        explanation="Dynamo doesn't support setting these tensor attributes",
                         hints=[
                             f"Don't mutate attribute '{name}' on tensors, or "
                             "move the mutation out of `torch.compile` region",
