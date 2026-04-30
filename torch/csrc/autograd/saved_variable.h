@@ -126,7 +126,7 @@ class TORCH_API SavedVariable {
   std::shared_ptr<Node> grad_fn_;
   // For the usual case where leaf tensors are the input, we expect its
   // grad_acc to be kept alive by the graph. The reason SavedVariable holds
-  // a owning reference is to support the case where a custom autograd Function
+  // an owning reference is to support the case where a custom autograd Function
   // saves an intermediate.
   std::shared_ptr<Node> grad_accumulator_;
   bool requires_grad_ = false;
