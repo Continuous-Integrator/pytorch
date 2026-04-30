@@ -66,7 +66,7 @@ def disk_cache_get(
             import cutlass.cute as cute
 
             m = cute.runtime.load_module(str(obj_path), enable_tvm_ffi=True)
-            fn = getattr(m, "func")
+            fn = m.func
             mem_cache[mem_key] = fn
             return fn
         except Exception:
@@ -97,9 +97,7 @@ def disk_cache_set(
         try:
             fd, tmp_path = tempfile.mkstemp(dir=str(d), suffix=".o.tmp")
             os.close(fd)
-            compiled_fn.export_to_c(
-                object_file_path=tmp_path, function_name="func"
-            )
+            compiled_fn.export_to_c(object_file_path=tmp_path, function_name="func")
             os.replace(tmp_path, str(obj_path))
         except (AttributeError, RuntimeError, TypeError):
             log.debug(
