@@ -2587,11 +2587,6 @@ class BuiltinVariable(BaseBuiltinVariable):
                         ],
                     )
 
-            if isinstance(obj, variables.UserDefinedClassVariable):
-                mod = getattr(obj.value, "__module__", None) or ""
-                if mod.startswith(("torch.", "torch_")):
-                    return None
-
             tx.output.side_effects.store_attr(obj, name, val)
             return val
         elif isinstance(obj, variables.NNModuleVariable):
