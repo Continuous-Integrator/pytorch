@@ -23340,7 +23340,7 @@ for dsl_name in torch.backends.python_native.available_dsls:
 # Calling the raw triton kernel here ould bypasses FakeTensorMode and crashes with an IMA
 dsl_ops_by_dsl.setdefault('triton', []).append(
     OpInfo(
-        "triton_bmm_outer_product",
+        "bmm",
         op=torch.bmm,
         dtypes=floating_types_and(torch.half, torch.bfloat16),
         dtypesIfCUDA=floating_types_and(torch.half, torch.bfloat16),
