@@ -536,11 +536,7 @@ class TestKernelBenchmark(TestCase):
 
     @config.patch(benchmark_harness=True)
     def test_benchmark_compiled_module_device_arg(self):
-        """Regression test for https://github.com/pytorch/pytorch/issues/181954.
-
-        benchmark_compiled_module must pass the correct device to print_performance
-        so that synchronize() targets the right backend (not always CUDA).
-        """
+        """Regression test for https://github.com/pytorch/pytorch/issues/181954."""
 
         @torch.compile
         def f(x):
