@@ -38,7 +38,7 @@ __all__ = [
     "IntSpecType",
     "IntSpec",
     "TensorSpec",
-    "ArgsSpec",
+    "ParamsSpec",
     "ShapesSpec",
     "lookup_spec",
 ]
@@ -394,7 +394,7 @@ class TensorSpec:
     # identity and conflict with the AOT-snapshot invariant.
 
 
-class ArgsSpec:
+class ParamsSpec:
     """Specification for the arguments of a compiled function.
 
     Describes the dynamic shape behavior for named arguments, *args, and
@@ -408,16 +408,16 @@ class ArgsSpec:
     Construct via the constructor or build incrementally with fluent methods::
 
         # Constructor form
-        ArgsSpec(
+        ParamsSpec(
             named_args={"x": TensorSpec(3), "y": IntSpec.backed("y")},
             varargs=[TensorSpec(2), None],
             varkw={"extra": TensorSpec(1)},
         )
 
         # Fluent form
-        ArgsSpec().arg("x", TensorSpec(3)).arg("y", IntSpec.backed("y"))
-        ArgsSpec().varargs([TensorSpec(2), None])
-        ArgsSpec().varkw({"extra": TensorSpec(1)})
+        ParamsSpec().arg("x", TensorSpec(3)).arg("y", IntSpec.backed("y"))
+        ParamsSpec().varargs([TensorSpec(2), None])
+        ParamsSpec().varkw({"extra": TensorSpec(1)})
     """
 
     def __init__(
@@ -436,18 +436,18 @@ class ArgsSpec:
         self._varargs: list[TensorSpec | IntSpec | None] | None = None
         self._varkw: dict[str, TensorSpec | IntSpec | None] | None = None
 
-    def arg(self, name: str, spec: ASpec) -> "ArgsSpec":
+    def arg(self, name: str, spec: ASpec) -> "ParamsSpec":
         """Add or update a named argument spec. Returns ``self`` for chaining."""
         if not isinstance(name, str):
             raise TypeError(f"arg name must be str, got {type(name).__name__}")
         self._named_args[name] = spec
         return self
 
-    def varargs(self, specs: list[ASpec]) -> "ArgsSpec":
+    def varargs(self, specs: list[ASpec]) -> "ParamsSpec":
         """Set specs for positional *args. Returns ``self`` for chaining."""
         raise NotImplementedError("varargs is not supported yet")
 
-    def varkw(self, specs: dict[str, ASpec]) -> "ArgsSpec":
+    def varkw(self, specs: dict[str, ASpec]) -> "ParamsSpec":
         """Set specs for **kwargs. Returns ``self`` for chaining."""
         raise NotImplementedError("varkw is not supported yet")
 
@@ -459,7 +459,7 @@ class ArgsSpec:
             parts.append(f"varargs={self._varargs!r}")
         if self._varkw is not None:
             parts.append(f"varkw={self._varkw!r}")
-        return f"ArgsSpec({', '.join(parts)})"
+        return f"ParamsSpec({', '.join(parts)})"
 
 
 class ShapesSpec:
@@ -471,7 +471,7 @@ class ShapesSpec:
 
     Currently only ``params`` is supported::
 
-        ShapesSpec(params=ArgsSpec().arg("x", TensorSpec(3)))
+        ShapesSpec(params=ParamsSpec().arg("x", TensorSpec(3)))
 
     ``globals`` and ``assumptions`` are reserved for future use and will
     raise ``NotImplementedError`` if set.
@@ -479,7 +479,7 @@ class ShapesSpec:
 
     def __init__(
         self,
-        params: ArgsSpec | None = None,
+        params: ParamsSpec | None = None,
         globals: Any = None,
         assumptions: Any = None,
     ) -> None:
@@ -490,7 +490,7 @@ class ShapesSpec:
         self._params = params
 
     @property
-    def params(self) -> ArgsSpec | None:
+    def params(self) -> ParamsSpec | None:
         return self._params
 
     def __repr__(self) -> str:
