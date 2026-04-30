@@ -17,19 +17,6 @@ static auto& lib = MetalShaderLibrary::getBundledLibrary();
 #include <ATen/native/mps/Linear_metallib.h>
 #endif
 
-// Pad a 2D tensor along `dim` to a multiple of `align`, zero-filling.
-static Tensor pad_to_multiple(const Tensor& t, int64_t dim, int64_t align) {
-  int64_t size = t.size(dim);
-  int64_t padded = (size + align - 1) / align * align;
-  if (padded == size)
-    return t;
-  auto pad_sizes = t.sizes().vec();
-  pad_sizes[dim] = padded;
-  auto padded_t = at::zeros(pad_sizes, t.options());
-  padded_t.narrow(dim, 0, size).copy_(t);
-  return padded_t;
-}
-
 // Select tile sizes based on input dimensions.
 // Tuned on M5 Pro for fp16 across LLM and small shapes.
 static std::pair<int64_t, int64_t> select_tile_sizes(int64_t M, int64_t N) {
@@ -51,20 +38,15 @@ static void _mps_linear_mpp(const Tensor& input, const Tensor& weight, const Ten
   int64_t TILE_M = tile_sizes.first;
   int64_t TILE_N = tile_sizes.second;
 
-  // MPP matmul2d requires M and N to be multiples of tile sizes.
-  auto input_padded = pad_to_multiple(input, 0, TILE_M);
-  auto weight_padded = pad_to_multiple(weight, 0, TILE_N);
-  int64_t M_padded = input_padded.size(0);
-  int64_t N_padded = weight_padded.size(0);
-
-  auto bias_padded = has_bias ? pad_to_multiple(bias.contiguous(), 0, TILE_N) : bias;
-
-  bool needs_slice = (M_padded != M || N_padded != N);
-  auto output_buf = needs_slice ? at::empty({M_padded, N_padded}, output.options()) : output;
+  // When M and N are already tile-aligned the aligned kernel runs without
+  // any per-tile bounds checks. Otherwise the dyn kernel handles edge tiles
+  // via dynamic-extent slices, so we never need to allocate padded buffers.
+  bool aligned = (M % TILE_M == 0) && (N % TILE_N == 0);
+  const char* variant = aligned ? "aligned" : "dyn";
 
   auto dtype_str = scalarToMetalTypeString(input);
   auto tile_str = std::to_string(TILE_M) + "x" + std::to_string(TILE_N);
-  auto func_name = (has_bias ? "mpp_linear_bias_" : "mpp_linear_") + tile_str + "_" + dtype_str;
+  auto func_name = std::string("mpp_linear_") + variant + (has_bias ? "_bias_" : "_") + tile_str + "_" + dtype_str;
   auto stream = getCurrentMPSStream();
   auto pso = lib.getPipelineStateForFunc(func_name);
 
@@ -74,27 +56,22 @@ static void _mps_linear_mpp(const Tensor& input, const Tensor& weight, const Ten
       auto computeEncoder = stream->commandEncoder();
       [computeEncoder setComputePipelineState:pso];
 
-      std::array<uint32_t, 3> sizes = {
-          static_cast<uint32_t>(M_padded), static_cast<uint32_t>(K), static_cast<uint32_t>(N_padded)};
+      std::array<uint32_t, 3> sizes = {static_cast<uint32_t>(M), static_cast<uint32_t>(K), static_cast<uint32_t>(N)};
       if (has_bias) {
-        mtl_setArgs(computeEncoder, input_padded, weight_padded, output_buf, bias_padded, sizes);
+        mtl_setArgs(computeEncoder, input, weight, output, bias, sizes);
       } else {
-        mtl_setArgs(computeEncoder, input_padded, weight_padded, output_buf, output_buf, sizes);
+        mtl_setArgs(computeEncoder, input, weight, output, output, sizes);
       }
 
       NSUInteger simd_w = [pso threadExecutionWidth];
       NSUInteger threads_per_tg = simd_w * 4;
-      uint32_t num_tg_x = static_cast<uint32_t>(N_padded / TILE_N);
-      uint32_t num_tg_y = static_cast<uint32_t>(M_padded / TILE_M);
+      uint32_t num_tg_x = static_cast<uint32_t>((N + TILE_N - 1) / TILE_N);
+      uint32_t num_tg_y = static_cast<uint32_t>((M + TILE_M - 1) / TILE_M);
 
       [computeEncoder dispatchThreadgroups:MTLSizeMake(num_tg_x, num_tg_y, 1)
                      threadsPerThreadgroup:MTLSizeMake(threads_per_tg, 1, 1)];
     }
   });
-
-  if (needs_slice) {
-    output.copy_(output_buf.narrow(0, 0, M).narrow(1, 0, N));
-  }
 }
 
 static void _mps_linear_nograph(const Tensor& input, const Tensor& weight, const Tensor& bias, Tensor& output) {
