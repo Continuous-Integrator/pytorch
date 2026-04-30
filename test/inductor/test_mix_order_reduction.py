@@ -1184,12 +1184,17 @@ class OverFusionTest(TestBase):
         out_act.backward(dy)
         grad_act = x.grad.clone()
 
-        # The eager vs compiled bf16 backward gradient drift is larger on XPU
-        # than on CUDA for this transformer pattern: the XPU SDPA backward and
-        # the Inductor-generated mix-order-reduction kernels accumulate in a
-        # different order than the eager reference, and bf16's narrow mantissa
-        # amplifies the resulting per-element error past the 5e-2 baseline used
-        # for CUDA. See intel/torch-xpu-ops#3509 for the failing-run evidence.
+        # The 5e-2 tolerance is the original baseline for this test on CUDA
+        # (introduced in #179494) and is left unchanged for CUDA/ROCm. On XPU
+        # the test was disabled by intel/torch-xpu-ops#3509 without a captured
+        # traceback, so the failing assertion is not known with certainty;
+        # local runs on Intel Data Center GPU Max 1550 (PVC) pass at 5e-2,
+        # which suggests the CI failure is hardware-specific (linux.idc.xpu
+        # may use different XPU SKUs whose SDPA-backward / Inductor kernel
+        # accumulation order produces larger bf16 drift than PVC). Bump only
+        # the XPU tolerance so CUDA/ROCm regression coverage is unaffected,
+        # and leave the two metric assertions below unchanged so the actual
+        # #179423 over-fusion regression is still gated on every backend.
         tol = 1e-1 if GPU_TYPE == "xpu" else 5e-2
         self.assertTrue(same(grad_ref, grad_act, tol=tol))
 
