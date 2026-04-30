@@ -192,8 +192,7 @@ class TestEnvironment:
         if env_var is not None:
             env_var_val = os.getenv(env_var)
             enabled = enabled_fn(env_var_val, default)
-        implied = False
-        if env_var_val is None:
+        else:
             implied = implied_by_fn()
             enabled = enabled or implied
         if include_in_repro and (env_var is not None) and (enabled != default) and not implied:
