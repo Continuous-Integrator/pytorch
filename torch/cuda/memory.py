@@ -161,6 +161,7 @@ def caching_allocator_enable(value: bool = True) -> None:
 @contextlib.contextmanager
 def caching_allocator_disabled():
     r"""Context manager that temporarily disables the CUDA caching allocator."""
+    # pyrefly: ignore [missing-attribute]
     prev = torch._C._cuda_cudaCachingAllocator_is_enabled()
     caching_allocator_enable(False)
     try:
@@ -280,6 +281,8 @@ def memory_stats(device: "Device" = None) -> dict[str, Any]:
       cuMemMap and cudaMalloc.
     - ``"num_device_free"``: number of CUDA free calls. This includes both cuMemUnmap
       and cudaFree.
+    - ``"num_oom_rejections"``: number of allocations preemptively rejected by the
+        throw_on_cudamalloc_oom + per_process_memory_fraction policy.
 
     The caching allocator can be configured via ENV to not split blocks larger than a
     defined size (see Memory Management section of the Cuda Semantics documentation).

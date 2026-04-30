@@ -379,8 +379,8 @@ std::optional<InferredType> _tryToInferTypeImpl(py::handle input);
 // Try to infer the type of a Python object
 // The type cannot be inferred if:
 //   input is an empty container (list, dict)
-//   input is an list with element types that cannot be unified
-//   input is an dict with key or value types that cannot be unified
+//   input is a list with element types that cannot be unified
+//   input is a dict with key or value types that cannot be unified
 inline InferredType tryToInferType(py::handle input) {
   // Try tensor types
   if (THPVariable_Check(input.ptr())) {
@@ -426,6 +426,14 @@ inline InferredType tryToInferType(py::handle input) {
     return InferredType(IntType::get());
   } else if (THPLayout_Check(input.ptr())) {
     return InferredType(IntType::get());
+  }
+
+  // Check for types registered in _tryToInferTypeImpl (e.g. ProcessGroup)
+  // before falling through to the expensive inspect.isclass / JIT compilation
+  // path below.
+  auto ty = detail::_tryToInferTypeImpl(input);
+  if (ty.has_value()) {
+    return ty.value();
   }
 
   auto enum_type = py::module::import("enum").attr("Enum");
@@ -515,11 +523,6 @@ inline InferredType tryToInferType(py::handle input) {
   py::bool_ is_module = py::isinstance(input, module_type);
   if (py::cast<bool>(is_module)) {
     return InferredType("Cannot infer concrete type of torch.nn.Module");
-  }
-
-  auto ty = detail::_tryToInferTypeImpl(input);
-  if (ty.has_value()) {
-    return ty.value();
   }
 
   // Try container types
