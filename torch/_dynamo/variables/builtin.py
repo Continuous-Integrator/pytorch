@@ -634,7 +634,6 @@ class BuiltinVariable(BaseBuiltinVariable):
             ) -> VariableTracker:
                 from .builder import wrap_fx_proxy
 
-
                 return wrap_fx_proxy(
                     tx,
                     tx.output.create_proxy(
