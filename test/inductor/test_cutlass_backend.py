@@ -373,7 +373,16 @@ class TestCutlassBackend(TestCase):
                 x = torch.randn(x_shape).to(GPU_TYPE).to(dtype)
                 Y_compiled = torch.compile(torch.addmm)(x, a, b, alpha=alpha, beta=beta)
                 Y = torch.addmm(x, a, b, alpha=alpha, beta=beta)
-                if GPU_TYPE == "xpu":
+                if GPU_TYPE == "xpu" and dtype == torch.bfloat16:
+                    # XPU CUTLASS kernels (xe20 tensorop) may accumulate slightly
+                    # more rounding error than the reference torch.addmm for large
+                    # reduction dimensions in bfloat16.  With K=25728 and bf16
+                    # (7-bit mantissa, ULP ~0.0078 around 1.0), a handful of
+                    # elements can differ by up to ~0.004 (half a bf16 ULP).
+                    # Use 5e-3 to accommodate this without masking real bugs.
+                    atol = 5e-3
+                    rtol = 5e-3
+                elif GPU_TYPE == "xpu":
                     atol = 1e-3
                     rtol = 1e-3
                 else:
@@ -2220,6 +2229,82 @@ class TestCutlassBackend(TestCase):
             1,
         )
         torch.testing.assert_close(result, ref_result)
+
+    @skipXPUIf(not Xe2_Or_Later, "")
+    @skipCUDAIf(not SM90OrLater, "need sm_90")
+    @use_evt_config
+    def test_evt_silu_fusion(self):
+        """Test that SiLU activation can be fused into GEMM epilogue via EVT."""
+
+        class TestModel(torch.nn.Module):
+            def forward(self, a, b):
+                return torch.nn.functional.silu(a @ b)
+
+        M, N = 1024, 512
+        a = torch.randn(M, N, device=GPU_TYPE, dtype=torch.float16)
+        b = torch.randn(N, N, device=GPU_TYPE, dtype=torch.float16).t()
+        model = TestModel().to(GPU_TYPE)
+
+        result = torch.compile(model)(a, b)
+        ref_result = model(a, b)
+
+        self.assertEqual(
+            torch._dynamo.utils.counters["inductor"]["cutlass_epilogue_fusion_counter"],
+            1,
+        )
+        torch.testing.assert_close(result, ref_result, atol=1e-2, rtol=1e-2)
+
+    @skipXPUIf(not Xe2_Or_Later, "")
+    @skipCUDAIf(not SM90OrLater, "need sm_90")
+    @use_evt_config
+    def test_evt_llama_mlp_pattern(self):
+        """Test the Llama MLP pattern: silu(x @ gate.T) * (x @ up.T)."""
+
+        class LlamaMLP(torch.nn.Module):
+            def forward(self, x, gate_w, up_w):
+                return torch.nn.functional.silu(x @ gate_w.t()) * (x @ up_w.t())
+
+        M, K, N = 256, 256, 256
+        x = torch.randn(M, K, device=GPU_TYPE, dtype=torch.float16)
+        gate_w = torch.randn(N, K, device=GPU_TYPE, dtype=torch.float16)
+        up_w = torch.randn(N, K, device=GPU_TYPE, dtype=torch.float16)
+        model = LlamaMLP().to(GPU_TYPE)
+
+        # Compute reference first to avoid OOM after autotuning on low-VRAM GPUs
+        ref_result = model(x, gate_w, up_w)
+        result = torch.compile(model)(x, gate_w, up_w)
+
+        # SiLU should be fused into at least one GEMM epilogue
+        self.assertGreaterEqual(
+            torch._dynamo.utils.counters["inductor"]["cutlass_epilogue_fusion_counter"],
+            1,
+        )
+        torch.testing.assert_close(result, ref_result, atol=1e-2, rtol=1e-2)
+
+    @skipXPUIf(not Xe2_Or_Later, "")
+    @skipCUDAIf(not SM90OrLater, "need sm_90")
+    @use_evt_config
+    def test_evt_aux_load_mul(self):
+        """Test that multiplying GEMM output with an external buffer uses AuxLoad."""
+
+        class TestModel(torch.nn.Module):
+            def forward(self, a, b, aux):
+                return (a @ b) * aux
+
+        M, N, K = 256, 256, 256
+        a = torch.randn(M, K, device=GPU_TYPE, dtype=torch.float16)
+        b = torch.randn(K, N, device=GPU_TYPE, dtype=torch.float16)
+        aux = torch.randn(M, N, device=GPU_TYPE, dtype=torch.float16)
+        model = TestModel().to(GPU_TYPE)
+
+        result = torch.compile(model)(a, b, aux)
+        ref_result = model(a, b, aux)
+
+        self.assertEqual(
+            torch._dynamo.utils.counters["inductor"]["cutlass_epilogue_fusion_counter"],
+            1,
+        )
+        torch.testing.assert_close(result, ref_result, atol=1e-2, rtol=1e-2)
 
     @skipXPUIf(not Xe2_Or_Later, "")
     @skipCUDAIf(not SM90OrLater, "need sm_90")
