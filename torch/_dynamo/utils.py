@@ -1312,6 +1312,9 @@ def unpack_and_apply_fn(
             variables.ConstDictVariable,
         ),
     ):
+        # avoid going through the generic iter/getiter/iternext protocol for
+        # common builtin iterables, since it can be a bottleneck for large
+        # iterables (e.g. unpacking a list of 1000 items)
         [apply_fn(item) for item in iterable.unpack_var_sequence(tx)]  # type: ignore[bad-argument-type]
         return
 
