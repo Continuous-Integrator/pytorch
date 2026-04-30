@@ -2,14 +2,13 @@
 """Test that spmd_check doesn't deadlock on recursive subgraph post_grad_passes.
 
 The bug: _recursive_post_grad_passes calls post_grad_passes for each
-subgraph, and each call hits spmd_check → all_gather_object. If ranks
-arrive at different all_gather_object calls at different times (due to
-different subgraph counts or compilation timing), they deadlock on the
-gloo collective.
+subgraph, and each call hits spmd_check → all_gather_object. Collectives
+are matched by call order; if ranks have different subgraph counts
+(non-SPMD), call sequences mismatch → deadlock.
 
 The fix: post_grad_passes accepts is_subgraph=True and skips spmd_check
-for subgraph-level calls. _recursive_post_grad_passes passes
-_is_subgraph=True when recursing into subgraphs.
+for subgraph-level calls. The top-level spmd_check hashes subgraphs
+recursively for full coverage with a single collective.
 """
 
 from unittest.mock import MagicMock, patch
@@ -146,6 +145,77 @@ class TestSpmdCheckSubgraph(TestCase):
         ):
             post_grad_passes(gm, is_inference=False, is_subgraph=False)
             mock_spmd.assert_called_once()
+
+    def test_hash_bundle_includes_subgraphs(self):
+        """_compute_hash_bundle recurses into subgraphs."""
+        from torch._inductor.fx_passes.spmd_check import _compute_hash_bundle
+
+        main_gm = torch.fx.GraphModule(torch.nn.Module(), torch.fx.Graph())
+        sub_gm = torch.fx.GraphModule(torch.nn.Module(), torch.fx.Graph())
+
+        sub_gm.graph.output(None)
+        main_gm.subgraph_0 = sub_gm
+        with main_gm.graph.inserting_before():
+            main_gm.graph.get_attr("subgraph_0")
+        main_gm.graph.output(None)
+
+        bundle = _compute_hash_bundle(main_gm)
+        self.assertIsNotNone(bundle)
+        self.assertIn("", bundle, "Should have top-level hash")
+        self.assertIn("subgraph_0", bundle, "Should have subgraph hash")
+
+    def test_hash_bundle_nested_subgraphs(self):
+        """_compute_hash_bundle recurses into deeply nested subgraphs."""
+        from torch._inductor.fx_passes.spmd_check import _compute_hash_bundle
+
+        leaf_gm = torch.fx.GraphModule(torch.nn.Module(), torch.fx.Graph())
+        leaf_gm.graph.output(None)
+
+        mid_gm = torch.fx.GraphModule(torch.nn.Module(), torch.fx.Graph())
+        mid_gm.leaf_sub = leaf_gm
+        with mid_gm.graph.inserting_before():
+            mid_gm.graph.get_attr("leaf_sub")
+        mid_gm.graph.output(None)
+
+        main_gm = torch.fx.GraphModule(torch.nn.Module(), torch.fx.Graph())
+        main_gm.mid_sub = mid_gm
+        with main_gm.graph.inserting_before():
+            main_gm.graph.get_attr("mid_sub")
+        main_gm.graph.output(None)
+
+        bundle = _compute_hash_bundle(main_gm)
+        self.assertIsNotNone(bundle)
+        self.assertEqual(sorted(bundle.keys()), ["", "mid_sub", "mid_sub.leaf_sub"])
+
+    def test_different_subgraph_contents_different_hashes(self):
+        """Subgraphs with different ops produce different hashes."""
+        from torch._inductor.fx_passes.spmd_check import _compute_hash_bundle
+
+        def _make_graph_with_subgraph(add_op: bool) -> torch.fx.GraphModule:
+            sub_graph = torch.fx.Graph()
+            if add_op:
+                x = sub_graph.placeholder("x")
+                sub_graph.call_function(torch.relu, (x,))
+            sub_graph.output(None)
+            sub_gm = torch.fx.GraphModule(torch.nn.Module(), sub_graph)
+
+            main_graph = torch.fx.Graph()
+            main_gm = torch.fx.GraphModule(torch.nn.Module(), main_graph)
+            main_gm.subgraph_0 = sub_gm
+            with main_graph.inserting_before():
+                main_graph.get_attr("subgraph_0")
+            main_graph.output(None)
+            return main_gm
+
+        bundle_with = _compute_hash_bundle(_make_graph_with_subgraph(True))
+        bundle_without = _compute_hash_bundle(_make_graph_with_subgraph(False))
+
+        self.assertIsNotNone(bundle_with)
+        self.assertIsNotNone(bundle_without)
+        self.assertNotEqual(
+            bundle_with["subgraph_0"],
+            bundle_without["subgraph_0"],
+        )
 
 
 if __name__ == "__main__":

@@ -243,8 +243,11 @@ def post_grad_passes(
                 GraphTransformObserver(gm, pass_name).apply_gm_pass(custom_backend_pass)
 
     # SPMD verification — before collective reordering passes.
-    # Only at top level: subgraph-level spmd_check would deadlock if
-    # ranks arrive at different all_gather_object calls due to timing.
+    # Only at top level: spmd_check uses all_gather_object (a collective
+    # matched by call order). Running it per-subgraph would create N+1
+    # collectives; if ranks have different subgraph counts (non-SPMD),
+    # call sequences mismatch → deadlock. The top-level check hashes
+    # subgraphs recursively, so full coverage with a single collective.
     if (
         not is_subgraph
         and config.aten_distributed_optimizations.spmd_check
