@@ -773,7 +773,7 @@ class TestInductorConfigOverrideIntegration(TestCase):
 
 
 instantiate_device_type_tests(
-    TestInductorConfigOverrideIntegration, globals(), only_for=["cpu", "cuda"]
+    TestInductorConfigOverrideIntegration, globals(), except_for="mps"
 )
 
 
