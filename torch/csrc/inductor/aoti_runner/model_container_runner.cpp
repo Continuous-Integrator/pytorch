@@ -158,9 +158,8 @@ std::vector<at::Tensor> AOTIModelContainerRunner::run_impl(
       reinterpret_cast<AOTInductorStreamHandle>(stream_handle),
       proxy_executor_handle_);
   if (run_result != AOTI_RUNTIME_SUCCESS) {
-    const char* err =
-        torch::csrc::shim::details::get_torch_exception_what().c_str();
-    if (err) {
+    const auto& err = torch::csrc::shim::details::get_torch_exception_what();
+    if (!err.empty()) {
       throw std::runtime_error(err);
     }
     torch::headeronly::detail::throw_exception(
