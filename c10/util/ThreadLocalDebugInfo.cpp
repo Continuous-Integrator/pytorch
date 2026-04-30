@@ -22,14 +22,13 @@ constexpr std::string_view kTestInfoName = "TEST_INFO";
 constexpr std::string_view kTestInfo2Name = "TEST_INFO_2";
 
 C10_API const DebugInfoKind DebugInfoKind::PRODUCER_INFO(&kProducerInfoName);
-C10_API const DebugInfoKind DebugInfoKind::MOBILE_RUNTIME_INFO(
-    &kMobileRuntimeInfoName);
-C10_API const DebugInfoKind DebugInfoKind::PROFILER_STATE(
-    &kProfilerStateName);
-C10_API const DebugInfoKind DebugInfoKind::INFERENCE_CONTEXT(
-    &kInferenceContextName);
-C10_API const DebugInfoKind DebugInfoKind::PARAM_COMMS_INFO(
-    &kParamCommsInfoName);
+C10_API const DebugInfoKind
+    DebugInfoKind::MOBILE_RUNTIME_INFO(&kMobileRuntimeInfoName);
+C10_API const DebugInfoKind DebugInfoKind::PROFILER_STATE(&kProfilerStateName);
+C10_API const DebugInfoKind
+    DebugInfoKind::INFERENCE_CONTEXT(&kInferenceContextName);
+C10_API const DebugInfoKind
+    DebugInfoKind::PARAM_COMMS_INFO(&kParamCommsInfoName);
 C10_API const DebugInfoKind DebugInfoKind::TEST_INFO(&kTestInfoName);
 C10_API const DebugInfoKind DebugInfoKind::TEST_INFO_2(&kTestInfo2Name);
 
