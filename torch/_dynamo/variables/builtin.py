@@ -1256,9 +1256,7 @@ class BuiltinVariable(BaseBuiltinVariable):
                         return obj.call_function(
                             tx,
                             [
-                                v.realize()
-                                if isinstance(v, LazyVariableTracker)
-                                else v
+                                v.realize() if isinstance(v, LazyVariableTracker) else v
                                 for v in args
                             ],
                             kwargs,
