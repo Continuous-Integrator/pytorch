@@ -1,4 +1,5 @@
 #include <string>
+#include <unordered_set>
 #define TORCH_ASSERT_ONLY_METHOD_OPERATORS
 #include <fmt/format.h>
 #include <iostream>
@@ -800,8 +801,11 @@ std::tuple<Tensor, Tensor> _scaled_dot_product_flash_attention_varlen_for_mps(
 
   const int64_t kvH = key.size(1);
   const int64_t gqa_factor = H / kvH;
-  TORCH_CHECK(D >= 1 && D <= 512,
-    "_scaled_dot_product_flash_attention_varlen_for_mps: head_dim must be in [1, 512], got ", D);
+  static const std::unordered_set<int64_t> kSupportedHeadDims = {
+      32, 48, 64, 80, 96, 112, 128, 160, 192, 224, 256};
+  TORCH_CHECK(kSupportedHeadDims.count(D),
+    "_scaled_dot_product_flash_attention_varlen_for_mps: ",
+    "head_dim must be one of {32,48,64,80,96,112,128,160,192,224,256}, got ", D);
   TORCH_CHECK(H % kvH == 0,
     "_scaled_dot_product_flash_attention_varlen_for_mps: H must be divisible by kvH, got H=",
     H, " kvH=", kvH);
