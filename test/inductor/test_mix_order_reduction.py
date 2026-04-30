@@ -1118,11 +1118,6 @@ class OverFusionTest(TestBase):
         Uses the exact model pattern from #179423: GQA attention with QK-norm
         and squared leaky-relu MLP. The QK-norm creates extra intermediate
         buffers in the backward pass that push read counts above the threshold.
-
-        For the rejection check, a deterministic synthetic function with >10
-        distinct reads is used instead of relying on the transformer backward
-        graph structure, which may vary across backends (e.g. XPU) and not
-        always produce fusion candidates that exceed max_reads.
         """
         if not HAS_GPU:
             self.skipTest("requires GPU")
@@ -1189,28 +1184,14 @@ class OverFusionTest(TestBase):
         out_act.backward(dy)
         grad_act = x.grad.clone()
 
-        self.assertTrue(same(grad_ref, grad_act, tol=5e-2))
+        # bf16 SDPA backward on XPU has higher numerical drift than CUDA/ROCm,
+        # mirroring the ROCm tolerance bump (1e-2 -> 5e-2) applied for the same
+        # reason. See intel/torch-xpu-ops#3509.
+        tol = 1e-1 if GPU_TYPE == "xpu" else 5e-2
+        self.assertTrue(same(grad_ref, grad_act, tol=tol))
 
         # max_reads should limit over-fusion, not disable mix_order entirely
         self.assertGreater(metrics.codegen_mix_order_reduction, 0)
-
-        # Use a deterministic synthetic function to verify the max_reads rejection
-        # path fires. The transformer backward graph structure may vary across
-        # backends (e.g. XPU uses native SDPA kernels), so the model above is
-        # not guaranteed to produce candidates exceeding max_reads=10.
-        # A function with >10 distinct reads always triggers the rejection.
-        metrics.reset()
-        M, N = 32768, 768
-
-        def f_many_reads(x2, a, b, c, d, e, f, g, h, i, j, k):
-            inner = x2.sum(dim=-1)
-            outer = x2.sum(dim=0)
-            result = inner + a + b + c + d + e + f + g + h + i + j + k
-            return result, outer
-
-        x2 = torch.randn(M, N, device=GPU_TYPE)
-        extras = [torch.randn(M, device=GPU_TYPE) for _ in range(11)]
-        torch.compile(f_many_reads)(x2, *extras)
         self.assertGreater(metrics.rejected_mix_order_reduction_fusion, 0)
 
 
