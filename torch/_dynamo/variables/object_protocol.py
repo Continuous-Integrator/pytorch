@@ -160,11 +160,6 @@ def type_implements_tp_iternext(obj_type: type) -> bool:
     return has_slot(type_slot, PyTypeSlots.TP_ITERNEXT)
 
 
-def type_implements_mp_subscript(obj_type: type) -> bool:
-    _, map_slots, _, _ = _get_cached_slots(obj_type)
-    return has_slot(map_slots, PyMappingSlots.MP_SUBSCRIPT)
-
-
 def pyiter_check(obj_type: type) -> bool:
     # ref: https://github.com/python/cpython/blob/3.13/Objects/abstract.c#L2891-L2897
     # CPython checks if tp_iternext != _PyObject_NextNotImplemented
