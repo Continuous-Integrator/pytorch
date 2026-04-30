@@ -1563,7 +1563,6 @@ class VariableBuilder:
             return UserDefinedClassVariable(
                 value,
                 source=self.source,
-                mutation_type=AttributeMutationExisting(),
             )
         elif type(value) is torch._C.Generator:
             # Generator is registered as an opaque reference type for make_fx
