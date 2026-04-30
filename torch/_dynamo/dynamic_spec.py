@@ -43,8 +43,10 @@ __all__ = [
     "lookup_spec",
 ]
 
-# Type alias for any per-argument spec
-ASpec: TypeAlias = "TensorSpec | IntSpec | None"
+# Type alias for leaf specs (individual argument specifications)
+LeafSpec: TypeAlias = "TensorSpec | IntSpec | None"
+# Any spec — what public APIs accept. TODO: expand to LeafSpec | ObjectSpec | ListSpec | DictSpec
+IntermediateSpec: TypeAlias = LeafSpec
 
 
 class IntSpecType(enum.Enum):
@@ -422,32 +424,30 @@ class ParamsSpec:
 
     def __init__(
         self,
-        named_args: dict[str, ASpec] | None = None,
-        varargs: list[ASpec] | None = None,
-        varkw: dict[str, ASpec] | None = None,
+        named_args: dict[str, IntermediateSpec] | None = None,
+        varargs: list[IntermediateSpec] | None = None,
+        varkw: dict[str, IntermediateSpec] | None = None,
     ) -> None:
-        self._named_args: dict[str, TensorSpec | IntSpec | None] = (
-            dict(named_args) if named_args else {}
-        )
+        self._named_args: dict[str, LeafSpec] = dict(named_args) if named_args else {}
         if varargs is not None:
             raise NotImplementedError("varargs is not supported yet")
         if varkw is not None:
             raise NotImplementedError("varkw is not supported yet")
-        self._varargs: list[TensorSpec | IntSpec | None] | None = None
-        self._varkw: dict[str, TensorSpec | IntSpec | None] | None = None
+        self._varargs: list[IntermediateSpec] | None = None
+        self._varkw: dict[str, IntermediateSpec] | None = None
 
-    def arg(self, name: str, spec: ASpec) -> "ParamsSpec":
+    def arg(self, name: str, spec: IntermediateSpec) -> "ParamsSpec":
         """Add or update a named argument spec. Returns ``self`` for chaining."""
         if not isinstance(name, str):
             raise TypeError(f"arg name must be str, got {type(name).__name__}")
         self._named_args[name] = spec
         return self
 
-    def varargs(self, specs: list[ASpec]) -> "ParamsSpec":
+    def varargs(self, specs: list[IntermediateSpec]) -> "ParamsSpec":
         """Set specs for positional *args. Returns ``self`` for chaining."""
         raise NotImplementedError("varargs is not supported yet")
 
-    def varkw(self, specs: dict[str, ASpec]) -> "ParamsSpec":
+    def varkw(self, specs: dict[str, IntermediateSpec]) -> "ParamsSpec":
         """Set specs for **kwargs. Returns ``self`` for chaining."""
         raise NotImplementedError("varkw is not supported yet")
 
@@ -497,7 +497,7 @@ class ShapesSpec:
         return f"ShapesSpec(params={self._params!r})"
 
 
-def lookup_spec(source, shapes_spec: ShapesSpec | None) -> TensorSpec | IntSpec | None:
+def lookup_spec(source, shapes_spec: ShapesSpec | None) -> LeafSpec:
     """Look up the spec for a function input arg from the shapes_spec.
 
     Only supports LocalSource with is_input=True (direct function args).

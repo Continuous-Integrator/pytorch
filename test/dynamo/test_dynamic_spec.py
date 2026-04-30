@@ -8,9 +8,9 @@ import torch._dynamo.testing
 import torch.fx.experimental._config as _fx_experimental_config
 from torch._dynamo.decorators import mark_static, mark_unbacked, maybe_mark_dynamic
 from torch._dynamo.dynamic_spec import (
-    ParamsSpec,
     IntSpec,
     IntSpecType,
+    ParamsSpec,
     ShapesSpec,
     TensorSpec,
 )
