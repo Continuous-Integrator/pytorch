@@ -1195,6 +1195,10 @@ class OverFusionTest(TestBase):
         # the XPU tolerance so CUDA/ROCm regression coverage is unaffected,
         # and leave the two metric assertions below unchanged so the actual
         # #179423 over-fusion regression is still gated on every backend.
+        # This follows the same per-backend tolerance pattern already used
+        # for ROCm in this repo, e.g. test/inductor/test_torchinductor.py
+        # lines 16215-16218 (`atol = 1e-5 if TEST_WITH_ROCM else 0`) and
+        # test/inductor/test_foreach.py lines 1364-1367.
         tol = 1e-1 if GPU_TYPE == "xpu" else 5e-2
         self.assertTrue(same(grad_ref, grad_act, tol=tol))
 
