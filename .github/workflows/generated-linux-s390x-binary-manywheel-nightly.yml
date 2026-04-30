@@ -122,7 +122,7 @@ jobs:
       DOCKER_IMAGE: ${{ matrix.docker_image }}
       DOCKER_IMAGE_TAG_PREFIX: ${{ matrix.docker_image_tag_prefix }}
       DESIRED_PYTHON: ${{ matrix.desired_python }}
-      runner_prefix: "${{ needs.get-label-type.outputs.label-type }}"
+      runner_prefix: ""
       runs_on: linux.s390x
       ALPINE_IMAGE: "docker.io/s390x/alpine"
       PYTORCH_EXTRA_INSTALL_REQUIREMENTS: ${{ matrix.pytorch_extra_install_requirements }}
@@ -208,7 +208,7 @@ jobs:
       DESIRED_PYTHON: ${{ matrix.desired_python }}
       build_name: ${{ matrix.build_name }}
       build_environment: linux-s390x-binary-manywheel
-      runner_prefix: "${{ needs.get-label-type.outputs.label-type }}"
+      runner_prefix: ""
       runs_on: ${{ matrix.runs_on }}
       ALPINE_IMAGE: "docker.io/s390x/alpine"
     secrets:
