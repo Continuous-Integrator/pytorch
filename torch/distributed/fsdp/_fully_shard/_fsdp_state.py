@@ -430,6 +430,7 @@ class FSDPState(_State):
                     "Use out-of-place ops (`out = out + y`, not `out += y`) or "
                     "`.clone()` the output before any in-place op.",
                     UserWarning,
+                    stacklevel=2,
                 )
             t.register_hook(self._pre_backward)
         return output
