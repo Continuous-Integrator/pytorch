@@ -32,6 +32,8 @@ import os
 import sys
 import traceback
 import types
+import typing
+import typing_extensions
 from collections import namedtuple
 from collections.abc import Callable, Sequence
 from types import CellType, FunctionType
@@ -804,6 +806,26 @@ class UserFunctionVariable(BaseUserFunctionVariable):
             ]:
                 with torch._dynamo.side_effects.allow_side_effects_in_hop(tx):
                     return super().call_function(tx, args, kwargs)
+
+        # This calls sys._getframe, so shortcut it here instead of trying to trace
+        if (
+            sys.version_info < (3, 13)
+            and self.fn
+            is typing_extensions._has_generic_or_protocol_as_origin  # pyrefly: ignore[missing-attribute]
+        ):
+            if (
+                tx.parent
+                and (origin := tx.parent.symbolic_locals.get("origin"))
+                and isinstance(origin, UserDefinedObjectVariable)
+            ):
+                ret = origin.value in (
+                    typing.Generic,
+                    typing.Protocol,
+                    typing_extensions.Protocol,
+                )
+            else:
+                ret = False
+            return VariableTracker.build(tx, ret)
 
         tree_map_result = self._maybe_call_tree_map_fastpath(tx, args, kwargs)
         if tree_map_result is not None:
@@ -2771,9 +2793,6 @@ class FunctoolsPartialVariable(VariableTracker):
         self.args = args
         assert isinstance(keywords, dict)
         self.keywords = keywords
-        # fake_value is used for id calculation. Creating this value and id'ng
-        # on it is sufficient for the tracing purposes.
-        self.fake_value = functools.partial(identity)
         # Store cache_hash from the original partial for SAC context_fn caching
         self.original_cache_hash = original_cache_hash
 

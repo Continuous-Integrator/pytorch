@@ -1,13 +1,14 @@
 # Owner(s): ["module: dynamo"]
 import typing
 import unittest
+from typing_extensions import TypeVar
 
 import torch
 from torch._dynamo.test_case import run_tests, TestCase
 from torch._dynamo.testing import same
 
 
-T = typing.TypeVar("T")
+T = TypeVar("T")
 
 
 class TypingTests(TestCase):
@@ -150,8 +151,8 @@ class TypingTests(TestCase):
                 f(x, y)
 
     def test_generic_multi_typevar(self):
-        U = typing.TypeVar("U")
-        V = typing.TypeVar("V", default=int)
+        U = TypeVar("U")
+        V = TypeVar("V", default=int)
 
         class C(typing.Generic[T, U, V]):
             pass

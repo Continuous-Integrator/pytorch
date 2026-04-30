@@ -221,6 +221,11 @@ class UserDefinedClassVariable(UserDefinedVariable):
         # is no way to reflect it in the created MappingProxyVariable.
         self.ban_mutation = False
 
+    def get_id_guard_type(self) -> Callable[..., Any] | None:
+        if self.source:
+            return GuardBuilder.CLASS_MATCH
+        return None
+
     def as_python_constant(self) -> type[object]:
         return self.value
 
@@ -745,10 +750,17 @@ class UserDefinedClassVariable(UserDefinedVariable):
         elif name == "__class_getitem__":
             if issubclass(self.value, typing.Generic):
                 # https://github.com/python/cpython/blob/v3.13.13/Objects/typevarobject.c#L1895
-                return variables.UserMethodVariable(
-                    typing._generic_class_getitem,  # pyrefly: ignore [missing-attribute]
-                    self,
-                ).call_function(tx, args, kwargs)
+                if sys.version_info >= (3, 13):
+                    return variables.UserMethodVariable(
+                        typing._generic_class_getitem,  # pyrefly: ignore [missing-attribute]
+                        self,
+                    ).call_function(tx, args, kwargs)
+                elif hasattr(self.value, "__class_getitem__"):
+                    # __class_getitem__ is implemented in python so we can trace, but it's also lru_cache'd so might as
+                    # well unwrap it to avoid the warning
+                    return variables.UserMethodVariable(
+                        self.value.__class_getitem__.__func__.__wrapped__, self
+                    ).call_function(tx, args, kwargs)
 
         # Dispatch dunder methods defined on the metaclass (e.g., EnumType.__contains__).
         # In Python, `x in Color` calls `type(Color).__contains__(Color, x)`.
@@ -1401,6 +1413,14 @@ class UserDefinedObjectVariable(UserDefinedVariable):
             ),
         ) or is_pybind11_enum_member(self.value):
             return self.value
+
+        from torch.utils._triton import has_triton_package
+
+        if has_triton_package():
+            import triton.language as tl
+
+            if isinstance(self.value, tl.constexpr):
+                return self.value.value
 
         if self.is_pytree_constant_class and self.source:
             # NOTE pytree constants created in the torch.compile region will
