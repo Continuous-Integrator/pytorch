@@ -7,21 +7,94 @@
 #include <ATen/ops/linear_backward_native.h>
 #include <ATen/ops/linear_native.h>
 
-// MTLGPUFamilyApple10 is only defined in the macOS 26+ SDK.
-#if !defined(__MAC_26_0)
-static constexpr auto MTLGPUFamilyApple10 = static_cast<MTLGPUFamily>(1010);
-#endif
-
 namespace at::native {
 
 using namespace mps;
 
-// MPSNDArrayMatrixMultiplication and MPSGraph matrixMultiplication produce
-// non-deterministic results for >2D fp16/bf16 inputs on Apple M5+ (Apple10 GPU family).
-// Flatten to 2D to work around the issue (See https://github.com/pytorch/pytorch/issues/180776 )
-static bool needs_nd_workaround(const Tensor& input) {
-  static const bool is_m5_or_newer = [MPSDevice::getInstance()->device() supportsFamily:MTLGPUFamilyApple10];
-  return input.dim() > 2 && is_m5_or_newer && (input.scalar_type() == kHalf || input.scalar_type() == kBFloat16);
+#ifndef PYTORCH_JIT_COMPILE_SHADERS
+static auto& lib = MetalShaderLibrary::getBundledLibrary();
+#else
+#include <ATen/native/mps/Linear_metallib.h>
+#endif
+
+// Pad a 2D tensor along `dim` to a multiple of `align`, zero-filling.
+static Tensor pad_to_multiple(const Tensor& t, int64_t dim, int64_t align) {
+  int64_t size = t.size(dim);
+  int64_t padded = (size + align - 1) / align * align;
+  if (padded == size)
+    return t;
+  auto pad_sizes = t.sizes().vec();
+  pad_sizes[dim] = padded;
+  auto padded_t = at::zeros(pad_sizes, t.options());
+  padded_t.narrow(dim, 0, size).copy_(t);
+  return padded_t;
+}
+
+// Select tile sizes based on input dimensions.
+// Tuned on M5 Pro for fp16 across LLM and small shapes.
+static std::pair<int64_t, int64_t> select_tile_sizes(int64_t M, int64_t N) {
+  if (M >= 128 && N >= 64)
+    return {128, 64};
+  if (M >= 64 && N >= 64)
+    return {64, 64};
+  return {32, 32};
+}
+
+static void _mps_linear_mpp(const Tensor& input, const Tensor& weight, const Tensor& bias, Tensor& output) {
+  bool has_bias = bias.defined();
+
+  int64_t M = input.size(0);
+  int64_t K = input.size(1);
+  int64_t N = weight.size(0);
+
+  auto tile_sizes = select_tile_sizes(M, N);
+  int64_t TILE_M = tile_sizes.first;
+  int64_t TILE_N = tile_sizes.second;
+
+  // MPP matmul2d requires M and N to be multiples of tile sizes.
+  auto input_padded = pad_to_multiple(input, 0, TILE_M);
+  auto weight_padded = pad_to_multiple(weight, 0, TILE_N);
+  int64_t M_padded = input_padded.size(0);
+  int64_t N_padded = weight_padded.size(0);
+
+  auto bias_padded = has_bias ? pad_to_multiple(bias.contiguous(), 0, TILE_N) : bias;
+
+  bool needs_slice = (M_padded != M || N_padded != N);
+  auto output_buf = needs_slice ? at::empty({M_padded, N_padded}, output.options()) : output;
+
+  auto dtype_str = scalarToMetalTypeString(input);
+  auto tile_str = std::to_string(TILE_M) + "x" + std::to_string(TILE_N);
+  auto func_name = (has_bias ? "mpp_linear_bias_" : "mpp_linear_") + tile_str + "_" + dtype_str;
+  auto stream = getCurrentMPSStream();
+  auto pso = lib.getPipelineStateForFunc(func_name);
+
+  dispatch_sync_with_rethrow(stream->queue(), ^() {
+    @autoreleasepool {
+      stream->endKernelCoalescing();
+      auto computeEncoder = stream->commandEncoder();
+      [computeEncoder setComputePipelineState:pso];
+
+      std::array<uint32_t, 3> sizes = {
+          static_cast<uint32_t>(M_padded), static_cast<uint32_t>(K), static_cast<uint32_t>(N_padded)};
+      if (has_bias) {
+        mtl_setArgs(computeEncoder, input_padded, weight_padded, output_buf, bias_padded, sizes);
+      } else {
+        mtl_setArgs(computeEncoder, input_padded, weight_padded, output_buf, output_buf, sizes);
+      }
+
+      NSUInteger simd_w = [pso threadExecutionWidth];
+      NSUInteger threads_per_tg = simd_w * 4;
+      uint32_t num_tg_x = static_cast<uint32_t>(N_padded / TILE_N);
+      uint32_t num_tg_y = static_cast<uint32_t>(M_padded / TILE_M);
+
+      [computeEncoder dispatchThreadgroups:MTLSizeMake(num_tg_x, num_tg_y, 1)
+                     threadsPerThreadgroup:MTLSizeMake(threads_per_tg, 1, 1)];
+    }
+  });
+
+  if (needs_slice) {
+    output.copy_(output_buf.narrow(0, 0, M).narrow(1, 0, N));
+  }
 }
 
 static void _mps_linear_nograph(const Tensor& input, const Tensor& weight, const Tensor& bias, Tensor& output) {
@@ -126,6 +199,22 @@ Tensor _mps_linear(const Tensor& input, const Tensor& weight_arg, const std::opt
   }
 
   const bool is_complex = input.is_complex() || weight.is_complex() || (is_bias_defined && bias.is_complex());
+
+  // MPP path: use MetalPerformancePrimitives matmul2d on macOS 26+.
+  // Handles arbitrary strides by contiguifying and flattening to 2D.
+  // Bias is fused into the kernel when it's 1D (the common case).
+  if (is_macos_13_or_newer(MacOSVersion::MACOS_VER_26_0_PLUS) && !is_complex) {
+    auto input_c = input.contiguous();
+    auto input2d = input_c.dim() == 1 ? input_c.unsqueeze(0) : input_c.dim() > 2 ? input_c.flatten(0, -2) : input_c;
+    auto weight2d = weight.contiguous();
+    auto output2d = output.dim() == 1 ? output.unsqueeze(0) : output.dim() > 2 ? output.flatten(0, -2) : output;
+    bool fuse_bias = is_bias_defined && bias.dim() == 1;
+    _mps_linear_mpp(input2d, weight2d, fuse_bias ? bias : Tensor(), output2d);
+    if (is_bias_defined && !fuse_bias) {
+      output.add_(bias);
+    }
+    return weight_arg.dim() != 1 ? output : output.squeeze(-1);
+  }
 
   // No-graph execution causes nonsense if these are non-contiguous.
   const bool is_contiguous = input.is_contiguous() && weight.is_contiguous() && bias.is_contiguous();
