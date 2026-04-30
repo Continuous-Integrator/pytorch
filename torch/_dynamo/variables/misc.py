@@ -52,6 +52,7 @@ from ..guards import GuardBuilder, install_guard
 from ..mutation_guard import unpatched_nn_module_init
 from ..source import (
     AttrSource,
+    DictGetItemSource,
     GenericAttrSource,
     GetItemSource,
     TypeMROSource,
@@ -1401,6 +1402,7 @@ class GetAttrVariable(VariableTracker):
         )
         self.obj.ban_mutation = True
         return VariableTracker.build(tx, self.obj.value.__dict__, self.source)
+
 
 class MethodWrapperVariable(VariableTracker):
     def __init__(self, method_wrapper: types.MethodWrapperType, **kwargs: Any) -> None:

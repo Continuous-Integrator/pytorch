@@ -14,6 +14,7 @@ CPython behavioral gaps.
 import collections
 import operator
 import types
+import typing
 import unittest
 
 import torch
@@ -431,10 +432,8 @@ class GetItemTests(torch._dynamo.test_case.TestCase):
         self.assertEqual(fn(x), self._compile(fn, x))
 
     def test_typing_subscript_dict(self):
-        import typing
-
         def fn(x):
-            operator.getitem(typing.Dict, (str, int))
+            operator.getitem(typing.Dict, (str, int))  # noqa: UP006
             return x + 1
 
         x = torch.randn(4)
