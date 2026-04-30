@@ -11,6 +11,7 @@ _R = TypeVar("_R")
 
 import torch
 from torch.fx._compatibility import compatibility
+from torch.fx.graph_module import _del_attr, _get_attr
 
 
 logger = logging.getLogger(__name__)
@@ -43,7 +44,7 @@ def _resolve_reduce_op_str(gm: torch.fx.GraphModule, arg: torch.fx.Node) -> str:
 
     if arg.op != "get_attr":
         raise AssertionError(f"expected get_attr, got op={arg.op!r}")
-    reduce_op = getattr(gm, arg.target)  # type: ignore[arg-type]
+    reduce_op = _get_attr(gm, arg.target)  # type: ignore[arg-type]
     if isinstance(reduce_op, torch.ScriptObject):
         reduce_op = dist.ReduceOp.RedOpType(reduce_op.op())  # type: ignore[attr-defined]
     return REDUCE_OP_TO_STR[reduce_op]
@@ -217,8 +218,19 @@ def _functionalize_inplace_collectives(
         gm.graph.erase_node(node)
         found = True
 
-    if found:
-        gm.recompile()
+    if not found:
+        return gm
+
+    # Strip orphan ``get_attr`` nodes (typically the ReduceOp attrs that
+    # got embedded as constants) along with their backing module attributes.
+    # Live ``get_attr`` nodes (e.g. the ProcessGroup, still referenced by
+    # the rewritten ``_c10d_functional`` call) are kept.
+    for n in list(gm.graph.find_nodes(op="get_attr")):
+        if n.users:
+            continue
+        _del_attr(gm, n.target)  # type: ignore[arg-type]
+        gm.graph.erase_node(n)
+    gm.recompile()
     return gm
 
 
