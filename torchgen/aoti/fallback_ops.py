@@ -221,12 +221,12 @@ inductor_fallback_ops: dict[str, dict[str, str | dict[str, list[str] | str]]] = 
 # The same BC rules apply as inductor_fallback_ops, read about the "since"
 # key above.
 aten_shimified_ops: dict[str, dict[str, str | dict[str, list[str] | str]]] = {
-    "aten.fill_.Scalar": {"since": "TORCH_VERSION_2_10_0"},
-    "aten.pad.default": {"since": "TORCH_VERSION_2_10_0"},
-    "aten.narrow.default": {"since": "TORCH_VERSION_2_10_0"},
-    "aten.amax.default": {"since": "TORCH_VERSION_2_10_0"},
-    "aten.new_empty.default": {"since": "TORCH_VERSION_2_10_0"},
-    "aten.new_zeros.default": {"since": "TORCH_VERSION_2_10_0"},
+    "aten.fill_.Scalar": {},
+    "aten.pad.default": {},
+    "aten.narrow.default": {},
+    "aten.amax.default": {},
+    "aten.new_empty.default": {},
+    "aten.new_zeros.default": {},
     "aten.full.default": {"since": "TORCH_VERSION_2_10_0"},
     "aten.subtract.Tensor": {"since": "TORCH_VERSION_2_10_0"},
 }
