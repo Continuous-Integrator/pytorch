@@ -18,40 +18,43 @@ TORCH_API const char* get_last_error();
 TORCH_API void set_last_error(const char* msg);
 } // namespace torch::aot_inductor
 
-#define AOTI_TORCH_CONVERT_EXCEPTION_TO_ERROR_CODE(...)   \
-  try {                                                   \
-    __VA_ARGS__                                           \
-  } catch (const c10::Error& e) {                         \
-    torch_exception_state_set_what(e.what());             \
-    torch_exception_state_set_what_without_backtrace(     \
-        e.what_without_backtrace());                      \
-    torch::aot_inductor::set_last_error(e.what());                         \
-    if (torch_exception_state_get_exception_printing()) { \
-      LOG(ERROR) << "Exception in aoti_torch: "           \
-                 << torch_exception_state_get_what();     \
-    }                                                     \
-    return AOTI_TORCH_FAILURE;                            \
-  } catch (const std::exception& e) {                     \
-    torch_exception_state_set_what(e.what());             \
-    torch_exception_state_set_what_without_backtrace(     \
-        torch_exception_state_get_what());                \
-    torch::aot_inductor::set_last_error(e.what());                         \
-    if (torch_exception_state_get_exception_printing()) { \
-      LOG(ERROR) << "Exception in aoti_torch: "           \
-                 << torch_exception_state_get_what();     \
-    }                                                     \
-    return AOTI_TORCH_FAILURE;                            \
-  } catch (...) {                                         \
-    torch_exception_state_set_what("UNKNOWN");            \
-    torch_exception_state_set_what_without_backtrace(     \
-        torch_exception_state_get_what());                \
-    torch::aot_inductor::set_last_error("Unknown exception in aoti_torch");\
-    if (torch_exception_state_get_exception_printing()) { \
-      LOG(ERROR) << "Exception in aoti_torch: "           \
-                 << torch_exception_state_get_what();     \
-    }                                                     \
-    return AOTI_TORCH_FAILURE;                            \
-  }                                                       \
+#define AOTI_TORCH_CONVERT_EXCEPTION_TO_ERROR_CODE(...)                     \
+  try {                                                                     \
+    __VA_ARGS__                                                             \
+  } catch (const c10::Error& e) {                                           \
+    torch::csrc::shim::details::set_torch_exception_what(e.what());         \
+    torch::csrc::shim::details::set_torch_exception_what_without_backtrace( \
+        e.what_without_backtrace());                                        \
+    torch::aot_inductor::set_last_error(e.what());                          \
+    if (torch::csrc::shim::details::                                        \
+            torch_exception_state_get_exception_printing()) {               \
+      LOG(ERROR) << "Exception in aoti_torch: "                             \
+                 << torch::csrc::shim::details::get_torch_exception_what(); \
+    }                                                                       \
+    return AOTI_TORCH_FAILURE;                                              \
+  } catch (const std::exception& e) {                                       \
+    torch::csrc::shim::details::set_torch_exception_what(e.what());         \
+    torch::csrc::shim::details::set_torch_exception_what_without_backtrace( \
+        torch::csrc::shim::details::get_torch_exception_what());            \
+    torch::aot_inductor::set_last_error(e.what());                          \
+    if (torch::csrc::shim::details::                                        \
+            torch_exception_state_get_exception_printing()) {               \
+      LOG(ERROR) << "Exception in aoti_torch: "                             \
+                 << torch::csrc::shim::details::get_torch_exception_what(); \
+    }                                                                       \
+    return AOTI_TORCH_FAILURE;                                              \
+  } catch (...) {                                                           \
+    torch::csrc::shim::details::set_torch_exception_what("UNKNOWN");        \
+    torch::csrc::shim::details::set_torch_exception_what_without_backtrace( \
+        torch::csrc::shim::details::get_torch_exception_what());            \
+    torch::aot_inductor::set_last_error("Unknown exception in aoti_torch"); \
+    if (torch::csrc::shim::details::                                        \
+            torch_exception_state_get_exception_printing()) {               \
+      LOG(ERROR) << "Exception in aoti_torch: "                             \
+                 << torch::csrc::shim::details::get_torch_exception_what(); \
+    }                                                                       \
+    return AOTI_TORCH_FAILURE;                                              \
+  }                                                                         \
   return AOTI_TORCH_SUCCESS;
 
 namespace torch::aot_inductor {

@@ -2,9 +2,9 @@
 #include <torch/csrc/inductor/aoti_torch/c/macros.h>
 #include <string>
 
+namespace torch::csrc::shim::details {
 /// Store an exception and its backtrace that occurred in the calling thread.
-AOTI_TORCH_EXPORT void set_torch_exception_what(
-    const std::string& our_message);
+AOTI_TORCH_EXPORT void set_torch_exception_what(const std::string& our_message);
 
 /// Store an exception that occurred in the calling thread.
 AOTI_TORCH_EXPORT void set_torch_exception_what_without_backtrace(
@@ -28,3 +28,4 @@ AOTI_TORCH_EXPORT bool torch_exception_state_set_exception_printing(
 
 /// Retrieves the backtrace printing state for this thread.
 AOTI_TORCH_EXPORT bool torch_exception_state_get_exception_printing();
+} // namespace torch::csrc::shim::details
