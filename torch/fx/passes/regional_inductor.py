@@ -249,12 +249,11 @@ def _unbox_process_group_torchbinds(
         all_reduce_(): argument 'group_name' must be either a string ...
         but got __torch__.torch.classes.c10d.ProcessGroup
 
-    Unboxing the attribute in-place (without changing the FX graph) keeps
-    the PG flowing as a graph value end-to-end while making it acceptable
-    to Inductor and the runtime collective ops. The b57e3f5 changes
-    (FakeTensor id-hash, GraphModule deepcopy share-by-ref, wrapper-codegen
-    pickle fallback) are what let the unboxed PG flow through downstream
-    consumers without crashing.
+    Unboxing the attribute in-place (without changing the FX graph) makes
+    the PG acceptable to the runtime collective op. The deepcopy
+    share-by-reference hook in ``GraphModule.__deepcopy__`` is what lets
+    ``standalone_compile``'s deepcopy of the submod survive the
+    non-pickleable Python ``dist.ProcessGroup``.
     """
     import torch.distributed as dist
 

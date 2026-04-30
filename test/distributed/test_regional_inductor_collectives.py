@@ -79,8 +79,9 @@ def forward(self, t_1):
         _functionalize_inplace_collectives(gm)
 
         # ReduceOp is baked as ``'sum'`` (its int value is read at rewrite
-        # time) and its now-dead ``_torchbind_obj1`` attr is stripped; the
-        # ProcessGroup ``get_attr`` flows through unchanged for pass 2.
+        # time) and its now-dead ``_torchbind_obj1`` get_attr / module attr
+        # is stripped; the ProcessGroup ``get_attr`` is still referenced by
+        # the new functional call, so it stays for pass 2.
         self.assertExpectedInline(
             gm.code.strip(),
             """\
