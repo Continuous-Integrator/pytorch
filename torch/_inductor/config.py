@@ -1956,6 +1956,12 @@ class triton:
     # Should TMA store be enable from templates. TODO: Remove once we
     # can autotune over the result.
     enable_template_tma_store = os.environ.get("ENABLE_TEMPLATE_TMA_STORE", "0") == "1"
+    # When True and enable_template_tma_store is True, emit both
+    # tma_store=True and tma_store=False candidates and let the autotuner
+    # pick the winner per shape.
+    autotune_tma_store = (
+        os.environ.get("TORCHINDUCTOR_AUTOTUNE_TMA_STORE", "0") == "1"
+    )
     # Skip L1 cache for buffers that are used only once.  Disabled by default
     skip_l1_cache = os.environ.get("TORCHINDUCTOR_SKIP_L1", "0") == "1"
 

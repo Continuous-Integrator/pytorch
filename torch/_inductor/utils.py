@@ -2003,14 +2003,22 @@ def use_triton_tma_template(
         for m in matrices
     ):
         return False
-    if config.triton.enable_template_tma_store and not _descriptor_shape_fits_in_int32(
-        output_layout.size, add_guards=add_guards
+    # When autotune_tma_store is enabled, output TMA store legality is checked
+    # per-candidate in _get_template_configs_impl, so skip the gate here.
+    if (
+        not config.triton.autotune_tma_store
+        and config.triton.enable_template_tma_store
+        and not _descriptor_shape_fits_in_int32(
+            output_layout.size, add_guards=add_guards
+        )
     ):
         return False
     # On AMD (HIP), TMA is not available but we still use non-TMA persistent
     # kernels, so skip the TMA compatibility checks.
     if torch.version.hip is not None:
         return True
+    if config.triton.autotune_tma_store:
+        return can_use_tma(*matrices, add_guards=add_guards)
     layout = output_layout if config.triton.enable_template_tma_store else None
     return can_use_tma(*matrices, output_layout=layout, add_guards=add_guards)
 

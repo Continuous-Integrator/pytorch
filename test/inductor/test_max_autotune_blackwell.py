@@ -372,6 +372,33 @@ class TestBlackwellExhaustiveConfigs(TestCase):
         self.assertEqual(num_warps_values, self.VALID_NUM_WARPS)
         self.assertEqual(epilogue_subtile_values, self.VALID_EPILOGUE_SUBTILE)
 
+    @unittest.skipIf(
+        not has_datacenter_blackwell_tma_device(),
+        "Need Blackwell with device-side TMA support in Triton",
+    )
+    def test_autotune_tma_store_generates_both_variants(self):
+        """When autotune_tma_store=True, both tma_store variants should be benchmarked."""
+        M, N, K = 128, 256, 64
+        a = torch.randn(M, K, dtype=torch.float16, device=GPU_TYPE)
+        b = torch.randn(K, N, dtype=torch.float16, device=GPU_TYPE)
+
+        with config.patch(
+            {
+                "max_autotune": True,
+                "triton.enable_persistent_tma_matmul": True,
+                "triton.enable_template_tma_store": True,
+                "triton.autotune_tma_store": True,
+                "test_configs.autotune_choice_name_regex": "blackwell_ws_persistent_device_tma",
+            }
+        ):
+            c_actual, code = run_and_get_code(
+                torch.compile(torch.mm, dynamic=False), a, b
+            )
+            c_expected = torch.mm(a, b)
+
+        torch.testing.assert_close(c_actual, c_expected, atol=1e-2, rtol=1e-2)
+        FileCheck().check("triton.language.make_tensor_descriptor").run(code[0])
+
 
 if __name__ == "__main__":
     from torch._inductor.utils import is_big_gpu

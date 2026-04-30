@@ -31,6 +31,8 @@ from ..kernel.mm import (
 from ..kernel.mm_plus_mm import mm_plus_mm_template
 from ..kernel_inputs import KernelInputs, MMKernelInputs
 from ..utils import (
+    _descriptor_shape_fits_in_int32,
+    can_use_tma,
     get_backend_num_stages,
     get_default_kpack,
     get_num_sms,
@@ -2209,22 +2211,35 @@ class TMATemplateConfigMixin(TMAWorkspaceMixin, MMTemplateConfigMixin):
     ) -> Generator[dict[str, Any], None, None]:
         """
         Generate TMA template configs by calling super and adding TMA-specific options.
+        When autotune_tma_store is True, emit both tma_store=True and
+        tma_store=False candidates (if the output is TMA-store-compatible),
+        letting the autotuner pick the winner per shape.
         """
         assert isinstance(kernel_inputs, MMKernelInputs), (
             "TMATemplateConfigMixin requires MMKernelInputs"
         )
         mat1, mat2 = kernel_inputs.mat1mat2()
-        tma_opts = {
+
+        if config.triton.autotune_tma_store and config.triton.enable_template_tma_store:
+            tma_store_variants = [False]
+            output_layout = kernel_inputs.output_layout(flexible=False)
+            if (
+                _descriptor_shape_fits_in_int32(output_layout.size)
+                and can_use_tma(output_layout=output_layout)
+            ):
+                tma_store_variants.append(True)
+        else:
+            tma_store_variants = [config.triton.enable_template_tma_store]
+
+        base_tma_opts = {
             "A_ROW_MAJOR": not mat1.layout.is_transposed(),
             "B_ROW_MAJOR": not mat2.layout.is_transposed(),
             "NUM_SMS": get_num_sms(),
             "TMA_SIZE": TMA_DESCRIPTOR_SIZE,
             "TMA_EXPERIMENTAL_API": not has_triton_stable_tma_api(),
-            "tma_store": config.triton.enable_template_tma_store,
             "transpose_discontiguous_tensor_descriptors_override": True,
         }
 
-        # Get base template configs from superclass
         for template_kwargs in super()._get_template_configs_impl(
             kernel_inputs,
             op_name,
@@ -2232,7 +2247,8 @@ class TMATemplateConfigMixin(TMAWorkspaceMixin, MMTemplateConfigMixin):
                 op_name, dtype_size=kernel_inputs.dtype().itemsize
             ),
         ):
-            yield {**template_kwargs, **tma_opts}
+            for tma_store_val in tma_store_variants:
+                yield {**template_kwargs, **base_tma_opts, "tma_store": tma_store_val}
 
 
 # TMA mixins for Blackwell templates
