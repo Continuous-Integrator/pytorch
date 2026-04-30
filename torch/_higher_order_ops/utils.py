@@ -1008,6 +1008,13 @@ def diff_tensor_meta(
 #      hops may receive int inputs from the shape of outer tensor inputs.
 #      However, CompositeExplicitAutograd won't receive SymInt inputs because it only accepts real tensor inputs.
 def validate_subgraph_args_types(lifted_args: tuple[Any, ...] | list[Any]):
+    # During FX tracing (e.g. GraphModule deserialization via KeepModules),
+    # tensor arguments become Proxy objects. Skip validation in that case
+    # since the real types will be validated at eager-execution time.
+    from torch.fx import Proxy
+
+    if any(isinstance(arg, Proxy) for arg in lifted_args):
+        return
     allowed_types = (torch.Tensor, int, torch.SymInt)
     if not all(
         isinstance(arg, (torch.Tensor, int, torch.SymInt)) for arg in lifted_args
