@@ -1184,9 +1184,12 @@ class OverFusionTest(TestBase):
         out_act.backward(dy)
         grad_act = x.grad.clone()
 
-        # bf16 SDPA backward on XPU has higher numerical drift than CUDA/ROCm,
-        # mirroring the ROCm tolerance bump (1e-2 -> 5e-2) applied for the same
-        # reason. See intel/torch-xpu-ops#3509.
+        # The eager vs compiled bf16 backward gradient drift is larger on XPU
+        # than on CUDA for this transformer pattern: the XPU SDPA backward and
+        # the Inductor-generated mix-order-reduction kernels accumulate in a
+        # different order than the eager reference, and bf16's narrow mantissa
+        # amplifies the resulting per-element error past the 5e-2 baseline used
+        # for CUDA. See intel/torch-xpu-ops#3509 for the failing-run evidence.
         tol = 1e-1 if GPU_TYPE == "xpu" else 5e-2
         self.assertTrue(same(grad_ref, grad_act, tol=tol))
 
