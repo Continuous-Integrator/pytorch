@@ -109,7 +109,9 @@ def _remove_profiler_ops(graph: torch.fx.Graph) -> None:
         graph.erase_node(node)
 
 
-def post_grad_passes(gm: torch.fx.GraphModule, is_inference: bool):
+def post_grad_passes(
+    gm: torch.fx.GraphModule, is_inference: bool, is_subgraph: bool = False
+):
     """
     Passes that run on after grad.  This is called once on the forwards
     graph and once on the backwards graph.
@@ -241,8 +243,11 @@ def post_grad_passes(gm: torch.fx.GraphModule, is_inference: bool):
                 GraphTransformObserver(gm, pass_name).apply_gm_pass(custom_backend_pass)
 
     # SPMD verification — before collective reordering passes.
+    # Only at top level: subgraph-level spmd_check would deadlock if
+    # ranks arrive at different all_gather_object calls due to timing.
     if (
-        config.aten_distributed_optimizations.spmd_check
+        not is_subgraph
+        and config.aten_distributed_optimizations.spmd_check
         and _needs_spmd_graph_preservation()
     ):
         from torch._inductor.fx_passes.spmd_check import spmd_check
