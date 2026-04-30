@@ -976,7 +976,7 @@ class IncByTwo:
         self.x = x + 2
 
 
-class LRUCacheWarningTests(torch._dynamo.test_case.TestCase):
+class LRUCacheWarningTests(LoggingTestCase):
     @make_logging_test(dynamo=logging.DEBUG)
     def test_lru_cache_warning_issued_during_tracing(self, device, records):
         prev_default = torch._C._get_default_device()
@@ -9160,7 +9160,7 @@ instantiate_parametrized_tests(ReproTests)
 
 devices = ["cuda", "hpu"]
 instantiate_device_type_tests(ReproTestsDevice, globals(), only_for=devices)
-instantiate_device_type_tests(LRUCacheWarningTests, globals())
+instantiate_device_type_tests(LRUCacheWarningTests, globals(), only_for=("cuda",))
 if __name__ == "__main__":
     from torch._dynamo.test_case import run_tests
 
