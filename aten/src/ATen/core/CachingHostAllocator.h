@@ -441,15 +441,7 @@ struct CachingHostAllocatorImpl {
       pool.free_list_[i].list_.clear();
 
       for (auto* block : blocks_to_remove) {
-        pool.blocks_.erase(block);
-        pool.ptr_to_block_.erase(block->ptr_);
-        auto index = size_index(block->size_);
-        free_block(block);
-        stats_.allocations.decrease(1);
-        stats_.allocated_bytes.decrease(block->size_);
-        stats_.allocation_bucket_stats[index].decrease(1);
-        stats_.allocated_bytes_bucket_stats[index].decrease(block->size_);
-        delete block;
+        destroy_block(block, pool, /*is_active=*/false);
       }
     }
   }
@@ -743,31 +735,39 @@ struct CachingHostAllocatorImpl {
     auto index = size_index(size);
 
     if (size > pinned_max_cached_size()) {
-      {
-        std::lock_guard<std::mutex> g(pool.blocks_mutex_);
-        pool.blocks_.erase(block);
-        pool.ptr_to_block_.erase(block->ptr_);
-      }
-      free_block(block);
-
-      {
-        std::lock_guard<std::mutex> g(pool.free_list_[index].mutex_);
-        stats_.allocations.decrease(1);
-        stats_.allocated_bytes.decrease(size);
-        stats_.allocation_bucket_stats[index].decrease(1);
-        stats_.allocated_bytes_bucket_stats[index].decrease(size);
-        stats_.active_bucket_stats[index].decrease(1);
-        stats_.active_bytes_bucket_stats[index].decrease(size);
-      }
-      delete block;
+      std::lock(pool.free_list_[index].mutex_, pool.blocks_mutex_);
+      std::lock_guard<std::mutex> gf(pool.free_list_[index].mutex_, std::adopt_lock);
+      std::lock_guard<std::mutex> gb(pool.blocks_mutex_, std::adopt_lock);
+      destroy_block(block, pool, /*is_active=*/true);
     } else {
-      {
-        std::lock_guard<std::mutex> g(pool.free_list_[index].mutex_);
-        pool.free_list_[index].list_.push_back(block);
-        stats_.active_bucket_stats[index].decrease(1);
-        stats_.active_bytes_bucket_stats[index].decrease(size);
-      }
+      std::lock_guard<std::mutex> g(pool.free_list_[index].mutex_);
+      pool.free_list_[index].list_.push_back(block);
+      stats_.active_bucket_stats[index].decrease(1);
+      stats_.active_bytes_bucket_stats[index].decrease(size);
     }
+  }
+
+  // Remove a block from the pool, free its memory, update stats, and delete it.
+  // Caller must hold both pool.blocks_mutex_ and pool.free_list_[index].mutex_.
+  // When is_active is true, also decrements active stats (for blocks going
+  // directly from in-use to freed without being cached first).
+  void destroy_block(B* block, BlockPool& pool, bool is_active) {
+    auto size = block->size_;
+    auto index = size_index(size);
+
+    pool.blocks_.erase(block);
+    pool.ptr_to_block_.erase(block->ptr_);
+    free_block(block);
+
+    stats_.allocations.decrease(1);
+    stats_.allocated_bytes.decrease(size);
+    stats_.allocation_bucket_stats[index].decrease(1);
+    stats_.allocated_bytes_bucket_stats[index].decrease(size);
+    if (is_active) {
+      stats_.active_bucket_stats[index].decrease(1);
+      stats_.active_bytes_bucket_stats[index].decrease(size);
+    }
+    delete block;
   }
 
   virtual size_t pinned_max_round_threshold() const {
