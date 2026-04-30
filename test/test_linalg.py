@@ -30,7 +30,7 @@ from torch.testing._internal.common_utils import \
      skipIfRocmArch, setBlasBackendsToDefaultFinally, setLinalgBackendsToDefaultFinally, serialTest, skipIfRocm,
      runOnRocmArch, MI200_ARCH, MI300_ARCH, MI350_ARCH, NAVI_ARCH, TEST_CUDA)
 from torch.testing._internal.common_device_type import \
-    (instantiate_device_type_tests, dtypes, has_cusolver, onlyCPU, skipIf, skipCPUIfNoLapack, precisionOverride,
+    (instantiate_device_type_tests, dtypes, has_cusolver, onlyCPU, skipIf, skipCUDAIfNoMagma, skipCPUIfNoLapack, precisionOverride,
      skipCUDAIf,
      skipCUDAIfNoCusolver, skipCUDAIfNoMagmaAndNoLinalgsolver, skipCUDAIfRocm, onlyNativeDeviceTypes, dtypesIfCUDA,
      onlyCUDA, skipMeta, skipCUDAIfNotRocm, dtypesIfMPS, largeTensorTest)
@@ -10262,7 +10262,7 @@ scipy_lobpcg  | {eq_err_scipy:10.2e}  | {eq_err_general_scipy:10.2e}  | {iters2:
             torch.linalg.ldl_solve(LD, bad, B, hermitian=hermitian)
 
     @onlyCUDA
-    @skipCUDAIfNoMagmaAndNoLinalgsolver
+    @skipCUDAIfNoMagma
     @setLinalgBackendsToDefaultFinally
     def test_preferred_linalg_library(self):
         # The main purpose of this test is to make sure these "backend" calls work normally without raising exceptions.
