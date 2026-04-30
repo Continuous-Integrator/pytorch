@@ -94,8 +94,7 @@ def get_compute_time(func_packet, args, kwargs, out, out_dtypes) -> float:  # ty
                 f"Only support single out dtype got {out_dtypes} for {func_packet}"
             )
         dtype = out_dtypes.pop()
-        # This actually gives peta-FLOPs/s hence multiply by 1e15 to get the FLOPs/s
-        peak_gpu_flops = get_device_tflops(dtype) * 1e15
+        peak_gpu_flops = get_device_tflops(dtype) * 1e12
         # We can expect to achieve 75% of theoretical peak flops
         factor = 0.75
         peak_empirical_flops = factor * peak_gpu_flops
