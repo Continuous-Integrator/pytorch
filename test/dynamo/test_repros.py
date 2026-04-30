@@ -66,7 +66,6 @@ from torch.testing._internal.common_cuda import (
     PLATFORM_SUPPORTS_FLASH_ATTENTION,
     PLATFORM_SUPPORTS_FP8,
     SM70OrLater,
-    TEST_CUDA,
 )
 from torch.testing._internal.common_device_type import (
     E4M3_MAX_POS,
@@ -9049,7 +9048,6 @@ class ReproTestsDevice(torch._dynamo.test_case.TestCase):
         )
 
 
-
 class CUDAReproTests(torch._dynamo.test_case.TestCase):
     @unittest.skipIf(not torch.cuda.is_available(), "requires cuda")
     def test_cuda_sync(self):
@@ -9159,7 +9157,9 @@ class CUDAReproTests(torch._dynamo.test_case.TestCase):
 
 instantiate_parametrized_tests(ReproTests)
 
-instantiate_device_type_tests(ReproTestsDevice, globals(), except_for=("cpu",), allow_xpu=True)
+instantiate_device_type_tests(
+    ReproTestsDevice, globals(), except_for=("cpu",), allow_xpu=True
+)
 instantiate_device_type_tests(LRUCacheWarningTests, globals(), only_for=("cuda",))
 if __name__ == "__main__":
     from torch._dynamo.test_case import run_tests
