@@ -1740,6 +1740,7 @@ def redistribute_local_tensor(
 def _redistribute_backward(
     grad_output: "dtensor.DTensor",
     previous_spec: DTensorSpec,
+    *,
     out_dtype: torch.dtype | None = None,
     op_dtype: torch.dtype | None = None,
     async_op: bool = False,
@@ -1946,9 +1947,9 @@ class NestedRedistribute(torch.autograd.Function):
         output, spec = _redistribute_backward(
             grad_output,
             previous_spec,
-            out_dtype,
-            op_dtype,
-            async_op,
+            out_dtype=out_dtype,
+            op_dtype=op_dtype,
+            async_op=async_op,
         )
 
         ctx.current_spec = spec
