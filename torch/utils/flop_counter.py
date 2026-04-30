@@ -627,8 +627,9 @@ def _register_flex_attention_flops() -> None:
     def flex_attention_backward_flop(
         query, key, value, out, logsumexp, grad_out, *args, out_val=None, **kwargs
     ) -> int:
+        grad_out_shape = grad_out.shape if grad_out is not None else out.shape
         return sdpa_backward_flop_count(
-            grad_out.shape, query.shape, key.shape, value.shape
+            grad_out_shape, query.shape, key.shape, value.shape
         )
 
 

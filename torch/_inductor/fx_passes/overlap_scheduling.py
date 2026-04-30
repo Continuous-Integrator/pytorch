@@ -212,8 +212,18 @@ def estimate_roofline_runtime_ms(node: fx.Node) -> float:
     # Compute time (FLOPs-based, only if op is in flop_registry)
     compute_ns: float = 0.0
     flop_key = _get_flop_registry_key(node.target)
-    if flop_key is not None and len(out_dtypes) == 1:
-        compute_ns = get_compute_time(flop_key, args, kwargs, out, out_dtypes.copy())
+    if flop_key is not None and len(out_dtypes) >= 1:
+        # Use a single dtype for peak-flops lookup. For mixed-dtype outputs
+        # (e.g. flex_attention returns bf16 out + fp32 logsumexp), use the
+        # first output tensor's dtype as the compute dtype.
+        compute_dtypes = (
+            OrderedSet(out_dtypes)
+            if len(out_dtypes) == 1
+            else OrderedSet(
+                [next(t.dtype for t in flat_outs if isinstance(t, torch.Tensor))]
+            )
+        )
+        compute_ns = get_compute_time(flop_key, args, kwargs, out, compute_dtypes)
         if isinstance(compute_ns, (torch.SymInt, torch.SymFloat)):
             compute_ns = compute_ns.node.hint if compute_ns.node.has_hint() else 0.0
 
