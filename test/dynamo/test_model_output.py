@@ -3,10 +3,9 @@ import dataclasses
 import unittest.mock
 
 import torch
-import torch._dynamo.test_case
 import torch._dynamo.testing
+from torch._dynamo.test_case import run_tests, TestCase
 from torch._dynamo.testing import same
-from torch._dynamo.test_case import TestCase
 from torch.testing._internal.common_device_type import instantiate_device_type_tests
 
 
@@ -362,6 +361,4 @@ class TestModelOutputBert(TestCase):
 instantiate_device_type_tests(TestModelOutputBert, globals(), allow_xpu=True)
 
 if __name__ == "__main__":
-    from torch._dynamo.test_case import run_tests
-
     run_tests()

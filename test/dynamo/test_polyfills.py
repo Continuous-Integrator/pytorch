@@ -1,9 +1,8 @@
 # Owner(s): ["module: dynamo"]
 
 import torch
-from torch._dynamo.test_case import run_tests, TestCase
 import torch._dynamo.testing
-from torch.testing._internal.common_utils import skipIfTorchDynamo
+from torch._dynamo.test_case import run_tests, TestCase
 
 
 class TestGroupTensorsByDeviceAndDtype(TestCase):
