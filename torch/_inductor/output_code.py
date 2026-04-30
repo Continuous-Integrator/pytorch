@@ -868,7 +868,7 @@ class CompiledFxGraph(OutputCode):
         self.current_callable = None
         self.recursively_apply_fns = None
         self.compiled_fn_runner = None
-        # Note: _original_gm is already picklable (metadata stripped at creation)
+        self._original_gm = None
         # Note: _serialized_fx_graph is already in serializable form (SerializedGraphModule)
         # so it doesn't need to be cleared
 
