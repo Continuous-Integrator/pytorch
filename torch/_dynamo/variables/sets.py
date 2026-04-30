@@ -600,6 +600,32 @@ class SetVariable(VariableTracker):
         self.items.update(other.items)  # type: ignore[missing-attribute]
         return self
 
+    def nb_subtract_impl(
+        self, tx: "InstructionTranslator", other: VariableTracker, reverse: bool = False
+    ) -> VariableTracker:
+        # ref: https://github.com/python/cpython/blob/v3.13.0/Objects/setobject.c#L1880-L1892 (set_sub)
+        self_, other_ = (other, self) if reverse else (self, other)
+
+        if not pyanyset_check(self_) or not pyanyset_check(other_):
+            return ConstantVariable.create(NotImplemented)
+
+        result = self_.call_method(tx, "copy", [], {})
+        for k in list(other_.items.keys()):  # type: ignore[missing-attribute]
+            result.items.pop(k, None)  # type: ignore[missing-attribute]
+        return result
+
+    def nb_inplace_subtract_impl(
+        self, tx: "InstructionTranslator", other: VariableTracker
+    ) -> VariableTracker:
+        # ref: https://github.com/python/cpython/blob/v3.13.0/Objects/setobject.c#L1894-L1909 (set_isub)
+        if not pyanyset_check(other):
+            return ConstantVariable.create(NotImplemented)
+
+        tx.output.side_effects.mutation(self)
+        for k in list(other.items.keys()):  # type: ignore[missing-attribute]
+            self.items.pop(k, None)
+        return self
+
     def sq_length(self, tx: "InstructionTranslator") -> VariableTracker:
         return VariableTracker.build(tx, len(self.set_items))
 

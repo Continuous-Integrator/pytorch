@@ -477,6 +477,27 @@ its type to `common_constant_types`.
             return ConstantVariable.create(NotImplemented)
         return VariableTracker.build(tx, result)
 
+    def nb_subtract_impl(
+        self,
+        tx: Any,
+        other: VariableTracker,
+        reverse: bool = False,
+    ) -> VariableTracker:
+        # CPython: int, float, and complex define nb_subtract; bool inherits int's.
+        # https://github.com/python/cpython/blob/v3.13.0/Objects/longobject.c#L3824 (long_sub_method)
+        # https://github.com/python/cpython/blob/v3.13.0/Objects/floatobject.c#L573 (float_sub)
+        # https://github.com/python/cpython/blob/v3.13.0/Objects/complexobject.c#L720 (COMPLEX_BINOP(sub, diff))
+        if not isinstance(self.value, (int, float, complex)):
+            return ConstantVariable.create(NotImplemented)
+        if not other.is_python_constant():
+            return ConstantVariable.create(NotImplemented)
+        self_, other_ = (other, self) if reverse else (self, other)
+        v, w = self_.as_python_constant(), other_.as_python_constant()
+        result = self_.python_type().__sub__(v, w)  # type: ignore[bad-argument-count]
+        if result is NotImplemented:
+            return ConstantVariable.create(NotImplemented)
+        return VariableTracker.build(tx, result)
+
 
 CONSTANT_VARIABLE_NONE = ConstantVariable(None)
 CONSTANT_VARIABLE_TRUE = ConstantVariable(True)
