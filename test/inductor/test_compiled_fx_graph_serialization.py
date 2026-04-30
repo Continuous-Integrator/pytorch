@@ -15,6 +15,7 @@ import unittest
 
 import torch
 from torch._inductor.output_code import CompiledFxGraph
+from torch.testing._internal.common_utils import run_tests
 
 
 class TestCompiledFxGraphSerialization(unittest.TestCase):
@@ -26,7 +27,7 @@ class TestCompiledFxGraphSerialization(unittest.TestCase):
         """
         gm = torch.fx.GraphModule(torch.nn.Module(), torch.fx.Graph())
         gm.graph.placeholder("x")
-        gm.graph.output(list(gm.graph.nodes)[0])
+        gm.graph.output(next(iter(gm.graph.nodes)))
         gm.recompile()
 
         cfg = CompiledFxGraph.__new__(CompiledFxGraph)
@@ -52,4 +53,4 @@ class TestCompiledFxGraphSerialization(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main()
+    run_tests()
