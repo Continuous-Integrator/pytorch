@@ -78,12 +78,7 @@ from ..utils import (
     str_methods,
     tensortype_to_dtype,
 )
-from .base import (
-    AsPythonConstantNotImplementedError,
-    AttributeMutationExisting,
-    ValueMutationNew,
-    VariableTracker,
-)
+from .base import AsPythonConstantNotImplementedError, ValueMutationNew, VariableTracker
 from .constant import ConstantVariable, FakeIdVariable
 from .dicts import (
     ConstDictVariable,
@@ -2464,11 +2459,6 @@ class BuiltinVariable(BaseBuiltinVariable):
             self, name, py_type=type(attr) if attr is not None else None, source=source
         )
 
-    @staticmethod
-    def _is_user_defined_class(cls: type) -> bool:
-        mod = getattr(cls, "__module__", None) or ""
-        return not mod.startswith(("torch.", "torch_", "_"))
-
     def call_setattr(
         self,
         tx: "InstructionTranslator",
@@ -2476,18 +2466,7 @@ class BuiltinVariable(BaseBuiltinVariable):
         name_var: VariableTracker,
         val: VariableTracker,
     ) -> VariableTracker | None:
-        if (
-            isinstance(obj, variables.UserDefinedClassVariable)
-            and name_var.is_python_constant()
-            and self._is_user_defined_class(obj.value)
-        ):
-            if obj.mutation_type is None:
-                obj.mutation_type = AttributeMutationExisting()
-            tx.output.side_effects.store_attr(
-                obj, name_var.as_python_constant(), val
-            )
-            return val
-        elif isinstance(
+        if isinstance(
             obj,
             (
                 variables.DefaultDictVariable,
@@ -2607,6 +2586,11 @@ class BuiltinVariable(BaseBuiltinVariable):
                             "move the mutation out of `torch.compile` region",
                         ],
                     )
+
+            if isinstance(obj, variables.UserDefinedClassVariable):
+                mod = getattr(obj.value, "__module__", None) or ""
+                if mod.startswith(("torch.", "torch_")):
+                    return None
 
             tx.output.side_effects.store_attr(obj, name, val)
             return val

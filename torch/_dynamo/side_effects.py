@@ -393,10 +393,6 @@ class SideEffects:
         self, item: VariableTracker, name: str, value: VariableTracker
     ) -> None:
         assert self.is_attribute_mutation(item)
-        if isinstance(item, variables.UserDefinedClassVariable):
-            if id(item.value) not in self.id_to_variable:
-                self.id_to_variable[id(item.value)] = item
-                self.keepalive.append(item.value)
         # For constant attribute mutations on outer-scope objects, defer
         # the side-effect check and validate after tracing that the
         # mutation was nullified (value restored to original).
