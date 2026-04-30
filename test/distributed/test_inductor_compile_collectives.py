@@ -6,8 +6,10 @@ import tempfile
 
 import torch
 import torch.distributed as dist
+from torch._inductor._functionalize_collectives import (
+    _functionalize_inplace_collectives,
+)
 from torch.fx.experimental.proxy_tensor import make_fx
-from torch.fx.passes.regional_inductor import _functionalize_inplace_collectives
 from torch.testing._internal.common_utils import run_tests, TestCase
 
 
@@ -26,13 +28,13 @@ def _make_fx_with_allreduce():
     return make_fx(_f)(torch.ones(4))
 
 
-class TestRegionalInductorCollectives(TestCase):
+class TestInductorCompileCollectives(TestCase):
     def setUp(self):
         super().setUp()
         os.environ.setdefault("MASTER_ADDR", "127.0.0.1")
         os.environ.setdefault("MASTER_PORT", "29516")
         with tempfile.NamedTemporaryFile(
-            prefix="regional_inductor_store_", delete=False
+            prefix="inductor_compile_collectives_store_", delete=False
         ) as fd:
             self._store_path = fd.name
         dist.init_process_group(
