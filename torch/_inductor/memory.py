@@ -483,7 +483,7 @@ def estimate_region_peak_memory(
     region_end: int,
     step_of: Callable[[BaseSchedulerNode], int],
     graph_outputs: OrderedSet[str],
-    carry_in: int = 0,
+    cur_memory: int = 0,
 ) -> int:
     """Peak memory inside `[region_start, region_end]` for the
     hypothetical post-reorder schedule.
@@ -492,7 +492,8 @@ def estimate_region_peak_memory(
     each node: alloc = sum of `size_alloc` over its outputs; free =
     sum of `size_free` over `pred_buffers` whose proposed last
     consumer is this node. Then accumulates per step starting from
-    `carry_in` and returns the maximum live bytes.
+    `cur_memory` (live bytes at the window boundary) and returns
+    the maximum live bytes.
     """
     R = region_end - region_start + 1
     region = [SNodeMemory(0, 0) for _ in range(R)]
@@ -527,7 +528,7 @@ def estimate_region_peak_memory(
                 region[slot].size_free += pb.mpi_buffer.size_free
                 freed_in_window.add(name)
 
-    cur = carry_in
+    cur = cur_memory
     peak = cur
     for af in region:
         cur += af.size_alloc

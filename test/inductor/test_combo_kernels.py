@@ -2084,6 +2084,7 @@ class ComboKernelPeakMemoryTests(InductorTestCase):
         baseline_cum,
         thresholds,
         graph_outputs=None,
+        initial_memory=0,
     ):
         from torch._inductor.scheduler import ComboKernelMemoryContext, Scheduler
 
@@ -2093,6 +2094,7 @@ class ComboKernelPeakMemoryTests(InductorTestCase):
             node_to_idx={node: idx for idx, node in enumerate(nodes)},
             baseline_peak=baseline_peak,
             running_peak=baseline_peak,
+            initial_memory=initial_memory,
             baseline_cum=baseline_cum,
         )
 

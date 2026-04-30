@@ -181,10 +181,15 @@ class ComboKernelMemoryContext:
     # gate's threshold check still compares against `baseline_peak`
     # (the original) so total drift is capped.
     running_peak: int = 0
-    # Live bytes at each step in the original schedule. carry_in for a
-    # window is just baseline_cum[region_start - 1] under the
-    # layer-locality of combo formation: prior horizontal fusion stays
-    # inside its own layer, so the boundary live set doesn't shift.
+    # Bytes already live at graph entry (graph-input / freeable-input
+    # buffers). Used as `cur_memory` when `region_start == 0` since the
+    # window starts before any node has run yet.
+    initial_memory: int = 0
+    # Live bytes at each step in the original schedule. The window's
+    # entry `cur_memory` is `baseline_cum[region_start - 1]` for
+    # `region_start > 0` under the layer-locality of combo formation:
+    # prior horizontal fusion stays inside its own layer, so the
+    # boundary live set doesn't shift.
     baseline_cum: list[int] = dataclasses.field(default_factory=list)
     accepted_step: dict[BaseSchedulerNode, int] = dataclasses.field(
         default_factory=dict
@@ -5290,12 +5295,16 @@ class Scheduler:
         baseline_peak, baseline_cum = peak_memory_from_buf_info_list(
             buf_info_list, len(self.nodes)
         )
+        initial_memory = sum(
+            fbuf.mpi_buffer.size_free for fbuf in name_to_freeable.values()
+        )
 
         return ComboKernelMemoryContext(
             graph_outputs=graph_outputs,
             node_to_idx={node: idx for idx, node in enumerate(self.nodes)},
             baseline_peak=baseline_peak,
             running_peak=baseline_peak,
+            initial_memory=initial_memory,
             baseline_cum=baseline_cum,
         )
 
@@ -5401,14 +5410,16 @@ class Scheduler:
                 return accepted_step[owner]
             return node_to_idx[owner]
 
-        # carry_in: bytes live at the boundary just before the window.
-        # Layer-locality of combo formation makes this invariant under
-        # prior horizontal fusion, so the precomputed baseline value is
-        # correct without per-trial recomputation.
-        carry_in = (
+        # cur_memory at window entry: bytes live at the boundary just
+        # before the window. For region_start > 0 this is
+        # baseline_cum[region_start - 1] (invariant under prior
+        # horizontal fusion thanks to layer-locality). For
+        # region_start == 0 the window starts before any node has run,
+        # so live bytes = freeable input buffers (graph inputs).
+        cur_memory = (
             mem_ctx.baseline_cum[region_start - 1]
             if region_start > 0 and mem_ctx.baseline_cum
-            else 0
+            else mem_ctx.initial_memory
         )
 
         region_peak = estimate_region_peak_memory(
@@ -5417,7 +5428,7 @@ class Scheduler:
             region_end=region_end,
             step_of=step_of,
             graph_outputs=mem_ctx.graph_outputs,
-            carry_in=carry_in,
+            cur_memory=cur_memory,
         )
 
         # Compare against the *original* baseline peak (not the running
