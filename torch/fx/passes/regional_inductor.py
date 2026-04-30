@@ -11,6 +11,7 @@ _R = TypeVar("_R")
 
 import torch
 from torch.fx._compatibility import compatibility
+from torch.fx.graph_module import _assign_attr, _del_attr, _get_attr
 
 
 logger = logging.getLogger(__name__)
@@ -43,7 +44,7 @@ def _resolve_reduce_op_str(gm: torch.fx.GraphModule, arg: torch.fx.Node) -> str:
 
     if arg.op != "get_attr":
         raise AssertionError(f"expected get_attr, got op={arg.op!r}")
-    reduce_op = getattr(gm, arg.target)  # type: ignore[arg-type]
+    reduce_op = _get_attr(gm, arg.target)  # type: ignore[arg-type]
     if isinstance(reduce_op, torch.ScriptObject):
         reduce_op = dist.ReduceOp.RedOpType(reduce_op.op())  # type: ignore[attr-defined]
     return REDUCE_OP_TO_STR[reduce_op]
@@ -217,8 +218,56 @@ def _functionalize_inplace_collectives(
         gm.graph.erase_node(node)
         found = True
 
-    if found:
-        gm.recompile()
+    if not found:
+        return gm
+
+    # Strip orphan ``get_attr`` nodes (typically the ReduceOp attrs that
+    # got embedded as constants) along with their backing module attributes.
+    # The PG ``get_attr`` stays alive — ``_unbox_process_group_torchbinds``
+    # handles it.
+    for n in list(gm.graph.find_nodes(op="get_attr")):
+        if n.users:
+            continue
+        _del_attr(gm, n.target)  # type: ignore[arg-type]
+        gm.graph.erase_node(n)
+    gm.recompile()
+    return gm
+
+
+def _unbox_process_group_torchbinds(
+    gm: torch.fx.GraphModule,
+) -> torch.fx.GraphModule:
+    """Replace ProcessGroup torchbind attrs with their unboxed Python
+    ``dist.ProcessGroup``.
+
+    ``make_fx`` traces ``dist.*`` collectives with a torchbind
+    ``__torch__.torch.classes.c10d.ProcessGroup`` baked in as a graph attr.
+    Inductor's collective ops (``_c10d_functional.{op}``) accept either a
+    ``group_name`` string or a Python ``dist.ProcessGroup`` — but **not** a
+    raw torchbind, which fails at runtime with::
+
+        all_reduce_(): argument 'group_name' must be either a string ...
+        but got __torch__.torch.classes.c10d.ProcessGroup
+
+    Unboxing the attribute in-place (without changing the FX graph) keeps
+    the PG flowing as a graph value end-to-end while making it acceptable
+    to Inductor and the runtime collective ops. The b57e3f5 changes
+    (FakeTensor id-hash, GraphModule deepcopy share-by-ref, wrapper-codegen
+    pickle fallback) are what let the unboxed PG flow through downstream
+    consumers without crashing.
+    """
+    import torch.distributed as dist
+
+    if not torch.distributed.is_available():
+        return gm
+
+    for node in gm.graph.find_nodes(op="get_attr"):
+        attr = _get_attr(gm, node.target)  # type: ignore[arg-type]
+        if not isinstance(attr, torch.ScriptObject):
+            continue
+        if attr._type().qualified_name() != "__torch__.torch.classes.c10d.ProcessGroup":  # type: ignore[attr-defined]
+            continue
+        _assign_attr(dist.ProcessGroup.unbox(attr), gm, node.target)  # type: ignore[arg-type]
     return gm
 
 
@@ -294,9 +343,15 @@ def _compile_submod(gm: torch.fx.GraphModule, prefix: str) -> torch.fx.GraphModu
                         f"Available config keys can be found in torch._inductor.config"
                     )
 
+            from torch.fx.graph_module import _share_torchbind_on_deepcopy
+
             with (
                 inductor_config.patch(inductor_options),
                 _disable_remat_for_regional_subcompile(),
+                # ``standalone_compile`` deepcopies the submod; let
+                # non-pickleable torchbind attrs (e.g. ProcessGroup) be
+                # shared by reference instead of crashing.
+                _share_torchbind_on_deepcopy(),
             ):
                 compiled_fn = torch._inductor.standalone_compile(
                     submod,
@@ -496,8 +551,11 @@ def regional_inductor(
 
     with torch.fx.traceback.preserve_node_meta(enable=False):
         # Rewrite raw ``c10d.{op}_`` inplace calls into ``_c10d_functional``
-        # form so Inductor's collective machinery can recognize and lower them.
+        # form, then unbox any ProcessGroup torchbind attrs into their
+        # Python ``dist.ProcessGroup`` so Inductor's collective lowering and
+        # the runtime ops accept them.
         gm = _functionalize_inplace_collectives(gm)
+        gm = _unbox_process_group_torchbinds(gm)
         gm = _create_inductor_marked_regions(gm)
         gm = _compile_inductor_marked_regions(gm)
         if torch._functorch.config.force_autograd_cache:
