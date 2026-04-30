@@ -201,13 +201,14 @@ jobs:
             "${DOCKER_IMAGE}"
           )
           docker exec -t -w "${PYTORCH_ROOT}" "${container_name}" bash -c "bash .ci/pytorch/binary_populate_env.sh"
-          docker exec -t -w "${PYTORCH_ROOT}" "${container_name}" bash -c "
+          # binary_linux_test.sh writes its test commands to OUTPUT_SCRIPT (defaults to a
+          # legacy CircleCI path); /pytorch and /final_pkgs are hardcoded inside the script.
+          docker exec -t -w "${PYTORCH_ROOT}" -e OUTPUT_SCRIPT=/run.sh "${container_name}" bash -c "
             ln -sf '${GITHUB_WORKSPACE}' /pytorch
             ln -sf '${PYTORCH_FINAL_PACKAGE_DIR}' /final_pkgs
             bash .ci/pytorch/binary_linux_test.sh
-            source '${BINARY_ENV_FILE}'
-            bash -x /run.sh
           "
+          docker exec -t "${container_name}" bash -c "source ${BINARY_ENV_FILE} && bash -x /run.sh"
 
       - name: Cleanup docker
         if: ${{ always() && !inputs.use_container_directive }}
