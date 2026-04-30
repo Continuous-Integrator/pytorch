@@ -636,6 +636,13 @@ class BuiltinVariable(BaseBuiltinVariable):
             ) -> VariableTracker:
                 from .builder import wrap_fx_proxy
 
+                def promote_bool_operand(v: VariableTracker) -> VariableTracker:
+                    if isinstance(v, (ConstantVariable, SymNodeVariable)) and v.python_type() is bool:
+                        return generic_int(tx, v)
+                    return v
+
+                a = promote_bool_operand(a)
+                b = promote_bool_operand(b)
                 return wrap_fx_proxy(
                     tx,
                     tx.output.create_proxy(
