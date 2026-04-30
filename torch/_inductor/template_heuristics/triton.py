@@ -1554,7 +1554,6 @@ class ROCmConfigHeuristic(BaseConfigHeuristic):
         # Architecture-aware default kpack for flex configs
         default_kpack = get_default_kpack()
 
-
         self.gfx950_default_flex_config = {
             (torch.float32, 64): ROCmFlexConfig(128, 32, 1, 4, kpack=default_kpack),
             (torch.float32, 128): ROCmFlexConfig(128, 32, 1, 4, kpack=default_kpack),
