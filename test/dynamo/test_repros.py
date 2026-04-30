@@ -71,6 +71,7 @@ from torch.testing._internal.common_device_type import (
     E4M3_MAX_POS,
     e4m3_type,
     instantiate_device_type_tests,
+    onlyAccelerator,
 )
 from torch.testing._internal.common_utils import (
     instantiate_parametrized_tests,
@@ -7764,6 +7765,7 @@ SavedForBackwardsAOTOutput(idx=5)""",
 
 class ReproTestsDevice(torch._dynamo.test_case.TestCase):
     @serialTest()
+    @onlyAccelerator
     def test_mem_leak_guards(self, device):
         def gn(x0, x):
             return x0 * x
@@ -7954,6 +7956,7 @@ class ReproTestsDevice(torch._dynamo.test_case.TestCase):
 
     # https://github.com/pytorch/pytorch/issues/156580
     @serialTest()
+    @onlyAccelerator
     def test_dont_dce_rand(self, device):
         # https://github.com/pytorch/pytorch/issues/143431
         def f(image_latent):
@@ -7986,6 +7989,7 @@ class ReproTestsDevice(torch._dynamo.test_case.TestCase):
                 self.assertEqual(actual, expected)
 
     # https://github.com/pytorch/pytorch/issues/151670
+    @onlyAccelerator
     def test_diagonal_scatter_single_elem_cpu_with_gpu_tensor(self, device):
         class Model(torch.nn.Module):
             def __init__(self):
@@ -8104,6 +8108,7 @@ class ReproTestsDevice(torch._dynamo.test_case.TestCase):
         self.assertEqual(out3_ref.shape, out3_test.shape)
         self.assertEqual(out3_ref.stride(), out3_test.stride())
 
+    @onlyAccelerator
     def test_memleak_when_graph_input_has_tensor_attr(self, device):
         @torch.compile(backend="eager")
         def f(x):
@@ -8425,6 +8430,7 @@ class ReproTestsDevice(torch._dynamo.test_case.TestCase):
         out2 = torch.compile(model, backend="eager")(input.clone())
         self.assertEqual(out1, out2)
 
+    @onlyAccelerator
     def test_zero_dim_param_mixed_device_grad(self, device):
         # cpu 0-dim params with cuda grads
         # https://github.com/pytorch/pytorch/issues/160084
@@ -9048,6 +9054,7 @@ class ReproTestsDevice(torch._dynamo.test_case.TestCase):
         )
 
 
+
 class CUDAReproTests(torch._dynamo.test_case.TestCase):
     @unittest.skipIf(not torch.cuda.is_available(), "requires cuda")
     def test_cuda_sync(self):
@@ -9157,9 +9164,8 @@ class CUDAReproTests(torch._dynamo.test_case.TestCase):
 
 instantiate_parametrized_tests(ReproTests)
 
-instantiate_device_type_tests(
-    ReproTestsDevice, globals(), except_for=("cpu",), allow_xpu=True
-)
+devices = ["cuda", "hpu"]
+instantiate_device_type_tests(ReproTestsDevice, globals(), only_for=devices)
 instantiate_device_type_tests(LRUCacheWarningTests, globals(), only_for=("cuda",))
 if __name__ == "__main__":
     from torch._dynamo.test_case import run_tests
