@@ -225,13 +225,13 @@ class FunctionalTensor(torch.Tensor):
             and torch.is_inference_mode_enabled()
             and torch._inductor.config.enable_auto_functionalized_v2
         ):
+            storage = out.elem.untyped_storage()
             if out.is_base_tensor():
                 out._inference_mode_base = None
                 # This assumes that the FunctionalTensor.elem does not change its storage after this point.
                 # Otherwise this would be invalid.
-                mode._storage_to_base[out.elem.untyped_storage()] = out
+                mode._storage_to_base[storage] = out
             else:
-                storage = out.elem.untyped_storage()
                 out._inference_mode_base = mode._storage_to_base.get(storage)
                 if out._inference_mode_base is None:
                     mode._storage_to_base[storage] = out
