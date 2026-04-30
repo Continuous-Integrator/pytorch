@@ -1634,24 +1634,6 @@ class UserDefinedObjectVariable(UserDefinedVariable):
             ).call_function(tx, [key], {})
         return super().mp_subscript_impl(tx, key)
 
-    def call_tp_slot(
-        self,
-        tx: "InstructionTranslator",
-        name: str,
-        args: list[VariableTracker],
-        kwargs: dict[str, VariableTracker],
-    ) -> VariableTracker:
-        type_attr = self.lookup_class_mro_attr(name)
-        if type_attr is NO_SUCH_SUBOBJ:
-            return variables.ConstantVariable.create(NotImplemented)
-        if type_attr is None:
-            raise_type_error(tx, "'NoneType' object is not callable")
-
-        # TODO(guilhermeleobas): Do not use self.call_method here as this
-        # can potentially cause infinite recursion. This needs to retrieve the tp_slot
-        # directly and call it.
-        return self.call_method(tx, name, args, kwargs)
-
     def SLOT1BIN(
         self,
         tx: "InstructionTranslator",
@@ -1713,9 +1695,7 @@ class UserDefinedObjectVariable(UserDefinedVariable):
         # Not if the dunder methods are called directly (MRO lookup + direct
         # call), which is what CPython's vectorcall_maybe does. This is
         # equivalent to calling a.__or__(b) directly, NOT a | b, which would
-        # re-enter the C slot layer and loop. In Dynamo, this means using
-        # call_tp_slot (direct invocation) rather than call_method, which would
-        # route back through nb_or dispatch.
+        # re-enter the C slot layer and loop.
 
         def py_is_type(w_type: type, v_type: type) -> bool:
             return w_type is v_type
@@ -1744,18 +1724,18 @@ class UserDefinedObjectVariable(UserDefinedVariable):
                     rdunder
                 ) != other_._maybe_get_baseclass_method(rdunder)
                 if method_is_overloaded:
-                    r = other_.call_tp_slot(tx, rdunder, [self_], {})
+                    r = other_.call_method(tx, rdunder, [self_], {})
                     if not is_nb_not_implemented(r):
                         return r
                     do_other = False
 
-            r = self_.call_tp_slot(tx, dunder, [other_], {})
+            r = self_.call_method(tx, dunder, [other_], {})
             if not is_nb_not_implemented(r) or py_is_type(o_type, s_type):
                 return r
 
         if do_other:
             assert isinstance(other_, UserDefinedObjectVariable)
-            r = other_.call_tp_slot(tx, rdunder, [self_], {})  # infinite recursion??
+            r = other_.call_method(tx, rdunder, [self_], {})  # infinite recursion??
             if not is_nb_not_implemented(r):
                 return r
 
@@ -1783,7 +1763,7 @@ class UserDefinedObjectVariable(UserDefinedVariable):
         other: VariableTracker,
     ) -> VariableTracker:
         # ref: https://github.com/python/cpython/blob/3.13/Objects/typeobject.c#L9494
-        return self.call_tp_slot(tx, "__ior__", [other], {})
+        return self.call_method(tx, "__ior__", [other], {})
 
     def call_method(
         self,
