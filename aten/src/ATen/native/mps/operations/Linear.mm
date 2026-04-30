@@ -220,13 +220,7 @@ Tensor _mps_linear(const Tensor& input, const Tensor& weight_arg, const std::opt
   const bool is_contiguous = input.is_contiguous() && weight.is_contiguous() && bias.is_contiguous();
 
   if (is_macos_13_or_newer(MacOSVersion::MACOS_VER_15_0_PLUS) && is_contiguous && !is_complex) {
-    if (needs_nd_workaround(input) && (!is_bias_defined || bias.dim() <= 1)) {
-      auto input2d = input.flatten(0, -2);
-      auto output2d = output.flatten(0, -2);
-      _mps_linear_nograph(input2d, weight, bias, output2d);
-    } else {
-      _mps_linear_nograph(input, weight, bias, output);
-    }
+    _mps_linear_nograph(input, weight, bias, output);
     // Squeeze last dim of 1D linear
     return weight_arg.dim() != 1 ? output : output.squeeze(-1);
   }
@@ -255,10 +249,6 @@ Tensor _mps_linear(const Tensor& input, const Tensor& weight_arg, const std::opt
         // workaround to improve the performance with 3D+ inputs
         doReshape =
             input_size.size() > 2 && input_size[0] > 1 && input_size[1] >= 1 && input_size[1] <= 32 && bias.dim() <= 1;
-      }
-      // Non-deterministic results for >2D fp16/bf16 on Apple10+
-      if (!doReshape) {
-        doReshape = needs_nd_workaround(input);
       }
       auto inputFlattened = doReshape ? [mpsGraph flatten2DTensor:inputTensor axis:-1 name:nil] : inputTensor;
       auto outputTensor = [mpsGraph matrixMultiplicationWithPrimaryTensor:inputFlattened
