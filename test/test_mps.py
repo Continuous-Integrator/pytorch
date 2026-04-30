@@ -14001,11 +14001,9 @@ class TestFlashAttentionMPS(TestCaseMPS):
 
         tol = 2e-2 if dtype in (torch.float16, torch.bfloat16) else 1e-3
         torch.testing.assert_close(q.grad.cpu().float(),  qc.grad,  atol=tol, rtol=tol)
-        # dK and dV are accumulated across gqa_factor q-heads; compare per kv-head
-        dk_ref = kc.grad.reshape(B, kvH, g, S, D).sum(dim=2)
-        dv_ref = vc.grad.reshape(B, kvH, g, S, D).sum(dim=2)
-        torch.testing.assert_close(k.grad.cpu().float(), dk_ref, atol=tol, rtol=tol)
-        torch.testing.assert_close(v.grad.cpu().float(), dv_ref, atol=tol, rtol=tol)
+        # kc.grad / vc.grad are already accumulated across the GQA groups
+        torch.testing.assert_close(k.grad.cpu().float(), kc.grad, atol=tol, rtol=tol)
+        torch.testing.assert_close(v.grad.cpu().float(), vc.grad, atol=tol, rtol=tol)
 
     # ------------------------------------------------------------------
     # Forward tests
