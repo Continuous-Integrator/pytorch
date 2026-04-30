@@ -22,7 +22,7 @@ from torch._inductor.runtime.cache_dir_utils import temporary_cache_dir
 from torch._inductor.utils import BoxedBool, InputType
 from torch._subclasses import FakeTensorMode
 from torch.fx.experimental.symbolic_shapes import ShapeEnv
-from torch.fx.graph_module import _share_torchbind_on_deepcopy
+from torch.fx.graph_module import _share_torchbind_and_process_group_on_deepcopy
 
 from . import config
 from ._functionalize_collectives import (
@@ -473,7 +473,7 @@ def standalone_compile(
         # The unboxed Python ``dist.ProcessGroup`` is non-pickleable; smuggle
         # it through the deepcopy as a shared reference instead of crashing.
         if not donate_graph_module:
-            with _share_torchbind_on_deepcopy():
+            with _share_torchbind_and_process_group_on_deepcopy():
                 gm = copy.deepcopy(gm)
         compiled_fn = compile_fx(
             gm, example_inputs, ignore_shape_env=ignore_shape_env, **options

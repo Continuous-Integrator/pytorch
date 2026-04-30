@@ -13,7 +13,7 @@ from torch._inductor._functionalize_collectives import (
     _unbox_process_group_torchbinds,
 )
 from torch.fx.experimental.proxy_tensor import make_fx
-from torch.fx.graph_module import _share_torchbind_on_deepcopy
+from torch.fx.graph_module import _share_torchbind_and_process_group_on_deepcopy
 from torch.fx.passes.regional_inductor import regional_inductor
 from torch.testing._internal.common_utils import run_tests, TestCase
 
@@ -97,7 +97,7 @@ def forward(self, t_1):
     def test_post_pass_gm_deepcopy(self):
         # After functionalizing + unboxing PG groups, ``_torchbind_obj0`` is a Python
         # ``dist.ProcessGroup`` — still not pickleable, but
-        # ``_share_torchbind_on_deepcopy()`` makes the gm deepcopy-safe by
+        # ``_share_torchbind_and_process_group_on_deepcopy()`` makes the gm deepcopy-safe by
         # sharing the PG by reference. This is what
         # ``standalone_compile``'s deepcopy of the regional submod relies
         # on.
@@ -106,7 +106,7 @@ def forward(self, t_1):
         _unbox_process_group_torchbinds(gm)
         self.assertIsInstance(gm._torchbind_obj0, dist.ProcessGroup)
 
-        with _share_torchbind_on_deepcopy():
+        with _share_torchbind_and_process_group_on_deepcopy():
             gm2 = copy.deepcopy(gm)
         self.assertIs(gm._torchbind_obj0, gm2._torchbind_obj0)
         self.assertExpectedInline(

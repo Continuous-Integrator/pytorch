@@ -111,20 +111,20 @@ class _EvalCacheLoader:
 _loader = _EvalCacheLoader()
 
 
-_share_torchbind = contextvars.ContextVar("_share_torchbind", default=False)
+_share_torchbind_and_process_group = contextvars.ContextVar("_share_torchbind_and_process_group", default=False)
 
 
 @contextlib.contextmanager
-def _share_torchbind_on_deepcopy() -> Iterator[None]:
+def _share_torchbind_and_process_group_on_deepcopy() -> Iterator[None]:
     """Inside this context, ``GraphModule.__deepcopy__`` smuggles torchbind
     objects without ``__getstate__``/``__setstate__`` (e.g. ProcessGroup)
     through deepcopy as shared references instead of crashing.
     """
-    token = _share_torchbind.set(True)
+    token = _share_torchbind_and_process_group.set(True)
     try:
         yield
     finally:
-        _share_torchbind.reset(token)
+        _share_torchbind_and_process_group.reset(token)
 
 
 def _exec_with_source(
@@ -1064,7 +1064,7 @@ class {module_name}(torch.nn.Module):
         memo[id(self)] = res
         # Opt-in: smuggle non-pickleable torchbind / ProcessGroup objects
         # through deepcopy as shared references.
-        if _share_torchbind.get():
+        if _share_torchbind_and_process_group.get():
             import torch.distributed as _dist
 
             _PG = _dist.ProcessGroup if _dist.is_available() else ()
