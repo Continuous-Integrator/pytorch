@@ -2358,9 +2358,13 @@ def clone_tensor(x: torch.Tensor) -> torch.Tensor:
 
 
 def _copy_dynamo_attr(src: torch.Tensor, dst: torch.Tensor, attr: str) -> None:
-    """Copy a single dynamo attribute from src to dst, or remove it from dst if src doesn't have it."""
+    """Copy a single dynamo attribute from src to dst, or remove it from dst
+    if src doesn't have it. Uses .copy() for container types (set, dict) to
+    avoid shared references between src and dst, and assigns directly for
+    primitive types like bool (e.g., _has_dynamo_dim_marking)."""
     if hasattr(src, attr):
-        setattr(dst, attr, getattr(src, attr).copy())
+        val = getattr(src, attr)
+        setattr(dst, attr, val.copy() if hasattr(val, "copy") else val)
     elif hasattr(dst, attr):
         delattr(dst, attr)
 
@@ -2378,6 +2382,8 @@ def copy_dynamo_tensor_attributes(src: torch.Tensor, dst: torch.Tensor) -> None:
     _copy_dynamo_attr(src, dst, "_dynamo_shape_ids")
     _copy_dynamo_attr(src, dst, "_dynamo_strict_unbacked_indices")
     _copy_dynamo_attr(src, dst, "_dynamo_weak_dynamic_indices")
+    _copy_dynamo_attr(src, dst, "_dynamo_propagated_dynamic_indices")
+    _copy_dynamo_attr(src, dst, "_has_dynamo_dim_marking")
 
 
 def clone_input(x: torch.Tensor, *, dtype: torch.dtype | None = None) -> torch.Tensor:
@@ -2795,25 +2801,21 @@ def specialize_symnode(arg: Any) -> Any:
     from .variables import ConstantVariable, LazyVariableTracker, SymNodeVariable
 
     # Guard and specialize
-    if isinstance(arg, LazyVariableTracker):
-        if not arg.is_realized():
-            # Find if the arg would be realized as SymNodeVariable later on. If yes,
-            # realize it and specialize. Else return the arg.
+    if isinstance(arg, LazyVariableTracker) and not arg.is_realized():
+        # Find if the arg would be realized as SymNodeVariable later on. If yes,
+        # realize it and specialize. Else return the arg.
 
-            source = arg.original_source()
-            value = arg.original_value()
+        source = arg.original_source()
+        value = arg.original_value()
 
-            is_symnode_vt = is_torch_sym(value) or (
-                not config.specialize_int
-                and type(value) is int
-                and not is_int_specialization_case(value, source)
-            )
+        is_symnode_vt = is_torch_sym(value) or (
+            not config.specialize_int
+            and type(value) is int
+            and not is_int_specialization_case(value, source)
+        )
 
-            if not is_symnode_vt:
-                return arg
-
-        # Realize to get the underlying variable (handles both realized and unrealized)
-        arg = arg.realize()
+        if not is_symnode_vt:
+            return arg
 
     if isinstance(arg, SymNodeVariable):
         return ConstantVariable.create(arg.evaluate_expr())
