@@ -8,16 +8,7 @@ import torch._dynamo.testing
 import torch.fx.experimental._config as _fx_experimental_config
 import torch.utils._pytree as pytree
 from torch._dynamo.decorators import mark_static, mark_unbacked, maybe_mark_dynamic
-from torch._dynamo.dynamic_spec import (
-    _active_dynamic_shapes,
-    _flatten_dynamic_shapes,
-    get_active_spec_for_arg,
-    get_active_spec_for_dim,
-    IntSpec,
-    IntSpecType,
-    ObjectSpec,
-    TensorSpec,
-)
+from torch._dynamo.dynamic_spec import IntSpec, IntSpecType, ObjectSpec, TensorSpec
 from torch._dynamo.test_case import TestCase
 from torch._dynamo.testing import EagerAndRecordGraphs
 from torch.fx.experimental.symbolic_shapes import (
@@ -812,11 +803,11 @@ class TestObjectSpec(TestCase):
         self.assertEqual(list(os.items()), [("x", spec_x), ("n", spec_n)])
 
     def test_repr(self):
-        # Single field-keyed entry.
+        # Single entry.
         os = ObjectSpec({"x": IntSpec.static()})
         self.assertEqual(
             repr(os),
-            "ObjectSpec({field('x'): IntSpec(type=STATIC)})",
+            "ObjectSpec({.x: IntSpec(type=STATIC)})",
         )
 
     def test_repr_multiple_entries(self):
@@ -825,56 +816,22 @@ class TestObjectSpec(TestCase):
         self.assertEqual(
             repr(os),
             "ObjectSpec({"
-            "field('x'): IntSpec(type=STATIC), "
-            "field('n'): IntSpec(name='n', type=BACKED)"
-            "})",
-        )
-
-    def test_repr_mixed_field_and_attr(self):
-        os = (
-            ObjectSpec()
-            .field("x", IntSpec.backed("batch"))
-            .attr("weight", TensorSpec([IntSpec.backed("h")]))
-        )
-        self.assertEqual(
-            repr(os),
-            "ObjectSpec({"
-            "field('x'): IntSpec(name='batch', type=BACKED), "
-            "attr('weight'): TensorSpec([IntSpec(name='h', type=BACKED)])"
+            ".x: IntSpec(type=STATIC), "
+            ".n: IntSpec(name='n', type=BACKED)"
             "})",
         )
 
     def test_repr_nested_objectspec(self):
-        inner = ObjectSpec().attr("weight", TensorSpec([IntSpec.backed("h")]))
-        outer = ObjectSpec().attr("model", inner).field("x", IntSpec.static())
+        inner = ObjectSpec().field("weight", TensorSpec([IntSpec.backed("h")]))
+        outer = ObjectSpec().field("model", inner).field("x", IntSpec.static())
         self.assertEqual(
             repr(outer),
             "ObjectSpec({"
-            "attr('model'): ObjectSpec({"
-            "attr('weight'): TensorSpec([IntSpec(name='h', type=BACKED)])}), "
-            "field('x'): IntSpec(type=STATIC)"
+            ".model: ObjectSpec({"
+            ".weight: TensorSpec([IntSpec(name='h', type=BACKED)])}), "
+            ".x: IntSpec(type=STATIC)"
             "})",
         )
-
-    def test_attr_setter(self):
-        spec = TensorSpec([IntSpec.backed("h")])
-        os = ObjectSpec().attr("weight", spec)
-        self.assertIs(os["weight"], spec)
-        self.assertEqual(
-            repr(os),
-            "ObjectSpec({attr('weight'): "
-            "TensorSpec([IntSpec(name='h', type=BACKED)])})",
-        )
-
-    def test_mixed_field_and_attr(self):
-        # Interleaved ``.field`` (item-keyed) and ``.attr``
-        # (attribute-keyed) entries preserve insertion order.
-        spec_x = IntSpec.backed("batch")
-        spec_w = TensorSpec([IntSpec.backed("h")])
-        os = ObjectSpec().field("x", spec_x).attr("weight", spec_w)
-        self.assertIs(os["x"], spec_x)
-        self.assertIs(os["weight"], spec_w)
-        self.assertEqual(list(os), ["x", "weight"])
 
     def test_recursive_nesting(self):
         # Recursion in the data class — nested ``ObjectSpec`` is accepted.
@@ -891,12 +848,14 @@ class TestObjectSpecPytree(TestCase):
     ``ObjectSpec`` containing ``IntSpec`` / ``TensorSpec`` leaves."""
 
     def test_top_level_intspec_leaf(self):
+        # ``ObjectSpec`` entries flatten as ``GetAttrKey`` — matches
+        # ``AttrSource`` in the dynamo builder.
         spec = IntSpec.backed("n")
         os = ObjectSpec({"n": spec})
         leaves_with_paths, _ = pytree.tree_flatten_with_path(os)
         self.assertEqual(len(leaves_with_paths), 1)
         path, leaf = leaves_with_paths[0]
-        self.assertEqual(tuple(path), (pytree.MappingKey("n"),))
+        self.assertEqual(tuple(path), (pytree.GetAttrKey("n"),))
         self.assertIs(leaf, spec)
 
     def test_tensorspec_dims_get_sequence_keys(self):
@@ -905,71 +864,22 @@ class TestObjectSpecPytree(TestCase):
         os = ObjectSpec({"x": TensorSpec([s0, s1])})
         leaves_with_paths, _ = pytree.tree_flatten_with_path(os)
         path_to_leaf = {tuple(p): leaf for p, leaf in leaves_with_paths}
-        self.assertIs(path_to_leaf[(pytree.MappingKey("x"), pytree.SequenceKey(0))], s0)
-        self.assertIs(path_to_leaf[(pytree.MappingKey("x"), pytree.SequenceKey(1))], s1)
+        self.assertIs(path_to_leaf[(pytree.GetAttrKey("x"), pytree.SequenceKey(0))], s0)
+        self.assertIs(path_to_leaf[(pytree.GetAttrKey("x"), pytree.SequenceKey(1))], s1)
 
-    def test_flatten_dynamic_shapes_drops_none_leaves(self):
-        # ``None`` per-dim entries flatten as ``None`` leaves and the
-        # helper drops them — the consumer falls through to the default
-        # policy at those slots.
+    def test_none_leaves_present_in_flatten(self):
+        # ``None`` per-dim entries flatten as ``None`` leaves with their
+        # paths preserved — downstream consumers (the integration layer)
+        # decide whether to drop them.
         os = ObjectSpec({"x": TensorSpec([IntSpec.backed("batch"), None])})
-        path_map = _flatten_dynamic_shapes(os)
-        self.assertEqual(len(path_map), 1)
-        self.assertIn((pytree.MappingKey("x"), pytree.SequenceKey(0)), path_map)
-
-    def test_attr_emits_get_attr_key(self):
-        # ``.attr`` entries get ``GetAttrKey`` paths instead of
-        # ``MappingKey`` — matches ``AttrSource`` in the dynamo builder.
-        spec = IntSpec.backed("h")
-        os = ObjectSpec().attr("weight", spec)
         leaves_with_paths, _ = pytree.tree_flatten_with_path(os)
-        self.assertEqual(len(leaves_with_paths), 1)
-        path, leaf = leaves_with_paths[0]
-        self.assertEqual(tuple(path), (pytree.GetAttrKey("weight"),))
-        self.assertIs(leaf, spec)
-
-    def test_mixed_kinds_emit_distinct_path_types(self):
-        # In the same ObjectSpec, ``.field`` and ``.attr`` entries emit
-        # different KeyEntry types on their respective paths.
-        s_x = IntSpec.backed("batch")
-        s_w = IntSpec.backed("h")
-        os = ObjectSpec().field("x", s_x).attr("weight", s_w)
-        leaves_with_paths, _ = pytree.tree_flatten_with_path(os)
+        self.assertEqual(len(leaves_with_paths), 2)
         path_to_leaf = {tuple(p): leaf for p, leaf in leaves_with_paths}
-        self.assertIs(path_to_leaf[(pytree.MappingKey("x"),)], s_x)
-        self.assertIs(path_to_leaf[(pytree.GetAttrKey("weight"),)], s_w)
-
-
-class TestObjectSpecContextVar(TestCase):
-    """``_active_dynamic_shapes`` ContextVar + the lookup helpers."""
-
-    def test_unset_context_returns_none(self):
-        # Default state: helpers return None when no spec is active.
-        self.assertIsNone(get_active_spec_for_arg("x"))
-        self.assertIsNone(get_active_spec_for_dim("x", 0))
-
-    def test_get_active_spec_for_arg(self):
-        spec = IntSpec.backed("n")
-        os = ObjectSpec({"n": spec})
-        token = _active_dynamic_shapes.set(_flatten_dynamic_shapes(os))
-        try:
-            self.assertIs(get_active_spec_for_arg("n"), spec)
-            self.assertIsNone(get_active_spec_for_arg("missing"))
-        finally:
-            _active_dynamic_shapes.reset(token)
-
-    def test_get_active_spec_for_dim(self):
-        s0 = IntSpec.backed("batch")
-        s1 = IntSpec.static()
-        os = ObjectSpec({"x": TensorSpec([s0, s1])})
-        token = _active_dynamic_shapes.set(_flatten_dynamic_shapes(os))
-        try:
-            self.assertIs(get_active_spec_for_dim("x", 0), s0)
-            self.assertIs(get_active_spec_for_dim("x", 1), s1)
-            self.assertIsNone(get_active_spec_for_dim("x", 5))
-            self.assertIsNone(get_active_spec_for_dim("missing", 0))
-        finally:
-            _active_dynamic_shapes.reset(token)
+        self.assertIsInstance(
+            path_to_leaf[(pytree.GetAttrKey("x"), pytree.SequenceKey(0))],
+            IntSpec,
+        )
+        self.assertIsNone(path_to_leaf[(pytree.GetAttrKey("x"), pytree.SequenceKey(1))])
 
 
 class TestObjectSpecMatch(TestCase):
@@ -1096,8 +1006,8 @@ class TestObjectSpecMatch(TestCase):
         self.assertEqual(
             repr(spec),
             "ObjectSpec({"
-            "attr('weight'): TensorSpec([None, None]), "
-            "attr('bias'): TensorSpec([None])"
+            ".weight: TensorSpec([None, None]), "
+            ".bias: TensorSpec([None])"
             "})",
         )
 
@@ -1117,9 +1027,9 @@ class TestObjectSpecMatch(TestCase):
         self.assertEqual(
             repr(spec),
             "ObjectSpec({"
-            "attr('inner'): ObjectSpec({"
-            "attr('weight'): TensorSpec([None, None])}), "
-            "attr('bias'): TensorSpec([None])"
+            ".inner: ObjectSpec({"
+            ".weight: TensorSpec([None, None])}), "
+            ".bias: TensorSpec([None])"
             "})",
         )
 

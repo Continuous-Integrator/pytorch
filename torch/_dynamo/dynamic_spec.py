@@ -31,7 +31,6 @@ https://dev-discuss.pytorch.org/t/backed-to-unbacked-from-guardable-to-guardless
 
 import enum
 from collections.abc import Iterator
-from contextvars import ContextVar
 from typing import Any, ClassVar
 
 import torch
@@ -43,8 +42,6 @@ __all__ = [
     "IntSpec",
     "TensorSpec",
     "ObjectSpec",
-    "get_active_spec_for_arg",
-    "get_active_spec_for_dim",
 ]
 
 
@@ -72,11 +69,10 @@ class IntSpec:
         IntSpec("x", IntSpecType.STATIC, value=10)
 
     ``type`` is fixed at construction; all other fields are mutable via
-    fluent setters that double as getters (no arg = read, one arg = write):
+    fluent setters that return ``self`` for chaining:
 
         spec = IntSpec.backed("batch", min=1, max=64)
         spec.guarding_hint(32)   # set, returns self
-        spec.guarding_hint()     # get, returns 32
         spec.min(1).max(64)      # chain
     """
 
@@ -378,94 +374,42 @@ class TensorSpec:
     # identity and conflict with the AOT-snapshot invariant.
 
 
-# ``LeafSpec`` is anything that can sit at a leaf of the spec tree (a
-# single-int spec or a per-dim tensor spec). Used in ``ObjectSpec``'s
-# field-value annotation, where the recursion is ``LeafSpec | ObjectSpec``.
+# ``LeafSpec`` is anything that can sit at a leaf of the spec tree.
+# Container specs (``ObjectSpec``, future ``DictSpec`` / ``ListSpec``)
+# recursively hold ``LeafSpec | <other container spec>`` values.
 LeafSpec = IntSpec | TensorSpec
 
 
-class _KeyKind(enum.Enum):
-    """How an ``ObjectSpec`` entry is keyed at lookup time.
-
-    Determines which pytree ``KeyEntry`` is emitted by
-    ``flatten_with_keys``, and therefore which ``Source`` shape in the
-    dynamo builder the spec matches.
-    """
-
-    ITEM = "field"  # → ``MappingKey``; matches ``LocalSource`` / ``GetItemSource``
-    ATTR = "attr"  # → ``GetAttrKey``; matches ``AttrSource``
-
-
 class ObjectSpec:
-    """Top-level dynamic-shape spec keyed by argument name.
+    """Spec for any Python object's attributes.
 
-    Each entry has a *key kind* — either item-access (dict-keyed, the
-    default — produces ``MappingKey`` paths) or attribute-access
-    (produces ``GetAttrKey`` paths). Use ``.field`` for item-keyed
-    entries, ``.attr`` for attribute-keyed ones. Each kind matches a
-    different ``Source`` shape in the dynamo builder:
+    Models attribute access on a Python object (e.g., an ``nn.Module``'s
+    parameters / buffers / submodules; ``self`` inside an instance
+    method). Each ``.field`` entry corresponds to a ``GetAttrKey`` on
+    the pytree keypath, matching ``AttrSource`` in the dynamo builder.
 
-    - ``.field("x", spec)`` → ``MappingKey("x")`` → matches
-      ``LocalSource("x")`` and ``GetItemSource(..., "x")``.
-    - ``.attr("weight", spec)`` → ``GetAttrKey("weight")`` → matches
-      ``AttrSource(..., "weight")`` (e.g. ``nn.Module`` attribute
-      access).
+    Construct fluently or via dict-form::
 
-    Construct via a one-shot dict (all entries item-keyed) or
-    incrementally via the fluent setters; mix freely::
+        ObjectSpec().field("weight", TensorSpec([IntSpec.backed("h")]))
+        ObjectSpec({"weight": TensorSpec([IntSpec.backed("h")])})
 
-        # Dict form (all ``.field`` / ``MappingKey``)
-        ObjectSpec(
-            {"x": TensorSpec([IntSpec.backed("batch")]), "n": IntSpec.backed("n")}
-        )
-
-        # Fluent form, mixing dict-key and attribute access
-        (
-            ObjectSpec()
-            .field("x", TensorSpec([IntSpec.backed("batch")]))
-            .attr(
-                "model", ObjectSpec().attr("weight", TensorSpec([IntSpec.backed("h")]))
-            )
-        )
-
-    Recursion is allowed: an ``ObjectSpec`` may hold nested
-    ``ObjectSpec`` values to describe deeper trees. The initial
-    integration only consumes top-level entries; nested entries are
-    silently inert until the source-chain → keypath translation in the
-    dynamo builder is extended.
+    Recursion is allowed: a value may be another ``ObjectSpec`` or a
+    leaf (``IntSpec`` / ``TensorSpec``).
     """
 
-    def __init__(
-        self,
-        fields: dict[str, "LeafSpec | ObjectSpec"] | None = None,
-    ) -> None:
-        # Each entry is ``(kind, spec)``; insertion order preserved.
-        self._fields: dict[str, tuple[_KeyKind, IntSpec | TensorSpec | ObjectSpec]] = {}
-        if fields is not None:
-            for k, v in fields.items():
-                self._fields[k] = (_KeyKind.ITEM, v)
+    def __init__(self, fields: dict[str, Any] | None = None) -> None:
+        self._fields: dict[str, Any] = dict(fields or {})
 
-    def field(self, name: str, spec: "LeafSpec | ObjectSpec") -> "ObjectSpec":
-        """Item-keyed entry (dict-like). Sets the spec at ``name`` and
-        returns ``self`` for chaining. Path entry is ``MappingKey``."""
-        self._fields[name] = (_KeyKind.ITEM, spec)
+    def field(self, name: str, spec: Any) -> "ObjectSpec":
+        """Set the spec at attribute ``name``; returns ``self``."""
+        self._fields[name] = spec
         return self
 
-    def attr(self, name: str, spec: "LeafSpec | ObjectSpec") -> "ObjectSpec":
-        """Attribute-keyed entry (object attribute access). Sets the spec
-        at ``name`` and returns ``self`` for chaining. Path entry is
-        ``GetAttrKey``."""
-        self._fields[name] = (_KeyKind.ATTR, spec)
-        return self
+    def __getitem__(self, name: str) -> Any:
+        return self._fields[name]
 
-    def __getitem__(self, name: str) -> "LeafSpec | ObjectSpec":
-        return self._fields[name][1]
-
-    def __setitem__(self, name: str, spec: "LeafSpec | ObjectSpec") -> None:
-        # Preserve existing key kind on overwrite; default to ITEM for
-        # new entries (matches the dict-form constructor).
-        kind = self._fields[name][0] if name in self._fields else _KeyKind.ITEM
-        self._fields[name] = (kind, spec)
+    def __setitem__(self, name: str, spec: Any) -> None:
+        self._fields[name] = spec
 
     def __contains__(self, name: object) -> bool:
         return name in self._fields
@@ -477,15 +421,10 @@ class ObjectSpec:
         return len(self._fields)
 
     def items(self) -> Any:
-        """Yield ``(name, spec)`` pairs in insertion order — kind is an
-        implementation detail of path translation."""
-        return ((k, v) for k, (_, v) in self._fields.items())
+        return self._fields.items()
 
     def __repr__(self) -> str:
-        entries = ", ".join(
-            f"{kind.value}({name!r}): {spec!r}"
-            for name, (kind, spec) in self._fields.items()
-        )
+        entries = ", ".join(f".{name}: {spec!r}" for name, spec in self._fields.items())
         return f"ObjectSpec({{{entries}}})"
 
     @classmethod
@@ -494,17 +433,13 @@ class ObjectSpec:
 
         Mapping per input kind:
 
-        - ``torch.Tensor``         → ``TensorSpec(obj.ndim)`` (all dims default-policy)
+        - ``torch.Tensor``         → ``TensorSpec(obj.ndim)``
         - ``int`` (not ``bool``)   → ``IntSpec.static()``
         - ``dict``                 → native ``dict`` of ``match(v)`` per entry
-        - ``list`` / ``tuple``     → native ``list`` / ``tuple`` of ``match(v)`` per entry
-        - ``torch.nn.Module``      → ``ObjectSpec`` with ``.attr`` per child
-                                     module, parameter, and buffer (one level —
-                                     submodules recurse via the ``match`` call)
+        - ``list`` / ``tuple``     → native container of ``match(v)`` per entry
+        - ``torch.nn.Module``      → ``ObjectSpec`` with ``.field`` per
+                                     child module / parameter / buffer
         - other                    → ``TypeError``
-
-        ``bool`` is rejected explicitly (it inherits from ``int`` and almost
-        always indicates a user mistake).
         """
         if isinstance(obj, torch.Tensor):
             return TensorSpec(obj.ndim)
@@ -518,16 +453,12 @@ class ObjectSpec:
             return type(obj)(cls.match(v) for v in obj)
         if isinstance(obj, torch.nn.Module):
             os = cls()
-            # Walk one level: child modules, parameters, buffers — each child
-            # module recurses via ``match``. ``recurse=False`` keeps the
-            # walk shallow so the returned ObjectSpec mirrors the module
-            # tree's hierarchy rather than a flat name table.
             for name, child in obj.named_children():
-                os.attr(name, cls.match(child))
+                os.field(name, cls.match(child))
             for name, p in obj.named_parameters(recurse=False):
-                os.attr(name, cls.match(p))
+                os.field(name, cls.match(p))
             for name, b in obj.named_buffers(recurse=False):
-                os.attr(name, cls.match(b))
+                os.field(name, cls.match(b))
             return os
         raise TypeError(
             f"ObjectSpec.match cannot derive a spec for {type(obj).__name__}"
@@ -570,40 +501,25 @@ pytree.register_pytree_node(
 )
 
 
-# ``ObjectSpec`` flattens to its field values; the per-entry kind
-# determines which pytree ``KeyEntry`` ``flatten_with_keys`` emits —
-# ``MappingKey`` for ``.field`` (item access), ``GetAttrKey`` for
-# ``.attr`` (attribute access). The context preserved across
-# flatten/unflatten is the list of ``(name, kind)`` pairs.
+# ``ObjectSpec`` flattens to its field values; the field names are the
+# context, and each entry becomes a ``GetAttrKey`` on the keypath when
+# ``tree_flatten_with_path`` is used.
 
 
-def _objectspec_flatten(
-    os: ObjectSpec,
-) -> tuple[list[Any], list[tuple[str, _KeyKind]]]:
-    return (
-        [v for _, v in os._fields.values()],
-        [(name, kind) for name, (kind, _) in os._fields.items()],
-    )
+def _objectspec_flatten(os: ObjectSpec) -> tuple[list[Any], list[str]]:
+    return list(os._fields.values()), list(os._fields.keys())
 
 
-def _objectspec_unflatten(values: Any, context: Any) -> ObjectSpec:
-    out = ObjectSpec()
-    for (name, kind), v in zip(context, values):
-        out._fields[name] = (kind, v)
-    return out
+def _objectspec_unflatten(values: Any, keys: Any) -> ObjectSpec:
+    return ObjectSpec(dict(zip(keys, values)))
 
 
 def _objectspec_flatten_with_keys(
     os: ObjectSpec,
-) -> tuple[list[tuple[Any, Any]], list[tuple[str, _KeyKind]]]:
-    def _key(name: str, kind: _KeyKind) -> Any:
-        if kind is _KeyKind.ATTR:
-            return pytree.GetAttrKey(name)
-        return pytree.MappingKey(name)
-
+) -> tuple[list[tuple[Any, Any]], list[str]]:
     return (
-        [(_key(name, kind), spec) for name, (kind, spec) in os._fields.items()],
-        [(name, kind) for name, (kind, _) in os._fields.items()],
+        [(pytree.GetAttrKey(name), spec) for name, spec in os._fields.items()],
+        list(os._fields.keys()),
     )
 
 
@@ -613,51 +529,3 @@ pytree.register_pytree_node(
     _objectspec_unflatten,
     flatten_with_keys_fn=_objectspec_flatten_with_keys,
 )
-
-
-# -- compile-time dispatch ---------------------------------------------------
-#
-# At ``torch.compile`` entry, the user's ``dynamic_shapes`` (any
-# pytree-compatible structure with ``IntSpec`` / ``TensorSpec`` / ``None``
-# leaves matching the function's argument tree) is flattened into a
-# ``path -> IntSpec`` map and stashed in ``_active_dynamic_shapes``. The
-# dynamo builder consults this map during input wrapping via
-# :func:`get_active_spec_for_arg` (scalar args) and
-# :func:`get_active_spec_for_dim` (tensor dims).
-
-
-_active_dynamic_shapes: ContextVar[dict[tuple[Any, ...], IntSpec] | None] = ContextVar(
-    "_active_dynamic_shapes", default=None
-)
-
-
-def _flatten_dynamic_shapes(shapes: Any) -> dict[tuple[Any, ...], IntSpec]:
-    """Flatten the user's spec tree into a ``path -> IntSpec`` map.
-
-    ``None`` leaves and any non-``IntSpec`` leaf are dropped — they
-    represent "no override" and the consumer should fall through to the
-    default policy.
-    """
-    leaves_with_paths, _ = pytree.tree_flatten_with_path(shapes)
-    return {
-        tuple(path): leaf
-        for path, leaf in leaves_with_paths
-        if isinstance(leaf, IntSpec)
-    }
-
-
-def get_active_spec_for_arg(arg_name: str) -> IntSpec | None:
-    """Return the spec for a top-level scalar argument, or ``None``."""
-    path_map = _active_dynamic_shapes.get()
-    if path_map is None:
-        return None
-    return path_map.get((pytree.MappingKey(arg_name),))
-
-
-def get_active_spec_for_dim(arg_name: str, dim: int) -> IntSpec | None:
-    """Return the spec for a top-level tensor argument's specific dim, or
-    ``None``."""
-    path_map = _active_dynamic_shapes.get()
-    if path_map is None:
-        return None
-    return path_map.get((pytree.MappingKey(arg_name), pytree.SequenceKey(dim)))
