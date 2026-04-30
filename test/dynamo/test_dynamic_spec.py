@@ -8,7 +8,13 @@ import torch._dynamo.testing
 import torch.fx.experimental._config as _fx_experimental_config
 import torch.utils._pytree as pytree
 from torch._dynamo.decorators import mark_static, mark_unbacked, maybe_mark_dynamic
-from torch._dynamo.dynamic_spec import IntSpec, IntSpecType, ObjectSpec, TensorSpec
+from torch._dynamo.dynamic_spec import (
+    DictSpec,
+    IntSpec,
+    IntSpecType,
+    ObjectSpec,
+    TensorSpec,
+)
 from torch._dynamo.test_case import TestCase
 from torch._dynamo.testing import EagerAndRecordGraphs
 from torch.fx.experimental.symbolic_shapes import (
@@ -906,7 +912,7 @@ class TestObjectSpecMatch(TestCase):
 
     def test_match_dict(self):
         result = ObjectSpec.match({"x": torch.randn(2, 3), "n": 4})
-        self.assertIsInstance(result, dict)
+        self.assertIsInstance(result, DictSpec)
         self.assertIsInstance(result["x"], TensorSpec)
         self.assertEqual(result["x"]._dim, 2)
         self.assertIsInstance(result["n"], IntSpec)
@@ -980,12 +986,10 @@ class TestObjectSpecMatch(TestCase):
         self.assertEqual(repr(ObjectSpec.match(5)), "IntSpec(type=STATIC)")
 
     def test_match_dict_repr(self):
-        # Native dict carries through; leaf reprs come from IntSpec /
-        # TensorSpec themselves.
         result = ObjectSpec.match({"x": torch.randn(2), "n": 4})
         self.assertEqual(
             repr(result),
-            "{'x': TensorSpec([None]), 'n': IntSpec(type=STATIC)}",
+            "DictSpec({'x': TensorSpec([None]), 'n': IntSpec(type=STATIC)})",
         )
 
     def test_match_list_repr(self):
@@ -1032,6 +1036,76 @@ class TestObjectSpecMatch(TestCase):
             ".bias: TensorSpec([None])"
             "})",
         )
+
+
+class TestDictSpec(TestCase):
+    """``DictSpec`` — dict-keyed entries, MappingKey paths."""
+
+    def test_empty(self):
+        ds = DictSpec()
+        self.assertEqual(len(ds), 0)
+
+    def test_dict_construction(self):
+        spec_x = TensorSpec([IntSpec.backed("batch")])
+        spec_n = IntSpec.backed("n")
+        ds = DictSpec({"x": spec_x, "n": spec_n})
+        self.assertEqual(len(ds), 2)
+        self.assertIs(ds["x"], spec_x)
+        self.assertIs(ds["n"], spec_n)
+
+    def test_fluent_entry(self):
+        spec_x = TensorSpec([IntSpec.backed("batch")])
+        ds = DictSpec().entry("x", spec_x)
+        self.assertIs(ds["x"], spec_x)
+
+    def test_setitem(self):
+        ds = DictSpec()
+        spec = IntSpec.backed("n")
+        ds["n"] = spec
+        self.assertIs(ds["n"], spec)
+
+    def test_iter_and_items(self):
+        spec_x = IntSpec.static()
+        spec_n = IntSpec.backed("n")
+        ds = DictSpec({"x": spec_x, "n": spec_n})
+        self.assertEqual(list(ds), ["x", "n"])
+        self.assertEqual(list(ds.items()), [("x", spec_x), ("n", spec_n)])
+
+    def test_repr(self):
+        ds = DictSpec({"x": IntSpec.static()})
+        self.assertEqual(
+            repr(ds),
+            "DictSpec({'x': IntSpec(type=STATIC)})",
+        )
+
+
+class TestDictSpecPytree(TestCase):
+    """``tree_flatten_with_path`` emits ``MappingKey`` for ``DictSpec``
+    entries — matches ``LocalSource`` / ``GetItemSource`` in the dynamo
+    builder."""
+
+    def test_dictspec_emits_mapping_key(self):
+        spec = IntSpec.backed("n")
+        ds = DictSpec({"n": spec})
+        leaves_with_paths, _ = pytree.tree_flatten_with_path(ds)
+        self.assertEqual(len(leaves_with_paths), 1)
+        path, leaf = leaves_with_paths[0]
+        self.assertEqual(tuple(path), (pytree.MappingKey("n"),))
+        self.assertIs(leaf, spec)
+
+    def test_nested_under_objectspec(self):
+        # DictSpec under ObjectSpec composes: ``GetAttrKey`` then
+        # ``MappingKey`` on the keypath.
+        spec = IntSpec.backed("bs")
+        os = ObjectSpec({"config": DictSpec({"batch_size": spec})})
+        leaves_with_paths, _ = pytree.tree_flatten_with_path(os)
+        self.assertEqual(len(leaves_with_paths), 1)
+        path, leaf = leaves_with_paths[0]
+        self.assertEqual(
+            tuple(path),
+            (pytree.GetAttrKey("config"), pytree.MappingKey("batch_size")),
+        )
+        self.assertIs(leaf, spec)
 
 
 if __name__ == "__main__":
