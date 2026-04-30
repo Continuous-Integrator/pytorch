@@ -4,7 +4,6 @@ import copy
 import os
 import sys
 import tempfile
-import unittest
 
 import torch
 import torch.distributed as dist
@@ -96,7 +95,7 @@ def forward(self, t_1):
         )
 
     def test_post_pass_gm_deepcopy(self):
-        # After pass 1 + pass 2, ``_torchbind_obj0`` is a Python
+        # After functionalizing + unboxing PG groups, ``_torchbind_obj0`` is a Python
         # ``dist.ProcessGroup`` — still not pickleable, but
         # ``_share_torchbind_on_deepcopy()`` makes the gm deepcopy-safe by
         # sharing the PG by reference. This is what
@@ -124,7 +123,7 @@ def forward(self, t_1):
         )
 
     def test_unbox_process_group_torchbinds(self):
-        # Pass 2 unboxes the torchbind ProcessGroup attr in-place: the FX
+        # We unbox the torchbind ProcessGroup attr in-place: the FX
         # graph still references ``_torchbind_obj0`` by name, but its value
         # flips from ``torch.ScriptObject`` to a Python ``dist.ProcessGroup``
         # — the form Inductor's collective lowering and runtime ops accept.
