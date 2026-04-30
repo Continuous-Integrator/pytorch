@@ -477,7 +477,7 @@ def estimate_peak_memory(
 
 
 def estimate_region_peak_memory(
-    relevant_bufs: Iterable[BufferInfo],
+    nodes_in_window: Iterable[BaseSchedulerNode],
     *,
     region_start: int,
     region_end: int,
@@ -488,71 +488,52 @@ def estimate_region_peak_memory(
     """Peak memory inside `[region_start, region_end]` for the
     hypothetical post-reorder schedule.
 
-    `relevant_bufs` is the caller-filtered subset of `BufferInfo`s
-    whose baseline lifetime touches the window — buffers entirely
-    outside the window contribute nothing locally and should be
-    excluded by the caller. `step_of(node)` returns the node's step
-    in the proposed order.
-
-    `carry_in` is the bytes already alive at `region_start - 1` (the
-    boundary just before the window). The caller is expected to pass
-    the precomputed `baseline_cum[region_start - 1]` — under the
-    layer-locality of combo formation, the boundary live set is
-    invariant under prior horizontal fusion, so the precomputed value
-    is correct without per-trial recomputation.
-
-    Three special cases:
-    * Graph outputs (`end_step == -1`): never freed.
-    * Buffers whose defining op runs past the region: ignored locally
-      (alloc/free happen elsewhere).
-    * Freeable inputs: alive from step 0; only their last consumer
-      can move under a reorder.
+    Walks `nodes_in_window` (post-rewrite, in proposed order). For
+    each node: alloc = sum of `size_alloc` over its outputs; free =
+    sum of `size_free` over `pred_buffers` whose proposed last
+    consumer is this node. Then accumulates per step starting from
+    `carry_in` and returns the maximum live bytes.
     """
-    region_delta = [0] * (region_end - region_start + 2)
+    R = region_end - region_start + 1
+    region = [SNodeMemory(0, 0) for _ in range(R)]
+    freed_in_window: OrderedSet[str] = OrderedSet()
 
-    for bi in relevant_bufs:
-        buf = bi.buffer
+    for node in nodes_in_window:
+        s = step_of(node)
+        slot = s - region_start
+        if not (0 <= slot < R):
+            continue
 
-        if isinstance(buf, FreeableInputBuffer):
-            new_start = 0
+        for buf in node.get_outputs():
+            bi = buf.mpi_buffer
+            region[slot].size_alloc += bi.size_alloc
             if buf.get_name() in graph_outputs:
-                new_end = -1
-            else:
-                succ = [
-                    s for s in (step_of(n) for n in buf.mpi_buffer.succ_nodes) if s >= 0
-                ]
-                if not succ:
-                    continue
-                new_end = max(succ)
-        else:
-            defining = buf.defining_op  # type: ignore[union-attr]
-            if defining is None:
                 continue
-            new_start = step_of(defining)
-            if new_start > region_end:
+            succ_steps = [step_of(n) for n in bi.succ_nodes if step_of(n) >= 0]
+            if not succ_steps:
+                # No consumer: alloc and free at the defining step.
+                region[slot].size_free += bi.size_free
+
+        for pb in node.mpi_node.pred_buffers:
+            name = pb.get_name()
+            if name in graph_outputs or name in freed_in_window:
                 continue
-            if buf.get_name() in graph_outputs:
-                new_end = -1
-            else:
-                succ = [
-                    s for s in (step_of(n) for n in buf.mpi_buffer.succ_nodes) if s >= 0
-                ]
-                new_end = max(succ) if succ else new_start
+            succ_steps = [
+                step_of(n) for n in pb.mpi_buffer.succ_nodes if step_of(n) >= 0
+            ]
+            if not succ_steps:
+                continue
+            if max(succ_steps) == s:
+                region[slot].size_free += pb.mpi_buffer.size_free
+                freed_in_window.add(name)
 
-        if region_start <= new_start <= region_end:
-            region_delta[new_start - region_start] += bi.size_alloc
-        if new_end >= 0:
-            free_slot = new_end + 1
-            if region_start <= free_slot <= region_end + 1:
-                region_delta[free_slot - region_start] -= bi.size_free
-
-    # peak starts at 0, not carry_in: carry_in is at region_start - 1, outside the window.
     cur = carry_in
-    peak = 0
-    for d in region_delta:
-        cur += d
+    peak = cur
+    for af in region:
+        cur += af.size_alloc
         if cur > peak:
             peak = cur
+        cur -= af.size_free
     return peak
 
 

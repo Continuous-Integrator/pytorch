@@ -12,7 +12,6 @@ from unittest.mock import patch
 
 import torch
 import torch._inductor
-from torch._inductor.memory import BufferInfo
 from torch._inductor.test_case import TestCase as InductorTestCase
 from torch._inductor.utils import fresh_cache, run_and_get_code
 from torch.testing import FileCheck
@@ -1929,6 +1928,9 @@ class _PeakMemFakeNode:
         self.name = name
         self.scheduler = object()
         self.unmet_dependencies = tuple(SimpleNamespace(name=dep) for dep in deps)
+        self._outputs: list = []
+        self.mpi_node = SimpleNamespace(pred_buffers=set())
+        self.snodes: list | None = None
 
     def get_name(self) -> str:
         return self.name
@@ -1939,19 +1941,34 @@ class _PeakMemFakeNode:
     def get_buffer_names(self):
         return ()
 
+    def get_outputs(self):
+        if self.snodes is not None:
+            out = []
+            for s in self.snodes:
+                out.extend(s.get_outputs())
+            return out
+        return self._outputs
+
 
 class _PeakMemFakeBuffer:
-    def __init__(self, name: str, defining_op: _PeakMemFakeNode, succ_nodes) -> None:
+    def __init__(
+        self,
+        name: str,
+        defining_op: _PeakMemFakeNode,
+        succ_nodes,
+        size_alloc: int = 0,
+        size_free: int = 0,
+    ) -> None:
         self.name = name
         self.defining_op = defining_op
-        self.mpi_buffer = SimpleNamespace(succ_nodes=succ_nodes)
+        self.mpi_buffer = SimpleNamespace(
+            size_alloc=size_alloc,
+            size_free=size_free,
+            succ_nodes=succ_nodes,
+        )
 
     def get_name(self) -> str:
         return self.name
-
-
-class _PeakMemFakeFreeableInputBuffer:
-    pass
 
 
 class _PeakMemFakeScheduler:
@@ -2063,29 +2080,35 @@ class ComboKernelPeakMemoryTests(InductorTestCase):
         nodes,
         group_nodes,
         *,
-        buf_info_list,
         baseline_peak,
+        baseline_cum,
         thresholds,
+        graph_outputs=None,
     ):
-        from torch._inductor.memory import peak_memory_from_buf_info_list
         from torch._inductor.scheduler import ComboKernelMemoryContext, Scheduler
 
         scheduler = _PeakMemFakeScheduler(nodes)
-        _, baseline_cum = peak_memory_from_buf_info_list(buf_info_list, len(nodes))
         mem_ctx = ComboKernelMemoryContext(
-            graph_outputs=set(),
-            buf_info_list=buf_info_list,
+            graph_outputs=set() if graph_outputs is None else graph_outputs,
             node_to_idx={node: idx for idx, node in enumerate(nodes)},
             baseline_peak=baseline_peak,
             running_peak=baseline_peak,
             baseline_cum=baseline_cum,
-            buf_info_by_start=sorted(buf_info_list, key=lambda bi: bi.start_step),
         )
+
+        def _fake_combo(scheduler_arg, snodes, **kwargs):
+            n = _PeakMemFakeNode("combo")
+            n.snodes = list(snodes)
+            pred_buffers: set = set()
+            for m in snodes:
+                pred_buffers.update(m.mpi_node.pred_buffers)
+            n.mpi_node = SimpleNamespace(pred_buffers=pred_buffers)
+            return n
 
         with (
             patch(
                 "torch._inductor.scheduler.ForeachKernelSchedulerNode",
-                lambda *a, **kw: _PeakMemFakeNode("combo"),
+                _fake_combo,
             ),
             torch._inductor.config.patch(**thresholds),
         ):
@@ -2106,29 +2129,26 @@ class ComboKernelPeakMemoryTests(InductorTestCase):
         nodes = [a, consume_a, b, consume_b]
         # Each buffer is 2 MB so the combo forces a +2 MB peak delta —
         # large enough to test against MB-scale thresholds.
-        buf_info_list = [
-            BufferInfo(
-                _PeakMemFakeBuffer("buf_a", a, {consume_a}),
-                2 * ONE_MB,
-                2 * ONE_MB,
-                0,
-                1,
-            ),
-            BufferInfo(
-                _PeakMemFakeBuffer("buf_b", b, {consume_b}),
-                2 * ONE_MB,
-                2 * ONE_MB,
-                2,
-                3,
-            ),
-        ]
+        buf_a = _PeakMemFakeBuffer(
+            "buf_a", a, {consume_a}, size_alloc=2 * ONE_MB, size_free=2 * ONE_MB
+        )
+        buf_b = _PeakMemFakeBuffer(
+            "buf_b", b, {consume_b}, size_alloc=2 * ONE_MB, size_free=2 * ONE_MB
+        )
+        a._outputs = [buf_a]
+        b._outputs = [buf_b]
+        consume_a.mpi_node.pred_buffers = {buf_a}
+        consume_b.mpi_node.pred_buffers = {buf_b}
+        # Baseline: a allocs (peak 2 MB), consume_a frees, b allocs (peak 2 MB),
+        # consume_b frees. baseline_cum tracks live bytes per step.
+        baseline_cum = [2 * ONE_MB, 0, 2 * ONE_MB, 0, 0]
 
         def run(thresholds):
             return self._try_combo_with_fake_scheduler(
                 nodes,
                 [a, b],
-                buf_info_list=buf_info_list,
                 baseline_peak=2 * ONE_MB,
+                baseline_cum=baseline_cum,
                 thresholds=thresholds,
             )
 
@@ -2193,40 +2213,43 @@ class ComboKernelPeakMemoryTests(InductorTestCase):
     def test_estimate_region_peak_memory(self):
         from torch._inductor import memory as mem_mod
 
-        # Window [0, 5] with four buffers:
-        #   bufA: size 100, alloc at step 1, free at slot 3 (end_step=2)
-        #   bufB: size 200, alloc at step 2, free at slot 5 (end_step=4)
-        #   bufC: size  50, alloc at step 3, graph output (never freed)
-        #   bufD: size 999, alloc at step 100 — past window, must skip
+        # Window [0, 5] with three buffers + one out-of-window node:
+        #   bufA: size 100, alloc at step 1 (a1), last use step 3 (b3)
+        #   bufB: size 200, alloc at step 2 (a2), last use step 5 (b5)
+        #   bufC: size  50, alloc at step 3 (a3), graph output (never freed)
+        #   bufD: size 999, alloc at step 100 (a100) — past window, must skip
         a1, a2, a3, a100, b3, b5 = (
             _PeakMemFakeNode(n) for n in ("a1", "a2", "a3", "a100", "b3", "b5")
         )
-        bil = [
-            BufferInfo(_PeakMemFakeBuffer("bufA", a1, {b3}), 100, 100, 1, 2),
-            BufferInfo(_PeakMemFakeBuffer("bufB", a2, {b5}), 200, 200, 2, 4),
-            BufferInfo(_PeakMemFakeBuffer("bufC", a3, set()), 50, 50, 3, -1),
-            BufferInfo(_PeakMemFakeBuffer("bufD", a100, set()), 999, 999, 100, 100),
-        ]
+        bufA = _PeakMemFakeBuffer("bufA", a1, {b3}, size_alloc=100, size_free=100)
+        bufB = _PeakMemFakeBuffer("bufB", a2, {b5}, size_alloc=200, size_free=200)
+        bufC = _PeakMemFakeBuffer("bufC", a3, set(), size_alloc=50, size_free=50)
+        bufD = _PeakMemFakeBuffer("bufD", a100, set(), size_alloc=999, size_free=999)
+        a1._outputs = [bufA]
+        a2._outputs = [bufB]
+        a3._outputs = [bufC]
+        a100._outputs = [bufD]
+        b3.mpi_node.pred_buffers = {bufA}
+        b5.mpi_node.pred_buffers = {bufB}
         steps = {a1: 1, a2: 2, a3: 3, a100: 100, b3: 3, b5: 5}
+        nodes_in_window = [a1, a2, a3, b3, b5]
 
         peak = mem_mod.estimate_region_peak_memory(
-            bil,
+            nodes_in_window,
             region_start=0,
             region_end=5,
             step_of=lambda n: steps[n],
             graph_outputs={"bufC"},
         )
-        # Peak is taken over cur values inside region [0, 5]:
-        #   step 0: no events     -> cur=0
-        #   step 1: bufA alloc    -> cur=100
-        #   step 2: bufB alloc    -> cur=300
-        #   step 3: bufC alloc    -> cur=350  ← max (A, B, C alive)
-        #   step 4: bufA free     -> cur=250
-        #   step 5: no events     -> cur=250
-        # (slot 6, just past region_end, sees bufB's free -> cur=50,
-        #  but this is outside [0, 5] and doesn't change peak.)
-        # bufD's defining op step (100) > region_end (5) -> skipped.
-        # bufC is a graph output -> its alloc applies, no free event.
+        # Walk per slot (alloc -> peak check -> free):
+        #   slot 0: nothing                                 -> cur=0
+        #   slot 1: a1 allocs bufA (+100)                   -> cur=100
+        #   slot 2: a2 allocs bufB (+200)                   -> cur=300
+        #   slot 3: a3 allocs bufC (+50), b3 frees bufA     -> peak=350, cur=250
+        #   slot 4: nothing                                 -> cur=250
+        #   slot 5: b5 frees bufB (-200)                    -> cur=50
+        # a100 (step 100) is outside the window, so bufD is never seen.
+        # bufC is a graph output, so it is never freed.
         self.assertEqual(peak, 350)
 
 

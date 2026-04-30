@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import bisect
 import collections
 import contextlib
 import dataclasses
@@ -78,7 +77,7 @@ from .ir import (
     NoneLayout,
 )
 from .loop_body import LoopBody
-from .memory import BufferInfo, MemoryPlanningInfoForBuffer, MemoryPlanningInfoForNode
+from .memory import MemoryPlanningInfoForBuffer, MemoryPlanningInfoForNode
 from .runtime.hints import DeviceProperties, ReductionHint
 from .runtime.runtime_utils import green_text, red_text
 from .sizevars import SimplifyIndexing
@@ -176,7 +175,6 @@ class ComboKernelMemoryContext:
     """
 
     graph_outputs: OrderedSet[str]
-    buf_info_list: list[BufferInfo]
     node_to_idx: dict[BaseSchedulerNode, int]
     baseline_peak: int = 0
     # Running peak after earlier accepts. Bumped on each accept; the
@@ -188,9 +186,6 @@ class ComboKernelMemoryContext:
     # layer-locality of combo formation: prior horizontal fusion stays
     # inside its own layer, so the boundary live set doesn't shift.
     baseline_cum: list[int] = dataclasses.field(default_factory=list)
-    # Sorted by start_step so a window query takes a prefix
-    # (start_step <= region_end) via binary search and skips the rest.
-    buf_info_by_start: list[BufferInfo] = dataclasses.field(default_factory=list)
     accepted_step: dict[BaseSchedulerNode, int] = dataclasses.field(
         default_factory=dict
     )
@@ -5298,12 +5293,10 @@ class Scheduler:
 
         return ComboKernelMemoryContext(
             graph_outputs=graph_outputs,
-            buf_info_list=buf_info_list,
             node_to_idx={node: idx for idx, node in enumerate(self.nodes)},
             baseline_peak=baseline_peak,
             running_peak=baseline_peak,
             baseline_cum=baseline_cum,
-            buf_info_by_start=sorted(buf_info_list, key=lambda bi: bi.start_step),
         )
 
     def _try_combo_with_memory_check(
@@ -5337,6 +5330,14 @@ class Scheduler:
             group_nodes,
             use_custom_partition_algo=True,
             enable_autotune=enable_autotune,
+        )
+        # Wire the combo's pred_buffers from its members so the gate
+        # simulator can read `node.mpi_node.pred_buffers` uniformly.
+        combo_pred_buffers = OrderedSet()
+        for m in group_nodes:
+            combo_pred_buffers.update(m.mpi_node.pred_buffers)
+        combo_node.mpi_node = MemoryPlanningInfoForNode(
+            pred_buffers=combo_pred_buffers,
         )
 
         node_to_idx = mem_ctx.node_to_idx
@@ -5400,18 +5401,6 @@ class Scheduler:
                 return accepted_step[owner]
             return node_to_idx[owner]
 
-        # Iterate only buffers whose baseline lifetime touches the
-        # window: prefix on buf_info_by_start gives start_step <=
-        # region_end, then filter by end_step >= region_start - 1.
-        end_idx = bisect.bisect_right(
-            mem_ctx.buf_info_by_start, region_end, key=lambda bi: bi.start_step
-        )
-        relevant = [
-            bi
-            for bi in mem_ctx.buf_info_by_start[:end_idx]
-            if bi.end_step == -1 or bi.end_step >= region_start - 1
-        ]
-
         # carry_in: bytes live at the boundary just before the window.
         # Layer-locality of combo formation makes this invariant under
         # prior horizontal fusion, so the precomputed baseline value is
@@ -5423,7 +5412,7 @@ class Scheduler:
         )
 
         region_peak = estimate_region_peak_memory(
-            relevant,
+            local_nodes,
             region_start=region_start,
             region_end=region_end,
             step_of=step_of,
@@ -5475,8 +5464,8 @@ class Scheduler:
             [ForeachKernelSchedulerNode, list[BaseSchedulerNode], int], None
         ],
     ) -> None:
-        """Try the full candidate; on reject, bisect by baseline-index
-        midpoint and try each half.
+        """Try the full candidate; on reject, halve at the
+        baseline-index midpoint and try each half.
         """
         n2i = mem_ctx.node_to_idx
         # Push late then early so early pops first.
