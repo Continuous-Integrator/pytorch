@@ -1184,23 +1184,7 @@ class OverFusionTest(TestBase):
         out_act.backward(dy)
         grad_act = x.grad.clone()
 
-        # The 5e-2 tolerance is the original baseline for this test on CUDA
-        # (introduced in #179494) and is left unchanged for CUDA/ROCm. On XPU
-        # the test was disabled by intel/torch-xpu-ops#3509 without a captured
-        # traceback, so the failing assertion is not known with certainty;
-        # local runs on Intel Data Center GPU Max 1550 (PVC) pass at 5e-2,
-        # which suggests the CI failure is hardware-specific (linux.idc.xpu
-        # may use different XPU SKUs whose SDPA-backward / Inductor kernel
-        # accumulation order produces larger bf16 drift than PVC). Bump only
-        # the XPU tolerance so CUDA/ROCm regression coverage is unaffected,
-        # and leave the two metric assertions below unchanged so the actual
-        # #179423 over-fusion regression is still gated on every backend.
-        # This follows the same per-backend tolerance pattern already used
-        # for ROCm in this repo, e.g. test/inductor/test_torchinductor.py
-        # lines 16215-16218 (`atol = 1e-5 if TEST_WITH_ROCM else 0`) and
-        # test/inductor/test_foreach.py lines 1364-1367.
-        tol = 1e-1 if GPU_TYPE == "xpu" else 5e-2
-        self.assertTrue(same(grad_ref, grad_act, tol=tol))
+        self.assertTrue(same(grad_ref, grad_act, tol=5e-2))
 
         # max_reads should limit over-fusion, not disable mix_order entirely
         self.assertGreater(metrics.codegen_mix_order_reduction, 0)
