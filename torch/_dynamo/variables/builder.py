@@ -1567,13 +1567,14 @@ class VariableBuilder:
                     source=self.source,
                 )
                 if value not in self.tx.output.side_effects:
-                    self.tx.output.side_effects.track_object_existing(value, result)
+                    return self.tx.output.side_effects.track_object_existing(value, result)
                 return result
 
             return UserDefinedClassVariable(
                 value,
                 source=self.source,
             )
+
         elif type(value) is torch._C.Generator:
             # Generator is registered as an opaque reference type for make_fx
             # tracing, but in dynamo we handle it as a regular object so that
