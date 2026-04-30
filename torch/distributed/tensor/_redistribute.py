@@ -1933,13 +1933,17 @@ class NestedRedistribute(torch.autograd.Function):
     ):
         ctx.async_op = async_op
         ctx.original_dtype = grad_output._local_tensor.dtype
+        # forward_dtype is the dtype the collective runs at (carried down from
+        # the user's backward_dtype); backward_dtype is what to snap the grad
+        # back to on the way out. Persist both so double-backward can reuse.
+        ctx.forward_dtype = forward_dtype
         ctx.backward_dtype = backward_dtype or ctx.original_dtype
 
         output, spec = _redistribute_backward(
             grad_output,
             previous_spec,
             ctx.backward_dtype,
-            backward_dtype,
+            forward_dtype,
             async_op,
         )
 
@@ -1957,14 +1961,11 @@ class NestedRedistribute(torch.autograd.Function):
     @staticmethod
     def backward(ctx, grad2_output: "dtensor.DTensor"):  # type: ignore[override]
         previous_spec = ctx.current_spec
-        async_op = ctx.async_op
-        backward_dtype = ctx.backward_dtype or ctx.original_dtype
-
         output_dtensor = NestedRedistribute.apply(
             grad2_output,
             previous_spec,
-            async_op,
-            backward_dtype,
+            ctx.async_op,
+            ctx.forward_dtype,
             ctx.original_dtype,
         )
 
