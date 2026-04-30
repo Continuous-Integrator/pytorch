@@ -1027,8 +1027,6 @@ class DictKeysVariable(DictViewVariable):
         elif name in (
             "__and__",
             "__iand__",
-            "__or__",
-            "__ior__",
             "__sub__",
             "__isub__",
             "__xor__",
