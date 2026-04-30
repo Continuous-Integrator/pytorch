@@ -576,7 +576,7 @@ class CtxManagerTests(torch._dynamo.test_case.TestCase):
         res = opt_fn(x)
         self.assertEqual(ref, res)
         self.assertEqual(cnts.frame_count, 1)
-        self.assertExpectedInline(str(cnts.op_count), """17""")
+        self.assertExpectedInline(str(cnts.op_count), """16""")
 
     @unittest.skipIf(not torch.cuda.is_available(), "requires cuda")
     def test_cuda_device(self):
@@ -3341,8 +3341,8 @@ class GraphModule(torch.nn.Module):
         _autograd_grad = torch._functorch.eager_transforms._autograd_grad((output,), [diff_args], create_graph = True);  diff_args = None
         grad_input: "f32[3, 3]" = _autograd_grad[0];  _autograd_grad = None
 
-        grad_input_1: "f32[3, 3]" = torch._functorch.predispatch._unwrap_for_grad(grad_input, 1);  grad_input = None
-        output_1: "f32[]" = torch._functorch.predispatch._unwrap_for_grad(output, 1);  output = output_1 = None
+        grad_input_1: "f32[3, 3]" = torch._C._functorch._unwrap_for_grad(grad_input, 1);  grad_input = None
+        output_1: "f32[]" = torch._C._functorch._unwrap_for_grad(output, 1);  output = output_1 = None
 
         _grad_decrement_nesting = torch._C._functorch._grad_decrement_nesting();  _grad_decrement_nesting = None
         _saved_tensors_hooks_enable = torch._C._autograd._saved_tensors_hooks_enable();  _saved_tensors_hooks_enable = None
