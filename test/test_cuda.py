@@ -6250,13 +6250,12 @@ def caching_host_allocator_max_round_threshold_and_max_cached_size(
     )
     cur_max_cached_size_mb = allocator_settings["max_cached_size"] // 1024 // 1024
 
-    if max_round_threshold_mb is None:
-        max_round_threshold_mb = cur_max_round_threshold_mb
-    if max_cached_size_mb is None:
-        max_cached_size_mb = cur_max_cached_size_mb
-    torch._C._accelerator_setAllocatorSettings(
-        f"pinned_max_round_threshold_mb:{max_round_threshold_mb},pinned_max_cached_size_mb:{max_cached_size_mb}"
-    )
+    parts = []
+    if max_round_threshold_mb is not None:
+        parts.append(f"pinned_max_round_threshold_mb:{max_round_threshold_mb}")
+    if max_cached_size_mb is not None:
+        parts.append(f"pinned_max_cached_size_mb:{max_cached_size_mb}")
+    torch._C._accelerator_setAllocatorSettings(",".join(parts))
     try:
         yield
     finally:
@@ -6311,6 +6310,28 @@ class TestCachingHostAllocatorConfig(TestCase):
 
             stats = torch.cuda.host_memory_stats()
             self.assertEqual(stats["allocations.current"], 1)
+
+    def test_round_threshold_larger_than_cached_size(self):
+        # When round_threshold > cached_size, allocations above the cache
+        # limit should be neither rounded up nor cached.
+        size_bytes = 100 * 1024 * 1024
+
+        with caching_host_allocator_max_round_threshold_and_max_cached_size(256, 64):
+            t = torch.empty(size_bytes, dtype=torch.uint8, pin_memory=True)
+            stats = torch.cuda.host_memory_stats()
+
+            # 100 MB is within the 256 MB round threshold but above the
+            # 64 MB cache limit — should NOT be rounded to 128 MB.
+            allocated = stats["allocated_bytes.current"]
+            self.assertGreaterEqual(allocated, size_bytes)
+            self.assertLess(allocated, 128 * 1024 * 1024)
+
+            del t
+            gc.collect()
+
+            # Block should have been freed, not cached.
+            stats = torch.cuda.host_memory_stats()
+            self.assertEqual(stats["allocations.current"], 0)
 
 
 @unittest.skipIf(not TEST_CUDA, "CUDA not available, skipping tests")

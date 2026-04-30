@@ -299,7 +299,8 @@ struct CachingHostAllocatorImpl {
     // Round up the allocation to the nearest power of two to improve reuse.
     // These power of two sizes are also used to index into the free list.
     const auto roundSize = [&]() -> size_t {
-      if (size <= pinned_max_round_threshold()) {
+      if (size <= pinned_max_round_threshold() &&
+          size <= pinned_max_cached_size()) {
         return c10::llvm::PowerOf2Ceil(size);
       } else {
         return size;

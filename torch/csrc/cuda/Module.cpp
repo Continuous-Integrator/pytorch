@@ -947,9 +947,9 @@ PyObject* THCPModule_memorySnapshot(PyObject* _unused, PyObject* arg) {
   allocator_settings[graph_capture_record_stream_reuse_s] =
       snapshot.config_metadata.graph_capture_record_stream_reuse;
   allocator_settings[max_round_threshold_s] =
-      snapshot.config_metadata.max_round_threshold;
+      int64_t(snapshot.config_metadata.max_round_threshold);
   allocator_settings[max_cached_size_s] =
-      snapshot.config_metadata.max_cached_size;
+      int64_t(snapshot.config_metadata.max_cached_size);
   unsigned int roundup_key = 1;
   py::dict roundup_settings;
   for (const auto& v : snapshot.config_metadata.roundup_power2_divisions) {

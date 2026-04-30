@@ -621,18 +621,14 @@ Available options:
   will use their exact requested size, which can reduce memory waste for large pinned memory
   allocations. For example, with a threshold of 128 MB, a 129 MB allocation will use 129 MB
   instead of being rounded to 256 MB. By default, this option is disabled.
+  Allocations that exceed `pinned_max_cached_size_mb` are never rounded up, regardless
+  of this setting, since rounding is only useful for cached blocks.
 
 * `pinned_max_cached_size_mb` option sets the maximum block size (in MB) that will be cached
-  in the free list for reuse. Blocks larger than this threshold will be freed immediately
-  when no longer in use, rather than being cached. This can help reduce peak memory usage for
-  workloads with large pinned memory allocations that are used infrequently.
-  By default, this option is disabled (all blocks are cached).
-
-.. note::
-
-    If `pinned_max_round_threshold_mb` is greater than `pinned_max_cached_size_mb`,
-    allocations between these thresholds will be rounded up but not cached, which
-    may lead to unexpected behavior. A warning is emitted when this configuration is detected.
+  in the free list for reuse. Blocks larger than this threshold will not be rounded up to
+  power-of-2 and will be freed immediately when no longer in use, rather than being cached.
+  This can help reduce peak memory usage for workloads with large pinned memory allocations
+  that are used infrequently. By default, this option is disabled (all blocks are cached).
 
 * ``graph_capture_record_stream_reuse`` (experimental, default: `False`)
   If set to `True`, the CUDA caching allocator will attempt to reclaim device memory during

@@ -357,11 +357,9 @@ class C10_API AcceleratorAllocatorConfig {
   std::atomic<bool> pinned_use_background_threads_{false};
 
   // Above this threshold, don't round allocations to power-of-2.
-  std::atomic<size_t> pinned_max_round_threshold_{
-      std::numeric_limits<size_t>::max()};
+  size_t pinned_max_round_threshold_{std::numeric_limits<size_t>::max()};
   // Above this threshold, don't cache blocks in the free list.
-  std::atomic<size_t> pinned_max_cached_size_{
-      std::numeric_limits<size_t>::max()};
+  size_t pinned_max_cached_size_{std::numeric_limits<size_t>::max()};
 
   /* The following members are used for both device and host allocator. */
 

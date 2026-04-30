@@ -246,7 +246,9 @@ size_t AcceleratorAllocatorConfig::parsePinnedMaxRoundThreshold(
     const ConfigTokenizer& tokenizer,
     size_t i) {
   tokenizer.checkToken(++i, ":");
-  pinned_max_round_threshold_ = tokenizer.toSizeT(++i) * 1024 * 1024;
+  constexpr size_t max_allowed_mb = std::numeric_limits<size_t>::max() / kMB;
+  size_t val = std::min(tokenizer.toSizeT(++i), max_allowed_mb);
+  pinned_max_round_threshold_ = val * kMB;
   return i;
 }
 
@@ -254,7 +256,9 @@ size_t AcceleratorAllocatorConfig::parsePinnedMaxCachedSize(
     const ConfigTokenizer& tokenizer,
     size_t i) {
   tokenizer.checkToken(++i, ":");
-  pinned_max_cached_size_ = tokenizer.toSizeT(++i) * 1024 * 1024;
+  constexpr size_t max_allowed_mb = std::numeric_limits<size_t>::max() / kMB;
+  size_t val = std::min(tokenizer.toSizeT(++i), max_allowed_mb);
+  pinned_max_cached_size_ = val * kMB;
   return i;
 }
 
@@ -326,11 +330,11 @@ void AcceleratorAllocatorConfig::parseArgs(const std::string& env) {
   if (max_round_threshold_set && max_cached_size_set &&
       pinned_max_round_threshold_ > pinned_max_cached_size_) {
     TORCH_WARN_ONCE(
-        "max_round_threshold_mb (",
+        "pinned_max_round_threshold_mb (",
         pinned_max_round_threshold_ >> 20,
-        ") > max_cached_size_mb (",
+        ") > pinned_max_cached_size_mb (",
         pinned_max_cached_size_ >> 20,
-        "). Allocations between these thresholds will be rounded up but not cached, which may be unexpected.");
+        "). The cache size limit takes precedence: allocations above pinned_max_cached_size_mb are never rounded up.");
   }
 }
 
