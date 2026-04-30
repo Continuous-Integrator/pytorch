@@ -1703,6 +1703,10 @@ def gather_node_runtime_estimations(
             compute_analytical,
         )
 
+    # Skip analytical logging when a custom estimator is provided: the
+    # analytical estimates weren't used for scheduling, and the logging
+    # path calls into NCCL estimation which can crash when group_name
+    # is an FX Node (compile-on-one-rank graphs).
     if log_estimations and collective_nodes and custom_runtime_estimation is None:
         from torch._inductor.fx_passes.node_runtime_estimation import (
             _log_collective_benchmarks,
