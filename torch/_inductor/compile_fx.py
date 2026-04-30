@@ -566,7 +566,9 @@ def _recursive_joint_graph_passes(
         return out_gm
 
 
-def _recursive_post_grad_passes(gm: GraphModule, is_inference: bool = False) -> None:
+def _recursive_post_grad_passes(
+    gm: GraphModule, is_inference: bool = False, _is_subgraph: bool = False
+) -> None:
     with dynamo_timed(
         "_recursive_post_grad_passes",
         log_pt2_compile_event=True,
@@ -577,8 +579,8 @@ def _recursive_post_grad_passes(gm: GraphModule, is_inference: bool = False) -> 
 
         for subgraph_name in _get_subgraph_names(gm):
             subgraph = getattr(gm, subgraph_name)
-            _recursive_post_grad_passes(subgraph, is_inference)
-        post_grad_passes(gm, is_inference)
+            _recursive_post_grad_passes(subgraph, is_inference, _is_subgraph=True)
+        post_grad_passes(gm, is_inference, is_subgraph=_is_subgraph)
 
 
 def split_const_gm(
