@@ -3075,7 +3075,7 @@ class TestFxGraphCacheHashing(TestCase):
                 raise TypeError("cannot pickle 'UnpicklableEnum' object")
 
         gm = torch.fx.GraphModule({}, torch.fx.Graph())
-        pickler = FxGraphCachePickler(gm)
+        pickler = FxGraphCachePickler(gm, unpicklable_fallback=True)
 
         obj_a = UnpicklableEnum("SUM")
         obj_b = UnpicklableEnum("SUM")
@@ -3107,7 +3107,7 @@ class TestFxGraphCacheHashing(TestCase):
                 raise TypeError("cannot pickle 'Pybind11Enum' object")
 
         gm = torch.fx.GraphModule({}, torch.fx.Graph())
-        pickler = FxGraphCachePickler(gm)
+        pickler = FxGraphCachePickler(gm, unpicklable_fallback=True)
 
         obj1 = Pybind11Enum("ReduceOp", 0)
         obj2 = Pybind11Enum("ReduceOp", 0)
@@ -3132,7 +3132,7 @@ class TestFxGraphCacheHashing(TestCase):
                 raise TypeError("cannot pickle 'ValueOnlyObj' object")
 
         gm = torch.fx.GraphModule({}, torch.fx.Graph())
-        pickler = FxGraphCachePickler(gm)
+        pickler = FxGraphCachePickler(gm, unpicklable_fallback=True)
 
         obj1 = ValueOnlyObj(42)
         obj2 = ValueOnlyObj(42)
@@ -3149,7 +3149,7 @@ class TestFxGraphCacheHashing(TestCase):
         pickle normally, so standard pickling is used for them.
         """
         gm = torch.fx.GraphModule({}, torch.fx.Graph())
-        pickler = FxGraphCachePickler(gm)
+        pickler = FxGraphCachePickler(gm, unpicklable_fallback=True)
 
         # Normal picklable objects should work as before
         data = pickler.dumps(42)
@@ -3163,7 +3163,7 @@ class TestFxGraphCacheHashing(TestCase):
 
     def test_reducer_override_caches_probed_types(self):
         """
-        Test that once a type is probed, it is cached in _checked_types
+        Test that once a type is probed, it is cached in _pickleable_type_cache
         for subsequent fast-path lookups (both picklable and unpicklable).
         """
 
@@ -3175,12 +3175,12 @@ class TestFxGraphCacheHashing(TestCase):
                 raise TypeError("cannot pickle")
 
         gm = torch.fx.GraphModule({}, torch.fx.Graph())
-        pickler = FxGraphCachePickler(gm)
+        pickler = FxGraphCachePickler(gm, unpicklable_fallback=True)
 
-        # Unpicklable type gets cached as True (class-level cache)
-        self.assertNotIn(AnotherUnpicklable, FxGraphCachePickler._checked_types)
+        # Unpicklable type gets cached as False (class-level cache)
+        self.assertNotIn(AnotherUnpicklable, FxGraphCachePickler._pickleable_type_cache)
         pickler.dumps(AnotherUnpicklable("x"))
-        self.assertTrue(FxGraphCachePickler._checked_types[AnotherUnpicklable])
+        self.assertFalse(FxGraphCachePickler._pickleable_type_cache[AnotherUnpicklable])
 
         # Second call should use fast path (same result)
         obj1 = AnotherUnpicklable("y")
@@ -3188,7 +3188,7 @@ class TestFxGraphCacheHashing(TestCase):
         self.assertEqual(pickler.dumps(obj1), pickler.dumps(obj2))
 
         # Clean up class-level cache to avoid polluting other tests
-        FxGraphCachePickler._checked_types.pop(AnotherUnpicklable, None)
+        FxGraphCachePickler._pickleable_type_cache.pop(AnotherUnpicklable, None)
 
     def test_reducer_override_bypasses_cache_for_totally_opaque_types(self):
         """
@@ -3202,13 +3202,13 @@ class TestFxGraphCacheHashing(TestCase):
                 raise TypeError("cannot pickle")
 
         gm = torch.fx.GraphModule({}, torch.fx.Graph())
-        pickler = FxGraphCachePickler(gm)
+        pickler = FxGraphCachePickler(gm, unpicklable_fallback=True)
 
         with self.assertRaises(BypassFxGraphCache):
             pickler.dumps(TotallyOpaque())
 
         # Clean up class-level cache
-        FxGraphCachePickler._checked_types.pop(TotallyOpaque, None)
+        FxGraphCachePickler._pickleable_type_cache.pop(TotallyOpaque, None)
 
 
 class TestCudaCompileCommand(TestCase):

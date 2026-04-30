@@ -483,6 +483,13 @@ def _ident(x: T) -> T:
     return x
 
 
+def _unpicklable_error(key: str) -> NoReturn:
+    raise RuntimeError(
+        f"Attempted to unpickle an object that was pickled only for cache-key "
+        f"hashing and cannot be reconstructed (key={key!r})"
+    )
+
+
 def extract_tensor_metadata_for_cache_key(t: Tensor) -> TensorMetadata:
     """
     Extracts the tensor metadata and removes fields of the TensorMetadata
@@ -546,15 +553,17 @@ class FxGraphCachePickler(pickle.Pickler):
     """
 
     # Cache probe results so we only call __reduce_ex__ once per type.
-    # Maps type -> True (unpicklable) or False (picklable).
+    # Maps type -> True (pickleable) or False (unpickleable).
     # Class-level because a type's picklability doesn't change at runtime.
-    _checked_types: dict[type, bool] = {}
+    _pickleable_type_cache: dict[type, bool] = {}
 
     def __init__(
         self,
         gm: torch.fx.GraphModule,
         has_user_defined_triton_kernels: bool = False,
         device_id_agnostic: bool = False,
+        *,
+        unpicklable_fallback: bool = False,
     ) -> None:
         """
         Create an FX graph pickler. If include_non_inlined=True, then pickling will
@@ -591,6 +600,7 @@ class FxGraphCachePickler(pickle.Pickler):
         # Run with pickler.fast so it doesn't intern strings, making the hash result more predictable
         # TODO: pickler.fast is technically deprecated. Will this work on new python versions?
         self.fast = True
+        self._unpicklable_fallback = unpicklable_fallback
 
     # pyrefly: ignore [bad-override]
     def reducer_override(self, obj: Any) -> Any:
@@ -600,7 +610,11 @@ class FxGraphCachePickler(pickle.Pickler):
         default pickling.  Instead of bypassing the FX graph cache entirely,
         we serialize a deterministic string representation of the object which
         is sufficient for cache-key hashing.
+
+        Only active when unpicklable_fallback=True was passed to the constructor.
         """
+        if not self._unpicklable_fallback:
+            return NotImplemented
         t = type(obj)
         # Types already registered or handled by default pickle.
         # Use isinstance for _PICKLE_NATIVE_TYPES to cover subclasses
@@ -609,32 +623,29 @@ class FxGraphCachePickler(pickle.Pickler):
         if t in self.dispatch_table or isinstance(obj, _PICKLE_NATIVE_TYPES_TUPLE):
             return NotImplemented
         # Fast path: type already probed.
-        # _checked_types maps type -> bool:
-        #   True  = unpicklable, use stable key fallback
-        #   False = picklable, let default pickle handle it
-        if t in self._checked_types:
-            if self._checked_types[t]:  # unpicklable
+        if (pickleable := self._pickleable_type_cache.get(t)) is not None:
+            if not pickleable:
                 return self._reduce_unpicklable(obj)
-            return NotImplemented  # picklable
+            return NotImplemented
         # First encounter: probe whether the default reduce protocol works.
         try:
             obj.__reduce_ex__(pickle.DEFAULT_PROTOCOL)
-        except (TypeError, AttributeError):
-            self._checked_types[t] = True
+        except (TypeError, AttributeError, pickle.PicklingError):
+            self._pickleable_type_cache[t] = False
             return self._reduce_unpicklable(obj)
         # Default pickling works – let pickle handle it.
-        self._checked_types[t] = False
+        self._pickleable_type_cache[t] = True
         return NotImplemented
 
     @staticmethod
-    def _reduce_unpicklable(obj: Any) -> tuple[Callable[[T], T], tuple[str]]:
+    def _reduce_unpicklable(obj: Any) -> Any:
         key = _get_stable_obj_key(obj)
         if key is None:
             raise BypassFxGraphCache(
                 f"Cannot produce stable cache key for unpicklable type "
                 f"{type(obj).__qualname__}"
             )
-        return _ident, (key,)
+        return _unpicklable_error, (key,)
 
     def _reduce_fake_tensor(
         self, t: Tensor
@@ -1182,7 +1193,9 @@ def compiled_fx_graph_hash(
     """
     details = FxGraphHashDetails(gm, example_inputs, fx_kwargs, inputs_to_check)
     has_user_defined_triton_kernels = len(details.user_defined_triton_source) != 0
-    pickler = FxGraphCachePickler(gm, has_user_defined_triton_kernels)
+    pickler = FxGraphCachePickler(
+        gm, has_user_defined_triton_kernels, unpicklable_fallback=True
+    )
 
     # The prefix distinguishes among the other kinds of objects we
     # cache in this module.

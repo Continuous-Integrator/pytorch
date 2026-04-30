@@ -512,7 +512,7 @@ class AOTAutogradCacheDetails(FxGraphHashDetails):
 
 class AOTAutogradCachePickler(FxGraphCachePickler):
     def __init__(self, gm: torch.fx.GraphModule) -> None:
-        super().__init__(gm)
+        super().__init__(gm, unpicklable_fallback=True)
         # pyrefly: ignore[missing-attribute]
         self.dispatch_table.update(
             {
