@@ -614,8 +614,8 @@ _pre_bucket_reduce_scatter.register_fake(_pre_bucket_reduce_scatter_fake)
 
 def reduce_scatter_merge_fn_to_trace_custom_ops(
     rs_ins: list[torch.Tensor],
+    group_name: Any,
     group_size: int,
-    group_name: str,
     reduce_op: str,
     reduce_dtype: torch.dtype,  # type: ignore[name-defined]
     device: torch.device,  # type: ignore[name-defined]
@@ -639,8 +639,8 @@ def reduce_scatter_merge_fn_to_trace_custom_ops(
 
 def reduce_scatter_merge_fn_to_trace(
     rs_ins: list[torch.Tensor],
+    group_name: Any,
     group_size: int,
-    group_name: str,
     reduce_op: str,
     reduce_dtype: torch.dtype,  # type: ignore[name-defined]
     device: torch.device,  # type: ignore[name-defined]
@@ -664,8 +664,8 @@ def reduce_scatter_merge_fn_to_trace(
 
 def reduce_scatter_merge_fn_coalesced(
     rs_ins: list[torch.Tensor],
+    group_name: Any,
     group_size: int,
-    group_name: str,
     reduce_op: str,
     reduce_dtype: torch.dtype,
     device: torch.device,
@@ -687,7 +687,7 @@ def reduce_scatter_merge_fn_coalesced(
 
 def all_reduce_merge_fn_to_trace(
     ar_ins: list[torch.Tensor],
-    group_name: str,
+    group_name: Any,
     reduce_op: str,
     reduce_dtype: torch.dtype,  # type: ignore[name-defined]
     device: torch.device,  # type: ignore[name-defined]
@@ -718,7 +718,6 @@ _ALL_DTYPES = tuple(
 def _pre_bucket_all_gather(
     ag_ins: list[torch.Tensor],
     group_size: int,
-    group_name: str,
     dtype: torch.dtype,  # type: ignore[name-defined]
     out_dtype_ints: list[
         int
@@ -732,7 +731,6 @@ def _pre_bucket_all_gather(
     Args:
         ag_ins: Input tensors to gather
         group_size: Size of the process group
-        group_name: Name of the process group
         dtype: Target dtype for the bucket
         out_dtype_ints: Dtype enum values for each input
         rank: Current rank
@@ -791,7 +789,6 @@ def _pre_bucket_all_gather(
 def _pre_bucket_all_gather_fake(
     ag_ins: list[torch.Tensor],
     group_size: int,
-    group_name: str,
     dtype: torch.dtype,  # type: ignore[name-defined]
     out_dtype_ints: list[int],
     rank: int,
@@ -817,8 +814,8 @@ _pre_bucket_all_gather.register_fake(_pre_bucket_all_gather_fake)
 
 def all_gather_merge_fn_to_trace_custom_ops(
     _ag_ins: list[torch.Tensor],
+    group_name: Any,
     group_size: int,
-    group_name: str,
     dtype: torch.dtype,  # type: ignore[name-defined]
     out_dtypes: list[torch.dtype],  # type: ignore[name-defined]
     rank: int,
@@ -847,7 +844,6 @@ def all_gather_merge_fn_to_trace_custom_ops(
     new_ag_out = torch.ops.bucketing._pre_bucket_all_gather(
         ag_ins,
         group_size,
-        group_name,
         dtype,
         out_dtype_ints,
         rank,
@@ -874,8 +870,8 @@ def all_gather_merge_fn_to_trace_custom_ops(
 
 def all_gather_merge_fn_to_trace(
     ag_ins: list[torch.Tensor],
+    group_name: Any,
     group_size: int,
-    group_name: str,
     dtype: torch.dtype,  # type: ignore[name-defined]
     out_dtypes: list[torch.dtype],  # type: ignore[name-defined]
     rank: int,
@@ -911,8 +907,8 @@ def all_gather_merge_fn_to_trace(
 
 def all_gather_merge_fn_to_trace_functional(
     ag_ins: list[torch.Tensor],
+    group_name: Any,
     group_size: int,
-    group_name: str,
     dtype: torch.dtype,  # type: ignore[name-defined]
     out_dtypes: list[torch.dtype],  # type: ignore[name-defined]
     rank: int,
@@ -964,36 +960,6 @@ def _trace(fn, inps) -> torch.fx.GraphModule:  # type: ignore[no-untyped-def]
             return out
 
 
-def _replace_const_args(
-    node: torch.fx.Node,
-    const_to_node: dict[str, torch.fx.Node],
-) -> None:
-    """Replace baked-in string constants with Node references in c10d ops.
-
-    make_fx only proxies tensors; non-tensor args like group_name become
-    constants in the traced graph.  When the original graph had a Node
-    reference (e.g. compile-on-one-rank), we need to restore it so that
-    serialization preserves the dynamic lookup.  Only applies to
-    _c10d_functional ops (custom ops like _pre_bucket_all_gather require
-    string group_name at runtime).
-    """
-    if node.op != "call_function":
-        return
-    if not isinstance(node.target, torch._ops.OpOverload):
-        return
-    if node.target.namespace not in ("_c10d_functional", "c10d_functional"):
-        return
-    schema = node.target._schema
-    for i, schema_arg in enumerate(schema.arguments):
-        if schema_arg.name == "group_name" and i < len(node.args):
-            val = node.args[i]
-            if isinstance(val, str) and val in const_to_node:
-                new_args = list(node.args)
-                new_args[i] = const_to_node[val]
-                node.args = tuple(new_args)
-            break
-
-
 def _insert_fn_trace_before_node(  # type: ignore[no-untyped-def]
     g: torch.fx.Graph,
     fn_to_trace,
@@ -1001,7 +967,6 @@ def _insert_fn_trace_before_node(  # type: ignore[no-untyped-def]
     insert_before_node: torch.fx.Node,
     g_fn_inps: list[torch.fx.Node],
     g_fn_outs: list[torch.fx.Node],
-    const_to_node: dict[str, torch.fx.Node] | None = None,
 ) -> tuple[dict[torch.fx.Node, torch.fx.Node], list[torch.fx.Node]]:  # type: ignore[no-untyped-def]
     """
     Helper function that traces :attr:`fn_to_trace` with inputs
@@ -1009,9 +974,6 @@ def _insert_fn_trace_before_node(  # type: ignore[no-untyped-def]
     The result function graph will be inserted before :attr:`insert_before_node`,
     using :attr:`g_fn_inps` nodes of original graph as inputs of function graph,
     function graph outputs will replace :attr:`g_fn_outs` in original graph.
-
-    If :attr:`const_to_node` is provided, string constants in c10d ops
-    that match a key are replaced with the corresponding Node at splice time.
 
     Returns:
         (replacements, new_nodes): Dictionary mapping old to new nodes, and list of all newly inserted nodes
@@ -1039,8 +1001,6 @@ def _insert_fn_trace_before_node(  # type: ignore[no-untyped-def]
                     g_fn_new_outs = _new_n.args[0]  # type: ignore[assignment]
                     g.erase_node(_new_n)
                 else:
-                    if const_to_node:
-                        _replace_const_args(_new_n, const_to_node)
                     new_nodes.append(_new_n)  # Track non-output nodes
 
         replacements = {  # noqa: C416
@@ -1073,7 +1033,7 @@ def process_collective_bucket(
     trace_args_fn: Callable[[list[torch.fx.Node]], tuple[Any, ...]],
     insert_before: torch.fx.Node | None = None,
     wait_insertion_point: torch.fx.Node | None = None,
-    const_to_node: dict[str, torch.fx.Node] | None = None,
+    extra_graph_inps: list[torch.fx.Node] | None = None,
 ) -> tuple[list[torch.fx.Node], dict[torch.fx.Node, torch.fx.Node]]:
     """
     Process a single bucket of collective operation nodes with flexible insertion control.
@@ -1085,10 +1045,10 @@ def process_collective_bucket(
         trace_args_fn: Function to create trace arguments from inputs
         insert_before: Where to insert the traced function (default: after last bucket node)
         wait_insertion_point: If provided, move all nodes from wait() onwards to before this node
-        const_to_node: If provided, string constants in c10d ops matching a
-            key are replaced with the corresponding Node at splice time.
-            This handles compile-on-one-rank graphs where group_name must
-            remain a Node reference rather than a baked-in string constant.
+        extra_graph_inps: Additional non-tensor graph nodes to wire as traced
+            inputs (appended after tensor inputs). Used for compile-on-one-rank
+            graphs where group_name is a Node reference that make_fx proxies
+            as an opaque input.
 
     Returns:
         new_nodes: List of all newly inserted nodes
@@ -1123,14 +1083,14 @@ def process_collective_bucket(
         insert_before = bucket_nodes[-1].next
 
     # Insert traced function and get replacements + new nodes
+    g_fn_inps = bucket_ins + (extra_graph_inps or [])
     replacements, new_nodes = _insert_fn_trace_before_node(
         g,
         fn_to_trace,
         trace_args,
         insert_before,
-        bucket_ins,
+        g_fn_inps,
         bucket_waits,
-        const_to_node=const_to_node,
     )
 
     # If requested, move wait nodes and everything after to specified location
@@ -1201,11 +1161,15 @@ def merge_reduce_scatter_bucket(
     elif mode and "custom_ops" in mode:
         rs_merge_fn = reduce_scatter_merge_fn_to_trace_custom_ops
 
+    group_name_val = (
+        group_name.meta["val"] if isinstance(group_name, torch.fx.Node) else group_name
+    )
+
     def create_trace_args(bucket_ins: list[torch.fx.Node]) -> tuple[Any, ...]:
         return (
             pytree.tree_map(lambda node: node.meta["val"], bucket_ins),
+            group_name_val,
             group_size,
-            group_name_str,
             reduce_op,
             reduce_dtype,
             device,
@@ -1218,10 +1182,8 @@ def merge_reduce_scatter_bucket(
         create_trace_args,
         insert_before=insert_before,
         wait_insertion_point=wait_insertion_point,
-        const_to_node=(
-            {group_name_str: group_name}
-            if isinstance(group_name, torch.fx.Node)
-            else None
+        extra_graph_inps=(
+            [group_name] if isinstance(group_name, torch.fx.Node) else None
         ),
     )
 
@@ -1251,10 +1213,14 @@ def merge_all_reduce_bucket(
 
     ar_merge_fn = all_reduce_merge_fn_to_trace
 
+    group_name_val = (
+        group_name.meta["val"] if isinstance(group_name, torch.fx.Node) else group_name
+    )
+
     def create_trace_args(bucket_ins: list[torch.fx.Node]) -> tuple[Any, ...]:
         return (
             pytree.tree_map(lambda node: node.meta["val"], bucket_ins),
-            group_name_str,
+            group_name_val,
             reduce_op,
             reduce_dtype,
             device,
@@ -1267,10 +1233,8 @@ def merge_all_reduce_bucket(
         create_trace_args,
         insert_before=insert_before,
         wait_insertion_point=wait_insertion_point,
-        const_to_node=(
-            {group_name_str: group_name}
-            if isinstance(group_name, torch.fx.Node)
-            else None
+        extra_graph_inps=(
+            [group_name] if isinstance(group_name, torch.fx.Node) else None
         ),
     )
 
@@ -1308,11 +1272,15 @@ def merge_all_gather_bucket(
     # pyrefly: ignore [bad-argument-type]
     rank: int = dist.get_rank(_resolve_process_group(group_name_str))
 
+    group_name_val = (
+        group_name.meta["val"] if isinstance(group_name, torch.fx.Node) else group_name
+    )
+
     def create_trace_args(bucket_ins: list[torch.fx.Node]) -> tuple[Any, ...]:
         return (
             pytree.tree_map(lambda node: node.meta["val"], bucket_ins),
+            group_name_val,
             group_size,
-            group_name_str,
             bucket_dtype,
             _ag_dtypes,
             rank,
@@ -1324,10 +1292,8 @@ def merge_all_gather_bucket(
         ag_merge_fn,
         create_trace_args,
         wait_insertion_point=wait_insertion_point,
-        const_to_node=(
-            {group_name_str: group_name}
-            if isinstance(group_name, torch.fx.Node)
-            else None
+        extra_graph_inps=(
+            [group_name] if isinstance(group_name, torch.fx.Node) else None
         ),
     )
 

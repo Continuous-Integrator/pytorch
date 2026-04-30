@@ -3376,8 +3376,7 @@ class TestNodeGroupNameResolution(torch._dynamo.test_case.TestCase):
 
     In compile-on-one-rank graphs, collective ops receive
     their group_name as an FX Node reference rather than a string literal.
-    These tests verify the resolution and const-replacement helpers work
-    correctly.
+    These tests verify the resolution helpers work correctly.
     """
 
     def _make_graph_with_pg_node(self, group_name_str: str):
@@ -3402,37 +3401,6 @@ class TestNodeGroupNameResolution(torch._dynamo.test_case.TestCase):
 
         graph, pg_node, _ = self._make_graph_with_pg_node("pg0")
         self.assertEqual(_resolve_group_name(pg_node), "pg0")
-
-    def test_replace_const_args_position_based(self):
-        """
-        When reduce_op has the same string value as group_name, only the
-        schema-identified group_name position should be replaced.
-        """
-        from torch._inductor.fx_passes.bucketing import _replace_const_args
-
-        graph, pg_node, input_node = self._make_graph_with_pg_node("test_pg")
-        ar_node = graph.call_function(
-            torch.ops._c10d_functional.all_reduce.default,
-            args=(input_node, "test_pg", "test_pg"),
-        )
-
-        _replace_const_args(ar_node, {"test_pg": pg_node})
-
-        self.assertEqual(ar_node.args[1], "test_pg")
-        self.assertIs(ar_node.args[2], pg_node)
-
-    def test_replace_const_args_skips_non_c10d(self):
-        from torch._inductor.fx_passes.bucketing import _replace_const_args
-
-        graph, pg_node, input_node = self._make_graph_with_pg_node("test_pg")
-        node = graph.call_function(
-            lambda x, y: x,
-            args=(input_node, "test_pg"),
-        )
-
-        _replace_const_args(node, {"test_pg": pg_node})
-
-        self.assertEqual(node.args[1], "test_pg")
 
     def test_ag_group_key_with_node_group_name(self):
         from torch._inductor.fx_passes.bucketing import _ag_group_key
