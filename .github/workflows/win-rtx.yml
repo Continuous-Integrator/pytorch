@@ -4,9 +4,6 @@ on:
   schedule:
     # Run every day at 00:30 AM UTC
     - cron: '30 0 * * *'
-  pull_request:
-    branches:
-      - main
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}-${{ github.event_name == 'workflow_dispatch' }}-${{ github.event_name == 'schedule' }}
@@ -29,7 +26,7 @@ jobs:
       python-version: "3.12"
       runner: "rtx-40x0-build"
       aws-role-to-assume: arn:aws:iam::308535385114:role/gha_workflow_s3_and_ecr_read_only
-      cuda-arch-list: "8.9;12.0"
+      cuda-arch-list: "8.9"
       runner-machine: "nvidia"
       test-matrix: |
         { include: [
@@ -70,7 +67,7 @@ jobs:
       runner: "rtx-50x0-build"
       aws-role-to-assume: arn:aws:iam::308535385114:role/gha_workflow_s3_and_ecr_read_only
       python-version: "3.12"
-      cuda-arch-list: "8.9;12.0"
+      cuda-arch-list: "12.0"
       test-matrix: |
         { include: [
           { config: "default",          shard: 1, num_shards: 5, runner: "rtx-50x0-test" },
