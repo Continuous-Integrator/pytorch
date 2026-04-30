@@ -106,14 +106,14 @@ Tensor gatherViewTensor(const at::Tensor& src, at::Tensor& dst) {
 
     uint32_t kernel_size = src.sizes().size();
     std::vector<uint32_t> src_sizes(kernel_size == 0 ? 1 : kernel_size);
-    std::vector<uint32_t> src_strides(kernel_size == 0 ? 1 : kernel_size);
+    std::vector<uint64_t> src_strides(kernel_size == 0 ? 1 : kernel_size);
 
     if (kernel_size == 0) {
       src_sizes[0] = src_strides[0] = 1;
     } else {
       for (const auto i : c10::irange(kernel_size)) {
         src_sizes[i] = (uint32_t)(src.sizes()[i]);
-        src_strides[i] = (uint32_t)(src.strides()[i]);
+        src_strides[i] = (uint64_t)(src.strides()[i]);
       }
     }
 
@@ -152,14 +152,14 @@ Tensor& scatterViewTensor(const at::Tensor& src, at::Tensor& output) {
 
       uint32_t kernel_size = output.sizes().size();
       std::vector<uint32_t> output_sizes(kernel_size == 0 ? 1 : kernel_size);
-      std::vector<uint32_t> output_strides(kernel_size == 0 ? 1 : kernel_size);
+      std::vector<uint64_t> output_strides(kernel_size == 0 ? 1 : kernel_size);
 
       if (kernel_size == 0) {
         output_sizes[0] = output_strides[0] = 1;
       } else {
         for (const auto i : c10::irange(kernel_size)) {
           output_sizes[i] = (uint32_t)(output.sizes()[i]);
-          output_strides[i] = (uint32_t)(output.strides()[i]);
+          output_strides[i] = (uint64_t)(output.strides()[i]);
         }
       }
 
