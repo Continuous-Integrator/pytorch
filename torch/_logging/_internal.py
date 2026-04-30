@@ -1488,6 +1488,7 @@ def trace_structured(
                     record["attempt"] = trace_id.attempt
 
             from torch.fx.traceback import get_regional_inductor_subgraph_name
+
             subgraph_name = get_regional_inductor_subgraph_name()
             if subgraph_name is not None:
                 record["subgraph_name"] = subgraph_name
