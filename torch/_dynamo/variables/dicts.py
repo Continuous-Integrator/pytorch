@@ -736,9 +736,10 @@ class ConstDictVariable(VariableTracker):
         reverse: bool = False,
     ) -> VariableTracker:
         # ref: https://github.com/python/cpython/blob/3.13/Objects/dictobject.c#L4643-L4658
-        if pydict_check(self) and pydict_check(other):
-            new = self.call_method(tx, "copy", [], {})
-            new.call_method(tx, "update", [other], {})
+        self_, other_ = (other, self) if reverse else (self, other)
+        if pydict_check(self_) and pydict_check(other_):
+            new = self_.call_method(tx, "copy", [], {})
+            new.call_method(tx, "update", [other_], {})
             return new
         return ConstantVariable.create(NotImplemented)
 
@@ -746,7 +747,6 @@ class ConstDictVariable(VariableTracker):
         self,
         tx: Any,
         other: VariableTracker,
-        reverse: bool = False,
     ) -> VariableTracker:
         # ref: https://github.com/python/cpython/blob/3.13/Objects/dictobject.c#L4660-L4667
         self.call_method(tx, "update", [other], {})
@@ -1062,6 +1062,10 @@ class DictValuesVariable(DictViewVariable):
 
     # DictValuesVariable is an iterable but cannot be compared.
     kv = "values"
+
+    # dict.values() do not implement nb_or and nb_inplace_or
+    nb_or_impl = None  # type: ignore[bad-override]
+    nb_inplace_or = None  # type: ignore[bad-override]
 
     @property
     def view_items_vt(self) -> list[VariableTracker]:

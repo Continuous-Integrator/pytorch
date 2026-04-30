@@ -442,9 +442,9 @@ its type to `common_constant_types`.
             return ConstantVariable.create(NotImplemented)
         if not other.is_python_constant():
             return ConstantVariable.create(NotImplemented)
-        other_val = other.as_python_constant()
-        # pyrefly: ignore[bad-argument-type]
-        result = type(self.value).__or__(self.value, other_val)
+        self_, other_ = (other, self) if reverse else (self, other)
+        v, w = self_.as_python_constant(), other_.as_python_constant()
+        result = self_.python_type().__or__(v, w)  # type: ignore[bad-argument-count]
         if result is NotImplemented:
             return ConstantVariable.create(NotImplemented)
         return VariableTracker.build(tx, result)

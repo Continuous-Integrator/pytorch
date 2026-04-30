@@ -25,7 +25,18 @@ from torch.testing._internal.common_utils import (
 )
 
 
-class TestLogicalOr(torch._dynamo.test_case.PythonTestCase):
+class Base(torch._dynamo.test_case.TestCase):
+    def setUp(self):
+        super().setUp()
+        self._u_prev = torch._dynamo.config.enable_trace_unittest
+        torch._dynamo.config.enable_trace_unittest = True
+
+    def tearDown(self):
+        super().tearDown()
+        torch._dynamo.config.enable_trace_unittest = self._u_prev
+
+
+class TestLogicalOr(Base):
     """Tests for logical OR operator (or)"""
 
     @make_dynamo_test
@@ -71,7 +82,7 @@ class TestLogicalOr(torch._dynamo.test_case.PythonTestCase):
         self.assertEqual(False or False or True, True)  # noqa: SIM222
 
 
-class TestBitwiseOrIntegers(torch._dynamo.test_case.PythonTestCase):
+class TestBitwiseOrIntegers(Base):
     """Tests for bitwise OR operator (|) with integers"""
 
     @make_dynamo_test
@@ -96,7 +107,7 @@ class TestBitwiseOrIntegers(torch._dynamo.test_case.PythonTestCase):
         self.assertEqual(1 | 2 | 4 | 8, 15)
 
 
-class TestBitwiseOrBooleans(torch._dynamo.test_case.PythonTestCase):
+class TestBitwiseOrBooleans(Base):
     """Tests for bitwise OR operator (|) with booleans"""
 
     @make_dynamo_test
@@ -113,7 +124,7 @@ class TestBitwiseOrBooleans(torch._dynamo.test_case.PythonTestCase):
         self.assertEqual(0 | True, 1)
 
 
-class TestBitwiseOrSet(torch._dynamo.test_case.PythonTestCase):
+class TestBitwiseOrSet(Base):
     """Tests for bitwise OR operator (|) with set objects"""
 
     @parametrize(
@@ -148,7 +159,7 @@ class TestBitwiseOrSet(torch._dynamo.test_case.PythonTestCase):
         self.assertEqual({1, 2} | {2, 3} | {3, 4}, {1, 2, 3, 4})
 
 
-class TestBitwiseOrFrozenSet(torch._dynamo.test_case.PythonTestCase):
+class TestBitwiseOrFrozenSet(Base):
     """Tests for bitwise OR operator (|) with frozenset objects"""
 
     @parametrize(
@@ -226,7 +237,7 @@ class _BitwiseOrDictBase:
         self.assertEqual(result, {"a": 1, "b": 2, "c": 3})
 
 
-class TestDictOrDict(_BitwiseOrDictBase, torch._dynamo.test_case.PythonTestCase):
+class TestDictOrDict(_BitwiseOrDictBase, Base):
     """Tests for dict | dict merge"""
 
     def make_left(self, data):
@@ -236,7 +247,7 @@ class TestDictOrDict(_BitwiseOrDictBase, torch._dynamo.test_case.PythonTestCase)
         return dict(data)
 
 
-class TestDictOrDefaultdict(_BitwiseOrDictBase, torch._dynamo.test_case.PythonTestCase):
+class TestDictOrDefaultdict(_BitwiseOrDictBase, Base):
     """Tests for dict | defaultdict merge"""
 
     def make_left(self, data):
@@ -246,7 +257,7 @@ class TestDictOrDefaultdict(_BitwiseOrDictBase, torch._dynamo.test_case.PythonTe
         return collections.defaultdict(int, data)
 
 
-class TestDefaultdictOrDict(_BitwiseOrDictBase, torch._dynamo.test_case.PythonTestCase):
+class TestDefaultdictOrDict(_BitwiseOrDictBase, Base):
     """Tests for defaultdict | dict merge"""
 
     def make_left(self, data):
@@ -256,9 +267,7 @@ class TestDefaultdictOrDict(_BitwiseOrDictBase, torch._dynamo.test_case.PythonTe
         return dict(data)
 
 
-class TestDefaultdictOrDefaultdict(
-    _BitwiseOrDictBase, torch._dynamo.test_case.PythonTestCase
-):
+class TestDefaultdictOrDefaultdict(_BitwiseOrDictBase, Base):
     """Tests for defaultdict | defaultdict merge"""
 
     def make_left(self, data):
@@ -268,7 +277,7 @@ class TestDefaultdictOrDefaultdict(
         return collections.defaultdict(int, data)
 
 
-class TestDictOrOrdereddict(_BitwiseOrDictBase, torch._dynamo.test_case.PythonTestCase):
+class TestDictOrOrdereddict(_BitwiseOrDictBase, Base):
     """Tests for dict | OrderedDict merge"""
 
     def make_left(self, data):
@@ -278,7 +287,7 @@ class TestDictOrOrdereddict(_BitwiseOrDictBase, torch._dynamo.test_case.PythonTe
         return collections.OrderedDict(data.items())
 
 
-class TestOrdereddictOrDict(_BitwiseOrDictBase, torch._dynamo.test_case.PythonTestCase):
+class TestOrdereddictOrDict(_BitwiseOrDictBase, Base):
     """Tests for OrderedDict | dict merge"""
 
     def make_left(self, data):
@@ -288,9 +297,7 @@ class TestOrdereddictOrDict(_BitwiseOrDictBase, torch._dynamo.test_case.PythonTe
         return dict(data)
 
 
-class TestOrdereddictOrOrdereddict(
-    _BitwiseOrDictBase, torch._dynamo.test_case.PythonTestCase
-):
+class TestOrdereddictOrOrdereddict(_BitwiseOrDictBase, Base):
     """Tests for OrderedDict | OrderedDict merge"""
 
     def make_left(self, data):
@@ -300,9 +307,7 @@ class TestOrdereddictOrOrdereddict(
         return collections.OrderedDict(data.items())
 
 
-class TestDictOrUserDefinedDict(
-    _BitwiseOrDictBase, torch._dynamo.test_case.PythonTestCase
-):
+class TestDictOrUserDefinedDict(_BitwiseOrDictBase, Base):
     """Tests for dict | user-defined dict merge"""
 
     def make_left(self, data):
@@ -312,9 +317,7 @@ class TestDictOrUserDefinedDict(
         return UserDefinedDict(data)
 
 
-class TestUserDefinedDictOrDict(
-    _BitwiseOrDictBase, torch._dynamo.test_case.PythonTestCase
-):
+class TestUserDefinedDictOrDict(_BitwiseOrDictBase, Base):
     """Tests for user-defined dict | dict merge"""
 
     def make_left(self, data):
@@ -324,9 +327,7 @@ class TestUserDefinedDictOrDict(
         return dict(data)
 
 
-class TestUserDefinedDictOrUserDefinedDict(
-    _BitwiseOrDictBase, torch._dynamo.test_case.PythonTestCase
-):
+class TestUserDefinedDictOrUserDefinedDict(_BitwiseOrDictBase, Base):
     """Tests for user-defined dict | user-defined dict merge"""
 
     def make_left(self, data):
@@ -357,7 +358,7 @@ class _BitwiseOrInplaceBase:
         self.assertEqual(left, self.expected)
 
 
-class TestDictInplaceOr(_BitwiseOrInplaceBase, torch._dynamo.test_case.PythonTestCase):
+class TestDictInplaceOr(_BitwiseOrInplaceBase, Base):
     """Tests for dict |= dict inplace merge"""
 
     container_type = dict
@@ -366,7 +367,7 @@ class TestDictInplaceOr(_BitwiseOrInplaceBase, torch._dynamo.test_case.PythonTes
     expected = {"a": 1, "b": 20, "c": 3}
 
 
-class TestSetInplaceOr(_BitwiseOrInplaceBase, torch._dynamo.test_case.PythonTestCase):
+class TestSetInplaceOr(_BitwiseOrInplaceBase, Base):
     """Tests for set |= set inplace union"""
 
     container_type = set
@@ -375,9 +376,7 @@ class TestSetInplaceOr(_BitwiseOrInplaceBase, torch._dynamo.test_case.PythonTest
     expected = {1, 2, 3}
 
 
-class TestDefaultdictInplaceOr(
-    _BitwiseOrInplaceBase, torch._dynamo.test_case.PythonTestCase
-):
+class TestDefaultdictInplaceOr(_BitwiseOrInplaceBase, Base):
     """Tests for defaultdict |= dict inplace merge"""
 
     def make_container(self, data):
@@ -388,7 +387,22 @@ class TestDefaultdictInplaceOr(
     expected = {"a": 1, "b": 20, "c": 3}
 
 
-class TestReversedOr(torch._dynamo.test_case.PythonTestCase):
+class MyDict(dict):
+    def __or__(self, other):
+        return NotImplemented
+
+
+class MySet(set):
+    def __or__(self, other):
+        return NotImplemented
+
+
+class NonDict:
+    def __or__(self, other):
+        return "wrong result"
+
+
+class TestReversedOr(Base):
     """Tests for reversed bitwise OR operator (__ror__)"""
 
     @make_dynamo_test
@@ -419,8 +433,29 @@ class TestReversedOr(torch._dynamo.test_case.PythonTestCase):
         # This tests the chain behavior
         self.assertEqual(result.value, 7)
 
+    @make_dynamo_test
+    def test_dict_ror_valid(self):
+        d = {"a": 1}
+        myd = MyDict({"a": 2})
+        result = myd | d
+        self.assertEqual(result, {"a": 1})
 
-class TestBitwiseOrUnsupported(torch._dynamo.test_case.PythonTestCase):
+    @make_dynamo_test
+    def test_set_ror_valid(self):
+        s = {1, 2}
+        mys = MySet({2, 3})
+        result = mys | s
+        self.assertEqual(result, {1, 2, 3})
+
+    @make_dynamo_test
+    def test_non_dict_or_invalid(self):
+        d = {"a": 1}
+        non_dict = NonDict()
+        result = d.__ror__(non_dict)
+        self.assertIs(result, NotImplemented)
+
+
+class TestBitwiseOrUnsupported(Base):
     """Tests that verify unsupported container types raise TypeError with | operator"""
 
     @make_dynamo_test
@@ -474,7 +509,7 @@ class UserDefinedClassWithOr:
         return f"UserDefinedClassWithOr({self.value})"
 
 
-class TestUserDefinedOr(torch._dynamo.test_case.PythonTestCase):
+class TestUserDefinedOr(Base):
     """Tests for user-defined classes with __or__ operator"""
 
     def setUp(self):
@@ -561,7 +596,7 @@ class RightOrClass:
         return f"RightOrClass({self.value})"
 
 
-class TestCrossTypeUserDefinedOr(torch._dynamo.test_case.PythonTestCase):
+class TestCrossTypeUserDefinedOr(Base):
     """Tests for two distinct user-defined classes with different __or__/__ror__ implementations"""
 
     @make_dynamo_test
@@ -597,7 +632,7 @@ class TestCrossTypeUserDefinedOr(torch._dynamo.test_case.PythonTestCase):
             a | b
 
 
-class TestOrOperatorWithTensors(torch._dynamo.test_case.TestCase):
+class TestOrOperatorWithTensors(Base):
     """Tests for OR operator behavior with torch tensors"""
 
     @make_dynamo_test
@@ -640,7 +675,7 @@ class _InheritedSub(_BaseWithOr):
     pass
 
 
-class TestSubclassRightOp(torch._dynamo.test_case.PythonTestCase):
+class TestSubclassRightOp(Base):
     """
     Tests for correct dispatch of subclass overloading __ror__.
 
@@ -680,11 +715,13 @@ class TestSubclassRightOp(torch._dynamo.test_case.PythonTestCase):
         # behavior).  This case failed in CPython 2.2.2 / 2.3a1 and is the
         # "This one would fail" assertion in
         # test_descr.py::test_subclass_right_op.
-        # self.assertIs(_InheritedSub.__ror__, _BaseWithOr.__ror__)  # sanity: truly inherited
+        self.assertIs(
+            _InheritedSub.__ror__, _BaseWithOr.__ror__
+        )  # sanity: truly inherited
 
-        # self.assertEqual(_InheritedSub() | 1, "_BaseWithOr.__or__")
-        # self.assertEqual(1 | _InheritedSub(), "_BaseWithOr.__ror__")
-        # self.assertEqual(_InheritedSub() | _BaseWithOr(), "_BaseWithOr.__or__")
+        self.assertEqual(_InheritedSub() | 1, "_BaseWithOr.__or__")
+        self.assertEqual(1 | _InheritedSub(), "_BaseWithOr.__ror__")
+        self.assertEqual(_InheritedSub() | _BaseWithOr(), "_BaseWithOr.__or__")
         self.assertEqual(
             _BaseWithOr() | _InheritedSub(), "_BaseWithOr.__or__"
         )  # must NOT call _InheritedSub.__ror__

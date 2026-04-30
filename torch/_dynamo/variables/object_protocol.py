@@ -473,7 +473,7 @@ def binary_op1(
     w_slot = getattr(type(w), impl_attr, None)
 
     # Same class → only call once (CPython: slotw = NULL if same type)
-    if type(v) is type(w):
+    if v.python_type() is w.python_type():
         w_slot = None
     # Same implementation (inherited) → skip w
     elif v_slot is w_slot:

@@ -1664,32 +1664,39 @@ class UserDefinedObjectVariable(UserDefinedVariable):
         # Implement SLOT1BIN semantics from CPython
         # ref: https://github.com/python/cpython/blob/3.13/Objects/typeobject.c#L9202-L9246
         #
-        # Direct translation of CPython's SLOT1BINFULL macro
-        # (Objects/typeobject.c). The logic is a bit convoluted, but the main
-        # idea remains the same. While implementing this I had some questions
-        # that might be worth answering here:
+        # Direct translation of CPython's SLOT1BINFULL macro (Objects/typeobject.c).
+        # The logic is a bit convoluted, but the main idea remains the same.
+        # While implementing this I had some questions that might be worth
+        # answering here:
         #
-        # Q1) What does SLOT1BIN do? It bridges a C nb_slot to the corresponding
-        # Python-level dunder methods, handling dispatch order (subclass
-        # priority, reflected calls) correctly.
+        # Q1) What does SLOT1BIN do?
         #
-        # Q2) Why does this macro exist? For built-in types, CPython dispatches
-        # binary operations through C-level tp_as_number slots (e.g., nb_or).
-        # User-defined types don't have a native C slot implementation, so
-        # CPython installs a wrapper function (e.g., slot_nb_or) that maps the C
-        # slot interface to the Python-level dunder methods (e.g., __or__ /
-        # __ror__). SLOT1BINFULL is the body of that wrapper.
+        # It bridges a C nb_slot to the corresponding Python-level dunder
+        # methods, handling dispatch order (subclass priority, reflected calls)
+        # correctly.
         #
-        # Q3) Does SLOT1BIN implement the same logic as binary_op1? Not quite.
-        # binary_op1 (Objects/abstract.c) reads C slot pointers and dispatches
-        # based on pointer identity. SLOT1BINFULL runs *inside* a slot call and
-        # handles Python-level dispatch (MRO lookup, subclass priority,
-        # NotImplemented fallthrough). They are complementary layers.
+        # Q2) Why does this macro exist?
         #
-        # Q4) What types can self and other be? SLOT1BINFULL is installed as the
-        # C slot for Python-defined types, so at least one operand always has
-        # the slot wrapper (e.g., slot_nb_or). The do_other / TESTFUNC checks
-        # determine if the *other* operand also has a Python-defined slot:
+        # For built-in types, CPython dispatches binary operations through
+        # C-level tp_as_number slots (e.g., nb_or). User-defined types don't
+        # have a native C slot implementation, so CPython installs a wrapper
+        # function (e.g., slot_nb_or) that maps the C slot interface to the
+        # Python-level dunder methods (e.g., __or__ / __ror__). SLOT1BINFULL is
+        # the body of that wrapper.
+        #
+        # Q3) Does SLOT1BIN implement the same logic as binary_op1?
+        #
+        # Not quite. binary_op1 (Objects/abstract.c) reads C slot pointers and
+        # dispatches based on pointer identity. SLOT1BINFULL runs *inside* a
+        # slot call and handles Python-level dispatch (MRO lookup, subclass
+        # priority, NotImplemented fallthrough). They are complementary layers.
+        #
+        # Q4) What types can self and other be?
+        #
+        # SLOT1BINFULL is installed as the C slot for Python-defined types, so
+        # at least one operand always has the slot wrapper (e.g., slot_nb_or).
+        # The do_other / TESTFUNC checks determine if the *other* operand also
+        # has a Python-defined slot:
         #
         #     int do_other = !Py_IS_TYPE(self, Py_TYPE(other)) &&
         #         Py_TYPE(other)->tp_as_number != NULL &&
@@ -1701,12 +1708,14 @@ class UserDefinedObjectVariable(UserDefinedVariable):
         # asking "does this operand's type have a Python-defined dunder?" Native
         # C types (e.g., int) fail the check and are skipped.
         #
-        # Q5) Can this cause infinite recursion? Not if the dunder methods are
-        # called directly (MRO lookup + direct call), which is what CPython's
-        # vectorcall_maybe does. This is equivalent to calling a.__or__(b)
-        # directly, NOT a | b, which would re-enter the C slot layer and loop.
-        # In Dynamo, this means using call_tp_slot (direct invocation) rather
-        # than call_method, which would route back through nb_or dispatch.
+        # Q5) Can this cause infinite recursion?
+        #
+        # Not if the dunder methods are called directly (MRO lookup + direct
+        # call), which is what CPython's vectorcall_maybe does. This is
+        # equivalent to calling a.__or__(b) directly, NOT a | b, which would
+        # re-enter the C slot layer and loop. In Dynamo, this means using
+        # call_tp_slot (direct invocation) rather than call_method, which would
+        # route back through nb_or dispatch.
 
         def py_is_type(w_type: type, v_type: type) -> bool:
             return w_type is v_type
@@ -1772,10 +1781,8 @@ class UserDefinedObjectVariable(UserDefinedVariable):
         self,
         tx: "InstructionTranslator",
         other: VariableTracker,
-        reverse: bool = False,
     ) -> VariableTracker:
         # ref: https://github.com/python/cpython/blob/3.13/Objects/typeobject.c#L9494
-        # return self.call_method(tx, "__ior__", [other], {})
         return self.call_tp_slot(tx, "__ior__", [other], {})
 
     def call_method(
@@ -3381,7 +3388,7 @@ class OrderedDictVariable(UserDefinedDictVariable):
         return new
 
     def nb_inplace_or_impl(
-        self, tx: "InstructionTranslator", other: VariableTracker, reverse: bool = False
+        self, tx: "InstructionTranslator", other: VariableTracker
     ) -> VariableTracker:
         # ref: https://github.com/python/cpython/blob/3.13/Lib/collections/__init__.py#L323-L325
         self.call_method(tx, "update", [other], {})

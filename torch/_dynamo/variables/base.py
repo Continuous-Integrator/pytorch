@@ -701,7 +701,7 @@ class VariableTracker(metaclass=VariableTrackerMeta):
             return self.nb_or_impl(tx, args[0])
         elif name == "__ror__":
             # ref: https://github.com/python/cpython/blob/3.13/Objects/typeobject.c#L8563-L8573
-            return args[0].nb_or_impl(tx, self)
+            return self.nb_or_impl(tx, args[0], reverse=True)
         elif name == "__ior__":
             return self.nb_inplace_or_impl(tx, args[0])
         elif name in cmp_name_to_op_mapping and len(args) == 1 and not kwargs:
@@ -1124,6 +1124,19 @@ class VariableTracker(metaclass=VariableTrackerMeta):
             hints=[*graph_break_hints.SUPPORTABLE],
         )
 
+    def _nb_slot_not_implemented(
+        self,
+        tp_slot_name: str,
+        other: VariableTracker,
+        reverse: bool = False,
+    ):
+        unimplemented(
+            gb_type="tp_as_number slot not implemented",
+            context=f"{tp_slot_name}({self.python_type_name()}, {other.python_type_name()}, reverse={reverse})",
+            explanation=f"The type {self.python_type_name()} does not implement the {tp_slot_name}",
+            hints=[*graph_break_hints.SUPPORTABLE],
+        )
+
     def nb_or_impl(
         self,
         tx: Any,
@@ -1135,16 +1148,15 @@ class VariableTracker(metaclass=VariableTrackerMeta):
         ``reverse=True`` means self is the right-hand operand (CPython would
         look up ``__ror__`` instead of ``__or__``).
         """
-        return variables.ConstantVariable.create(NotImplemented)
+        return self._nb_slot_not_implemented("nb_or_impl", other, reverse=reverse)
 
     def nb_inplace_or_impl(
         self,
         tx: Any,
         other: VariableTracker,
-        reverse: bool = False,
     ) -> VariableTracker:
         """tp_as_number->nb_inplace_or slot. Default: returns NotImplemented."""
-        return variables.ConstantVariable.create(NotImplemented)
+        return self._nb_slot_not_implemented("nb_inplace_or", other)
 
     def __init__(
         self,

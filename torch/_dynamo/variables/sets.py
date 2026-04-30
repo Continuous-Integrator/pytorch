@@ -583,17 +583,19 @@ class SetVariable(VariableTracker):
         self, tx: "InstructionTranslator", other: VariableTracker, reverse: bool = False
     ) -> VariableTracker:
         # ref: https://github.com/python/cpython/blob/3.13/Objects/setobject.c#L1318-L1338
-        if not pyanyset_check(self) or not pyanyset_check(other):
+        self_, other_ = (other, self) if reverse else (self, other)
+
+        if not pyanyset_check(self_) or not pyanyset_check(other_):
             return ConstantVariable.create(NotImplemented)
 
-        result = self.call_method(tx, "copy", [], {})
-        if self is other:
+        result = self_.call_method(tx, "copy", [], {})
+        if self_ is other_:
             return result
-        result.items.update(other.items)  # type: ignore[missing-attribute]
+        result.items.update(other_.items)  # type: ignore[missing-attribute]
         return result
 
     def nb_inplace_or_impl(
-        self, tx: "InstructionTranslator", other: VariableTracker, reverse: bool = False
+        self, tx: "InstructionTranslator", other: VariableTracker
     ) -> VariableTracker:
         # ref: https://github.com/python/cpython/blob/3.13/Objects/setobject.c#L1340-L1350
         if not pyanyset_check(other):
