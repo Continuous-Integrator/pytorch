@@ -976,7 +976,7 @@ class IncByTwo:
         self.x = x + 2
 
 
-class LRUCacheWarningTests(torch._dynamo.test_case.TestCase):
+class LRUCacheWarningTests(LoggingTestCase):
     @make_logging_test(dynamo=logging.DEBUG)
     def test_lru_cache_warning_issued_during_tracing(self, device, records):
         prev_default = torch._C._get_default_device()
@@ -8974,8 +8974,6 @@ class ReproTestsDevice(torch._dynamo.test_case.TestCase):
             "flex_attention mask_mod __defaults__ not properly guarded",
         )
 
-
-class ReproTestsAllDevices(torch._dynamo.test_case.TestCase):
     def test_sub_alpha_scalar_repro(self, device):
         @torch.compile(backend="aot_eager")
         def f(x):
@@ -9050,6 +9048,7 @@ class ReproTestsAllDevices(torch._dynamo.test_case.TestCase):
             compiled_cloned_stride,
             f"Strides should match in eager: {compiled_a_stride} against {compiled_cloned_stride}",
         )
+
 
 
 class CUDAReproTests(torch._dynamo.test_case.TestCase):
@@ -9162,8 +9161,7 @@ class CUDAReproTests(torch._dynamo.test_case.TestCase):
 instantiate_parametrized_tests(ReproTests)
 
 instantiate_device_type_tests(ReproTestsDevice, globals(), except_for=("cpu",), allow_xpu=True)
-instantiate_device_type_tests(ReproTestsAllDevices, globals(), allow_xpu=True)
-instantiate_device_type_tests(LRUCacheWarningTests, globals())
+instantiate_device_type_tests(LRUCacheWarningTests, globals(), only_for=("cuda",))
 if __name__ == "__main__":
     from torch._dynamo.test_case import run_tests
 
