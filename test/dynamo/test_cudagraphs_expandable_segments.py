@@ -7,7 +7,7 @@ import sys
 
 import torch
 from torch.testing._internal.common_cuda import IS_JETSON, IS_WINDOWS
-from torch.testing._internal.common_utils import run_tests
+from torch._dynamo.test_case import run_tests
 
 
 pytorch_test_dir = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
