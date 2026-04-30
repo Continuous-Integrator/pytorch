@@ -15787,9 +15787,14 @@ def forward(self, arg0_1: "Sym(s77)", arg1_1: "Sym(s27)", arg2_1: "Sym(s53)", ar
             _, (code_allowed,) = run_and_get_code(fn, *inputs)
         with config.patch(allow_buffer_reuse=False):
             _, (code_disallowed,) = run_and_get_code(fn, *inputs)
-        code_allowed = re.sub(r"AOT ID: .*", "AOT ID: ['test']", code_allowed)
-        code_disallowed = re.sub(r"AOT ID: .*", "AOT ID: ['test']", code_disallowed)
-        return code_allowed != code_disallowed
+        # Compare only the reuse-decision lines so that unrelated codegen
+        # non-determinism (AOT IDs, autotune outcomes, kernel ordering) does
+        # not cause spurious diffs.
+        reuse_lines_allowed = [l for l in code_allowed.splitlines() if "# reuse" in l]
+        reuse_lines_disallowed = [
+            l for l in code_disallowed.splitlines() if "# reuse" in l
+        ]
+        return reuse_lines_allowed != reuse_lines_disallowed
 
     # If matmul is implemented by triton there is more reuse
     @config.patch(
