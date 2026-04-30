@@ -465,13 +465,13 @@ class ArgsSpec:
 class ShapesSpec:
     """Top-level shape specification for a ``torch.compile`` call.
 
-    ``args`` describes the arguments of the compiled callable — for a raw
+    ``params`` describes the arguments of the compiled callable — for a raw
     function this is the function's parameters, for an ``nn.Module`` this
     is the parameters of ``forward`` (excluding ``self``).
 
-    Currently only ``args`` is supported::
+    Currently only ``params`` is supported::
 
-        ShapesSpec(args=ArgsSpec().arg("x", TensorSpec(3)))
+        ShapesSpec(params=ArgsSpec().arg("x", TensorSpec(3)))
 
     ``globals`` and ``assumptions`` are reserved for future use and will
     raise ``NotImplementedError`` if set.
@@ -479,7 +479,7 @@ class ShapesSpec:
 
     def __init__(
         self,
-        args: ArgsSpec | None = None,
+        params: ArgsSpec | None = None,
         globals: Any = None,
         assumptions: Any = None,
     ) -> None:
@@ -487,14 +487,14 @@ class ShapesSpec:
             raise NotImplementedError("ShapesSpec.globals is not supported yet")
         if assumptions is not None:
             raise NotImplementedError("ShapesSpec.assumptions is not supported yet")
-        self._args = args
+        self._params = params
 
     @property
-    def args(self) -> ArgsSpec | None:
-        return self._args
+    def params(self) -> ArgsSpec | None:
+        return self._params
 
     def __repr__(self) -> str:
-        return f"ShapesSpec(args={self._args!r})"
+        return f"ShapesSpec(params={self._params!r})"
 
 
 def lookup_spec(source, shapes_spec: ShapesSpec | None) -> TensorSpec | IntSpec | None:
@@ -505,11 +505,11 @@ def lookup_spec(source, shapes_spec: ShapesSpec | None) -> TensorSpec | IntSpec 
     """
     from torch._dynamo.source import LocalSource
 
-    if shapes_spec is None or shapes_spec.args is None:
+    if shapes_spec is None or shapes_spec.params is None:
         return None
     # Only top-level function input args are supported for now.
     #  Module attributes (self.x), globals, and values computed
     #  during execution are not covered by shapes_spe yet.
     if not isinstance(source, LocalSource) or not source.is_input:
         return None
-    return shapes_spec.args._named_args.get(source.local_name)
+    return shapes_spec.params._named_args.get(source.local_name)
