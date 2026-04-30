@@ -533,7 +533,6 @@ class TestKernelBenchmark(TestCase):
         compiled_module = self.get_compiled_module()
         self.verify_remove_inductor_deps(compiled_module)
 
-
     @config.patch(benchmark_harness=True)
     def test_benchmark_compiled_module_device_arg(self):
         """Regression test for https://github.com/pytorch/pytorch/issues/181954."""
