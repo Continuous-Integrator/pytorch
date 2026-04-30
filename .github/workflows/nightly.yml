@@ -71,7 +71,7 @@ jobs:
       run-doxygen: true
       use-arc: ${{ needs.get-label-type.outputs.use-arc == 'true' }}
       python-version: "3.10"
-      compiler: clang18
+      compiler: gcc11
     secrets:
       GH_PYTORCHBOT_TOKEN: ${{ secrets.GH_PYTORCHBOT_TOKEN }}
 
