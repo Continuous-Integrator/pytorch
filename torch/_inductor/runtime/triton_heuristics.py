@@ -497,13 +497,14 @@ class CachingAutotuner(KernelInterface):
                     self.compile_results = [compile_result]
                     return
 
-            # The best config isn't in our compile results — it was
-            # found dynamically (coordesc tuning or _dynamic_scale_rblock)
-            # after the static autotuner was saved. Compile it now.
-            with dynamo_timed("CachingAutotuner.slow_precompile_config"):
-                if self.fn.fn is None:
-                    self.fn = reload_kernel_from_src().fn
-                self.compile_results = [self._precompile_config(best_config)]
+            # If the best config isn't in our list of compile results,
+            # it's likely because it was found by coordesc after the cache
+            # already saved
+            if found_by_coordesc:
+                with dynamo_timed("CachingAutotuner.slow_precompile_config"):
+                    if self.fn.fn is None:
+                        self.fn = reload_kernel_from_src().fn
+                    self.compile_results = [self._precompile_config(best_config)]
 
     def set_compile_info(self, compile_id: CompileId | None, is_backward: bool) -> None:
         self.compile_id = compile_id
@@ -560,11 +561,6 @@ class CachingAutotuner(KernelInterface):
     def _dynamic_scale_rblock(self):
         # TODO(jansel): we should find a way to move this extra compile into the worker process
         # Currently it relies on _make_launchers(), which requires a cuda context, to populate nreg.
-        if (
-            self.autotune_cache_info
-            and self.autotune_cache_info.get("autotune_cache_state") == "hit"
-        ):
-            return
         device_prop = self.device_props
         if (
             not self.deterministic_mode
