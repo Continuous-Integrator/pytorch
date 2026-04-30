@@ -164,9 +164,8 @@ def _ao_wait_tensor(
 ) -> torch.Tensor:
     completion_event, device = _pop_wait(tensor)
     current_stream = torch.accelerator.current_stream(device)
+
     current_stream.wait_event(completion_event)
-    # For offload (D2H): free the GPU tensor's storage now that the async
-    # copy is complete and all forward consumers have finished reading it.
     if keepalive is not None:
         storage = keepalive.untyped_storage()
         if storage.size() > 0:
