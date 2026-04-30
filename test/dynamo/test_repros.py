@@ -110,7 +110,6 @@ if HAS_OMEGACONF:
     from omegaconf import OmegaConf
 
 
-
 def exists(val):
     return val is not None
 
@@ -4596,7 +4595,7 @@ class ReproTests(torch._dynamo.test_case.TestCase):
                 pass
 
         def fn(x, y):
-            ucm = UserCtxManager()
+            ucm = UserCtxManager()  # noqa: F841
             return x * x
 
         cnt = torch._dynamo.testing.CompileCounter()
@@ -4665,7 +4664,7 @@ class ReproTests(torch._dynamo.test_case.TestCase):
                 pass
 
         def fn(x, y):
-            ucm = UserCtxManager(y)
+            ucm = UserCtxManager(y)  # noqa: F841
             return x * y[0]
 
         cnt = torch._dynamo.testing.CompileCounter()
@@ -4689,7 +4688,7 @@ class ReproTests(torch._dynamo.test_case.TestCase):
 
         def fn(x, counter):
             x = x * x
-            ucm = UserCtxManager(counter)
+            ucm = UserCtxManager(counter)  # noqa: F841
             return x * x
 
         cnt = torch._dynamo.testing.CompileCounter()
@@ -6112,7 +6111,7 @@ def forward(self, s77 : torch.SymInt, s27 : torch.SymInt, L_x_ : torch.Tensor):
 
         @torch.compile(backend="aot_eager_decomp_partition")
         def f(x, l):
-            z = x.sin()
+            z = x.sin()  # noqa: F841
             y = x + 1
             # graph input has its storage mutated
             torch.ops.fsdp.copy_.default(x, y)
@@ -7743,7 +7742,7 @@ SavedForBackwardsAOTOutput(idx=5)""",
 
         def fn(x):
             foo = Foo()
-            bar = type(foo)()
+            bar = type(foo)()  # noqa: F841
             return torch.cos(x)
 
         opt_fn = torch.compile(fn, backend="eager", fullgraph=True)
