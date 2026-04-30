@@ -9054,7 +9054,6 @@ class ReproTestsDevice(torch._dynamo.test_case.TestCase):
         )
 
 
-
 class CUDAReproTests(torch._dynamo.test_case.TestCase):
     @unittest.skipIf(not torch.cuda.is_available(), "requires cuda")
     def test_cuda_sync(self):
