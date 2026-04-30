@@ -141,23 +141,35 @@ def _(
 # Synchronization details (completion event, device) are looked up from
 # ``_wait_registry`` keyed on ``tensor.data_ptr()``.
 #
-# ``keepalive`` is not read by the op — its sole purpose is to create a graph
-# dependency that extends the tensor's lifetime in the FX graph. For offload,
-# this keeps the source GPU tensor alive until the compute stream has waited
-# on the D2H completion event, preventing the allocator from reclaiming it
-# while the async copy is still in flight.
+# ``keepalive`` serves two purposes: (1) it creates a graph dependency that
+# extends the GPU tensor's lifetime until the compute stream has waited on
+# the D2H completion event, and (2) when present, the op frees the GPU
+# tensor's storage after the wait, since all forward consumers have already
+# finished reading it.
+#
+# ``dep`` is an optional scheduling dependency: it is not read by the op,
+# but creates a graph edge that prevents graph-reordering passes (e.g.
+# bucketing) from moving this wait before the last forward consumer.
 _lib = torch.library.Library("ao", "DEF")
-_lib.define("wait_tensor(Tensor(a) tensor, Tensor? keepalive=None) -> Tensor(a)")
+_lib.define(
+    "wait_tensor(Tensor(a) tensor, Tensor? keepalive=None, Tensor? dep=None) -> Tensor(a)"
+)
 
 
 @torch.library.impl("ao::wait_tensor", "CompositeExplicitAutograd")
 def _ao_wait_tensor(
     tensor: torch.Tensor,
     keepalive: torch.Tensor | None = None,
+    dep: torch.Tensor | None = None,
 ) -> torch.Tensor:
     completion_event, device = _pop_wait(tensor)
     current_stream = torch.accelerator.current_stream(device)
+
     current_stream.wait_event(completion_event)
+    if keepalive is not None:
+        storage = keepalive.untyped_storage()
+        if storage.size() > 0:
+            storage.resize_(0)
     return tensor
 
 
@@ -165,6 +177,7 @@ def _ao_wait_tensor(
 def _ao_wait_tensor_fake(
     tensor: torch.Tensor,
     keepalive: torch.Tensor | None = None,
+    dep: torch.Tensor | None = None,
 ) -> torch.Tensor:
     return tensor
 
@@ -175,6 +188,7 @@ has_side_effect(torch.ops.ao.wait_tensor.default)
 def wait_tensor(
     tensor: torch.Tensor,
     keepalive: torch.Tensor | None = None,
+    dep: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """Callable wrapper so ``wait_tensor`` can be imported by name for op registration."""
-    return torch.ops.ao.wait_tensor.default(tensor, keepalive)
+    return torch.ops.ao.wait_tensor.default(tensor, keepalive, dep)
