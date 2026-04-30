@@ -603,7 +603,7 @@ class SetVariable(VariableTracker):
     def nb_subtract_impl(
         self, tx: "InstructionTranslator", other: VariableTracker, reverse: bool = False
     ) -> VariableTracker:
-        # ref: https://github.com/python/cpython/blob/v3.13.0/Objects/setobject.c#L1880-L1892 (set_sub)
+        # ref: https://github.com/python/cpython/blob/v3.13.0/Objects/setobject.c#L1801-L1812
         self_, other_ = (other, self) if reverse else (self, other)
 
         if not pyanyset_check(self_) or not pyanyset_check(other_):
@@ -617,7 +617,7 @@ class SetVariable(VariableTracker):
     def nb_inplace_subtract_impl(
         self, tx: "InstructionTranslator", other: VariableTracker
     ) -> VariableTracker:
-        # ref: https://github.com/python/cpython/blob/v3.13.0/Objects/setobject.c#L1894-L1909 (set_isub)
+        # ref: https://github.com/python/cpython/blob/v3.13.0/Objects/setobject.c#L1814-L1828
         if not pyanyset_check(other):
             return ConstantVariable.create(NotImplemented)
 
@@ -734,6 +734,11 @@ class OrderedSetVariable(SetVariable):
         # OrderedSet does not inherit from Python set, so SetVariable.nb_or_impl
         # won't work due to the PyAnySet_Check
         return super().call_method(tx, "union", [other], {})
+
+    def nb_subtract_impl(
+        self, tx: "InstructionTranslator", other: VariableTracker, reverse: bool = False
+    ):
+        return super().call_method(tx, "difference", [other], {})
 
 
 class FrozensetVariable(SetVariable):
