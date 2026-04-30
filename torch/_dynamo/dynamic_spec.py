@@ -44,6 +44,7 @@ __all__ = [
     "ObjectSpec",
     "DictSpec",
     "ListSpec",
+    "AnySpec",
 ]
 
 
@@ -429,46 +430,6 @@ class ObjectSpec:
         entries = ", ".join(f".{name}: {spec!r}" for name, spec in self._fields.items())
         return f"ObjectSpec({{{entries}}})"
 
-    @classmethod
-    def match(cls, obj: Any) -> Any:
-        """Auto-derive a default spec scaffold mirroring ``obj``'s structure.
-
-        Mapping per input kind:
-
-        - ``torch.Tensor``         → ``TensorSpec(obj.ndim)``
-        - ``int`` (not ``bool``)   → ``IntSpec.static()``
-        - ``dict``                 → ``DictSpec`` with one entry per key
-        - ``list`` / ``tuple``     → native container of ``match(v)`` per entry
-        - ``torch.nn.Module``      → ``ObjectSpec`` with ``.field`` per
-                                     child module / parameter / buffer
-        - other                    → ``TypeError``
-        """
-        if isinstance(obj, torch.Tensor):
-            return TensorSpec(obj.ndim)
-        if isinstance(obj, bool):
-            raise TypeError(f"ObjectSpec.match cannot derive a spec for bool {obj!r}")
-        if isinstance(obj, int):
-            return IntSpec.static()
-        if isinstance(obj, dict):
-            ds = DictSpec()
-            for k, v in obj.items():
-                ds.entry(k, cls.match(v))
-            return ds
-        if isinstance(obj, (list, tuple)):
-            return type(obj)(cls.match(v) for v in obj)
-        if isinstance(obj, torch.nn.Module):
-            os = cls()
-            for name, child in obj.named_children():
-                os.field(name, cls.match(child))
-            for name, p in obj.named_parameters(recurse=False):
-                os.field(name, cls.match(p))
-            for name, b in obj.named_buffers(recurse=False):
-                os.field(name, cls.match(b))
-            return os
-        raise TypeError(
-            f"ObjectSpec.match cannot derive a spec for {type(obj).__name__}"
-        )
-
     # No ``__eq__`` / ``__hash__``: same call as :class:`IntSpec` /
     # :class:`TensorSpec`.
 
@@ -583,6 +544,27 @@ class ListSpec:
         return f"ListSpec([{entries}])"
 
     # No ``__eq__`` / ``__hash__``: matches the rest of the spec types.
+
+
+class AnySpec:
+    """Placeholder spec for a leaf in the spec tree whose concrete spec
+    is derived from the example value at compile time.
+
+    Use ``AnySpec()`` when you want a concrete spec without pinning the
+    structure yourself. The integration layer is responsible for
+    walking the spec tree, finding ``AnySpec()`` leaves, and resolving
+    them against the paired example values.
+
+    Not pytree-registered — stays opaque so the walk treats it as a
+    leaf alongside ``IntSpec`` / ``TensorSpec``.
+
+    TODO: dispatch (``match(value) -> concrete spec``) and tree
+    resolution (``resolve(spec_tree, example_tree)``) will land with
+    the integration layer that consumes them.
+    """
+
+    def __repr__(self) -> str:
+        return "AnySpec()"
 
 
 # -- pytree registration -----------------------------------------------------
