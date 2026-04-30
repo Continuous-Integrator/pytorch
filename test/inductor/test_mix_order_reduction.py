@@ -1108,6 +1108,12 @@ class OverFusionTest(TestBase):
         {
             "triton.mix_order_reduction": True,
             "triton.mix_order_reduction_max_reads": 10,
+            # Disable the inductor disk cache so that metrics counters
+            # (codegen_mix_order_reduction, rejected_mix_order_reduction_fusion)
+            # are always populated from a fresh compilation.  A warm cache
+            # causes Scheduler.fuse_nodes to be skipped entirely, leaving
+            # the counters at zero and failing the assertGreater checks.
+            "force_disable_caches": True,
         }
     )
     def test_max_reads_limits_fusion(self):
