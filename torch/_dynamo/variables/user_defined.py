@@ -1943,9 +1943,7 @@ class UserDefinedObjectVariable(UserDefinedVariable):
             return self.value in self._supported_random_functions()
         except (TypeError, AttributeError):
             # TypeError: unhashable type
-            # AttributeError: partially-initialized object whose __hash__
-            # reads attrs that Dynamo has set only symbolically (e.g.
-            # typing._GenericAlias built during tracing).
+            # AttributeError: backing object may not be fully initialized
             return False
 
     def call_function(
@@ -3636,6 +3634,25 @@ class UserDefinedTupleVariable(UserDefinedObjectVariable):
     def items(self) -> list[VariableTracker]:
         assert self._base_vt is not None
         return self._base_vt.items  # type: ignore[return-value]
+
+    def resolve_data_descriptor(
+        self,
+        tx: "InstructionTranslator",
+        name: str,
+        type_attr: object,
+        source: Source | None,
+    ) -> VariableTracker:
+        if isinstance(type_attr, _collections._tuplegetter):
+            # namedtuple fields are _tuplegetter descriptors implemented in C.
+            # Emulate _tuplegetter.__get__ via tracked tuple items because
+            # self.value may be a freshly-created empty tuple from
+            # SideEffects.get_example_value (tuple.__new__(cls) with no args)
+            # or otherwise underpopulated. Subclasses (NamedTupleVariable,
+            # StructSequenceVariable) may further override for their specific
+            # descriptor types.
+            _, (idx, _) = type_attr.__reduce__()
+            return self.items[idx]
+        return super().resolve_data_descriptor(tx, name, type_attr, source)
 
     def call_method(
         self,

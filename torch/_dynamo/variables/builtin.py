@@ -2043,6 +2043,7 @@ class BuiltinVariable(BaseBuiltinVariable):
                 list(obj.unpack_var_sequence(tx)),
                 mutation_type=ValueMutationNew(),
             )
+
         return None
 
     def _call_iter_tuple_generator(
