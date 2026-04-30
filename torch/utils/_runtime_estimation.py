@@ -100,8 +100,7 @@ def get_compute_time(func_packet, args, kwargs, out, out_dtypes) -> float:  # ty
         factor = 0.75
         peak_empirical_flops = factor * peak_gpu_flops
         flop_count_func = flop_registry[func_packet]
-        # We divide by a factor of 2 to get the MACs (multiply and accumulate)
-        flop_count = flop_count_func(*args, **kwargs, out_val=out) / 2
+        flop_count = flop_count_func(*args, **kwargs, out_val=out)
         # We multiply by 1e9 to get the time in nano seconds
         compute_time = (flop_count / peak_empirical_flops) * 1e9
         return compute_time
