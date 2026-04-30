@@ -31,10 +31,11 @@ from ..exc import (
     raise_value_error,
     unimplemented,
 )
+from ..utils import unpack_iterable
 from .base import ValueMutationNew, VariableTracker
 from .constant import ConstantVariable
 from .hashable import HashableTracker
-from .object_protocol import generic_iternext, unpack_iterator
+from .object_protocol import generic_iternext
 
 
 if TYPE_CHECKING:
@@ -92,7 +93,7 @@ class ItertoolsVariable(VariableTracker):
                 r = kwargs["repeat"].as_python_constant()
             else:
                 r = 1
-            seqs = [unpack_iterator(tx, arg) for arg in args]
+            seqs = [unpack_iterable(tx, arg) for arg in args]
             items = [
                 variables.TupleVariable(list(item))
                 for item in itertools.product(*seqs, repeat=r)
@@ -107,7 +108,7 @@ class ItertoolsVariable(VariableTracker):
             and len(args) == 2
             and args[1].is_python_constant()
         ):
-            iterable = unpack_iterator(tx, args[0])
+            iterable = unpack_iterable(tx, args[0])
             r = args[1].as_python_constant()
 
             items = []
@@ -155,7 +156,7 @@ class ItertoolsVariable(VariableTracker):
                         *graph_break_hints.SUPPORTABLE,
                     ],
                 )
-            seq = unpack_iterator(tx, args[0])
+            seq = unpack_iterable(tx, args[0])
 
             if "key" in kwargs:
 
@@ -231,9 +232,7 @@ class ItertoolsVariable(VariableTracker):
                 r = None
             items = [
                 variables.TupleVariable(list(item))
-                for item in itertools.permutations(
-                    unpack_iterator(tx, args[0]), r
-                )
+                for item in itertools.permutations(unpack_iterable(tx, args[0]), r)
             ]
             return variables.ListIteratorVariable(
                 items,  # type: ignore[arg-type]
