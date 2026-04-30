@@ -18,7 +18,7 @@ from .virtualized import V
 
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Iterable
 
     from .dependencies import Dep
     from .scheduler import BaseSchedulerNode, SchedulerBuffer
@@ -477,17 +477,29 @@ def estimate_peak_memory(
 
 
 def estimate_region_peak_memory(
-    buf_info_list: list[BufferInfo],
+    relevant_bufs: Iterable[BufferInfo],
     *,
     region_start: int,
     region_end: int,
     step_of: Callable[[BaseSchedulerNode], int],
     graph_outputs: OrderedSet[str],
-    freeable_input_buffer_cls: type,
+    carry_in: int = 0,
 ) -> int:
     """Peak memory inside `[region_start, region_end]` for the
-    hypothetical post-reorder schedule. `step_of(node)` returns the
-    node's step in the proposed order, or -1 if not located.
+    hypothetical post-reorder schedule.
+
+    `relevant_bufs` is the caller-filtered subset of `BufferInfo`s
+    whose baseline lifetime touches the window — buffers entirely
+    outside the window contribute nothing locally and should be
+    excluded by the caller. `step_of(node)` returns the node's step
+    in the proposed order.
+
+    `carry_in` is the bytes already alive at `region_start - 1` (the
+    boundary just before the window). The caller is expected to pass
+    the precomputed `baseline_cum[region_start - 1]` — under the
+    layer-locality of combo formation, the boundary live set is
+    invariant under prior horizontal fusion, so the precomputed value
+    is correct without per-trial recomputation.
 
     Three special cases:
     * Graph outputs (`end_step == -1`): never freed.
@@ -497,12 +509,11 @@ def estimate_region_peak_memory(
       can move under a reorder.
     """
     region_delta = [0] * (region_end - region_start + 2)
-    carry_in = 0
 
-    for bi in buf_info_list:
+    for bi in relevant_bufs:
         buf = bi.buffer
 
-        if isinstance(buf, freeable_input_buffer_cls):
+        if isinstance(buf, FreeableInputBuffer):
             new_start = 0
             if buf.get_name() in graph_outputs:
                 new_end = -1
@@ -518,7 +529,7 @@ def estimate_region_peak_memory(
             if defining is None:
                 continue
             new_start = step_of(defining)
-            if new_start < 0 or new_start > region_end:
+            if new_start > region_end:
                 continue
             if buf.get_name() in graph_outputs:
                 new_end = -1
@@ -527,12 +538,6 @@ def estimate_region_peak_memory(
                     s for s in (step_of(n) for n in buf.mpi_buffer.succ_nodes) if s >= 0
                 ]
                 new_end = max(succ) if succ else new_start
-
-        # `region_start - 1` (not `region_start`): a buffer freed at
-        # `region_start` lands its subtract in region_delta[0], so its
-        # alloc must be in carry_in too.
-        if new_start < region_start and (new_end == -1 or new_end >= region_start - 1):
-            carry_in += bi.size_alloc
 
         if region_start <= new_start <= region_end:
             region_delta[new_start - region_start] += bi.size_alloc

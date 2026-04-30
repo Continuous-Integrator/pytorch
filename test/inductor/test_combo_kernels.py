@@ -67,7 +67,7 @@ class ComboKernelTests(TestCase):
                     "benchmark_combo_kernel": False,
                     "combo_kernel_per_subkernel_blocks": self.combo_kernel_per_subkernel_blocks,
                     "combo_kernel_max_distance": -1,
-                    "combo_kernel_peak_memory_threshold": None,
+                    "combo_kernel_peak_memory_increase_gb": None,
                     "combo_kernel_peak_memory_pct_threshold": None,
                 }
             )
@@ -748,7 +748,7 @@ class ComboKernelBenchmarkTests(TestCase):
                     "benchmark_combo_kernel": True,
                     "combo_kernel_per_subkernel_blocks": self.combo_kernel_per_subkernel_blocks,
                     "combo_kernel_max_distance": -1,
-                    "combo_kernel_peak_memory_threshold": None,
+                    "combo_kernel_peak_memory_increase_gb": None,
                     "combo_kernel_peak_memory_pct_threshold": None,
                 }
             )
@@ -906,7 +906,7 @@ class ComboKernelDynamicShapesTests(TestCase):
                     "benchmark_combo_kernel": True,
                     "combo_kernel_per_subkernel_blocks": self.combo_kernel_per_subkernel_blocks,
                     "combo_kernel_max_distance": -1,
-                    "combo_kernel_peak_memory_threshold": None,
+                    "combo_kernel_peak_memory_increase_gb": None,
                     "combo_kernel_peak_memory_pct_threshold": None,
                 }
             )
@@ -1199,7 +1199,7 @@ class ComboKernelPDLTests(TestCase):
                     "benchmark_combo_kernel": False,
                     "triton.enable_pdl": True,
                     "combo_kernel_max_distance": -1,
-                    "combo_kernel_peak_memory_threshold": None,
+                    "combo_kernel_peak_memory_increase_gb": None,
                     "combo_kernel_peak_memory_pct_threshold": None,
                 }
             )
@@ -1328,7 +1328,7 @@ class ComboKernelTestsMaxAutotune(TestCase):
                     "max_autotune": True,
                     "autotune_local_cache": False,
                     "combo_kernel_max_distance": -1,
-                    "combo_kernel_peak_memory_threshold": None,
+                    "combo_kernel_peak_memory_increase_gb": None,
                     "combo_kernel_peak_memory_pct_threshold": None,
                 }
             )
@@ -1466,8 +1466,8 @@ class ComboKernelTestsMaxAutotune(TestCase):
         def fn(a, b, c, d):
             return a.cos(), b.sin(), c.exp(), d.neg()
 
-        # a,b: numel=262144 → bs=1024, c,d: numel=32 → bs=256
-        # Different bs → different configs → separate groups
+        # a,b: numel=262144 -> bs=1024, c,d: numel=32 -> bs=256
+        # Different bs -> different configs -> separate groups
         inps = [
             torch.rand(4, 65536, device=GPU_TYPE),
             torch.rand(4, 65536, device=GPU_TYPE),
@@ -1492,7 +1492,7 @@ class ComboKernelTestsMaxAutotune(TestCase):
             if re.search(r"group (\d+)", line)
         }
         # 4 sub-kernels in 2 size buckets (rnumel 65536 vs 8) with identical
-        # per-sub-kernel metadata within each bucket → exactly 2 groups.
+        # per-sub-kernel metadata within each bucket -> exactly 2 groups.
         self.assertEqual(
             len(group_indices),
             2,
@@ -1555,7 +1555,7 @@ class ComboKernelTestsMaxAutotune(TestCase):
             ]
 
         # Each case mutates one field of sub-kernel 1 away from sub-kernel 0.
-        # `None` means no mutation → expect groups to merge.
+        # `None` means no mutation -> expect groups to merge.
         # For per-kernel fields, mutate inside inductor_meta_1 sub-dict.
         cases = [
             ("all identical merge", None, None, 1),
@@ -1988,9 +1988,9 @@ class ComboKernelPeakMemoryTests(InductorTestCase):
         super().tearDown()
 
     @staticmethod
-    def _thresholds(*, abs_thr=None, pct_thr=None, max_distance=-1):
+    def _thresholds(*, abs_thr_gb=None, pct_thr=None, max_distance=-1):
         return {
-            "combo_kernel_peak_memory_threshold": abs_thr,
+            "combo_kernel_peak_memory_increase_gb": abs_thr_gb,
             "combo_kernel_peak_memory_pct_threshold": pct_thr,
             "combo_kernel_max_distance": max_distance,
         }
@@ -2067,15 +2067,19 @@ class ComboKernelPeakMemoryTests(InductorTestCase):
         baseline_peak,
         thresholds,
     ):
+        from torch._inductor.memory import peak_memory_from_buf_info_list
         from torch._inductor.scheduler import ComboKernelMemoryContext, Scheduler
 
         scheduler = _PeakMemFakeScheduler(nodes)
+        _, baseline_cum = peak_memory_from_buf_info_list(buf_info_list, len(nodes))
         mem_ctx = ComboKernelMemoryContext(
             graph_outputs=set(),
             buf_info_list=buf_info_list,
-            freeable_input_buffer_cls=_PeakMemFakeFreeableInputBuffer,
             node_to_idx={node: idx for idx, node in enumerate(nodes)},
             baseline_peak=baseline_peak,
+            running_peak=baseline_peak,
+            baseline_cum=baseline_cum,
+            buf_info_by_start=sorted(buf_info_list, key=lambda bi: bi.start_step),
         )
 
         with (
@@ -2089,20 +2093,34 @@ class ComboKernelPeakMemoryTests(InductorTestCase):
                 scheduler,
                 group_nodes,
                 mem_ctx,
-                baseline_peak=baseline_peak,
                 enable_autotune=False,
             )
 
     def test_threshold_gating(self):
         """abs_thr/pct_thr set to 0 or a too-small bound reject; default accepts."""
+        ONE_MB = 1024 * 1024
         a = _PeakMemFakeNode("a")
         consume_a = _PeakMemFakeNode("consume_a", deps=("buf_a",))
         b = _PeakMemFakeNode("b")
         consume_b = _PeakMemFakeNode("consume_b", deps=("buf_b",))
         nodes = [a, consume_a, b, consume_b]
+        # Each buffer is 2 MB so the combo forces a +2 MB peak delta —
+        # large enough to test against MB-scale thresholds.
         buf_info_list = [
-            BufferInfo(_PeakMemFakeBuffer("buf_a", a, {consume_a}), 100, 100, 0, 1),
-            BufferInfo(_PeakMemFakeBuffer("buf_b", b, {consume_b}), 100, 100, 2, 3),
+            BufferInfo(
+                _PeakMemFakeBuffer("buf_a", a, {consume_a}),
+                2 * ONE_MB,
+                2 * ONE_MB,
+                0,
+                1,
+            ),
+            BufferInfo(
+                _PeakMemFakeBuffer("buf_b", b, {consume_b}),
+                2 * ONE_MB,
+                2 * ONE_MB,
+                2,
+                3,
+            ),
         ]
 
         def run(thresholds):
@@ -2110,21 +2128,21 @@ class ComboKernelPeakMemoryTests(InductorTestCase):
                 nodes,
                 [a, b],
                 buf_info_list=buf_info_list,
-                baseline_peak=100,
+                baseline_peak=2 * ONE_MB,
                 thresholds=thresholds,
             )
 
-        # Rejection cases: any limit below the +100 delta the combo forces.
+        # Rejection cases: any limit below the +2 MB delta the combo forces.
         for label, thresholds in (
-            ("abs=0", self._thresholds(abs_thr=0)),
+            ("abs_gb=0", self._thresholds(abs_thr_gb=0.0)),
             ("pct=0", self._thresholds(pct_thr=0.0)),
-            ("abs=1", self._thresholds(abs_thr=1)),
+            ("abs_gb=1MB", self._thresholds(abs_thr_gb=1.0 / 1024)),
         ):
-            combo, _, _ = run(thresholds)
+            combo, _ = run(thresholds)
             self.assertIsNone(combo, f"{label} should reject")
 
-        # Both thresholds disabled → accept; combo lands at step 0.
-        combo, _, combo_step = run(self._thresholds())
+        # Both thresholds disabled -> accept; combo lands at step 0.
+        combo, combo_step = run(self._thresholds())
         self.assertIsNotNone(combo)
         self.assertEqual(combo_step, 0)
 
@@ -2156,13 +2174,14 @@ class ComboKernelPeakMemoryTests(InductorTestCase):
                 torch.cuda.synchronize()
             return torch.cuda.max_memory_allocated()
 
-        # Gating disabled: combos can co-allocate freely → higher peak.
+        # Gating disabled: combos can co-allocate freely -> higher peak.
         peak_disabled = compile_and_measure_peak(
-            **self._thresholds(abs_thr=None, pct_thr=None, max_distance=-1),
+            **self._thresholds(abs_thr_gb=None, pct_thr=None, max_distance=-1),
         )
-        # Tight abs threshold: reject combos that would inflate peak.
+        # Tight abs threshold (1 MB -> ~0.001 GB): reject combos that
+        # would inflate peak.
         peak_tight = compile_and_measure_peak(
-            **self._thresholds(abs_thr=1 << 20, max_distance=32),
+            **self._thresholds(abs_thr_gb=1.0 / 1024, max_distance=32),
         )
         self.assertLess(
             peak_tight,
@@ -2170,6 +2189,45 @@ class ComboKernelPeakMemoryTests(InductorTestCase):
             f"tight threshold did not reduce runtime peak memory "
             f"(tight={peak_tight}, disabled={peak_disabled})",
         )
+
+    def test_estimate_region_peak_memory(self):
+        from torch._inductor import memory as mem_mod
+
+        # Window [0, 5] with four buffers:
+        #   bufA: size 100, alloc at step 1, free at slot 3 (end_step=2)
+        #   bufB: size 200, alloc at step 2, free at slot 5 (end_step=4)
+        #   bufC: size  50, alloc at step 3, graph output (never freed)
+        #   bufD: size 999, alloc at step 100 — past window, must skip
+        a1, a2, a3, a100, b3, b5 = (
+            _PeakMemFakeNode(n) for n in ("a1", "a2", "a3", "a100", "b3", "b5")
+        )
+        bil = [
+            BufferInfo(_PeakMemFakeBuffer("bufA", a1, {b3}), 100, 100, 1, 2),
+            BufferInfo(_PeakMemFakeBuffer("bufB", a2, {b5}), 200, 200, 2, 4),
+            BufferInfo(_PeakMemFakeBuffer("bufC", a3, set()), 50, 50, 3, -1),
+            BufferInfo(_PeakMemFakeBuffer("bufD", a100, set()), 999, 999, 100, 100),
+        ]
+        steps = {a1: 1, a2: 2, a3: 3, a100: 100, b3: 3, b5: 5}
+
+        peak = mem_mod.estimate_region_peak_memory(
+            bil,
+            region_start=0,
+            region_end=5,
+            step_of=lambda n: steps[n],
+            graph_outputs={"bufC"},
+        )
+        # Peak is taken over cur values inside region [0, 5]:
+        #   step 0: no events     -> cur=0
+        #   step 1: bufA alloc    -> cur=100
+        #   step 2: bufB alloc    -> cur=300
+        #   step 3: bufC alloc    -> cur=350  ← max (A, B, C alive)
+        #   step 4: bufA free     -> cur=250
+        #   step 5: no events     -> cur=250
+        # (slot 6, just past region_end, sees bufB's free -> cur=50,
+        #  but this is outside [0, 5] and doesn't change peak.)
+        # bufD's defining op step (100) > region_end (5) -> skipped.
+        # bufC is a graph output -> its alloc applies, no free event.
+        self.assertEqual(peak, 350)
 
 
 if __name__ == "__main__":
