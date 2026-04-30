@@ -1567,9 +1567,7 @@ class VariableBuilder:
                     source=self.source,
                 )
                 if value not in self.tx.output.side_effects:
-                    self.tx.output.side_effects.track_object_existing(
-                        value, result
-                    )
+                    self.tx.output.side_effects.track_object_existing(value, result)
                 return result
 
             return UserDefinedClassVariable(
