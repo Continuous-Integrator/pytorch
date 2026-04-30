@@ -1,6 +1,6 @@
 # Owner(s): ["module: dynamo"]
 
-"""Tests for | and or operators in PyTorch Dynamo."""
+"""Tests for nb_or (|, or) and nb_subtract (-) operators in PyTorch Dynamo."""
 
 import collections
 import functools
@@ -493,7 +493,327 @@ class TestNbOr(torch._dynamo.test_case.TestCase):
         self.assertEqual(_BaseWithOr() | _InheritedSub(), "_BaseWithOr.__or__")
 
 
+# --- Helper classes for sub tests ---
+
+
+class UserDefinedClassWithSub:
+    def __init__(self, value):
+        self.value = value
+
+    def __sub__(self, other):
+        if isinstance(other, UserDefinedClassWithSub):
+            return UserDefinedClassWithSub(self.value - other.value)
+        return UserDefinedClassWithSub(self.value - other)
+
+    def __rsub__(self, other):
+        if isinstance(other, UserDefinedClassWithSub):
+            return UserDefinedClassWithSub(other.value - self.value)
+        return UserDefinedClassWithSub(other - self.value)
+
+    def __eq__(self, other):
+        if isinstance(other, UserDefinedClassWithSub):
+            return self.value == other.value
+        return False
+
+    def __repr__(self):
+        return f"UserDefinedClassWithSub({self.value})"
+
+
+class LeftSubClass:
+    def __init__(self, value):
+        self.value = value
+
+    def __sub__(self, other):
+        if isinstance(other, LeftSubClass):
+            return LeftSubClass(self.value - other.value)
+        return NotImplemented
+
+    def __rsub__(self, other):
+        if isinstance(other, LeftSubClass):
+            return LeftSubClass(other.value - self.value)
+        return NotImplemented
+
+    def __eq__(self, other):
+        return isinstance(other, LeftSubClass) and self.value == other.value
+
+    def __repr__(self):
+        return f"LeftSubClass({self.value})"
+
+
+class RightSubClass:
+    def __init__(self, value):
+        self.value = value
+
+    def __sub__(self, other):
+        if isinstance(other, RightSubClass):
+            return RightSubClass(self.value - other.value)
+        return NotImplemented
+
+    def __rsub__(self, other):
+        if isinstance(other, LeftSubClass):
+            return f"LeftSubClass({other.value})-RightSubClass({self.value})"
+        return NotImplemented
+
+    def __eq__(self, other):
+        return isinstance(other, RightSubClass) and self.value == other.value
+
+    def __repr__(self):
+        return f"RightSubClass({self.value})"
+
+
+class _IntSubWithSub(int):
+    def __sub__(self, other):
+        return "_IntSubWithSub.__sub__"
+
+    def __rsub__(self, other):
+        return "_IntSubWithSub.__rsub__"
+
+
+class _BaseWithSub:
+    def __sub__(self, other):
+        return "_BaseWithSub.__sub__"
+
+    def __rsub__(self, other):
+        return "_BaseWithSub.__rsub__"
+
+
+class _SubWithSub(_BaseWithSub):
+    def __sub__(self, other):
+        return "_SubWithSub.__sub__"
+
+    def __rsub__(self, other):
+        return "_SubWithSub.__rsub__"
+
+
+class _InheritedSubSub(_BaseWithSub):
+    pass
+
+
+class TestNbSub(torch._dynamo.test_case.TestCase):
+    def setUp(self):
+        super().setUp()
+        self._u_prev = torch._dynamo.config.enable_trace_unittest
+        torch._dynamo.config.enable_trace_unittest = True
+
+    def tearDown(self):
+        super().tearDown()
+        torch._dynamo.config.enable_trace_unittest = self._u_prev
+
+    # --- Arithmetic sub ---
+
+    @make_dynamo_test
+    def test_sub_integers(self):
+        self.assertEqual(10 - 3, 7)
+        self.assertEqual(0 - 5, -5)
+        self.assertEqual(5 - 5, 0)
+
+    @make_dynamo_test
+    def test_sub_floats(self):
+        self.assertAlmostEqual(1.5 - 0.5, 1.0)
+        self.assertAlmostEqual(3.14 - 1.14, 2.0)
+
+    @make_dynamo_test
+    def test_sub_negative(self):
+        self.assertEqual(-3 - (-5), 2)
+        self.assertEqual(-3 - 5, -8)
+
+    @make_dynamo_test
+    def test_sub_chained(self):
+        self.assertEqual(10 - 3 - 2 - 1, 4)
+
+    @make_dynamo_test
+    def test_sub_zero(self):
+        self.assertEqual(5 - 0, 5)
+        self.assertEqual(0 - 0, 0)
+
+    # --- Sub booleans ---
+
+    @make_dynamo_test
+    def test_sub_bools(self):
+        self.assertEqual(True - True, 0)
+        self.assertEqual(True - False, 1)
+        self.assertEqual(False - False, 0)
+
+    @make_dynamo_test
+    def test_sub_int_and_bool(self):
+        self.assertEqual(5 - True, 4)
+        self.assertEqual(0 - True, -1)
+
+    # --- Set difference ---
+
+    @parametrize(
+        "operand1,operand2,expected",
+        [
+            ({1, 2, 3}, {2, 3}, {1}),
+            ({1, 2}, {2}, {1}),
+            ({1, 2, 3}, {4, 5}, {1, 2, 3}),
+        ],
+    )
+    @make_dynamo_test
+    def test_set_difference(self, operand1, operand2, expected):
+        self.assertEqual(operand1 - operand2, expected)
+
+    @make_dynamo_test
+    def test_set_difference_with_empty(self):
+        self.assertEqual({1, 2} - set(), {1, 2})
+        self.assertEqual(set() - {1, 2}, set())
+
+    @make_dynamo_test
+    def test_set_difference_empty(self):
+        self.assertEqual(set() - set(), set())
+
+    @make_dynamo_test
+    def test_set_difference_chained(self):
+        self.assertEqual({1, 2, 3, 4} - {2} - {3}, {1, 4})
+
+    # --- Frozenset difference ---
+
+    @parametrize(
+        "operand1,operand2,expected",
+        [
+            (frozenset({1, 2, 3}), frozenset({2, 3}), frozenset({1})),
+            (frozenset({1, 2}), frozenset({2}), frozenset({1})),
+            (frozenset({1, 2, 3}), frozenset({4, 5}), frozenset({1, 2, 3})),
+        ],
+    )
+    @make_dynamo_test
+    def test_frozenset_difference(self, operand1, operand2, expected):
+        self.assertEqual(operand1 - operand2, expected)
+
+    @make_dynamo_test
+    def test_frozenset_difference_with_empty(self):
+        self.assertEqual(frozenset({1, 2}) - frozenset(), frozenset({1, 2}))
+        self.assertEqual(frozenset() - frozenset({1, 2}), frozenset())
+
+    # --- Inplace -= ---
+
+    @make_dynamo_test
+    def test_inplace_sub_integers(self):
+        x = 10
+        x -= 3
+        self.assertEqual(x, 7)
+
+    @make_dynamo_test
+    def test_inplace_sub_set(self):
+        s = {1, 2, 3}
+        s -= {2, 3}
+        self.assertEqual(s, {1})
+
+    # --- Reversed sub (__rsub__) ---
+
+    @make_dynamo_test
+    def test_reversed_sub_with_integer(self):
+        obj = UserDefinedClassWithSub(3)
+        result = 10 - obj
+        self.assertEqual(result, UserDefinedClassWithSub(7))
+
+    @make_dynamo_test
+    def test_reversed_sub_with_user_defined_object(self):
+        obj1 = UserDefinedClassWithSub(5)
+        obj2 = UserDefinedClassWithSub(3)
+        result = obj1 - obj2
+        self.assertEqual(result, UserDefinedClassWithSub(2))
+
+    @make_dynamo_test
+    def test_reversed_sub_chained(self):
+        obj1 = UserDefinedClassWithSub(10)
+        obj2 = UserDefinedClassWithSub(3)
+        obj3 = UserDefinedClassWithSub(2)
+        result = obj1 - obj2 - obj3
+        self.assertEqual(result, UserDefinedClassWithSub(5))
+
+    # --- Unsupported types ---
+
+    @make_dynamo_test
+    def test_str_sub_str_raises_type_error(self):
+        with self.assertRaises(TypeError):
+            "hello" - "world"
+
+    @make_dynamo_test
+    def test_list_sub_list_raises_type_error(self):
+        with self.assertRaises(TypeError):
+            [1, 2] - [1]
+
+    # --- User-defined __sub__ ---
+
+    @make_dynamo_test
+    def test_user_defined_sub_basic(self):
+        obj1 = UserDefinedClassWithSub(10)
+        obj2 = UserDefinedClassWithSub(3)
+        self.assertEqual(obj1 - obj2, UserDefinedClassWithSub(7))
+
+    @make_dynamo_test
+    def test_user_defined_sub_with_integer(self):
+        obj = UserDefinedClassWithSub(10)
+        self.assertEqual(obj - 3, UserDefinedClassWithSub(7))
+
+    @make_dynamo_test
+    def test_user_defined_sub_zero(self):
+        obj = UserDefinedClassWithSub(5)
+        self.assertEqual(obj - 0, UserDefinedClassWithSub(5))
+
+    @make_dynamo_test
+    def test_user_defined_sub_chained(self):
+        obj1 = UserDefinedClassWithSub(10)
+        obj2 = UserDefinedClassWithSub(3)
+        obj3 = UserDefinedClassWithSub(2)
+        self.assertEqual(obj1 - obj2 - obj3, UserDefinedClassWithSub(5))
+
+    # --- Cross-type user-defined sub ---
+
+    @make_dynamo_test
+    def test_left_sub_left_uses_sub(self):
+        a = LeftSubClass(10)
+        b = LeftSubClass(3)
+        self.assertEqual(a - b, LeftSubClass(7))
+
+    @make_dynamo_test
+    def test_right_sub_right_uses_sub(self):
+        a = RightSubClass(10)
+        b = RightSubClass(3)
+        self.assertEqual(a - b, RightSubClass(7))
+
+    @make_dynamo_test
+    def test_left_sub_right_falls_back_to_rsub(self):
+        a = LeftSubClass(10)
+        b = RightSubClass(3)
+        self.assertEqual(a - b, "LeftSubClass(10)-RightSubClass(3)")
+
+    @make_dynamo_test
+    def test_right_sub_left_raises(self):
+        a = RightSubClass(10)
+        b = LeftSubClass(3)
+        with self.assertRaises(TypeError):
+            a - b
+
+    # --- Subclass right-op dispatch ---
+
+    @make_dynamo_test
+    def test_subclass_of_int_gets_priority(self):
+        self.assertEqual(_IntSubWithSub(1) - 1, "_IntSubWithSub.__sub__")
+        self.assertEqual(1 - _IntSubWithSub(1), "_IntSubWithSub.__rsub__")
+
+    @make_dynamo_test
+    def test_subclass_of_object_baseline(self):
+        self.assertEqual(_BaseWithSub() - 1, "_BaseWithSub.__sub__")
+        self.assertEqual(1 - _BaseWithSub(), "_BaseWithSub.__rsub__")
+
+    @make_dynamo_test
+    def test_subclass_of_user_defined_gets_priority(self):
+        self.assertEqual(_SubWithSub() - _BaseWithSub(), "_SubWithSub.__sub__")
+        self.assertEqual(_BaseWithSub() - _SubWithSub(), "_SubWithSub.__rsub__")
+
+    @make_dynamo_test
+    def test_inherited_subclass_no_priority(self):
+        self.assertIs(_InheritedSubSub.__rsub__, _BaseWithSub.__rsub__)
+        self.assertEqual(_InheritedSubSub() - 1, "_BaseWithSub.__sub__")
+        self.assertEqual(1 - _InheritedSubSub(), "_BaseWithSub.__rsub__")
+        self.assertEqual(_InheritedSubSub() - _BaseWithSub(), "_BaseWithSub.__sub__")
+        self.assertEqual(_BaseWithSub() - _InheritedSubSub(), "_BaseWithSub.__sub__")
+
+
 instantiate_parametrized_tests(TestNbOr)
+instantiate_parametrized_tests(TestNbSub)
 
 
 if __name__ == "__main__":
