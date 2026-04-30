@@ -163,8 +163,6 @@ jobs:
           # 1. Calculate hash of downloaded file
           TRUSTED_HASH=${{ inputs.build-secure-hash }}
           DOWNLOADED_HASH=$(sha256sum "$FILENAME" | awk '{print $1}')
-          echo "Downloaded: $DOWNLOADED_HASH" | cat -v
-          echo "Trusted: $TRUSTED_HASH" | cat -v
 
           # 2. Compare safely (No printing to logs)
           if [ "$DOWNLOADED_HASH" == "$TRUSTED_HASH" ]; then
