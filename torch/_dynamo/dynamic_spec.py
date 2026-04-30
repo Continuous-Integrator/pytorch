@@ -40,7 +40,7 @@ __all__ = [
     "TensorSpec",
     "ParamsSpec",
     "ShapesSpec",
-    "lookup_spec",
+    "lookup_spec_from_dynamo_source",
 ]
 
 # Type alias for leaf specs (individual argument specifications)
@@ -497,7 +497,7 @@ class ShapesSpec:
         return f"ShapesSpec(params={self._params!r})"
 
 
-def lookup_spec(source, shapes_spec: ShapesSpec | None) -> LeafSpec:
+def lookup_spec_from_dynamo_source(source, shapes_spec: ShapesSpec | None) -> LeafSpec:
     """Look up the spec for a function input arg from the shapes_spec.
 
     Only supports LocalSource with is_input=True (direct function args).

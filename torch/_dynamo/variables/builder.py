@@ -2254,9 +2254,13 @@ class VariableBuilder:
                 return self.wrap_symint(value, dynamism=DimDynamic.UNBACKED)
 
             # Check for user-provided IntSpec from shapes_spec
-            from torch._dynamo.dynamic_spec import IntSpec, IntSpecType, lookup_spec
+            from torch._dynamo.dynamic_spec import (
+                IntSpec,
+                IntSpecType,
+                lookup_spec_from_dynamo_source,
+            )
 
-            int_spec = lookup_spec(self.source, config._shapes_spec)
+            int_spec = lookup_spec_from_dynamo_source(self.source, config._shapes_spec)
             if isinstance(int_spec, IntSpec):
                 if int_spec._type is IntSpecType.STATIC:
                     self.install_guards(GuardBuilder.CONSTANT_MATCH)
@@ -2274,13 +2278,16 @@ class VariableBuilder:
                         if int_spec._type is IntSpecType.BACKED
                         else int_spec._optimization_hint
                     )
-                    sym_value = hint if hint is not None else value
-                    result = self.wrap_symint(sym_value, dynamism=dynamism)
+                    hint_value = hint if hint is not None else value
+                    result = self.wrap_symint(hint_value, dynamism=dynamism)
                     sym_val = result.sym_num  # type: ignore[attr-defined]
                     if int_spec._min is not None:
                         torch._check(sym_val >= int_spec._min)
                     if int_spec._max is not None:
                         torch._check(sym_val <= int_spec._max)
+                    # Override hint for both backed and unbacked:
+                    # - unbacked: sets the optimization_hint for guardless optimizations
+                    # - both: changes the FX cache key (different hint = cache miss)
                     if hint is not None:
                         expr = sym_val.node.expr
                         sym_val.node.shape_env.var_to_hint_override[expr] = hint
@@ -3979,9 +3986,13 @@ def _automatic_dynamic(
     specialize_on = []
 
     # Look up user-provided TensorSpec for this tensor
-    from torch._dynamo.dynamic_spec import IntSpecType, lookup_spec, TensorSpec
+    from torch._dynamo.dynamic_spec import (
+        IntSpecType,
+        lookup_spec_from_dynamo_source,
+        TensorSpec,
+    )
 
-    spec = lookup_spec(source, config._shapes_spec)
+    spec = lookup_spec_from_dynamo_source(source, config._shapes_spec)
     tensor_spec = spec if isinstance(spec, TensorSpec) else None
 
     for i in range(e.dim()):
@@ -3999,6 +4010,19 @@ def _automatic_dynamic(
         # If user provided a TensorSpec with an IntSpec for this dim, use it
         # and skip the existing heuristics.
         if tensor_spec is not None and tensor_spec[i] is not None:
+            if any(
+                [
+                    marked_strict_unbacked,
+                    marked_unbacked,
+                    marked_dynamic,
+                    marked_weak_dynamic,
+                    marked_static,
+                ]
+            ):
+                raise ValueError(
+                    f"Dimension {i} has both a TensorSpec and a mark_dynamic/mark_static "
+                    f"annotation. Use one or the other, not both."
+                )
             dim_spec = tensor_spec[i]
             if dim_spec._type is IntSpecType.STATIC:  # type: ignore[union-attr]
                 dynamic_sizes.append(DimDynamic.STATIC)
@@ -4149,6 +4173,7 @@ def _automatic_dynamic(
         view_base_context=view_base_context,
         tensor_source=source,
         shape_env_to_source_to_symbol_cache=shape_env_to_source_to_symbol_cache,
+        # TODO: read names from tensor spec and pass them as shape_ids
         shape_ids=getattr(e, "_dynamo_shape_ids", None),
         unbacked_bounds=getattr(e, "_dynamo_unbacked_bounds", None),
         excluded_sizes=frame_state_entry.excluded_sizes,
