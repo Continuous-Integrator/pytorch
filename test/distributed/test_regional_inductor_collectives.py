@@ -71,14 +71,15 @@ def forward(self, t_1):
         _functionalize_inplace_collectives(gm)
 
         # ReduceOp is baked as ``'sum'`` (its int value is read at rewrite
-        # time); the ProcessGroup ``get_attr`` flows through unchanged.
+        # time) and its now-dead ``_torchbind_obj1`` get_attr / module attr
+        # is stripped; the ProcessGroup ``get_attr`` is still referenced by
+        # the new functional call, so it stays.
         self.assertExpectedInline(
             gm.code.strip(),
             """\
 def forward(self, t_1):
     clone = torch.ops.aten.clone.default(t_1);  t_1 = None
     _torchbind_obj0 = self._torchbind_obj0
-    _torchbind_obj1 = self._torchbind_obj1;  _torchbind_obj1 = None
     all_reduce_default = torch.ops._c10d_functional.all_reduce.default(clone, 'sum', _torchbind_obj0);  _torchbind_obj0 = None
     wait_tensor_default = torch.ops._c10d_functional.wait_tensor.default(all_reduce_default);  all_reduce_default = None
     copy__default = torch.ops.aten.copy_.default(clone, wait_tensor_default);  clone = copy__default = None
