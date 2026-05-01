@@ -488,8 +488,8 @@ void inline apply_grad_input(scalar_in* buffer_ptr, scalar_out* gin, int64_t siz
   return;
 }
 
-// Avoid GCC AArch64 tree-vectorization issues when adding float buffers to BFloat16/Half gradients.
-#if defined(__GNUC__) && !defined(__clang__) && defined(__aarch64__)
+// Avoid GCC < 14 AArch64 tree-vectorization issues when adding float buffers to BFloat16/Half gradients.
+#if defined(__GNUC__) && !defined(__clang__) && defined(__aarch64__) && (__GNUC__ < 14)
 #pragma GCC push_options
 #pragma GCC optimize("no-tree-vectorize")
 #endif
@@ -513,7 +513,7 @@ void inline apply_grad_input(scalar_in* buffer_ptr, scalar_out* gin, int64_t siz
     buffer_ptr[d] = 0;
   }
 }
-#if defined(__GNUC__) && !defined(__clang__) && defined(__aarch64__)
+#if defined(__GNUC__) && !defined(__clang__) && defined(__aarch64__) && (__GNUC__ < 14)
 #pragma GCC pop_options
 #endif
 
