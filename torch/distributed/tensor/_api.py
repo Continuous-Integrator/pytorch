@@ -695,7 +695,15 @@ class DTensor(torch.Tensor):
 
         # pyre-fixme[16]: `Redistribute` has no attribute `apply`.
         return Redistribute.apply(
-            self, device_mesh, placements, async_op, forward_dtype, backward_dtype
+            self,
+            device_mesh,
+            placements,
+            async_op=async_op,
+            op_dtype=forward_dtype,
+            out_dtype=forward_dtype,
+            # out_dtype omitted from backward_options -> snap back to input's
+            # storage dtype, matching prior behavior.
+            backward_options={"op_dtype": backward_dtype},
         )
 
     def full_tensor(

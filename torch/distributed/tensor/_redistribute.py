@@ -1832,6 +1832,41 @@ def _redistribute_backward(
 
 
 class Redistribute(torch.autograd.Function):
+    # Keys permitted in ``backward_options``. ``op_dtype=None`` means the
+    # backward collective runs at the incoming gradient's runtime dtype (no
+    # cast). ``out_dtype=None`` means the returned gradient is cast back to
+    # the forward input's dtype - the usual "snap back to the param's storage
+    # dtype" behavior.
+    _BACKWARD_OPTION_KEYS = frozenset({"op_dtype", "out_dtype"})
+
+    # autograd.Function.apply cannot forward kwargs; wrap it so the call sites
+    # spell out op_dtype/out_dtype/backward_options explicitly.
+    @classmethod
+    def apply(  # type: ignore[override]
+        cls,
+        input: "dtensor.DTensor",
+        device_mesh: DeviceMesh,
+        placements: tuple[Placement, ...],
+        *,
+        async_op: bool = False,
+        op_dtype: torch.dtype | None = None,
+        out_dtype: torch.dtype | None = None,
+        backward_options: dict | None = None,
+    ) -> "dtensor.DTensor":
+        backward_options = backward_options or {}
+        unknown = backward_options.keys() - cls._BACKWARD_OPTION_KEYS
+        if unknown:
+            raise TypeError(f"Unknown backward_options: {sorted(unknown)}")
+        return super().apply(  # type: ignore[no-any-return]
+            input,
+            device_mesh,
+            placements,
+            async_op,
+            op_dtype,
+            out_dtype,
+            backward_options,
+        )
+
     @staticmethod
     def forward(  # type: ignore[override]
         # pyre-fixme[2]: Parameter must be annotated.
@@ -1839,23 +1874,24 @@ class Redistribute(torch.autograd.Function):
         input: "dtensor.DTensor",
         device_mesh: DeviceMesh,
         placements: tuple[Placement, ...],
-        async_op: bool = False,
-        forward_dtype: torch.dtype | None = None,
-        backward_dtype: torch.dtype | None = None,
+        async_op: bool,
+        op_dtype: torch.dtype | None,
+        out_dtype: torch.dtype | None,
+        backward_options: dict,
     ):
         ctx.async_op = async_op
-        ctx.backward_dtype = backward_dtype
+        ctx.backward_options = backward_options
         ctx.original_dtype = input._local_tensor.dtype
 
-        if forward_dtype is not None and forward_dtype != input._local_tensor.dtype:
-            local_tensor = input._local_tensor.to(dtype=forward_dtype)
+        if op_dtype is not None and op_dtype != input._local_tensor.dtype:
+            local_tensor = input._local_tensor.to(dtype=op_dtype)
             current_spec = DTensorSpec(
                 mesh=device_mesh,
                 placements=input._spec.placements,
                 tensor_meta=TensorMeta(
                     shape=input.shape,
                     stride=input.stride(),
-                    dtype=forward_dtype,
+                    dtype=op_dtype,
                 ),
                 use_strided_shard_as_shard_order=input._spec.use_strided_shard_as_shard_order,
             )
@@ -1882,6 +1918,19 @@ class Redistribute(torch.autograd.Function):
             output = local_tensor
             target_spec = current_spec
 
+        if out_dtype is not None and output.dtype != out_dtype:
+            output = output.to(out_dtype)
+            target_spec = DTensorSpec(
+                device_mesh,
+                target_spec.placements,
+                tensor_meta=TensorMeta(
+                    shape=input.shape,
+                    stride=input.stride(),
+                    dtype=out_dtype,
+                ),
+                use_strided_shard_as_shard_order=target_spec.use_strided_shard_as_shard_order,
+            )
+
         # pyrefly: ignore [bad-argument-type]
         return dtensor.DTensor(
             # pyrefly: ignore [bad-argument-count]
@@ -1894,19 +1943,22 @@ class Redistribute(torch.autograd.Function):
     @staticmethod
     def backward(ctx, grad_output: "dtensor.DTensor"):  # type: ignore[override]
         previous_spec = ctx.current_spec
-        # If the user didn't request a backward_dtype, the collective runs at
-        # the incoming grad's dtype (a no-op cast) and the result is pinned
-        # back to the forward input's original dtype.
-        op_dtype = ctx.backward_dtype or grad_output._local_tensor.dtype
+        opts: dict = ctx.backward_options
+        # None sentinels resolve dynamically: op_dtype falls back to the grad's
+        # runtime dtype (no cast), out_dtype falls back to the forward input's
+        # dtype (snap back to the param's storage dtype).
+        op_dtype = opts.get("op_dtype") or grad_output._local_tensor.dtype
+        out_dtype = opts.get("out_dtype") or ctx.original_dtype
         output_dtensor = NestedRedistribute.apply(
             grad_output,
             previous_spec,
             async_op=ctx.async_op,
             op_dtype=op_dtype,
-            out_dtype=ctx.original_dtype,
+            out_dtype=out_dtype,
         )
         return (
             output_dtensor,
+            None,
             None,
             None,
             None,
