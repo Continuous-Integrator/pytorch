@@ -3,7 +3,9 @@
 import torch
 from torch._inductor.test_case import TestCase
 from torch.testing._internal.common_utils import IS_FBCODE, run_tests
-from torch.testing._internal.inductor_utils import HAS_CUDA
+
+
+HAS_CUDA = torch.cuda.is_available()
 
 
 class TestTorchbindAOTI(TestCase):
