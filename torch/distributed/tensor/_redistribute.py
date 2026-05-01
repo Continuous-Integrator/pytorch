@@ -1741,8 +1741,8 @@ def _redistribute_backward(
     grad_output: "dtensor.DTensor",
     previous_spec: DTensorSpec,
     *,
-    out_dtype: torch.dtype | None = None,
-    op_dtype: torch.dtype | None = None,
+    out_dtype: torch.dtype,
+    op_dtype: torch.dtype,
     async_op: bool = False,
 ):
     """
@@ -1762,7 +1762,7 @@ def _redistribute_backward(
         A :class:`torch.Tensor` object.
         A :class:`DTensorSpec` object.
     """
-    if op_dtype is not None and op_dtype != grad_output._local_tensor.dtype:
+    if op_dtype != grad_output._local_tensor.dtype:
         local_tensor = grad_output._local_tensor.to(dtype=op_dtype)
         current_spec = DTensorSpec(
             mesh=grad_output._spec.device_mesh,
@@ -1770,7 +1770,6 @@ def _redistribute_backward(
             tensor_meta=TensorMeta(
                 shape=grad_output.shape,
                 stride=grad_output.stride(),
-                # pyrefly: ignore [bad-argument-type]
                 dtype=op_dtype,
             ),
             use_strided_shard_as_shard_order=grad_output._spec.use_strided_shard_as_shard_order,
@@ -1895,12 +1894,16 @@ class Redistribute(torch.autograd.Function):
     @staticmethod
     def backward(ctx, grad_output: "dtensor.DTensor"):  # type: ignore[override]
         previous_spec = ctx.current_spec
+        # If the user didn't request a backward_dtype, the collective runs at
+        # the incoming grad's dtype (a no-op cast) and the result is pinned
+        # back to the forward input's original dtype.
+        op_dtype = ctx.backward_dtype or grad_output._local_tensor.dtype
         output_dtensor = NestedRedistribute.apply(
             grad_output,
             previous_spec,
-            ctx.async_op,
-            ctx.backward_dtype,
-            ctx.original_dtype,
+            async_op=ctx.async_op,
+            op_dtype=op_dtype,
+            out_dtype=ctx.original_dtype,
         )
         return (
             output_dtensor,
@@ -1923,26 +1926,37 @@ class NestedRedistribute(torch.autograd.Function):
     backward is not yet supported.
     """
 
+    # autograd.Function.apply cannot forward kwargs; wrap it so the call sites
+    # spell out op_dtype/out_dtype explicitly.
+    @classmethod
+    def apply(  # type: ignore[override]
+        cls,
+        grad_output: "dtensor.DTensor",
+        previous_spec: DTensorSpec,
+        *,
+        async_op: bool,
+        op_dtype: torch.dtype,
+        out_dtype: torch.dtype,
+    ) -> "dtensor.DTensor":
+        return super().apply(  # type: ignore[no-any-return]
+            grad_output, previous_spec, async_op, op_dtype, out_dtype
+        )
+
     @staticmethod
     def forward(  # type: ignore[override]
         # pyre-fixme[2]: Parameter must be annotated.
         ctx,
         grad_output: "dtensor.DTensor",
         previous_spec: DTensorSpec,
-        async_op: bool = False,
-        op_dtype: torch.dtype | None = None,
-        out_dtype: torch.dtype | None = None,
+        async_op: bool,
+        op_dtype: torch.dtype,
+        out_dtype: torch.dtype,
     ):
-        # Naming: both dtype slots describe this backward pass.
-        #   op_dtype  = dtype the collective runs at (user's backward_dtype).
-        #   out_dtype = dtype to cast the result to on the way out (pinned by
-        #               autograd to match the input of the node above us).
-        # Persist op_dtype so double-backward reuses it; out_dtype for this
-        # level is only needed locally here.
+        # Persist op_dtype so the double-backward reuses the same collective
+        # dtype one level down.
         ctx.async_op = async_op
         ctx.original_dtype = grad_output._local_tensor.dtype
         ctx.op_dtype = op_dtype
-        out_dtype = out_dtype or ctx.original_dtype
 
         output, spec = _redistribute_backward(
             grad_output,
@@ -1972,9 +1986,9 @@ class NestedRedistribute(torch.autograd.Function):
         output_dtensor = NestedRedistribute.apply(
             grad2_output,
             previous_spec,
-            ctx.async_op,
-            ctx.op_dtype,
-            ctx.original_dtype,
+            async_op=ctx.async_op,
+            op_dtype=ctx.op_dtype,
+            out_dtype=ctx.original_dtype,
         )
 
         return (
