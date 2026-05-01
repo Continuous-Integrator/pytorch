@@ -1,6 +1,8 @@
 #!/bin/bash
 # ROCm-specific utility functions shared across CI scripts
 
+ROCM_UTILS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 # Build rocm-composable-kernel (ck4inductor) wheel
 # Usage: build_rocm_ck_wheel <output_dir>
 build_rocm_ck_wheel() {
@@ -8,8 +10,9 @@ build_rocm_ck_wheel() {
 
   echo "Building rocm-composable-kernel (ck4inductor) wheel at $(date)"
 
+  local pin_file="${ROCM_UTILS_DIR}/../docker/ci_commit_pins/rocm-composable-kernel.txt"
   local ck_commit
-  ck_commit=$(cat .ci/docker/ci_commit_pins/rocm-composable-kernel.txt)
+  ck_commit=$(cat "$pin_file")
   echo "CK commit: $ck_commit"
 
   git clone --depth 1 https://github.com/ROCm/composable_kernel.git /tmp/ck
