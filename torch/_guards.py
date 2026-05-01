@@ -1343,6 +1343,9 @@ class Source:
     def reconstruct(self, codegen: PyCodegen) -> None:
         raise NotImplementedError
 
+    def pycode(self, codegen: PyCodegen) -> str:
+        raise NotImplementedError
+
     @functools.cached_property
     def guard_source(self) -> GuardSource:
         raise NotImplementedError

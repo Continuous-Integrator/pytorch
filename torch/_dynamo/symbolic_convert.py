@@ -5173,7 +5173,8 @@ class InstructionTranslator(InstructionTranslatorBase):
         assert len(all_stack_locals_metadata) == 1
         assert not all_stack_locals_metadata[0].stack_null_idxes
         self.output.add_output_instructions(
-            self.codegen_return_with_pops(inst, all_stack_locals_metadata[0].num_stack)
+            self.codegen_return_with_pops(inst, all_stack_locals_metadata[0].num_stack),
+            "__ret = __stack0",
         )
         raise ReturnValueOp
 
