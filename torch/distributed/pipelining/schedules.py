@@ -300,9 +300,11 @@ class _PipelineSchedule(ABC):
         self._internal_losses: list[torch.Tensor] = []
         logger.info("Using %s", self.__class__.__name__)
 
-    def _maybe_compute_loss(self, stage, output, target_mbs, mb_index):
+    def _maybe_compute_loss(
+        self, stage, output, target_mbs, mb_index, loss_kwargs=None
+    ):
         if stage.is_last and self._loss_fn is not None:
-            loss = self._compute_loss(output, target_mbs[mb_index])  # type: ignore[index]
+            loss = self._compute_loss(output, target_mbs[mb_index], loss_kwargs)  # type: ignore[index]
             self._internal_losses.append(loss)
 
     def _maybe_get_loss(self, stage, mb_index):
@@ -406,6 +408,7 @@ class _PipelineSchedule(ABC):
         target: Any,
         fwd_initialized: bool,
         bwd_initialized: bool,
+        loss_kwargs: dict[str, Any] | None = None,
     ) -> tuple[bool, bool]:
         """Common stage initialization shared by Single and Multi schedules.
 
@@ -460,6 +463,7 @@ class _PipelineSchedule(ABC):
                         loss_fn=self._loss_fn,
                         target=target,
                         received_grad_meta=prev_stage_grad_meta,
+                        loss_kwargs=loss_kwargs,
                     )
                 bwd_initialized = True
 
@@ -477,6 +481,7 @@ class _PipelineSchedule(ABC):
         target_mbs: list | None = None,
         losses: list | None = None,
         return_outputs: bool = True,
+        loss_kwargs: dict[str, Any] | None = None,
     ):
         """
         Run one iteration of the pipeline schedule with list of microbatches.
@@ -486,6 +491,7 @@ class _PipelineSchedule(ABC):
         Args:
             microbatches: list of microbatch args.
             return_outputs: whether to return the outputs from the last stage.
+            loss_kwargs: extra keyword arguments forwarded to the loss function.
         """
         raise NotImplementedError
 
@@ -496,6 +502,7 @@ class _PipelineSchedule(ABC):
         target=None,
         losses: list | None = None,
         return_outputs=True,
+        loss_kwargs: dict[str, Any] | None = None,
         **kwargs,
     ):
         """
@@ -508,6 +515,7 @@ class _PipelineSchedule(ABC):
         target: target for the loss function.
         losses: a list to store the losses for each microbatch.
         return_outputs: whether to return the outputs from the last stage.
+        loss_kwargs: extra keyword arguments forwarded to the loss function.
         """
         raise NotImplementedError
 
@@ -569,8 +577,8 @@ class _PipelineSchedule(ABC):
 
         return arg_mbs, kwarg_mbs
 
-    def _compute_loss(self, output, target):
-        return self._loss_fn(output, target)  # type: ignore[misc]
+    def _compute_loss(self, output, target, loss_kwargs=None):
+        return self._loss_fn(output, target, **(loss_kwargs or {}))  # type: ignore[misc]
 
     def _split_inputs(
         self,
@@ -709,7 +717,7 @@ class PipelineScheduleSingle(_PipelineSchedule):
             self._get_pipeline_order()
         )
 
-    def _initialize_stage(self, args, kwargs, target=None):
+    def _initialize_stage(self, args, kwargs, target=None, loss_kwargs=None):
         (
             self._stage_forward_initialized,
             self._stage_backward_initialized,
@@ -720,6 +728,7 @@ class PipelineScheduleSingle(_PipelineSchedule):
             target,
             self._stage_forward_initialized,
             self._stage_backward_initialized,
+            loss_kwargs=loss_kwargs,
         )
 
     def step(
@@ -728,6 +737,7 @@ class PipelineScheduleSingle(_PipelineSchedule):
         target=None,
         losses: list | None = None,
         return_outputs: bool = True,
+        loss_kwargs: dict[str, Any] | None = None,
         **kwargs,
     ):
         """
@@ -740,6 +750,7 @@ class PipelineScheduleSingle(_PipelineSchedule):
         target: target for the loss function.
         losses: a list to store the losses for each microbatch.
         return_outputs: whether to return the outputs from the last stage.
+        loss_kwargs: extra keyword arguments forwarded to the loss function.
         """
         if self._has_backward and not torch.is_grad_enabled():
             raise RuntimeError(
@@ -764,7 +775,12 @@ class PipelineScheduleSingle(_PipelineSchedule):
 
         # Run microbatches
         self._step_microbatches(
-            args_split, kwargs_split, targets_split, losses, return_outputs
+            args_split,
+            kwargs_split,
+            targets_split,
+            losses,
+            return_outputs,
+            loss_kwargs=loss_kwargs,
         )
 
         # Return merged results per original format
@@ -805,6 +821,7 @@ class _ScheduleForwardOnly(PipelineScheduleSingle):
         target_mbs: list | None = None,
         losses: list | None = None,
         return_outputs: bool = True,
+        loss_kwargs: dict[str, Any] | None = None,
     ):
         """
         Run one iteration of the pipeline schedule
@@ -857,6 +874,7 @@ class ScheduleGPipe(PipelineScheduleSingle):
         target_mbs: list | None = None,
         losses: list | None = None,
         return_outputs: bool = True,
+        loss_kwargs: dict[str, Any] | None = None,
     ):
         """
         Run one iteration of the pipeline schedule with list of microbatches.
@@ -868,7 +886,9 @@ class ScheduleGPipe(PipelineScheduleSingle):
         """
         arg_mbs, kwarg_mbs = self._check_inputs(arg_mbs, kwarg_mbs, target_mbs, losses)
         maybe_first_target = target_mbs[0] if target_mbs is not None else None
-        self._initialize_stage(arg_mbs[0], kwarg_mbs[0], maybe_first_target)
+        self._initialize_stage(
+            arg_mbs[0], kwarg_mbs[0], maybe_first_target, loss_kwargs
+        )
 
         # Delay send waits
         fwd_sends_to_wait: list[list[dist.Work]] = []
@@ -891,7 +911,7 @@ class ScheduleGPipe(PipelineScheduleSingle):
 
             logger.debug("[%s] Forwarded microbatch %s", self._stage.stage_index, i)
 
-            self._maybe_compute_loss(self._stage, output, target_mbs, i)
+            self._maybe_compute_loss(self._stage, output, target_mbs, i, loss_kwargs)
 
         # Wait for all forward sends to finish
         # This should not have performance impact because by the time the first
@@ -1002,6 +1022,7 @@ or equal to the number of stages ({self._num_stages})."
         target_mbs: list | None = None,
         losses: list | None = None,
         return_outputs: bool = True,
+        loss_kwargs: dict[str, Any] | None = None,
     ):
         """
         Run one iteration of the pipeline schedule with list of microbatches.
@@ -1010,10 +1031,13 @@ or equal to the number of stages ({self._num_stages})."
         Args:
             microbatches: list of microbatch args.
             return_outputs: whether to return the outputs from the last stage.
+            loss_kwargs: extra keyword arguments forwarded to the loss function.
         """
         arg_mbs, kwarg_mbs = self._check_inputs(arg_mbs, kwarg_mbs, target_mbs, losses)
         maybe_first_target = target_mbs[0] if target_mbs is not None else None
-        self._initialize_stage(arg_mbs[0], kwarg_mbs[0], maybe_first_target)
+        self._initialize_stage(
+            arg_mbs[0], kwarg_mbs[0], maybe_first_target, loss_kwargs
+        )
 
         # Last stage has 1 warmup, second-to-last 2 warmups, ...
         # first stage `num_stages` warmups
@@ -1057,7 +1081,9 @@ or equal to the number of stages ({self._num_stages})."
             #   The last forward send is left for fuse with first 1B in 1B1F below
 
             # Compute loss
-            self._maybe_compute_loss(self._stage, output, target_mbs, fwd_mb_index)
+            self._maybe_compute_loss(
+                self._stage, output, target_mbs, fwd_mb_index, loss_kwargs
+            )
             fwd_mb_index += 1
 
         # Now we should have send ops left over, to be fused with first 1B of 1B1F phase below.
@@ -1101,7 +1127,9 @@ or equal to the number of stages ({self._num_stages})."
             )  # type: ignore[index]
 
             # Compute loss
-            self._maybe_compute_loss(self._stage, output, target_mbs, fwd_mb_index)
+            self._maybe_compute_loss(
+                self._stage, output, target_mbs, fwd_mb_index, loss_kwargs
+            )
 
             # Get the fwd send ops, but don't fire, leave it for the next iter (wrap-around)
             fwd_sends = self._stage.get_fwd_send_ops(fwd_mb_index)
@@ -1680,7 +1708,9 @@ class PipelineScheduleMulti(_PipelineSchedule):
                 "Simply stop passing it, and everything should still work fine."
             )
 
-    def _initialize_stages(self, args: tuple[Any, ...], kwargs, target=None):
+    def _initialize_stages(
+        self, args: tuple[Any, ...], kwargs, target=None, loss_kwargs=None
+    ):
         (
             self._stages_forward_initialized,
             self._stages_backward_initialized,
@@ -1691,6 +1721,7 @@ class PipelineScheduleMulti(_PipelineSchedule):
             target,
             self._stages_forward_initialized,
             self._stages_backward_initialized,
+            loss_kwargs=loss_kwargs,
         )
 
     def _validate_and_set_stage_mapping(
@@ -1738,6 +1769,7 @@ class PipelineScheduleMulti(_PipelineSchedule):
         target=None,
         losses: list | None = None,
         return_outputs: bool = True,
+        loss_kwargs: dict[str, Any] | None = None,
         **kwargs,
     ):
         """
@@ -1750,6 +1782,7 @@ class PipelineScheduleMulti(_PipelineSchedule):
         target: target for the loss function.
         losses: a list to store the losses for each microbatch.
         return_outputs: whether to return the outputs from the last stage.
+        loss_kwargs: extra keyword arguments forwarded to the loss function.
         """
         if (
             self._has_backward
@@ -1780,7 +1813,12 @@ class PipelineScheduleMulti(_PipelineSchedule):
 
         # Run microbatches
         self._step_microbatches(
-            args_split, kwargs_split, targets_split, losses, return_outputs
+            args_split,
+            kwargs_split,
+            targets_split,
+            losses,
+            return_outputs,
+            loss_kwargs=loss_kwargs,
         )
 
         # Return merged results per original format
@@ -1797,6 +1835,7 @@ class PipelineScheduleMulti(_PipelineSchedule):
         target_mbs: list | None = None,
         losses: list | None = None,
         return_outputs: bool = True,
+        loss_kwargs: dict[str, Any] | None = None,
     ):
         """
         Operate on the microbatches for looped schedules (multiple stages on each rank).
@@ -1806,7 +1845,9 @@ class PipelineScheduleMulti(_PipelineSchedule):
         """
         arg_mbs, kwarg_mbs = self._check_inputs(arg_mbs, kwarg_mbs, target_mbs, losses)
         maybe_first_target = target_mbs[0] if target_mbs is not None else None
-        self._initialize_stages(arg_mbs[0], kwarg_mbs[0], maybe_first_target)
+        self._initialize_stages(
+            arg_mbs[0], kwarg_mbs[0], maybe_first_target, loss_kwargs
+        )
 
         # Based on the plan in Step 1 created in __init__:
         # 2. Perform communication based on the pipeline_order
@@ -1846,7 +1887,9 @@ class PipelineScheduleMulti(_PipelineSchedule):
                             kwarg_mbs[mb_index],
                             save_forward_output=return_outputs,
                         )
-                        self._maybe_compute_loss(stage, output, target_mbs, mb_index)
+                        self._maybe_compute_loss(
+                            stage, output, target_mbs, mb_index, loss_kwargs
+                        )
                         ops.extend(stage.get_fwd_send_ops(mb_index))
                     elif computation_type == _ComputationType.FULL_BACKWARD:
                         # perform backward computation
@@ -1965,7 +2008,7 @@ class PipelineScheduleMulti(_PipelineSchedule):
                 # do the communication
                 _wait_batch_p2p(_batch_p2p(ops))
             except Exception as e:
-                logger.error(  # noqa: G200
+                logger.error(
                     "[Rank %s] pipeline schedule %s caught the following exception '%s' \
 at time_step %s when running action %s",
                     self.rank,
@@ -2183,6 +2226,7 @@ class _PipelineScheduleRuntime(PipelineScheduleMulti):
         target_mbs: list | None = None,
         losses: list | None = None,
         return_outputs: bool = True,
+        loss_kwargs: dict[str, Any] | None = None,
     ):
         """
         Operate on the microbatches for looped schedules (multiple stages on each rank).
@@ -2192,7 +2236,9 @@ class _PipelineScheduleRuntime(PipelineScheduleMulti):
         """
         arg_mbs, kwarg_mbs = self._check_inputs(arg_mbs, kwarg_mbs, target_mbs, losses)
         maybe_first_target = target_mbs[0] if target_mbs is not None else None
-        self._initialize_stages(arg_mbs[0], kwarg_mbs[0], maybe_first_target)
+        self._initialize_stages(
+            arg_mbs[0], kwarg_mbs[0], maybe_first_target, loss_kwargs
+        )
 
         # Based on the plan in Step 1 created in __init__:
         # 2. Perform communication based on the pipeline_order
@@ -2302,7 +2348,9 @@ class _PipelineScheduleRuntime(PipelineScheduleMulti):
                     kwarg_mbs[mb_index],  # type: ignore[index]
                     save_forward_output=return_outputs,
                 )
-                self._maybe_compute_loss(stage, output, target_mbs, mb_index)
+                self._maybe_compute_loss(
+                    stage, output, target_mbs, mb_index, loss_kwargs
+                )
 
                 # SEND/RECV op are avoided for special case with 2 adjacent stages on same rank
                 # see [Note: V-schedule special case]
