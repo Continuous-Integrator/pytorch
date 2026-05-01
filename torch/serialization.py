@@ -1532,7 +1532,7 @@ def load(
         fspath = os.fspath(f)
         if fspath.endswith(".safetensors"):
             try:
-                import safetensors.torch
+                import safetensors.torch  # type: ignore[import-not-found]
 
                 # Convert map_location to a device string for safetensors
                 device = "cpu"
