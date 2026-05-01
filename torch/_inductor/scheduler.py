@@ -167,11 +167,9 @@ class _LocalEntry(NamedTuple):
 class ComboKernelMemoryContext:
     """Shared state used by the memory-aware combo gate.
 
-    Every time a combo is accepted, we add its members + the combo node
-    itself to `accepted_step`, mapping each one to the step the combo
-    runs at. The next gate call reads `accepted_step` through `step_of`
-    to figure out where each node now lives. Nothing else is mutated,
-    so commit order does not matter.
+    Candidate windows are evaluated independently against the original
+    schedule. Earlier accepted combos only contribute through `running_peak`,
+    which caps the cumulative peak drift from the original graph.
     """
 
     graph_outputs: OrderedSet[str]
@@ -181,19 +179,10 @@ class ComboKernelMemoryContext:
     # gate's threshold check still compares against `baseline_peak`
     # (the original) so total drift is capped.
     running_peak: int = 0
-    # Bytes already live at graph entry (graph-input / freeable-input
-    # buffers). Used as `cur_memory` when `region_start == 0` since the
-    # window starts before any node has run yet.
-    initial_memory: int = 0
-    # Live bytes at each step in the original schedule. The window's
-    # entry `cur_memory` is `baseline_cum[region_start - 1]` for
-    # `region_start > 0` under the layer-locality of combo formation:
-    # prior horizontal fusion stays inside its own layer, so the
-    # boundary live set doesn't shift.
-    baseline_cum: list[int] = dataclasses.field(default_factory=list)
-    accepted_step: dict[BaseSchedulerNode, int] = dataclasses.field(
-        default_factory=dict
-    )
+    # Live bytes before each step in the original schedule. Combo windows
+    # are evaluated independently, so a window's entry memory is the
+    # precomputed baseline live-in at `region_start`.
+    baseline_live_before: list[int] = dataclasses.field(default_factory=list)
 
 
 class MixOrderReduction:
@@ -5138,16 +5127,15 @@ class Scheduler:
     def _distance_windows(
         nodes: list[BaseSchedulerNode],
         node_to_idx: dict[BaseSchedulerNode, int],
-        max_distance: int | None,
+        max_distance: int,
     ) -> Iterator[list[BaseSchedulerNode]]:
         """Sort `nodes` by baseline index, then yield groups whose span
         is at most `max_distance`. Start a new window whenever the next
-        node would push the span past the limit. `max_distance` of None
-        or any negative value means "no limit" — yield everything as
-        one window.
+        node would push the span past the limit. Negative `max_distance`
+        means "no limit" — yield everything as one window.
         """
         ordered = sorted(nodes, key=lambda n: node_to_idx[n])
-        if max_distance is None or max_distance < 0:
+        if max_distance < 0:
             if ordered:
                 yield ordered
             return
@@ -5168,8 +5156,8 @@ class Scheduler:
         """Group parallel nodes into combo kernels.
 
         Each parallel group is split into windows whose baseline-index
-        span is at most `combo_kernel_max_distance` (set the config to
-        None to disable splitting). If a peak-memory threshold is set,
+        span is at most `combo_kernel_max_distance` (set the config to a
+        negative value to disable splitting). If a peak-memory threshold is set,
         each window goes through the gate, which simulates the
         post-fusion peak and accepts the combo only if the peak stays
         under the threshold; rejected windows are halved and retried.
@@ -5275,6 +5263,7 @@ class Scheduler:
             assign_memory_planning_info_for_scheduler_nodes,
             compute_memory_timeline,
             get_freeable_input_buf,
+            live_memory_before_steps_from_buf_info_list,
             peak_memory_from_buf_info_list,
         )
 
@@ -5292,11 +5281,11 @@ class Scheduler:
         buf_info_list, _, _ = compute_memory_timeline(
             self.nodes, name_to_freeable, graph_outputs
         )
-        baseline_peak, baseline_cum = peak_memory_from_buf_info_list(
+        baseline_peak, _ = peak_memory_from_buf_info_list(
             buf_info_list, len(self.nodes)
         )
-        initial_memory = sum(
-            fbuf.mpi_buffer.size_free for fbuf in name_to_freeable.values()
+        baseline_live_before = live_memory_before_steps_from_buf_info_list(
+            buf_info_list, len(self.nodes)
         )
 
         return ComboKernelMemoryContext(
@@ -5304,8 +5293,7 @@ class Scheduler:
             node_to_idx={node: idx for idx, node in enumerate(self.nodes)},
             baseline_peak=baseline_peak,
             running_peak=baseline_peak,
-            initial_memory=initial_memory,
-            baseline_cum=baseline_cum,
+            baseline_live_before=baseline_live_before,
         )
 
     def _try_combo_with_memory_check(
@@ -5324,13 +5312,11 @@ class Scheduler:
         `[region_start, region_end]` (the smallest range containing all
         members). Inside that window:
           - the members collapse into one combo node, all at `combo_step`,
-          - any earlier-accepted combo whose step lands in the window
-            shows up once at that step,
-          - everything else keeps its original step.
-        Outside the window, nothing moves. The threshold is checked
-        against `mem_ctx.baseline_peak` (the original graph peak) so the
-        peak cannot drift far from where we started, even after many
-        accepts.
+          - everything else is evaluated from the original schedule.
+        Outside the window, nothing moves. Earlier accepts are accounted
+        for only by `mem_ctx.running_peak`. The threshold is checked
+        against `mem_ctx.baseline_peak` (the original graph peak) so total
+        peak drift is capped.
         """
         from .memory import estimate_region_peak_memory
 
@@ -5350,8 +5336,6 @@ class Scheduler:
         )
 
         node_to_idx = mem_ctx.node_to_idx
-        accepted_step = mem_ctx.accepted_step
-        name_to_fused_node = self.name_to_fused_node
 
         # Single pass over group_nodes: build the set and find the
         # min/max baseline index together.
@@ -5368,13 +5352,10 @@ class Scheduler:
 
         # Build the post-rewrite slice for [region_start, region_end].
         local_entries: list[_LocalEntry] = []
-        seen_local: OrderedSet[BaseSchedulerNode] = OrderedSet()
         inserted_combo = False
 
         def add_local(node: BaseSchedulerNode, cur: int, baseline: int) -> None:
-            if node not in seen_local:
-                local_entries.append(_LocalEntry(cur, baseline, node))
-                seen_local.add(node)
+            local_entries.append(_LocalEntry(cur, baseline, node))
 
         for i in range(region_start, region_end + 1):
             n = self.nodes[i]
@@ -5382,13 +5363,6 @@ class Scheduler:
                 if not inserted_combo:
                     add_local(combo_node, region_start, i)
                     inserted_combo = True
-                continue
-            step = accepted_step.get(n)
-            if step is not None:
-                # Earlier combo runs in this window: add its owner once.
-                if region_start <= step <= region_end:
-                    top = name_to_fused_node.get(n.get_first_name(), n)
-                    add_local(top, step, i)
                 continue
             add_local(n, i, i)
 
@@ -5403,24 +5377,13 @@ class Scheduler:
             new_step[n] = combo_step
 
         def step_of(node: BaseSchedulerNode) -> int:
-            owner = name_to_fused_node.get(node.get_first_name(), node)
-            if owner in new_step:
-                return new_step[owner]
-            if owner in accepted_step:
-                return accepted_step[owner]
-            return node_to_idx[owner]
+            if node in new_step:
+                return new_step[node]
+            return node_to_idx[node]
 
-        # cur_memory at window entry: bytes live at the boundary just
-        # before the window. For region_start > 0 this is
-        # baseline_cum[region_start - 1] (invariant under prior
-        # horizontal fusion thanks to layer-locality). For
-        # region_start == 0 the window starts before any node has run,
-        # so live bytes = freeable input buffers (graph inputs).
-        cur_memory = (
-            mem_ctx.baseline_cum[region_start - 1]
-            if region_start > 0 and mem_ctx.baseline_cum
-            else mem_ctx.initial_memory
-        )
+        # Combo windows are evaluated independently. The entry live set is
+        # therefore the original-schedule live memory before this region starts.
+        cur_memory = mem_ctx.baseline_live_before[region_start]
 
         region_peak = estimate_region_peak_memory(
             local_nodes,
@@ -5441,7 +5404,8 @@ class Scheduler:
         limits = [float(abs_thr_gb) * (1024**3)] if abs_thr_gb is not None else []
         if pct_thr is not None:
             limits.append(pct_thr * original_peak)
-        accept = not limits or delta <= min(limits)
+        assert limits
+        accept = delta <= min(limits)
 
         pct = (100.0 * delta / original_peak) if original_peak > 0 else 0.0
         if not accept:
@@ -5490,9 +5454,6 @@ class Scheduler:
                 self, subset, mem_ctx, enable_autotune
             )
             if combo_node is not None:
-                mem_ctx.accepted_step[combo_node] = combo_step
-                for n in subset:
-                    mem_ctx.accepted_step[n] = combo_step
                 on_accept(combo_node, subset, num)
                 continue
 

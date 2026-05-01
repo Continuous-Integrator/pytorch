@@ -1034,9 +1034,9 @@ combo_kernels_pointwise_only = False
 # Memory-aware combo kernel gating.
 #   None: disable that threshold dimension
 #   0: allow no graph-peak increase
-#   value: allow peak delta up to that limit for one combo attempt
-# The accepted delta is measured against the current graph peak after earlier
-# accepted combos. When both thresholds are set, the tighter limit wins.
+#   value: allow total graph-peak delta up to that limit
+# The accepted delta is measured against the original graph peak before combo
+# kernels. When both thresholds are set, the tighter limit wins.
 combo_kernel_peak_memory_increase_gb: float | None = None  # Absolute cap in GB
 combo_kernel_peak_memory_pct_threshold: float | None = 0.05
 # Maximum baseline-index span of a single combo candidate. Groups whose

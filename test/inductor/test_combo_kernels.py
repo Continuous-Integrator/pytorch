@@ -1924,10 +1924,9 @@ class ComboKernelMetadataTests(TestCase):
 
 # Minimal scheduler doubles for direct _try_combo_with_memory_check tests.
 class _PeakMemFakeNode:
-    def __init__(self, name: str, deps=()) -> None:
+    def __init__(self, name: str) -> None:
         self.name = name
         self.scheduler = object()
-        self.unmet_dependencies = tuple(SimpleNamespace(name=dep) for dep in deps)
         self._outputs: list = []
         self.mpi_node = SimpleNamespace(pred_buffers=set())
         self.snodes: list | None = None
@@ -1937,9 +1936,6 @@ class _PeakMemFakeNode:
 
     def get_first_name(self) -> str:
         return self.name
-
-    def get_buffer_names(self):
-        return ()
 
     def get_outputs(self):
         if self.snodes is not None:
@@ -1951,16 +1947,8 @@ class _PeakMemFakeNode:
 
 
 class _PeakMemFakeBuffer:
-    def __init__(
-        self,
-        name: str,
-        defining_op: _PeakMemFakeNode,
-        succ_nodes,
-        size_alloc: int = 0,
-        size_free: int = 0,
-    ) -> None:
+    def __init__(self, name: str, succ_nodes, size_alloc: int, size_free: int) -> None:
         self.name = name
-        self.defining_op = defining_op
         self.mpi_buffer = SimpleNamespace(
             size_alloc=size_alloc,
             size_free=size_free,
@@ -2081,10 +2069,9 @@ class ComboKernelPeakMemoryTests(InductorTestCase):
         group_nodes,
         *,
         baseline_peak,
-        baseline_cum,
+        baseline_live_before,
         thresholds,
         graph_outputs=None,
-        initial_memory=0,
     ):
         from torch._inductor.scheduler import ComboKernelMemoryContext, Scheduler
 
@@ -2094,8 +2081,7 @@ class ComboKernelPeakMemoryTests(InductorTestCase):
             node_to_idx={node: idx for idx, node in enumerate(nodes)},
             baseline_peak=baseline_peak,
             running_peak=baseline_peak,
-            initial_memory=initial_memory,
-            baseline_cum=baseline_cum,
+            baseline_live_before=baseline_live_before,
         )
 
         def _fake_combo(scheduler_arg, snodes, **kwargs):
@@ -2122,35 +2108,31 @@ class ComboKernelPeakMemoryTests(InductorTestCase):
             )
 
     def test_threshold_gating(self):
-        """abs_thr/pct_thr set to 0 or a too-small bound reject; default accepts."""
+        """abs_thr/pct_thr set to 0 or a too-small bound reject."""
         ONE_MB = 1024 * 1024
         a = _PeakMemFakeNode("a")
-        consume_a = _PeakMemFakeNode("consume_a", deps=("buf_a",))
+        consume_a = _PeakMemFakeNode("consume_a")
         b = _PeakMemFakeNode("b")
-        consume_b = _PeakMemFakeNode("consume_b", deps=("buf_b",))
+        consume_b = _PeakMemFakeNode("consume_b")
         nodes = [a, consume_a, b, consume_b]
         # Each buffer is 2 MB so the combo forces a +2 MB peak delta —
         # large enough to test against MB-scale thresholds.
-        buf_a = _PeakMemFakeBuffer(
-            "buf_a", a, {consume_a}, size_alloc=2 * ONE_MB, size_free=2 * ONE_MB
-        )
-        buf_b = _PeakMemFakeBuffer(
-            "buf_b", b, {consume_b}, size_alloc=2 * ONE_MB, size_free=2 * ONE_MB
-        )
+        buf_a = _PeakMemFakeBuffer("buf_a", {consume_a}, 2 * ONE_MB, 2 * ONE_MB)
+        buf_b = _PeakMemFakeBuffer("buf_b", {consume_b}, 2 * ONE_MB, 2 * ONE_MB)
         a._outputs = [buf_a]
         b._outputs = [buf_b]
         consume_a.mpi_node.pred_buffers = {buf_a}
         consume_b.mpi_node.pred_buffers = {buf_b}
         # Baseline: a allocs (peak 2 MB), consume_a frees, b allocs (peak 2 MB),
-        # consume_b frees. baseline_cum tracks live bytes per step.
-        baseline_cum = [2 * ONE_MB, 0, 2 * ONE_MB, 0, 0]
+        # consume_b frees. baseline_live_before tracks live bytes before each step.
+        baseline_live_before = [0, 2 * ONE_MB, 0, 2 * ONE_MB, 0]
 
         def run(thresholds):
             return self._try_combo_with_fake_scheduler(
                 nodes,
                 [a, b],
                 baseline_peak=2 * ONE_MB,
-                baseline_cum=baseline_cum,
+                baseline_live_before=baseline_live_before,
                 thresholds=thresholds,
             )
 
@@ -2163,12 +2145,40 @@ class ComboKernelPeakMemoryTests(InductorTestCase):
             combo, _ = run(thresholds)
             self.assertIsNone(combo, f"{label} should reject")
 
-        # Both thresholds disabled -> accept; combo lands at step 0.
-        combo, combo_step = run(self._thresholds())
+        combo, combo_step = run(self._thresholds(abs_thr_gb=1.0))
         self.assertIsNotNone(combo)
         self.assertEqual(combo_step, 0)
 
-    @requires_gpu_and_triton
+    def test_region_carry_in_uses_post_free_boundary(self):
+        a = _PeakMemFakeNode("a")
+        consume_a = _PeakMemFakeNode("consume_a")
+        c = _PeakMemFakeNode("c")
+        d = _PeakMemFakeNode("d")
+        nodes = [a, consume_a, c, d]
+
+        buf_a = _PeakMemFakeBuffer("buf_a", {consume_a}, 100, 100)
+        buf_c = _PeakMemFakeBuffer("buf_c", set(), 100, 100)
+        buf_d = _PeakMemFakeBuffer("buf_d", set(), 100, 100)
+        a._outputs = [buf_a]
+        c._outputs = [buf_c]
+        d._outputs = [buf_d]
+        consume_a.mpi_node.pred_buffers = {buf_a}
+
+        # buf_a is freed at step 1, so a region starting at step 2 has no
+        # carry-in from buf_a.
+        baseline_live_before = [0, 100, 0, 100, 200]
+
+        combo, _ = self._try_combo_with_fake_scheduler(
+            nodes,
+            [c, d],
+            baseline_peak=200,
+            baseline_live_before=baseline_live_before,
+            thresholds=self._thresholds(abs_thr_gb=0.0, pct_thr=None),
+            graph_outputs={"buf_c", "buf_d"},
+        )
+        self.assertIsNotNone(combo)
+
+    @requires_cuda_and_triton
     def test_combo_kernel_peak_memory_wide_resnet(self):
         """A tight peak-memory threshold must measurably reduce the
         runtime CUDA peak memory of the compiled forward pass compared
@@ -2198,7 +2208,7 @@ class ComboKernelPeakMemoryTests(InductorTestCase):
 
         # Gating disabled: combos can co-allocate freely -> higher peak.
         peak_disabled = compile_and_measure_peak(
-            **self._thresholds(abs_thr_gb=None, pct_thr=None, max_distance=-1),
+            **self._thresholds(abs_thr_gb=None, pct_thr=None, max_distance=32),
         )
         # Tight abs threshold (1 MB -> ~0.001 GB): reject combos that
         # would inflate peak.
@@ -2223,10 +2233,10 @@ class ComboKernelPeakMemoryTests(InductorTestCase):
         a1, a2, a3, a100, b3, b5 = (
             _PeakMemFakeNode(n) for n in ("a1", "a2", "a3", "a100", "b3", "b5")
         )
-        bufA = _PeakMemFakeBuffer("bufA", a1, {b3}, size_alloc=100, size_free=100)
-        bufB = _PeakMemFakeBuffer("bufB", a2, {b5}, size_alloc=200, size_free=200)
-        bufC = _PeakMemFakeBuffer("bufC", a3, set(), size_alloc=50, size_free=50)
-        bufD = _PeakMemFakeBuffer("bufD", a100, set(), size_alloc=999, size_free=999)
+        bufA = _PeakMemFakeBuffer("bufA", {b3}, 100, 100)
+        bufB = _PeakMemFakeBuffer("bufB", {b5}, 200, 200)
+        bufC = _PeakMemFakeBuffer("bufC", set(), 50, 50)
+        bufD = _PeakMemFakeBuffer("bufD", set(), 999, 999)
         a1._outputs = [bufA]
         a2._outputs = [bufB]
         a3._outputs = [bufC]

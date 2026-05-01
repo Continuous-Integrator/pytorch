@@ -457,6 +457,29 @@ def peak_memory_from_buf_info_list(
     return max_memory, memories_at_nodes
 
 
+def live_memory_before_steps_from_buf_info_list(
+    buf_info_list: list[BufferInfo], num_steps: int
+) -> list[int]:
+    """Compute live bytes before each scheduler step runs."""
+    delta = [0] * (num_steps + 1)
+    cur_memory = 0
+    for bi in buf_info_list:
+        if isinstance(bi.buffer, FreeableInputBuffer):
+            cur_memory += bi.size_alloc
+        else:
+            delta[bi.start_step + 1] += bi.size_alloc
+
+        if bi.end_step != -1:
+            delta[bi.end_step + 1] -= bi.size_free
+
+    live_before = [0] * (num_steps + 1)
+    live_before[0] = cur_memory
+    for t in range(1, num_steps + 1):
+        cur_memory += delta[t]
+        live_before[t] = cur_memory
+    return live_before
+
+
 def estimate_peak_memory(
     nodes: list[BaseSchedulerNode],
     name_to_freeable_input_buf: dict[str, FreeableInputBuffer],
@@ -497,36 +520,30 @@ def estimate_region_peak_memory(
     """
     R = region_end - region_start + 1
     region = [SNodeMemory(0, 0) for _ in range(R)]
-    freed_in_window: OrderedSet[str] = OrderedSet()
 
     for node in nodes_in_window:
         s = step_of(node)
         slot = s - region_start
-        if not (0 <= slot < R):
-            continue
+        assert 0 <= slot < R
 
         for buf in node.get_outputs():
             bi = buf.mpi_buffer
             region[slot].size_alloc += bi.size_alloc
-            if buf.get_name() in graph_outputs:
+            name = buf.get_name()
+            if name in graph_outputs:
                 continue
-            succ_steps = [step_of(n) for n in bi.succ_nodes if step_of(n) >= 0]
+            succ_steps = [step_of(n) for n in bi.succ_nodes]
             if not succ_steps:
-                # No consumer: alloc and free at the defining step.
                 region[slot].size_free += bi.size_free
 
         for pb in node.mpi_node.pred_buffers:
             name = pb.get_name()
-            if name in graph_outputs or name in freed_in_window:
+            if name in graph_outputs:
                 continue
-            succ_steps = [
-                step_of(n) for n in pb.mpi_buffer.succ_nodes if step_of(n) >= 0
-            ]
-            if not succ_steps:
-                continue
+            succ_steps = [step_of(n) for n in pb.mpi_buffer.succ_nodes]
+            assert succ_steps
             if max(succ_steps) == s:
                 region[slot].size_free += pb.mpi_buffer.size_free
-                freed_in_window.add(name)
 
     cur = cur_memory
     peak = cur
