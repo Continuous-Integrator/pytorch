@@ -165,6 +165,9 @@ class LocalSource(Source):
         else:
             codegen.append_output(codegen.create_load(self.local_name))
 
+    def pycode(self, codegen: "PyCodegen") -> str:
+        return self.local_name
+
     @property
     def guard_source(self) -> GuardSource:
         return GuardSource.LOCAL
@@ -234,6 +237,9 @@ class GlobalSource(Source):
     def reconstruct(self, codegen: "PyCodegen") -> None:
         codegen.append_output(codegen.create_load_global(self.global_name, add=True))
 
+    def pycode(self, codegen: "PyCodegen") -> str:
+        return self.global_name
+
     @property
     def guard_source(self) -> GuardSource:
         return GuardSource.GLOBAL
@@ -294,6 +300,13 @@ class AttrSource(ChainedSource):
     def reconstruct(self, codegen: "PyCodegen") -> None:
         codegen(self.base)
         codegen.extend_output(codegen.create_load_attrs(self.member))
+
+    def pycode(self, codegen: "PyCodegen") -> str:
+        base = self.base.pycode(codegen)
+        if self.member.isidentifier():
+            return f"{base}.{self.member}"
+        else:
+            return f"getattr({base}, {self.member!r})"
 
     @functools.cached_property
     def _name_template(self) -> str:
@@ -694,6 +707,14 @@ class GetItemSource(ChainedSource):
             codegen.append_output(codegen.create_load_const(self.index))
         codegen.append_output(create_binary_subscr())
 
+    def pycode(self, codegen: "PyCodegen") -> str:
+        base = self.base.pycode(codegen)
+        if isinstance(self.index, Source):
+            index = self.index.pycode(codegen)
+        else:
+            index = repr(self.index)
+        return f"{base}[{index}]"
+
     def unpack_slice(self) -> slice:
         assert self.index_is_slice
         slice_class, slice_args = self.index
@@ -783,6 +804,14 @@ class DictGetItemSource(ChainedSource):
         else:
             codegen.append_output(codegen.create_load_const(self.index))
         codegen.append_output(create_binary_subscr())
+
+    def pycode(self, codegen: "PyCodegen") -> str:
+        base = self.base.pycode(codegen)
+        if isinstance(self.index, ConstDictKeySource):
+            index = self.index.pycode(codegen)
+        else:
+            index = repr(self.index)
+        return f"{base}[{index}]"
 
     @functools.cached_property
     def _name_template(self) -> str:
@@ -948,6 +977,9 @@ class OptimizerSource(ChainedSource):
 class NNModuleSource(ChainedSource):
     def reconstruct(self, codegen: "PyCodegen") -> None:
         codegen(self.base)
+
+    def pycode(self, codegen: "PyCodegen") -> str:
+        return self.base.pycode(codegen)
 
     @functools.cached_property
     def guard_source(self) -> GuardSource:

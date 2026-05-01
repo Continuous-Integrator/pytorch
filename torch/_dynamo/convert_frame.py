@@ -975,6 +975,7 @@ class DynamoOutput:
 
     tracer_output: DynamoTracerOutput
     bytecode: types.CodeType
+    pycode: list[str | None]
     last_attempt_start_time: float | None
 
     def build_guards(
@@ -1015,6 +1016,7 @@ class DynamoOutput:
             output_graph.import_sources,
             output_graph.traced_code,
             self.bytecode,
+            self.pycode,
             self.tracer_output.closure,
             argdefs,
             kwdefaults,
@@ -1043,6 +1045,7 @@ class BackendInput:
 @dataclass(frozen=True)
 class GraphRuntimeEnv:
     bytecode: types.CodeType
+    pycode: list[str | None]
     import_sources: dict[str, str]
     used_globals: dict[str, Any]
     closure: tuple[Any, ...] | None
@@ -1056,6 +1059,7 @@ class GraphRuntimeEnv:
         compiled_fn: Callable[..., Any],
         *,
         extra_globals: dict[str, Any] | None = None,
+        use_python_codegen: bool = False,
     ) -> Callable[..., Any]:
         import_sources = {
             alias: importlib.import_module(module_name)
@@ -1071,8 +1075,13 @@ class GraphRuntimeEnv:
         # check that all external references are available
         self._check_external_refs(f_globals)
 
+        if use_python_codegen:
+            bytecode = self._build_python_wrapper(f_globals, backend_id)
+        else:
+            bytecode = self.bytecode
+
         fn = types.FunctionType(
-            self.bytecode,
+            bytecode,
             f_globals,
             closure=self.closure,
             argdefs=self.argdefs,
@@ -1080,6 +1089,38 @@ class GraphRuntimeEnv:
         if self.kwdefaults:
             fn.__kwdefaults__ = self.kwdefaults
         return fn
+
+    def _build_python_wrapper(
+        self, f_globals: dict[str, Any], backend_id: str
+    ) -> types.CodeType:
+        """Build a Python code object from the generated pycode strings."""
+        # Filter out None values and join the pycode strings
+        pycode_parts = [p for p in self.pycode if p is not None]
+        if not pycode_parts:
+            raise RuntimeError("No Python code generated from Dynamo.")
+        # Get the original code object to extract signature info
+        orig_code = self.bytecode
+        argcount = orig_code.co_argcount
+        varnames = orig_code.co_varnames[:argcount]
+        argnames = ", ".join(varnames)
+
+        # Build the function source
+        func_lines = ["def __generate_func__():"]
+        func_lines.append(f"    def __dynamo_func__({argnames}):")
+        for part in pycode_parts:
+            for line in part.split("\n"):
+                func_lines.append(f"        {line}")
+        func_lines.append("        return __ret")
+        func_lines.append("    return __dynamo_func__")
+        func_lines.append("__dynamo_generated_func__ = __generate_func__()")
+
+        func_source = "\n".join(func_lines)
+
+        # Execute to get the function, then extract its code
+        namespace: dict[str, Any] = f_globals.copy()
+        exec(func_source, namespace)
+        func = namespace["__dynamo_generated_func__"]
+        return func.__code__
 
     def _check_external_refs(self, f_globals: dict[str, Any]) -> None:
         # pyrefly: ignore [implicit-any]
@@ -1119,6 +1160,7 @@ class GraphCaptureOutput:
     import_sources: dict[str, str]
     traced_code: list[CodeType]
     bytecode: CodeType
+    pycode: list[str | None]
     closure: tuple[Any, ...] | None
     argdefs: tuple[Any, ...] | None
     kwdefaults: dict[str, Any] | None
@@ -1171,6 +1213,7 @@ class GraphCaptureOutput:
 
         return GraphRuntimeEnv(
             bytecode=self.bytecode,
+            pycode=self.pycode,
             import_sources=self.import_sources,
             used_globals=used_globals,
             closure=self.closure,
@@ -1220,6 +1263,7 @@ class CaptureOutput:
         *,
         compiled_fn: Callable[..., Any] | None = None,
         extra_globals: dict[str, Any] | None = None,
+        use_python_codegen: bool = False,
     ) -> Callable[..., Any]:
         runtime_env = self.graph_capture_output.get_runtime_env()
         assert self.backend_input is not None
@@ -1229,6 +1273,7 @@ class CaptureOutput:
             backend_id,
             compiled_fn,
             extra_globals=extra_globals,
+            use_python_codegen=use_python_codegen,
         )
 
 
@@ -1400,18 +1445,19 @@ def _fullgraph_capture_frame(
         return gm
 
     try:
-        dynamo_output = compile_frame(
-            frame.code,
-            frame.globals,
-            frame.locals,
-            frame.builtins,
-            frame.closure,
-            compiler_fn=fullgraph_compiler,
-            export=_is_export_deprecated_do_not_use,
-            export_constraints=constraints,  # type: ignore[arg-type]
-            one_graph=True,
-            restart_reasons=set(),
-        )
+        with torch._dynamo.config.patch(generate_pycode=True):
+            dynamo_output = compile_frame(
+                frame.code,
+                frame.globals,
+                frame.locals,
+                frame.builtins,
+                frame.closure,
+                compiler_fn=fullgraph_compiler,
+                export=_is_export_deprecated_do_not_use,
+                export_constraints=constraints,  # type: ignore[arg-type]
+                one_graph=True,
+                restart_reasons=set(),
+            )
         # https://github.com/pytorch/pytorch/blob/main/torch/_dynamo/eval_frame.py#L831
     except (Unsupported, UncapturedHigherOrderOpError, UserError) as e:
         augment_exc_message(e)
@@ -1515,9 +1561,11 @@ def compile_frame(  # type: ignore[return]
             with dynamo_timed(f"compile_attempt_{attempt}", log_pt2_compile_event=True):
                 bytecode, tracer_output = transform_code_object(code, transform)
                 assert tracer_output is not None
+                assert tracer_output.output_graph is not None
                 return DynamoOutput(
                     tracer_output=tracer_output,
                     bytecode=bytecode,
+                    pycode=tracer_output.output_graph.output_pycode,
                     last_attempt_start_time=last_attempt_start_time,
                 )
         except exc.RestartAnalysis as e:

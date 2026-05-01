@@ -408,6 +408,10 @@ class GraphArg:
     def reconstruct(self, codegen: "PyCodegen") -> None:
         codegen(self.source)
 
+    def pycode(self, codegen) -> str:
+        assert self.source is not None
+        return self.source.pycode(codegen)
+
     def erase(self) -> None:
         self._example = None
         self.example_strong_ref = None

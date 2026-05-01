@@ -437,6 +437,9 @@ its type to `common_constant_types`.
         # bool inherits nb_float from int via slot inheritance.
         return ConstantVariable.create(float(self.value))
 
+    def pycode(self, codegen) -> str:
+        return repr(self.value)
+
 
 CONSTANT_VARIABLE_NONE = ConstantVariable(None)
 CONSTANT_VARIABLE_TRUE = ConstantVariable(True)
