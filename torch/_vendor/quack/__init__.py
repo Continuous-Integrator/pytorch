@@ -1,63 +1,28 @@
-"""Re-export the vendored quack package under the torch._vendor.quack namespace.
+"""Vendored subset of the quack library (https://github.com/Dao-AILab/quack).
 
-The source lives at ``third_party/quack/quack`` (as a git submodule). This shim
-exposes it without requiring quack to be installed separately, and forwards
-submodule imports so that ``torch._vendor.quack.X`` and ``quack.X`` always
-refer to the same module object.
+Upstream SHA: 6bceaad2dba3b979b898824b146b1bb2816fc483 (quack 0.4.0)
+
+Only the modules required by torch._native.ops.norm.rmsnorm_impl are vendored.
+Imports are rewritten to be package-relative so this copy is independent of any
+``quack`` top-level package that may be installed via pip. Custom op namespaces
+are renamed from ``quack::`` to ``torch_vendor_quack::`` for the same reason.
 """
-import importlib
-import importlib.abc
-import importlib.machinery
-import os
-import sys
+__version__ = "0.4.0"
 
-_QUACK_PARENT = os.path.normpath(
-    os.path.join(
-        os.path.dirname(os.path.abspath(__file__)),
-        "..",
-        "..",
-        "..",
-        "third_party",
-        "quack",
-    )
-)
+# Two CuTeDSL workarounds, both must run before the first cute.compile call:
+#   - cutlass#3161: duplicate .text section flags break MCJIT in multi-process
+#     loads (see cute_dsl_elf_fix).
+#   - cutlass#3062: ir.Context spawns LLVM thread pools that leak across
+#     compiles, eventually exhausting pthreads (see cute_dsl_mlir_threading).
+from . import cute_dsl_elf_fix
+from . import cute_dsl_mlir_threading
 
-# quack's own __init__.py does `import quack.cute_dsl_elf_fix` etc., so the
-# top-level "quack" name must be resolvable via sys.path.
-if _QUACK_PARENT not in sys.path:
-    sys.path.insert(0, _QUACK_PARENT)
+cute_dsl_elf_fix.patch()
+cute_dsl_mlir_threading.patch()
+
+from .rmsnorm import rmsnorm  # noqa: E402
 
 
-class _QuackAliasFinder(importlib.abc.MetaPathFinder, importlib.abc.Loader):
-    """Forwards torch._vendor.quack[.X] imports to quack[.X]."""
-
-    _PREFIX = __name__ + "."
-    _TARGET_PREFIX = "quack."
-
-    def find_spec(self, fullname, path=None, target=None):
-        if not fullname.startswith(self._PREFIX):
-            return None
-        return importlib.machinery.ModuleSpec(fullname, self)
-
-    def create_module(self, spec):
-        # Let Python create a placeholder module; we swap it for the real one
-        # in exec_module.
-        return None
-
-    def exec_module(self, module):
-        target = self._TARGET_PREFIX + module.__name__[len(self._PREFIX) :]
-        sys.modules[module.__name__] = importlib.import_module(target)
-
-
-if not any(isinstance(f, _QuackAliasFinder) for f in sys.meta_path):
-    # Insert before PathFinder so torch._vendor.quack.X is resolved by us,
-    # not by Python's path-based import (which would otherwise find quack's
-    # source via the __path__ inherited from the quack module and execute
-    # submodules a second time under a different name).
-    sys.meta_path.insert(0, _QuackAliasFinder())
-
-import quack as _quack  # noqa: E402
-
-# Replace this module with quack so attribute access on torch._vendor.quack
-# transparently resolves to quack's attributes.
-sys.modules[__name__] = _quack
+__all__ = [
+    "rmsnorm",
+]
