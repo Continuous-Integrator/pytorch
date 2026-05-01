@@ -2608,7 +2608,7 @@ def compile(
     name: str | None = None,
     disable: builtins.bool = False,
     recompile_limit: builtins.int | None = None,
-    isolate_recompiles: builtins.bool = False,
+    isolated_region: builtins.bool = False,
 ) -> (
     _Callable[[_Callable[_InputT, _RetT]], _Callable[_InputT, _RetT]]
     | _Callable[_InputT, _RetT]
@@ -2705,11 +2705,11 @@ def compile(
         ``torch.compile()`` call before falling back to eager. If None (default), uses
         the global ``torch._dynamo.config.recompile_limit`` (default 8). With
         ``fullgraph=True``, exceeding the limit raises ``FailOnRecompileLimitHit``.
-       isolate_recompiles (bool): If True, this ``torch.compile()`` call tracks
+       isolated_region (bool): If True, this ``torch.compile()`` call tracks
         recompilations independently. By default, all ``torch.compile()`` calls on the
         same function share a single set of compiled entries, so one call's
         recompilations count against every other call's limit. With
-        ``isolate_recompiles=True``, each call gets its own isolated set of entries.
+        ``isolated_region=True``, each call gets its own isolated set of entries.
         Lookups for an isolated compile call will still fall back to entries from
         non-isolated compile calls (BC-friendly reuse), but new compilations are
         stored separately. ``recompile_limit`` is checked per-region;
@@ -2764,7 +2764,7 @@ def compile(
                 name=name,
                 disable=disable,
                 recompile_limit=recompile_limit,
-                isolate_recompiles=isolate_recompiles,
+                isolated_region=isolated_region,
             )
 
         return fn
@@ -2822,7 +2822,7 @@ def compile(
         disable=disable,
         guard_filter_fn=guard_filter_fn,
         recompile_limit=recompile_limit,
-        isolate_recompiles=isolate_recompiles,
+        isolated_region=isolated_region,
     )(model)  # type: ignore[return-value]
 
 
