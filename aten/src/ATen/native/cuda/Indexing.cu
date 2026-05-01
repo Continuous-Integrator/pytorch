@@ -515,11 +515,17 @@ public:
 static ReduceMultiply reduce_multiply;
 
 class ReduceAdd {
-public:
+ public:
   template <typename scalar_t>
   constexpr C10_DEVICE void operator() (scalar_t* self_data_start, int64_t index, int64_t numel, const scalar_t * src_data) const {
-#if (defined(__gfx942__) || defined(__gfx950__))
-    opportunistic_fastAtomicAdd(self_data_start, index, numel, *src_data);
+#if defined(USE_ROCM)
+    // TODO: this check is too coarse, revisit, we should only be checking for
+    //       the availability of the builtins required by the implementation, at
+    //       most.
+    if(__builtin_amdgcn_processor_is("gfx942") ||
+       __builtin_amdgcn_processor_is("gfx950"))
+      return opportunistic_fastAtomicAdd(self_data_start, index, numel, *src_data);
+    fastAtomicAdd(self_data_start, index, numel, *src_data, true);
 #else
     fastAtomicAdd(self_data_start, index, numel, *src_data, true);
 #endif
@@ -1527,6 +1533,27 @@ void index_reduce_func_cuda_impl(
 
 TORCH_IMPL_FUNC(index_add_cuda_out)
 (const Tensor& self, int64_t dim, const Tensor& index, const Tensor& source, const Scalar& alpha, const Tensor& result) {
+#if defined(__HIP_PLATFORM_AMD__)
+  // On AMD MI350X, scatter_add_ outperforms the indexFuncLargeIndex
+  // atomicAdd path across all measured source sizes (>=1.0x at 1K rising
+  // to ~2x for uniform / ~5x for Zipf-distributed indices). Always
+  // redirect for the matching shape; see bench_index_add_powerlaw.py.
+  // When deterministicAlgorithms() is enabled, fall through to
+  // index_add_cuda_impl so its index_put_ deterministic path is honored —
+  // scatter_add_ on HIP uses non-deterministic atomicAdd.
+  if (alpha.equal(1) && dim == 0 && self.dim() == 2 &&
+      !globalContext().deterministicAlgorithms()) {
+    // Mirror index_add_cuda_impl's structured-kernel pre-copy: for
+    // out-of-place / index_add(out=...) the result is uninitialized
+    // and must be seeded with self before accumulating.
+    if (!result.is_same(self)) {
+      result.copy_(self);
+    }
+    auto expanded_index = index.to(at::kLong).unsqueeze(1).expand_as(source);
+    result.scatter_add_(dim, expanded_index, source);
+    return;
+  }
+#endif
   index_add_cuda_impl(self, dim, index, source, alpha, result);
 }
 
