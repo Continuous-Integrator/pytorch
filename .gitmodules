@@ -132,6 +132,3 @@
 [submodule "third_party/mslk"]
 	path = third_party/mslk
 	url = https://github.com/meta-pytorch/MSLK.git
-[submodule "third_party/quack"]
-	path = third_party/quack
-	url = https://github.com/Dao-AILab/quack.git
