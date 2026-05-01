@@ -711,6 +711,22 @@ class GetItemTests(torch._dynamo.test_case.TestCase):
         x = torch.randn(4)
         self.assertEqual(fn(x), self._compile(fn, x))
 
+    def test_getattr_dict_subscript(self):
+        """obj.__dict__["key"] → GetAttrVariable → DunderDictVariable."""
+
+        class Model(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.linear = torch.nn.Linear(4, 4)
+
+            def forward(self, x):
+                return self.__dict__["_modules"]["linear"](x)
+
+        model = Model()
+        x = torch.randn(4)
+        compiled = torch.compile(model, backend="eager")
+        self.assertEqual(model(x), compiled(x))
+
     # --- TorchScriptObjectVariable ---
 
     def test_opaque_object_getitem(self):

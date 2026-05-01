@@ -69,6 +69,7 @@ from ..utils import (
 )
 from .base import AsPythonConstantNotImplementedError, NO_SUCH_SUBOBJ, VariableTracker
 from .constant import ConstantVariable
+from .dicts import DunderDictVariable
 from .functions import NestedUserFunctionVariable, UserFunctionVariable
 from .user_defined import call_random_fn, is_standard_setattr, UserDefinedObjectVariable
 
@@ -1346,6 +1347,16 @@ class GetAttrVariable(VariableTracker):
         kwargs: dict[str, VariableTracker],
     ) -> VariableTracker:
         return self.obj.call_method(tx, self.name, list(args), kwargs)
+
+    def mp_subscript_impl(
+        self,
+        tx: "InstructionTranslator",
+        key: VariableTracker,
+    ) -> VariableTracker:
+        if self.name == "__dict__":
+            dunder = DunderDictVariable.create(tx, self.obj)
+            return dunder.mp_subscript_impl(tx, key)
+        return super().mp_subscript_impl(tx, key)
 
 
 class MethodWrapperVariable(VariableTracker):
