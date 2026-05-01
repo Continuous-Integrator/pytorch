@@ -35,6 +35,7 @@ import re
 import sys
 import time
 import types
+import typing
 import weakref
 from collections.abc import Callable, MutableMapping
 from types import ModuleType
@@ -4381,7 +4382,16 @@ class SourcelessBuilder:
             return torch._dynamo.variables.higher_order_ops.FlexAttentionBackwardHighOrderVariable(
                 value
             )
-        elif isinstance(value, (types.GenericAlias, types.UnionType)):
+        elif isinstance(
+            value,
+            (types.GenericAlias, types.UnionType, typing._GenericAlias),  # type: ignore[attr-defined]
+        ):
+            # types.GenericAlias: PEP 585 (e.g. list[int])
+            # types.UnionType:    PEP 604 (e.g. int | None)
+            # typing._GenericAlias: subscripted typing/Generic[T] classes
+            #   (e.g. typing.List[int], CallInfo[None] for Generic[T] dataclasses).
+            #   Surfaced after the pytest 7 -> 9 bump because pytest 9 added an
+            #   addSubTest hook in _pytest.unittest that calls CallInfo[None](...).
             return TypingVariable(value)
         elif is_namedtuple(value):
             output = [
