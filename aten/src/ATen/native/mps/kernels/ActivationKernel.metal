@@ -227,3 +227,80 @@ struct silu_backward_functor {
 REGISTER_BINARY_OP(silu_backward, float, float);
 REGISTER_BINARY_OP(silu_backward, half, half);
 REGISTER_BINARY_OP(silu_backward, bfloat, bfloat);
+
+// ================================================================
+//  GELU forward and backward kernels
+//  All math done in float32 regardless of input dtype for precision.
+//
+//  Exact (none):
+//    fwd:  x * 0.5 * (1 + erf(x / sqrt(2)))
+//    bwd:  dy * (cdf(x) + x * pdf(x))
+//
+//  Tanh approximation:
+//    fwd:  0.5 * x * (1 + tanh(beta*(x + kappa*x^3)))
+//    bwd:  dy * (0.5*(1+t) + 0.5*x*(1-t^2)*beta*(1+3*kappa*x^2))
+//          where t = tanh(beta*(x+kappa*x^3))
+// ================================================================
+
+struct gelu_none_functor {
+  template <typename T>
+  inline T operator()(const T x) {
+    constexpr float kAlpha = 0.7071067811865476f; // 1/sqrt(2)
+    float xf = float(x);
+    return static_cast<T>(xf * 0.5f * (1.0f + erf(xf * kAlpha)));
+  }
+};
+
+REGISTER_UNARY_OP(gelu_none, float, float);
+REGISTER_UNARY_OP(gelu_none, half, half);
+REGISTER_UNARY_OP(gelu_none, bfloat, bfloat);
+
+struct gelu_tanh_functor {
+  template <typename T>
+  inline T operator()(const T x) {
+    constexpr float kBeta = 0.7978845608028654f; // sqrt(2/pi)
+    constexpr float kKappa = 0.044715f;
+    float xf = float(x);
+    float inner = kBeta * (xf + kKappa * xf * xf * xf);
+    return static_cast<T>(0.5f * xf * (1.0f + tanh(inner)));
+  }
+};
+
+REGISTER_UNARY_OP(gelu_tanh, float, float);
+REGISTER_UNARY_OP(gelu_tanh, half, half);
+REGISTER_UNARY_OP(gelu_tanh, bfloat, bfloat);
+
+struct gelu_backward_none_functor {
+  template <typename T>
+  inline T operator()(const T grad_output, const T x) {
+    constexpr float kAlpha = 0.7071067811865476f; // 1/sqrt(2)
+    constexpr float kBeta = 0.3989422804014327f; // 1/sqrt(2*pi)
+    float xf = float(x);
+    float cdf = 0.5f * (1.0f + erf(xf * kAlpha));
+    float pdf = exp(-0.5f * xf * xf) * kBeta;
+    return static_cast<T>(float(grad_output) * (cdf + xf * pdf));
+  }
+};
+
+REGISTER_BINARY_OP(gelu_backward_none, float, float);
+REGISTER_BINARY_OP(gelu_backward_none, half, half);
+REGISTER_BINARY_OP(gelu_backward_none, bfloat, bfloat);
+
+struct gelu_backward_tanh_functor {
+  template <typename T>
+  inline T operator()(const T grad_output, const T x) {
+    constexpr float kBeta = 0.7978845608028654f; // sqrt(2/pi)
+    constexpr float kKappa = 0.044715f;
+    float xf = float(x);
+    float inner = kBeta * (xf + kKappa * xf * xf * xf);
+    float t = tanh(inner);
+    float left_d = 0.5f * (1.0f + t);
+    float right_d =
+        0.5f * xf * (1.0f - t * t) * kBeta * (1.0f + 3.0f * kKappa * xf * xf);
+    return static_cast<T>(float(grad_output) * (left_d + right_d));
+  }
+};
+
+REGISTER_BINARY_OP(gelu_backward_tanh, float, float);
+REGISTER_BINARY_OP(gelu_backward_tanh, half, half);
+REGISTER_BINARY_OP(gelu_backward_tanh, bfloat, bfloat);

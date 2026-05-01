@@ -7079,6 +7079,37 @@ class TestMPS(TestCaseMPS):
 
         helper((2, 8, 4, 5))
 
+
+    def test_gelu_metal(self):
+        """Verify Metal GELU kernels for both approximations, all dtypes, fwd+bwd."""
+        import torch.nn.functional as F
+
+        def run(shape, dtype, approximate):
+            tol = 1e-3 if dtype == torch.float32 else 5e-2
+            cpu_x = torch.randn(shape, dtype=torch.float32)
+            xc = cpu_x.clone().requires_grad_(True)
+            yc = F.gelu(xc, approximate=approximate)
+            dyc = torch.randn_like(yc)
+            yc.backward(dyc)
+
+            x_mps = cpu_x.to(device='mps', dtype=dtype).requires_grad_(True)
+            ym = F.gelu(x_mps, approximate=approximate)
+            ym.backward(dyc.to(device='mps', dtype=dtype))
+
+            fwd_err = (ym.float().cpu() - yc.detach()).abs().max().item()
+            bwd_err = (x_mps.grad.float().cpu() - xc.grad).abs().max().item()
+            self.assertLess(fwd_err, tol,
+                f"GELU fwd err {fwd_err:.2e} for approx={approximate} dtype={dtype} shape={shape}")
+            self.assertLess(bwd_err, tol,
+                f"GELU bwd err {bwd_err:.2e} for approx={approximate} dtype={dtype} shape={shape}")
+
+        for approximate in ['none', 'tanh']:
+            for dtype in [torch.float32, torch.float16, torch.bfloat16]:
+                for shape in [(4,), (4, 3), (5, 4, 3), (2, 8, 4, 5)]:
+                    run(shape, dtype, approximate)
+                # non-contiguous
+                run((8, 8), dtype, approximate)
+
     # Test hardtanh
     def test_hardtanh(self):
         def helper(shape, min_val, max_val, inplace=False):
