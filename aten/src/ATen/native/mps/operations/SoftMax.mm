@@ -239,8 +239,7 @@ TORCH_IMPL_FUNC(softmax_backward_mps_out)
     const int N_READS = 4;
     int64_t axis_size = output.size(dim_);
     int64_t outer_size = output.numel() / axis_size;
-    int64_t tg_size =
-        std::min(static_cast<int64_t>((axis_size + N_READS - 1) / N_READS), static_cast<int64_t>(1024));
+    int64_t tg_size = std::min(static_cast<int64_t>((axis_size + N_READS - 1) / N_READS), static_cast<int64_t>(1024));
     auto params = makeBackwardParams(grad, output, dim_);
 
     // Split backward across threadgroups when few rows leave the GPU underutilized.
@@ -266,8 +265,7 @@ TORCH_IMPL_FUNC(softmax_backward_mps_out)
         MTLSize threadsPerGroup = MTLSizeMake(tg_size, 1, 1);
 
         if (use_two_pass) {
-          auto dot_kernel =
-              mps::lib.getPipelineStateForFunc("softmax_backward_2pass_dot_" + metalType);
+          auto dot_kernel = mps::lib.getPipelineStateForFunc("softmax_backward_2pass_dot_" + metalType);
           [encoder setComputePipelineState:dot_kernel];
           mps::mtl_setArgs(encoder, grad, output, partial_sums, params);
           MTLSize numGroups = MTLSizeMake(static_cast<NSUInteger>(params.num_chunks) * outer_size, 1, 1);
@@ -275,8 +273,7 @@ TORCH_IMPL_FUNC(softmax_backward_mps_out)
 
           [encoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
 
-          auto grad_kernel =
-              mps::lib.getPipelineStateForFunc("softmax_backward_2pass_grad_" + metalType);
+          auto grad_kernel = mps::lib.getPipelineStateForFunc("softmax_backward_2pass_grad_" + metalType);
           [encoder setComputePipelineState:grad_kernel];
           mps::mtl_setArgs(encoder, grad, output, grad_input, partial_sums, params);
           [encoder dispatchThreadgroups:numGroups threadsPerThreadgroup:threadsPerGroup];

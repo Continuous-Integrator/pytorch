@@ -74,7 +74,10 @@ kernel void softmax_forward_single_row(
   if (base + N_READS <= axis_size) {
     if (contiguous) {
       float4 v = load_vec4(x + base);
-      vals[0] = v.x; vals[1] = v.y; vals[2] = v.z; vals[3] = v.w;
+      vals[0] = v.x;
+      vals[1] = v.y;
+      vals[2] = v.z;
+      vals[3] = v.w;
     } else {
       for (int i = 0; i < N_READS; i++)
         vals[i] = float(x[(base + i) * sa]);
@@ -129,9 +132,11 @@ kernel void softmax_forward_single_row(
   threadgroup_barrier(mem_flags::mem_threadgroup);
   float inv_sum = 1.0f / shared[simdgroup_size];
 
-  // out is always contiguous (output + tg_id * axis_size), so always use store_vec4.
+  // out is always contiguous (output + tg_id * axis_size), so always use
+  // store_vec4.
   if (base + N_READS <= axis_size) {
-    store_vec4(out + base, float4(vals[0], vals[1], vals[2], vals[3]) * inv_sum);
+    store_vec4(
+        out + base, float4(vals[0], vals[1], vals[2], vals[3]) * inv_sum);
   } else {
     for (int i = 0; i < N_READS; i++) {
       if (base + i < axis_size)
@@ -168,14 +173,19 @@ kernel void softmax_forward_looped(
       if (contiguous) {
         v = load_vec4(x + base);
       } else {
-        v = float4(x[base * sa], x[(base + 1) * sa],
-                   x[(base + 2) * sa], x[(base + 3) * sa]);
+        v = float4(
+            x[base * sa],
+            x[(base + 1) * sa],
+            x[(base + 2) * sa],
+            x[(base + 3) * sa]);
       }
       float chunk_max = fmax(fmax(v.x, v.y), fmax(v.z, v.w));
       float new_max = fmax(local_max, chunk_max);
       local_sum = local_sum * metal::precise::exp(local_max - new_max) +
-          metal::precise::exp(v.x - new_max) + metal::precise::exp(v.y - new_max) +
-          metal::precise::exp(v.z - new_max) + metal::precise::exp(v.w - new_max);
+          metal::precise::exp(v.x - new_max) +
+          metal::precise::exp(v.y - new_max) +
+          metal::precise::exp(v.z - new_max) +
+          metal::precise::exp(v.w - new_max);
       local_max = new_max;
     } else {
       for (uint i = base; i < min(base + uint(N_READS), axis_size); i++) {
@@ -220,13 +230,15 @@ kernel void softmax_forward_looped(
     uint base = r + tid * N_READS;
     if (base + N_READS <= axis_size) {
       if (contiguous) {
-        store_vec4(out + base,
-                   metal::precise::exp(load_vec4(x + base) - row_max) * inv_sum);
+        store_vec4(
+            out + base,
+            metal::precise::exp(load_vec4(x + base) - row_max) * inv_sum);
       } else {
 #pragma unroll
         for (int i = 0; i < N_READS; i++)
-          out[base + i] =
-              static_cast<T>(metal::precise::exp(float(x[(base + i) * sa]) - row_max) * inv_sum);
+          out[base + i] = static_cast<T>(
+              metal::precise::exp(float(x[(base + i) * sa]) - row_max) *
+              inv_sum);
       }
     } else {
       for (uint i = base; i < min(base + uint(N_READS), axis_size); i++) {
@@ -268,8 +280,14 @@ kernel void softmax_backward_single_row(
     if (contiguous) {
       float4 dy_v = load_vec4(dy + base);
       float4 y_v = load_vec4(y + base);
-      dy_vals[0] = dy_v.x; dy_vals[1] = dy_v.y; dy_vals[2] = dy_v.z; dy_vals[3] = dy_v.w;
-      y_vals[0] = y_v.x;   y_vals[1] = y_v.y;   y_vals[2] = y_v.z;   y_vals[3] = y_v.w;
+      dy_vals[0] = dy_v.x;
+      dy_vals[1] = dy_v.y;
+      dy_vals[2] = dy_v.z;
+      dy_vals[3] = dy_v.w;
+      y_vals[0] = y_v.x;
+      y_vals[1] = y_v.y;
+      y_vals[2] = y_v.z;
+      y_vals[3] = y_v.w;
       local_dot = dot(dy_v, y_v);
     } else {
       for (int i = 0; i < N_READS; i++) {
@@ -281,7 +299,8 @@ kernel void softmax_backward_single_row(
   } else {
     for (int i = 0; i < N_READS; i++) {
       if (base + i < axis_size) {
-        dy_vals[i] = contiguous ? float(dy[base + i]) : float(dy[(base + i) * sa]);
+        dy_vals[i] =
+            contiguous ? float(dy[base + i]) : float(dy[(base + i) * sa]);
         y_vals[i] = contiguous ? float(y[base + i]) : float(y[(base + i) * sb]);
         local_dot += dy_vals[i] * y_vals[i];
       }
@@ -305,11 +324,13 @@ kernel void softmax_backward_single_row(
   threadgroup_barrier(mem_flags::mem_threadgroup);
   float dot_sum = shared_dot[simdgroup_size];
 
-  // dx is always contiguous (grad_input + tg_id * axis_size), so always use store_vec4.
+  // dx is always contiguous (grad_input + tg_id * axis_size), so always use
+  // store_vec4.
   if (base + N_READS <= axis_size) {
-    store_vec4(dx + base,
-               float4(y_vals[0], y_vals[1], y_vals[2], y_vals[3]) *
-               (float4(dy_vals[0], dy_vals[1], dy_vals[2], dy_vals[3]) - dot_sum));
+    store_vec4(
+        dx + base,
+        float4(y_vals[0], y_vals[1], y_vals[2], y_vals[3]) *
+            (float4(dy_vals[0], dy_vals[1], dy_vals[2], dy_vals[3]) - dot_sum));
   } else {
     for (int i = 0; i < N_READS; i++) {
       if (base + i < axis_size)
@@ -347,16 +368,22 @@ kernel void softmax_backward_looped(
       if (contiguous) {
         local_dot += dot(load_vec4(dy + base), load_vec4(y + base));
       } else {
-        float4 dy_v = float4(dy[base * sa], dy[(base + 1) * sa],
-                              dy[(base + 2) * sa], dy[(base + 3) * sa]);
-        float4 y_v = float4(y[base * sb], y[(base + 1) * sb],
-                             y[(base + 2) * sb], y[(base + 3) * sb]);
+        float4 dy_v = float4(
+            dy[base * sa],
+            dy[(base + 1) * sa],
+            dy[(base + 2) * sa],
+            dy[(base + 3) * sa]);
+        float4 y_v = float4(
+            y[base * sb],
+            y[(base + 1) * sb],
+            y[(base + 2) * sb],
+            y[(base + 3) * sb]);
         local_dot += dot(dy_v, y_v);
       }
     } else {
       for (uint i = base; i < min(base + uint(N_READS), axis_size); i++)
         local_dot += (contiguous ? float(dy[i]) : float(dy[i * sa])) *
-                     (contiguous ? float(y[i]) : float(y[i * sb]));
+            (contiguous ? float(y[i]) : float(y[i * sb]));
     }
   }
 
@@ -385,7 +412,8 @@ kernel void softmax_backward_looped(
 #pragma unroll
         for (int i = 0; i < N_READS; i++)
           dx[base + i] = static_cast<T>(
-              float(y[(base + i) * sb]) * (float(dy[(base + i) * sa]) - dot_sum));
+              float(y[(base + i) * sb]) *
+              (float(dy[(base + i) * sa]) - dot_sum));
       }
     } else {
       for (uint i = base; i < min(base + uint(N_READS), axis_size); i++) {
@@ -399,7 +427,8 @@ kernel void softmax_backward_looped(
 
 // Two-pass backward for low-occupancy cases (few rows, large axis).
 // Phase 1: each threadgroup computes a partial dot(dy, y) over its chunk.
-// Phase 2: each threadgroup sums partial dots, then computes grad_input for its chunk.
+// Phase 2: each threadgroup sums partial dots, then computes grad_input for its
+// chunk.
 
 template <typename T>
 kernel void softmax_backward_2pass_dot(
@@ -434,16 +463,22 @@ kernel void softmax_backward_2pass_dot(
       if (contiguous) {
         local_dot += dot(load_vec4(dy + base), load_vec4(y + base));
       } else {
-        float4 dy_v = float4(dy[base * sa], dy[(base + 1) * sa],
-                              dy[(base + 2) * sa], dy[(base + 3) * sa]);
-        float4 y_v = float4(y[base * sb], y[(base + 1) * sb],
-                             y[(base + 2) * sb], y[(base + 3) * sb]);
+        float4 dy_v = float4(
+            dy[base * sa],
+            dy[(base + 1) * sa],
+            dy[(base + 2) * sa],
+            dy[(base + 3) * sa]);
+        float4 y_v = float4(
+            y[base * sb],
+            y[(base + 1) * sb],
+            y[(base + 2) * sb],
+            y[(base + 3) * sb]);
         local_dot += dot(dy_v, y_v);
       }
     } else {
       for (uint i = base; i < min(base + uint(N_READS), end); i++)
         local_dot += (contiguous ? float(dy[i]) : float(dy[i * sa])) *
-                     (contiguous ? float(y[i]) : float(y[i * sb]));
+            (contiguous ? float(y[i]) : float(y[i * sb]));
     }
   }
 
@@ -501,7 +536,8 @@ kernel void softmax_backward_2pass_grad(
 #pragma unroll
         for (int i = 0; i < N_READS; i++)
           dx[base + i] = static_cast<T>(
-              float(y[(base + i) * sb]) * (float(dy[(base + i) * sa]) - dot_sum));
+              float(y[(base + i) * sb]) *
+              (float(dy[(base + i) * sa]) - dot_sum));
       }
     } else {
       for (uint i = base; i < min(base + uint(N_READS), end); i++) {
@@ -576,23 +612,24 @@ kernel void softmax_backward_2pass_grad(
       uint simd_lane_id [[thread_index_in_simdgroup]],                         \
       uint simdgroup_id [[simdgroup_index_in_threadgroup]]);
 
-#define instantiate_softmax_backward_2pass_grad(DTYPE)                          \
-  template [[host_name("softmax_backward_2pass_grad_" #DTYPE)]] [[kernel]] void \
-  softmax_backward_2pass_grad<DTYPE>(                                           \
-      device const DTYPE* grad_output [[buffer(0)]],                            \
-      device const DTYPE* output [[buffer(1)]],                                 \
-      device DTYPE* grad_input [[buffer(2)]],                                   \
-      device const float* partial_sums [[buffer(3)]],                           \
-      constant SoftmaxParams& params [[buffer(4)]],                             \
-      uint tg_id [[threadgroup_position_in_grid]],                              \
-      uint tid [[thread_position_in_threadgroup]],                              \
-      uint lsize [[threads_per_threadgroup]]);
+#define instantiate_softmax_backward_2pass_grad(DTYPE)                     \
+  template                                                                 \
+      [[host_name("softmax_backward_2pass_grad_" #DTYPE)]] [[kernel]] void \
+      softmax_backward_2pass_grad<DTYPE>(                                  \
+          device const DTYPE* grad_output [[buffer(0)]],                   \
+          device const DTYPE* output [[buffer(1)]],                        \
+          device DTYPE* grad_input [[buffer(2)]],                          \
+          device const float* partial_sums [[buffer(3)]],                  \
+          constant SoftmaxParams& params [[buffer(4)]],                    \
+          uint tg_id [[threadgroup_position_in_grid]],                     \
+          uint tid [[thread_position_in_threadgroup]],                     \
+          uint lsize [[threads_per_threadgroup]]);
 
-#define instantiate_softmax(DTYPE)                       \
-  instantiate_softmax_forward_single_row(DTYPE)          \
-      instantiate_softmax_forward_looped(DTYPE)          \
-          instantiate_softmax_backward_single_row(DTYPE) \
-              instantiate_softmax_backward_looped(DTYPE) \
+#define instantiate_softmax(DTYPE)                              \
+  instantiate_softmax_forward_single_row(DTYPE)                 \
+      instantiate_softmax_forward_looped(DTYPE)                 \
+          instantiate_softmax_backward_single_row(DTYPE)        \
+              instantiate_softmax_backward_looped(DTYPE)        \
                   instantiate_softmax_backward_2pass_dot(DTYPE) \
                       instantiate_softmax_backward_2pass_grad(DTYPE)
 
