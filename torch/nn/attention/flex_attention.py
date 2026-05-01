@@ -1,5 +1,4 @@
 # mypy: allow-untyped-defs
-# flake8: noqa: B950
 """This module implements the user facing API for flex_attention in PyTorch."""
 
 from __future__ import annotations
@@ -1712,7 +1711,7 @@ def _enforce_mem_layouts(
         return tensor.stride()[-2] == 1
 
     # These memory layout constraint are only for FP8 GEMMs on NVIDIA GPU architectures >= SM89 and < SM100.
-    # This is because GPU arch < SM89 does not not support FP8 GEMMs, and
+    # This is because GPU arch < SM89 does not support FP8 GEMMs, and
     # SM100 has support for TN, NT, TT, NN layouts for FP8 GEMMs
     # (i.e., left and right operands can be in row or column major layouts)
     # so this check is only needed for older architectures.
