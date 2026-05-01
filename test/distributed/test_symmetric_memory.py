@@ -263,6 +263,55 @@ class SymmetricMemoryTest(MultiProcContinuousTest):
         not PLATFORM_SUPPORTS_SYMM_MEM, "SymmMem is not supported on this ROCm arch"
     )
     @skip_if_lt_x_gpu(2)
+    def test_rendezvous_via_pg_allgather(self) -> None:
+        # Verify that routing the RendezvousRequest exchange through the
+        # process group's NCCL all_gather (TORCH_SYMMMEM_RENDEZVOUS_USE_PG=1)
+        # produces a functional symmetric memory handle and actually issues
+        # a NCCL _all_gather_base. The flight recorder delta distinguishes
+        # this from the default store-based path, which issues no NCCL ops.
+        import pickle
+
+        self._init_process()
+
+        os.environ["TORCH_SYMMMEM_RENDEZVOUS_USE_PG"] = "1"
+        try:
+            torch._C._distributed_c10d._reset_fr_recording_nccl()
+
+            t = symm_mem.empty(64, dtype=torch.float32, device=self.device).fill_(
+                self.rank
+            )
+            symm_mem_hdl = symm_mem.rendezvous(t, group=dist.group.WORLD)
+            torch.cuda.synchronize()
+
+            self.assertEqual(symm_mem_hdl.rank, self.rank)
+            self.assertEqual(symm_mem_hdl.world_size, self.world_size)
+
+            entries = pickle.loads(
+                torch._C._distributed_c10d._dump_nccl_trace()
+            )["entries"]
+            ag_entries = [
+                e for e in entries
+                if e["profiling_name"] == "nccl:_all_gather_base"
+            ]
+            self.assertEqual(
+                len(ag_entries),
+                1,
+                f"expected exactly one NCCL _all_gather_base from rendezvous, "
+                f"got {len(ag_entries)}: {[e['profiling_name'] for e in entries]}",
+            )
+
+            symm_mem_hdl.barrier()
+            for peer in range(self.world_size):
+                buf = symm_mem_hdl.get_buffer(peer, (64,), torch.float32)
+                self.assertTrue(buf.eq(peer).all())
+            symm_mem_hdl.barrier()
+        finally:
+            os.environ.pop("TORCH_SYMMMEM_RENDEZVOUS_USE_PG", None)
+
+    @skipIf(
+        not PLATFORM_SUPPORTS_SYMM_MEM, "SymmMem is not supported on this ROCm arch"
+    )
+    @skip_if_lt_x_gpu(2)
     @parametrize("symm_mem_input", [True, False])
     def test_low_contention_all_gather(self, symm_mem_input: bool) -> None:
         self._init_process()

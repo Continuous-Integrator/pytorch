@@ -11,6 +11,9 @@
 #include <hip/hip_runtime_api.h>
 #endif
 
+#include <ATen/ATen.h>
+#include <ATen/cuda/CUDAContext.h>
+#include <c10/cuda/CUDAGuard.h>
 #include <torch/csrc/distributed/c10d/cuda/utils.hpp>
 #include <torch/csrc/distributed/c10d/symm_mem/CUDASymmetricMemoryUtils.hpp>
 
@@ -26,6 +29,58 @@ bool device_has_multicast_support(int device_idx) {
 bool allow_overlapping_devices() {
   return c10::utils::check_env("TORCH_SYMM_MEM_ALLOW_OVERLAPPING_DEVICES") ==
       true;
+}
+
+bool use_pg_rendezvous() {
+  return c10::utils::check_env("TORCH_SYMMMEM_RENDEZVOUS_USE_PG") == true;
+}
+
+std::vector<std::vector<uint8_t>> pg_all_gather_bytes(
+    const c10::intrusive_ptr<c10d::ProcessGroup>& pg,
+    const void* data,
+    size_t nbytes,
+    int device_idx) {
+  TORCH_CHECK(pg != nullptr, "pg_all_gather_bytes: null ProcessGroup");
+  const int world_size = pg->getSize();
+  TORCH_CHECK(world_size > 0);
+
+  c10::cuda::CUDAGuard guard(device_idx);
+  auto device = c10::Device(c10::DeviceType::CUDA, device_idx);
+  auto opts =
+      at::TensorOptions().dtype(at::kByte).device(device).pinned_memory(false);
+
+  at::Tensor in_buf = at::empty({static_cast<int64_t>(nbytes)}, opts);
+  if (nbytes > 0) {
+    AT_CUDA_CHECK(cudaMemcpy(
+        in_buf.data_ptr(), data, nbytes, cudaMemcpyHostToDevice));
+  }
+  at::Tensor out_buf =
+      at::empty({static_cast<int64_t>(world_size * nbytes)}, opts);
+
+  c10d::AllgatherOptions ag_opts;
+  auto work = pg->_allgather_base(out_buf, in_buf, ag_opts);
+  work->wait();
+  // wait() synchronizes the current stream with the NCCL stream; fence the
+  // device so the subsequent D2H copy observes the gathered payload
+  // regardless of which stream the copy is scheduled on.
+  AT_CUDA_CHECK(cudaDeviceSynchronize());
+
+  std::vector<uint8_t> flat(world_size * nbytes);
+  if (nbytes > 0) {
+    AT_CUDA_CHECK(cudaMemcpy(
+        flat.data(),
+        out_buf.data_ptr(),
+        world_size * nbytes,
+        cudaMemcpyDeviceToHost));
+  }
+
+  std::vector<std::vector<uint8_t>> result;
+  result.reserve(world_size);
+  for (int r = 0; r < world_size; ++r) {
+    result.emplace_back(
+        flat.begin() + r * nbytes, flat.begin() + (r + 1) * nbytes);
+  }
+  return result;
 }
 
 // Query environment variable to get the backend used for CUDA Symmetric Memory.

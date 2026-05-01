@@ -1,9 +1,13 @@
 #pragma once
 
+#include <torch/csrc/distributed/c10d/ProcessGroup.hpp>
 #include <torch/csrc/distributed/c10d/Store.hpp>
 #include <torch/csrc/distributed/c10d/symm_mem/CUDASymmetricMemoryTypes.hpp>
 #include <torch/csrc/distributed/c10d/symm_mem/SymmetricMemory.hpp>
+#include <cstring>
+#include <type_traits>
 #include <utility>
+#include <vector>
 
 namespace c10d {
 namespace symmetric_memory {
@@ -12,8 +16,45 @@ bool device_has_multicast_support(int device_idx);
 
 bool allow_overlapping_devices();
 
+// If true, rendezvous metadata (RendezvousRequest) is exchanged through the
+// ProcessGroup's NCCL all_gather instead of a TCPStore O(N^2) loop. Controlled
+// by the TORCH_SYMMMEM_RENDEZVOUS_USE_PG environment variable.
+bool use_pg_rendezvous();
+
 // Query environment variable to get the backend used for CUDA Symmetric Memory.
 std::string getSymmMemBackendCUDA();
+
+// All-gather a fixed-size byte payload through the given ProcessGroup.
+// Uses ProcessGroup::_allgather_base (NCCL allgather for a NCCL-backed PG).
+// The payload is staged through a uint8 CUDA tensor on `device_idx`; the H2D
+// and D2H copies are negligible at the sizes exchanged during rendezvous (a
+// few hundred bytes per rank).
+std::vector<std::vector<uint8_t>> pg_all_gather_bytes(
+    const c10::intrusive_ptr<c10d::ProcessGroup>& pg,
+    const void* data,
+    size_t nbytes,
+    int device_idx);
+
+// Templated wrapper around `pg_all_gather_bytes` matching the shape of
+// `StoreExchange::all_gather` so rendezvous code can swap transports without
+// caring about serialization.
+template <typename T>
+std::vector<T> pg_all_gather(
+    const c10::intrusive_ptr<c10d::ProcessGroup>& pg,
+    int device_idx,
+    const T& val) {
+  static_assert(std::is_trivially_copyable_v<T>);
+  auto bytes = pg_all_gather_bytes(pg, &val, sizeof(T), device_idx);
+  std::vector<T> out;
+  out.reserve(bytes.size());
+  for (const auto& b : bytes) {
+    TORCH_CHECK(b.size() == sizeof(T));
+    T v{};
+    std::memcpy(&v, b.data(), sizeof(T));
+    out.push_back(v);
+  }
+  return out;
+}
 
 class IpcChannel {
  public:
