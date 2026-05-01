@@ -1,7 +1,6 @@
 # Owner(s): ["module: dynamo"]
 
 import re
-import unittest
 
 import torch
 import torch._inductor.test_case
@@ -19,6 +18,7 @@ class SimpleLinearModule(torch.nn.Module):
         return self.linear(x)
 
 
+@torch._dynamo.config.patch(generate_pycode=True)
 class TestPycode(torch._inductor.test_case.TestCase):
     def test_pycode_basic(self):
         mod = SimpleLinearModule()
@@ -56,6 +56,7 @@ __ret = __stack0""",
     def test_pycode_dict_output(self):
         def fn(x, y):
             return {"sum": x + y, "diff": x - y, "prod": x * y}
+
         x = torch.randn(3, 3)
         y = torch.randn(3, 3)
         with get_metrics_context():
@@ -90,6 +91,7 @@ __ret = __stack0""",
     def test_pycode_default_args(self):
         def fn(x, y, scale=1.0, bias=0.0):
             return x * scale + y + bias
+
         x = torch.randn(3, 3)
         y = torch.randn(3, 3)
         with get_metrics_context():

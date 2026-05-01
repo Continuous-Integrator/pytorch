@@ -1445,19 +1445,19 @@ def _fullgraph_capture_frame(
         return gm
 
     try:
-        with torch._dynamo.config.patch(generate_pycode=True):
-            dynamo_output = compile_frame(
-                frame.code,
-                frame.globals,
-                frame.locals,
-                frame.builtins,
-                frame.closure,
-                compiler_fn=fullgraph_compiler,
-                export=_is_export_deprecated_do_not_use,
-                export_constraints=constraints,  # type: ignore[arg-type]
-                one_graph=True,
-                restart_reasons=set(),
-            )
+        # TODO with torch._dynamo.config.patch(generate_pycode=True):
+        dynamo_output = compile_frame(
+            frame.code,
+            frame.globals,
+            frame.locals,
+            frame.builtins,
+            frame.closure,
+            compiler_fn=fullgraph_compiler,
+            export=_is_export_deprecated_do_not_use,
+            export_constraints=constraints,  # type: ignore[arg-type]
+            one_graph=True,
+            restart_reasons=set(),
+        )
         # https://github.com/pytorch/pytorch/blob/main/torch/_dynamo/eval_frame.py#L831
     except (Unsupported, UncapturedHigherOrderOpError, UserError) as e:
         augment_exc_message(e)
