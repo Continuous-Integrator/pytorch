@@ -164,13 +164,6 @@ def _get_module_content(module: types.ModuleType) -> str:
     return inspect.getsource(module)
 
 
-@functools.lru_cache(maxsize=4096)
-def _cached_getsourcelines(
-    code: types.CodeType,
-) -> tuple[list[str], int]:
-    return inspect.getsourcelines(code)
-
-
 @dataclasses.dataclass
 class SourceInfo:
     inlined_sources: set[InlinedSource]
@@ -179,9 +172,10 @@ class SourceInfo:
         module = inspect.getmodule(code)
         if module is None:
             return
-        sourcelines, firstlineno = _cached_getsourcelines(code)
+        sourcelines, firstlineno = inspect.getsourcelines(code)
         lastlineno = firstlineno + len(sourcelines)
         source = "".join(sourcelines)
+        assert source == "".join(_get_sourcelines(module, firstlineno, lastlineno))
         self.inlined_sources.add(
             InlinedSource(
                 module=module.__name__,
@@ -543,9 +537,7 @@ def _hash_source(source: str) -> str:
 def _get_sourcelines(
     m: types.ModuleType, firstlineno: int, lastlineno: int
 ) -> list[str]:
-    content = _get_module_content(m)
-    lines = content.splitlines(True)
-    return lines[firstlineno - 1 : lastlineno - 1]
+    return inspect.getsourcelines(m)[0][firstlineno - 1 : lastlineno - 1]
 
 
 def _hash_sourcelines(m: types.ModuleType, firstlineno: int, lastlineno: int) -> str:
