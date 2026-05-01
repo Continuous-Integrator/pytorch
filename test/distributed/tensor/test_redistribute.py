@@ -430,9 +430,15 @@ class RedistributeTest(DTensorContinuousTestBase):
 
         comm_mode = CommDebugMode()
 
+        dt = replica_tensor.dtype
         with comm_mode:
             partial_tensor = Redistribute.apply(
-                replica_tensor, device_mesh, [partial_spec]
+                replica_tensor,
+                device_mesh,
+                [partial_spec],
+                op_dtype=dt,
+                out_dtype=dt,
+                backward_options={"op_dtype": dt, "out_dtype": dt},
             )
         self.assertEqual(partial_tensor.size(), local_tensor.size())
         # test it successfully zero out the contents on other ranks
@@ -451,9 +457,15 @@ class RedistributeTest(DTensorContinuousTestBase):
         replica_tensor = distribute_tensor(
             local_tensor, device_mesh, [replica_spec, replica_spec]
         )
+        dt = replica_tensor.dtype
         with comm_mode:
             partial_tensor = Redistribute.apply(
-                replica_tensor, device_mesh, [partial_spec, partial_spec]
+                replica_tensor,
+                device_mesh,
+                [partial_spec, partial_spec],
+                op_dtype=dt,
+                out_dtype=dt,
+                backward_options={"op_dtype": dt, "out_dtype": dt},
             )
         self.assertEqual(partial_tensor.size(), local_tensor.size())
 
@@ -835,9 +847,15 @@ class RedistributeTest(DTensorContinuousTestBase):
 
             # Apply R->P transition with the specified reduce_op
             partial_spec = Partial(reduce_op)
+            dt = replica_tensor.dtype
             with comm_mode:
                 partial_tensor = Redistribute.apply(
-                    replica_tensor, device_mesh, [partial_spec]
+                    replica_tensor,
+                    device_mesh,
+                    [partial_spec],
+                    op_dtype=dt,
+                    out_dtype=dt,
+                    backward_options={"op_dtype": dt, "out_dtype": dt},
                 )
 
             self.assertEqual(partial_tensor.size(), local_tensor.size())
