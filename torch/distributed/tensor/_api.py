@@ -693,9 +693,24 @@ class DTensor(torch.Tensor):
                 )
         placements = tuple(placements)
 
+        input_dtype = self._local_tensor.dtype
+        forward_dtype = forward_dtype or input_dtype
         # pyre-fixme[16]: `Redistribute` has no attribute `apply`.
         return Redistribute.apply(
-            self, device_mesh, placements, async_op, forward_dtype, backward_dtype
+            self,
+            device_mesh,
+            placements,
+            async_op=async_op,
+            op_dtype=forward_dtype,
+            out_dtype=forward_dtype,
+            backward_options={
+                # Absent backward_dtype means the backward collective runs at
+                # the same dtype the forward ran at (which is also the dtype
+                # the grad arrives in under normal autograd).
+                "op_dtype": backward_dtype or forward_dtype,
+                # Snap the gradient back to the input's storage dtype.
+                "out_dtype": input_dtype,
+            },
         )
 
     def full_tensor(
