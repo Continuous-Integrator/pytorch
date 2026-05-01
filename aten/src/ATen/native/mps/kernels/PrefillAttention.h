@@ -758,7 +758,6 @@ prefill_attention(
     // Mask out partial K block.
     if (k_block_size < BK) {
       using stile_t = decltype(Stile);
-      using selem_t = typename stile_t::elem_type;
       constexpr auto neg_inf = -INFINITY;
 
       PREFILL_PRAGMA_UNROLL
@@ -779,7 +778,6 @@ prefill_attention(
     // Causal mask (PyTorch upper-left convention: row r sees cols 0..r).
     if IF_CONSTEXPR (do_causal) {
       using stile_t = decltype(Stile);
-      using selem_t = typename stile_t::elem_type;
       constexpr auto neg_inf = -INFINITY;
 
       PREFILL_PRAGMA_UNROLL
