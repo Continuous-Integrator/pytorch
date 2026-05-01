@@ -106,7 +106,7 @@ from .object_protocol import (
     vt_getitem,
     vt_identity_compare,
 )
-from .sets import FrozensetVariable, OrderedSetClassVariable, SetVariable
+from .sets import FrozensetVariable, SetVariable
 from .tensor import (
     DataPtrVariable,
     FakeItemVariable,
@@ -1689,7 +1689,7 @@ class BuiltinVariable(BaseBuiltinVariable):
                 RangeVariable,
                 ConstDictVariable,
                 variables.DefaultDictVariable,
-                OrderedSetClassVariable,
+                variables.OrderedSetClassVariable,
                 DictViewVariable,
             ),
         ):
