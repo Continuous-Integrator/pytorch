@@ -841,10 +841,12 @@ class CompiledFxGraph(OutputCode):
                 allow_non_fake_inputs=True,
                 shape_env=ShapeEnv(),
             )
-            self._original_gm = cast(
+            original_gm = cast(
                 torch.fx.GraphModule,
                 GraphPickler.loads(self._serialized_original_gm, fake_mode),
             )
+            original_gm.recompile()
+            self._original_gm = original_gm
             self._serialized_original_gm = None
 
         # Apply inductor_compiled_code HOP wrapper if configured
