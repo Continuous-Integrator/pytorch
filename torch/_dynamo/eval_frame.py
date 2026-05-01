@@ -397,7 +397,7 @@ def _get_cache_entries_for_region(
     isolate_recompiles_id: int,
 ) -> list[CacheEntry]:
     """
-    Return the cache entries for a specific isolate_recompiles region on
+    Return the cache entries for a specific isolated region on
     ``code``, in LRU order (most-recently-used first).
 
     Pass ``isolate_recompiles_id=-1`` to get the default (non-isolated)
@@ -419,7 +419,7 @@ def _get_cache_entries_for_region(
 def _get_total_cache_entry_count(
     code: types.CodeType | Callable[..., Any],
 ) -> int:
-    """Total cache entries across all isolate_recompiles regions for a code object."""
+    """Total cache entries across all isolated regions for a code object."""
     if callable(code):
         code = code.__code__
     return torch._C._dynamo.eval_frame._get_total_cache_entry_count(code)
@@ -780,7 +780,7 @@ class _TorchDynamoContext:
         compiler_config: Any | None = None,
         package: CompilePackage | None = None,
         hooks: Hooks | None = None,
-        isolate_recompiles: bool = False,
+        isolated_region: bool = False,
     ) -> None:
         super().__init__()
         assert callable(callback) or callback is False or callback is None
@@ -798,7 +798,7 @@ class _TorchDynamoContext:
         self._package = package
         self._hooks = hooks
         self._isolate_recompiles_id = (
-            next(_next_isolate_recompiles_id) if isolate_recompiles else -1
+            next(_next_isolate_recompiles_id) if isolated_region else -1
         )
         patch_fn()
 
@@ -1223,7 +1223,7 @@ class OptimizeContext(_TorchDynamoContext):
         rebuild_ctx: Callable[[], OptimizeContext | _NullDecorator] | None = None,
         package: CompilePackage | None = None,
         hooks: Hooks | None = None,
-        isolate_recompiles: bool = False,
+        isolated_region: bool = False,
     ) -> None:
         def on_enter() -> None:
             install_generation_tagging_init()
@@ -1241,7 +1241,7 @@ class OptimizeContext(_TorchDynamoContext):
             compiler_config=compiler_config,
             package=package,
             hooks=hooks,
-            isolate_recompiles=isolate_recompiles,
+            isolated_region=isolated_region,
         )
 
         if config.compiled_autograd:
@@ -1393,7 +1393,7 @@ def _optimize_catch_errors(
     compiler_config: Any | None = None,
     rebuild_ctx: Callable[[], OptimizeContext | _NullDecorator] | None = None,
     package: CompilePackage | None = None,
-    isolate_recompiles: bool = False,
+    isolated_region: bool = False,
 ) -> OptimizeContext:
     return OptimizeContext(
         convert_frame.catch_errors_wrapper(compile_fn, hooks),
@@ -1407,7 +1407,7 @@ def _optimize_catch_errors(
         rebuild_ctx=rebuild_ctx,
         package=package,
         hooks=hooks,
-        isolate_recompiles=isolate_recompiles,
+        isolated_region=isolated_region,
     )
 
 
@@ -1594,7 +1594,7 @@ def _optimize(
     dynamic: bool | None = None,
     package: CompilePackage | None = None,
     recompile_limit: int | None = None,
-    isolate_recompiles: bool = False,
+    isolated_region: bool = False,
 ) -> OptimizeContext | _NullDecorator:
     """
     The main entrypoint of TorchDynamo.  Do graph capture and call
@@ -1622,7 +1622,7 @@ def _optimize(
             detect when sizes vary and generate dynamic kernels upon recompile.
         recompile_limit: Maximum number of recompilations for this region.
             If None, uses ``torch._dynamo.config.recompile_limit``.
-        isolate_recompiles: If True, this compile call gets its own isolated
+        isolated_region: If True, this compile call gets its own isolated
             cache so recompilations are tracked independently from other
             compile calls on the same function.
 
@@ -1659,7 +1659,7 @@ def _optimize(
             rebuild_ctx=rebuild_ctx,
             package=package,
             recompile_limit=recompile_limit,
-            isolate_recompiles=isolate_recompiles,
+            isolated_region=isolated_region,
         )
 
     backend = get_compiler_fn(backend)
@@ -1698,7 +1698,7 @@ def _optimize(
         ),
         rebuild_ctx=rebuild_ctx,
         package=package,
-        isolate_recompiles=isolate_recompiles,
+        isolated_region=isolated_region,
     )
 
 
@@ -2538,7 +2538,7 @@ def _optimize_assert(
     dynamic: bool | None = None,
     package: CompilePackage | None = None,
     recompile_limit: int | None = None,
-    isolate_recompiles: bool = False,
+    isolated_region: bool = False,
 ) -> OptimizeContext:
     """
     Guarantees single-graph capture.
@@ -2578,7 +2578,7 @@ def _optimize_assert(
         dynamic=dynamic,
         rebuild_ctx=rebuild_ctx,
         package=package,
-        isolate_recompiles=isolate_recompiles,
+        isolated_region=isolated_region,
     )
 
 

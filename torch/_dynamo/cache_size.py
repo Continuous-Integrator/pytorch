@@ -144,7 +144,7 @@ def compute_cache_size(
     cache_entries: list[Any],
     total_cache_entries_all_regions: int = 0,
 ) -> CacheSizeRelevantForFrame:
-    # cache_entries is already scoped to a single isolate_recompiles region.
+    # cache_entries is already scoped to a single isolated region.
     # recompile_limit is checked per-region. accumulated_recompile_limit uses
     # total_cache_entries_all_regions as a global safety cap.
     num_cache_entries = 0

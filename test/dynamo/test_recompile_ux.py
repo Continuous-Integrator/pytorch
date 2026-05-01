@@ -445,9 +445,9 @@ class RecompileLimitKwargTests(torch._dynamo.test_case.TestCase):
 
 
 class IsolateRecompilesTests(torch._dynamo.test_case.TestCase):
-    """Tests for isolate_recompiles=True on torch.compile().
+    """Tests for isolated_region=True on torch.compile().
 
-    Each torch.compile() call with isolate_recompiles=True gets its own
+    Each torch.compile() call with isolated_region=True gets its own
     isolated cache bucket via the per-compile cache map in ExtraState.
     Without isolation, all compile calls on the same code object share a
     single cache — entries from one call interfere with another's lookup,
@@ -471,9 +471,7 @@ class IsolateRecompilesTests(torch._dynamo.test_case.TestCase):
         def f(x):
             return x.sin()
 
-        opt_f = torch.compile(
-            f, backend="eager", dynamic=False, isolate_recompiles=True
-        )
+        opt_f = torch.compile(f, backend="eager", dynamic=False, isolated_region=True)
 
         opt_f(torch.randn(3))
 
@@ -493,8 +491,8 @@ class IsolateRecompilesTests(torch._dynamo.test_case.TestCase):
         def f(x):
             return x.sin()
 
-        opt_a = torch.compile(f, backend=cnt, dynamic=False, isolate_recompiles=True)
-        opt_b = torch.compile(f, backend=cnt, dynamic=False, isolate_recompiles=True)
+        opt_a = torch.compile(f, backend=cnt, dynamic=False, isolated_region=True)
+        opt_b = torch.compile(f, backend=cnt, dynamic=False, isolated_region=True)
 
         opt_a(torch.randn(3))
         opt_b(torch.randn(4))
@@ -515,7 +513,7 @@ class IsolateRecompilesTests(torch._dynamo.test_case.TestCase):
 
         @cache
         def factory(key):
-            @torch.compile(fullgraph=True, dynamic=False, isolate_recompiles=True)
+            @torch.compile(fullgraph=True, dynamic=False, isolated_region=True)
             def frontend(x, n):
                 return core(x) + n
 
@@ -536,8 +534,8 @@ class IsolateRecompilesTests(torch._dynamo.test_case.TestCase):
         def f(x):
             return x.sin()
 
-        opt_a = torch.compile(f, backend=cnt, dynamic=False, isolate_recompiles=True)
-        opt_b = torch.compile(f, backend=cnt, dynamic=False, isolate_recompiles=True)
+        opt_a = torch.compile(f, backend=cnt, dynamic=False, isolated_region=True)
+        opt_b = torch.compile(f, backend=cnt, dynamic=False, isolated_region=True)
 
         opt_a(torch.randn(3))
         self.assertEqual(cnt.frame_count, 1)
@@ -559,8 +557,8 @@ class IsolateRecompilesTests(torch._dynamo.test_case.TestCase):
         def f(x):
             return x.sin()
 
-        opt_a = torch.compile(f, backend=backend, isolate_recompiles=True)
-        opt_b = torch.compile(f, backend=backend, isolate_recompiles=True)
+        opt_a = torch.compile(f, backend=backend, isolated_region=True)
+        opt_b = torch.compile(f, backend=backend, isolated_region=True)
 
         opt_a(torch.randn(3))
         self.assertEqual(self._num_cache_entries(f), 1)
@@ -577,19 +575,15 @@ class IsolateRecompilesTests(torch._dynamo.test_case.TestCase):
     @torch._dynamo.config.patch(automatic_dynamic_shapes=False)
     def test_isolate_recompiles_static_and_dynamic(self):
         """Two regions on the same function: one static, one dynamic.
-        isolate_recompiles keeps their cache entries separate so static
+        isolated_region keeps their cache entries separate so static
         recompiles don't count against the dynamic region."""
         cnt = torch._dynamo.testing.CompileCounter()
 
         def f(x):
             return x.sum()
 
-        opt_static = torch.compile(
-            f, backend=cnt, dynamic=False, isolate_recompiles=True
-        )
-        opt_dynamic = torch.compile(
-            f, backend=cnt, dynamic=True, isolate_recompiles=True
-        )
+        opt_static = torch.compile(f, backend=cnt, dynamic=False, isolated_region=True)
+        opt_dynamic = torch.compile(f, backend=cnt, dynamic=True, isolated_region=True)
 
         opt_static(torch.randn(4, 8))
         self.assertEqual(cnt.frame_count, 1)
@@ -618,8 +612,8 @@ class IsolateRecompilesTests(torch._dynamo.test_case.TestCase):
         def f(x):
             return x.sin()
 
-        opt_static = torch.compile(f, backend=cnt_static, isolate_recompiles=True)
-        opt_dynamic = torch.compile(f, backend=cnt_dynamic, isolate_recompiles=True)
+        opt_static = torch.compile(f, backend=cnt_static, isolated_region=True)
+        opt_dynamic = torch.compile(f, backend=cnt_dynamic, isolated_region=True)
 
         x_static = torch.randn(4, 8)
         torch._dynamo.mark_static(x_static, 0)
@@ -659,8 +653,8 @@ class IsolateRecompilesTests(torch._dynamo.test_case.TestCase):
         def f(x):
             return x.sin()
 
-        opt_a = torch.compile(f, backend=cnt_a, isolate_recompiles=True)
-        opt_b = torch.compile(f, backend=cnt_b, isolate_recompiles=True)
+        opt_a = torch.compile(f, backend=cnt_a, isolated_region=True)
+        opt_b = torch.compile(f, backend=cnt_b, isolated_region=True)
 
         opt_a(torch.randn(3, 4))
         opt_a(torch.randn(5, 4))
@@ -686,12 +680,8 @@ class IsolateRecompilesTests(torch._dynamo.test_case.TestCase):
         def f(x):
             return x.sin()
 
-        opt_static = torch.compile(
-            f, backend=cnt, dynamic=False, isolate_recompiles=True
-        )
-        opt_dynamic = torch.compile(
-            f, backend=cnt, dynamic=True, isolate_recompiles=True
-        )
+        opt_static = torch.compile(f, backend=cnt, dynamic=False, isolated_region=True)
+        opt_dynamic = torch.compile(f, backend=cnt, dynamic=True, isolated_region=True)
 
         # Static region: two shapes fill recompile_limit=2
         opt_static(torch.randn(3))
@@ -723,7 +713,7 @@ class IsolateRecompilesTests(torch._dynamo.test_case.TestCase):
             return x.sin()
 
         opt_f = torch.compile(
-            f, backend="eager", fullgraph=True, dynamic=False, isolate_recompiles=True
+            f, backend="eager", fullgraph=True, dynamic=False, isolated_region=True
         )
 
         opt_f(torch.randn(3))
@@ -745,15 +735,9 @@ class IsolateRecompilesTests(torch._dynamo.test_case.TestCase):
         def f(x):
             return x.sin()
 
-        opt_a = torch.compile(
-            f, backend="eager", dynamic=False, isolate_recompiles=True
-        )
-        opt_b = torch.compile(
-            f, backend="eager", dynamic=False, isolate_recompiles=True
-        )
-        opt_c = torch.compile(
-            f, backend="eager", dynamic=False, isolate_recompiles=True
-        )
+        opt_a = torch.compile(f, backend="eager", dynamic=False, isolated_region=True)
+        opt_b = torch.compile(f, backend="eager", dynamic=False, isolated_region=True)
+        opt_c = torch.compile(f, backend="eager", dynamic=False, isolated_region=True)
 
         id_a = opt_a._isolate_recompiles_id
         id_b = opt_b._isolate_recompiles_id
@@ -814,12 +798,8 @@ class IsolateRecompilesTests(torch._dynamo.test_case.TestCase):
         def f(x):
             return x.cos()
 
-        opt_a = torch.compile(
-            f, backend="eager", dynamic=False, isolate_recompiles=True
-        )
-        opt_b = torch.compile(
-            f, backend="eager", dynamic=False, isolate_recompiles=True
-        )
+        opt_a = torch.compile(f, backend="eager", dynamic=False, isolated_region=True)
+        opt_b = torch.compile(f, backend="eager", dynamic=False, isolated_region=True)
 
         id_a = opt_a._isolate_recompiles_id
         id_b = opt_b._isolate_recompiles_id
@@ -850,12 +830,8 @@ class IsolateRecompilesTests(torch._dynamo.test_case.TestCase):
         def f(x):
             return x.sin()
 
-        opt_a = torch.compile(
-            f, backend="eager", dynamic=False, isolate_recompiles=True
-        )
-        opt_b = torch.compile(
-            f, backend="eager", dynamic=False, isolate_recompiles=True
-        )
+        opt_a = torch.compile(f, backend="eager", dynamic=False, isolated_region=True)
+        opt_b = torch.compile(f, backend="eager", dynamic=False, isolated_region=True)
         opt_default = torch.compile(f, backend="eager", dynamic=False)
 
         id_a = opt_a._isolate_recompiles_id
@@ -888,8 +864,8 @@ class IsolateRecompilesTests(torch._dynamo.test_case.TestCase):
         def f(x):
             return x.sin()
 
-        opt_a = torch.compile(f, backend=cnt, dynamic=False, isolate_recompiles=True)
-        opt_b = torch.compile(f, backend=cnt, dynamic=False, isolate_recompiles=True)
+        opt_a = torch.compile(f, backend=cnt, dynamic=False, isolated_region=True)
+        opt_b = torch.compile(f, backend=cnt, dynamic=False, isolated_region=True)
         id_a = opt_a._isolate_recompiles_id
         id_b = opt_b._isolate_recompiles_id
 
@@ -939,7 +915,7 @@ class IsolateRecompilesTests(torch._dynamo.test_case.TestCase):
         self.assertEqual(cnt.frame_count, 0)
         self.assertEqual(len(_get_cache_entries_for_region(f, -1)), 0)
 
-        opt_iso = torch.compile(f, backend=cnt, isolate_recompiles=True)
+        opt_iso = torch.compile(f, backend=cnt, isolated_region=True)
         id_iso = opt_iso._isolate_recompiles_id
 
         x = torch.randn(3)
@@ -969,7 +945,7 @@ class IsolateRecompilesTests(torch._dynamo.test_case.TestCase):
         self.assertEqual(cnt.frame_count, 1)
 
         # Isolated region must ignore the persisted RUN_ONLY.
-        opt_iso = torch.compile(f, backend=cnt, isolate_recompiles=True)
+        opt_iso = torch.compile(f, backend=cnt, isolated_region=True)
         id_iso = opt_iso._isolate_recompiles_id
         opt_iso(torch.randn(6))
         self.assertEqual(cnt.frame_count, 2)
@@ -986,12 +962,8 @@ class IsolateRecompilesTests(torch._dynamo.test_case.TestCase):
         def f(x):
             return x.sin()
 
-        opt_a = torch.compile(
-            f, backend="eager", dynamic=False, isolate_recompiles=True
-        )
-        opt_b = torch.compile(
-            f, backend="eager", dynamic=False, isolate_recompiles=True
-        )
+        opt_a = torch.compile(f, backend="eager", dynamic=False, isolated_region=True)
+        opt_b = torch.compile(f, backend="eager", dynamic=False, isolated_region=True)
         id_a = opt_a._isolate_recompiles_id
         id_b = opt_b._isolate_recompiles_id
 
@@ -1031,12 +1003,8 @@ class IsolateRecompilesTests(torch._dynamo.test_case.TestCase):
         def f(x):
             return x.sin()
 
-        opt_a = torch.compile(
-            f, backend="eager", dynamic=False, isolate_recompiles=True
-        )
-        opt_b = torch.compile(
-            f, backend="eager", dynamic=False, isolate_recompiles=True
-        )
+        opt_a = torch.compile(f, backend="eager", dynamic=False, isolated_region=True)
+        opt_b = torch.compile(f, backend="eager", dynamic=False, isolated_region=True)
         id_a = opt_a._isolate_recompiles_id
         id_b = opt_b._isolate_recompiles_id
 
@@ -1088,7 +1056,7 @@ class IsolateRecompilesTests(torch._dynamo.test_case.TestCase):
         opt_global(torch.randn(3))
         self.assertEqual(cnt.frame_count, 1)
 
-        opt_isolated = torch.compile(f, backend=cnt, isolate_recompiles=True)
+        opt_isolated = torch.compile(f, backend=cnt, isolated_region=True)
         opt_isolated(torch.randn(3))
         self.assertEqual(cnt.frame_count, 1)
 
@@ -1117,7 +1085,7 @@ class IsolateRecompilesTests(torch._dynamo.test_case.TestCase):
             "eager",
             guard_fail_fn=record_region,
             dynamic=False,
-            isolate_recompiles=True,
+            isolated_region=True,
         )(f)
 
         # Populate default bucket with a shape-3 entry.
@@ -1179,9 +1147,9 @@ class IsolateRecompilesTests(torch._dynamo.test_case.TestCase):
         # Prime the region with one entry — recompile-reason logging only
         # fires on subsequent calls (is_recompilation requires the region
         # to already have ≥1 entry).
-        opt_iso = torch._dynamo.optimize(
-            "eager", dynamic=False, isolate_recompiles=True
-        )(f)
+        opt_iso = torch._dynamo.optimize("eager", dynamic=False, isolated_region=True)(
+            f
+        )
         opt_iso(torch.randn(5))
         default_fails.clear()
 
@@ -1208,16 +1176,14 @@ class IsolateRecompilesTests(torch._dynamo.test_case.TestCase):
         with torch._dynamo.config.patch(
             recompile_limit=1, automatic_dynamic_shapes=False
         ):
-            opt_a = torch.compile(
-                f, backend=cnt, dynamic=False, isolate_recompiles=True
-            )
+            opt_a = torch.compile(f, backend=cnt, dynamic=False, isolated_region=True)
             opt_a(torch.randn(3))
             opt_a(torch.randn(4))  # hits limit → region RUN_ONLY persisted
             self.assertEqual(cnt.frame_count, 1)
 
         torch._dynamo.reset()
 
-        opt_b = torch.compile(f, backend=cnt, isolate_recompiles=True)
+        opt_b = torch.compile(f, backend=cnt, isolated_region=True)
         opt_b(torch.randn(5))
         self.assertEqual(cnt.frame_count, 2)
 
@@ -1227,7 +1193,7 @@ class IsolateRecompilesTests(torch._dynamo.test_case.TestCase):
         automatic_dynamic_shapes=False,
     )
     def test_non_isolated_compiles_share_cache(self):
-        """Without isolate_recompiles, two compile calls share bucket -1.
+        """Without isolated_region, two compile calls share bucket -1.
         They share cache hits AND recompile limits."""
         cnt = torch._dynamo.testing.CompileCounter()
 
@@ -1257,7 +1223,7 @@ class IsolateRecompilesTests(torch._dynamo.test_case.TestCase):
 
     @torch._dynamo.config.patch(automatic_dynamic_shapes=False)
     def test_no_isolate_recompiles_shared_cache(self):
-        """Baseline: without isolate_recompiles, compile calls share the
+        """Baseline: without isolated_region, compile calls share the
         cache. A recompile from one is visible to the other."""
         cnt = torch._dynamo.testing.CompileCounter()
 
@@ -1285,7 +1251,7 @@ class IsolateRecompilesTests(torch._dynamo.test_case.TestCase):
         automatic_dynamic_shapes=False,
     )
     def test_different_backends_shared_cache_without_isolate(self):
-        """Baseline: without isolate_recompiles, different backends share the
+        """Baseline: without isolated_region, different backends share the
         cache. Entries from backend A count against backend B's limit."""
         cnt_a = torch._dynamo.testing.CompileCounter()
         cnt_b = torch._dynamo.testing.CompileCounter()
@@ -1309,15 +1275,15 @@ class IsolateRecompilesTests(torch._dynamo.test_case.TestCase):
         automatic_dynamic_shapes=False,
     )
     def test_different_backends_independent_with_isolate(self):
-        """With isolate_recompiles, different backends get independent buckets."""
+        """With isolated_region, different backends get independent buckets."""
         cnt_a = torch._dynamo.testing.CompileCounter()
         cnt_b = torch._dynamo.testing.CompileCounter()
 
         def f(x):
             return x.sum()
 
-        opt_a = torch.compile(f, backend=cnt_a, dynamic=False, isolate_recompiles=True)
-        opt_b = torch.compile(f, backend=cnt_b, dynamic=False, isolate_recompiles=True)
+        opt_a = torch.compile(f, backend=cnt_a, dynamic=False, isolated_region=True)
+        opt_b = torch.compile(f, backend=cnt_b, dynamic=False, isolated_region=True)
 
         opt_a(torch.randn(3))
         opt_a(torch.randn(4))
@@ -1339,8 +1305,8 @@ class IsolateRecompilesTests(torch._dynamo.test_case.TestCase):
         def f(x):
             return x.cos()
 
-        opt_a = torch.compile(f, backend=cnt_a, isolate_recompiles=True)
-        opt_b = torch.compile(f, backend=cnt_b, isolate_recompiles=True)
+        opt_a = torch.compile(f, backend=cnt_a, isolated_region=True)
+        opt_b = torch.compile(f, backend=cnt_b, isolated_region=True)
 
         opt_a(torch.randn(3))
         opt_b(torch.randn(4))
@@ -1374,7 +1340,7 @@ class IsolateRecompilesTests(torch._dynamo.test_case.TestCase):
             else:
                 return a + 1
 
-        opt_f = torch.compile(f, backend=cnt, isolate_recompiles=True)
+        opt_f = torch.compile(f, backend=cnt, isolated_region=True)
 
         opt_f(torch.randn(4))
         frame_count_after_1 = cnt.frame_count
@@ -1405,7 +1371,7 @@ class IsolateRecompilesTests(torch._dynamo.test_case.TestCase):
         def f(x):
             return x.sin()
 
-        opt_a = torch.compile(f, backend=cnt, isolate_recompiles=True)
+        opt_a = torch.compile(f, backend=cnt, isolated_region=True)
         opt_a(torch.randn(3))
         self.assertEqual(cnt.frame_count, 1)
         self.assertEqual(self._num_cache_entries(f), 1)
@@ -1417,7 +1383,7 @@ class IsolateRecompilesTests(torch._dynamo.test_case.TestCase):
         self.assertEqual(self._num_cache_entries(f), 1)
 
         # Fresh region compiles independently
-        opt_b = torch.compile(f, backend=cnt, isolate_recompiles=True)
+        opt_b = torch.compile(f, backend=cnt, isolated_region=True)
         opt_b(torch.randn(3))
         self.assertEqual(cnt.frame_count, 2)
         self.assertEqual(self._num_cache_entries(f), 2)
@@ -1435,9 +1401,7 @@ class IsolateRecompilesTests(torch._dynamo.test_case.TestCase):
         def f(x):
             return x.sin()
 
-        opts = [
-            torch.compile(f, backend=cnt, isolate_recompiles=True) for _ in range(6)
-        ]
+        opts = [torch.compile(f, backend=cnt, isolated_region=True) for _ in range(6)]
         for opt in reversed(opts):
             opt(torch.randn(3))
 
