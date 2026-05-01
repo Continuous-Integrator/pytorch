@@ -6948,6 +6948,12 @@ class TritonScheduling(SIMDScheduling):
             total_ms += ms
             total_clone_ms += ms_clone
             file_list.append(mod.__file__)
+            # Release GPU memory between combo kernel benchmark iterations to
+            # prevent the caching allocator from accumulating freed blocks.
+            # Without this, large models OOM during compilation on MI300X (192 GiB)
+            # as benchmark tensors with inflated strides accumulate across iterations.
+            del args, call, wrapped_jit_function
+            torch.accelerator.empty_cache()
         V.graph.removed_buffers = removed_buffers_orig
         V.graph.inplaced_to_remove = inplaced_to_remove_orig
         return total_ms, total_clone_ms, file_list
