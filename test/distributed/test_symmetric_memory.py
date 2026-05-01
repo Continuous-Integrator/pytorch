@@ -286,12 +286,11 @@ class SymmetricMemoryTest(MultiProcContinuousTest):
             self.assertEqual(symm_mem_hdl.rank, self.rank)
             self.assertEqual(symm_mem_hdl.world_size, self.world_size)
 
-            entries = pickle.loads(
-                torch._C._distributed_c10d._dump_nccl_trace()
-            )["entries"]
+            entries = pickle.loads(torch._C._distributed_c10d._dump_nccl_trace())[
+                "entries"
+            ]
             ag_entries = [
-                e for e in entries
-                if e["profiling_name"] == "nccl:_all_gather_base"
+                e for e in entries if e["profiling_name"] == "nccl:_all_gather_base"
             ]
             self.assertEqual(
                 len(ag_entries),

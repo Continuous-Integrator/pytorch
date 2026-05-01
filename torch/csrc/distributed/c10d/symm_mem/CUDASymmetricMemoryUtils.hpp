@@ -28,8 +28,8 @@ std::string getSymmMemBackendCUDA();
 // Uses ProcessGroup::_allgather_base (NCCL allgather for a NCCL-backed PG).
 // The payload is staged through a uint8 CUDA tensor on `device_idx`; the H2D
 // and D2H copies are negligible at the sizes exchanged during rendezvous (a
-// few hundred bytes per rank).
-std::vector<std::vector<uint8_t>> pg_all_gather_bytes(
+// few hundred bytes per rank). Returns a flat buffer of world_size * nbytes.
+std::vector<uint8_t> pg_all_gather_bytes(
     const c10::intrusive_ptr<c10d::ProcessGroup>& pg,
     const void* data,
     size_t nbytes,
@@ -44,13 +44,14 @@ std::vector<T> pg_all_gather(
     int device_idx,
     const T& val) {
   static_assert(std::is_trivially_copyable_v<T>);
-  auto bytes = pg_all_gather_bytes(pg, &val, sizeof(T), device_idx);
+  auto flat = pg_all_gather_bytes(pg, &val, sizeof(T), device_idx);
+  const int world_size = pg->getSize();
+  TORCH_CHECK(flat.size() == static_cast<size_t>(world_size) * sizeof(T));
   std::vector<T> out;
-  out.reserve(bytes.size());
-  for (const auto& b : bytes) {
-    TORCH_CHECK(b.size() == sizeof(T));
+  out.reserve(world_size);
+  for (int r = 0; r < world_size; ++r) {
     T v{};
-    std::memcpy(&v, b.data(), sizeof(T));
+    std::memcpy(&v, flat.data() + r * sizeof(T), sizeof(T));
     out.push_back(v);
   }
   return out;

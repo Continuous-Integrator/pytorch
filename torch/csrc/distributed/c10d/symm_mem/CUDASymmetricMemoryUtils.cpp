@@ -35,7 +35,7 @@ bool use_pg_rendezvous() {
   return c10::utils::check_env("TORCH_SYMMMEM_RENDEZVOUS_USE_PG") == true;
 }
 
-std::vector<std::vector<uint8_t>> pg_all_gather_bytes(
+std::vector<uint8_t> pg_all_gather_bytes(
     const c10::intrusive_ptr<c10d::ProcessGroup>& pg,
     const void* data,
     size_t nbytes,
@@ -73,14 +73,7 @@ std::vector<std::vector<uint8_t>> pg_all_gather_bytes(
         world_size * nbytes,
         cudaMemcpyDeviceToHost));
   }
-
-  std::vector<std::vector<uint8_t>> result;
-  result.reserve(world_size);
-  for (int r = 0; r < world_size; ++r) {
-    result.emplace_back(
-        flat.begin() + r * nbytes, flat.begin() + (r + 1) * nbytes);
-  }
-  return result;
+  return flat;
 }
 
 // Query environment variable to get the backend used for CUDA Symmetric Memory.
