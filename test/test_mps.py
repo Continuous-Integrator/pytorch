@@ -6227,6 +6227,24 @@ class TestMPS(TestCaseMPS):
             sorted_mi, _ = torch.sort(mi, dim=-1)
             self.assertEqual(sorted_mi.cpu(), torch.arange(mi.size(-1)).expand_as(mi))
 
+    @parametrize("dtype", [torch.float32, torch.bfloat16, torch.float16, torch.int32, torch.int64])
+    @parametrize("descending", [False, True])
+    @parametrize("stable", [True, False])
+    def test_sort_single_block_stable(self, dtype, descending, stable):
+        max_ss = 1024 if dtype == torch.int64 else 4096
+
+        def make(shape):
+            return torch.randint(0, 4, shape).to(dtype)
+        for cpu in [make((4, 4)), make((8, max_ss)), make((16, 32, 64)),
+                    make((8, 2048))[:, ::2], make((1024, 8)).t()]:
+            mps = cpu.to("mps")
+            cv, ci = torch.sort(cpu, stable=stable, dim=-1, descending=descending)
+            mv, mi = torch.sort(mps, stable=stable, dim=-1, descending=descending)
+            self.assertEqual(cv, mv.cpu())
+            self.assertEqual(torch.gather(mps, -1, mi).cpu(), mv.cpu())
+            if stable:
+                self.assertEqual(ci, mi.cpu())
+
     def test_linalg_cholesky(self):
         from torch.testing._internal.common_utils import random_hermitian_pd_matrix
 
@@ -10350,21 +10368,31 @@ class TestSDPA(TestCaseMPS):
 
     @parametrize("dtype", [torch.float16, torch.float32])
     @parametrize("layout", ["contiguous", "mT", "transpose_seq_head", "permute"])
-    @parametrize("head_dim", [64, 96, 128])  # 64, 96, 128 are for the fast kernel
+    @parametrize("head_dim", [64, 96, 128])  # supported by the fast kernel
     @parametrize("with_mask", [True, False])
-    def test_fast_vector_attention(self, dtype: torch.dtype, layout: str, head_dim: int, with_mask: bool):
+    @parametrize("is_causal", [False, True])
+    def test_fast_vector_attention(
+        self, dtype: torch.dtype, layout: str, head_dim: int, with_mask: bool, is_causal: bool
+    ):
+        if is_causal and with_mask:
+            self.skipTest("PyTorch SDPA disallows attn_mask together with is_causal")
         torch.manual_seed(1729)
         batch = 1
         NH = 2
         q_len = 4  # <8 so that vector fast is eligible
         s_len = 16  # smaller than 1024 so that we use the one–pass variant
         q, k, v = self.generate_qkv(batch, NH, q_len, s_len, head_dim, layout, dtype)
-        self.run_fast_attention_test(q, k, v, with_mask)
+        self.run_fast_attention_test(q, k, v, with_mask, is_causal=is_causal)
 
     @parametrize("dtype", [torch.float32])  # float16 underflows sometimes, which leads to flaky tests
     @parametrize("layout", ["contiguous", "mT", "transpose_seq_head", "permute"])
     @parametrize("with_mask", [True, False])
-    def test_fast_vector_attention_2pass(self, dtype: torch.dtype, layout: str, with_mask: bool):
+    @parametrize("is_causal", [False, True])
+    def test_fast_vector_attention_2pass(
+        self, dtype: torch.dtype, layout: str, with_mask: bool, is_causal: bool
+    ):
+        if is_causal and with_mask:
+            self.skipTest("PyTorch SDPA disallows attn_mask together with is_causal")
         torch.manual_seed(1729)
         batch = 1
         NH = 32
@@ -10372,7 +10400,7 @@ class TestSDPA(TestCaseMPS):
         s_len = 1024  # large enough to trigger the two–pass path
         head_dim = 64  # supported head dimension for vector attention
         q, k, v = self.generate_qkv(batch, NH, q_len, s_len, head_dim, layout, dtype)
-        self.run_fast_attention_test(q, k, v, with_mask)
+        self.run_fast_attention_test(q, k, v, with_mask, is_causal=is_causal)
 
     def test_fast_vector_permuted_inputs_regression(self):
         # Regression test for https://github.com/pytorch/pytorch/issues/181133
@@ -10393,6 +10421,21 @@ class TestSDPA(TestCaseMPS):
         y_mps = F.scaled_dot_product_attention(q_mps, k_mps, v_mps)
         y_cpu = F.scaled_dot_product_attention(q_cpu, k_cpu, v_cpu)
         self._compare_tensors(y_mps.cpu(), y_cpu)
+
+    def test_sdpa_causal_with_attn_mask_raises(self):
+        # Passing both is_causal=True and an explicit attn_mask is ill-defined
+        # input and must raise rather than crash
+        torch.manual_seed(0)
+        q = torch.randn(1, 2, 4, 64, device="mps")
+        k = torch.randn(1, 2, 16, 64, device="mps")
+        v = torch.randn(1, 2, 16, 64, device="mps")
+        mask = torch.zeros(1, 2, 4, 16, dtype=torch.bool, device="mps")
+        with torch.nn.attention.sdpa_kernel([torch.nn.attention.SDPBackend.MATH]):
+            with self.assertRaisesRegex(
+                RuntimeError,
+                r"_scaled_dot_product_attention: Explicit attn_mask should not be set when is_causal=True",
+            ):
+                F.scaled_dot_product_attention(q, k, v, attn_mask=mask, is_causal=True)
 
     @unittest.skip("Full attention fast kernel not implemented yet")
     @parametrize("dtype", [torch.float16, torch.float32])
