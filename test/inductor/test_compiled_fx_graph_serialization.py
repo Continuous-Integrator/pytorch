@@ -11,14 +11,12 @@ mask_mod_other_buffers — deserialization retraces via KeepModules().trace()
 and validate_subgraph_args_types rejects the resulting Proxy objects).
 """
 
-import unittest
-
 import torch
 from torch._inductor.output_code import CompiledFxGraph
-from torch.testing._internal.common_utils import run_tests
+from torch.testing._internal.common_utils import run_tests, TestCase
 
 
-class TestCompiledFxGraphSerialization(unittest.TestCase):
+class TestCompiledFxGraphSerialization(TestCase):
     def test_original_gm_cleared_on_prepare_for_serialization(self):
         """_original_gm must be None after prepare_for_serialization.
 
