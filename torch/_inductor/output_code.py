@@ -26,7 +26,7 @@ import dataclasses
 import logging
 import os
 from functools import partial
-from typing import Any, TYPE_CHECKING, TypeAlias
+from typing import Any, cast, TYPE_CHECKING, TypeAlias
 
 import torch
 from torch._dynamo.utils import counters, get_runtime_metrics_context
@@ -832,30 +832,31 @@ class CompiledFxGraph(OutputCode):
             self.mutated_input_idxs,
         )
 
+        if self._original_gm is None and self._serialized_original_gm is not None:
+            from torch._subclasses import FakeTensorMode
+            from torch.fx._graph_pickler import GraphPickler
+            from torch.fx.experimental.symbolic_shapes import ShapeEnv
+
+            fake_mode = FakeTensorMode(
+                allow_non_fake_inputs=True,
+                shape_env=ShapeEnv(),
+            )
+            self._original_gm = cast(
+                torch.fx.GraphModule,
+                GraphPickler.loads(self._serialized_original_gm, fake_mode),
+            )
+            self._serialized_original_gm = None
+
         # Apply inductor_compiled_code HOP wrapper if configured
         # This is done in post_compile to ensure it works with cached artifacts
         if self._wrap_compiled_regions and self.current_callable is not None:
             from torch._higher_order_ops.wrap import InductorCompiledCallable
 
-            original_gm = self._original_gm
-            if original_gm is None and self._serialized_original_gm is not None:
-                from torch._subclasses import FakeTensorMode
-                from torch.fx._graph_pickler import GraphPickler
-                from torch.fx.experimental.symbolic_shapes import ShapeEnv
-
-                fake_mode = FakeTensorMode(
-                    allow_non_fake_inputs=True,
-                    shape_env=ShapeEnv(),
-                )
-                original_gm = GraphPickler.loads(
-                    self._serialized_original_gm, fake_mode
-                )
-
             original_callable = self.current_callable
 
             inductor_callable = InductorCompiledCallable(
                 original_callable,
-                original_gm,
+                self._original_gm,
                 compile_region_name=self.compile_region_name,
             )
 
@@ -884,9 +885,11 @@ class CompiledFxGraph(OutputCode):
         self.recursively_apply_fns = None
         self.compiled_fn_runner = None
         if self._original_gm is not None:
-            from torch.fx._graph_pickler import GraphPickler
+            from torch.fx._graph_pickler import GraphPickler, Options
 
-            self._serialized_original_gm = GraphPickler.dumps(self._original_gm)
+            self._serialized_original_gm = GraphPickler.dumps(
+                self._original_gm, Options(ops_filter=None)
+            )
             self._original_gm = None
         # Note: _serialized_fx_graph is already in serializable form (SerializedGraphModule)
         # so it doesn't need to be cleared

@@ -15,14 +15,12 @@ GraphPickler (which serializes the graph structure directly without
 retracing), and post_compile deserializes it back on load.
 """
 
-import unittest
-
 import torch
 from torch._inductor.output_code import CompiledFxGraph
-from torch.testing._internal.common_utils import run_tests
+from torch.testing._internal.common_utils import run_tests, TestCase
 
 
-class TestCompiledFxGraphSerialization(unittest.TestCase):
+class TestCompiledFxGraphSerialization(TestCase):
     def _make_gm(self):
         gm = torch.fx.GraphModule(torch.nn.Module(), torch.fx.Graph())
         gm.graph.placeholder("x")
