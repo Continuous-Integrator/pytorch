@@ -1347,18 +1347,6 @@ class GetAttrVariable(VariableTracker):
     ) -> VariableTracker:
         return self.obj.call_method(tx, self.name, list(args), kwargs)
 
-    def mp_subscript_impl(
-        self,
-        tx: "InstructionTranslator",
-        key: VariableTracker,
-    ) -> VariableTracker:
-        if self.name == "__dict__":
-            from .dicts import DunderDictVariable
-
-            dunder = DunderDictVariable.create(tx, self.obj)
-            return dunder.mp_subscript_impl(tx, key)
-        return super().mp_subscript_impl(tx, key)
-
 
 class MethodWrapperVariable(VariableTracker):
     def __init__(self, method_wrapper: types.MethodWrapperType, **kwargs: Any) -> None:

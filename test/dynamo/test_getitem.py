@@ -711,34 +711,6 @@ class GetItemTests(torch._dynamo.test_case.TestCase):
         x = torch.randn(4)
         self.assertEqual(fn(x), self._compile(fn, x))
 
-    def test_getattr_dict_missing_key(self):
-        class Model(torch.nn.Module):
-            def __init__(self):
-                super().__init__()
-                self.linear = torch.nn.Linear(4, 4)
-
-            def forward(self, x):
-                return operator.getitem(self.__dict__["_modules"], "nonexistent")(x)
-
-        model = Model()
-        x = torch.randn(4)
-        with self.assertRaises(torch._dynamo.exc.Unsupported):
-            torch.compile(model, backend="eager", fullgraph=True)(x)
-
-    def test_getattr_dict_int_key(self):
-        class Model(torch.nn.Module):
-            def __init__(self):
-                super().__init__()
-                self.linear = torch.nn.Linear(4, 4)
-
-            def forward(self, x):
-                return operator.getitem(self.__dict__, 0)
-
-        model = Model()
-        x = torch.randn(4)
-        with self.assertRaises(torch._dynamo.exc.Unsupported):
-            torch.compile(model, backend="eager", fullgraph=True)(x)
-
     # --- TorchScriptObjectVariable ---
 
     def test_opaque_object_getitem(self):
