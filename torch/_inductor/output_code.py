@@ -510,6 +510,7 @@ class CompiledFxGraph(OutputCode):
     # Running this graph under FakeTensorMode re-derives output shapes
     # (including aliasing) from the input shapes.
     _original_gm: torch.fx.GraphModule | None = None
+    _serialized_original_gm: bytes | None = None
 
     def __init__(
         self,
@@ -836,11 +837,25 @@ class CompiledFxGraph(OutputCode):
         if self._wrap_compiled_regions and self.current_callable is not None:
             from torch._higher_order_ops.wrap import InductorCompiledCallable
 
+            original_gm = self._original_gm
+            if original_gm is None and self._serialized_original_gm is not None:
+                from torch._subclasses import FakeTensorMode
+                from torch.fx._graph_pickler import GraphPickler
+                from torch.fx.experimental.symbolic_shapes import ShapeEnv
+
+                fake_mode = FakeTensorMode(
+                    allow_non_fake_inputs=True,
+                    shape_env=ShapeEnv(),
+                )
+                original_gm = GraphPickler.loads(
+                    self._serialized_original_gm, fake_mode
+                )
+
             original_callable = self.current_callable
 
             inductor_callable = InductorCompiledCallable(
                 original_callable,
-                self._original_gm,
+                original_gm,
                 compile_region_name=self.compile_region_name,
             )
 
@@ -868,7 +883,11 @@ class CompiledFxGraph(OutputCode):
         self.current_callable = None
         self.recursively_apply_fns = None
         self.compiled_fn_runner = None
-        # Note: _original_gm is already picklable (metadata stripped at creation)
+        if self._original_gm is not None:
+            from torch.fx._graph_pickler import GraphPickler
+
+            self._serialized_original_gm = GraphPickler.dumps(self._original_gm)
+            self._original_gm = None
         # Note: _serialized_fx_graph is already in serializable form (SerializedGraphModule)
         # so it doesn't need to be cleared
 
