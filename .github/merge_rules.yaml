@@ -41,7 +41,6 @@
 - name: OSS CI
   patterns:
   - .github/**
-  - .circleci/**
   - .ci/**
   - scripts/**
   - tools/**
@@ -198,11 +197,13 @@
 - name: MPS
   patterns:
   - test/test_mps.py
+  - test/inductor/test_mps_basic.py
+  - torch/testing/_internal/common_mps.py
   - aten/src/ATen/native/native_functions.yaml
   - aten/src/ATen/mps/**
   - aten/src/ATen/native/mps/**
+  - c10/metal/**
   approved_by:
-  - alband
   - malfet
   - DenisVieriu97
   - kurtamohler
@@ -534,6 +535,7 @@
   - aten/src/ATen/detail/PrivateUse1HooksInterface.*
   - docs/source/accelerator/**
   - test/cpp_extensions/open_registration_extension/torch_openreg/**
+  - test/test_accelerator.py
   approved_by:
   - albanD
   - fffrog
@@ -548,19 +550,24 @@
   patterns:
   - '*'
   approved_by:
-  - aelavender
+  - 8Keep
+  - aditvenk
+  - AmesingFlank
   - andrewor14
   - andyanwang
   - angelayi
   - ankitageorge
   - anshul-si
   - aorenste
+  - arui-meta
   - atalman
   - azahed98
+  - banitag1
   - blaine-rister
   - bobrenjc93
   - BoyuanFeng
   - choijon5
+  - colesbury
   - ColinPeppler
   - d4l3k
   - danielvegamyhre
@@ -569,27 +576,29 @@
   - divyanshk
   - dolpm
   - drisspg
-  - dzmitry-huba
+  - echen4096
   - fduwjj
   - fegin
+  - frgossen
   - fxdawnn
   - georgiaphillips
-  - H-Huang
   - henrylhtsang
   - htyu
   - huydhn
   - IvanKobzarev
   - izaitsevfb
-  - jananisriram
+  - JacobSzwejbka
+  - jainapurva
   - janeyx99
   - jathu
   - jbschlosser
-  - jcaip
   - jeanschmidt
   - jerryzh168
+  - jiannanWang
   - jijunyan
   - kapilsh
   - karthickai
+  - kqfu
   - laithsakka
   - liangel-02
   - Lucaskabela
@@ -598,26 +607,26 @@
   - Microve
   - mikaylagawarecki
   - mlazos
-  - mori360
-  - msaroufim
   - NikhilAPatel
   - njriasan
   - oulgen
   - PaulZhang12
   - pianpwk
-  - ramanishsingh
+  - ryanzhang22
   - sanketpurandare
+  - sanrise
   - scotts
   - seemethere
   - SherlockNoMad
   - shunting314
+  - sidt-meta
   - slayton58
   - soulitzer
-  - sraikund16
+  - StellarrZ
   - tianrengao
   - tianyu-l
   - tugsbayasgalan
-  - v0i0
+  - tushar00jain
   - wconstab
   - wdvr
   - weifengpy
@@ -625,8 +634,9 @@
   - xmfan
   - yangw-dev
   - ydwu4
-  - yf225
+  - yiming0416
   - yushangdi
+  - ZainRizvi
   - zhxchen17
   - zoranzhao
   - zpcore
