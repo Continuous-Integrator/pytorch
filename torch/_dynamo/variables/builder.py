@@ -264,12 +264,7 @@ from .nn_module import (
 from .optimizer import OptimizerVariable
 from .script_object import OpaqueObjectClassVariable, TorchScriptObjectVariable
 from .sdpa import SDPAParamsVariable
-from .sets import (
-    DictKeySetVariable,
-    FrozensetVariable,
-    OrderedSetClassVariable,
-    OrderedSetVariable,
-)
+from .sets import DictKeySetVariable, FrozensetVariable
 from .streams import EventVariable, StreamContextVariable, StreamVariable
 from .tensor import (
     NumpyNdarrayVariable,
@@ -298,6 +293,7 @@ from .user_defined import (
     KeyedJaggedTensorVariable,
     MutableMappingVariable,
     OrderedDictVariable,
+    OrderedSetVariable,
     SourcelessGraphModuleVariable,
     UserDefinedClassVariable,
     UserDefinedConstantVariable,
@@ -1261,7 +1257,8 @@ class VariableBuilder:
             return WorldMetaClassVariable(value, source=self.source)
         elif value is OrderedSet:
             self.install_guards(GuardBuilder.ID_MATCH)
-            return OrderedSetClassVariable()
+            # return UserDefinedClassVariable(OrderedSet, source=self.source)
+            return OrderedSetClassVariable(OrderedSet, source=self.source)
         elif (
             id(value) in ITERTOOLS_TYPE_IDS
             and id(value) not in ITERTOOLS_POLYFILLED_TYPE_IDS

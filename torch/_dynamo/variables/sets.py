@@ -17,17 +17,15 @@ dictionaries with None values.
 
 import functools
 import operator
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable
 from typing import Any, Literal, TYPE_CHECKING
-
-from torch.utils._ordered_set import OrderedSet
 
 from .. import polyfills, variables
 from ..bytecode_transformation import create_call_function, create_instruction
 from ..exc import raise_observed_exception
 from ..guards import GuardBuilder, install_guard
-from ..source import AttrSource, is_constant_source, is_from_local_source
-from ..utils import cmp_name_to_op_mapping, istype, raise_args_mismatch, set_methods
+from ..source import is_constant_source, is_from_local_source
+from ..utils import cmp_name_to_op_mapping, istype, raise_args_mismatch
 from .base import ValueMutationNew, VariableTracker
 from .constant import ConstantVariable
 from .hashable import HashableTracker, is_hashable, raise_unhashable
@@ -568,105 +566,6 @@ class SetVariable(VariableTracker):
 
     def sq_length(self, tx: "InstructionTranslator") -> VariableTracker:
         return VariableTracker.build(tx, len(self.set_items))
-
-
-class OrderedSetClassVariable(VariableTracker):
-    def __init__(self, **kwargs: Any) -> None:
-        super().__init__(**kwargs)
-
-    def as_python_constant(self) -> type[OrderedSet[Any]]:
-        return OrderedSet
-
-    def var_getattr(self, tx: "InstructionTranslator", name: str) -> VariableTracker:
-        if name == "__new__":
-            from .misc import GetAttrVariable
-
-            if self.source:
-                attr_source = AttrSource(self.source, name)
-            else:
-                attr_source = None
-            return GetAttrVariable(
-                self, name, py_type=type(getattr(OrderedSet, name)), source=attr_source
-            )
-        else:
-            return super().var_getattr(tx, name)
-
-    def call_method(
-        self,
-        tx: "InstructionTranslator",
-        name: str,
-        args: list[VariableTracker],
-        kwargs: dict[str, VariableTracker],
-    ) -> VariableTracker:
-        if name == "__new__":
-            if len(args) != 2 or kwargs:
-                raise_args_mismatch(
-                    tx,
-                    name,
-                    "OrderedSet.__new__ only accepts one arg"
-                    f"{len(args)} args and {len(kwargs)} kwargs",
-                )
-
-            return variables.OrderedSetVariable([], mutation_type=ValueMutationNew())
-
-        resolved_fn = getattr(set, name)
-        if resolved_fn in set_methods and isinstance(args[0], variables.SetVariable):
-            return args[0].call_method(tx, name, args[1:], kwargs)
-
-        return super().call_method(tx, name, args, kwargs)
-
-    def call_function(
-        self,
-        tx: "InstructionTranslator",
-        args: Sequence[VariableTracker],
-        kwargs: dict[str, VariableTracker],
-    ) -> "OrderedSetVariable":
-        if len(args) > 1 or kwargs:
-            raise_args_mismatch(
-                tx,
-                "OrderedSet",
-                "OrderedSet only accepts one arg"
-                f"{len(args)} args and {len(kwargs)} kwargs",
-            )
-
-        if len(args) == 0:
-            # pyrefly: ignore [implicit-any]
-            items = []
-        else:
-            items = args[0].force_unpack_var_sequence(tx)
-        return variables.OrderedSetVariable(items, mutation_type=ValueMutationNew())
-
-
-class OrderedSetVariable(SetVariable):
-    def debug_repr(self) -> str:
-        if not self.items:
-            return "OrderedSet([])"
-        else:
-            items: list[str] = []
-            for k in self.items:
-                key_str = (
-                    repr(k.vt.value) if hasattr(k.vt, "value") else k.vt.debug_repr()
-                )
-                items.append(key_str)
-            return "OrderedSet([" + ",".join(items) + "])"
-
-    def as_python_constant(self) -> OrderedSet[Any]:
-        return OrderedSet([k.vt.as_python_constant() for k in self.set_items])
-
-    def python_type(self) -> type[OrderedSet[Any]]:
-        return OrderedSet
-
-    # pyrefly: ignore[bad-override]
-    def python_type_var(self) -> OrderedSetClassVariable:
-        return OrderedSetClassVariable()
-
-    def reconstruct(self, codegen: "PyCodegen") -> None:
-        codegen.add_push_null(
-            lambda: codegen.load_import_from("torch.utils._ordered_set", "OrderedSet")
-        )
-        codegen.foreach([x.vt for x in self.set_items])
-        codegen.append_output(create_instruction("BUILD_LIST", arg=len(self.set_items)))
-        codegen.extend_output(create_call_function(1, False))
 
 
 class FrozensetVariable(SetVariable):

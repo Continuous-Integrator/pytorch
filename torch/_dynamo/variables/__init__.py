@@ -139,13 +139,7 @@ from .nn_module import (
 )
 from .optimizer import OptimizerVariable
 from .sdpa import SDPAParamsVariable
-from .sets import (
-    DictKeySetVariable,
-    FrozensetVariable,
-    OrderedSetClassVariable,
-    OrderedSetVariable,
-    SetVariable,
-)
+from .sets import DictKeySetVariable, FrozensetVariable, SetVariable
 from .streams import (
     CudaStreamVariable,
     EventVariable,
@@ -169,6 +163,8 @@ from .user_defined import (
     MutableMappingVariable,
     NamedTupleVariable,
     OrderedDictVariable,
+    OrderedSetClassVariable,
+    OrderedSetVariable,
     RemovableHandleVariable,
     StructSequenceVariable,
     UserDefinedClassVariable,

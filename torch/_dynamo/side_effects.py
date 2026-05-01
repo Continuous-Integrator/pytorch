@@ -494,6 +494,7 @@ class SideEffects:
             list.__getattribute__,
             tuple.__getattribute__,
             BaseException.__getattribute__,
+            OrderedSet.__getattribute__,
         )
 
     def is_attribute_mutation(self, item: VariableTracker) -> bool:
@@ -622,6 +623,8 @@ class SideEffects:
             variable_cls = variables.MutableMappingVariable
         elif is_frozen_dataclass(user_cls):
             variable_cls = FrozenDataClassVariable
+        elif issubclass(user_cls, OrderedSet):
+            variable_cls = variables.OrderedSetVariable
         elif issubclass(user_cls, BaseException):
             variable_cls = variables.UserDefinedExceptionObjectVariable
         elif issubclass(
