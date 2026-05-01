@@ -3,7 +3,7 @@ import logging
 import operator
 from collections import defaultdict
 from collections.abc import Callable
-from typing import Any, Literal, TypeAlias
+from typing import Any, Literal, TYPE_CHECKING, TypeAlias
 
 import torch
 import torch.distributed as dist
@@ -16,10 +16,13 @@ from torch._inductor.comm_analysis import (
 )
 from torch._inductor.runtime.runtime_utils import dynamo_timed
 from torch._logging import trace_structured
-from torch.distributed.distributed_c10d import GroupName
 from torch.fx.experimental.proxy_tensor import make_fx
 from torch.fx.traceback import NodeSource, NodeSourceAction
 from torch.utils._ordered_set import OrderedSet
+
+
+if TYPE_CHECKING:
+    from torch.distributed.distributed_c10d import GroupName
 
 
 logger: logging.Logger = logging.getLogger(__name__)
@@ -28,7 +31,7 @@ logger.setLevel(logging.INFO)
 overlap_log = torch._logging.getArtifactLogger(__name__, "overlap")
 
 
-def _resolve_group_name(group_name: Any) -> GroupName:
+def _resolve_group_name(group_name: Any) -> "GroupName":
     """Resolve group_name to a GroupName string.
 
     In compile-on-one-rank graphs, collective ops receive their
@@ -38,7 +41,7 @@ def _resolve_group_name(group_name: Any) -> GroupName:
     node.meta["val"].
     """
     if isinstance(group_name, str):
-        return GroupName(group_name)
+        return group_name  # pyrefly: ignore [bad-return]
     pg = group_name.meta["val"]
     return pg.group_name
 
@@ -943,7 +946,6 @@ def all_gather_merge_fn_to_trace_functional(
         for o, shape in zip(outs, ins_sizes)
     ]
     return outs_reshaped
-
 
 
 def _trace(fn, inps) -> torch.fx.GraphModule:  # type: ignore[no-untyped-def]
